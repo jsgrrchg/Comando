@@ -8,9 +8,12 @@ import {
 } from "react";
 
 import type {
+    ComandoApi,
     GitStatusBadge,
+    PersistenceSnapshot,
     ProjectSummary,
     ProjectTreeNode,
+    SettingsSnapshot,
 } from "@shared/ipc";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
@@ -98,12 +101,16 @@ export function App() {
             void hydrateBootstrap();
 
             try {
-                const [persistenceSnapshot, settingsSnapshot] = window.comando
-                    ? await Promise.all([
-                          window.comando.getPersistenceSnapshot(),
-                          window.comando.getSettingsSnapshot(),
-                      ])
-                    : [null, null];
+                const comandoApi = getComandoApi();
+                let persistenceSnapshot: PersistenceSnapshot | null = null;
+                let settingsSnapshot: SettingsSnapshot | null = null;
+
+                if (comandoApi) {
+                    [persistenceSnapshot, settingsSnapshot] = await Promise.all([
+                        comandoApi.getPersistenceSnapshot(),
+                        comandoApi.getSettingsSnapshot(),
+                    ]);
+                }
 
                 if (isDisposed) {
                     return;
@@ -129,29 +136,29 @@ export function App() {
     }, [hydrateBootstrap, hydrateProjects, hydrateShell, workspaceHydrate]);
 
     useEffect(() => {
-        if (!window.comando) {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
             return;
         }
 
-        const unsubscribe = window.comando.onProjectTreeInvalidated(
-            (payload) => {
-                void refreshProjectTree(payload.projectId);
-                void refreshProjectTabs(payload.projectId);
-            },
-        );
+        const unsubscribe = comandoApi.onProjectTreeInvalidated((payload) => {
+            void refreshProjectTree(payload.projectId);
+            void refreshProjectTabs(payload.projectId);
+        });
 
         return unsubscribe;
     }, [refreshProjectTabs, refreshProjectTree]);
 
     useEffect(() => {
-        if (!window.comando) {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
             return;
         }
 
-        const unsubscribeData = window.comando.onTerminalData((event) => {
+        const unsubscribeData = comandoApi.onTerminalData((event) => {
             appendTerminalOutput(event);
         });
-        const unsubscribeExit = window.comando.onTerminalExit((event) => {
+        const unsubscribeExit = comandoApi.onTerminalExit((event) => {
             handleTerminalExit(event);
         });
 
@@ -175,12 +182,13 @@ export function App() {
     }, [syncViewport]);
 
     useEffect(() => {
-        if (!persistenceReady || !window.comando) {
+        const comandoApi = getComandoApi();
+        if (!persistenceReady || !comandoApi) {
             return;
         }
 
         const timeout = window.setTimeout(() => {
-            void window.comando.saveSettingsSnapshot({
+            void comandoApi.saveSettingsSnapshot({
                 shellState: {
                     activeSurface,
                     leftWidth,
@@ -784,7 +792,7 @@ function TreeFolderIcon({ open }: { readonly open: boolean }) {
         return (
             <svg
                 aria-hidden="true"
-                className="h-[15px] w-[15px] shrink-0"
+                className="h-3.75 w-3.75 shrink-0"
                 fill="none"
                 viewBox="0 0 16 16"
             >
@@ -805,7 +813,7 @@ function TreeFolderIcon({ open }: { readonly open: boolean }) {
     return (
         <svg
             aria-hidden="true"
-            className="h-[15px] w-[15px] shrink-0"
+            className="h-3.75 w-3.75 shrink-0"
             fill="none"
             viewBox="0 0 16 16"
         >
@@ -822,7 +830,7 @@ function TreeNoteIcon() {
     return (
         <svg
             aria-hidden="true"
-            className="h-[13px] w-[13px] shrink-0 opacity-55"
+            className="h-3.25 w-3.25 shrink-0 opacity-55"
             fill="none"
             viewBox="0 0 16 16"
         >
@@ -845,7 +853,7 @@ function TreePdfIcon() {
     return (
         <svg
             aria-hidden="true"
-            className="h-[13px] w-[13px] shrink-0"
+            className="h-3.25 w-3.25 shrink-0"
             fill="none"
             viewBox="0 0 16 16"
         >
@@ -879,7 +887,7 @@ function TreeImageIcon() {
     return (
         <svg
             aria-hidden="true"
-            className="h-[13px] w-[13px] shrink-0 opacity-58"
+            className="h-3.25 w-3.25 shrink-0 opacity-58"
             fill="none"
             viewBox="0 0 16 16"
         >
@@ -914,7 +922,7 @@ function TreeGenericFileIcon() {
     return (
         <svg
             aria-hidden="true"
-            className="h-[13px] w-[13px] shrink-0 opacity-58"
+            className="h-3.25 w-3.25 shrink-0 opacity-58"
             fill="none"
             viewBox="0 0 16 16"
         >
@@ -964,6 +972,10 @@ function GitBadge({ status }: { readonly status: GitStatusBadge }) {
             {label}
         </span>
     );
+}
+
+function getComandoApi(): ComandoApi | null {
+    return "comando" in window ? window.comando : null;
 }
 
 function getParentKey(parentRelativePath: string | null): string {

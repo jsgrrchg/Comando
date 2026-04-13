@@ -17,7 +17,7 @@ export function SplitHandle({
         <div
             aria-label={label}
             aria-orientation="vertical"
-            className="group relative z-[2] flex h-full cursor-col-resize items-center justify-center"
+            className="group relative z-2 flex h-full cursor-col-resize items-center justify-center"
             onKeyDown={handleKeyDown}
             onPointerDown={onPointerDown}
             role="separator"

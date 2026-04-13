@@ -14,19 +14,27 @@ export default tseslint.config(
             "coverage/**",
             "dist/**",
             "dist-electron/**",
-            "eslint.config.mjs",
             "node_modules/**",
             "out/**",
         ],
     },
     js.configs.recommended,
-    ...tseslint.configs.recommendedTypeChecked,
     {
         files: ["**/*.{ts,tsx,mts,cts}"],
+        extends: tseslint.configs.recommendedTypeChecked,
         languageOptions: {
             parserOptions: {
                 projectService: true,
                 tsconfigRootDir: rootDir,
+            },
+        },
+    },
+    {
+        files: ["eslint.config.mjs"],
+        extends: [tseslint.configs.disableTypeChecked],
+        languageOptions: {
+            globals: {
+                ...globals.node,
             },
         },
     },

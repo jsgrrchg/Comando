@@ -313,7 +313,7 @@ function WorkspacePaneView({
                             return (
                                 <button
                                     className={[
-                                        "group app-no-drag relative flex h-[31px] items-center gap-1.5 border-r border-[#cfd4dd] px-3 text-[12px] transition",
+                                        "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-[#cfd4dd] px-3 text-[12px] transition",
                                         isActive
                                             ? "z-10 bg-white text-[#2d3440] shadow-[inset_0_-2px_0_0_#4b5563]"
                                             : "z-0 bg-[#d7dce4] text-[#6f7784] hover:bg-[#d1d7e0] hover:text-[#4d5562]",
@@ -530,7 +530,9 @@ function FileTabView({
             <div className="min-h-0 flex-1">
                 <Editor
                     language={document.languageId}
-                    onChange={(value) => onDraftChange(tab.id, value ?? "")}
+                    onChange={(value: string | undefined) =>
+                        onDraftChange(tab.id, value ?? "")
+                    }
                     options={{
                         automaticLayout: true,
                         fontFamily:
