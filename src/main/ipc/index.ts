@@ -13,10 +13,10 @@ import {
     type CreateTerminalSessionInput,
     type ListProjectTreeInput,
     type OpenProjectFileInput,
-    type PersistedShellState,
     type PersistenceSnapshot,
     type ResizeTerminalSessionInput,
     type SaveProjectFileInput,
+    type SettingsSnapshot,
     type SystemTheme,
     type WriteTerminalInput,
     type WorkspaceSnapshot,
@@ -24,6 +24,7 @@ import {
 
 import type { ProjectService } from "@main/projects/service";
 import type { PersistenceService } from "@main/persistence/service";
+import type { SettingsService } from "@main/settings/service";
 import type { TerminalService } from "@main/terminals/service";
 import type { WorkspaceService } from "@main/workspace/service";
 
@@ -31,6 +32,7 @@ interface RegisterIpcHandlersOptions {
     readonly getSnapshot: () => AppBootstrapSnapshot;
     readonly persistenceService: PersistenceService;
     readonly projectService: ProjectService;
+    readonly settingsService: SettingsService;
     readonly terminalService: TerminalService;
     readonly workspaceService: WorkspaceService;
 }
@@ -38,8 +40,9 @@ interface RegisterIpcHandlersOptions {
 export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getBootstrapSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getPersistenceSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
-    ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
+    ipcMain.removeHandler(IPC_CHANNELS.saveSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveProjectId);
     ipcMain.removeHandler(IPC_CHANNELS.listProjects);
     ipcMain.removeHandler(IPC_CHANNELS.openProjects);
@@ -65,15 +68,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (): PersistenceSnapshot => options.persistenceService.loadSnapshot(),
     );
     ipcMain.handle(
+        IPC_CHANNELS.getSettingsSnapshot,
+        (): SettingsSnapshot => options.settingsService.loadSnapshot(),
+    );
+    ipcMain.handle(
         IPC_CHANNELS.getSystemTheme,
         (): SystemTheme => ({
             isDark: nativeTheme.shouldUseDarkColors,
         }),
     );
     ipcMain.handle(
-        IPC_CHANNELS.saveShellState,
-        (_event, state: PersistedShellState) => {
-            options.persistenceService.saveShellState(state);
+        IPC_CHANNELS.saveSettingsSnapshot,
+        (_event, snapshot: SettingsSnapshot) => {
+            options.settingsService.saveSnapshot(snapshot);
         },
     );
     ipcMain.handle(

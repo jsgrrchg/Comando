@@ -59,7 +59,28 @@ describe("project tree helpers", () => {
         expect(document.relativePath).toBe(relativePath);
         expect(document.isBinary).toBe(false);
         expect(document.content).toContain("console.log");
-        expect(document.languageHint).toBe("ts");
+        expect(document.languageId).toBe("typescript");
+        expect(document.languageLabel).toBe("TypeScript");
+    });
+
+    it("detects scripts without extension from the shebang", async () => {
+        const rootPath = createProjectFixture();
+        const relativePath = "scripts/release";
+
+        fs.mkdirSync(path.join(rootPath, "scripts"));
+        fs.writeFileSync(
+            path.join(rootPath, relativePath),
+            "#!/usr/bin/env python3\nprint('ship it')\n",
+        );
+
+        const document = await readProjectFile({
+            projectId: "project-1",
+            relativePath,
+            rootPath,
+        });
+
+        expect(document.languageId).toBe("python");
+        expect(document.languageLabel).toBe("Python");
     });
 });
 

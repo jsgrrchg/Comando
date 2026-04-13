@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { PersistenceService } from "./service";
 
 describe("PersistenceService", () => {
-    it("restaura shell, ventana y proyecto activo desde la ultima sesion", () => {
+    it("restaura ventana y proyecto activo desde la ultima sesion", () => {
         const connection = createFakePersistenceConnection();
         const service = new PersistenceService(
             connection as unknown as Database.Database,
@@ -19,20 +19,10 @@ describe("PersistenceService", () => {
             x: 24,
             y: 32,
         });
-        service.saveShellState({
-            activeSurface: "workspace",
-            leftWidth: 260,
-            rightWidth: 336,
-        });
         service.saveActiveProjectId("project-1");
 
         expect(service.loadSnapshot()).toEqual({
             activeProjectId: "project-1",
-            shellState: {
-                activeSurface: "workspace",
-                leftWidth: 260,
-                rightWidth: 336,
-            },
             windowState: {
                 height: 900,
                 id: "main",
@@ -47,7 +37,6 @@ describe("PersistenceService", () => {
 });
 
 function createFakePersistenceConnection() {
-    const settings = new Map<string, string>();
     const windows = new Map<
         string,
         {
@@ -71,25 +60,6 @@ function createFakePersistenceConnection() {
 
     return {
         prepare(sql: string) {
-            if (sql.includes("INSERT INTO app_settings")) {
-                return {
-                    run(key: string, value: string) {
-                        settings.set(key, value);
-                    },
-                };
-            }
-
-            if (
-                sql.includes("SELECT value FROM app_settings WHERE key = ?")
-            ) {
-                return {
-                    get(key: string) {
-                        const value = settings.get(key);
-                        return value ? { value } : undefined;
-                    },
-                };
-            }
-
             if (sql.includes("INSERT INTO app_windows")) {
                 return {
                     run(
@@ -144,7 +114,7 @@ function createFakePersistenceConnection() {
                         const activeProjectId =
                             activeProjectIdOrCreatedAt &&
                             activeProjectIdOrCreatedAt.includes("T")
-                                ? existing?.active_project_id ?? null
+                                ? (existing?.active_project_id ?? null)
                                 : activeProjectIdOrCreatedAt;
 
                         sessions.set(id, {
@@ -156,7 +126,9 @@ function createFakePersistenceConnection() {
                 };
             }
 
-            throw new Error(`Unsupported SQL in fake persistence test:\n${sql}`);
+            throw new Error(
+                `Unsupported SQL in fake persistence test:\n${sql}`,
+            );
         },
     };
 }

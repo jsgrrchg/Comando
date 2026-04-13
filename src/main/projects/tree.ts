@@ -6,6 +6,7 @@ import type {
     ProjectFileDocument,
     ProjectTreeNode,
 } from "@shared/ipc";
+import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { shouldIgnoreEntry } from "./ignore";
 
@@ -80,6 +81,10 @@ export async function readProjectFile(options: {
     const isTooLarge = stats.size > maxBytes;
     const binaryProbe = await readProbeBuffer(absolutePath, 4096);
     const isBinary = bufferLooksBinary(binaryProbe);
+    const language = resolveEditorLanguage({
+        filePath: absolutePath,
+        probeContent: isBinary ? "" : binaryProbe.toString("utf8"),
+    });
 
     let content = "";
     if (isBinary) {
@@ -96,7 +101,8 @@ export async function readProjectFile(options: {
         content,
         isBinary,
         isTooLarge,
-        languageHint: detectLanguageHint(absolutePath),
+        languageId: language.id,
+        languageLabel: language.label,
         name: path.basename(absolutePath),
         projectId: options.projectId,
         relativePath: normalizeRelativePath(options.relativePath),
@@ -221,14 +227,4 @@ function formatByteSize(bytes: number): string {
     }
 
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function detectLanguageHint(filePath: string): string {
-    const extension = path.extname(filePath).slice(1).toLowerCase();
-
-    if (!extension) {
-        return "text";
-    }
-
-    return extension;
 }

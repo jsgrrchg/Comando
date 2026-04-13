@@ -3,8 +3,9 @@ import type { AppIdentity } from "@shared/app-identity";
 export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
     getPersistenceSnapshot: "app:get-persistence-snapshot",
+    getSettingsSnapshot: "settings:get-snapshot",
     getSystemTheme: "app:get-system-theme",
-    saveShellState: "app:save-shell-state",
+    saveSettingsSnapshot: "settings:save-snapshot",
     saveActiveProjectId: "app:save-active-project-id",
     listProjects: "projects:list",
     openProjects: "projects:open",
@@ -75,8 +76,11 @@ export interface PersistedWindowState {
 
 export interface PersistenceSnapshot {
     readonly activeProjectId: string | null;
-    readonly shellState: PersistedShellState | null;
     readonly windowState: PersistedWindowState | null;
+}
+
+export interface SettingsSnapshot {
+    readonly shellState: PersistedShellState | null;
 }
 
 export type GitStatusBadge =
@@ -112,7 +116,8 @@ export interface ProjectFileDocument {
     readonly relativePath: string;
     readonly name: string;
     readonly content: string;
-    readonly languageHint: string;
+    readonly languageId: string;
+    readonly languageLabel: string;
     readonly isBinary: boolean;
     readonly isTooLarge: boolean;
 }
@@ -231,19 +236,42 @@ export interface WorkspaceSnapshot {
 
 export interface PersistedChatSessionState {
     readonly draft: string;
+    readonly events: readonly ChatSessionEvent[];
     readonly messageCount: number;
     readonly projectId: string | null;
+    readonly reviewArtifacts: readonly ReviewArtifact[];
     readonly sessionId: string;
     readonly title: string;
     readonly transcriptJson: string;
     readonly updatedAt: string;
 }
 
+export interface ChatSessionEvent {
+    readonly id: string;
+    readonly sessionId: string;
+    readonly sequence: number;
+    readonly eventType: string;
+    readonly payloadJson: string;
+    readonly createdAt: string;
+}
+
+export interface ReviewArtifact {
+    readonly id: string;
+    readonly sessionId: string | null;
+    readonly artifactType: string;
+    readonly title: string;
+    readonly path: string | null;
+    readonly payloadJson: string;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+}
+
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot>;
+    getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getSystemTheme: () => Promise<SystemTheme>;
-    saveShellState: (state: PersistedShellState) => Promise<void>;
+    saveSettingsSnapshot: (snapshot: SettingsSnapshot) => Promise<void>;
     saveActiveProjectId: (projectId: string | null) => Promise<void>;
     listProjects: () => Promise<ProjectSummary[]>;
     openProjects: () => Promise<ProjectSummary[]>;

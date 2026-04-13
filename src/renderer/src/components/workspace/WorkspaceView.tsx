@@ -5,10 +5,10 @@ import "@xterm/xterm/css/xterm.css";
 import {
     useEffect,
     useEffectEvent,
-    useMemo,
     useRef,
     useState,
     type PointerEvent as ReactPointerEvent,
+    type WheelEvent as ReactWheelEvent,
 } from "react";
 
 import type {
@@ -16,10 +16,10 @@ import type {
     WorkspacePaneNode,
     WorkspaceSplitNode,
 } from "@shared/ipc";
+import { shouldWrapEditorLanguage } from "@shared/editor-language";
 
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import {
-    collectPaneNodes,
     type RuntimeWorkspaceChatTab,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTerminalTab,
@@ -36,50 +36,14 @@ type SplitDragState = {
 } | null;
 
 export function WorkspaceView({ defaultProjectId }: WorkspaceViewProps) {
-    const activePaneId = useWorkspaceStore((state) => state.activePaneId);
-    const error = useWorkspaceStore((state) => state.error);
     const rootNode = useWorkspaceStore((state) => state.rootNode);
-    const tabsById = useWorkspaceStore((state) => state.tabsById);
-
-    const paneCount = useMemo(
-        () => collectPaneNodes(rootNode).length,
-        [rootNode],
-    );
-    const tabCount = Object.keys(tabsById).length;
 
     return (
-        <div className="flex h-full min-h-0 flex-col">
-            <div className="border-b border-border bg-bg-secondary px-3 py-2">
-                <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-2">
-                        <span className="rounded border border-border bg-bg-elevated px-2 py-1 text-[11px] font-medium text-text-secondary">
-                            Workspace
-                        </span>
-                        <span className="truncate text-[11px] text-text-secondary">
-                            {paneCount} pane{paneCount === 1 ? "" : "s"} ·{" "}
-                            {tabCount} tab
-                            {tabCount === 1 ? "" : "s"}
-                        </span>
-                    </div>
-
-                    {error ? (
-                        <span className="truncate text-[11px] text-red-600">
-                            {error}
-                        </span>
-                    ) : (
-                        <span className="text-[11px] text-text-secondary">
-                            Active pane: {activePaneId}
-                        </span>
-                    )}
-                </div>
-            </div>
-
-            <div className="min-h-0 flex-1 bg-bg-primary">
-                <WorkspaceNodeView
-                    defaultProjectId={defaultProjectId}
-                    node={rootNode}
-                />
-            </div>
+        <div className="h-full min-h-0 bg-bg-primary">
+            <WorkspaceNodeView
+                defaultProjectId={defaultProjectId}
+                node={rootNode}
+            />
         </div>
     );
 }
@@ -279,7 +243,6 @@ function WorkspacePaneView({
     const createTerminalTab = useWorkspaceStore(
         (state) => state.createTerminalTab,
     );
-    const moveActiveTab = useWorkspaceStore((state) => state.moveActiveTab);
     const selectTab = useWorkspaceStore((state) => state.selectTab);
     const setActivePane = useWorkspaceStore((state) => state.setActivePane);
     const splitPane = useWorkspaceStore((state) => state.splitPane);
@@ -296,22 +259,46 @@ function WorkspacePaneView({
     const restartTerminalTab = useWorkspaceStore(
         (state) => state.restartTerminalTab,
     );
+    const tabStripRef = useRef<HTMLDivElement | null>(null);
 
     const activeTab = node.activeTabId ? tabsById[node.activeTabId] : null;
     const isActivePane = activePaneId === node.id;
+
+    const handleTabStripWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+        const container = tabStripRef.current;
+        if (!container) {
+            return;
+        }
+
+        const hasHorizontalOverflow =
+            container.scrollWidth > container.clientWidth;
+        const shouldTranslateVerticalScroll =
+            Math.abs(event.deltaY) > Math.abs(event.deltaX);
+
+        if (!hasHorizontalOverflow || !shouldTranslateVerticalScroll) {
+            return;
+        }
+
+        event.preventDefault();
+        container.scrollLeft += event.deltaY;
+    };
 
     return (
         <section
             className={[
                 "flex h-full min-h-0 flex-col border bg-bg-primary",
-                isActivePane ? "border-accent/45" : "border-transparent",
+                isActivePane ? "border-border-strong" : "border-transparent",
             ].join(" ")}
             onMouseDown={() => void setActivePane(node.id)}
         >
-            <div className="flex items-center justify-between gap-2 border-b border-border bg-bg-panel px-2 py-1.5">
-                <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+            <div className="app-drag flex items-center justify-between border-b border-border bg-[#dfe3ea] px-0">
+                <div
+                    className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
+                    onWheel={handleTabStripWheel}
+                    ref={tabStripRef}
+                >
                     {node.tabIds.length === 0 ? (
-                        <span className="px-2 text-[11px] text-text-secondary">
+                        <span className="px-2.5 py-1.5 text-[11px] text-text-secondary">
                             Empty pane
                         </span>
                     ) : (
@@ -321,84 +308,80 @@ function WorkspacePaneView({
                                 return null;
                             }
 
+                            const isActive = tabId === node.activeTabId;
+
                             return (
-                                <div
+                                <button
                                     className={[
-                                        "group flex items-center gap-1 rounded-md border px-1 py-1 text-xs transition",
-                                        tabId === node.activeTabId
-                                            ? "border-accent bg-accent-soft text-accent-strong"
-                                            : "border-transparent text-text-secondary hover:border-border hover:bg-bg-secondary hover:text-text-primary",
+                                        "group app-no-drag relative flex h-[31px] items-center gap-1.5 border-r border-[#cfd4dd] px-3 text-[12px] transition",
+                                        isActive
+                                            ? "z-10 bg-white text-[#2d3440] shadow-[inset_0_-2px_0_0_#4b5563]"
+                                            : "z-0 bg-[#d7dce4] text-[#6f7784] hover:bg-[#d1d7e0] hover:text-[#4d5562]",
                                     ].join(" ")}
                                     key={tabId}
+                                    onClick={() =>
+                                        void selectTab(node.id, tabId)
+                                    }
+                                    type="button"
                                 >
-                                    <button
-                                        className="app-no-drag flex min-w-0 items-center gap-2 rounded px-1.5 py-0.5"
-                                        onClick={() =>
-                                            void selectTab(node.id, tabId)
-                                        }
-                                        type="button"
-                                    >
-                                        <span className="text-[10px] uppercase tracking-[0.12em]">
-                                            {getTabLabel(tab.kind)}
+                                    <TabIcon kind={tab.kind} />
+                                    <span className="truncate">
+                                        {tab.title}
+                                    </span>
+                                    {"isDirty" in tab && tab.isDirty ? (
+                                        <span className="text-[9px] text-amber-500">
+                                            ●
                                         </span>
-                                        <span className="truncate">
-                                            {tab.title}
-                                        </span>
-                                        {"isDirty" in tab && tab.isDirty ? (
-                                            <span className="text-[11px] text-amber-600">
-                                                ●
-                                            </span>
-                                        ) : null}
-                                    </button>
-                                    <button
-                                        className="rounded px-1 text-[10px] text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary"
-                                        onClick={() => void closeTab(tabId)}
-                                        type="button"
+                                    ) : null}
+                                    <span
+                                        className={[
+                                            "ml-0.5 rounded px-0.5 text-[10px] transition hover:bg-black/5 hover:text-text-primary",
+                                            isActive
+                                                ? "text-[#6f7784] opacity-70"
+                                                : "text-[#7b8390] opacity-0 group-hover:opacity-70",
+                                        ].join(" ")}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            void closeTab(tabId);
+                                        }}
+                                        role="button"
+                                        tabIndex={-1}
                                     >
                                         ×
-                                    </button>
-                                </div>
+                                    </span>
+                                </button>
                             );
                         })
                     )}
                 </div>
 
-                <div className="flex items-center gap-1">
+                <div className="flex shrink-0 items-center">
                     <PaneActionButton
-                        label="Chat"
+                        label="+"
                         onClick={() => void createChatTab(defaultProjectId)}
+                        title="New chat"
                     />
                     <PaneActionButton
-                        label="Terminal"
+                        label="▸"
                         onClick={() => void createTerminalTab(defaultProjectId)}
+                        title="New terminal"
                     />
-                    <PaneActionButton
-                        label="←"
-                        onClick={() => void moveActiveTab(node.id, "previous")}
-                    />
-                    <PaneActionButton
-                        label="→"
-                        onClick={() => void moveActiveTab(node.id, "next")}
-                    />
+                    <span className="mx-1 h-3 w-px bg-border" />
                     <PaneActionButton
                         label="◧"
                         onClick={() => void splitPane(node.id, "left")}
+                        title="Split left"
                     />
                     <PaneActionButton
                         label="◨"
                         onClick={() => void splitPane(node.id, "right")}
+                        title="Split right"
                     />
-                    <PaneActionButton
-                        label="▤"
-                        onClick={() => void splitPane(node.id, "up")}
-                    />
-                    <PaneActionButton
-                        label="▥"
-                        onClick={() => void splitPane(node.id, "down")}
-                    />
+                    <span className="mx-1 h-3 w-px bg-border" />
                     <PaneActionButton
                         label="×"
                         onClick={() => void closePane(node.id)}
+                        title="Close pane"
                     />
                 </div>
             </div>
@@ -429,15 +412,9 @@ function WorkspacePaneView({
                     )
                 ) : (
                     <div className="flex h-full items-center justify-center px-6 text-center">
-                        <div>
-                            <p className="text-sm font-medium text-text-primary">
-                                This pane is ready
-                            </p>
-                            <p className="mt-2 text-sm leading-6 text-text-secondary">
-                                Open a file from the project tree, start a chat
-                                or launch a terminal here.
-                            </p>
-                        </div>
+                        <p className="text-[12px] text-text-secondary">
+                            Open a file, start a chat or launch a terminal.
+                        </p>
                     </div>
                 )}
             </div>
@@ -448,14 +425,17 @@ function WorkspacePaneView({
 function PaneActionButton({
     label,
     onClick,
+    title,
 }: {
     readonly label: string;
     readonly onClick: () => void;
+    readonly title: string;
 }) {
     return (
         <button
-            className="app-no-drag rounded border border-transparent px-2 py-1 text-[11px] text-text-secondary transition hover:border-border hover:bg-bg-secondary hover:text-text-primary"
+            className="app-no-drag rounded px-1.5 py-0.5 text-[11px] text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary"
             onClick={onClick}
+            title={title}
             type="button"
         >
             {label}
@@ -528,9 +508,7 @@ function FileTabView({
     if (!canEdit) {
         return (
             <div className="flex h-full min-h-0 flex-col">
-                <div className="border-b border-border bg-bg-panel px-4 py-2 text-[11px] text-text-secondary">
-                    {document.relativePath} · {document.languageHint}
-                </div>
+                <FilePathBar path={document.absolutePath} />
                 <div className="flex h-full items-center justify-center px-6 text-center">
                     <div>
                         <div className="text-sm font-medium text-text-primary">
@@ -547,42 +525,11 @@ function FileTabView({
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center justify-between gap-3 border-b border-border bg-bg-panel px-4 py-2 text-[11px] text-text-secondary">
-                <div className="min-w-0 truncate">
-                    {document.relativePath} · {document.languageHint}
-                </div>
-                <div className="flex items-center gap-2">
-                    {tab.saveError ? (
-                        <span className="text-red-600">{tab.saveError}</span>
-                    ) : null}
-                    <span
-                        className={
-                            tab.isDirty ? "text-amber-600" : "text-emerald-600"
-                        }
-                    >
-                        {tab.isSaving
-                            ? "Saving..."
-                            : tab.isDirty
-                              ? "Unsaved changes"
-                              : "Saved"}
-                    </span>
-                    <button
-                        className="ide-button app-no-drag px-3 py-1.5"
-                        disabled={!tab.isDirty || tab.isSaving}
-                        onClick={() => void onSave(tab.id)}
-                        type="button"
-                    >
-                        Save
-                    </button>
-                </div>
-            </div>
+            <FilePathBar path={document.absolutePath} />
 
             <div className="min-h-0 flex-1">
                 <Editor
-                    language={resolveMonacoLanguage(
-                        document.languageHint,
-                        document.relativePath,
-                    )}
+                    language={document.languageId}
                     onChange={(value) => onDraftChange(tab.id, value ?? "")}
                     options={{
                         automaticLayout: true,
@@ -594,20 +541,24 @@ function FileTabView({
                         padding: { top: 16, bottom: 16 },
                         scrollBeyondLastLine: false,
                         smoothScrolling: true,
-                        wordWrap: "off",
+                        wordWrap: shouldEnableDocumentWrapping(document)
+                            ? "on"
+                            : "off",
                     }}
                     path={document.absolutePath}
                     theme={editorTheme}
                     value={tab.draftContent}
                 />
             </div>
+        </div>
+    );
+}
 
-            <div className="border-t border-border bg-bg-panel px-4 py-2 text-[11px] text-text-secondary">
-                Search is built in. Use{" "}
-                {navigator.platform.includes("Mac") ? "Cmd" : "Ctrl"}+F
-                {" · "}
-                Save with {navigator.platform.includes("Mac") ? "Cmd" : "Ctrl"}
-                +S
+function FilePathBar({ path }: { readonly path: string }) {
+    return (
+        <div className="flex h-6 items-center border-b border-border bg-bg-secondary px-3 text-[10px] leading-none text-text-secondary">
+            <div className="min-w-0 truncate" title={path}>
+                {path}
             </div>
         </div>
     );
@@ -764,16 +715,64 @@ function TerminalTabView({
     );
 }
 
-function getTabLabel(kind: "chat" | "file" | "terminal"): string {
-    if (kind === "file") {
-        return "File";
-    }
-
+function TabIcon({ kind }: { readonly kind: "chat" | "file" | "terminal" }) {
     if (kind === "terminal") {
-        return "Term";
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <path d="M4.5 5.5 7 8l-2.5 2.5" strokeWidth="1.2" />
+                <path d="M8.5 10.5h3" strokeWidth="1.2" />
+            </svg>
+        );
     }
 
-    return "Chat";
+    if (kind === "chat") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <path
+                    d="M3 3.5h10a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5H5l-2.5 2V4a.5.5 0 0 1 .5-.5Z"
+                    strokeWidth="1.2"
+                />
+            </svg>
+        );
+    }
+
+    return (
+        <svg
+            className="shrink-0 opacity-55"
+            fill="none"
+            height={12}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            viewBox="0 0 16 16"
+            width={12}
+        >
+            <path
+                d="M4 2.5h5.5l3 3V13a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5Z"
+                strokeWidth="1"
+            />
+            <path d="M9.5 2.5V5a.5.5 0 0 0 .5.5h2.5" strokeWidth="0.8" />
+            <path d="M6 8.5h4M6 10.5h2.5" strokeWidth="0.8" />
+        </svg>
+    );
 }
 
 function useMonacoTheme(): "vs" | "vs-dark" {
@@ -806,54 +805,10 @@ function useMonacoTheme(): "vs" | "vs-dark" {
     return theme;
 }
 
-function resolveMonacoLanguage(
-    languageHint: string,
-    relativePath: string,
-): string {
-    const extension = relativePath.split(".").at(-1)?.toLowerCase() ?? "";
-    const normalizedHint = languageHint.toLowerCase();
-
-    if (normalizedHint === "ts" || extension === "ts") {
-        return "typescript";
-    }
-
-    if (normalizedHint === "tsx" || extension === "tsx") {
-        return "typescript";
-    }
-
-    if (normalizedHint === "js" || extension === "js") {
-        return "javascript";
-    }
-
-    if (normalizedHint === "jsx" || extension === "jsx") {
-        return "javascript";
-    }
-
-    if (normalizedHint === "md" || extension === "md") {
-        return "markdown";
-    }
-
-    if (normalizedHint === "json" || extension === "json") {
-        return "json";
-    }
-
-    if (normalizedHint === "css" || extension === "css") {
-        return "css";
-    }
-
-    if (normalizedHint === "html" || extension === "html") {
-        return "html";
-    }
-
-    if (normalizedHint === "yml" || normalizedHint === "yaml") {
-        return "yaml";
-    }
-
-    if (normalizedHint === "sh" || extension === "sh") {
-        return "shell";
-    }
-
-    return normalizedHint || "plaintext";
+function shouldEnableDocumentWrapping(document: {
+    readonly languageId: string;
+}): boolean {
+    return shouldWrapEditorLanguage(document.languageId);
 }
 
 function getTerminalTheme() {

@@ -13,6 +13,7 @@ import { bootstrapDatabase, type DatabaseManager } from "./db";
 import { ProjectService } from "./projects/service";
 import { registerIpcHandlers } from "./ipc";
 import { PersistenceService } from "./persistence/service";
+import { SettingsService } from "./settings/service";
 import { TerminalService } from "./terminals/service";
 import { WorkspaceService } from "./workspace/service";
 import { createMainWindow } from "./window";
@@ -21,6 +22,7 @@ let database: DatabaseManager | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let persistenceService: PersistenceService | null = null;
 let projectService: ProjectService | null = null;
+let settingsService: SettingsService | null = null;
 let terminalService: TerminalService | null = null;
 let workspaceService: WorkspaceService | null = null;
 
@@ -29,6 +31,7 @@ void app.whenReady().then(() => {
         dataDir: app.getPath("userData"),
     });
     persistenceService = new PersistenceService(database.connection);
+    settingsService = new SettingsService(database.connection);
     projectService = new ProjectService({
         connection: database.connection,
         onProjectTreeInvalidated: broadcastProjectTreeInvalidation,
@@ -64,6 +67,7 @@ void app.whenReady().then(() => {
         },
         persistenceService,
         projectService,
+        settingsService,
         terminalService,
         workspaceService,
     });
@@ -92,6 +96,7 @@ app.on("before-quit", () => {
     terminalService?.close();
     terminalService = null;
     persistenceService = null;
+    settingsService = null;
     workspaceService = null;
     database?.close();
     database = null;

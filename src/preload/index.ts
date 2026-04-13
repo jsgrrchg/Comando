@@ -8,11 +8,11 @@ import {
     type CreateTerminalSessionInput,
     type ListProjectTreeInput,
     type OpenProjectFileInput,
-    type PersistedShellState,
     type PersistenceSnapshot,
     type ProjectTreeInvalidation,
     type ResizeTerminalSessionInput,
     type SaveProjectFileInput,
+    type SettingsSnapshot,
     type SystemTheme,
     type TerminalDataEvent,
     type TerminalExitEvent,
@@ -29,6 +29,10 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(
             IPC_CHANNELS.getPersistenceSnapshot,
         ) as Promise<PersistenceSnapshot>,
+    getSettingsSnapshot: () =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.getSettingsSnapshot,
+        ) as Promise<SettingsSnapshot>,
     getSystemTheme: () =>
         ipcRenderer.invoke(IPC_CHANNELS.getSystemTheme) as Promise<SystemTheme>,
     getWorkspaceSnapshot: () =>
@@ -104,8 +108,8 @@ const comandoApi: ComandoApi = {
     openProjects: () => ipcRenderer.invoke(IPC_CHANNELS.openProjects),
     saveProjectFile: (input: SaveProjectFileInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveProjectFile, input),
-    saveShellState: (state: PersistedShellState) =>
-        ipcRenderer.invoke(IPC_CHANNELS.saveShellState, state),
+    saveSettingsSnapshot: (snapshot: SettingsSnapshot) =>
+        ipcRenderer.invoke(IPC_CHANNELS.saveSettingsSnapshot, snapshot),
     saveActiveProjectId: (projectId: string | null) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveActiveProjectId, projectId),
     listProjectTree: (input: ListProjectTreeInput) =>

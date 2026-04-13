@@ -1,18 +1,10 @@
 import type Database from "better-sqlite3";
 
-import type {
-    PersistenceSnapshot,
-    PersistedShellState,
-    PersistedWindowState,
-} from "@shared/ipc";
+import type { PersistenceSnapshot, PersistedWindowState } from "@shared/ipc";
 
 const PRIMARY_WINDOW_ID = "main";
 const PRIMARY_WORKSPACE_ID = "primary";
 const PRIMARY_WORKSPACE_SESSION_ID = "last-session";
-
-interface SettingRow {
-    readonly value: string;
-}
 
 interface WindowRow {
     readonly height: number;
@@ -38,7 +30,6 @@ export class PersistenceService {
     loadSnapshot(): PersistenceSnapshot {
         return {
             activeProjectId: this.#loadActiveProjectId(),
-            shellState: this.#loadShellState(),
             windowState: this.loadWindowState(PRIMARY_WINDOW_ID),
         };
     }
@@ -109,10 +100,6 @@ export class PersistenceService {
                 now,
                 now,
             );
-    }
-
-    saveShellState(state: PersistedShellState): void {
-        this.#saveSetting("shell.state", JSON.stringify(state));
     }
 
     saveWindowState(state: PersistedWindowState): void {
@@ -219,38 +206,5 @@ export class PersistenceService {
             .get(PRIMARY_WORKSPACE_SESSION_ID);
 
         return row?.active_project_id ?? null;
-    }
-
-    #loadShellState(): PersistedShellState | null {
-        const row = this.#connection
-            .prepare<
-                [string],
-                SettingRow | undefined
-            >("SELECT value FROM app_settings WHERE key = ?")
-            .get("shell.state");
-
-        if (!row) {
-            return null;
-        }
-
-        try {
-            return JSON.parse(row.value) as PersistedShellState;
-        } catch {
-            return null;
-        }
-    }
-
-    #saveSetting(key: string, value: string): void {
-        this.#connection
-            .prepare<[string, string, string], void>(
-                `
-                INSERT INTO app_settings (key, value, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    value = excluded.value,
-                    updated_at = excluded.updated_at
-                `,
-            )
-            .run(key, value, new Date().toISOString());
     }
 }

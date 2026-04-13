@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type Database from "better-sqlite3";
 
 import type {
@@ -23,6 +25,26 @@ interface WorkspaceTabRow {
     readonly kind: string;
     readonly payload_json: string;
     readonly title: string;
+}
+
+interface ChatSessionEventRow {
+    readonly created_at: string;
+    readonly event_type: string;
+    readonly id: string;
+    readonly payload_json: string;
+    readonly sequence: number;
+    readonly session_id: string;
+}
+
+interface ReviewArtifactRow {
+    readonly artifact_type: string;
+    readonly created_at: string;
+    readonly id: string;
+    readonly path: string | null;
+    readonly payload_json: string;
+    readonly session_id: string | null;
+    readonly title: string;
+    readonly updated_at: string;
 }
 
 type WorkspaceFilePayload = Omit<
@@ -73,8 +95,13 @@ export class WorkspaceService {
 
         return {
             activePaneId: layoutRow.active_pane_id,
-            rootNode: JSON.parse(layoutRow.root_node_json) as WorkspaceNode,
-            tabs: tabRows.map((row) => deserializeTabRow(row)),
+            rootNode: parseJsonWithFallback<WorkspaceNode>(
+                layoutRow.root_node_json,
+                createDefaultWorkspaceSnapshot().rootNode,
+            ),
+            tabs: tabRows
+                .map((row) => deserializeTabRow(row))
+                .filter((tab): tab is WorkspaceTab => tab !== null),
         };
     }
 
@@ -184,24 +211,85 @@ export class WorkspaceService {
             return null;
         }
 
+        const events = this.#connection
+            .prepare<[string], ChatSessionEventRow>(
+                `
+                SELECT
+                    id,
+                    session_id,
+                    sequence,
+                    event_type,
+                    payload_json,
+                    created_at
+                FROM chat_session_events
+                WHERE session_id = ?
+                ORDER BY sequence ASC
+                `,
+            )
+            .all(sessionId);
+        const reviewArtifacts = this.#connection
+            .prepare<[string], ReviewArtifactRow>(
+                `
+                SELECT
+                    id,
+                    session_id,
+                    artifact_type,
+                    title,
+                    path,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM review_artifacts
+                WHERE session_id = ?
+                ORDER BY updated_at DESC, created_at DESC
+                `,
+            )
+            .all(sessionId);
+
         return {
             draft: row.draft,
+            events: events.map((event) => ({
+                createdAt: event.created_at,
+                eventType: event.event_type,
+                id: event.id,
+                payloadJson: event.payload_json,
+                sequence: event.sequence,
+                sessionId: event.session_id,
+            })),
             messageCount: row.message_count ?? 0,
             projectId: row.project_id,
+            reviewArtifacts: reviewArtifacts.map((artifact) => ({
+                artifactType: artifact.artifact_type,
+                createdAt: artifact.created_at,
+                id: artifact.id,
+                path: artifact.path,
+                payloadJson: artifact.payload_json,
+                sessionId: artifact.session_id,
+                title: artifact.title,
+                updatedAt: artifact.updated_at,
+            })),
             sessionId,
             title: row.title,
-            transcriptJson:
-                row.transcript_json ?? createEmptyTranscriptSkeleton(sessionId),
+            transcriptJson: normalizeTranscriptJson(
+                row.transcript_json,
+                sessionId,
+            ),
             updatedAt: row.updated_at,
         };
     }
 }
 
-function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab {
-    const payload = JSON.parse(row.payload_json) as
+function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
+    const payload = parseJsonWithFallback<
         | WorkspaceFilePayload
         | WorkspaceChatPayload
-        | WorkspaceTerminalPayload;
+        | WorkspaceTerminalPayload
+        | null
+    >(row.payload_json, null);
+
+    if (!payload) {
+        return null;
+    }
 
     return {
         ...payload,
@@ -258,6 +346,10 @@ function syncChatPersistence(
     const chatTabs = tabs.filter(
         (tab): tab is WorkspaceChatTab => tab.kind === "chat",
     );
+    const findSession = connection.prepare<
+        [string],
+        { id: string } | undefined
+    >("SELECT id FROM chat_sessions WHERE id = ?");
     const upsertChatSession = connection.prepare<
         [string, string | null, string, string, string, string, string],
         void
@@ -299,12 +391,66 @@ function syncChatPersistence(
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             transcript_json = excluded.transcript_json,
+            message_count = excluded.message_count,
+            updated_at = excluded.updated_at
+        `,
+    );
+    const nextSessionSequence = connection.prepare<
+        [string],
+        { next_sequence: number }
+    >(
+        `
+        SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+        FROM chat_session_events
+        WHERE session_id = ?
+        `,
+    );
+    const insertSessionEvent = connection.prepare<
+        [string, string, number, string, string, string],
+        void
+    >(
+        `
+        INSERT INTO chat_session_events (
+            id,
+            session_id,
+            sequence,
+            event_type,
+            payload_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        `,
+    );
+    const upsertReviewArtifact = connection.prepare<
+        [string, string, string, string, string | null, string, string, string],
+        void
+    >(
+        `
+        INSERT INTO review_artifacts (
+            id,
+            session_id,
+            artifact_type,
+            title,
+            path,
+            payload_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            artifact_type = excluded.artifact_type,
+            title = excluded.title,
+            path = excluded.path,
+            payload_json = excluded.payload_json,
             updated_at = excluded.updated_at
         `,
     );
 
     for (const tab of chatTabs) {
         const now = new Date().toISOString();
+        const wasPersisted = Boolean(findSession.get(tab.sessionId));
+        const transcriptSkeleton = createEmptyTranscriptSkeleton(tab.sessionId);
+
         upsertChatSession.run(
             tab.sessionId,
             tab.projectId,
@@ -317,11 +463,76 @@ function syncChatPersistence(
         upsertTranscript.run(
             `transcript:${tab.sessionId}`,
             tab.sessionId,
-            createEmptyTranscriptSkeleton(tab.sessionId),
+            transcriptSkeleton,
             0,
             tab.createdAt,
             now,
         );
+
+        if (!wasPersisted) {
+            const sequence =
+                nextSessionSequence.get(tab.sessionId)?.next_sequence ?? 1;
+            insertSessionEvent.run(
+                randomUUID(),
+                tab.sessionId,
+                sequence,
+                "session.created",
+                JSON.stringify({
+                    projectId: tab.projectId,
+                    source: "workspace-sync",
+                    tabId: tab.id,
+                    title: tab.title,
+                }),
+                now,
+            );
+        }
+
+        upsertReviewArtifact.run(
+            `artifact:${tab.sessionId}:transcript-skeleton`,
+            tab.sessionId,
+            "transcript-skeleton",
+            "Transcript skeleton",
+            null,
+            JSON.stringify({
+                messageCount: 0,
+                sessionId: tab.sessionId,
+                tabId: tab.id,
+                version: 1,
+            }),
+            tab.createdAt,
+            now,
+        );
+    }
+}
+
+function normalizeTranscriptJson(
+    transcriptJson: string | null | undefined,
+    sessionId: string,
+): string {
+    return JSON.stringify(
+        parseJsonWithFallback(
+            transcriptJson,
+            JSON.parse(createEmptyTranscriptSkeleton(sessionId)) as {
+                readonly messages: readonly unknown[];
+                readonly sessionId: string | null;
+                readonly version: number;
+            },
+        ),
+    );
+}
+
+function parseJsonWithFallback<T>(
+    value: string | null | undefined,
+    fallback: T,
+): T {
+    if (!value) {
+        return fallback;
+    }
+
+    try {
+        return JSON.parse(value) as T;
+    } catch {
+        return fallback;
     }
 }
 

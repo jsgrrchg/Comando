@@ -36,11 +36,9 @@ export function App() {
 
     const bootstrap = useAppStore((state) => state.bootstrap);
     const bootstrapError = useAppStore((state) => state.error);
-    const bootstrapStatus = useAppStore((state) => state.status);
     const hydrateBootstrap = useAppStore((state) => state.hydrate);
 
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
-    const addProjectPath = useProjectsStore((state) => state.addProjectPath);
     const addProjects = useProjectsStore((state) => state.addProjects);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const loadingNodeKeys = useProjectsStore((state) => state.loadingNodeKeys);
@@ -90,8 +88,6 @@ export function App() {
     const syncViewport = useShellStore((state) => state.syncViewport);
 
     const [dragState, setDragState] = useState<DragState>(null);
-    const [isPathEntryVisible, setIsPathEntryVisible] = useState(false);
-    const [manualProjectPath, setManualProjectPath] = useState("");
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [projectFilter, setProjectFilter] = useState("");
 
@@ -102,15 +98,18 @@ export function App() {
             void hydrateBootstrap();
 
             try {
-                const persistenceSnapshot = window.comando
-                    ? await window.comando.getPersistenceSnapshot()
-                    : null;
+                const [persistenceSnapshot, settingsSnapshot] = window.comando
+                    ? await Promise.all([
+                          window.comando.getPersistenceSnapshot(),
+                          window.comando.getSettingsSnapshot(),
+                      ])
+                    : [null, null];
 
                 if (isDisposed) {
                     return;
                 }
 
-                hydrateShell(persistenceSnapshot?.shellState ?? null);
+                hydrateShell(settingsSnapshot?.shellState ?? null);
                 await hydrateProjects(
                     persistenceSnapshot?.activeProjectId ?? null,
                 );
@@ -181,10 +180,12 @@ export function App() {
         }
 
         const timeout = window.setTimeout(() => {
-            void window.comando.saveShellState({
-                activeSurface,
-                leftWidth,
-                rightWidth,
+            void window.comando.saveSettingsSnapshot({
+                shellState: {
+                    activeSurface,
+                    leftWidth,
+                    rightWidth,
+                },
             });
         }, 120);
 
@@ -285,8 +286,7 @@ export function App() {
         activeWorkspaceTab?.kind === "file"
             ? activeWorkspaceTab.relativePath
             : null;
-    const windowChromePaddingClass =
-        bootstrap?.platform === "darwin" ? "pl-[92px]" : "pl-4";
+    const isMac = bootstrap?.platform === "darwin";
     const topStatus = [bootstrapError, projectsError, workspaceError]
         .filter(Boolean)
         .join(" ");
@@ -305,152 +305,94 @@ export function App() {
     return (
         <div className="min-h-screen text-text-primary">
             <div className="relative h-screen">
-                <div className="h-full overflow-hidden">
-                    <div className="app-drag border-b border-border/50 px-4 py-2">
-                        <div
-                            className={`flex items-center justify-between gap-4 ${windowChromePaddingClass}`}
-                        >
-                            <div className="min-w-0">
-                                <div className="flex items-center gap-2 text-[11px] text-text-secondary">
-                                    <span>Comando</span>
-                                    <span>/</span>
-                                    <span>
-                                        {activeProject?.name ??
-                                            "No project selected"}
-                                    </span>
-                                    {activeWorkspaceTab ? (
-                                        <>
-                                            <span>/</span>
-                                            <span className="truncate">
-                                                {activeWorkspaceTab.kind ===
-                                                "file"
-                                                    ? activeWorkspaceTab.relativePath
-                                                    : activeWorkspaceTab.title}
-                                            </span>
-                                        </>
-                                    ) : null}
-                                </div>
-                            </div>
-
-                            <div className="app-no-drag flex items-center gap-2 text-[11px] text-text-secondary">
-                                <span>
-                                    {bootstrapStatus === "ready"
-                                        ? bootstrap?.versions.electron
-                                        : "Booting"}
-                                </span>
-                                <span className="rounded-full border border-border bg-bg-elevated px-2 py-0.5">
-                                    Phase 3
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-
+                <div className="flex h-full flex-col overflow-hidden">
                     <div
-                        className="grid h-[calc(100%-41px)]"
+                        className="grid min-h-0 flex-1"
                         style={{ gridTemplateColumns }}
                     >
                         <aside
-                            className="surface-focus flex min-h-0 flex-col border-r border-border"
+                            className="flex min-h-0 flex-col"
                             data-active={activeSurface === "projects"}
                             onClick={() => focusSurface("projects")}
                             onFocus={() => focusSurface("projects")}
                             tabIndex={0}
                         >
-                            <div className="border-b border-border/50 px-3 py-3">
-                                <div className="mb-3 flex items-center justify-between gap-3">
-                                    <div>
-                                        <p className="text-[11px] uppercase tracking-[0.18em] text-text-secondary">
-                                            Projects
-                                        </p>
-                                        <h1 className="mt-1 text-sm font-semibold text-text-primary">
-                                            Workspace roots
-                                        </h1>
-                                    </div>
-
+                            <div className="app-drag px-3 pb-2 pt-2">
+                                <div
+                                    className="flex min-h-7 items-center justify-between"
+                                    style={
+                                        isMac
+                                            ? {
+                                                  paddingLeft: 84,
+                                              }
+                                            : undefined
+                                    }
+                                >
+                                    <h1 className="text-[11px] font-medium uppercase tracking-[0.16em] text-text-secondary">
+                                        Projects
+                                    </h1>
                                     <button
-                                        className="ide-button app-no-drag"
+                                        aria-label="Add project"
+                                        className="sidebar-tool-button app-no-drag"
                                         onClick={() => void addProjects()}
                                         type="button"
                                     >
-                                        Add Project
+                                        <svg
+                                            aria-hidden="true"
+                                            className="h-3.5 w-3.5"
+                                            fill="none"
+                                            viewBox="0 0 16 16"
+                                        >
+                                            <path
+                                                d="M8 3v10M3 8h10"
+                                                stroke="currentColor"
+                                                strokeLinecap="round"
+                                                strokeWidth="1.5"
+                                            />
+                                        </svg>
                                     </button>
                                 </div>
 
-                                <div className="mb-3 flex items-center gap-2">
-                                    <button
-                                        className="ide-button app-no-drag"
-                                        onClick={() =>
-                                            setIsPathEntryVisible(
-                                                (current) => !current,
-                                            )
-                                        }
-                                        type="button"
+                                <div className="sidebar-search app-no-drag mt-2">
+                                    <svg
+                                        aria-hidden="true"
+                                        className="h-3 w-3 shrink-0 text-text-secondary"
+                                        fill="none"
+                                        viewBox="0 0 16 16"
                                     >
-                                        Add Path
-                                    </button>
-                                    <span className="text-[11px] text-text-secondary">
-                                        Use this if the native picker does not
-                                        appear.
-                                    </span>
-                                </div>
-
-                                {isPathEntryVisible ? (
-                                    <form
-                                        className="mb-3 space-y-2"
-                                        onSubmit={(event) => {
-                                            event.preventDefault();
-                                            void addProjectPath(
-                                                manualProjectPath,
-                                            ).then(() => {
-                                                setManualProjectPath("");
-                                            });
-                                        }}
-                                    >
-                                        <input
-                                            className="ide-input app-no-drag w-full"
-                                            onChange={(event) =>
-                                                setManualProjectPath(
-                                                    event.target.value,
-                                                )
-                                            }
-                                            placeholder="/Users/you/Development/MyProject"
-                                            type="text"
-                                            value={manualProjectPath}
+                                        <circle
+                                            cx="7"
+                                            cy="7"
+                                            r="4.5"
+                                            stroke="currentColor"
+                                            strokeWidth="1.3"
                                         />
-                                        <div className="flex justify-end">
-                                            <button
-                                                className="ide-button app-no-drag"
-                                                type="submit"
-                                            >
-                                                Save Path
-                                            </button>
-                                        </div>
-                                    </form>
-                                ) : null}
-
-                                <label className="block">
-                                    <span className="sr-only">
-                                        Filter projects
-                                    </span>
+                                        <path
+                                            d="M10.5 10.5L14 14"
+                                            stroke="currentColor"
+                                            strokeLinecap="round"
+                                            strokeWidth="1.3"
+                                        />
+                                    </svg>
                                     <input
-                                        className="ide-input app-no-drag w-full"
+                                        className="app-no-drag sidebar-search-input"
                                         onChange={(event) =>
                                             setProjectFilter(event.target.value)
                                         }
-                                        placeholder="Filter projects..."
+                                        placeholder="Filter..."
                                         type="text"
                                         value={projectFilter}
                                     />
-                                </label>
+                                </div>
 
                                 {projectsError ? (
-                                    <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+                                    <div className="mt-2 rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-600">
                                         {projectsError}
                                     </div>
                                 ) : null}
                             </div>
 
-                            <div className="shell-scrollbar flex-1 overflow-y-auto px-2 py-3">
+                            <div className="shell-scrollbar flex-1 overflow-y-auto px-2 py-1">
                                 <ProjectSection
                                     emptyCopy="Open a folder to start building your project library."
                                     projects={recentProjects}
@@ -571,36 +513,9 @@ export function App() {
                             tabIndex={0}
                         >
                             <div className="border-b border-border px-3 py-2.5">
-                                <div className="mb-3 flex items-center justify-between gap-3">
-                                    <div>
-                                        <p className="text-[11px] uppercase tracking-[0.18em] text-text-secondary">
-                                            Files
-                                        </p>
-                                        <h2 className="mt-1 text-sm font-semibold text-text-primary">
-                                            {activeProject?.name ??
-                                                "Project explorer"}
-                                        </h2>
-                                    </div>
-
-                                    {activeProject ? (
-                                        <button
-                                            className="ide-button app-no-drag"
-                                            onClick={() =>
-                                                void refreshProjectTree(
-                                                    activeProject.id,
-                                                )
-                                            }
-                                            type="button"
-                                        >
-                                            Refresh
-                                        </button>
-                                    ) : null}
-                                </div>
-
-                                <div className="ide-input pointer-events-none truncate">
-                                    {activeProject?.rootPath ??
-                                        "Pick a project to inspect its files."}
-                                </div>
+                                <p className="text-[11px] uppercase tracking-[0.18em] text-text-secondary">
+                                    Files
+                                </p>
                             </div>
 
                             <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2">
@@ -671,11 +586,11 @@ function ProjectSection({
     readonly title: string;
 }) {
     return (
-        <section className="mb-5">
-            <div className="mb-2 px-1 text-[11px] font-medium uppercase tracking-[0.16em] text-text-secondary">
+        <section className="mb-4">
+            <div className="mb-1.5 px-2 text-[11px] font-medium uppercase tracking-[0.16em] text-text-secondary">
                 {title}
             </div>
-            <div className="space-y-1">
+            <div className="space-y-0.5">
                 {projects.length === 0 ? (
                     <div className="px-2 py-2 text-xs text-text-secondary">
                         {emptyCopy}
@@ -702,10 +617,10 @@ function ProjectRow({
     return (
         <div
             className={[
-                "group flex items-center gap-2 rounded-lg border px-2 py-2 transition",
+                "group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors",
                 isActive
-                    ? "border-accent bg-accent-soft"
-                    : "border-transparent hover:border-border hover:bg-bg-secondary",
+                    ? "bg-accent/12 text-accent-strong"
+                    : "hover:bg-bg-secondary/80",
             ].join(" ")}
         >
             <button
@@ -713,7 +628,7 @@ function ProjectRow({
                 onClick={onActivate}
                 type="button"
             >
-                <div className="truncate text-sm font-medium text-text-primary">
+                <div className="truncate text-[13px] font-medium text-text-primary">
                     {project.name}
                 </div>
                 <div className="truncate text-[11px] text-text-secondary">
@@ -723,7 +638,7 @@ function ProjectRow({
 
             <button
                 aria-label={`Remove ${project.name}`}
-                className="app-no-drag rounded px-1.5 py-1 text-[11px] text-text-secondary opacity-0 transition hover:bg-bg-tertiary hover:text-text-primary group-hover:opacity-100"
+                className="app-no-drag rounded-md px-1 py-0.5 text-[11px] text-text-secondary opacity-0 transition hover:bg-bg-tertiary hover:text-text-primary group-hover:opacity-100"
                 onClick={onRemove}
                 type="button"
             >
@@ -775,17 +690,11 @@ function TreeNodeRow({
                 }
                 type="button"
             >
-                <span className="inline-flex w-3 justify-center text-[10px]">
-                    {isDirectory ? (isExpanded ? "▾" : "▸") : ""}
+                <span className="inline-flex w-3 justify-center text-[10px] text-text-secondary">
+                    {isDirectory ? <TreeChevronIcon open={isExpanded} /> : null}
                 </span>
-                <span className="inline-flex w-4 justify-center">
-                    {isDirectory ? (
-                        <span className="relative inline-flex h-3 w-3.5 rounded-[3px] border border-amber-300 bg-amber-50">
-                            <span className="absolute -top-px left-0.5 h-1 w-1.5 rounded-t-xs border border-b-0 border-amber-300 bg-amber-50" />
-                        </span>
-                    ) : (
-                        <span className="inline-flex h-3.5 w-3 rounded-xs border border-slate-300 bg-white" />
-                    )}
+                <span className="inline-flex w-4 justify-center text-text-secondary">
+                    <TreeEntryIcon node={rootNode} open={isExpanded} />
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[13px]">
                     {rootNode.name}
@@ -819,6 +728,209 @@ function TreeNodeRow({
                 </div>
             ) : null}
         </div>
+    );
+}
+
+function TreeChevronIcon({ open }: { readonly open: boolean }) {
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-3 w-3 opacity-55 transition-transform duration-100"
+            fill="none"
+            style={{
+                transform: open ? "rotate(90deg)" : "rotate(0deg)",
+            }}
+            viewBox="0 0 16 16"
+        >
+            <path
+                d="M6 4l4 4-4 4"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.5"
+            />
+        </svg>
+    );
+}
+
+function TreeEntryIcon({
+    node,
+    open,
+}: {
+    readonly node: ProjectTreeNode;
+    readonly open: boolean;
+}) {
+    if (node.kind === "directory") {
+        return <TreeFolderIcon open={open} />;
+    }
+
+    if (isMarkdownExtension(node.extension)) {
+        return <TreeNoteIcon />;
+    }
+
+    if (node.extension?.toLowerCase() === "pdf") {
+        return <TreePdfIcon />;
+    }
+
+    if (isImageExtension(node.extension)) {
+        return <TreeImageIcon />;
+    }
+
+    return <TreeGenericFileIcon />;
+}
+
+function TreeFolderIcon({ open }: { readonly open: boolean }) {
+    if (open) {
+        return (
+            <svg
+                aria-hidden="true"
+                className="h-[15px] w-[15px] shrink-0"
+                fill="none"
+                viewBox="0 0 16 16"
+            >
+                <path
+                    d="M1.5 3.5A1 1 0 0 1 2.5 2.5H6l1.5 1.5h5a1 1 0 0 1 1 1V5H2.5V3.5Z"
+                    fill="#f4c44c"
+                    opacity="0.92"
+                />
+                <path
+                    d="M1 5.5h13l-1.5 7.5H2.5L1 5.5Z"
+                    fill="#e6b33e"
+                    opacity="0.84"
+                />
+            </svg>
+        );
+    }
+
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-[15px] w-[15px] shrink-0"
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <path
+                d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
+                fill="#f0be49"
+                opacity="0.78"
+            />
+        </svg>
+    );
+}
+
+function TreeNoteIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-[13px] w-[13px] shrink-0 opacity-55"
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <path
+                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
+                stroke="currentColor"
+                strokeWidth="1"
+            />
+            <path
+                d="M6 8h4M6 10.5h3"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="0.8"
+            />
+        </svg>
+    );
+}
+
+function TreePdfIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-[13px] w-[13px] shrink-0"
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <path
+                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
+                stroke="#e24b3b"
+                strokeWidth="1"
+            />
+            <path
+                d="M9.5 1.5V5H13"
+                stroke="#e24b3b"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="0.8"
+            />
+            <text
+                fill="#e24b3b"
+                fontFamily="sans-serif"
+                fontSize="4.5"
+                fontWeight="700"
+                x="5"
+                y="12"
+            >
+                PDF
+            </text>
+        </svg>
+    );
+}
+
+function TreeImageIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-[13px] w-[13px] shrink-0 opacity-58"
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <rect
+                height="11"
+                rx="1.5"
+                stroke="currentColor"
+                strokeWidth="1"
+                width="12"
+                x="2"
+                y="2.5"
+            />
+            <circle
+                cx="5.5"
+                cy="5.8"
+                r="1.2"
+                stroke="currentColor"
+                strokeWidth="0.8"
+            />
+            <path
+                d="M2.5 11l3-3.5 2.5 2.5 1.5-1.5 4 3.5"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="0.8"
+            />
+        </svg>
+    );
+}
+
+function TreeGenericFileIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-[13px] w-[13px] shrink-0 opacity-58"
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <path
+                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
+                stroke="currentColor"
+                strokeWidth="1"
+            />
+            <path
+                d="M9.5 1.5V5H13"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="0.8"
+            />
+        </svg>
     );
 }
 
@@ -856,6 +968,24 @@ function GitBadge({ status }: { readonly status: GitStatusBadge }) {
 
 function getParentKey(parentRelativePath: string | null): string {
     return parentRelativePath ?? ROOT_NODE_KEY;
+}
+
+function isImageExtension(extension: string | null): boolean {
+    if (!extension) {
+        return false;
+    }
+
+    return ["avif", "gif", "jpeg", "jpg", "png", "svg", "webp"].includes(
+        extension.toLowerCase(),
+    );
+}
+
+function isMarkdownExtension(extension: string | null): boolean {
+    if (!extension) {
+        return false;
+    }
+
+    return ["markdown", "md", "mdx"].includes(extension.toLowerCase());
 }
 
 function startDragging(
