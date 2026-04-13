@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
     getPersistenceSnapshot: "app:get-persistence-snapshot",
     getSettingsSnapshot: "settings:get-snapshot",
+    saveCodexRuntimeSettings: "settings:save-codex-runtime-settings",
     getSystemTheme: "app:get-system-theme",
     saveSettingsSnapshot: "settings:save-snapshot",
     saveActiveProjectId: "app:save-active-project-id",
@@ -19,6 +20,7 @@ export const IPC_CHANNELS = {
     renameProjectEntry: "projects:rename-entry",
     deleteProjectEntry: "projects:delete-entry",
     revealProjectEntry: "projects:reveal-entry",
+    searchProjectEntries: "projects:search-entries",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
     getChatSessionState: "workspace:get-chat-session-state",
@@ -26,6 +28,16 @@ export const IPC_CHANNELS = {
     writeTerminalInput: "terminals:write-input",
     resizeTerminalSession: "terminals:resize-session",
     closeTerminalSession: "terminals:close-session",
+    getAiRuntimeStatus: "ai:get-runtime-status",
+    getAiSessionSnapshot: "ai:get-session-snapshot",
+    sendAiPrompt: "ai:send-prompt",
+    cancelAiSession: "ai:cancel-session",
+    closeAiSession: "ai:close-session",
+    respondAiPermission: "ai:respond-permission",
+    keepAiTrackedFile: "ai:keep-tracked-file",
+    rejectAiTrackedFile: "ai:reject-tracked-file",
+    keepAllAiTrackedFiles: "ai:keep-all-tracked-files",
+    rejectAllAiTrackedFiles: "ai:reject-all-tracked-files",
 } as const;
 
 export const IPC_EVENTS = {
@@ -33,6 +45,8 @@ export const IPC_EVENTS = {
     themeUpdated: "app:theme-updated",
     terminalData: "terminals:data",
     terminalExit: "terminals:exit",
+    aiRuntimeStatus: "ai:runtime-status",
+    aiSessionSnapshot: "ai:session-snapshot",
 } as const;
 
 export interface SystemTheme {
@@ -68,6 +82,29 @@ export interface PersistedShellState {
     readonly rightWidth: number;
 }
 
+export type AiRuntimeId = "codex";
+
+export interface CodexRuntimeSettings {
+    readonly binaryPath: string | null;
+}
+
+export interface AiSettingsSnapshot {
+    readonly codex: CodexRuntimeSettings;
+}
+
+export type AiRuntimeSource = "env" | "path" | "settings" | "unknown";
+
+export type AiRuntimeState = "error" | "missing" | "ready";
+
+export interface AiRuntimeStatus {
+    readonly checkedAt: string;
+    readonly command: string | null;
+    readonly message: string | null;
+    readonly runtimeId: AiRuntimeId;
+    readonly source: AiRuntimeSource | null;
+    readonly state: AiRuntimeState;
+}
+
 export interface PersistedWindowState {
     readonly height: number;
     readonly id: string;
@@ -84,6 +121,7 @@ export interface PersistenceSnapshot {
 }
 
 export interface SettingsSnapshot {
+    readonly ai?: AiSettingsSnapshot | null;
     readonly shellState: PersistedShellState | null;
 }
 
@@ -112,6 +150,12 @@ export interface ProjectTreeNode {
     readonly extension: string | null;
     readonly hasChildren: boolean;
     readonly gitStatus: GitStatusBadge | null;
+}
+
+export interface SearchProjectEntriesInput {
+    readonly limit?: number;
+    readonly projectId: string;
+    readonly query: string;
 }
 
 export type ProjectEntryKind = "directory" | "file";
@@ -245,8 +289,19 @@ export interface WorkspaceChatTab {
     readonly kind: "chat";
     readonly title: string;
     readonly projectId: string | null;
+    readonly runtimeId: AiRuntimeId;
     readonly sessionId: string;
     readonly draft: string;
+    readonly createdAt: string;
+}
+
+export interface WorkspaceReviewTab {
+    readonly id: string;
+    readonly kind: "review";
+    readonly title: string;
+    readonly projectId: string | null;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
     readonly createdAt: string;
 }
 
@@ -262,6 +317,7 @@ export interface WorkspaceTerminalTab {
 export type WorkspaceTab =
     | WorkspaceFileTab
     | WorkspaceChatTab
+    | WorkspaceReviewTab
     | WorkspaceTerminalTab;
 
 export interface WorkspaceSnapshot {
@@ -302,6 +358,135 @@ export interface ReviewArtifact {
     readonly updatedAt: string;
 }
 
+export type AiSessionStatus =
+    | "error"
+    | "idle"
+    | "starting"
+    | "streaming"
+    | "waiting_permission";
+
+export type AiMessageKind = "assistant" | "thinking" | "user";
+
+export interface AiMessage {
+    readonly content: string;
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: AiMessageKind;
+    readonly status: "completed" | "streaming";
+}
+
+export interface AiFileDiff {
+    readonly kind: "create" | "delete" | "update";
+    readonly newText: string | null;
+    readonly oldText: string | null;
+    readonly path: string;
+}
+
+export interface AiToolActivity {
+    readonly diffs: readonly AiFileDiff[];
+    readonly id: string;
+    readonly kind: string;
+    readonly locations: readonly string[];
+    readonly rawInputJson: string | null;
+    readonly rawOutputJson: string | null;
+    readonly sessionId: string;
+    readonly status: "completed" | "failed" | "in_progress" | "pending";
+    readonly summary: string | null;
+    readonly title: string;
+    readonly updatedAt: string;
+}
+
+export interface AiPlanEntry {
+    readonly content: string;
+    readonly priority: "high" | "low" | "medium";
+    readonly status: "completed" | "in_progress" | "pending";
+}
+
+export interface AiPlan {
+    readonly entries: readonly AiPlanEntry[];
+    readonly updatedAt: string;
+}
+
+export interface AiAvailableCommand {
+    readonly description: string;
+    readonly id: string;
+    readonly insertText: string;
+    readonly label: string;
+}
+
+export interface AiPermissionOption {
+    readonly kind:
+        | "allow_always"
+        | "allow_once"
+        | "reject_always"
+        | "reject_once";
+    readonly name: string;
+    readonly optionId: string;
+}
+
+export interface AiPermissionRequest {
+    readonly options: readonly AiPermissionOption[];
+    readonly requestId: string;
+    readonly sessionId: string;
+    readonly title: string;
+    readonly toolCallId: string;
+    readonly updatedAt: string;
+}
+
+export interface AiTrackedFile {
+    readonly identityKey: string;
+    readonly isText: boolean;
+    readonly kind: "create" | "delete" | "update";
+    readonly newText: string | null;
+    readonly oldText: string | null;
+    readonly path: string;
+    readonly reviewState: "kept" | "pending" | "rejected";
+    readonly sessionId: string;
+    readonly toolCallId: string | null;
+    readonly updatedAt: string;
+}
+
+export interface AiSessionSnapshot {
+    readonly availableCommands: readonly AiAvailableCommand[];
+    readonly lastError: string | null;
+    readonly messages: readonly AiMessage[];
+    readonly pendingPermission: AiPermissionRequest | null;
+    readonly plan: AiPlan | null;
+    readonly projectId: string | null;
+    readonly runtimeId: AiRuntimeId;
+    readonly runtimeSessionId: string | null;
+    readonly sessionId: string;
+    readonly status: AiSessionStatus;
+    readonly title: string;
+    readonly toolActivity: readonly AiToolActivity[];
+    readonly trackedFiles: readonly AiTrackedFile[];
+    readonly updatedAt: string;
+}
+
+export interface SendAiPromptInput {
+    readonly projectId: string | null;
+    readonly prompt: string;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
+    readonly title: string;
+}
+
+export interface AiPromptResult {
+    readonly sessionId: string;
+    readonly stopReason: string;
+}
+
+export interface AiPermissionResponseInput {
+    readonly optionId: string | null;
+    readonly requestId: string;
+    readonly sessionId: string;
+}
+
+export interface AiTrackedFileMutationInput {
+    readonly path: string;
+    readonly sessionId: string;
+}
+
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot>;
@@ -316,6 +501,9 @@ export interface ComandoApi {
     touchProject: (projectId: string) => Promise<void>;
     listProjectTree: (
         input: ListProjectTreeInput,
+    ) => Promise<ProjectTreeNode[]>;
+    searchProjectEntries: (
+        input: SearchProjectEntriesInput,
     ) => Promise<ProjectTreeNode[]>;
     openProjectFile: (
         input: OpenProjectFileInput,
@@ -336,6 +524,21 @@ export interface ComandoApi {
     getChatSessionState: (
         sessionId: string,
     ) => Promise<PersistedChatSessionState | null>;
+    getAiRuntimeStatus: (runtimeId: AiRuntimeId) => Promise<AiRuntimeStatus>;
+    getAiSessionSnapshot: (
+        sessionId: string,
+    ) => Promise<AiSessionSnapshot | null>;
+    sendAiPrompt: (input: SendAiPromptInput) => Promise<AiPromptResult>;
+    cancelAiSession: (sessionId: string) => Promise<void>;
+    closeAiSession: (sessionId: string) => Promise<void>;
+    respondAiPermission: (input: AiPermissionResponseInput) => Promise<void>;
+    keepAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
+    rejectAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
+    keepAllAiTrackedFiles: (sessionId: string) => Promise<void>;
+    rejectAllAiTrackedFiles: (sessionId: string) => Promise<void>;
+    saveCodexRuntimeSettings: (
+        settings: CodexRuntimeSettings,
+    ) => Promise<AiRuntimeStatus>;
     createTerminalSession: (
         input: CreateTerminalSessionInput,
     ) => Promise<TerminalSession>;
@@ -351,5 +554,11 @@ export interface ComandoApi {
     ) => () => void;
     onTerminalExit: (
         listener: (event: TerminalExitEvent) => void,
+    ) => () => void;
+    onAiRuntimeStatus: (
+        listener: (status: AiRuntimeStatus) => void,
+    ) => () => void;
+    onAiSessionSnapshot: (
+        listener: (snapshot: AiSessionSnapshot) => void,
     ) => () => void;
 }

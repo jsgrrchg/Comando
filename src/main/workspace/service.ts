@@ -7,6 +7,7 @@ import type {
     WorkspaceChatTab,
     WorkspaceFileTab,
     WorkspaceNode,
+    WorkspaceReviewTab,
     WorkspaceSnapshot,
     WorkspaceTab,
     WorkspaceTerminalTab,
@@ -53,6 +54,10 @@ type WorkspaceFilePayload = Omit<
 >;
 type WorkspaceChatPayload = Omit<
     WorkspaceChatTab,
+    "createdAt" | "id" | "title"
+>;
+type WorkspaceReviewPayload = Omit<
+    WorkspaceReviewTab,
     "createdAt" | "id" | "title"
 >;
 type WorkspaceTerminalPayload = Omit<
@@ -283,12 +288,63 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
     const payload = parseJsonWithFallback<
         | WorkspaceFilePayload
         | WorkspaceChatPayload
+        | WorkspaceReviewPayload
         | WorkspaceTerminalPayload
         | null
     >(row.payload_json, null);
 
     if (!payload) {
         return null;
+    }
+
+    if (row.kind === "chat") {
+        const chatPayload = payload as Partial<WorkspaceChatPayload>;
+
+        return {
+            createdAt: row.created_at,
+            draft:
+                typeof chatPayload.draft === "string" ? chatPayload.draft : "",
+            id: row.id,
+            kind: "chat",
+            projectId:
+                typeof chatPayload.projectId === "string" ||
+                chatPayload.projectId === null
+                    ? chatPayload.projectId
+                    : null,
+            runtimeId:
+                chatPayload.runtimeId === "codex"
+                    ? chatPayload.runtimeId
+                    : "codex",
+            sessionId:
+                typeof chatPayload.sessionId === "string"
+                    ? chatPayload.sessionId
+                    : row.id,
+            title: row.title,
+        };
+    }
+
+    if (row.kind === "review") {
+        const reviewPayload = payload as Partial<WorkspaceReviewPayload>;
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "review",
+            projectId:
+                typeof reviewPayload.projectId === "string" ||
+                reviewPayload.projectId === null
+                    ? reviewPayload.projectId
+                    : null,
+            runtimeId:
+                reviewPayload.runtimeId === "codex"
+                    ? reviewPayload.runtimeId
+                    : "codex",
+            sessionId:
+                typeof reviewPayload.sessionId === "string"
+                    ? reviewPayload.sessionId
+                    : row.id,
+            title: row.title,
+        };
     }
 
     return {
@@ -301,7 +357,11 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
 
 function serializeTab(
     tab: WorkspaceTab,
-): WorkspaceFilePayload | WorkspaceChatPayload | WorkspaceTerminalPayload {
+):
+    | WorkspaceFilePayload
+    | WorkspaceChatPayload
+    | WorkspaceReviewPayload
+    | WorkspaceTerminalPayload {
     if (tab.kind === "file") {
         return {
             kind: tab.kind,
@@ -315,6 +375,16 @@ function serializeTab(
             draft: tab.draft,
             kind: tab.kind,
             projectId: tab.projectId,
+            runtimeId: tab.runtimeId,
+            sessionId: tab.sessionId,
+        };
+    }
+
+    if (tab.kind === "review") {
+        return {
+            kind: tab.kind,
+            projectId: tab.projectId,
+            runtimeId: tab.runtimeId,
             sessionId: tab.sessionId,
         };
     }
@@ -351,7 +421,7 @@ function syncChatPersistence(
         { id: string } | undefined
     >("SELECT id FROM chat_sessions WHERE id = ?");
     const upsertChatSession = connection.prepare<
-        [string, string | null, string, string, string, string, string],
+        [string, string | null, string, string, string, string, string, string],
         void
     >(
         `
@@ -366,10 +436,11 @@ function syncChatPersistence(
             updated_at,
             last_opened_at
         )
-        VALUES (?, ?, ?, 'pending', 'idle', ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             project_id = excluded.project_id,
             title = excluded.title,
+            runtime = excluded.runtime,
             draft = excluded.draft,
             updated_at = excluded.updated_at,
             last_opened_at = excluded.last_opened_at
@@ -449,27 +520,31 @@ function syncChatPersistence(
     for (const tab of chatTabs) {
         const now = new Date().toISOString();
         const wasPersisted = Boolean(findSession.get(tab.sessionId));
-        const transcriptSkeleton = createEmptyTranscriptSkeleton(tab.sessionId);
 
         upsertChatSession.run(
             tab.sessionId,
             tab.projectId,
             tab.title,
+            tab.runtimeId,
             tab.draft,
             tab.createdAt,
             now,
             now,
         );
-        upsertTranscript.run(
-            `transcript:${tab.sessionId}`,
-            tab.sessionId,
-            transcriptSkeleton,
-            0,
-            tab.createdAt,
-            now,
-        );
 
         if (!wasPersisted) {
+            const transcriptSkeleton = createEmptyTranscriptSkeleton(
+                tab.sessionId,
+            );
+
+            upsertTranscript.run(
+                `transcript:${tab.sessionId}`,
+                tab.sessionId,
+                transcriptSkeleton,
+                0,
+                tab.createdAt,
+                now,
+            );
             const sequence =
                 nextSessionSequence.get(tab.sessionId)?.next_sequence ?? 1;
             insertSessionEvent.run(
@@ -479,6 +554,7 @@ function syncChatPersistence(
                 "session.created",
                 JSON.stringify({
                     projectId: tab.projectId,
+                    runtimeId: tab.runtimeId,
                     source: "workspace-sync",
                     tabId: tab.id,
                     title: tab.title,
@@ -495,6 +571,7 @@ function syncChatPersistence(
             null,
             JSON.stringify({
                 messageCount: 0,
+                runtimeId: tab.runtimeId,
                 sessionId: tab.sessionId,
                 tabId: tab.id,
                 version: 1,

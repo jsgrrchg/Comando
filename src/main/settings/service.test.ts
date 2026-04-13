@@ -19,6 +19,11 @@ describe("SettingsService", () => {
         });
 
         expect(service.loadSnapshot()).toEqual({
+            ai: {
+                codex: {
+                    binaryPath: null,
+                },
+            },
             shellState: {
                 activeSurface: "workspace",
                 leftWidth: 280,
@@ -36,7 +41,32 @@ describe("SettingsService", () => {
         );
 
         expect(service.loadSnapshot()).toEqual({
+            ai: {
+                codex: {
+                    binaryPath: null,
+                },
+            },
             shellState: null,
+        });
+    });
+
+    it("guarda y recarga el path configurado de codex", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveCodexRuntimeSettings({
+            binaryPath: "/usr/local/bin/codex-acp",
+        });
+
+        expect(service.loadCodexRuntimeSettings()).toEqual({
+            binaryPath: "/usr/local/bin/codex-acp",
+        });
+        expect(service.loadSnapshot().ai).toEqual({
+            codex: {
+                binaryPath: "/usr/local/bin/codex-acp",
+            },
         });
     });
 });

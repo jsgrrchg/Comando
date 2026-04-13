@@ -15,17 +15,20 @@ import type {
     ProjectTreeNode,
     ProjectTreeInvalidation,
     RenameProjectEntryInput,
+    SearchProjectEntriesInput,
 } from "@shared/ipc";
 
 import {
     createProjectEntry,
     deleteProjectEntry,
     listProjectTreeChildren,
+    normalizeRelativePath,
     readProjectFile,
     renameProjectEntry,
     resolveProjectPath,
     writeProjectFile,
 } from "./tree";
+import { shouldIgnoreEntry } from "./ignore";
 
 interface PersistedProjectRow {
     readonly id: string;
@@ -238,6 +241,108 @@ export class ProjectService {
             relativePath: input.relativePath,
             rootPath: project.rootPath,
         });
+    }
+
+    async searchProjectEntries(
+        input: SearchProjectEntriesInput,
+    ): Promise<ProjectTreeNode[]> {
+        const normalizedQuery = input.query.trim().toLowerCase();
+        if (!normalizedQuery) {
+            return [];
+        }
+
+        const project = this.#getProjectById(input.projectId);
+        const gitSnapshot = await this.#getGitSnapshot(
+            project.id,
+            project.rootPath,
+        );
+        const limit = Math.max(1, input.limit ?? 20);
+        const scoredEntries: {
+            readonly node: ProjectTreeNode;
+            readonly score: number;
+        }[] = [];
+        const queue = [project.rootPath];
+
+        while (queue.length > 0) {
+            const currentDirectory = queue.shift();
+            if (!currentDirectory) {
+                break;
+            }
+
+            let entries: fs.Dirent[] = [];
+            try {
+                entries = fs.readdirSync(currentDirectory, {
+                    withFileTypes: true,
+                });
+            } catch {
+                continue;
+            }
+
+            for (const entry of entries) {
+                if (shouldIgnoreEntry(entry.name, entry.isDirectory())) {
+                    continue;
+                }
+
+                const absolutePath = path.join(currentDirectory, entry.name);
+                const relativePath = normalizeRelativePath(
+                    path.relative(project.rootPath, absolutePath),
+                );
+                const score = scoreProjectEntry(
+                    entry.name,
+                    relativePath,
+                    normalizedQuery,
+                );
+
+                if (entry.isDirectory()) {
+                    queue.push(absolutePath);
+                }
+
+                if (score <= 0) {
+                    continue;
+                }
+
+                const kind = entry.isDirectory() ? "directory" : "file";
+                scoredEntries.push({
+                    node: {
+                        id: `${input.projectId}:${relativePath}`,
+                        extension:
+                            kind === "file"
+                                ? path.extname(entry.name).slice(1) || null
+                                : null,
+                        gitStatus:
+                            kind === "directory"
+                                ? getDirectoryBadge(relativePath, gitSnapshot)
+                                : (gitSnapshot.exactBadges.get(relativePath) ??
+                                  null),
+                        hasChildren:
+                            kind === "directory"
+                                ? directoryHasVisibleChildren(absolutePath)
+                                : false,
+                        kind,
+                        name: entry.name,
+                        parentRelativePath:
+                            path.posix.dirname(relativePath) === "."
+                                ? null
+                                : path.posix.dirname(relativePath),
+                        relativePath,
+                    },
+                    score,
+                });
+            }
+        }
+
+        return scoredEntries
+            .sort(
+                (left, right) =>
+                    right.score - left.score ||
+                    left.node.relativePath.length -
+                        right.node.relativePath.length ||
+                    left.node.relativePath.localeCompare(
+                        right.node.relativePath,
+                    ),
+            )
+            .slice(0, limit)
+            .map((entry) => entry.node);
     }
 
     async saveProjectFile(input: {
@@ -460,4 +565,60 @@ export class ProjectService {
 
 function normalizeGitPath(filePath: string): string {
     return filePath.split(path.sep).join("/");
+}
+
+function directoryHasVisibleChildren(directoryPath: string): boolean {
+    try {
+        return fs
+            .readdirSync(directoryPath, { withFileTypes: true })
+            .some(
+                (entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()),
+            );
+    } catch {
+        return false;
+    }
+}
+
+function getDirectoryBadge(
+    directoryRelativePath: string,
+    gitSnapshot: GitSnapshot,
+): GitStatusBadge | null {
+    for (const changedPath of gitSnapshot.changedPaths) {
+        if (changedPath.startsWith(`${directoryRelativePath}/`)) {
+            return "mixed";
+        }
+    }
+
+    return gitSnapshot.exactBadges.get(directoryRelativePath) ?? null;
+}
+
+function scoreProjectEntry(
+    name: string,
+    relativePath: string,
+    normalizedQuery: string,
+): number {
+    const normalizedName = name.toLowerCase();
+    const normalizedPath = relativePath.toLowerCase();
+
+    if (normalizedName === normalizedQuery) {
+        return 120;
+    }
+
+    if (normalizedName.startsWith(normalizedQuery)) {
+        return 90;
+    }
+
+    if (normalizedPath.startsWith(normalizedQuery)) {
+        return 75;
+    }
+
+    if (normalizedName.includes(normalizedQuery)) {
+        return 55;
+    }
+
+    if (normalizedPath.includes(normalizedQuery)) {
+        return 35;
+    }
+
+    return 0;
 }
