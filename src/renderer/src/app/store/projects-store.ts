@@ -15,6 +15,7 @@ interface ProjectsState {
     readonly activeProjectId: string | null;
     readonly error: string | null;
     readonly expandedDirectories: Record<string, readonly string[]>;
+    readonly fullyLoadedTreeProjects: Record<string, boolean>;
     readonly loadingNodeKeys: readonly string[];
     readonly projects: readonly ProjectSummary[];
     readonly treeNodes: Record<
@@ -31,6 +32,7 @@ interface ProjectsState {
     ) => Promise<ProjectEntryMutationResult>;
     deleteEntry: (projectId: string, relativePath: string) => Promise<void>;
     hydrate: (preferredProjectId?: string | null) => Promise<void>;
+    loadEntireProjectTree: (projectId: string) => Promise<void>;
     refreshProjectTree: (projectId: string) => Promise<void>;
     renameEntry: (
         projectId: string,
@@ -61,6 +63,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     activeProjectId: null,
     error: null,
     expandedDirectories: {},
+    fullyLoadedTreeProjects: {},
     loadingNodeKeys: [],
     projects: [],
     treeNodes: {},
@@ -133,6 +136,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
             set((state) => ({
                 error: null,
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [projectId]: false,
+                },
                 treeNodes: {
                     ...state.treeNodes,
                     [projectId]: {},
@@ -165,6 +172,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         state.expandedDirectories[projectId] ?? [],
                         relativePath,
                     ),
+                },
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [projectId]: false,
                 },
                 treeNodes: {
                     ...state.treeNodes,
@@ -215,6 +226,51 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
+    loadEntireProjectTree: async (projectId) => {
+        await loadDirectory(projectId, null, set, get);
+
+        const queue = [...(get().treeNodes[projectId]?.[ROOT_NODE_KEY] ?? [])];
+        const visitedDirectories = new Set<string>();
+
+        while (queue.length > 0) {
+            const currentNode = queue.shift();
+
+            if (
+                !currentNode ||
+                currentNode.kind !== "directory" ||
+                visitedDirectories.has(currentNode.relativePath) ||
+                !currentNode.hasChildren
+            ) {
+                continue;
+            }
+
+            visitedDirectories.add(currentNode.relativePath);
+
+            const parentKey = getParentKey(currentNode.relativePath);
+            const currentTree = get().treeNodes[projectId] ?? {};
+
+            if (!(parentKey in currentTree)) {
+                await loadDirectory(
+                    projectId,
+                    currentNode.relativePath,
+                    set,
+                    get,
+                );
+            }
+
+            const childNodes = get().treeNodes[projectId]?.[parentKey] ?? [];
+
+            queue.push(...childNodes);
+        }
+
+        set((state) => ({
+            fullyLoadedTreeProjects: {
+                ...state.fullyLoadedTreeProjects,
+                [projectId]: true,
+            },
+        }));
+    },
+
     refreshProjectTree: async (projectId) => {
         const state = get();
         const expandedDirectories = state.expandedDirectories[projectId] ?? [];
@@ -243,6 +299,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
                 return {
                     error: null,
+                    fullyLoadedTreeProjects: {
+                        ...currentState.fullyLoadedTreeProjects,
+                        [projectId]: false,
+                    },
                     treeNodes: {
                         ...currentState.treeNodes,
                         [projectId]: projectTree,
@@ -277,6 +337,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         entry.relativePath,
                     ),
                 },
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [projectId]: false,
+                },
                 treeNodes: {
                     ...state.treeNodes,
                     [projectId]: {},
@@ -307,6 +371,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 error: null,
                 expandedDirectories: omitProjectKey(
                     state.expandedDirectories,
+                    projectId,
+                ),
+                fullyLoadedTreeProjects: omitProjectKey(
+                    state.fullyLoadedTreeProjects,
                     projectId,
                 ),
                 projects,

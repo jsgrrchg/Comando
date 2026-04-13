@@ -2,6 +2,7 @@ import {
     useEffect,
     useEffectEvent,
     useMemo,
+    useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
@@ -20,6 +21,7 @@ import type {
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
+import { buildFilteredProjectTree } from "./app/projects/tree-filter";
 import { useAppStore } from "./app/store/app-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useShellStore } from "./app/store/shell-store";
@@ -62,6 +64,14 @@ export function App() {
     const createEntry = useProjectsStore((state) => state.createEntry);
     const deleteEntry = useProjectsStore((state) => state.deleteEntry);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
+    const isActiveProjectTreeFullyLoaded = useProjectsStore((state) =>
+        activeProjectId
+            ? Boolean(state.fullyLoadedTreeProjects[activeProjectId])
+            : false,
+    );
+    const loadEntireProjectTree = useProjectsStore(
+        (state) => state.loadEntireProjectTree,
+    );
     const loadingNodeKeys = useProjectsStore((state) => state.loadingNodeKeys);
     const projects = useProjectsStore((state) => state.projects);
     const projectsError = useProjectsStore((state) => state.error);
@@ -119,8 +129,13 @@ export function App() {
     const [dragState, setDragState] = useState<DragState>(null);
     const [fileTreeContextMenu, setFileTreeContextMenu] =
         useState<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
+    const [isFileTreeSearchOpen, setIsFileTreeSearchOpen] = useState(false);
+    const [isFileTreeSearchLoading, setIsFileTreeSearchLoading] =
+        useState(false);
+    const [fileTreeFilter, setFileTreeFilter] = useState("");
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [projectFilter, setProjectFilter] = useState("");
+    const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         let isDisposed = false;
@@ -240,6 +255,51 @@ export function App() {
         void window.comando.saveActiveProjectId(activeProjectId);
     }, [activeProjectId, persistenceReady]);
 
+    useEffect(() => {
+        setFileTreeFilter("");
+        setIsFileTreeSearchLoading(false);
+        setIsFileTreeSearchOpen(false);
+    }, [activeProjectId]);
+
+    useEffect(() => {
+        if (!isFileTreeSearchOpen) {
+            return;
+        }
+
+        fileTreeSearchInputRef.current?.focus();
+    }, [isFileTreeSearchOpen]);
+
+    useEffect(() => {
+        const normalizedFilter = fileTreeFilter.trim();
+
+        if (
+            !activeProjectId ||
+            !normalizedFilter ||
+            isActiveProjectTreeFullyLoaded
+        ) {
+            setIsFileTreeSearchLoading(false);
+            return;
+        }
+
+        let isCancelled = false;
+        setIsFileTreeSearchLoading(true);
+
+        void loadEntireProjectTree(activeProjectId).finally(() => {
+            if (!isCancelled) {
+                setIsFileTreeSearchLoading(false);
+            }
+        });
+
+        return () => {
+            isCancelled = true;
+        };
+    }, [
+        activeProjectId,
+        fileTreeFilter,
+        isActiveProjectTreeFullyLoaded,
+        loadEntireProjectTree,
+    ]);
+
     const handlePointerMove = useEffectEvent((event: PointerEvent) => {
         if (!dragState) {
             return;
@@ -309,10 +369,32 @@ export function App() {
 
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
-    const activeProjectTree =
-        treeNodes[activeProjectId ?? ""]?.[ROOT_NODE_KEY] ?? [];
+    const activeTreeNodesByParent = useMemo(
+        () => treeNodes[activeProjectId ?? ""] ?? {},
+        [activeProjectId, treeNodes],
+    );
+    const activeProjectTree = activeTreeNodesByParent[ROOT_NODE_KEY] ?? [];
     const activeExpandedDirectories =
         expandedDirectories[activeProjectId ?? ""] ?? [];
+    const normalizedFileTreeFilter = fileTreeFilter.trim();
+    const filteredFileTree = useMemo(
+        () =>
+            buildFilteredProjectTree(
+                activeTreeNodesByParent,
+                normalizedFileTreeFilter,
+            ),
+        [activeTreeNodesByParent, normalizedFileTreeFilter],
+    );
+    const isFilteringFileTree = normalizedFileTreeFilter.length > 0;
+    const visibleFileTreeRoots = isFilteringFileTree
+        ? filteredFileTree.rootNodes
+        : activeProjectTree;
+    const visibleFileTreeNodesByParent = isFilteringFileTree
+        ? filteredFileTree.nodesByParent
+        : activeTreeNodesByParent;
+    const visibleExpandedDirectories = isFilteringFileTree
+        ? filteredFileTree.expandedDirectories
+        : activeExpandedDirectories;
     const activeWorkspacePane = findPaneById(
         workspaceRootNode,
         workspaceActivePaneId,
@@ -601,6 +683,19 @@ export function App() {
         ];
     })();
 
+    function handleToggleFileTreeSearch(): void {
+        setIsFileTreeSearchOpen((currentValue) => {
+            const nextValue = !currentValue;
+
+            if (!nextValue) {
+                setFileTreeFilter("");
+                setIsFileTreeSearchLoading(false);
+            }
+
+            return nextValue;
+        });
+    }
+
     return (
         <div className="min-h-screen text-text-primary">
             <div className="relative h-screen">
@@ -812,55 +907,185 @@ export function App() {
                             tabIndex={0}
                         >
                             <div className="border-b border-border px-3 py-2.5">
-                                <p className="text-[11px] uppercase tracking-[0.18em] text-text-secondary">
-                                    Files
-                                </p>
+                                <div className="flex items-center justify-between gap-2">
+                                    <p className="text-[11px] uppercase tracking-[0.18em] text-text-secondary">
+                                        Files
+                                    </p>
+                                    <button
+                                        aria-expanded={isFileTreeSearchOpen}
+                                        aria-label="Search files"
+                                        className={[
+                                            "sidebar-tool-button app-no-drag",
+                                            isFileTreeSearchOpen
+                                                ? "bg-bg-secondary text-text-primary"
+                                                : "",
+                                        ].join(" ")}
+                                        onClick={handleToggleFileTreeSearch}
+                                        type="button"
+                                    >
+                                        <svg
+                                            aria-hidden="true"
+                                            className="h-3.25 w-3.25"
+                                            fill="none"
+                                            viewBox="0 0 16 16"
+                                        >
+                                            <circle
+                                                cx="7"
+                                                cy="7"
+                                                r="4.5"
+                                                stroke="currentColor"
+                                                strokeWidth="1.25"
+                                            />
+                                            <path
+                                                d="M10.5 10.5L14 14"
+                                                stroke="currentColor"
+                                                strokeLinecap="round"
+                                                strokeWidth="1.25"
+                                            />
+                                        </svg>
+                                    </button>
+                                </div>
+
+                                {isFileTreeSearchOpen ? (
+                                    <div className="sidebar-search app-no-drag mt-2">
+                                        <svg
+                                            aria-hidden="true"
+                                            className="h-3 w-3 shrink-0 text-text-secondary"
+                                            fill="none"
+                                            viewBox="0 0 16 16"
+                                        >
+                                            <circle
+                                                cx="7"
+                                                cy="7"
+                                                r="4.5"
+                                                stroke="currentColor"
+                                                strokeWidth="1.25"
+                                            />
+                                            <path
+                                                d="M10.5 10.5L14 14"
+                                                stroke="currentColor"
+                                                strokeLinecap="round"
+                                                strokeWidth="1.25"
+                                            />
+                                        </svg>
+                                        <input
+                                            aria-label="Filter files in tree"
+                                            className="app-no-drag sidebar-search-input"
+                                            onChange={(event) =>
+                                                setFileTreeFilter(
+                                                    event.target.value,
+                                                )
+                                            }
+                                            onKeyDown={(event) => {
+                                                if (event.key !== "Escape") {
+                                                    return;
+                                                }
+
+                                                if (fileTreeFilter) {
+                                                    setFileTreeFilter("");
+                                                    return;
+                                                }
+
+                                                setIsFileTreeSearchOpen(false);
+                                            }}
+                                            placeholder="Search files..."
+                                            ref={fileTreeSearchInputRef}
+                                            type="text"
+                                            value={fileTreeFilter}
+                                        />
+                                        {fileTreeFilter ? (
+                                            <button
+                                                aria-label="Clear file search"
+                                                className="sidebar-tool-button h-5 w-5 shrink-0"
+                                                onClick={() =>
+                                                    setFileTreeFilter("")
+                                                }
+                                                type="button"
+                                            >
+                                                <span aria-hidden="true">
+                                                    ×
+                                                </span>
+                                            </button>
+                                        ) : null}
+                                    </div>
+                                ) : null}
                             </div>
 
                             <div
-                                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2"
+                                className="shell-scrollbar min-h-0 flex-1 overflow-auto px-2 py-2"
                                 onContextMenu={handleBlankTreeContextMenu}
                             >
                                 {activeProject ? (
-                                    <div className="space-y-1">
-                                        {activeProjectTree.map((node) => (
-                                            <TreeNodeRow
-                                                activeFilePath={activeFilePath}
-                                                expandedDirectories={
-                                                    activeExpandedDirectories
-                                                }
-                                                key={node.id}
-                                                loadingNodeKeys={
-                                                    loadingNodeKeys
-                                                }
-                                                nodesByParent={
-                                                    treeNodes[
-                                                        activeProject.id
-                                                    ] ?? {}
-                                                }
-                                                onOpenFile={(relativePath) =>
-                                                    void openFileTab(
-                                                        activeProject.id,
-                                                        relativePath,
-                                                    )
-                                                }
-                                                onOpenMenu={(event, treeNode) =>
-                                                    handleTreeNodeContextMenu(
-                                                        event,
-                                                        treeNode,
-                                                    )
-                                                }
-                                                onToggleDirectory={(treeNode) =>
-                                                    void toggleDirectory(
-                                                        activeProject.id,
-                                                        treeNode,
-                                                    )
-                                                }
-                                                projectId={activeProject.id}
-                                                rootNode={node}
-                                            />
-                                        ))}
-                                    </div>
+                                    visibleFileTreeRoots.length > 0 ? (
+                                        <div className="min-w-full w-max space-y-1">
+                                            {visibleFileTreeRoots.map(
+                                                (node) => (
+                                                    <TreeNodeRow
+                                                        activeFilePath={
+                                                            activeFilePath
+                                                        }
+                                                        expandedDirectories={
+                                                            visibleExpandedDirectories
+                                                        }
+                                                        isFilterActive={
+                                                            isFilteringFileTree
+                                                        }
+                                                        key={node.id}
+                                                        loadingNodeKeys={
+                                                            loadingNodeKeys
+                                                        }
+                                                        nodesByParent={
+                                                            visibleFileTreeNodesByParent
+                                                        }
+                                                        onOpenFile={(
+                                                            relativePath,
+                                                        ) =>
+                                                            void openFileTab(
+                                                                activeProject.id,
+                                                                relativePath,
+                                                            )
+                                                        }
+                                                        onOpenMenu={(
+                                                            event,
+                                                            treeNode,
+                                                        ) =>
+                                                            handleTreeNodeContextMenu(
+                                                                event,
+                                                                treeNode,
+                                                            )
+                                                        }
+                                                        onToggleDirectory={(
+                                                            treeNode,
+                                                        ) =>
+                                                            void toggleDirectory(
+                                                                activeProject.id,
+                                                                treeNode,
+                                                            )
+                                                        }
+                                                        projectId={
+                                                            activeProject.id
+                                                        }
+                                                        rootNode={node}
+                                                    />
+                                                ),
+                                            )}
+                                        </div>
+                                    ) : isFilteringFileTree &&
+                                      isFileTreeSearchLoading ? (
+                                        <div className="px-2 py-2 text-xs text-text-secondary">
+                                            Scanning project tree...
+                                        </div>
+                                    ) : isFilteringFileTree ? (
+                                        <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-text-secondary">
+                                            No files match "
+                                            {normalizedFileTreeFilter}
+                                            ".
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-text-secondary">
+                                            This project is empty.
+                                        </div>
+                                    )
                                 ) : (
                                     <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-text-secondary">
                                         Add a project and select it to browse
@@ -968,6 +1193,7 @@ function ProjectRow({
 function TreeNodeRow({
     activeFilePath,
     expandedDirectories,
+    isFilterActive,
     loadingNodeKeys,
     nodesByParent,
     onOpenFile,
@@ -978,6 +1204,7 @@ function TreeNodeRow({
 }: {
     readonly activeFilePath: string | null;
     readonly expandedDirectories: readonly string[];
+    readonly isFilterActive: boolean;
     readonly loadingNodeKeys: readonly string[];
     readonly nodesByParent: Record<string, readonly ProjectTreeNode[]>;
     readonly onOpenFile: (relativePath: string) => void;
@@ -1000,14 +1227,17 @@ function TreeNodeRow({
         <div>
             <button
                 className={[
-                    "app-no-drag tree-row flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left transition",
+                    "app-no-drag tree-row flex min-w-full w-max items-center gap-1 rounded-md px-1.5 py-1 text-left transition",
+                    isDirectory && isFilterActive ? "cursor-default" : "",
                     isActiveFile
                         ? "bg-selection text-text-primary"
                         : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary",
                 ].join(" ")}
                 onClick={() =>
                     isDirectory
-                        ? onToggleDirectory(rootNode)
+                        ? isFilterActive
+                            ? undefined
+                            : onToggleDirectory(rootNode)
                         : onOpenFile(rootNode.relativePath)
                 }
                 onContextMenu={(event) => onOpenMenu(event, rootNode)}
@@ -1019,7 +1249,7 @@ function TreeNodeRow({
                 <span className="inline-flex w-4 justify-center text-text-secondary">
                     <TreeEntryIcon node={rootNode} open={isExpanded} />
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[13px]">
+                <span className="flex-1 whitespace-nowrap pr-2 text-[13px]">
                     {rootNode.name}
                 </span>
                 {rootNode.gitStatus ? (
@@ -1028,7 +1258,7 @@ function TreeNodeRow({
             </button>
 
             {isDirectory && isExpanded ? (
-                <div className="ml-4 border-l border-border pl-2">
+                <div className="ml-4 min-w-full w-max border-l border-border pl-2">
                     {isLoading ? (
                         <div className="px-1.5 py-1 text-[11px] text-text-secondary">
                             Loading...
@@ -1038,6 +1268,7 @@ function TreeNodeRow({
                             <TreeNodeRow
                                 activeFilePath={activeFilePath}
                                 expandedDirectories={expandedDirectories}
+                                isFilterActive={isFilterActive}
                                 key={node.id}
                                 loadingNodeKeys={loadingNodeKeys}
                                 nodesByParent={nodesByParent}
