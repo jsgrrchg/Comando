@@ -1,0 +1,40 @@
+import type { TerminalDataEvent, TerminalExitEvent } from "@shared/ipc";
+import { type MoveDirection, type SplitDirection, type WorkspaceTreeState } from "../workspace/tree";
+interface WorkspaceStore extends WorkspaceTreeState {
+    closeOtherTabs: (tabId: string) => Promise<void>;
+    readonly error: string | null;
+    readonly hydrated: boolean;
+    appendTerminalOutput: (event: TerminalDataEvent) => void;
+    closePane: (paneId: string) => Promise<void>;
+    closeTab: (tabId: string) => Promise<void>;
+    closeTabsToRight: (tabId: string) => Promise<void>;
+    createChatTab: (projectId: string | null) => Promise<void>;
+    createTerminalTab: (projectId: string | null) => Promise<void>;
+    handleTerminalExit: (event: TerminalExitEvent) => void;
+    hydrate: () => Promise<void>;
+    moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
+    moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
+    openFileTab: (projectId: string, relativePath: string) => Promise<void>;
+    openReviewTab: (input: {
+        readonly projectId: string | null;
+        readonly runtimeId: "codex";
+        readonly sessionId: string;
+        readonly title: string;
+    }) => Promise<void>;
+    refreshProjectTabs: (projectId: string) => Promise<void>;
+    removeProjectTabs: (projectId: string) => Promise<void>;
+    closeTabsForProjectPath: (projectId: string, relativePath: string, kind: "directory" | "file") => Promise<void>;
+    resizeSplit: (splitId: string, nextSizes: readonly number[]) => Promise<void>;
+    renameTabsForProjectPath: (projectId: string, previousRelativePath: string, nextRelativePath: string, kind: "directory" | "file") => Promise<void>;
+    restartTerminalTab: (tabId: string) => Promise<void>;
+    saveFileTab: (tabId: string) => Promise<void>;
+    selectTab: (paneId: string, tabId: string) => Promise<void>;
+    sendTerminalInput: (sessionId: string, data: string) => Promise<void>;
+    setActivePane: (paneId: string) => Promise<void>;
+    splitPane: (paneId: string, direction: SplitDirection) => Promise<void>;
+    updateChatDraft: (tabId: string, draft: string) => Promise<void>;
+    updateFileDraft: (tabId: string, draft: string) => void;
+    updateTerminalSize: (sessionId: string, cols: number, rows: number) => Promise<void>;
+}
+export declare const useWorkspaceStore: import("zustand").UseBoundStore<import("zustand").StoreApi<WorkspaceStore>>;
+export {};
