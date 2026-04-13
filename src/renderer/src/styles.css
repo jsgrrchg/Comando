@@ -14,6 +14,7 @@
     --color-bg-tertiary: #eef0f3;
     --color-bg-elevated: #ffffff;
     --color-bg-panel: #fbfbfc;
+    --color-bg-chrome: #dfe1e5;
     --color-editor: #ffffff;
 
     --color-text-primary: #17191c;
@@ -47,6 +48,7 @@
     --color-bg-tertiary: #2c2d30;
     --color-bg-elevated: #2a2b2e;
     --color-bg-panel: #222325;
+    --color-bg-chrome: #18191b;
     --color-editor: #1e1f22;
     --color-text-primary: #e4e5e8;
     --color-text-secondary: #8b8f96;
@@ -97,7 +99,6 @@ textarea {
 
 button {
     border: 0;
-    background: transparent;
 }
 
 .app-drag {
@@ -223,8 +224,63 @@ button {
     background: var(--color-bg-primary);
 }
 
+.sidebar-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--color-bg-tertiary);
+    border-radius: 6px;
+    padding: 5px 8px;
+}
+
+.sidebar-search-input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--color-text-primary);
+    font-size: 12px;
+}
+
+.sidebar-search-input::placeholder {
+    color: var(--color-text-secondary);
+}
+
+.sidebar-tool-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    color: var(--color-text-secondary);
+    transition:
+        background-color 120ms ease,
+        color 120ms ease;
+}
+
+.sidebar-tool-button:hover {
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+}
+
+.sidebar-tool-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+    outline-offset: 1px;
+}
+
 .tree-row {
     min-height: 28px;
+}
+
+.workspace-tab-strip {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.workspace-tab-strip::-webkit-scrollbar {
+    display: none;
 }
 
 .terminal-surface {

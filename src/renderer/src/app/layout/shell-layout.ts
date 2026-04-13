@@ -11,7 +11,7 @@ export const shellLayoutConstraints = {
     defaultLeftWidth: 252,
     defaultRightWidth: 328,
     framePadding: 24,
-    handleWidth: 20,
+    handleWidth: 1,
     minCenterWidth: 520,
     minLeftWidth: 224,
     maxLeftWidth: 340,

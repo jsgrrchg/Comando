@@ -17,15 +17,14 @@ export function SplitHandle({
         <div
             aria-label={label}
             aria-orientation="vertical"
-            className="group flex h-full items-center justify-center"
+            className="group relative z-[2] flex h-full cursor-col-resize items-center justify-center"
             onKeyDown={handleKeyDown}
             onPointerDown={onPointerDown}
             role="separator"
+            style={{ marginLeft: -5, marginRight: -5, width: 11 }}
             tabIndex={0}
         >
-            <div className="flex h-full w-full items-center justify-center transition-colors duration-100 group-focus-visible:outline-none">
-                <div className="h-8 w-px rounded-full bg-border-strong transition-all duration-100 group-hover:h-12 group-hover:bg-accent group-focus-visible:h-12 group-focus-visible:bg-accent" />
-            </div>
+            <div className="h-full w-px bg-border transition-colors duration-100 group-hover:bg-accent group-focus-visible:bg-accent group-focus-visible:outline-none" />
         </div>
     );
 
