@@ -662,6 +662,412 @@ function FilePathBar({ path }: { readonly path: string }) {
     );
 }
 
+// ---------------------------------------------------------------------------
+//  Chat mock data & visual components (visual only, no functionality)
+// ---------------------------------------------------------------------------
+
+type MockMessage =
+    | { id: string; role: "user"; kind: "text"; content: string }
+    | { id: string; role: "assistant"; kind: "text"; content: string }
+    | {
+          id: string;
+          role: "assistant";
+          kind: "reasoning";
+          content: string;
+      }
+    | {
+          id: string;
+          role: "assistant";
+          kind: "tool";
+          label: string;
+          target?: string;
+          toolKind: string;
+          status: "completed" | "in_progress";
+      };
+
+const MOCK_MESSAGES: MockMessage[] = [
+    {
+        id: "1",
+        role: "user",
+        kind: "text",
+        content:
+            "Add a /api/projects endpoint that returns all projects for the authenticated user, with pagination support.",
+    },
+    {
+        id: "2",
+        role: "assistant",
+        kind: "reasoning",
+        content:
+            "Looking at existing route structure and auth middleware to follow the same patterns.",
+    },
+    {
+        id: "3",
+        role: "assistant",
+        kind: "tool",
+        label: "src/routes/index.ts",
+        target: "/project/src/routes/index.ts",
+        toolKind: "read",
+        status: "completed",
+    },
+    {
+        id: "4",
+        role: "assistant",
+        kind: "tool",
+        label: "src/middleware/auth.ts",
+        target: "/project/src/middleware/auth.ts",
+        toolKind: "read",
+        status: "completed",
+    },
+    {
+        id: "5",
+        role: "assistant",
+        kind: "reasoning",
+        content:
+            "Found the route pattern and PaginatedResponse type. Creating the projects endpoint with requireAuth middleware.",
+    },
+    {
+        id: "6",
+        role: "assistant",
+        kind: "tool",
+        label: "src/routes/projects.ts",
+        target: "/project/src/routes/projects.ts",
+        toolKind: "edit",
+        status: "completed",
+    },
+    {
+        id: "7",
+        role: "assistant",
+        kind: "tool",
+        label: "src/routes/index.ts",
+        target: "/project/src/routes/index.ts",
+        toolKind: "edit",
+        status: "completed",
+    },
+    {
+        id: "8",
+        role: "assistant",
+        kind: "text",
+        content:
+            "Done. The new endpoint is available at `GET /api/projects` and supports:\n\n- **Authentication** via the existing `requireAuth` middleware\n- **Pagination** with `?page=1&limit=20` query params (defaults to page 1, limit 20)\n- **Response format** includes `items`, `total`, `page`, and `limit`\n\nRunning the existing test suite to make sure nothing broke.",
+    },
+    {
+        id: "9",
+        role: "assistant",
+        kind: "tool",
+        label: "npm test",
+        toolKind: "execute",
+        status: "completed",
+    },
+    {
+        id: "10",
+        role: "assistant",
+        kind: "text",
+        content: "All 24 tests passing. The endpoint is ready to use.",
+    },
+    {
+        id: "11",
+        role: "user",
+        kind: "text",
+        content:
+            "Nice, can you also add filtering by project status? I need active, archived, and all.",
+    },
+    {
+        id: "12",
+        role: "assistant",
+        kind: "reasoning",
+        content:
+            "Adding a ?status= query param. Valid values: active, archived, or omit for all.",
+    },
+    {
+        id: "13",
+        role: "assistant",
+        kind: "tool",
+        label: "src/routes/projects.ts",
+        target: "/project/src/routes/projects.ts",
+        toolKind: "edit",
+        status: "in_progress",
+    },
+];
+
+function ChatUserMessage({ content }: { readonly content: string }) {
+    return (
+        <div
+            className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
+            style={{
+                color: "var(--color-text-primary)",
+                backgroundColor: "var(--color-bg-tertiary)",
+                border: "1px solid var(--color-border)",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+            }}
+        >
+            {content}
+        </div>
+    );
+}
+
+function ChatAssistantMessage({ content }: { readonly content: string }) {
+    return (
+        <div
+            className="chat-assistant-content min-w-0 max-w-full"
+            style={{
+                color: "var(--color-text-primary)",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+                lineHeight: 1.55,
+            }}
+        >
+            {content.split("\n\n").map((paragraph, i) => {
+                if (paragraph.startsWith("- **")) {
+                    const items = paragraph.split("\n");
+                    return (
+                        <ul
+                            key={i}
+                            className="my-1.5 ml-4 list-disc space-y-0.5"
+                        >
+                            {items.map((item, j) => {
+                                const match = item.match(
+                                    /^- \*\*(.+?)\*\*(.*)$/,
+                                );
+                                if (match) {
+                                    return (
+                                        <li key={j}>
+                                            <strong>{match[1]}</strong>
+                                            {match[2]}
+                                        </li>
+                                    );
+                                }
+                                return (
+                                    <li key={j}>{item.replace(/^- /, "")}</li>
+                                );
+                            })}
+                        </ul>
+                    );
+                }
+
+                const parts: Array<string | React.ReactElement> = [];
+                const regex = /`([^`]+)`|\*\*(.+?)\*\*/g;
+                let lastIndex = 0;
+                let match: RegExpExecArray | null;
+                let key = 0;
+                while ((match = regex.exec(paragraph)) !== null) {
+                    if (match.index > lastIndex) {
+                        parts.push(paragraph.slice(lastIndex, match.index));
+                    }
+                    if (match[1] !== undefined) {
+                        parts.push(
+                            <code
+                                key={key++}
+                                className="rounded px-1 py-0.5"
+                                style={{
+                                    backgroundColor: "var(--color-bg-tertiary)",
+                                    fontSize: "0.88em",
+                                }}
+                            >
+                                {match[1]}
+                            </code>,
+                        );
+                    } else if (match[2] !== undefined) {
+                        parts.push(<strong key={key++}>{match[2]}</strong>);
+                    }
+                    lastIndex = match.index + match[0].length;
+                }
+                if (lastIndex < paragraph.length) {
+                    parts.push(paragraph.slice(lastIndex));
+                }
+                return (
+                    <p key={i} className={i > 0 ? "mt-2.5" : ""}>
+                        {parts}
+                    </p>
+                );
+            })}
+        </div>
+    );
+}
+
+function ChatReasoningMessage({ content }: { readonly content: string }) {
+    return (
+        <div className="min-w-0 max-w-full">
+            <div
+                className="flex items-start gap-1.5 py-0.5"
+                style={{
+                    color: "var(--color-text-secondary)",
+                    fontSize: "0.82em",
+                    lineHeight: 1.45,
+                    opacity: 0.72,
+                }}
+            >
+                <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="mt-0.5 shrink-0"
+                    style={{ opacity: 0.6 }}
+                >
+                    <circle cx="6" cy="6" r="4.5" />
+                    <path d="M6 4v2.5l1.5 1" />
+                </svg>
+                <span
+                    style={{
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                    }}
+                >
+                    {content}
+                </span>
+            </div>
+        </div>
+    );
+}
+
+function ChatToolMessage({
+    label,
+    target,
+    toolKind,
+    status,
+}: {
+    readonly label: string;
+    readonly target?: string;
+    readonly toolKind: string;
+    readonly status: "completed" | "in_progress";
+}) {
+    const accent = toolKind === "delete" ? "#ef4444" : "#6b7280";
+    const isCompleted = status === "completed";
+    const isRead = toolKind === "read" || toolKind === "search";
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--color-border))`,
+                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
+                opacity: isCompleted ? 0.65 : 1,
+                transition: "opacity 0.2s ease",
+            }}
+        >
+            <div className="flex items-center gap-2 px-3 py-1.5">
+                {isRead ? (
+                    <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1.4"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                    >
+                        <circle cx="6" cy="6" r="3.5" />
+                        <path d="M8.5 8.5L12 12" />
+                    </svg>
+                ) : (
+                    <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth="1.3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                    >
+                        <path d="M8 1.5H3.5a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L8 1.5z" />
+                        <path d="M8 1.5V5h3.5" />
+                        <path d="M5 8.5l1.5 1.5L9 7" />
+                    </svg>
+                )}
+                <span
+                    className="min-w-0 flex-1 truncate"
+                    title={target}
+                    style={{
+                        color: target
+                            ? "var(--color-accent)"
+                            : "var(--color-text-primary)",
+                        fontSize: "0.83em",
+                        fontWeight: 500,
+                    }}
+                >
+                    {label}
+                </span>
+                {status === "in_progress" ? (
+                    <span
+                        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full"
+                        style={{ backgroundColor: accent }}
+                    />
+                ) : (
+                    <span
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontSize: "0.72em",
+                            opacity: 0.7,
+                        }}
+                    >
+                        done
+                    </span>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function ChatStreamingIndicator() {
+    return (
+        <div
+            className="inline-flex items-center gap-2 py-1"
+            style={{
+                color: "var(--color-text-secondary)",
+                fontSize: "0.74em",
+                lineHeight: 1.2,
+                opacity: 0.78,
+            }}
+        >
+            <span className="inline-flex items-baseline gap-0.75">
+                {[0, 1, 2].map((i) => (
+                    <span
+                        key={i}
+                        className="inline-block rounded-full"
+                        style={{
+                            width: 5,
+                            height: 5,
+                            backgroundColor: "var(--color-accent)",
+                            opacity: 0.6,
+                            animation: `ai-bounce 1.2s ease-in-out ${i * 0.15}s infinite`,
+                        }}
+                    />
+                ))}
+            </span>
+            <span>12s</span>
+        </div>
+    );
+}
+
+function ChatMessageItem({ message }: { readonly message: MockMessage }) {
+    if (message.kind === "text" && message.role === "user") {
+        return <ChatUserMessage content={message.content} />;
+    }
+    if (message.kind === "reasoning") {
+        return <ChatReasoningMessage content={message.content} />;
+    }
+    if (message.kind === "tool") {
+        return (
+            <ChatToolMessage
+                label={message.label}
+                target={message.target}
+                toolKind={message.toolKind}
+                status={message.status}
+            />
+        );
+    }
+    return <ChatAssistantMessage content={message.content} />;
+}
+
 function ChatTabView({
     onDraftChange,
     tab,
@@ -670,29 +1076,85 @@ function ChatTabView({
     readonly tab: RuntimeWorkspaceChatTab;
 }) {
     return (
-        <div className="flex h-full min-h-0 flex-col justify-between">
-            <div className="flex flex-1 items-center justify-center px-6 text-center">
-                <div>
-                    <p className="text-sm font-semibold uppercase tracking-[0.18em] text-text-secondary">
-                        Chat Session
-                    </p>
-                    <h3 className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-text-primary">
-                        {tab.title}
-                    </h3>
-                    <p className="mt-3 max-w-xl text-sm leading-6 text-text-secondary">
-                        This pane is ready for an ACP session. Files, chats and
-                        terminals now share the same split-pane workspace model.
-                    </p>
+        <div
+            className="relative flex h-full min-h-0 flex-col"
+            style={{ backgroundColor: "var(--color-bg-secondary)" }}
+        >
+            {/* Message list */}
+            <div className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3">
+                <div className="min-w-0 space-y-2" style={{ fontSize: 14 }}>
+                    {MOCK_MESSAGES.map((msg) => (
+                        <div key={msg.id} data-chat-row="true">
+                            <ChatMessageItem message={msg} />
+                        </div>
+                    ))}
+                    <ChatStreamingIndicator />
                 </div>
             </div>
 
-            <div className="border-t border-border bg-bg-panel px-4 py-4">
-                <textarea
-                    className="ide-input app-no-drag min-h-24 resize-none"
-                    onChange={(event) => onDraftChange(event.target.value)}
-                    placeholder="Type the first message for this ACP session..."
-                    value={tab.draft}
-                />
+            {/* Composer */}
+            <div className="px-3 pb-3 pt-2">
+                <div
+                    className="relative flex flex-col"
+                    style={{
+                        border: "1px solid var(--color-border)",
+                        borderRadius: 12,
+                        backgroundColor: "var(--color-bg-tertiary)",
+                    }}
+                >
+                    <textarea
+                        className="app-no-drag w-full resize-none whitespace-pre-wrap break-words"
+                        onChange={(event) => onDraftChange(event.target.value)}
+                        placeholder="Message Codex — @ to include context, / for commands"
+                        value={tab.draft}
+                        rows={2}
+                        style={{
+                            color: "var(--color-text-primary)",
+                            backgroundColor: "transparent",
+                            border: "none",
+                            outline: "none",
+                            minHeight: 64,
+                            maxHeight: 200,
+                            padding: "10px 14px 4px 14px",
+                            lineHeight: 1.5,
+                            fontSize: 14,
+                        }}
+                    />
+                    <div className="mt-auto flex items-center justify-end gap-2 px-2 pb-1.5">
+                        <button
+                            type="button"
+                            className="flex shrink-0 items-center justify-center rounded-full"
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: tab.draft.trim()
+                                    ? "#fff"
+                                    : "var(--color-text-secondary)",
+                                backgroundColor: tab.draft.trim()
+                                    ? "var(--color-accent)"
+                                    : "transparent",
+                                border: "none",
+                                opacity: tab.draft.trim() ? 1 : 0.4,
+                                transition: "all 0.15s ease",
+                            }}
+                            aria-label="Send"
+                            title="Send"
+                        >
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M8 12V4M4 7l4-3 4 3" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     );

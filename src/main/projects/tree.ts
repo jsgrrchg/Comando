@@ -3,6 +3,8 @@ import path from "node:path";
 
 import type {
     GitStatusBadge,
+    ProjectEntryKind,
+    ProjectEntryMutationResult,
     ProjectFileDocument,
     ProjectTreeNode,
 } from "@shared/ipc";
@@ -128,6 +130,88 @@ export async function writeProjectFile(options: {
     });
 }
 
+export async function createProjectEntry(options: {
+    readonly kind: ProjectEntryKind;
+    readonly name: string;
+    readonly parentRelativePath: string | null;
+    readonly rootPath: string;
+}): Promise<ProjectEntryMutationResult> {
+    const entryName = validateEntryName(options.name);
+    const absoluteParentPath = resolveProjectPath(
+        options.rootPath,
+        options.parentRelativePath,
+    );
+    const absolutePath = path.join(absoluteParentPath, entryName);
+
+    if (options.kind === "directory") {
+        await fs.promises.mkdir(absolutePath);
+    } else {
+        const handle = await fs.promises.open(absolutePath, "wx");
+        await handle.close();
+    }
+
+    return {
+        kind: options.kind,
+        name: entryName,
+        parentRelativePath: options.parentRelativePath,
+        relativePath: normalizeRelativePath(
+            path.relative(options.rootPath, absolutePath),
+        ),
+    };
+}
+
+export async function renameProjectEntry(options: {
+    readonly nextName: string;
+    readonly relativePath: string;
+    readonly rootPath: string;
+}): Promise<ProjectEntryMutationResult> {
+    const nextName = validateEntryName(options.nextName);
+    const currentAbsolutePath = resolveProjectPath(
+        options.rootPath,
+        options.relativePath,
+    );
+    const stats = await fs.promises.stat(currentAbsolutePath);
+    const currentRelativePath = normalizeRelativePath(options.relativePath);
+    const parentRelativePath = getParentRelativePath(currentRelativePath);
+    const absoluteParentPath = resolveProjectPath(
+        options.rootPath,
+        parentRelativePath,
+    );
+    const nextAbsolutePath = path.join(absoluteParentPath, nextName);
+    const nextRelativePath = normalizeRelativePath(
+        path.relative(options.rootPath, nextAbsolutePath),
+    );
+
+    if (nextRelativePath !== currentRelativePath) {
+        await fs.promises.rename(currentAbsolutePath, nextAbsolutePath);
+    }
+
+    return {
+        kind: stats.isDirectory() ? "directory" : "file",
+        name: nextName,
+        parentRelativePath,
+        relativePath: nextRelativePath,
+    };
+}
+
+export async function deleteProjectEntry(options: {
+    readonly relativePath: string;
+    readonly rootPath: string;
+}): Promise<void> {
+    const absolutePath = resolveProjectPath(
+        options.rootPath,
+        options.relativePath,
+    );
+    const stats = await fs.promises.stat(absolutePath);
+
+    if (stats.isDirectory()) {
+        await fs.promises.rm(absolutePath, { recursive: true });
+        return;
+    }
+
+    await fs.promises.unlink(absolutePath);
+}
+
 export function normalizeRelativePath(relativePath: string): string {
     return relativePath.split(path.sep).join("/");
 }
@@ -227,4 +311,27 @@ function formatByteSize(bytes: number): string {
     }
 
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function validateEntryName(name: string): string {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+        throw new Error("Provide a name before continuing.");
+    }
+
+    if (
+        trimmedName === "." ||
+        trimmedName === ".." ||
+        trimmedName.includes("/") ||
+        trimmedName.includes("\\")
+    ) {
+        throw new Error("Use a valid file or folder name.");
+    }
+
+    return trimmedName;
+}
+
+function getParentRelativePath(relativePath: string): string | null {
+    const parentPath = path.posix.dirname(relativePath);
+    return parentPath === "." ? null : parentPath;
 }

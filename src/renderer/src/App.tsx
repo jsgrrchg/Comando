@@ -12,6 +12,7 @@ import type {
     ComandoApi,
     GitStatusBadge,
     PersistenceSnapshot,
+    ProjectEntryKind,
     ProjectSummary,
     ProjectTreeNode,
     SettingsSnapshot,
@@ -58,6 +59,8 @@ export function App() {
 
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
     const addProjects = useProjectsStore((state) => state.addProjects);
+    const createEntry = useProjectsStore((state) => state.createEntry);
+    const deleteEntry = useProjectsStore((state) => state.deleteEntry);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const loadingNodeKeys = useProjectsStore((state) => state.loadingNodeKeys);
     const projects = useProjectsStore((state) => state.projects);
@@ -65,6 +68,8 @@ export function App() {
     const refreshProjectTree = useProjectsStore(
         (state) => state.refreshProjectTree,
     );
+    const renameEntry = useProjectsStore((state) => state.renameEntry);
+    const revealEntry = useProjectsStore((state) => state.revealEntry);
     const removeProject = useProjectsStore((state) => state.removeProject);
     const setActiveProject = useProjectsStore(
         (state) => state.setActiveProject,
@@ -83,8 +88,14 @@ export function App() {
         (state) => state.handleTerminalExit,
     );
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
+    const closeTabsForProjectPath = useWorkspaceStore(
+        (state) => state.closeTabsForProjectPath,
+    );
     const refreshProjectTabs = useWorkspaceStore(
         (state) => state.refreshProjectTabs,
+    );
+    const renameTabsForProjectPath = useWorkspaceStore(
+        (state) => state.renameTabsForProjectPath,
     );
     const removeProjectTabs = useWorkspaceStore(
         (state) => state.removeProjectTabs,
@@ -361,6 +372,124 @@ export function App() {
         });
     }
 
+    async function handleCreateProjectEntry(
+        kind: ProjectEntryKind,
+        parentRelativePath: string | null,
+    ): Promise<void> {
+        if (!activeProject) {
+            return;
+        }
+
+        const suggestedName = kind === "file" ? "untitled.txt" : "New Folder";
+        const name = window.prompt(
+            kind === "file" ? "New file name" : "New folder name",
+            suggestedName,
+        );
+
+        if (name === null) {
+            return;
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            return;
+        }
+
+        try {
+            const entry = await createEntry(
+                activeProject.id,
+                parentRelativePath,
+                trimmedName,
+                kind,
+            );
+
+            if (kind === "file") {
+                await openFileTab(activeProject.id, entry.relativePath);
+            }
+        } catch {
+            return;
+        }
+    }
+
+    async function handleRenameProjectEntry(
+        node: ProjectTreeNode,
+    ): Promise<void> {
+        if (!activeProject) {
+            return;
+        }
+
+        const nextName = window.prompt("Rename entry", node.name);
+        if (nextName === null) {
+            return;
+        }
+
+        const trimmedName = nextName.trim();
+        if (!trimmedName || trimmedName === node.name) {
+            return;
+        }
+
+        try {
+            const renamedEntry = await renameEntry(
+                activeProject.id,
+                node.relativePath,
+                trimmedName,
+            );
+
+            await renameTabsForProjectPath(
+                activeProject.id,
+                node.relativePath,
+                renamedEntry.relativePath,
+                node.kind,
+            );
+            await refreshProjectTabs(activeProject.id);
+        } catch {
+            return;
+        }
+    }
+
+    async function handleDeleteProjectEntry(
+        node: ProjectTreeNode,
+    ): Promise<void> {
+        if (!activeProject) {
+            return;
+        }
+
+        const confirmed = window.confirm(
+            node.kind === "directory"
+                ? `Delete folder "${node.name}" and all of its contents?`
+                : `Delete file "${node.name}"?`,
+        );
+
+        if (!confirmed) {
+            return;
+        }
+
+        try {
+            await deleteEntry(activeProject.id, node.relativePath);
+            await closeTabsForProjectPath(
+                activeProject.id,
+                node.relativePath,
+                node.kind,
+            );
+        } catch {
+            return;
+        }
+    }
+
+    async function handleRevealProjectEntry(
+        relativePath: string | null,
+    ): Promise<void> {
+        if (!activeProject) {
+            return;
+        }
+
+        try {
+            await revealEntry(activeProject.id, relativePath);
+        } catch {
+            return;
+        }
+    }
+
     const fileTreeContextMenuEntries: ContextMenuEntry[] = (() => {
         if (!fileTreeContextMenu || !activeProject) {
             return [];
@@ -372,7 +501,24 @@ export function App() {
         };
 
         if (fileTreeContextMenu.payload.kind === "blank") {
-            return [refreshEntry];
+            return [
+                {
+                    label: "New File",
+                    action: () => void handleCreateProjectEntry("file", null),
+                },
+                {
+                    label: "New Folder",
+                    action: () =>
+                        void handleCreateProjectEntry("directory", null),
+                },
+                { type: "separator" },
+                {
+                    label: "Reveal Project Root",
+                    action: () => void handleRevealProjectEntry(null),
+                },
+                { type: "separator" },
+                refreshEntry,
+            ];
         }
 
         const { node } = fileTreeContextMenu.payload;
@@ -384,8 +530,38 @@ export function App() {
 
             return [
                 {
+                    label: "New File Here",
+                    action: () =>
+                        void handleCreateProjectEntry(
+                            "file",
+                            node.relativePath,
+                        ),
+                },
+                {
+                    label: "New Folder Here",
+                    action: () =>
+                        void handleCreateProjectEntry(
+                            "directory",
+                            node.relativePath,
+                        ),
+                },
+                { type: "separator" },
+                {
                     label: isExpanded ? "Collapse" : "Expand",
                     action: () => void toggleDirectory(activeProject.id, node),
+                },
+                {
+                    label: "Rename",
+                    action: () => void handleRenameProjectEntry(node),
+                },
+                {
+                    label: "Delete Folder",
+                    action: () => void handleDeleteProjectEntry(node),
+                },
+                {
+                    label: "Reveal in File Manager",
+                    action: () =>
+                        void handleRevealProjectEntry(node.relativePath),
                 },
                 {
                     label: "Copy Relative Path",
@@ -402,6 +578,18 @@ export function App() {
                 label: "Open",
                 action: () =>
                     void openFileTab(activeProject.id, node.relativePath),
+            },
+            {
+                label: "Rename",
+                action: () => void handleRenameProjectEntry(node),
+            },
+            {
+                label: "Delete File",
+                action: () => void handleDeleteProjectEntry(node),
+            },
+            {
+                label: "Reveal in File Manager",
+                action: () => void handleRevealProjectEntry(node.relativePath),
             },
             {
                 label: "Copy Relative Path",

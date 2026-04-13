@@ -15,6 +15,10 @@ export const IPC_CHANNELS = {
     listProjectTree: "projects:list-tree",
     openProjectFile: "projects:open-file",
     saveProjectFile: "projects:save-file",
+    createProjectEntry: "projects:create-entry",
+    renameProjectEntry: "projects:rename-entry",
+    deleteProjectEntry: "projects:delete-entry",
+    revealProjectEntry: "projects:reveal-entry",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
     getChatSessionState: "workspace:get-chat-session-state",
@@ -110,6 +114,15 @@ export interface ProjectTreeNode {
     readonly gitStatus: GitStatusBadge | null;
 }
 
+export type ProjectEntryKind = "directory" | "file";
+
+export interface ProjectEntryMutationResult {
+    readonly kind: ProjectEntryKind;
+    readonly name: string;
+    readonly parentRelativePath: string | null;
+    readonly relativePath: string;
+}
+
 export interface ProjectFileDocument {
     readonly projectId: string;
     readonly absolutePath: string;
@@ -126,6 +139,29 @@ export interface SaveProjectFileInput {
     readonly projectId: string;
     readonly relativePath: string;
     readonly content: string;
+}
+
+export interface CreateProjectEntryInput {
+    readonly projectId: string;
+    readonly kind: ProjectEntryKind;
+    readonly name: string;
+    readonly parentRelativePath: string | null;
+}
+
+export interface RenameProjectEntryInput {
+    readonly projectId: string;
+    readonly nextName: string;
+    readonly relativePath: string;
+}
+
+export interface DeleteProjectEntryInput {
+    readonly projectId: string;
+    readonly relativePath: string;
+}
+
+export interface RevealProjectEntryInput {
+    readonly projectId: string;
+    readonly relativePath: string | null;
 }
 
 export interface ProjectTreeInvalidation {
@@ -287,6 +323,14 @@ export interface ComandoApi {
     saveProjectFile: (
         input: SaveProjectFileInput,
     ) => Promise<ProjectFileDocument>;
+    createProjectEntry: (
+        input: CreateProjectEntryInput,
+    ) => Promise<ProjectEntryMutationResult>;
+    renameProjectEntry: (
+        input: RenameProjectEntryInput,
+    ) => Promise<ProjectEntryMutationResult>;
+    deleteProjectEntry: (input: DeleteProjectEntryInput) => Promise<void>;
+    revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
     getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
     saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) => Promise<void>;
     getChatSessionState: (

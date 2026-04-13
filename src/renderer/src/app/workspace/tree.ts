@@ -422,6 +422,83 @@ export function closeWorkspaceTabsToRight(
     );
 }
 
+export function closeWorkspaceTabsForProjectPath(
+    state: WorkspaceTreeState,
+    projectId: string,
+    relativePath: string,
+    kind: "directory" | "file",
+): WorkspaceTreeState {
+    const tabIdsToClose = Object.values(state.tabsById)
+        .filter(
+            (tab): tab is RuntimeWorkspaceFileTab =>
+                tab.kind === "file" &&
+                tab.projectId === projectId &&
+                matchesProjectPath(tab.relativePath, relativePath, kind),
+        )
+        .map((tab) => tab.id);
+
+    return tabIdsToClose.reduce(
+        (currentState, tabId) => closeWorkspaceTab(currentState, tabId),
+        state,
+    );
+}
+
+export function renameWorkspaceTabsForProjectPath(
+    state: WorkspaceTreeState,
+    projectId: string,
+    previousRelativePath: string,
+    nextRelativePath: string,
+    kind: "directory" | "file",
+): WorkspaceTreeState {
+    const nextTabsById = Object.fromEntries(
+        Object.entries(state.tabsById).map(([tabId, tab]) => {
+            if (
+                tab.kind !== "file" ||
+                tab.projectId !== projectId ||
+                !matchesProjectPath(
+                    tab.relativePath,
+                    previousRelativePath,
+                    kind,
+                )
+            ) {
+                return [tabId, tab];
+            }
+
+            const tabNextRelativePath =
+                kind === "file"
+                    ? nextRelativePath
+                    : `${nextRelativePath}${tab.relativePath.slice(previousRelativePath.length)}`;
+            const nextTitle = getFileTitle(tabNextRelativePath);
+
+            return [
+                tabId,
+                {
+                    ...tab,
+                    document: tab.document
+                        ? {
+                              ...tab.document,
+                              absolutePath: rebaseAbsolutePath(
+                                  tab.document.absolutePath,
+                                  tab.relativePath,
+                                  tabNextRelativePath,
+                              ),
+                              name: nextTitle,
+                              relativePath: tabNextRelativePath,
+                          }
+                        : null,
+                    relativePath: tabNextRelativePath,
+                    title: nextTitle,
+                } satisfies RuntimeWorkspaceFileTab,
+            ];
+        }),
+    ) as Record<string, RuntimeWorkspaceTab>;
+
+    return {
+        ...state,
+        tabsById: nextTabsById,
+    };
+}
+
 export function updateChatDraft(
     state: WorkspaceTreeState,
     tabId: string,
@@ -914,4 +991,44 @@ function formatExitDetails(
     }
 
     return "";
+}
+
+function matchesProjectPath(
+    candidatePath: string,
+    targetPath: string,
+    kind: "directory" | "file",
+): boolean {
+    if (kind === "file") {
+        return candidatePath === targetPath;
+    }
+
+    return (
+        candidatePath === targetPath ||
+        candidatePath.startsWith(`${targetPath}/`)
+    );
+}
+
+function rebaseAbsolutePath(
+    absolutePath: string,
+    previousRelativePath: string,
+    nextRelativePath: string,
+): string {
+    const separator = absolutePath.includes("\\") ? "\\" : "/";
+    const normalizedAbsolutePath = absolutePath.replaceAll("\\", "/");
+    const normalizedPreviousPath = previousRelativePath.replaceAll("\\", "/");
+
+    if (!normalizedAbsolutePath.endsWith(normalizedPreviousPath)) {
+        return absolutePath;
+    }
+
+    const prefix = normalizedAbsolutePath.slice(
+        0,
+        normalizedAbsolutePath.length - normalizedPreviousPath.length,
+    );
+
+    return `${prefix}${nextRelativePath}`.replaceAll("/", separator);
+}
+
+function getFileTitle(relativePath: string): string {
+    return relativePath.split("/").at(-1) ?? relativePath;
 }

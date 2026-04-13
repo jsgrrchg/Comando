@@ -287,6 +287,52 @@ button {
     background: var(--color-editor);
 }
 
+/* ── Chat ── */
+
+.chat-scroll {
+    scrollbar-color: color-mix(
+            in srgb,
+            var(--color-text-secondary) 24%,
+            transparent
+        )
+        transparent;
+}
+
+.chat-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.chat-scroll::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: color-mix(
+        in srgb,
+        var(--color-text-secondary) 24%,
+        transparent
+    );
+    background-clip: padding-box;
+}
+
+.chat-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+@keyframes ai-bounce {
+    0%,
+    80%,
+    100% {
+        transform: translateY(0);
+    }
+    40% {
+        transform: translateY(-4px);
+    }
+}
+
+.chat-assistant-content strong {
+    font-weight: 600;
+}
+
 .terminal-surface .xterm {
     height: 100%;
 }

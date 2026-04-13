@@ -3,6 +3,7 @@ import {
     dialog,
     ipcMain,
     nativeTheme,
+    shell,
     type OpenDialogOptions,
 } from "electron";
 
@@ -10,10 +11,14 @@ import {
     IPC_CHANNELS,
     IPC_EVENTS,
     type AppBootstrapSnapshot,
+    type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
+    type DeleteProjectEntryInput,
     type ListProjectTreeInput,
     type OpenProjectFileInput,
     type PersistenceSnapshot,
+    type RenameProjectEntryInput,
+    type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
     type SaveProjectFileInput,
     type SettingsSnapshot,
@@ -52,6 +57,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.listProjectTree);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectFile);
     ipcMain.removeHandler(IPC_CHANNELS.saveProjectFile);
+    ipcMain.removeHandler(IPC_CHANNELS.createProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.renameProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.deleteProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.revealProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
@@ -145,6 +154,32 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveProjectFile,
         (_event, input: SaveProjectFileInput) =>
             options.projectService.saveProjectFile(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.createProjectEntry,
+        (_event, input: CreateProjectEntryInput) =>
+            options.projectService.createProjectEntry(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.renameProjectEntry,
+        (_event, input: RenameProjectEntryInput) =>
+            options.projectService.renameProjectEntry(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.deleteProjectEntry,
+        (_event, input: DeleteProjectEntryInput) => {
+            return options.projectService.deleteProjectEntry(input);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.revealProjectEntry,
+        (_event, input: RevealProjectEntryInput) => {
+            const absolutePath = options.projectService.resolveProjectEntryPath(
+                input.projectId,
+                input.relativePath,
+            );
+            shell.showItemInFolder(absolutePath);
+        },
     );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, () =>
         options.workspaceService.loadSnapshot(),

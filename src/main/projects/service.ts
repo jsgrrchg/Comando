@@ -6,16 +6,24 @@ import type Database from "better-sqlite3";
 import { simpleGit } from "simple-git";
 
 import type {
+    CreateProjectEntryInput,
+    DeleteProjectEntryInput,
     GitStatusBadge,
+    ProjectEntryMutationResult,
     ProjectFileDocument,
     ProjectSummary,
     ProjectTreeNode,
     ProjectTreeInvalidation,
+    RenameProjectEntryInput,
 } from "@shared/ipc";
 
 import {
+    createProjectEntry,
+    deleteProjectEntry,
     listProjectTreeChildren,
     readProjectFile,
+    renameProjectEntry,
+    resolveProjectPath,
     writeProjectFile,
 } from "./tree";
 
@@ -249,8 +257,64 @@ export class ProjectService {
         });
     }
 
+    async createProjectEntry(
+        input: CreateProjectEntryInput,
+    ): Promise<ProjectEntryMutationResult> {
+        const project = this.#getProjectById(input.projectId);
+        this.touchProject(input.projectId);
+        this.#gitSnapshots.delete(input.projectId);
+
+        const entry = await createProjectEntry({
+            kind: input.kind,
+            name: input.name,
+            parentRelativePath: input.parentRelativePath,
+            rootPath: project.rootPath,
+        });
+
+        this.#scheduleInvalidation(input.projectId);
+        return entry;
+    }
+
+    async renameProjectEntry(
+        input: RenameProjectEntryInput,
+    ): Promise<ProjectEntryMutationResult> {
+        const project = this.#getProjectById(input.projectId);
+        this.touchProject(input.projectId);
+        this.#gitSnapshots.delete(input.projectId);
+
+        const entry = await renameProjectEntry({
+            nextName: input.nextName,
+            relativePath: input.relativePath,
+            rootPath: project.rootPath,
+        });
+
+        this.#scheduleInvalidation(input.projectId);
+        return entry;
+    }
+
+    async deleteProjectEntry(input: DeleteProjectEntryInput): Promise<void> {
+        const project = this.#getProjectById(input.projectId);
+        this.touchProject(input.projectId);
+        this.#gitSnapshots.delete(input.projectId);
+
+        await deleteProjectEntry({
+            relativePath: input.relativePath,
+            rootPath: project.rootPath,
+        });
+
+        this.#scheduleInvalidation(input.projectId);
+    }
+
     getProjectRootPath(projectId: string): string {
         return this.#getProjectById(projectId).rootPath;
+    }
+
+    resolveProjectEntryPath(
+        projectId: string,
+        relativePath: string | null,
+    ): string {
+        const project = this.#getProjectById(projectId);
+        return resolveProjectPath(project.rootPath, relativePath);
     }
 
     close(): void {

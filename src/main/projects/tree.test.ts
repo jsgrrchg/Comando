@@ -4,7 +4,13 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { listProjectTreeChildren, readProjectFile } from "./tree";
+import {
+    createProjectEntry,
+    deleteProjectEntry,
+    listProjectTreeChildren,
+    readProjectFile,
+    renameProjectEntry,
+} from "./tree";
 
 const temporaryDirectories: string[] = [];
 
@@ -81,6 +87,70 @@ describe("project tree helpers", () => {
 
         expect(document.languageId).toBe("python");
         expect(document.languageLabel).toBe("Python");
+    });
+
+    it("creates, renames and deletes project entries safely", async () => {
+        const rootPath = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "src"));
+
+        const createdFile = await createProjectEntry({
+            kind: "file",
+            name: "notes.md",
+            parentRelativePath: "src",
+            rootPath,
+        });
+        const createdDirectory = await createProjectEntry({
+            kind: "directory",
+            name: "assets",
+            parentRelativePath: null,
+            rootPath,
+        });
+
+        expect(createdFile.relativePath).toBe("src/notes.md");
+        expect(createdDirectory.relativePath).toBe("assets");
+        expect(fs.existsSync(path.join(rootPath, "src/notes.md"))).toBe(true);
+        expect(fs.existsSync(path.join(rootPath, "assets"))).toBe(true);
+
+        const renamedFile = await renameProjectEntry({
+            nextName: "README.md",
+            relativePath: "src/notes.md",
+            rootPath,
+        });
+        const renamedDirectory = await renameProjectEntry({
+            nextName: "public",
+            relativePath: "assets",
+            rootPath,
+        });
+
+        expect(renamedFile.relativePath).toBe("src/README.md");
+        expect(renamedDirectory.relativePath).toBe("public");
+        expect(fs.existsSync(path.join(rootPath, "src/README.md"))).toBe(true);
+        expect(fs.existsSync(path.join(rootPath, "public"))).toBe(true);
+
+        await deleteProjectEntry({
+            relativePath: "src/README.md",
+            rootPath,
+        });
+        await deleteProjectEntry({
+            relativePath: "public",
+            rootPath,
+        });
+
+        expect(fs.existsSync(path.join(rootPath, "src/README.md"))).toBe(false);
+        expect(fs.existsSync(path.join(rootPath, "public"))).toBe(false);
+    });
+
+    it("rejects invalid entry names", async () => {
+        const rootPath = createProjectFixture();
+
+        await expect(
+            createProjectEntry({
+                kind: "file",
+                name: "../hack.ts",
+                parentRelativePath: null,
+                rootPath,
+            }),
+        ).rejects.toThrow(/valid file or folder name/i);
     });
 });
 

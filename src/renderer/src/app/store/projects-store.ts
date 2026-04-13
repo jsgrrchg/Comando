@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-import type { ProjectSummary, ProjectTreeNode } from "@shared/ipc";
+import type {
+    ProjectEntryKind,
+    ProjectEntryMutationResult,
+    ProjectSummary,
+    ProjectTreeNode,
+} from "@shared/ipc";
 
 const ROOT_NODE_KEY = "__root__";
 
@@ -18,9 +23,25 @@ interface ProjectsState {
     >;
     addProjectPath: (projectPath: string) => Promise<void>;
     addProjects: () => Promise<void>;
+    createEntry: (
+        projectId: string,
+        parentRelativePath: string | null,
+        name: string,
+        kind: ProjectEntryKind,
+    ) => Promise<ProjectEntryMutationResult>;
+    deleteEntry: (projectId: string, relativePath: string) => Promise<void>;
     hydrate: (preferredProjectId?: string | null) => Promise<void>;
     refreshProjectTree: (projectId: string) => Promise<void>;
+    renameEntry: (
+        projectId: string,
+        relativePath: string,
+        nextName: string,
+    ) => Promise<ProjectEntryMutationResult>;
     removeProject: (projectId: string) => Promise<void>;
+    revealEntry: (
+        projectId: string,
+        relativePath: string | null,
+    ) => Promise<void>;
     setActiveProject: (projectId: string) => Promise<void>;
     toggleDirectory: (
         projectId: string,
@@ -101,6 +122,67 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
+    createEntry: async (projectId, parentRelativePath, name, kind) => {
+        try {
+            const entry = await getComandoApi().createProjectEntry({
+                kind,
+                name,
+                parentRelativePath,
+                projectId,
+            });
+
+            set((state) => ({
+                error: null,
+                treeNodes: {
+                    ...state.treeNodes,
+                    [projectId]: {},
+                },
+            }));
+            void get().refreshProjectTree(projectId);
+            return entry;
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : `Could not create the ${kind}.`;
+            set({ error: message });
+            throw error;
+        }
+    },
+
+    deleteEntry: async (projectId, relativePath) => {
+        try {
+            await getComandoApi().deleteProjectEntry({
+                projectId,
+                relativePath,
+            });
+
+            set((state) => ({
+                error: null,
+                expandedDirectories: {
+                    ...state.expandedDirectories,
+                    [projectId]: removeMatchingPaths(
+                        state.expandedDirectories[projectId] ?? [],
+                        relativePath,
+                    ),
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [projectId]: {},
+                },
+            }));
+            void get().refreshProjectTree(projectId);
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not delete the selected entry.",
+            });
+            throw error;
+        }
+    },
+
     hydrate: async (preferredProjectId = null) => {
         try {
             const projects = await getComandoApi().listProjects();
@@ -177,6 +259,41 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
+    renameEntry: async (projectId, relativePath, nextName) => {
+        try {
+            const entry = await getComandoApi().renameProjectEntry({
+                nextName,
+                projectId,
+                relativePath,
+            });
+
+            set((state) => ({
+                error: null,
+                expandedDirectories: {
+                    ...state.expandedDirectories,
+                    [projectId]: renameMatchingPaths(
+                        state.expandedDirectories[projectId] ?? [],
+                        relativePath,
+                        entry.relativePath,
+                    ),
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [projectId]: {},
+                },
+            }));
+            void get().refreshProjectTree(projectId);
+            return entry;
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Could not rename the selected entry.";
+            set({ error: message });
+            throw error;
+        }
+    },
+
     removeProject: async (projectId) => {
         try {
             await getComandoApi().removeProject(projectId);
@@ -207,6 +324,23 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         ? error.message
                         : "Could not remove the selected project.",
             });
+        }
+    },
+
+    revealEntry: async (projectId, relativePath) => {
+        try {
+            await getComandoApi().revealProjectEntry({
+                projectId,
+                relativePath,
+            });
+            set({ error: null });
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Could not reveal the selected entry.";
+            set({ error: message });
+            throw error;
         }
     },
 
@@ -326,4 +460,33 @@ function omitProjectKey<TValue>(
     return Object.fromEntries(
         Object.entries(record).filter(([key]) => key !== projectId),
     );
+}
+
+function removeMatchingPaths(
+    paths: readonly string[],
+    relativePath: string,
+): readonly string[] {
+    return paths.filter(
+        (path) => path !== relativePath && !path.startsWith(`${relativePath}/`),
+    );
+}
+
+function renameMatchingPaths(
+    paths: readonly string[],
+    previousPath: string,
+    nextPath: string,
+): readonly string[] {
+    const renamedPaths = paths.map((path) => {
+        if (path === previousPath) {
+            return nextPath;
+        }
+
+        if (path.startsWith(`${previousPath}/`)) {
+            return `${nextPath}${path.slice(previousPath.length)}`;
+        }
+
+        return path;
+    });
+
+    return [...new Set(renamedPaths)];
 }

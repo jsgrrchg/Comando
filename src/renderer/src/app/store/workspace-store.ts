@@ -14,12 +14,14 @@ import {
     closeOtherWorkspaceTabs,
     closeWorkspacePane,
     closeWorkspaceTab,
+    closeWorkspaceTabsForProjectPath,
     closeWorkspaceTabsToRight,
     createDefaultWorkspaceState,
     markTerminalExited,
     moveActiveTabBetweenPanes,
     moveWorkspaceTabBetweenPanes,
     removeProjectTabs,
+    renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
     resizeSplit,
     selectPaneTab,
@@ -58,9 +60,20 @@ interface WorkspaceStore extends WorkspaceTreeState {
     openFileTab: (projectId: string, relativePath: string) => Promise<void>;
     refreshProjectTabs: (projectId: string) => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
+    closeTabsForProjectPath: (
+        projectId: string,
+        relativePath: string,
+        kind: "directory" | "file",
+    ) => Promise<void>;
     resizeSplit: (
         splitId: string,
         nextSizes: readonly number[],
+    ) => Promise<void>;
+    renameTabsForProjectPath: (
+        projectId: string,
+        previousRelativePath: string,
+        nextRelativePath: string,
+        kind: "directory" | "file",
     ) => Promise<void>;
     restartTerminalTab: (tabId: string) => Promise<void>;
     saveFileTab: (tabId: string) => Promise<void>;
@@ -101,6 +114,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     closePane: async (paneId) => {
         set((state) => ({
             ...closeWorkspacePane(state, paneId),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    closeTabsForProjectPath: async (projectId, relativePath, kind) => {
+        set((state) => ({
+            ...closeWorkspaceTabsForProjectPath(
+                state,
+                projectId,
+                relativePath,
+                kind,
+            ),
             error: null,
         }));
         await persistWorkspaceState(get);
@@ -316,6 +342,25 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
         set((state) => ({
             ...removeProjectTabs(state, projectId),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    renameTabsForProjectPath: async (
+        projectId,
+        previousRelativePath,
+        nextRelativePath,
+        kind,
+    ) => {
+        set((state) => ({
+            ...renameWorkspaceTabsForProjectPath(
+                state,
+                projectId,
+                previousRelativePath,
+                nextRelativePath,
+                kind,
+            ),
             error: null,
         }));
         await persistWorkspaceState(get);

@@ -5,11 +5,15 @@ import {
     IPC_CHANNELS,
     type AppBootstrapSnapshot,
     type ComandoApi,
+    type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
+    type DeleteProjectEntryInput,
     type ListProjectTreeInput,
     type OpenProjectFileInput,
     type PersistenceSnapshot,
     type ProjectTreeInvalidation,
+    type RenameProjectEntryInput,
+    type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
     type SaveProjectFileInput,
     type SettingsSnapshot,
@@ -108,6 +112,14 @@ const comandoApi: ComandoApi = {
     openProjects: () => ipcRenderer.invoke(IPC_CHANNELS.openProjects),
     saveProjectFile: (input: SaveProjectFileInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveProjectFile, input),
+    createProjectEntry: (input: CreateProjectEntryInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.createProjectEntry, input),
+    renameProjectEntry: (input: RenameProjectEntryInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.renameProjectEntry, input),
+    deleteProjectEntry: (input: DeleteProjectEntryInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.deleteProjectEntry, input),
+    revealProjectEntry: (input: RevealProjectEntryInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.revealProjectEntry, input),
     saveSettingsSnapshot: (snapshot: SettingsSnapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveSettingsSnapshot, snapshot),
     saveActiveProjectId: (projectId: string | null) =>

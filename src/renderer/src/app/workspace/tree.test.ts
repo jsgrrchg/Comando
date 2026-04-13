@@ -4,11 +4,14 @@ import {
     attachTabToPane,
     closeOtherWorkspaceTabs,
     closeWorkspacePane,
+    closeWorkspaceTabsForProjectPath,
     closeWorkspaceTabsToRight,
     createDefaultWorkspaceState,
     moveActiveTabBetweenPanes,
     moveWorkspaceTabBetweenPanes,
+    renameWorkspaceTabsForProjectPath,
     splitPaneInDirection,
+    type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
 } from "./tree";
 
@@ -21,6 +24,39 @@ function makeChatTab(id: string): RuntimeWorkspaceTab {
         projectId: null,
         sessionId: `session-${id}`,
         title: `Chat ${id}`,
+    };
+}
+
+function makeFileTab(
+    id: string,
+    relativePath: string,
+    projectId = "project-1",
+): RuntimeWorkspaceFileTab {
+    return {
+        createdAt: "2026-04-12T00:00:00.000Z",
+        document: {
+            absolutePath: `/tmp/${relativePath}`,
+            content: "",
+            isBinary: false,
+            isTooLarge: false,
+            languageId: "markdown",
+            languageLabel: "Markdown",
+            name: relativePath.split("/").at(-1) ?? relativePath,
+            projectId,
+            relativePath,
+        },
+        draftContent: "",
+        id,
+        isDirty: false,
+        isLoading: false,
+        isSaving: false,
+        kind: "file",
+        loadError: null,
+        projectId,
+        relativePath,
+        savedContent: "",
+        saveError: null,
+        title: relativePath.split("/").at(-1) ?? relativePath,
     };
 }
 
@@ -199,5 +235,71 @@ describe("workspace tree helpers", () => {
         if (closed.rootNode.type === "pane") {
             expect(closed.rootNode.tabIds).toEqual(["tab-1", "tab-2"]);
         }
+    });
+
+    it("closes every file tab that matches a deleted directory", () => {
+        const withReadme = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeFileTab("tab-1", "docs/readme.md"),
+        );
+        const withGuide = attachTabToPane(
+            withReadme,
+            "pane-root",
+            makeFileTab("tab-2", "docs/guides/getting-started.md"),
+        );
+        const withOtherFile = attachTabToPane(
+            withGuide,
+            "pane-root",
+            makeFileTab("tab-3", "src/index.ts"),
+        );
+
+        const closed = closeWorkspaceTabsForProjectPath(
+            withOtherFile,
+            "project-1",
+            "docs",
+            "directory",
+        );
+
+        expect(Object.keys(closed.tabsById).sort()).toEqual(["tab-3"]);
+    });
+
+    it("renames every matching open tab when a directory moves", () => {
+        const withReadme = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeFileTab("tab-1", "docs/readme.md"),
+        );
+        const withGuide = attachTabToPane(
+            withReadme,
+            "pane-root",
+            makeFileTab("tab-2", "docs/guides/getting-started.md"),
+        );
+
+        const renamed = renameWorkspaceTabsForProjectPath(
+            withGuide,
+            "project-1",
+            "docs",
+            "knowledge-base",
+            "directory",
+        );
+
+        const readmeTab = renamed.tabsById["tab-1"];
+        const guideTab = renamed.tabsById["tab-2"];
+        if (readmeTab?.kind !== "file" || guideTab?.kind !== "file") {
+            throw new Error("Expected file tabs after rename.");
+        }
+
+        expect(readmeTab.relativePath).toBe("knowledge-base/readme.md");
+        expect(readmeTab.document?.relativePath).toBe(
+            "knowledge-base/readme.md",
+        );
+        expect(readmeTab.title).toBe("readme.md");
+        expect(guideTab.relativePath).toBe(
+            "knowledge-base/guides/getting-started.md",
+        );
+        expect(guideTab.document?.absolutePath).toContain(
+            "knowledge-base/guides/getting-started.md",
+        );
     });
 });
