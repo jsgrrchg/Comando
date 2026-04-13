@@ -3,12 +3,16 @@ import { app, BrowserWindow } from "electron";
 import { appIdentity } from "@shared/app-identity";
 import {
     IPC_EVENTS,
+    type AiRuntimeStatus,
+    type AiSessionSnapshot,
     type AppBootstrapSnapshot,
     type ProjectTreeInvalidation,
     type TerminalDataEvent,
     type TerminalExitEvent,
 } from "@shared/ipc";
 
+import { AiPersistence } from "./ai/persistence";
+import { AiService } from "./ai/service";
 import { bootstrapDatabase, type DatabaseManager } from "./db";
 import { ProjectService } from "./projects/service";
 import { registerIpcHandlers } from "./ipc";
@@ -20,6 +24,7 @@ import { createMainWindow } from "./window";
 
 let database: DatabaseManager | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
+let aiService: AiService | null = null;
 let persistenceService: PersistenceService | null = null;
 let projectService: ProjectService | null = null;
 let settingsService: SettingsService | null = null;
@@ -35,6 +40,13 @@ void app.whenReady().then(() => {
     projectService = new ProjectService({
         connection: database.connection,
         onProjectTreeInvalidated: broadcastProjectTreeInvalidation,
+    });
+    aiService = new AiService({
+        onRuntimeStatus: broadcastAiRuntimeStatus,
+        onSessionSnapshot: broadcastAiSessionSnapshot,
+        persistence: new AiPersistence(database.connection),
+        projectService,
+        settingsService,
     });
     terminalService = new TerminalService({
         onData: broadcastTerminalData,
@@ -56,6 +68,7 @@ void app.whenReady().then(() => {
     };
 
     registerIpcHandlers({
+        aiService,
         getSnapshot: () => {
             if (!bootstrapSnapshot) {
                 throw new Error(
@@ -91,6 +104,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+    aiService?.close();
+    aiService = null;
     projectService?.close();
     projectService = null;
     terminalService?.close();
@@ -150,6 +165,18 @@ function attachWindowPersistence(window: BrowserWindow): void {
     window.on("close", persistWindowState);
 
     persistWindowState();
+}
+
+function broadcastAiRuntimeStatus(payload: AiRuntimeStatus): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(IPC_EVENTS.aiRuntimeStatus, payload);
+    }
+}
+
+function broadcastAiSessionSnapshot(payload: AiSessionSnapshot): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
+    }
 }
 
 function broadcastTerminalData(payload: TerminalDataEvent): void {

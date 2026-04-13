@@ -4,7 +4,13 @@ import {
     IPC_EVENTS,
     IPC_CHANNELS,
     type AppBootstrapSnapshot,
+    type AiPermissionResponseInput,
+    type AiRuntimeId,
+    type AiRuntimeStatus,
+    type AiSessionSnapshot,
+    type AiTrackedFileMutationInput,
     type ComandoApi,
+    type CodexRuntimeSettings,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -15,7 +21,9 @@ import {
     type RenameProjectEntryInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
+    type SearchProjectEntriesInput,
     type SaveProjectFileInput,
+    type SendAiPromptInput,
     type SettingsSnapshot,
     type SystemTheme,
     type TerminalDataEvent,
@@ -126,6 +134,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveActiveProjectId, projectId),
     listProjectTree: (input: ListProjectTreeInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.listProjectTree, input),
+    searchProjectEntries: (input: SearchProjectEntriesInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.searchProjectEntries, input),
     removeProject: (projectId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.removeProject, projectId),
     resizeTerminalSession: (input: ResizeTerminalSessionInput) =>
@@ -134,12 +144,65 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveWorkspaceSnapshot, snapshot),
     getChatSessionState: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.getChatSessionState, sessionId),
+    getAiRuntimeStatus: (runtimeId: AiRuntimeId) =>
+        ipcRenderer.invoke(IPC_CHANNELS.getAiRuntimeStatus, runtimeId),
+    getAiSessionSnapshot: (sessionId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.getAiSessionSnapshot, sessionId),
+    sendAiPrompt: (input: SendAiPromptInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.sendAiPrompt, input),
+    cancelAiSession: (sessionId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.cancelAiSession, sessionId),
+    closeAiSession: (sessionId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.closeAiSession, sessionId),
+    respondAiPermission: (input: AiPermissionResponseInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.respondAiPermission, input),
+    keepAiTrackedFile: (input: AiTrackedFileMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.keepAiTrackedFile, input),
+    rejectAiTrackedFile: (input: AiTrackedFileMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.rejectAiTrackedFile, input),
+    keepAllAiTrackedFiles: (sessionId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.keepAllAiTrackedFiles, sessionId),
+    rejectAllAiTrackedFiles: (sessionId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.rejectAllAiTrackedFiles, sessionId),
+    saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) =>
+        ipcRenderer.invoke(IPC_CHANNELS.saveCodexRuntimeSettings, settings),
     closeTerminalSession: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.closeTerminalSession, sessionId),
     touchProject: (projectId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.touchProject, projectId),
     writeTerminalInput: (input: WriteTerminalInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.writeTerminalInput, input),
+    onAiRuntimeStatus: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            status: AiRuntimeStatus,
+        ) => {
+            listener(status);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.aiRuntimeStatus, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(IPC_EVENTS.aiRuntimeStatus, handleEvent);
+        };
+    },
+    onAiSessionSnapshot: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            snapshot: AiSessionSnapshot,
+        ) => {
+            listener(snapshot);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.aiSessionSnapshot, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.aiSessionSnapshot,
+                handleEvent,
+            );
+        };
+    },
 };
 
 contextBridge.exposeInMainWorld("comando", comandoApi);

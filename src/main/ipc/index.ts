@@ -11,6 +11,9 @@ import {
     IPC_CHANNELS,
     IPC_EVENTS,
     type AppBootstrapSnapshot,
+    type AiPermissionResponseInput,
+    type AiRuntimeId,
+    type AiTrackedFileMutationInput,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -20,13 +23,17 @@ import {
     type RenameProjectEntryInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
+    type SearchProjectEntriesInput,
     type SaveProjectFileInput,
+    type SendAiPromptInput,
     type SettingsSnapshot,
     type SystemTheme,
     type WriteTerminalInput,
     type WorkspaceSnapshot,
+    type CodexRuntimeSettings,
 } from "@shared/ipc";
 
+import type { AiService } from "@main/ai/service";
 import type { ProjectService } from "@main/projects/service";
 import type { PersistenceService } from "@main/persistence/service";
 import type { SettingsService } from "@main/settings/service";
@@ -34,6 +41,7 @@ import type { TerminalService } from "@main/terminals/service";
 import type { WorkspaceService } from "@main/workspace/service";
 
 interface RegisterIpcHandlersOptions {
+    readonly aiService: AiService;
     readonly getSnapshot: () => AppBootstrapSnapshot;
     readonly persistenceService: PersistenceService;
     readonly projectService: ProjectService;
@@ -61,6 +69,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.renameProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.deleteProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.revealProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
@@ -68,6 +77,17 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.writeTerminalInput);
     ipcMain.removeHandler(IPC_CHANNELS.resizeTerminalSession);
     ipcMain.removeHandler(IPC_CHANNELS.closeTerminalSession);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiRuntimeStatus);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiSessionSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.sendAiPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.cancelAiSession);
+    ipcMain.removeHandler(IPC_CHANNELS.closeAiSession);
+    ipcMain.removeHandler(IPC_CHANNELS.respondAiPermission);
+    ipcMain.removeHandler(IPC_CHANNELS.keepAiTrackedFile);
+    ipcMain.removeHandler(IPC_CHANNELS.rejectAiTrackedFile);
+    ipcMain.removeHandler(IPC_CHANNELS.keepAllAiTrackedFiles);
+    ipcMain.removeHandler(IPC_CHANNELS.rejectAllAiTrackedFiles);
+    ipcMain.removeHandler(IPC_CHANNELS.saveCodexRuntimeSettings);
 
     ipcMain.handle(IPC_CHANNELS.getBootstrapSnapshot, () =>
         options.getSnapshot(),
@@ -181,6 +201,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             shell.showItemInFolder(absolutePath);
         },
     );
+    ipcMain.handle(
+        IPC_CHANNELS.searchProjectEntries,
+        (_event, input: SearchProjectEntriesInput) =>
+            options.projectService.searchProjectEntries(input),
+    );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, () =>
         options.workspaceService.loadSnapshot(),
     );
@@ -221,5 +246,56 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, sessionId: string) => {
             options.terminalService.closeSession(sessionId);
         },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getAiRuntimeStatus,
+        (_event, runtimeId: AiRuntimeId) =>
+            options.aiService.getRuntimeStatus(runtimeId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getAiSessionSnapshot,
+        (_event, sessionId: string) =>
+            options.aiService.getSessionSnapshot(sessionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.sendAiPrompt,
+        (_event, input: SendAiPromptInput) =>
+            options.aiService.sendPrompt(input),
+    );
+    ipcMain.handle(IPC_CHANNELS.cancelAiSession, (_event, sessionId: string) =>
+        options.aiService.cancelSession(sessionId),
+    );
+    ipcMain.handle(IPC_CHANNELS.closeAiSession, (_event, sessionId: string) =>
+        options.aiService.closeSession(sessionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.respondAiPermission,
+        (_event, input: AiPermissionResponseInput) =>
+            options.aiService.respondPermission(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.keepAiTrackedFile,
+        (_event, input: AiTrackedFileMutationInput) =>
+            options.aiService.keepTrackedFile(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.rejectAiTrackedFile,
+        (_event, input: AiTrackedFileMutationInput) =>
+            options.aiService.rejectTrackedFile(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.keepAllAiTrackedFiles,
+        (_event, sessionId: string) =>
+            options.aiService.keepAllTrackedFiles(sessionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.rejectAllAiTrackedFiles,
+        (_event, sessionId: string) =>
+            options.aiService.rejectAllTrackedFiles(sessionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.saveCodexRuntimeSettings,
+        (_event, settings: CodexRuntimeSettings) =>
+            options.aiService.saveCodexRuntimeSettings(settings),
     );
 }
