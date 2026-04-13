@@ -11,11 +11,14 @@ import {
     activatePane,
     appendTerminalOutput,
     attachTabToPane,
+    closeOtherWorkspaceTabs,
     closeWorkspacePane,
     closeWorkspaceTab,
+    closeWorkspaceTabsToRight,
     createDefaultWorkspaceState,
     markTerminalExited,
     moveActiveTabBetweenPanes,
+    moveWorkspaceTabBetweenPanes,
     removeProjectTabs,
     replaceFileDocument,
     resizeSplit,
@@ -39,16 +42,19 @@ import {
 } from "../workspace/tree";
 
 interface WorkspaceStore extends WorkspaceTreeState {
+    closeOtherTabs: (tabId: string) => Promise<void>;
     readonly error: string | null;
     readonly hydrated: boolean;
     appendTerminalOutput: (event: TerminalDataEvent) => void;
     closePane: (paneId: string) => Promise<void>;
     closeTab: (tabId: string) => Promise<void>;
+    closeTabsToRight: (tabId: string) => Promise<void>;
     createChatTab: (projectId: string | null) => Promise<void>;
     createTerminalTab: (projectId: string | null) => Promise<void>;
     handleTerminalExit: (event: TerminalExitEvent) => void;
     hydrate: () => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
+    moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
     openFileTab: (projectId: string, relativePath: string) => Promise<void>;
     refreshProjectTabs: (projectId: string) => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
@@ -84,9 +90,25 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
     },
 
+    closeOtherTabs: async (tabId) => {
+        set((state) => ({
+            ...closeOtherWorkspaceTabs(state, tabId),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
     closePane: async (paneId) => {
         set((state) => ({
             ...closeWorkspacePane(state, paneId),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    closeTabsToRight: async (tabId) => {
+        set((state) => ({
+            ...closeWorkspaceTabsToRight(state, tabId),
             error: null,
         }));
         await persistWorkspaceState(get);
@@ -187,6 +209,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     moveActiveTab: async (paneId, direction) => {
         set((state) => ({
             ...moveActiveTabBetweenPanes(state, paneId, direction),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    moveTab: async (tabId, direction) => {
+        set((state) => ({
+            ...moveWorkspaceTabBetweenPanes(state, tabId, direction),
             error: null,
         }));
         await persistWorkspaceState(get);

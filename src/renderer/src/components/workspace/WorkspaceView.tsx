@@ -7,6 +7,7 @@ import {
     useEffectEvent,
     useRef,
     useState,
+    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
     type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -20,10 +21,16 @@ import { shouldWrapEditorLanguage } from "@shared/editor-language";
 
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import {
+    collectPaneNodes,
     type RuntimeWorkspaceChatTab,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTerminalTab,
 } from "@renderer/app/workspace/tree";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "@renderer/components/context-menu/ContextMenu";
 
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
@@ -34,6 +41,10 @@ type SplitDragState = {
     readonly startCoordinate: number;
     readonly startSizes: readonly number[];
 } | null;
+
+type TabContextMenuPayload = {
+    readonly tabId: string;
+};
 
 export function WorkspaceView({ defaultProjectId }: WorkspaceViewProps) {
     const rootNode = useWorkspaceStore((state) => state.rootNode);
@@ -237,11 +248,19 @@ function WorkspacePaneView({
     readonly node: WorkspacePaneNode;
 }) {
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
+    const closeOtherTabs = useWorkspaceStore((state) => state.closeOtherTabs);
     const closePane = useWorkspaceStore((state) => state.closePane);
     const closeTab = useWorkspaceStore((state) => state.closeTab);
+    const closeTabsToRight = useWorkspaceStore(
+        (state) => state.closeTabsToRight,
+    );
     const createChatTab = useWorkspaceStore((state) => state.createChatTab);
     const createTerminalTab = useWorkspaceStore(
         (state) => state.createTerminalTab,
+    );
+    const moveTab = useWorkspaceStore((state) => state.moveTab);
+    const paneCount = useWorkspaceStore(
+        (state) => collectPaneNodes(state.rootNode).length,
     );
     const selectTab = useWorkspaceStore((state) => state.selectTab);
     const setActivePane = useWorkspaceStore((state) => state.setActivePane);
@@ -260,6 +279,8 @@ function WorkspacePaneView({
         (state) => state.restartTerminalTab,
     );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
+    const [tabContextMenu, setTabContextMenu] =
+        useState<ContextMenuState<TabContextMenuPayload> | null>(null);
 
     const activeTab = node.activeTabId ? tabsById[node.activeTabId] : null;
     const isActivePane = activePaneId === node.id;
@@ -283,142 +304,217 @@ function WorkspacePaneView({
         container.scrollLeft += event.deltaY;
     };
 
+    const tabContextMenuEntries: ContextMenuEntry[] = (() => {
+        if (!tabContextMenu) {
+            return [];
+        }
+
+        const tabIndex = node.tabIds.indexOf(tabContextMenu.payload.tabId);
+        if (tabIndex === -1) {
+            return [];
+        }
+
+        return [
+            {
+                label: "Close",
+                action: () => void closeTab(tabContextMenu.payload.tabId),
+            },
+            {
+                label: "Close Others",
+                action: () => void closeOtherTabs(tabContextMenu.payload.tabId),
+                disabled: node.tabIds.length <= 1,
+            },
+            {
+                label: "Close Tabs to the Right",
+                action: () =>
+                    void closeTabsToRight(tabContextMenu.payload.tabId),
+                disabled: tabIndex === node.tabIds.length - 1,
+            },
+            { type: "separator" },
+            {
+                label: "Move to Previous Pane",
+                action: () =>
+                    void moveTab(tabContextMenu.payload.tabId, "previous"),
+                disabled: paneCount < 2,
+            },
+            {
+                label: "Move to Next Pane",
+                action: () =>
+                    void moveTab(tabContextMenu.payload.tabId, "next"),
+                disabled: paneCount < 2,
+            },
+        ];
+    })();
+
+    function handleTabContextMenu(
+        event: ReactMouseEvent<HTMLButtonElement>,
+        tabId: string,
+    ) {
+        event.preventDefault();
+        event.stopPropagation();
+        void setActivePane(node.id);
+        void selectTab(node.id, tabId);
+        setTabContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            payload: { tabId },
+        });
+    }
+
     return (
-        <section
-            className={[
-                "flex h-full min-h-0 flex-col border bg-bg-primary",
-                isActivePane ? "border-border-strong" : "border-transparent",
-            ].join(" ")}
-            onMouseDown={() => void setActivePane(node.id)}
-        >
-            <div className="app-drag flex items-center justify-between border-b border-border bg-[#dfe3ea] px-0">
-                <div
-                    className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
-                    onWheel={handleTabStripWheel}
-                    ref={tabStripRef}
-                >
-                    {node.tabIds.length === 0 ? (
-                        <span className="px-2.5 py-1.5 text-[11px] text-text-secondary">
-                            Empty pane
-                        </span>
-                    ) : (
-                        node.tabIds.map((tabId) => {
-                            const tab = tabsById[tabId];
-                            if (!tab) {
-                                return null;
-                            }
+        <>
+            <section
+                className={[
+                    "flex h-full min-h-0 flex-col border bg-bg-primary",
+                    isActivePane
+                        ? "border-border-strong"
+                        : "border-transparent",
+                ].join(" ")}
+                onMouseDown={() => void setActivePane(node.id)}
+            >
+                <div className="app-drag flex items-center justify-between border-b border-border bg-[#dfe3ea] px-0">
+                    <div
+                        className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
+                        onWheel={handleTabStripWheel}
+                        ref={tabStripRef}
+                    >
+                        {node.tabIds.length === 0 ? (
+                            <span className="px-2.5 py-1.5 text-[11px] text-text-secondary">
+                                Empty pane
+                            </span>
+                        ) : (
+                            node.tabIds.map((tabId) => {
+                                const tab = tabsById[tabId];
+                                if (!tab) {
+                                    return null;
+                                }
 
-                            const isActive = tabId === node.activeTabId;
+                                const isActive = tabId === node.activeTabId;
 
-                            return (
-                                <button
-                                    className={[
-                                        "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-[#cfd4dd] px-3 text-[12px] transition",
-                                        isActive
-                                            ? "z-10 bg-white text-[#2d3440] shadow-[inset_0_-2px_0_0_#4b5563]"
-                                            : "z-0 bg-[#d7dce4] text-[#6f7784] hover:bg-[#d1d7e0] hover:text-[#4d5562]",
-                                    ].join(" ")}
-                                    key={tabId}
-                                    onClick={() =>
-                                        void selectTab(node.id, tabId)
-                                    }
-                                    type="button"
-                                >
-                                    <TabIcon kind={tab.kind} />
-                                    <span className="truncate">
-                                        {tab.title}
-                                    </span>
-                                    {"isDirty" in tab && tab.isDirty ? (
-                                        <span className="text-[9px] text-amber-500">
-                                            ●
-                                        </span>
-                                    ) : null}
-                                    <span
+                                return (
+                                    <button
                                         className={[
-                                            "ml-0.5 rounded px-0.5 text-[10px] transition hover:bg-black/5 hover:text-text-primary",
+                                            "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-[#cfd4dd] px-3 text-[12px] transition",
                                             isActive
-                                                ? "text-[#6f7784] opacity-70"
-                                                : "text-[#7b8390] opacity-0 group-hover:opacity-70",
+                                                ? "z-10 bg-white text-[#2d3440] shadow-[inset_0_-2px_0_0_#4b5563]"
+                                                : "z-0 bg-[#d7dce4] text-[#6f7784] hover:bg-[#d1d7e0] hover:text-[#4d5562]",
                                         ].join(" ")}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            void closeTab(tabId);
-                                        }}
-                                        role="button"
-                                        tabIndex={-1}
+                                        key={tabId}
+                                        onClick={() =>
+                                            void selectTab(node.id, tabId)
+                                        }
+                                        onContextMenu={(event) =>
+                                            handleTabContextMenu(event, tabId)
+                                        }
+                                        type="button"
                                     >
-                                        ×
-                                    </span>
-                                </button>
-                            );
-                        })
+                                        <TabIcon kind={tab.kind} />
+                                        <span className="truncate">
+                                            {tab.title}
+                                        </span>
+                                        {"isDirty" in tab && tab.isDirty ? (
+                                            <span className="text-[9px] text-amber-500">
+                                                ●
+                                            </span>
+                                        ) : null}
+                                        <span
+                                            className={[
+                                                "ml-0.5 rounded px-0.5 text-[10px] transition hover:bg-black/5 hover:text-text-primary",
+                                                isActive
+                                                    ? "text-[#6f7784] opacity-70"
+                                                    : "text-[#7b8390] opacity-0 group-hover:opacity-70",
+                                            ].join(" ")}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                void closeTab(tabId);
+                                            }}
+                                            role="button"
+                                            tabIndex={-1}
+                                        >
+                                            ×
+                                        </span>
+                                    </button>
+                                );
+                            })
+                        )}
+                    </div>
+
+                    <div className="flex shrink-0 items-center">
+                        <PaneActionButton
+                            label="+"
+                            onClick={() => void createChatTab(defaultProjectId)}
+                            title="New chat"
+                        />
+                        <PaneActionButton
+                            label="▸"
+                            onClick={() =>
+                                void createTerminalTab(defaultProjectId)
+                            }
+                            title="New terminal"
+                        />
+                        <span className="mx-1 h-3 w-px bg-border" />
+                        <PaneActionButton
+                            label="◧"
+                            onClick={() => void splitPane(node.id, "left")}
+                            title="Split left"
+                        />
+                        <PaneActionButton
+                            label="◨"
+                            onClick={() => void splitPane(node.id, "right")}
+                            title="Split right"
+                        />
+                        <span className="mx-1 h-3 w-px bg-border" />
+                        <PaneActionButton
+                            label="×"
+                            onClick={() => void closePane(node.id)}
+                            title="Close pane"
+                        />
+                    </div>
+                </div>
+
+                <div className="min-h-0 flex-1 bg-editor">
+                    {activeTab ? (
+                        activeTab.kind === "file" ? (
+                            <FileTabView
+                                isActivePane={isActivePane}
+                                onDraftChange={updateFileDraft}
+                                onSave={saveFileTab}
+                                tab={activeTab}
+                            />
+                        ) : activeTab.kind === "terminal" ? (
+                            <TerminalTabView
+                                onResize={updateTerminalSize}
+                                onRestart={restartTerminalTab}
+                                onSendInput={sendTerminalInput}
+                                tab={activeTab}
+                            />
+                        ) : (
+                            <ChatTabView
+                                onDraftChange={(draft) =>
+                                    void updateChatDraft(activeTab.id, draft)
+                                }
+                                tab={activeTab}
+                            />
+                        )
+                    ) : (
+                        <div className="flex h-full items-center justify-center px-6 text-center">
+                            <p className="text-[12px] text-text-secondary">
+                                Open a file, start a chat or launch a terminal.
+                            </p>
+                        </div>
                     )}
                 </div>
+            </section>
 
-                <div className="flex shrink-0 items-center">
-                    <PaneActionButton
-                        label="+"
-                        onClick={() => void createChatTab(defaultProjectId)}
-                        title="New chat"
-                    />
-                    <PaneActionButton
-                        label="▸"
-                        onClick={() => void createTerminalTab(defaultProjectId)}
-                        title="New terminal"
-                    />
-                    <span className="mx-1 h-3 w-px bg-border" />
-                    <PaneActionButton
-                        label="◧"
-                        onClick={() => void splitPane(node.id, "left")}
-                        title="Split left"
-                    />
-                    <PaneActionButton
-                        label="◨"
-                        onClick={() => void splitPane(node.id, "right")}
-                        title="Split right"
-                    />
-                    <span className="mx-1 h-3 w-px bg-border" />
-                    <PaneActionButton
-                        label="×"
-                        onClick={() => void closePane(node.id)}
-                        title="Close pane"
-                    />
-                </div>
-            </div>
-
-            <div className="min-h-0 flex-1 bg-editor">
-                {activeTab ? (
-                    activeTab.kind === "file" ? (
-                        <FileTabView
-                            isActivePane={isActivePane}
-                            onDraftChange={updateFileDraft}
-                            onSave={saveFileTab}
-                            tab={activeTab}
-                        />
-                    ) : activeTab.kind === "terminal" ? (
-                        <TerminalTabView
-                            onResize={updateTerminalSize}
-                            onRestart={restartTerminalTab}
-                            onSendInput={sendTerminalInput}
-                            tab={activeTab}
-                        />
-                    ) : (
-                        <ChatTabView
-                            onDraftChange={(draft) =>
-                                void updateChatDraft(activeTab.id, draft)
-                            }
-                            tab={activeTab}
-                        />
-                    )
-                ) : (
-                    <div className="flex h-full items-center justify-center px-6 text-center">
-                        <p className="text-[12px] text-text-secondary">
-                            Open a file, start a chat or launch a terminal.
-                        </p>
-                    </div>
-                )}
-            </div>
-        </section>
+            {tabContextMenu ? (
+                <ContextMenu
+                    entries={tabContextMenuEntries}
+                    menu={tabContextMenu}
+                    minWidth={190}
+                    onClose={() => setTabContextMenu(null)}
+                />
+            ) : null}
+        </>
     );
 }
 

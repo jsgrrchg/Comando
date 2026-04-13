@@ -340,6 +340,88 @@ export function moveActiveTabBetweenPanes(
     );
 }
 
+export function moveWorkspaceTabBetweenPanes(
+    state: WorkspaceTreeState,
+    tabId: string,
+    direction: MoveDirection,
+): WorkspaceTreeState {
+    const paneIds = collectPaneNodes(state.rootNode).map((pane) => pane.id);
+    if (paneIds.length < 2) {
+        return state;
+    }
+
+    const sourcePaneId = findPaneIdForTab(state.rootNode, tabId);
+    if (!sourcePaneId) {
+        return state;
+    }
+
+    const sourceIndex = paneIds.indexOf(sourcePaneId);
+    if (sourceIndex === -1) {
+        return state;
+    }
+
+    const targetIndex =
+        direction === "next"
+            ? (sourceIndex + 1) % paneIds.length
+            : (sourceIndex - 1 + paneIds.length) % paneIds.length;
+    const targetPaneId = paneIds[targetIndex];
+
+    return moveTabBetweenPanes(state, tabId, sourcePaneId, targetPaneId);
+}
+
+export function closeOtherWorkspaceTabs(
+    state: WorkspaceTreeState,
+    tabId: string,
+): WorkspaceTreeState {
+    const paneId = findPaneIdForTab(state.rootNode, tabId);
+    if (!paneId) {
+        return state;
+    }
+
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane || !pane.tabIds.includes(tabId)) {
+        return state;
+    }
+
+    const tabIdsToClose = pane.tabIds.filter(
+        (currentTabId) => currentTabId !== tabId,
+    );
+
+    return tabIdsToClose.reduce(
+        (currentState, currentTabId) =>
+            closeWorkspaceTab(currentState, currentTabId),
+        state,
+    );
+}
+
+export function closeWorkspaceTabsToRight(
+    state: WorkspaceTreeState,
+    tabId: string,
+): WorkspaceTreeState {
+    const paneId = findPaneIdForTab(state.rootNode, tabId);
+    if (!paneId) {
+        return state;
+    }
+
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane) {
+        return state;
+    }
+
+    const tabIndex = pane.tabIds.indexOf(tabId);
+    if (tabIndex === -1 || tabIndex === pane.tabIds.length - 1) {
+        return state;
+    }
+
+    const tabIdsToClose = pane.tabIds.slice(tabIndex + 1);
+
+    return tabIdsToClose.reduce(
+        (currentState, currentTabId) =>
+            closeWorkspaceTab(currentState, currentTabId),
+        state,
+    );
+}
+
 export function updateChatDraft(
     state: WorkspaceTreeState,
     tabId: string,

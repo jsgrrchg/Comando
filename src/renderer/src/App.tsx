@@ -3,6 +3,7 @@ import {
     useEffectEvent,
     useMemo,
     useState,
+    type MouseEvent as ReactMouseEvent,
     type ReactNode,
     type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -23,6 +24,11 @@ import { useProjectsStore } from "./app/store/projects-store";
 import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
 import { findPaneById } from "./app/workspace/tree";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "./components/context-menu/ContextMenu";
 import { SplitHandle } from "./components/SplitHandle";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 
@@ -31,6 +37,15 @@ type DragState = {
     readonly startWidth: number;
     readonly startX: number;
 } | null;
+
+type FileTreeContextMenuPayload =
+    | {
+          readonly kind: "blank";
+      }
+    | {
+          readonly kind: "directory" | "file";
+          readonly node: ProjectTreeNode;
+      };
 
 const ROOT_NODE_KEY = "__root__";
 
@@ -91,6 +106,8 @@ export function App() {
     const syncViewport = useShellStore((state) => state.syncViewport);
 
     const [dragState, setDragState] = useState<DragState>(null);
+    const [fileTreeContextMenu, setFileTreeContextMenu] =
+        useState<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [projectFilter, setProjectFilter] = useState("");
 
@@ -106,10 +123,12 @@ export function App() {
                 let settingsSnapshot: SettingsSnapshot | null = null;
 
                 if (comandoApi) {
-                    [persistenceSnapshot, settingsSnapshot] = await Promise.all([
-                        comandoApi.getPersistenceSnapshot(),
-                        comandoApi.getSettingsSnapshot(),
-                    ]);
+                    [persistenceSnapshot, settingsSnapshot] = await Promise.all(
+                        [
+                            comandoApi.getPersistenceSnapshot(),
+                            comandoApi.getSettingsSnapshot(),
+                        ],
+                    );
                 }
 
                 if (isDisposed) {
@@ -309,6 +328,90 @@ export function App() {
             await removeProjectTabs(projectId);
         }
     }
+
+    function handleTreeNodeContextMenu(
+        event: ReactMouseEvent<HTMLButtonElement>,
+        node: ProjectTreeNode,
+    ) {
+        event.preventDefault();
+        focusSurface("utility");
+        setFileTreeContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            payload: {
+                kind: node.kind,
+                node,
+            },
+        });
+    }
+
+    function handleBlankTreeContextMenu(
+        event: ReactMouseEvent<HTMLDivElement>,
+    ) {
+        if (event.target !== event.currentTarget || !activeProject) {
+            return;
+        }
+
+        event.preventDefault();
+        focusSurface("utility");
+        setFileTreeContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            payload: { kind: "blank" },
+        });
+    }
+
+    const fileTreeContextMenuEntries: ContextMenuEntry[] = (() => {
+        if (!fileTreeContextMenu || !activeProject) {
+            return [];
+        }
+
+        const refreshEntry: ContextMenuEntry = {
+            label: "Refresh Project Tree",
+            action: () => void refreshProjectTree(activeProject.id),
+        };
+
+        if (fileTreeContextMenu.payload.kind === "blank") {
+            return [refreshEntry];
+        }
+
+        const { node } = fileTreeContextMenu.payload;
+
+        if (node.kind === "directory") {
+            const isExpanded = activeExpandedDirectories.includes(
+                node.relativePath,
+            );
+
+            return [
+                {
+                    label: isExpanded ? "Collapse" : "Expand",
+                    action: () => void toggleDirectory(activeProject.id, node),
+                },
+                {
+                    label: "Copy Relative Path",
+                    action: () =>
+                        void navigator.clipboard.writeText(node.relativePath),
+                },
+                { type: "separator" },
+                refreshEntry,
+            ];
+        }
+
+        return [
+            {
+                label: "Open",
+                action: () =>
+                    void openFileTab(activeProject.id, node.relativePath),
+            },
+            {
+                label: "Copy Relative Path",
+                action: () =>
+                    void navigator.clipboard.writeText(node.relativePath),
+            },
+            { type: "separator" },
+            refreshEntry,
+        ];
+    })();
 
     return (
         <div className="min-h-screen text-text-primary">
@@ -526,7 +629,10 @@ export function App() {
                                 </p>
                             </div>
 
-                            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2">
+                            <div
+                                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2"
+                                onContextMenu={handleBlankTreeContextMenu}
+                            >
                                 {activeProject ? (
                                     <div className="space-y-1">
                                         {activeProjectTree.map((node) => (
@@ -548,6 +654,12 @@ export function App() {
                                                     void openFileTab(
                                                         activeProject.id,
                                                         relativePath,
+                                                    )
+                                                }
+                                                onOpenMenu={(event, treeNode) =>
+                                                    handleTreeNodeContextMenu(
+                                                        event,
+                                                        treeNode,
                                                     )
                                                 }
                                                 onToggleDirectory={(treeNode) =>
@@ -577,6 +689,15 @@ export function App() {
                 <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md border border-border bg-bg-elevated px-3 py-2 text-[11px] text-text-secondary shadow-sm">
                     {topStatus}
                 </div>
+            ) : null}
+
+            {fileTreeContextMenu ? (
+                <ContextMenu
+                    entries={fileTreeContextMenuEntries}
+                    menu={fileTreeContextMenu}
+                    minWidth={180}
+                    onClose={() => setFileTreeContextMenu(null)}
+                />
             ) : null}
         </div>
     );
@@ -662,6 +783,7 @@ function TreeNodeRow({
     loadingNodeKeys,
     nodesByParent,
     onOpenFile,
+    onOpenMenu,
     onToggleDirectory,
     projectId,
     rootNode,
@@ -671,6 +793,10 @@ function TreeNodeRow({
     readonly loadingNodeKeys: readonly string[];
     readonly nodesByParent: Record<string, readonly ProjectTreeNode[]>;
     readonly onOpenFile: (relativePath: string) => void;
+    readonly onOpenMenu: (
+        event: ReactMouseEvent<HTMLButtonElement>,
+        node: ProjectTreeNode,
+    ) => void;
     readonly onToggleDirectory: (node: ProjectTreeNode) => void;
     readonly projectId: string;
     readonly rootNode: ProjectTreeNode;
@@ -696,6 +822,7 @@ function TreeNodeRow({
                         ? onToggleDirectory(rootNode)
                         : onOpenFile(rootNode.relativePath)
                 }
+                onContextMenu={(event) => onOpenMenu(event, rootNode)}
                 type="button"
             >
                 <span className="inline-flex w-3 justify-center text-[10px] text-text-secondary">
@@ -727,6 +854,7 @@ function TreeNodeRow({
                                 loadingNodeKeys={loadingNodeKeys}
                                 nodesByParent={nodesByParent}
                                 onOpenFile={onOpenFile}
+                                onOpenMenu={onOpenMenu}
                                 onToggleDirectory={onToggleDirectory}
                                 projectId={projectId}
                                 rootNode={node}
