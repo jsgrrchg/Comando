@@ -639,7 +639,7 @@ function ChatTabView({
 
             <div className="border-t border-border bg-bg-panel px-4 py-4">
                 <textarea
-                    className="ide-input app-no-drag min-h-[96px] resize-none"
+                    className="ide-input app-no-drag min-h-24 resize-none"
                     onChange={(event) => onDraftChange(event.target.value)}
                     placeholder="Type the first message for this ACP session..."
                     value={tab.draft}

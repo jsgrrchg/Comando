@@ -781,10 +781,10 @@ function TreeNodeRow({
                 <span className="inline-flex w-4 justify-center">
                     {isDirectory ? (
                         <span className="relative inline-flex h-3 w-3.5 rounded-[3px] border border-amber-300 bg-amber-50">
-                            <span className="absolute -top-px left-0.5 h-1 w-1.5 rounded-t-[2px] border border-b-0 border-amber-300 bg-amber-50" />
+                            <span className="absolute -top-px left-0.5 h-1 w-1.5 rounded-t-xs border border-b-0 border-amber-300 bg-amber-50" />
                         </span>
                     ) : (
-                        <span className="inline-flex h-3.5 w-3 rounded-[2px] border border-slate-300 bg-white" />
+                        <span className="inline-flex h-3.5 w-3 rounded-xs border border-slate-300 bg-white" />
                     )}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[13px]">
