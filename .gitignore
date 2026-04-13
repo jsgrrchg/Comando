@@ -1,0 +1,10 @@
+.personal/
+agents.md
+claude.md
+node_modules/
+dist/
+dist-electron/
+out/
+coverage/
+*.log
+*.tsbuildinfo

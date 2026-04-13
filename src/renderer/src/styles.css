@@ -1,0 +1,236 @@
+@import "tailwindcss";
+
+@theme {
+    --font-sans:
+        "SF Pro Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont,
+        sans-serif;
+    --font-mono:
+        "SF Mono", "JetBrains Mono", "Cascadia Code", ui-monospace,
+        SFMono-Regular, monospace;
+
+    --color-app: #f3f4f7;
+    --color-bg-primary: #ffffff;
+    --color-bg-secondary: #f7f8fa;
+    --color-bg-tertiary: #eef0f3;
+    --color-bg-elevated: #ffffff;
+    --color-bg-panel: #fbfbfc;
+    --color-editor: #ffffff;
+
+    --color-text-primary: #17191c;
+    --color-text-secondary: #6d737c;
+    --color-editor-text: #1f2430;
+
+    --color-border: #e5e7eb;
+    --color-border-strong: #d4d8de;
+    --color-border-subtle: #edf0f3;
+
+    --color-accent: #3b82f6;
+    --color-accent-soft: #eff6ff;
+    --color-accent-strong: #1d4ed8;
+    --color-selection: rgba(59, 130, 246, 0.1);
+
+    --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.08);
+}
+
+:root {
+    color-scheme: light;
+    font-family: var(--font-sans);
+    background: transparent;
+    color: var(--color-text-primary);
+}
+
+:root.dark {
+    color-scheme: dark;
+    --color-app: #1a1b1e;
+    --color-bg-primary: #1e1f22;
+    --color-bg-secondary: #252628;
+    --color-bg-tertiary: #2c2d30;
+    --color-bg-elevated: #2a2b2e;
+    --color-bg-panel: #222325;
+    --color-editor: #1e1f22;
+    --color-text-primary: #e4e5e8;
+    --color-text-secondary: #8b8f96;
+    --color-editor-text: #d4d5d8;
+    --color-border: #383a3e;
+    --color-border-strong: #484a50;
+    --color-border-subtle: #2e3034;
+    --color-accent: #5b9cf6;
+    --color-accent-soft: rgba(91, 156, 246, 0.12);
+    --color-accent-strong: #3b82f6;
+    --color-selection: rgba(91, 156, 246, 0.14);
+    --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    margin: 0;
+    min-height: 100%;
+}
+
+body {
+    min-height: 100vh;
+    overflow: hidden;
+    font-size: 13px;
+    background: transparent;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+input,
+textarea {
+    color: inherit;
+}
+
+::selection {
+    background: var(--color-selection);
+}
+
+button {
+    border: 0;
+    background: transparent;
+}
+
+.app-drag {
+    -webkit-app-region: drag;
+}
+
+.app-no-drag {
+    -webkit-app-region: no-drag;
+}
+
+.shell-window {
+    box-shadow: var(--shadow-soft);
+}
+
+.ide-window {
+    backdrop-filter: none;
+}
+
+.shell-scrollbar {
+    scrollbar-color: color-mix(
+            in srgb,
+            var(--color-text-secondary) 30%,
+            transparent
+        )
+        transparent;
+}
+
+.shell-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.shell-scrollbar::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: color-mix(
+        in srgb,
+        var(--color-text-secondary) 24%,
+        transparent
+    );
+    background-clip: padding-box;
+}
+
+.shell-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.surface-focus {
+    transition:
+        border-color 120ms ease,
+        background-color 120ms ease;
+}
+
+.surface-focus[data-active="true"] {
+    border-color: color-mix(
+        in srgb,
+        var(--color-accent) 30%,
+        var(--color-border)
+    );
+}
+
+.surface-focus:focus-visible {
+    outline: none;
+    border-color: color-mix(in srgb, var(--color-accent) 52%, transparent);
+}
+
+.ide-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    padding: 0.45rem 0.7rem;
+    font-size: 12px;
+    font-weight: 500;
+    transition:
+        border-color 120ms ease,
+        background-color 120ms ease,
+        color 120ms ease;
+}
+
+.ide-button:hover {
+    border-color: var(--color-border-strong);
+    background: var(--color-bg-secondary);
+}
+
+.ide-button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.ide-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+    outline-offset: 1px;
+}
+
+.ide-input {
+    width: 100%;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-elevated);
+    padding: 0.55rem 0.7rem;
+    font-size: 12px;
+    line-height: 1.2;
+    transition:
+        border-color 120ms ease,
+        background-color 120ms ease;
+}
+
+.ide-input::placeholder {
+    color: color-mix(in srgb, var(--color-text-secondary) 90%, transparent);
+}
+
+.ide-input:focus {
+    outline: none;
+    border-color: color-mix(
+        in srgb,
+        var(--color-accent) 55%,
+        var(--color-border)
+    );
+    background: var(--color-bg-primary);
+}
+
+.tree-row {
+    min-height: 28px;
+}
+
+.terminal-surface {
+    background: var(--color-editor);
+}
+
+.terminal-surface .xterm {
+    height: 100%;
+}
