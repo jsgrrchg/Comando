@@ -5,6 +5,7 @@ import type {
     WorkspaceFileTab,
     WorkspaceNode,
     WorkspacePaneNode,
+    WorkspaceReviewTab,
     WorkspaceSnapshot,
     WorkspaceSplitNode,
     WorkspaceTab,
@@ -26,6 +27,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
 }
 
 export type RuntimeWorkspaceChatTab = WorkspaceChatTab;
+export type RuntimeWorkspaceReviewTab = WorkspaceReviewTab;
 
 export interface RuntimeWorkspaceTerminalTab extends WorkspaceTerminalTab {
     readonly exitCode: number | null;
@@ -39,6 +41,7 @@ export interface RuntimeWorkspaceTerminalTab extends WorkspaceTerminalTab {
 export type RuntimeWorkspaceTab =
     | RuntimeWorkspaceFileTab
     | RuntimeWorkspaceChatTab
+    | RuntimeWorkspaceReviewTab
     | RuntimeWorkspaceTerminalTab;
 
 export interface WorkspaceTreeState {
@@ -962,6 +965,10 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
             sessionId: tab.sessionId,
             title: tab.title,
         };
+    }
+
+    if (tab.kind === "review") {
+        return tab;
     }
 
     return tab;

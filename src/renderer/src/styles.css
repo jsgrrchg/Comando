@@ -320,17 +320,22 @@ button {
 
 @keyframes ai-bounce {
     0%,
-    80%,
+    60%,
     100% {
         transform: translateY(0);
     }
-    40% {
+    30% {
         transform: translateY(-4px);
     }
 }
 
 .chat-assistant-content strong {
     font-weight: 600;
+}
+
+.chat-composer-input::placeholder {
+    color: var(--color-text-secondary);
+    opacity: 0.6;
 }
 
 .terminal-surface .xterm {

@@ -23,6 +23,7 @@ import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import { buildFilteredProjectTree } from "./app/projects/tree-filter";
 import { useAppStore } from "./app/store/app-store";
+import { useAiStore } from "./app/store/ai-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
@@ -125,6 +126,13 @@ export function App() {
     const resizePanel = useShellStore((state) => state.resizePanel);
     const rightWidth = useShellStore((state) => state.rightWidth);
     const syncViewport = useShellStore((state) => state.syncViewport);
+    const applyAiRuntimeStatus = useAiStore(
+        (state) => state.applyRuntimeStatus,
+    );
+    const applyAiSessionSnapshot = useAiStore(
+        (state) => state.applySessionSnapshot,
+    );
+    const hydrateAiSettings = useAiStore((state) => state.hydrateSettings);
 
     const [dragState, setDragState] = useState<DragState>(null);
     const [fileTreeContextMenu, setFileTreeContextMenu] =
@@ -161,6 +169,7 @@ export function App() {
                     return;
                 }
 
+                hydrateAiSettings(settingsSnapshot?.ai ?? null);
                 hydrateShell(settingsSnapshot?.shellState ?? null);
                 await hydrateProjects(
                     persistenceSnapshot?.activeProjectId ?? null,
@@ -178,7 +187,13 @@ export function App() {
         return () => {
             isDisposed = true;
         };
-    }, [hydrateBootstrap, hydrateProjects, hydrateShell, workspaceHydrate]);
+    }, [
+        hydrateAiSettings,
+        hydrateBootstrap,
+        hydrateProjects,
+        hydrateShell,
+        workspaceHydrate,
+    ]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -193,6 +208,27 @@ export function App() {
 
         return unsubscribe;
     }, [refreshProjectTabs, refreshProjectTree]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        const unsubscribeRuntime = comandoApi.onAiRuntimeStatus((status) => {
+            applyAiRuntimeStatus(status);
+        });
+        const unsubscribeSession = comandoApi.onAiSessionSnapshot(
+            (snapshot) => {
+                applyAiSessionSnapshot(snapshot);
+            },
+        );
+
+        return () => {
+            unsubscribeRuntime();
+            unsubscribeSession();
+        };
+    }, [applyAiRuntimeStatus, applyAiSessionSnapshot]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();

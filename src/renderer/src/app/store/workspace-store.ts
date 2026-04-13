@@ -4,6 +4,7 @@ import type {
     TerminalDataEvent,
     TerminalExitEvent,
     WorkspaceChatTab,
+    WorkspaceReviewTab,
     WorkspaceSnapshot,
 } from "@shared/ipc";
 
@@ -37,6 +38,7 @@ import {
     workspaceStateToSnapshot,
     type MoveDirection,
     type RuntimeWorkspaceFileTab,
+    type RuntimeWorkspaceReviewTab,
     type RuntimeWorkspaceTab,
     type RuntimeWorkspaceTerminalTab,
     type SplitDirection,
@@ -58,6 +60,12 @@ interface WorkspaceStore extends WorkspaceTreeState {
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
     moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
     openFileTab: (projectId: string, relativePath: string) => Promise<void>;
+    openReviewTab: (input: {
+        readonly projectId: string | null;
+        readonly runtimeId: "codex";
+        readonly sessionId: string;
+        readonly title: string;
+    }) => Promise<void>;
     refreshProjectTabs: (projectId: string) => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
     closeTabsForProjectPath: (
@@ -145,6 +153,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         if (tab?.kind === "terminal") {
             await safeCloseTerminal(tab.sessionId);
         }
+        if (tab?.kind === "chat") {
+            await safeCloseAiSession(tab.sessionId);
+        }
 
         set((state) => ({
             ...closeWorkspaceTab(state, tabId),
@@ -161,6 +172,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             id: crypto.randomUUID(),
             kind: "chat",
             projectId,
+            runtimeId: "codex",
             sessionId: crypto.randomUUID(),
             title: `Session ${countTabs(get, "chat") + 1}`,
         };
@@ -305,6 +317,39 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                         : "Could not open the selected file in the workspace.",
             });
         }
+    },
+
+    openReviewTab: async (input) => {
+        const existingTab = findExistingReviewTab(get(), input.sessionId);
+        if (existingTab) {
+            const paneId = findPaneIdByTabId(get(), existingTab.id);
+            if (!paneId) {
+                return;
+            }
+
+            set((state) => ({
+                ...selectPaneTab(state, paneId, existingTab.id),
+                error: null,
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const tab: WorkspaceReviewTab = {
+            createdAt: new Date().toISOString(),
+            id: crypto.randomUUID(),
+            kind: "review",
+            projectId: input.projectId,
+            runtimeId: input.runtimeId,
+            sessionId: input.sessionId,
+            title: `Review · ${input.title}`,
+        };
+
+        set((state) => ({
+            ...attachTabToPane(state, state.activePaneId, tab),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
     },
 
     refreshProjectTabs: async (projectId) => {
@@ -526,6 +571,10 @@ function createHydratedRuntimeTabs(
                 return [tab.id, tab] as const;
             }
 
+            if (tab.kind === "review") {
+                return [tab.id, tab] as const;
+            }
+
             if (tab.kind === "terminal") {
                 return [
                     tab.id,
@@ -594,6 +643,10 @@ async function hydrateRuntimeTabs(
                     return;
                 }
 
+                return;
+            }
+
+            if (tab.kind === "review") {
                 return;
             }
 
@@ -705,6 +758,14 @@ async function safeCloseTerminal(sessionId: string): Promise<void> {
     }
 }
 
+async function safeCloseAiSession(sessionId: string): Promise<void> {
+    try {
+        await getComandoApi().closeAiSession(sessionId);
+    } catch (error) {
+        console.error(error);
+    }
+}
+
 function countTabs(
     get: GetWorkspaceState,
     kind: RuntimeWorkspaceTab["kind"],
@@ -728,6 +789,18 @@ function findExistingFileTab(
                 tab.kind === "file" &&
                 tab.projectId === projectId &&
                 tab.relativePath === relativePath,
+        ) ?? null
+    );
+}
+
+function findExistingReviewTab(
+    state: WorkspaceTreeState,
+    sessionId: string,
+): RuntimeWorkspaceReviewTab | null {
+    return (
+        Object.values(state.tabsById).find(
+            (tab): tab is RuntimeWorkspaceReviewTab =>
+                tab.kind === "review" && tab.sessionId === sessionId,
         ) ?? null
     );
 }

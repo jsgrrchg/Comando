@@ -22,6 +22,7 @@ function makeChatTab(id: string): RuntimeWorkspaceTab {
         id,
         kind: "chat",
         projectId: null,
+        runtimeId: "codex",
         sessionId: `session-${id}`,
         title: `Chat ${id}`,
     };
