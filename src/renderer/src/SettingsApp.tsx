@@ -32,6 +32,10 @@ import {
     saveProjectAppearanceSettings,
 } from "./app/settings/client";
 import {
+    buildSelectableFontFamilyOptions,
+    useAvailableFontFamilyIds,
+} from "./app/hooks/use-available-font-family-options";
+import {
     CHAT_FONT_FAMILY_OPTIONS,
     EDITOR_FONT_FAMILY_OPTIONS,
     getDefaultAiChatSettings,
@@ -75,6 +79,7 @@ export function SettingsApp() {
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
         initialProjectId,
     );
+    const availableFontFamilyIds = useAvailableFontFamilyIds();
 
     useResolvedAppearance(selectedProjectId);
 
@@ -404,6 +409,46 @@ export function SettingsApp() {
             ),
         [runtimeStatuses],
     );
+    const appEditorFontFamilies = useMemo(
+        () =>
+            buildSelectableFontFamilyOptions(
+                EDITOR_FONT_FAMILY_OPTIONS,
+                availableFontFamilyIds,
+                appEditor.fontFamily,
+            ),
+        [availableFontFamilyIds, appEditor.fontFamily],
+    );
+    const projectEditorFontFamilies = useMemo(
+        () =>
+            buildSelectableFontFamilyOptions(
+                EDITOR_FONT_FAMILY_OPTIONS,
+                availableFontFamilyIds,
+                projectEditor.fontFamily ?? appEditor.fontFamily,
+            ),
+        [
+            availableFontFamilyIds,
+            appEditor.fontFamily,
+            projectEditor.fontFamily,
+        ],
+    );
+    const chatFontFamilies = useMemo(
+        () =>
+            buildSelectableFontFamilyOptions(
+                CHAT_FONT_FAMILY_OPTIONS,
+                availableFontFamilyIds,
+                aiChat.chatFontFamily,
+            ),
+        [aiChat.chatFontFamily, availableFontFamilyIds],
+    );
+    const composerFontFamilies = useMemo(
+        () =>
+            buildSelectableFontFamilyOptions(
+                CHAT_FONT_FAMILY_OPTIONS,
+                availableFontFamilyIds,
+                aiChat.composerFontFamily,
+            ),
+        [aiChat.composerFontFamily, availableFontFamilyIds],
+    );
     const shortcuts = useMemo(
         () =>
             shortcutDefinitions.map((shortcut) => ({
@@ -420,10 +465,10 @@ export function SettingsApp() {
         <SettingsWindow
             aiChat={{
                 chatFontFamily: aiChat.chatFontFamily,
-                chatFontFamilies: CHAT_FONT_FAMILY_OPTIONS,
+                chatFontFamilies: chatFontFamilies,
                 chatFontSize: aiChat.chatFontSize,
                 composerFontFamily: aiChat.composerFontFamily,
-                composerFontFamilies: CHAT_FONT_FAMILY_OPTIONS,
+                composerFontFamilies: composerFontFamilies,
                 composerFontSize: aiChat.composerFontSize,
                 requireCmdEnterToSend: aiChat.requireCmdEnterToSend,
                 screenshotRetentionSeconds: aiChat.screenshotRetentionSeconds,
@@ -464,8 +509,9 @@ export function SettingsApp() {
                 zoomFactor: appAppearance.zoomFactor,
             }}
             appEditor={{
-                fontFamilies: EDITOR_FONT_FAMILY_OPTIONS.map((fontFamily) => ({
+                fontFamilies: appEditorFontFamilies.map((fontFamily) => ({
                     description: fontFamily.description,
+                    disabled: fontFamily.disabled,
                     group: fontFamily.group,
                     id: fontFamily.id,
                     label: fontFamily.label,
@@ -519,9 +565,10 @@ export function SettingsApp() {
                 selectedProjectId
                     ? {
                           enabled: projectEditorOverrideEnabled,
-                          fontFamilies: EDITOR_FONT_FAMILY_OPTIONS.map(
+                          fontFamilies: projectEditorFontFamilies.map(
                               (fontFamily) => ({
                                   description: fontFamily.description,
+                                  disabled: fontFamily.disabled,
                                   group: fontFamily.group,
                                   id: fontFamily.id,
                                   label: fontFamily.label,

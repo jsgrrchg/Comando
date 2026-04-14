@@ -104,6 +104,7 @@ type SelectFieldOption<T extends string | number | null> = {
     value: T;
     label: string;
     group?: string;
+    disabled?: boolean;
 };
 
 function getViewportSafePosition(
@@ -288,6 +289,10 @@ export function SelectField<T extends string | number | null>({
                                     <button
                                         type="button"
                                         onClick={() => {
+                                            if (opt.disabled) {
+                                                return;
+                                            }
+
                                             onChange(opt.value);
                                             setOpen(false);
                                         }}
@@ -300,15 +305,23 @@ export function SelectField<T extends string | number | null>({
                                             fontFamily: "inherit",
                                             borderRadius: 4,
                                             border: "none",
-                                            color:
-                                                opt.value === value
-                                                    ? "var(--color-accent)"
-                                                    : "var(--color-text-primary)",
+                                            color: opt.disabled
+                                                ? "var(--color-text-secondary)"
+                                                : opt.value === value
+                                                  ? "var(--color-accent)"
+                                                  : "var(--color-text-primary)",
                                             backgroundColor: "transparent",
-                                            cursor: "pointer",
+                                            cursor: opt.disabled
+                                                ? "not-allowed"
+                                                : "pointer",
+                                            opacity: opt.disabled ? 0.6 : 1,
                                             whiteSpace: "nowrap",
                                         }}
                                         onMouseEnter={(e) => {
+                                            if (opt.disabled) {
+                                                return;
+                                            }
+
                                             e.currentTarget.style.backgroundColor =
                                                 "var(--color-bg-tertiary)";
                                         }}

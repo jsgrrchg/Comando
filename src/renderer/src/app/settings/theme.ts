@@ -32,7 +32,9 @@ export interface EditorFontFamilyOption {
     readonly group: "Sans" | "Serif" | "Mono";
     readonly id: EditorFontFamily;
     readonly label: string;
+    readonly primaryFamily: string;
     readonly preview: string;
+    readonly source: "bundled" | "system";
 }
 
 interface ThemeColors {
@@ -715,183 +717,231 @@ export const EDITOR_FONT_FAMILY_OPTIONS: readonly EditorFontFamilyOption[] = [
         label: "System",
         description: "Use the platform default UI font stack.",
         group: "Sans",
+        primaryFamily: "system-ui",
         preview:
             'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        source: "system",
     },
     {
         id: "sans",
         label: "Inter",
         description: "A neutral sans tuned for crisp app UI and long reading.",
         group: "Sans",
+        primaryFamily: "Inter",
         preview:
             '"Inter", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif',
+        source: "bundled",
     },
     {
         id: "geist",
         label: "Geist",
         description: "A sharper modern sans with tighter spacing.",
         group: "Sans",
+        primaryFamily: "Geist",
         preview: '"Geist", "Inter", system-ui, sans-serif',
+        source: "bundled",
     },
     {
         id: "atkinson",
         label: "Atkinson Hyperlegible",
         description: "Optimized for legibility with distinctive letterforms.",
         group: "Sans",
+        primaryFamily: "Atkinson Hyperlegible",
         preview: '"Atkinson Hyperlegible", system-ui, sans-serif',
+        source: "bundled",
     },
     {
         id: "rounded",
         label: "Rounded (SF Pro)",
         description: "Softer, friendlier curves for casual writing.",
         group: "Sans",
+        primaryFamily: "SF Pro Rounded",
         preview:
             '"SF Pro Rounded", "Nunito", "Avenir Next Rounded", "Hiragino Maru Gothic ProN", sans-serif',
+        source: "system",
     },
     {
         id: "humanist",
         label: "Optima",
         description: "A humanist sans with warmer contrast.",
         group: "Sans",
+        primaryFamily: "Optima",
         preview:
             '"Optima", "Gill Sans", "Trebuchet MS", "Segoe UI", sans-serif',
+        source: "system",
     },
     {
         id: "condensed",
         label: "Condensed",
         description: "A narrower sans for denser layouts.",
         group: "Sans",
+        primaryFamily: "Avenir Next Condensed",
         preview:
             '"Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", "Helvetica Neue", sans-serif',
+        source: "system",
     },
     {
         id: "literata",
         label: "Literata",
         description: "A literary serif built for immersive reading.",
         group: "Serif",
+        primaryFamily: "Literata",
         preview: '"Literata", Georgia, serif',
+        source: "bundled",
     },
     {
         id: "lora",
         label: "Lora",
         description: "A balanced serif with slightly more calligraphic rhythm.",
         group: "Serif",
+        primaryFamily: "Lora",
         preview: '"Lora", "Palatino Linotype", Georgia, serif',
+        source: "bundled",
     },
     {
         id: "merriweather",
         label: "Merriweather",
         description: "A sturdy serif that stays readable at small sizes.",
         group: "Serif",
+        primaryFamily: "Merriweather",
         preview: '"Merriweather", Georgia, serif',
+        source: "bundled",
     },
     {
         id: "reading",
         label: "Charter",
         description: "A bookish serif with a quiet editorial tone.",
         group: "Serif",
+        primaryFamily: "Charter",
         preview: '"Charter", "Baskerville", "Georgia", serif',
+        source: "system",
     },
     {
         id: "serif",
         label: "Palatino",
         description: "A classic serif stack that feels familiar on desktop.",
         group: "Serif",
+        primaryFamily: "Iowan Old Style",
         preview:
             '"Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif',
+        source: "system",
     },
     {
         id: "source-serif",
         label: "Source Serif",
         description: "A contemporary serif with clean contrast.",
         group: "Serif",
+        primaryFamily: "Source Serif 4",
         preview: '"Source Serif 4", Georgia, "Iowan Old Style", serif',
+        source: "bundled",
     },
     {
         id: "newspaper",
         label: "Times New Roman",
         description: "A sharper editorial serif for dense text blocks.",
         group: "Serif",
+        primaryFamily: "Times New Roman",
         preview:
             '"Times New Roman", "Georgia", "Source Serif 4", "Iowan Old Style", serif',
+        source: "system",
     },
     {
         id: "slab",
         label: "Rockwell Slab",
         description: "A slab serif with stronger weight and personality.",
         group: "Serif",
+        primaryFamily: "Rockwell",
         preview:
             '"Rockwell", "Clarendon Text", "Roboto Slab", "Courier Prime", serif',
+        source: "system",
     },
     {
         id: "mono",
         label: "Monospace (JetBrains)",
         description: "A versatile coding stack with JetBrains Mono first.",
         group: "Mono",
+        primaryFamily: "JetBrains Mono",
         preview:
             '"JetBrains Mono", "SFMono-Regular", "Fira Code", Menlo, Monaco, Consolas, monospace',
+        source: "bundled",
     },
     {
         id: "sf-mono",
         label: "SF Mono",
         description: "The native mono stack on Apple platforms.",
         group: "Mono",
+        primaryFamily: "SF Mono",
         preview:
             '"SF Mono", "SFMono-Regular", "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
+        source: "system",
     },
     {
         id: "jetbrains",
         label: "JetBrains Mono",
         description: "A coding-first font with clean punctuation.",
         group: "Mono",
+        primaryFamily: "JetBrains Mono",
         preview:
             '"JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace',
+        source: "bundled",
     },
     {
         id: "geist-mono",
         label: "Geist Mono",
         description: "A tighter mono with a slightly more contemporary feel.",
         group: "Mono",
+        primaryFamily: "Geist Mono",
         preview:
             '"Geist Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
+        source: "bundled",
     },
     {
         id: "ibm-plex-mono",
         label: "IBM Plex Mono",
         description: "A more editorial mono with softer contrast.",
         group: "Mono",
+        primaryFamily: "IBM Plex Mono",
         preview:
             '"IBM Plex Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
+        source: "bundled",
     },
     {
         id: "courier",
         label: "Courier New",
         description: "A classic mono fallback with a familiar mechanical feel.",
         group: "Mono",
+        primaryFamily: "Courier New",
         preview: '"Courier New", Courier, "Nimbus Mono PS", monospace',
+        source: "system",
     },
     {
         id: "andale",
         label: "Andale Mono",
         description: "A compact mono that stays readable in denser UIs.",
         group: "Mono",
+        primaryFamily: "Andale Mono",
         preview: '"Andale Mono", Menlo, Monaco, Consolas, monospace',
+        source: "system",
     },
     {
         id: "typewriter",
         label: "Typewriter",
         description: "A warmer mono stack with analog typewriter character.",
         group: "Mono",
+        primaryFamily: "American Typewriter",
         preview:
             '"American Typewriter", "Courier Prime", "Courier New", "Nimbus Mono PS", monospace',
+        source: "system",
     },
     {
         id: "cascadia-code",
         label: "Cascadia Code",
         description: "A wider mono face that stays readable at smaller sizes.",
         group: "Mono",
+        primaryFamily: "Cascadia Code",
         preview:
             '"Cascadia Code", "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace',
+        source: "system",
     },
 ];
 
@@ -985,6 +1035,8 @@ export interface ChatFontFamilyOption {
     readonly group?: "Sans" | "Serif" | "Mono";
     readonly id: ChatFontFamily;
     readonly label: string;
+    readonly primaryFamily: string;
+    readonly source: "bundled" | "system";
 }
 
 export const CHAT_FONT_FAMILY_OPTIONS: readonly ChatFontFamilyOption[] =
@@ -992,6 +1044,8 @@ export const CHAT_FONT_FAMILY_OPTIONS: readonly ChatFontFamilyOption[] =
         group: fontFamily.group,
         id: fontFamily.id,
         label: fontFamily.label,
+        primaryFamily: fontFamily.primaryFamily,
+        source: fontFamily.source,
     }));
 
 export function resolveAppearance(

@@ -5,6 +5,7 @@ export interface EditorFontFamilyOption {
     readonly id: string;
     readonly label: string;
     readonly description?: string;
+    readonly disabled?: boolean;
     readonly preview?: string;
 }
 
@@ -86,6 +87,7 @@ export interface ChatFontFamilyOption {
     readonly group?: string;
     readonly id: string;
     readonly label: string;
+    readonly disabled?: boolean;
 }
 
 export interface SettingsAiChatState {
