@@ -10,6 +10,7 @@ import {
     listProjectTreeChildren,
     readProjectFile,
     renameProjectEntry,
+    writeProjectFile,
 } from "./tree";
 
 const temporaryDirectories: string[] = [];
@@ -69,6 +70,7 @@ describe("project tree helpers", () => {
         expect(document.languageId).toBe("typescript");
         expect(document.languageLabel).toBe("TypeScript");
         expect(document.imageDataBase64).toBeNull();
+        expect(document.modifiedAtMs).toBeGreaterThan(0);
     });
 
     it("detects scripts without extension from the shebang", async () => {
@@ -178,6 +180,74 @@ describe("project tree helpers", () => {
                 rootPath,
             }),
         ).rejects.toThrow(/valid file or folder name/i);
+    });
+
+    it("rejects stale writes when the file changed on disk", async () => {
+        const rootPath = createProjectFixture();
+        const relativePath = "src/main.ts";
+
+        fs.mkdirSync(path.join(rootPath, "src"));
+        fs.writeFileSync(
+            path.join(rootPath, relativePath),
+            "console.log(1);\n",
+        );
+
+        const opened = await readProjectFile({
+            projectId: "project-1",
+            relativePath,
+            rootPath,
+        });
+
+        fs.writeFileSync(
+            path.join(rootPath, relativePath),
+            "console.log(2);\n",
+        );
+        const conflictTime = new Date(Date.now() + 60_000);
+        fs.utimesSync(
+            path.join(rootPath, relativePath),
+            conflictTime,
+            conflictTime,
+        );
+
+        await expect(
+            writeProjectFile({
+                content: "console.log(3);\n",
+                expectedModifiedAtMs: opened.modifiedAtMs,
+                projectId: "project-1",
+                relativePath,
+                rootPath,
+            }),
+        ).rejects.toThrow(/changed on disk/i);
+    });
+
+    it("allows forced writes without the expected modified timestamp", async () => {
+        const rootPath = createProjectFixture();
+        const relativePath = "src/main.ts";
+
+        fs.mkdirSync(path.join(rootPath, "src"));
+        fs.writeFileSync(
+            path.join(rootPath, relativePath),
+            "console.log(1);\n",
+        );
+        fs.writeFileSync(
+            path.join(rootPath, relativePath),
+            "console.log(2);\n",
+        );
+        const forcedTime = new Date(Date.now() + 60_000);
+        fs.utimesSync(
+            path.join(rootPath, relativePath),
+            forcedTime,
+            forcedTime,
+        );
+
+        const document = await writeProjectFile({
+            content: "console.log(3);\n",
+            projectId: "project-1",
+            relativePath,
+            rootPath,
+        });
+
+        expect(document.content).toContain("console.log(3)");
     });
 });
 

@@ -646,6 +646,7 @@ export interface ProjectFileDocument {
     readonly relativePath: string;
     readonly name: string;
     readonly content: string;
+    readonly modifiedAtMs: number;
     readonly languageId: string;
     readonly languageLabel: string;
     readonly kind: "binary" | "image" | "text";
@@ -660,6 +661,7 @@ export interface SaveProjectFileInput {
     readonly projectId: string;
     readonly relativePath: string;
     readonly content: string;
+    readonly expectedModifiedAtMs?: number | null;
     readonly worktreeId?: string | null;
 }
 
@@ -923,6 +925,7 @@ export interface AiFileDiff {
 }
 
 export interface AiToolActivity {
+    readonly createdAt: string;
     readonly diffs: readonly AiFileDiff[];
     readonly id: string;
     readonly kind: string;

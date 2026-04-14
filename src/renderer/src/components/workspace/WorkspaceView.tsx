@@ -12,6 +12,7 @@ import {
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
+    type ReactNode,
     type PointerEvent as ReactPointerEvent,
     type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -428,6 +429,7 @@ function WorkspacePaneView({
     const tabsById = useWorkspaceStore((state) => state.tabsById);
     const updateChatDraft = useWorkspaceStore((state) => state.updateChatDraft);
     const updateFileDraft = useWorkspaceStore((state) => state.updateFileDraft);
+    const reloadFileTab = useWorkspaceStore((state) => state.reloadFileTab);
     const saveFileTab = useWorkspaceStore((state) => state.saveFileTab);
     const sendTerminalInput = useWorkspaceStore(
         (state) => state.sendTerminalInput,
@@ -566,9 +568,10 @@ function WorkspacePaneView({
 
         const entry = await createEntry(
             defaultProjectId,
-            defaultWorktreeId ?? null,
+            null,
             trimmedName,
             "file",
+            defaultWorktreeId ?? null,
         );
         setLastQuickCreateAction("file");
         await openFileTab(
@@ -608,17 +611,19 @@ function WorkspacePaneView({
                 );
             };
 
-            const panes = collectPaneNodes(rootNode);
             const currentPaneMatch = node.tabIds.find(isMatchingChatScope);
             const candidateTabId =
                 currentPaneMatch ??
-                panes.flatMap((pane) => pane.tabIds).find(isMatchingChatScope) ??
+                collectPaneNodes(rootNode)
+                    .flatMap((pane) => pane.tabIds)
+                    .find(isMatchingChatScope) ??
                 null;
 
             if (candidateTabId) {
                 const paneId =
-                    panes.find((pane) => pane.tabIds.includes(candidateTabId))
-                        ?.id ?? node.id;
+                    collectPaneNodes(rootNode).find((pane) =>
+                        pane.tabIds.includes(candidateTabId),
+                    )?.id ?? node.id;
 
                 await setActivePane(paneId);
                 await selectTab(paneId, candidateTabId);
@@ -802,6 +807,7 @@ function WorkspacePaneView({
 
             if (key === "n") {
                 event.preventDefault();
+                event.stopPropagation();
 
                 if (event.shiftKey) {
                     handleCreateAgentFromFocusedProvider();
@@ -814,6 +820,7 @@ function WorkspacePaneView({
 
             if (key === "r" && !event.shiftKey) {
                 event.preventDefault();
+                event.stopPropagation();
                 void createTerminalTab(
                     defaultProjectId,
                     defaultWorktreeId ?? null,
@@ -821,9 +828,13 @@ function WorkspacePaneView({
             }
         };
 
-        window.addEventListener("keydown", handleKeyDown);
+        window.addEventListener("keydown", handleKeyDown, {
+            capture: true,
+        });
         return () => {
-            window.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("keydown", handleKeyDown, {
+                capture: true,
+            });
         };
     }, [
         createTerminalTab,
@@ -925,6 +936,15 @@ function WorkspacePaneView({
                                                 ●
                                             </span>
                                         ) : null}
+                                        {"hasExternalChange" in tab &&
+                                        tab.hasExternalChange ? (
+                                            <span
+                                                className="text-[10px] font-semibold text-rose-500"
+                                                title="File changed on disk"
+                                            >
+                                                !
+                                            </span>
+                                        ) : null}
                                         <span
                                             className={[
                                                 "ml-0.5 rounded px-0.5 text-[10px] transition hover:bg-text-secondary/10 hover:text-text-primary",
@@ -978,6 +998,7 @@ function WorkspacePaneView({
                                 isActivePane={isActivePane}
                                 onAttachLineFragment={handleAttachLineFragment}
                                 onDraftChange={updateFileDraft}
+                                onReload={reloadFileTab}
                                 onSave={saveFileTab}
                                 tab={activeTab}
                             />
@@ -1011,11 +1032,19 @@ function WorkspacePaneView({
                                 onDraftChange={(draft) =>
                                     void updateChatDraft(activeTab.id, draft)
                                 }
-                                onOpenFile={(projectId, relativePath) =>
+                                onOpenFile={(
+                                    projectId,
+                                    relativePath,
+                                    worktreeId,
+                                    reviewContext,
+                                ) =>
                                     openFileTab(
                                         projectId,
                                         relativePath,
-                                        activeTab.worktreeId ?? null,
+                                        worktreeId ??
+                                            activeTab.worktreeId ??
+                                            null,
+                                        reviewContext ?? null,
                                     )
                                 }
                                 onOpenReview={() =>
@@ -1409,6 +1438,7 @@ function FileTabView({
     isActivePane,
     onAttachLineFragment,
     onDraftChange,
+    onReload,
     onSave,
     tab,
 }: {
@@ -1417,7 +1447,13 @@ function FileTabView({
         context: AiFileContextAttachment,
     ) => Promise<void>;
     readonly onDraftChange: (tabId: string, draft: string) => void;
-    readonly onSave: (tabId: string) => Promise<void>;
+    readonly onReload: (tabId: string) => Promise<void>;
+    readonly onSave: (
+        tabId: string,
+        options?: {
+            readonly force?: boolean;
+        },
+    ) => Promise<void>;
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const editorTheme = useMonacoTheme();
@@ -1587,23 +1623,23 @@ function FileTabView({
                 return;
             }
 
-            if (event.shiftKey || event.altKey) {
+            if (!event.altKey) {
                 return;
             }
 
-            if (event.key === "=" || event.key === "+") {
+            if (event.code === "Equal" || event.code === "NumpadAdd") {
                 event.preventDefault();
                 void adjustEditorFontSize("increase");
                 return;
             }
 
-            if (event.key === "-") {
+            if (event.code === "Minus" || event.code === "NumpadSubtract") {
                 event.preventDefault();
                 void adjustEditorFontSize("decrease");
                 return;
             }
 
-            if (key === "0") {
+            if (event.code === "Digit0" || event.code === "Numpad0") {
                 event.preventDefault();
                 void adjustEditorFontSize("reset");
             }
@@ -1640,6 +1676,42 @@ function FileTabView({
         applyMonacoThemeFromDom();
     }, []);
 
+    const canEdit = document
+        ? !document.isBinary && !document.isTooLarge
+        : false;
+
+    useEffect(() => {
+        if (
+            !document ||
+            document.kind === "image" ||
+            !canEdit ||
+            !tab.isDirty ||
+            tab.isSaving ||
+            tab.hasExternalChange ||
+            tab.saveError !== null
+        ) {
+            return;
+        }
+
+        const timeout = window.setTimeout(() => {
+            void onSave(tab.id);
+        }, 900);
+
+        return () => {
+            window.clearTimeout(timeout);
+        };
+    }, [
+        canEdit,
+        document,
+        onSave,
+        tab.draftContent,
+        tab.hasExternalChange,
+        tab.id,
+        tab.isDirty,
+        tab.isSaving,
+        tab.saveError,
+    ]);
+
     if (!document) {
         return (
             <div className="flex h-full items-center justify-center px-6 text-center">
@@ -1661,8 +1733,6 @@ function FileTabView({
     if (document.kind === "image") {
         return <ImageFileView document={document} />;
     }
-
-    const canEdit = !document.isBinary && !document.isTooLarge;
 
     if (!canEdit) {
         return (
@@ -1764,7 +1834,63 @@ function FileTabView({
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <FilePathBar path={document.absolutePath} />
+            <FilePathBar
+                path={document.absolutePath}
+                statusLabel={
+                    tab.isSaving
+                        ? "Saving..."
+                        : tab.isDirty
+                          ? "Unsaved changes"
+                          : "Saved"
+                }
+            />
+
+            {tab.hasExternalChange ? (
+                <FileSyncNotice
+                    actions={
+                        <>
+                            <button
+                                className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-text-primary transition hover:bg-bg-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled={tab.isSaving}
+                                onClick={() => void onReload(tab.id)}
+                                type="button"
+                            >
+                                Reload from disk
+                            </button>
+                            <button
+                                className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled={tab.isSaving}
+                                onClick={() =>
+                                    void onSave(tab.id, { force: true })
+                                }
+                                type="button"
+                            >
+                                Overwrite disk
+                            </button>
+                        </>
+                    }
+                    tone="danger"
+                >
+                    {tab.saveError ??
+                        "This file changed on disk while you had unsaved edits."}
+                </FileSyncNotice>
+            ) : tab.saveError ? (
+                <FileSyncNotice
+                    actions={
+                        <button
+                            className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-text-primary transition hover:bg-bg-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={tab.isSaving}
+                            onClick={() => void onSave(tab.id)}
+                            type="button"
+                        >
+                            Retry save
+                        </button>
+                    }
+                    tone="warning"
+                >
+                    {tab.saveError}
+                </FileSyncNotice>
+            ) : null}
 
             {reviewBar}
 
@@ -1839,12 +1965,48 @@ function FileTabView({
     );
 }
 
-function FilePathBar({ path }: { readonly path: string }) {
+function FilePathBar({
+    path,
+    statusLabel,
+}: {
+    readonly path: string;
+    readonly statusLabel?: string;
+}) {
     return (
-        <div className="flex h-6 items-center border-b border-border bg-bg-secondary px-3 text-[10px] leading-none text-text-secondary">
+        <div className="flex h-6 items-center justify-between gap-3 border-b border-border bg-bg-secondary px-3 text-[10px] leading-none text-text-secondary">
             <div className="min-w-0 truncate" title={path}>
                 {path}
             </div>
+            {statusLabel ? <div className="shrink-0">{statusLabel}</div> : null}
+        </div>
+    );
+}
+
+function FileSyncNotice({
+    actions,
+    children,
+    tone,
+}: {
+    readonly actions?: ReactNode;
+    readonly children: ReactNode;
+    readonly tone: "danger" | "warning";
+}) {
+    const toneClassName =
+        tone === "danger"
+            ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
+            : "border-amber-500/30 bg-amber-500/10 text-amber-100";
+
+    return (
+        <div
+            className={[
+                "flex items-center justify-between gap-3 border-b px-3 py-2",
+                toneClassName,
+            ].join(" ")}
+        >
+            <p className="text-[11px] leading-5">{children}</p>
+            {actions ? (
+                <div className="flex shrink-0 gap-2">{actions}</div>
+            ) : null}
         </div>
     );
 }

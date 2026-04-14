@@ -1163,6 +1163,7 @@ export class AiService {
                 );
                 break;
             case "tool_call":
+                nextSnapshot = finalizeStreamingMessages(nextSnapshot);
                 nextSnapshot = mapToolCallUpdate(nextSnapshot, update, now);
                 break;
             case "tool_call_update":
@@ -2428,6 +2429,7 @@ function mapToolCallUpdate(
     const content = update.content ?? null;
     const pendingUserInput = parseUserInputRequest(snapshot, update, updatedAt);
     const nextActivity = {
+        createdAt: existing?.createdAt ?? updatedAt,
         diffs: content
             ? collectDiffs(content, toolKind)
             : (existing?.diffs ?? []),

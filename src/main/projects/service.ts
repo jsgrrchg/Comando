@@ -476,6 +476,7 @@ export class ProjectService {
 
         return writeProjectFile({
             content: input.content,
+            expectedModifiedAtMs: input.expectedModifiedAtMs ?? null,
             projectId: input.projectId,
             relativePath: input.relativePath,
             rootPath: project.rootPath,

@@ -47,10 +47,20 @@ interface RegisteredSessionMeta {
     readonly worktreeId: string | null;
 }
 
+interface QueuedPromptEditState {
+    readonly nextPromptId: string | null;
+    readonly previousComposerParts: readonly AiComposerDraftPart[];
+    readonly previousDraftAttachments: readonly AiImageAttachment[];
+    readonly previousDraftFileContexts: readonly AiFileContextAttachment[];
+    readonly previousPromptId: string | null;
+    readonly queueIndex: number;
+}
+
 interface AiSessionClientState {
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly diffZoom: number;
+    readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
     readonly hydrated: boolean;
     readonly isDispatching: boolean;
@@ -82,7 +92,9 @@ interface AiStore {
     applyRuntimeStatus: (status: AiRuntimeStatus) => void;
     applySessionSnapshot: (snapshot: AiSessionSnapshot) => void;
     cancelSession: (sessionId: string) => Promise<void>;
-    cancelQueuedPromptEdit: (sessionId: string) => void;
+    cancelQueuedPromptEdit: (
+        sessionId: string,
+    ) => readonly AiComposerDraftPart[] | null;
     clearDraftAttachments: (sessionId: string) => void;
     clearQueuedPrompts: (sessionId: string) => void;
     addDraftFileContext: (
@@ -94,6 +106,7 @@ interface AiStore {
     editQueuedPrompt: (
         sessionId: string,
         promptId: string,
+        currentComposerParts?: readonly AiComposerDraftPart[],
     ) => readonly AiComposerDraftPart[] | null;
     ensureSession: (tab: RuntimeAiSessionTab) => Promise<void>;
     hydrateSettings: (settings: AiSettingsSnapshot | null | undefined) => void;
@@ -176,32 +189,47 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     cancelQueuedPromptEdit: (sessionId) => {
+        let restoredComposerParts: readonly AiComposerDraftPart[] | null = null;
+
         set((state) => {
             const session = state.sessions[sessionId];
-            if (!session?.editingQueuedPrompt) {
+            if (
+                !session?.editingQueuedPrompt ||
+                !session.editingQueuedPromptState
+            ) {
                 return state;
             }
+
+            restoredComposerParts = cloneComposerDraftParts(
+                session.editingQueuedPromptState.previousComposerParts,
+            );
 
             return {
                 sessions: {
                     ...state.sessions,
                     [sessionId]: {
                         ...session,
-                        draftAttachments: [],
-                        draftFileContexts: [],
+                        draftAttachments: cloneDraftAttachments(
+                            session.editingQueuedPromptState
+                                .previousDraftAttachments,
+                        ),
+                        draftFileContexts: cloneDraftFileContexts(
+                            session.editingQueuedPromptState
+                                .previousDraftFileContexts,
+                        ),
+                        editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
-                        queue: [
+                        queue: insertQueuedPromptAtEditPosition(
+                            session.queue,
                             session.editingQueuedPrompt,
-                            ...session.queue.filter(
-                                (candidate) =>
-                                    candidate.id !==
-                                    session.editingQueuedPrompt?.id,
-                            ),
-                        ],
+                            session.editingQueuedPromptState,
+                        ),
                     },
                 },
             };
         });
+
+        return restoredComposerParts;
     },
 
     addDraftFileContext: (sessionId, context) => {
@@ -271,6 +299,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [sessionId]: {
                         ...session,
+                        editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
                         queue: [],
                     },
@@ -604,7 +633,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         });
     },
 
-    editQueuedPrompt: (sessionId, promptId) => {
+    editQueuedPrompt: (sessionId, promptId, currentComposerParts = []) => {
         let restoredComposerParts: readonly AiComposerDraftPart[] | null = null;
 
         set((state) => {
@@ -613,7 +642,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 return state;
             }
 
-            const queuedPrompt = session.queue.find(
+            const queueWithExistingEditRestored =
+                session.editingQueuedPrompt && session.editingQueuedPromptState
+                    ? insertQueuedPromptAtEditPosition(
+                          session.queue,
+                          session.editingQueuedPrompt,
+                          session.editingQueuedPromptState,
+                      )
+                    : session.queue;
+
+            const queuedPrompt = queueWithExistingEditRestored.find(
                 (candidate) => candidate.id === promptId,
             );
             if (!queuedPrompt || queuedPrompt.status === "sending") {
@@ -624,9 +662,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 queuedPrompt.composerPartsSnapshot,
             );
 
-            const nextQueue = session.queue.filter(
+            const nextQueue = queueWithExistingEditRestored.filter(
                 (candidate) => candidate.id !== promptId,
             );
+            const queueIndex = queueWithExistingEditRestored.findIndex(
+                (candidate) => candidate.id === promptId,
+            );
+            const nextEditState = createQueuedPromptEditState({
+                currentComposerParts,
+                queue: queueWithExistingEditRestored,
+                queueIndex,
+                session,
+            });
 
             return {
                 sessions: {
@@ -639,11 +686,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         draftFileContexts: cloneDraftFileContexts(
                             queuedPrompt.fileContextsSnapshot,
                         ),
+                        editingQueuedPromptState: nextEditState,
                         editingQueuedPrompt: queuedPrompt,
                         localError: null,
-                        queue: session.editingQueuedPrompt
-                            ? [session.editingQueuedPrompt, ...nextQueue]
-                            : nextQueue,
+                        queue: nextQueue,
                     },
                 },
             };
@@ -910,29 +956,51 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
+        get().registerSessionTab(tab);
+        const session = get().sessions[tab.sessionId] ?? createSessionState();
+        const editingQueuedPrompt = session.editingQueuedPrompt;
         const queuedPrompt = createQueuedPrompt({
             attachments,
             composerPartsSnapshot: options.composerPartsSnapshot ?? [
                 { text: trimmedPrompt, type: "text" },
             ],
+            existing: editingQueuedPrompt,
             fileContextsSnapshot: options.fileContextsSnapshot ?? [],
             prompt: trimmedPrompt,
         });
-
-        get().registerSessionTab(tab);
-        const session = get().sessions[tab.sessionId] ?? createSessionState();
         if (
             session.isDispatching ||
             (session.snapshot ? isBusySession(session.snapshot) : false)
         ) {
-            enqueuePrompt(
+            if (editingQueuedPrompt) {
+                commitQueuedPromptEdit(
+                    tab.sessionId,
+                    queuedPrompt,
+                    set,
+                    buildSessionMeta(tab),
+                );
+            } else {
+                enqueuePrompt(
+                    tab.sessionId,
+                    queuedPrompt,
+                    "tail",
+                    set,
+                    buildSessionMeta(tab),
+                );
+            }
+            clearEditingQueuedPromptState(tab.sessionId, set);
+            return;
+        }
+
+        if (editingQueuedPrompt) {
+            commitQueuedPromptEdit(
                 tab.sessionId,
                 queuedPrompt,
-                "tail",
                 set,
                 buildSessionMeta(tab),
             );
             clearEditingQueuedPromptState(tab.sessionId, set);
+            await drainQueueIfNeeded(tab.sessionId, get, set);
             return;
         }
 
@@ -963,6 +1031,7 @@ function createSessionState(): AiSessionClientState {
         draftAttachments: [],
         draftFileContexts: [],
         diffZoom: DEFAULT_AI_DIFF_ZOOM,
+        editingQueuedPromptState: null,
         editingQueuedPrompt: null,
         hydrated: false,
         isDispatching: false,
@@ -1293,6 +1362,7 @@ async function drainQueueIfNeeded(
 function createQueuedPrompt(input: {
     readonly attachments: readonly AiImageAttachment[];
     readonly composerPartsSnapshot: readonly AiComposerDraftPart[];
+    readonly existing?: QueuedPrompt | null;
     readonly fileContextsSnapshot: readonly AiFileContextAttachment[];
     readonly prompt: string;
 }): QueuedPrompt {
@@ -1301,14 +1371,119 @@ function createQueuedPrompt(input: {
         composerPartsSnapshot: cloneComposerDraftParts(
             input.composerPartsSnapshot,
         ),
-        createdAt: new Date().toISOString(),
+        createdAt: input.existing?.createdAt ?? new Date().toISOString(),
         fileContextsSnapshot: cloneDraftFileContexts(
             input.fileContextsSnapshot,
         ),
-        id: crypto.randomUUID(),
+        id: input.existing?.id ?? crypto.randomUUID(),
         prompt: input.prompt,
         status: "queued",
     };
+}
+
+function createQueuedPromptEditState(input: {
+    readonly currentComposerParts: readonly AiComposerDraftPart[];
+    readonly queue: readonly QueuedPrompt[];
+    readonly queueIndex: number;
+    readonly session: AiSessionClientState;
+}): QueuedPromptEditState {
+    const normalizedQueueIndex =
+        input.queueIndex < 0 ? input.queue.length : input.queueIndex;
+
+    return {
+        nextPromptId: input.queue[normalizedQueueIndex + 1]?.id ?? null,
+        previousComposerParts: cloneComposerDraftParts(
+            input.currentComposerParts,
+        ),
+        previousDraftAttachments: cloneDraftAttachments(
+            input.session.draftAttachments,
+        ),
+        previousDraftFileContexts: cloneDraftFileContexts(
+            input.session.draftFileContexts,
+        ),
+        previousPromptId:
+            normalizedQueueIndex > 0
+                ? (input.queue[normalizedQueueIndex - 1]?.id ?? null)
+                : null,
+        queueIndex: normalizedQueueIndex,
+    };
+}
+
+function insertQueuedPromptAtEditPosition(
+    queue: readonly QueuedPrompt[],
+    queuedPrompt: QueuedPrompt,
+    editState: QueuedPromptEditState | null,
+): QueuedPrompt[] {
+    const remainingQueue = queue.filter(
+        (candidate) => candidate.id !== queuedPrompt.id,
+    );
+    if (!editState) {
+        return [queuedPrompt, ...remainingQueue];
+    }
+
+    if (editState.nextPromptId) {
+        const nextIndex = remainingQueue.findIndex(
+            (candidate) => candidate.id === editState.nextPromptId,
+        );
+        if (nextIndex >= 0) {
+            return [
+                ...remainingQueue.slice(0, nextIndex),
+                queuedPrompt,
+                ...remainingQueue.slice(nextIndex),
+            ];
+        }
+    }
+
+    if (editState.previousPromptId) {
+        const previousIndex = remainingQueue.findIndex(
+            (candidate) => candidate.id === editState.previousPromptId,
+        );
+        if (previousIndex >= 0) {
+            const insertionIndex = previousIndex + 1;
+            return [
+                ...remainingQueue.slice(0, insertionIndex),
+                queuedPrompt,
+                ...remainingQueue.slice(insertionIndex),
+            ];
+        }
+    }
+
+    const insertionIndex = Math.min(
+        Math.max(editState.queueIndex, 0),
+        remainingQueue.length,
+    );
+
+    return [
+        ...remainingQueue.slice(0, insertionIndex),
+        queuedPrompt,
+        ...remainingQueue.slice(insertionIndex),
+    ];
+}
+
+function commitQueuedPromptEdit(
+    sessionId: string,
+    queuedPrompt: QueuedPrompt,
+    set: SetAiState,
+    meta?: RegisteredSessionMeta,
+): void {
+    set((state) => {
+        const session = state.sessions[sessionId] ?? createSessionState();
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    meta: meta ?? session.meta,
+                    queue: insertQueuedPromptAtEditPosition(
+                        session.queue,
+                        queuedPrompt,
+                        session.editingQueuedPromptState,
+                    ),
+                },
+            },
+        };
+    });
 }
 
 function enqueuePrompt(
@@ -1400,6 +1575,7 @@ function clearEditingQueuedPromptState(
                 ...state.sessions,
                 [sessionId]: {
                     ...session,
+                    editingQueuedPromptState: null,
                     editingQueuedPrompt: null,
                 },
             },

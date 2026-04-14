@@ -20,6 +20,15 @@ interface GitSnapshot {
     readonly exactBadges: ReadonlyMap<string, GitStatusBadge>;
 }
 
+export class ProjectFileConflictError extends Error {
+    constructor(relativePath: string) {
+        super(
+            `The file "${relativePath}" changed on disk. Reload it before saving.`,
+        );
+        this.name = "ProjectFileConflictError";
+    }
+}
+
 export function listProjectTreeChildren(options: {
     readonly projectId: string;
     readonly rootPath: string;
@@ -125,6 +134,7 @@ export async function readProjectFile(options: {
         kind,
         languageId: language.id,
         languageLabel: language.label,
+        modifiedAtMs: stats.mtimeMs,
         mimeType,
         name: path.basename(absolutePath),
         projectId: options.projectId,
@@ -138,11 +148,22 @@ export async function writeProjectFile(options: {
     readonly rootPath: string;
     readonly relativePath: string;
     readonly content: string;
+    readonly expectedModifiedAtMs?: number | null;
 }): Promise<ProjectFileDocument> {
     const absolutePath = resolveProjectPath(
         options.rootPath,
         options.relativePath,
     );
+    const stats = await fs.promises.stat(absolutePath);
+
+    if (
+        options.expectedModifiedAtMs !== undefined &&
+        options.expectedModifiedAtMs !== null &&
+        stats.mtimeMs !== options.expectedModifiedAtMs
+    ) {
+        throw new ProjectFileConflictError(options.relativePath);
+    }
+
     await fs.promises.writeFile(absolutePath, options.content, "utf8");
 
     return readProjectFile({

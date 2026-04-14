@@ -69,7 +69,26 @@ function tryParseTable(lines: string[]): ParsedTable | null {
 
 /* ─── Block parsing ─── */
 
+const PARSED_BLOCK_CACHE_LIMIT = 250;
+const parsedBlockCache = new Map<string, Block[]>();
+
+function rememberParsedBlocks(text: string, blocks: Block[]): Block[] {
+    if (parsedBlockCache.has(text)) {
+        parsedBlockCache.delete(text);
+    }
+    parsedBlockCache.set(text, blocks);
+    if (parsedBlockCache.size > PARSED_BLOCK_CACHE_LIMIT) {
+        const oldestKey = parsedBlockCache.keys().next().value;
+        if (oldestKey !== undefined) {
+            parsedBlockCache.delete(oldestKey);
+        }
+    }
+    return blocks;
+}
+
 function parseBlocks(text: string): Block[] {
+    const cached = parsedBlockCache.get(text);
+    if (cached) return cached;
     const blocks: Block[] = [];
     let lastIndex = 0;
 
@@ -91,7 +110,7 @@ function parseBlocks(text: string): Block[] {
         blocks.push({ content: tail, info: "", type: "text" });
     }
 
-    return blocks;
+    return rememberParsedBlocks(text, blocks);
 }
 
 /* ─── File path detection ─── */
@@ -263,7 +282,9 @@ function CodeBlock({
 
     const copyButton = (
         <button
+            aria-label="Copy code block"
             onClick={handleCopy}
+            title={copied ? "Copied" : "Copy"}
             style={{
                 alignItems: "center",
                 background:

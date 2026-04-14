@@ -30,6 +30,7 @@ import {
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
     resizeSplit,
+    setFileTabExternalChange,
     setFileTabReviewContext,
     selectPaneTab,
     setFileTabLoading,
@@ -102,6 +103,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly title: string;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    reloadFileTab: (tabId: string) => Promise<void>;
     refreshProjectTabs: (
         projectId: string,
         worktreeId?: string | null,
@@ -136,7 +138,12 @@ interface WorkspaceStore extends WorkspaceTreeState {
         kind: "directory" | "file",
     ) => Promise<void>;
     restartTerminalTab: (tabId: string) => Promise<void>;
-    saveFileTab: (tabId: string) => Promise<void>;
+    saveFileTab: (
+        tabId: string,
+        options?: {
+            readonly force?: boolean;
+        },
+    ) => Promise<void>;
     selectTab: (paneId: string, tabId: string) => Promise<void>;
     sendTerminalInput: (sessionId: string, data: string) => Promise<void>;
     setLastFocusedRuntimeId: (runtimeId: AiRuntimeId) => void;
@@ -387,7 +394,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 }));
 
                 if (!existingTab.document && !existingTab.isDirty) {
-                    await reloadFileTab(get, set, existingTab.id);
+                    await loadFileTabDocument(get, set, existingTab.id);
                 }
 
                 await persistWorkspaceState(get);
@@ -398,6 +405,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 createdAt: new Date().toISOString(),
                 document: null,
                 draftContent: "",
+                hasExternalChange: false,
                 id: crypto.randomUUID(),
                 isDirty: false,
                 isLoading: true,
@@ -418,7 +426,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 error: null,
             }));
             await persistWorkspaceState(get);
-            await reloadFileTab(get, set, tab.id);
+            await loadFileTabDocument(get, set, tab.id);
         } catch (error) {
             set({
                 error:
@@ -464,6 +472,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
+    reloadFileTab: async (tabId) => {
+        await loadFileTabDocument(get, set, tabId);
+    },
+
     refreshProjectTabs: async (
         projectId: string,
         worktreeId: string | null = null,
@@ -483,10 +495,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await Promise.all(
             fileTabs.map(async (tab) => {
                 if (tab.isDirty) {
+                    set((state) => ({
+                        ...setFileTabExternalChange(
+                            state,
+                            tab.id,
+                            true,
+                            "This file changed on disk while you have unsaved edits.",
+                        ),
+                        error: null,
+                    }));
                     return;
                 }
 
-                await reloadFileTab(get, set, tab.id);
+                await loadFileTabDocument(get, set, tab.id);
             }),
         );
     },
@@ -572,7 +593,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await bootTerminalSession(get, set, tabId);
     },
 
-    saveFileTab: async (tabId) => {
+    saveFileTab: async (tabId, options) => {
         const tab = get().tabsById[tabId];
         if (!tab || tab.kind !== "file" || !tab.document || !tab.isDirty) {
             return;
@@ -586,6 +607,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         try {
             const document = await getComandoApi().saveProjectFile({
                 content: tab.draftContent,
+                expectedModifiedAtMs: options?.force
+                    ? null
+                    : tab.document.modifiedAtMs,
                 projectId: tab.projectId,
                 relativePath: tab.relativePath,
                 worktreeId: tab.worktreeId ?? null,
@@ -596,19 +620,21 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 error: null,
             }));
         } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Could not save this file.";
+            const isConflict = isProjectFileConflictMessage(message);
             set((state) => ({
-                ...setFileTabSaving(
-                    state,
-                    tabId,
-                    false,
-                    error instanceof Error
-                        ? error.message
-                        : "Could not save this file.",
-                ),
-                error:
-                    error instanceof Error
-                        ? error.message
-                        : "Could not save this file.",
+                ...(isConflict
+                    ? setFileTabExternalChange(
+                          setFileTabSaving(state, tabId, false, message),
+                          tabId,
+                          true,
+                          message,
+                      )
+                    : setFileTabSaving(state, tabId, false, message)),
+                error: message,
             }));
         }
     },
@@ -784,6 +810,7 @@ function createHydratedRuntimeTabs(
                     ...tab,
                     document: null,
                     draftContent: "",
+                    hasExternalChange: false,
                     isDirty: false,
                     isLoading: true,
                     isSaving: false,
@@ -845,7 +872,7 @@ async function hydrateRuntimeTabs(
                 return;
             }
 
-            await reloadFileTab(get, set, tab.id);
+            await loadFileTabDocument(get, set, tab.id);
         }),
     );
 }
@@ -861,7 +888,7 @@ async function persistWorkspaceState(get: GetWorkspaceState): Promise<void> {
     }
 }
 
-async function reloadFileTab(
+async function loadFileTabDocument(
     get: GetWorkspaceState,
     set: WorkspaceSetState,
     tabId: string,
@@ -977,6 +1004,10 @@ function countRuntimeChatTabs(
 
 function getFileTitle(relativePath: string): string {
     return relativePath.split("/").at(-1) ?? relativePath;
+}
+
+function isProjectFileConflictMessage(message: string): boolean {
+    return /changed on disk/i.test(message);
 }
 
 function findExistingFileTab(

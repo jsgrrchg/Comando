@@ -14,6 +14,8 @@ import {
     moveWorkspaceTabBetweenPanes,
     reorderTabInPane,
     renameWorkspaceTabsForProjectPath,
+    replaceFileDocument,
+    setFileTabExternalChange,
     splitPaneInDirection,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
@@ -48,6 +50,7 @@ function makeFileTab(
             kind: "text",
             languageId: "markdown",
             languageLabel: "Markdown",
+            modifiedAtMs: 1,
             mimeType: "text/markdown",
             name: relativePath.split("/").at(-1) ?? relativePath,
             projectId,
@@ -55,6 +58,7 @@ function makeFileTab(
             sizeBytes: 0,
         },
         draftContent: "",
+        hasExternalChange: false,
         id,
         isDirty: false,
         isLoading: false,
@@ -526,5 +530,68 @@ describe("workspace tree helpers", () => {
         expect(guideTab.document?.absolutePath).toContain(
             "knowledge-base/guides/getting-started.md",
         );
+    });
+
+    it("marks file tabs with external disk changes", () => {
+        const state = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeFileTab("file-1", "src/readme.md"),
+        );
+
+        const nextState = setFileTabExternalChange(
+            state,
+            "file-1",
+            true,
+            "Changed on disk.",
+        );
+        const tab = nextState.tabsById["file-1"];
+
+        expect(tab?.kind).toBe("file");
+        if (!tab || tab.kind !== "file") {
+            return;
+        }
+
+        expect(tab.hasExternalChange).toBe(true);
+        expect(tab.saveError).toBe("Changed on disk.");
+    });
+
+    it("clears external change state when replacing the file document", () => {
+        const state = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            {
+                ...makeFileTab("file-1", "src/readme.md"),
+                hasExternalChange: true,
+                saveError: "Changed on disk.",
+            },
+        );
+
+        const nextState = replaceFileDocument(state, "file-1", {
+            absolutePath: "/tmp/src/readme.md",
+            content: "updated",
+            imageDataBase64: null,
+            isBinary: false,
+            isTooLarge: false,
+            kind: "text",
+            languageId: "markdown",
+            languageLabel: "Markdown",
+            modifiedAtMs: 2,
+            mimeType: "text/markdown",
+            name: "readme.md",
+            projectId: "project-1",
+            relativePath: "src/readme.md",
+            sizeBytes: 7,
+        });
+        const tab = nextState.tabsById["file-1"];
+
+        expect(tab?.kind).toBe("file");
+        if (!tab || tab.kind !== "file") {
+            return;
+        }
+
+        expect(tab.hasExternalChange).toBe(false);
+        expect(tab.isDirty).toBe(false);
+        expect(tab.saveError).toBeNull();
     });
 });

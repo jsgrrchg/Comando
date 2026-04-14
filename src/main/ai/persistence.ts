@@ -703,8 +703,17 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
             return [];
         }
 
+        const updatedAt =
+            typeof entry.updatedAt === "string"
+                ? entry.updatedAt
+                : new Date().toISOString();
+
         return [
             {
+                createdAt:
+                    typeof entry.createdAt === "string"
+                        ? entry.createdAt
+                        : updatedAt,
                 diffs: normalizeFileDiffs(entry.diffs),
                 id: entry.id,
                 kind: typeof entry.kind === "string" ? entry.kind : "unknown",
@@ -735,10 +744,7 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
                     typeof entry.summary === "string" ? entry.summary : null,
                 title:
                     typeof entry.title === "string" ? entry.title : "Tool call",
-                updatedAt:
-                    typeof entry.updatedAt === "string"
-                        ? entry.updatedAt
-                        : new Date().toISOString(),
+                updatedAt,
             } satisfies AiToolActivity,
         ];
     });

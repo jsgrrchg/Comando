@@ -190,7 +190,7 @@ describe("ai-store queue", () => {
         expect(restoredSession?.editingQueuedPrompt?.id).toBe(queuedPrompt?.id);
     });
 
-    it("permite cancelar la edicion de un queued prompt y reencolarlo", async () => {
+    it("restaura el draft previo al cancelar la edicion de un queued prompt", async () => {
         const sendAiPrompt = vi
             .fn()
             .mockRejectedValueOnce(
@@ -210,6 +210,18 @@ describe("ai-store queue", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(createSnapshot());
 
+        const previousAttachment = createImageAttachment({
+            id: "img-prev",
+            name: "previous.png",
+        });
+        const previousFileContext = createFileContext({
+            id: "ctx-prev",
+            relativePath: "src/previous.ts",
+        });
+        const previousComposerParts = [
+            { text: "draft previo", type: "text" as const },
+        ];
+
         await useAiStore.getState().sendPrompt(TAB, "hola", {
             attachments: [createImageAttachment()],
             composerPartsSnapshot: [{ text: "hola", type: "text" }],
@@ -220,16 +232,83 @@ describe("ai-store queue", () => {
             useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
         useAiStore
             .getState()
-            .editQueuedPrompt(TAB.sessionId, queuedPrompt?.id ?? "");
+            .setDraftAttachments(TAB.sessionId, [previousAttachment]);
+        useAiStore
+            .getState()
+            .addDraftFileContext(TAB.sessionId, previousFileContext);
+        useAiStore
+            .getState()
+            .editQueuedPrompt(
+                TAB.sessionId,
+                queuedPrompt?.id ?? "",
+                previousComposerParts,
+            );
 
-        useAiStore.getState().cancelQueuedPromptEdit(TAB.sessionId);
+        const restoredParts = useAiStore
+            .getState()
+            .cancelQueuedPromptEdit(TAB.sessionId);
 
         const restoredSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(restoredParts).toEqual(previousComposerParts);
         expect(restoredSession?.editingQueuedPrompt).toBeNull();
-        expect(restoredSession?.draftAttachments).toEqual([]);
-        expect(restoredSession?.draftFileContexts).toEqual([]);
+        expect(restoredSession?.draftAttachments).toEqual([previousAttachment]);
+        expect(restoredSession?.draftFileContexts).toEqual([
+            previousFileContext,
+        ]);
         expect(restoredSession?.queue).toHaveLength(1);
         expect(restoredSession?.queue[0]?.id).toBe(queuedPrompt?.id);
+    });
+
+    it("preserva el id y la posicion original al guardar un queued prompt en edicion", async () => {
+        const sendAiPrompt = vi.fn();
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "starting",
+            }),
+        );
+
+        await useAiStore.getState().sendPrompt(TAB, "primero", {
+            composerPartsSnapshot: [{ text: "primero", type: "text" }],
+        });
+        await useAiStore.getState().sendPrompt(TAB, "segundo", {
+            composerPartsSnapshot: [{ text: "segundo", type: "text" }],
+        });
+
+        const queuedSession = useAiStore.getState().sessions[TAB.sessionId];
+        const firstPrompt = queuedSession?.queue[0];
+        const secondPrompt = queuedSession?.queue[1];
+
+        useAiStore
+            .getState()
+            .editQueuedPrompt(TAB.sessionId, secondPrompt?.id ?? "", [
+                { text: "draft local", type: "text" },
+            ]);
+
+        await useAiStore.getState().sendPrompt(TAB, "segundo editado", {
+            composerPartsSnapshot: [{ text: "segundo editado", type: "text" }],
+        });
+
+        const nextSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        expect(nextSession?.editingQueuedPrompt).toBeNull();
+        expect(nextSession?.queue.map((item) => item.id)).toEqual([
+            firstPrompt?.id,
+            secondPrompt?.id,
+        ]);
+        expect(nextSession?.queue[1]?.prompt).toBe("segundo editado");
+        expect(nextSession?.queue[1]?.createdAt).toBe(secondPrompt?.createdAt);
     });
 
     it("permite limpiar la cola completa incluso si habia un mensaje en edicion", async () => {

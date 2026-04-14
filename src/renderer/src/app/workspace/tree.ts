@@ -23,6 +23,7 @@ export interface RuntimeWorkspaceFileReviewContext {
 export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
+    readonly hasExternalChange: boolean;
     readonly isDirty: boolean;
     readonly isLoading: boolean;
     readonly isSaving: boolean;
@@ -757,6 +758,7 @@ export function replaceFileDocument(
                 ...tab,
                 document,
                 draftContent: document.content,
+                hasExternalChange: false,
                 isDirty: false,
                 isLoading: false,
                 isSaving: false,
@@ -788,6 +790,30 @@ export function setFileTabSaving(
                 ...tab,
                 isSaving,
                 saveError,
+            },
+        },
+    };
+}
+
+export function setFileTabExternalChange(
+    state: WorkspaceTreeState,
+    tabId: string,
+    hasExternalChange: boolean,
+    saveError?: string | null,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file") {
+        return state;
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                hasExternalChange,
+                saveError: saveError === undefined ? tab.saveError : saveError,
             },
         },
     };
