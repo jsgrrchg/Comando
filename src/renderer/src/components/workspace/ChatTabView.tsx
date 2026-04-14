@@ -17,10 +17,7 @@ import type {
     GeminiAuthMethodId,
 } from "@shared/ipc";
 
-import {
-    DEFAULT_AI_DIFF_ZOOM,
-    type QueuedPrompt,
-} from "@renderer/app/ai/sessionReviewContracts";
+import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -38,6 +35,7 @@ import {
 } from "./chat/composerParts";
 import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
+import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
     deriveToolActivityReviewEntries,
@@ -108,7 +106,9 @@ export function ChatTabView({
     tab,
 }: ChatTabViewProps) {
     const aiChatSettings = useAiChatSettings();
+    const cancelQueuedPromptEdit = useAiStore((s) => s.cancelQueuedPromptEdit);
     const claudeSettings = useAiStore((s) => s.claudeSettings);
+    const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
     const codexBinaryPath = useAiStore((s) => s.codexBinaryPath);
     const ensureSession = useAiStore((s) => s.ensureSession);
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
@@ -144,6 +144,7 @@ export function ChatTabView({
     const setSessionMode = useAiStore((s) => s.setSessionMode);
     const setSessionModel = useAiStore((s) => s.setSessionModel);
     const setDraftAttachments = useAiStore((s) => s.setDraftAttachments);
+    const sendQueuedPromptNow = useAiStore((s) => s.sendQueuedPromptNow);
     const verifyCodexBinaryPath = useAiStore((s) => s.verifyCodexBinaryPath);
     const sendPrompt = useAiStore((s) => s.sendPrompt);
     const runtimeCatalog = useAiStore(
@@ -308,6 +309,7 @@ export function ChatTabView({
         sessionState?.draftAttachments ?? EMPTY_DRAFT_ATTACHMENTS;
     const draftFileContexts =
         sessionState?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
+    const editingQueuedPrompt = sessionState?.editingQueuedPrompt ?? null;
     const queuedPrompts = sessionState?.queue ?? [];
     const pendingPermission = snapshot.pendingPermission;
     const pendingUserInput = snapshot.pendingUserInput;
@@ -361,6 +363,7 @@ export function ChatTabView({
     const hasComposerContext =
         pendingPermission !== null ||
         pendingUserInput !== null ||
+        editingQueuedPrompt !== null ||
         queuedPrompts.length > 0 ||
         currentError !== null ||
         composerError !== null ||
@@ -566,6 +569,32 @@ export function ChatTabView({
             setComposerError(null);
         },
         [editQueuedPrompt, onDraftChange, tab.sessionId],
+    );
+
+    const handleCancelQueuedPromptEdit = useCallback(() => {
+        cancelQueuedPromptEdit(tab.sessionId);
+        setComposerParts(createEmptyComposerParts());
+        setComposerResetNonce((current) => current + 1);
+        onDraftChange("");
+        setComposerError(null);
+    }, [cancelQueuedPromptEdit, onDraftChange, tab.sessionId]);
+
+    const handleClearQueuedPrompts = useCallback(() => {
+        clearQueuedPrompts(tab.sessionId);
+    }, [clearQueuedPrompts, tab.sessionId]);
+
+    const handleRemoveQueuedPrompt = useCallback(
+        (promptId: string) => {
+            removeQueuedPrompt(tab.sessionId, promptId);
+        },
+        [removeQueuedPrompt, tab.sessionId],
+    );
+
+    const handleSendQueuedPromptNow = useCallback(
+        (promptId: string) => {
+            void sendQueuedPromptNow(tab.sessionId, promptId);
+        },
+        [sendQueuedPromptNow, tab.sessionId],
     );
 
     const handleKeepAllPendingReview = useCallback(() => {
@@ -1189,14 +1218,17 @@ export function ChatTabView({
                                     request={pendingUserInput}
                                 />
                             ) : null}
-                            {queuedPrompts.length > 0
-                                ? renderQueuedPrompts(
-                                      queuedPrompts,
-                                      handleEditQueuedPrompt,
-                                      removeQueuedPrompt,
-                                      tab.sessionId,
-                                  )
-                                : null}
+                            {queuedPrompts.length > 0 || editingQueuedPrompt ? (
+                                <QueuedMessagesPanel
+                                    editingItem={editingQueuedPrompt}
+                                    items={queuedPrompts}
+                                    onCancelEdit={handleCancelQueuedPromptEdit}
+                                    onClearAll={handleClearQueuedPrompts}
+                                    onDelete={handleRemoveQueuedPrompt}
+                                    onEdit={handleEditQueuedPrompt}
+                                    onSendNow={handleSendQueuedPromptNow}
+                                />
+                            ) : null}
                             {currentError ? renderError(currentError) : null}
                             {composerError ? renderError(composerError) : null}
 
@@ -1941,99 +1973,6 @@ function renderPermissionRequest(
                     Cancel
                 </button>
             </div>
-        </div>
-    );
-}
-
-function renderQueuedPrompts(
-    queue: readonly QueuedPrompt[],
-    edit: (promptId: string) => void,
-    remove: (sessionId: string, id: string) => void,
-    sessionId: string,
-) {
-    return (
-        <div className="mb-2 space-y-1">
-            {queue.map((q, i) => (
-                <div
-                    className="flex items-center gap-2 rounded-md px-3 py-1.5"
-                    key={q.id}
-                    style={{
-                        backgroundColor: "var(--color-bg-tertiary)",
-                        border: "1px solid var(--color-border)",
-                        fontSize: "0.8em",
-                    }}
-                >
-                    <span
-                        style={{
-                            color: "var(--color-text-secondary)",
-                            fontSize: "0.85em",
-                        }}
-                    >
-                        #{i + 1}
-                    </span>
-                    <span
-                        className="min-w-0 flex-1 truncate"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        {q.prompt}
-                    </span>
-                    <span
-                        className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]"
-                        style={{
-                            backgroundColor:
-                                q.status === "failed"
-                                    ? "color-mix(in srgb, #dc2626 10%, transparent)"
-                                    : q.status === "sending"
-                                      ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
-                                      : "color-mix(in srgb, var(--color-text-secondary) 10%, transparent)",
-                            color:
-                                q.status === "failed"
-                                    ? "#fca5a5"
-                                    : q.status === "sending"
-                                      ? "var(--color-accent)"
-                                      : "var(--color-text-secondary)",
-                        }}
-                    >
-                        {q.status === "failed"
-                            ? "failed"
-                            : q.status === "sending"
-                              ? "sending"
-                              : "queued"}
-                    </span>
-                    <button
-                        className="app-no-drag"
-                        disabled={q.status === "sending"}
-                        onClick={() => edit(q.id)}
-                        style={{
-                            background: "none",
-                            color: "var(--color-text-secondary)",
-                            cursor:
-                                q.status === "sending" ? "default" : "pointer",
-                            fontSize: "0.85em",
-                            opacity: q.status === "sending" ? 0.35 : 0.75,
-                        }}
-                        type="button"
-                    >
-                        Edit
-                    </button>
-                    <button
-                        className="app-no-drag"
-                        disabled={q.status === "sending"}
-                        onClick={() => remove(sessionId, q.id)}
-                        style={{
-                            background: "none",
-                            color: "var(--color-text-secondary)",
-                            cursor:
-                                q.status === "sending" ? "default" : "pointer",
-                            fontSize: "0.85em",
-                            opacity: q.status === "sending" ? 0.35 : 0.7,
-                        }}
-                        type="button"
-                    >
-                        ✕
-                    </button>
-                </div>
-            ))}
         </div>
     );
 }

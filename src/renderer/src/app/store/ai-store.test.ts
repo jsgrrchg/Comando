@@ -187,6 +187,84 @@ describe("ai-store queue", () => {
         expect(restoredSession?.draftAttachments).toEqual([attachment]);
         expect(restoredSession?.draftFileContexts).toEqual([fileContext]);
         expect(restoredSession?.queue).toHaveLength(0);
+        expect(restoredSession?.editingQueuedPrompt?.id).toBe(queuedPrompt?.id);
+    });
+
+    it("permite cancelar la edicion de un queued prompt y reencolarlo", async () => {
+        const sendAiPrompt = vi
+            .fn()
+            .mockRejectedValueOnce(
+                new Error("La sesión todavía está ocupada."),
+            );
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        await useAiStore.getState().sendPrompt(TAB, "hola", {
+            attachments: [createImageAttachment()],
+            composerPartsSnapshot: [{ text: "hola", type: "text" }],
+            fileContextsSnapshot: [createFileContext()],
+        });
+
+        const queuedPrompt =
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
+        useAiStore
+            .getState()
+            .editQueuedPrompt(TAB.sessionId, queuedPrompt?.id ?? "");
+
+        useAiStore.getState().cancelQueuedPromptEdit(TAB.sessionId);
+
+        const restoredSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(restoredSession?.editingQueuedPrompt).toBeNull();
+        expect(restoredSession?.draftAttachments).toEqual([]);
+        expect(restoredSession?.draftFileContexts).toEqual([]);
+        expect(restoredSession?.queue).toHaveLength(1);
+        expect(restoredSession?.queue[0]?.id).toBe(queuedPrompt?.id);
+    });
+
+    it("permite limpiar la cola completa incluso si habia un mensaje en edicion", async () => {
+        const sendAiPrompt = vi
+            .fn()
+            .mockRejectedValueOnce(
+                new Error("La sesión todavía está ocupada."),
+            );
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        await useAiStore.getState().sendPrompt(TAB, "hola");
+
+        const queuedPrompt =
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
+        useAiStore
+            .getState()
+            .editQueuedPrompt(TAB.sessionId, queuedPrompt?.id ?? "");
+
+        useAiStore.getState().clearQueuedPrompts(TAB.sessionId);
+
+        const sessionAfterClear = useAiStore.getState().sessions[TAB.sessionId];
+        expect(sessionAfterClear?.editingQueuedPrompt).toBeNull();
+        expect(sessionAfterClear?.queue).toEqual([]);
     });
 
     it("marca queued prompts como failed cuando el dispatch automático falla", async () => {
@@ -223,6 +301,57 @@ describe("ai-store queue", () => {
             const failedQueuedPrompt =
                 useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
             expect(failedQueuedPrompt?.status).toBe("failed");
+        });
+    });
+
+    it("permite reintentar un queued prompt fallido con sendQueuedPromptNow", async () => {
+        const sendAiPrompt = vi
+            .fn()
+            .mockRejectedValueOnce(new Error("La sesión todavía está ocupada."))
+            .mockRejectedValueOnce(new Error("Boom"))
+            .mockResolvedValueOnce(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        await useAiStore.getState().sendPrompt(TAB, "hola");
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            const failedQueuedPrompt =
+                useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
+            expect(failedQueuedPrompt?.status).toBe("failed");
+        });
+
+        const failedQueuedPrompt =
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
+
+        await useAiStore
+            .getState()
+            .sendQueuedPromptNow(TAB.sessionId, failedQueuedPrompt?.id ?? "");
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(3);
+        });
+        await vi.waitFor(() => {
+            const drainedSession =
+                useAiStore.getState().sessions[TAB.sessionId];
+            expect(drainedSession?.queue).toHaveLength(0);
         });
     });
 

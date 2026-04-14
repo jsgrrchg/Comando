@@ -99,7 +99,7 @@ body {
 }
 
 .cm-static-token-keyword {
-    color: color-mix(in srgb, var(--diff-warn) 78%, var(--color-text-primary));
+    color: color-mix(in srgb, var(--diff-warn) 82%, var(--color-text-primary));
 }
 
 .cm-static-token-variable {
@@ -120,11 +120,15 @@ body {
 }
 
 .cm-static-token-function {
-    color: color-mix(in srgb, #0f766e 86%, var(--color-text-primary));
+    color: color-mix(
+        in srgb,
+        var(--color-accent) 76%,
+        var(--color-text-primary)
+    );
 }
 
 .cm-static-token-type {
-    color: color-mix(in srgb, #b45309 78%, var(--color-text-primary));
+    color: color-mix(in srgb, var(--diff-move) 68%, var(--color-text-primary));
 }
 
 .cm-static-token-property {
@@ -154,7 +158,7 @@ body {
 
 .cm-static-token-number,
 .cm-static-token-atom {
-    color: color-mix(in srgb, var(--diff-move) 72%, var(--color-text-primary));
+    color: color-mix(in srgb, var(--diff-move) 82%, var(--color-text-primary));
 }
 
 .cm-static-token-operator,

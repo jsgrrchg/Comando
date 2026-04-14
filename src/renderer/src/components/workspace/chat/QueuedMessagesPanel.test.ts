@@ -1,0 +1,90 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import type { QueuedPrompt } from "@renderer/app/ai/sessionReviewContracts";
+
+import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
+
+function createQueuedPrompt(
+    overrides: Partial<QueuedPrompt> = {},
+): QueuedPrompt {
+    return {
+        attachments: [],
+        composerPartsSnapshot: [{ text: "Review src/app.ts", type: "text" }],
+        createdAt: "2026-04-14T00:00:00.000Z",
+        fileContextsSnapshot: [],
+        id: "queued-1",
+        prompt: "Review src/app.ts",
+        status: "queued",
+        ...overrides,
+    };
+}
+
+describe("QueuedMessagesPanel", () => {
+    it("renderiza el header, el mensaje en edicion y las acciones del queue", () => {
+        const markup = renderToStaticMarkup(
+            createElement(QueuedMessagesPanel, {
+                editingItem: createQueuedPrompt({
+                    id: "editing-1",
+                    prompt: "Refine the previous message",
+                }),
+                items: [
+                    createQueuedPrompt(),
+                    createQueuedPrompt({
+                        id: "queued-2",
+                        prompt: "Retry failing message",
+                        status: "failed",
+                    }),
+                ],
+                onCancelEdit: () => {},
+                onClearAll: () => {},
+                onDelete: () => {},
+                onEdit: () => {},
+                onSendNow: () => {},
+            }),
+        );
+
+        expect(markup).toContain("2 Queued Messages");
+        expect(markup).toContain("Editing queued message");
+        expect(markup).toContain("Cancel Edit");
+        expect(markup).toContain("Clear All");
+        expect(markup).toContain("Delete");
+        expect(markup).toContain("Edit");
+        expect(markup).toContain("Send Now");
+        expect(markup).toContain("Retry failing message");
+    });
+
+    it("permite arrancar colapsado sin renderizar la lista", () => {
+        const markup = renderToStaticMarkup(
+            createElement(QueuedMessagesPanel, {
+                defaultCollapsed: true,
+                items: [createQueuedPrompt()],
+                onCancelEdit: () => {},
+                onClearAll: () => {},
+                onDelete: () => {},
+                onEdit: () => {},
+                onSendNow: () => {},
+            }),
+        );
+
+        expect(markup).toContain("1 Queued Message");
+        expect(markup).not.toContain("queued-messages-list");
+        expect(markup).not.toContain("Review src/app.ts");
+    });
+
+    it("no renderiza nada cuando no hay cola ni mensaje en edicion", () => {
+        const markup = renderToStaticMarkup(
+            createElement(QueuedMessagesPanel, {
+                items: [],
+                onCancelEdit: () => {},
+                onClearAll: () => {},
+                onDelete: () => {},
+                onEdit: () => {},
+                onSendNow: () => {},
+            }),
+        );
+
+        expect(markup).toBe("");
+    });
+});

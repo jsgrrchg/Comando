@@ -142,7 +142,41 @@ const pathLanguageIdToKey: Record<string, LanguageKey | null> = {
     xml: "xml",
     yaml: "yaml",
 };
-const languageSupportCache = new Map<string, Promise<LanguageSupport | null>>();
+const mimeTypeToKey: Record<string, LanguageKey | null> = {
+    "application/json": "json",
+    "application/sql": "sql",
+    "application/typescript": "typescript",
+    "application/x-httpd-php": "php",
+    "application/x-sh": "shell",
+    "application/xml": "xml",
+    "application/yaml": "yaml",
+    "image/svg+xml": "xml",
+    "text/css": "css",
+    "text/html": "html",
+    "text/javascript": "javascript",
+    "text/jsx": "javascript-jsx",
+    "text/markdown": null,
+    "text/plain": null,
+    "text/typescript": "typescript",
+    "text/x-c": "c",
+    "text/x-c++src": "cpp",
+    "text/x-diff": "diff",
+    "text/x-go": "go",
+    "text/x-java-source": "java",
+    "text/x-java": "java",
+    "text/x-jsx": "javascript-jsx",
+    "text/x-patch": "diff",
+    "text/x-php": "php",
+    "text/x-python": "python",
+    "text/x-ruby": "ruby",
+    "text/x-rustsrc": "rust",
+    "text/x-shellscript": "shell",
+    "text/x-sql": "sql",
+    "text/x-tsx": "typescript-jsx",
+    "text/xml": "xml",
+    "text/yaml": "yaml",
+};
+const languageCache = new Map<LanguageKey, Promise<LanguageSupport | null>>();
 const exactPathAliases = new Map<string, LanguageKey>([
     ["dockerfile", "dockerfile"],
     ["makefile", "makefile"],
@@ -169,19 +203,25 @@ function toLanguageSupport(
     return null;
 }
 
-function loadLanguageSupportByKey(
+function loadCachedLanguageByKey(
     key: LanguageKey,
 ): Promise<LanguageSupport | null> {
-    const cacheKey = `key:${key}`;
-    const cached = languageSupportCache.get(cacheKey);
+    const cached = languageCache.get(key);
     if (cached) {
         return cached;
     }
 
-    const loader = Promise.resolve(loadLanguageByKey(key)).then((language) =>
-        toLanguageSupport(language),
-    );
-    languageSupportCache.set(cacheKey, loader);
+    const loader = Promise.resolve(loadLanguageByKey(key))
+        .then((language) => toLanguageSupport(language))
+        .catch((error) => {
+            languageCache.delete(key);
+            console.error(
+                `Failed to load CodeMirror language support for "${key}".`,
+                error,
+            );
+            return null;
+        });
+    languageCache.set(key, loader);
     return loader;
 }
 
@@ -415,10 +455,36 @@ export function resolveMarkdownCodeLanguageKey(
     return markdownFenceAliasToKey.get(token) ?? null;
 }
 
-export function resolveCodeLanguageKeyFromPath(
+function normalizeMimeType(mimeType?: string | null): string | null {
+    if (!mimeType) {
+        return null;
+    }
+
+    const normalized = mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    return normalized || null;
+}
+
+function resolveCodeLanguageKeyFromMimeType(
+    mimeType?: string | null,
+): LanguageKey | null {
+    const normalizedMimeType = normalizeMimeType(mimeType);
+    if (!normalizedMimeType) {
+        return null;
+    }
+
+    return mimeTypeToKey[normalizedMimeType] ?? null;
+}
+
+export function resolveCodeLanguageKey(
     filePath: string,
+    mimeType?: string | null,
     probeContent?: string,
 ): LanguageKey | null {
+    const mimeTypeKey = resolveCodeLanguageKeyFromMimeType(mimeType);
+    if (mimeTypeKey) {
+        return mimeTypeKey;
+    }
+
     const normalizedPath = filePath.replaceAll("\\", "/");
     const fileName = normalizedPath.split("/").pop()?.toLowerCase() ?? "";
     const exactAlias = exactPathAliases.get(fileName);
@@ -443,6 +509,13 @@ export function resolveCodeLanguageKeyFromPath(
     return pathLanguageIdToKey[resolvedLanguage.id] ?? null;
 }
 
+export function resolveCodeLanguageKeyFromPath(
+    filePath: string,
+    probeContent?: string,
+): LanguageKey | null {
+    return resolveCodeLanguageKey(filePath, null, probeContent);
+}
+
 export async function loadMarkdownCodeLanguageSupport(
     info: string,
 ): Promise<LanguageSupport | null> {
@@ -450,17 +523,25 @@ export async function loadMarkdownCodeLanguageSupport(
     if (!key) {
         return null;
     }
-    return loadLanguageSupportByKey(key);
+    return loadCachedLanguageByKey(key);
+}
+
+export async function loadCodeLanguageSupportByPath(
+    filePath: string,
+    mimeType?: string | null,
+    probeContent?: string,
+): Promise<LanguageSupport | null> {
+    const key = resolveCodeLanguageKey(filePath, mimeType, probeContent);
+    if (!key) {
+        return null;
+    }
+
+    return loadCachedLanguageByKey(key);
 }
 
 export async function loadCodeLanguageSupportForPath(
     filePath: string,
     probeContent?: string,
 ): Promise<LanguageSupport | null> {
-    const key = resolveCodeLanguageKeyFromPath(filePath, probeContent);
-    if (!key) {
-        return null;
-    }
-
-    return loadLanguageSupportByKey(key);
+    return loadCodeLanguageSupportByPath(filePath, null, probeContent);
 }

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
     extractFenceLanguageToken,
+    loadCodeLanguageSupportByPath,
     loadCodeLanguageSupportForPath,
+    resolveCodeLanguageKey,
     resolveCodeLanguageKeyFromPath,
     resolveMarkdownCodeLanguageKey,
 } from "./codeLanguage";
@@ -52,6 +54,17 @@ describe("resolveCodeLanguageKeyFromPath", () => {
     });
 });
 
+describe("resolveCodeLanguageKey", () => {
+    it("permite resolver por mime type antes del fallback por path", () => {
+        expect(
+            resolveCodeLanguageKey("/workspace/notes.txt", "text/x-diff"),
+        ).toBe("diff");
+        expect(
+            resolveCodeLanguageKey("/workspace/unknown", "application/json"),
+        ).toBe("json");
+    });
+});
+
 describe("loadCodeLanguageSupportForPath", () => {
     it("reuses the shared cache for repeated path loads", async () => {
         const first = await loadCodeLanguageSupportForPath(
@@ -59,6 +72,20 @@ describe("loadCodeLanguageSupportForPath", () => {
         );
         const second = await loadCodeLanguageSupportForPath(
             "/workspace/src/example.ts",
+        );
+
+        expect(first).not.toBeNull();
+        expect(second).toBe(first);
+    });
+
+    it("supports explicit mime type loads through the path-based helper", async () => {
+        const first = await loadCodeLanguageSupportByPath(
+            "/workspace/patch.txt",
+            "text/x-diff",
+        );
+        const second = await loadCodeLanguageSupportByPath(
+            "/workspace/patch.txt",
+            "text/x-diff",
         );
 
         expect(first).not.toBeNull();

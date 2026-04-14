@@ -3,6 +3,11 @@ import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
 import { HighlightedCodeText } from "../../app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "../../app/editor/useCodeLanguageSupport";
+import { DiffLineView } from "./review/DiffLineView";
+import {
+    DIFF_PANEL_MAX_HEIGHT,
+    computeUnifiedDiffLines,
+} from "./review/reviewDiff";
 import {
     getChatCodeBlockFontSize,
     getChatCodeLabelFontSize,
@@ -20,7 +25,7 @@ interface MarkdownContentProps {
 interface Block {
     readonly content: string;
     readonly info: string;
-    readonly type: "code" | "table" | "text";
+    readonly type: "code" | "text";
 }
 
 const BLOCK_RE = /```([^\n`]*)\n([\s\S]*?)```/g;
@@ -236,6 +241,13 @@ function CodeBlock({
     const [copied, setCopied] = useState(false);
     const languageSupport = useMarkdownCodeLanguageSupport(block.info);
     const languageToken = extractFenceLanguageToken(block.info ?? "");
+    const isDiffBlock =
+        languageToken?.toLowerCase() === "diff" ||
+        languageToken?.toLowerCase() === "patch";
+    const diffLines = useMemo(
+        () => (isDiffBlock ? computeUnifiedDiffLines(block.content) : []),
+        [block.content, isDiffBlock],
+    );
     const codeFontSize = getChatCodeBlockFontSize(chatFontSize);
     const languageLabel =
         languageToken?.toLowerCase() === "md"
@@ -315,20 +327,43 @@ function CodeBlock({
                     wordBreak: "break-word",
                 }}
             >
-                <code
-                    style={{
-                        color: "var(--color-text-primary)",
-                        whiteSpace: "inherit",
-                        overflowWrap: "inherit",
-                        wordBreak: "inherit",
-                    }}
-                >
-                    <HighlightedCodeText
-                        text={block.content}
-                        language={languageSupport}
-                        segmentKeyPrefix={`chat-code:${languageToken ?? "plain"}:${block.content.length}`}
-                    />
-                </code>
+                {isDiffBlock && diffLines.length > 0 ? (
+                    <div
+                        data-testid="markdown-diff-block"
+                        style={{
+                            color: "var(--color-text-primary)",
+                            display: "flex",
+                            flexDirection: "column",
+                            maxHeight: DIFF_PANEL_MAX_HEIGHT,
+                            minWidth: 0,
+                            overflow: "auto",
+                        }}
+                    >
+                        {diffLines.map((line, index) => (
+                            <DiffLineView
+                                compactLineNumbers={false}
+                                key={`markdown-diff:${index}:${line.oldLineNumber ?? "n"}:${line.newLineNumber ?? "n"}:${line.type}`}
+                                line={line}
+                                lineWrapping
+                            />
+                        ))}
+                    </div>
+                ) : (
+                    <code
+                        style={{
+                            color: "var(--color-text-primary)",
+                            whiteSpace: "inherit",
+                            overflowWrap: "inherit",
+                            wordBreak: "inherit",
+                        }}
+                    >
+                        <HighlightedCodeText
+                            text={block.content}
+                            language={languageSupport}
+                            segmentKeyPrefix={`chat-code:${languageToken ?? "plain"}:${block.content.length}`}
+                        />
+                    </code>
+                )}
             </pre>
         </div>
     );
@@ -606,7 +641,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     chatFontSize = 14,
     onOpenFile,
 }: MarkdownContentProps) {
-    const blocks = parseBlocks(content);
+    const blocks = useMemo(() => parseBlocks(content), [content]);
 
     const inlineOptions: InlineOptions | undefined = useMemo(() => {
         if (!onOpenFile) return undefined;

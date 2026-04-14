@@ -2,7 +2,7 @@ import { type LanguageSupport } from "@codemirror/language";
 import { useEffect, useMemo, useState } from "react";
 
 import {
-    loadCodeLanguageSupportForPath,
+    loadCodeLanguageSupportByPath,
     loadMarkdownCodeLanguageSupport,
 } from "./codeLanguage";
 
@@ -62,8 +62,9 @@ export function useCodeLanguageSupport(
         const trimmedPath = filePath?.trim();
         if (trimmedPath) {
             return () =>
-                loadCodeLanguageSupportForPath(
+                loadCodeLanguageSupportByPath(
                     trimmedPath,
+                    null,
                     probeContent ?? undefined,
                 );
         }

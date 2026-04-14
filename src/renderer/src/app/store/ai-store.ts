@@ -51,6 +51,7 @@ interface AiSessionClientState {
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly diffZoom: number;
+    readonly editingQueuedPrompt: QueuedPrompt | null;
     readonly hydrated: boolean;
     readonly isDispatching: boolean;
     readonly isHydrating: boolean;
@@ -81,7 +82,9 @@ interface AiStore {
     applyRuntimeStatus: (status: AiRuntimeStatus) => void;
     applySessionSnapshot: (snapshot: AiSessionSnapshot) => void;
     cancelSession: (sessionId: string) => Promise<void>;
+    cancelQueuedPromptEdit: (sessionId: string) => void;
     clearDraftAttachments: (sessionId: string) => void;
+    clearQueuedPrompts: (sessionId: string) => void;
     addDraftFileContext: (
         sessionId: string,
         context: AiFileContextAttachment,
@@ -124,12 +127,18 @@ interface AiStore {
         sessionId: string,
         attachments: readonly AiImageAttachment[],
     ) => void;
+    setQueuedPromptStatus: (
+        sessionId: string,
+        promptId: string,
+        status: QueuedPrompt["status"],
+    ) => void;
     setSessionDiffZoom: (sessionId: string, diffZoom: number) => void;
     setSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
     setSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
     setSessionConfigOption: (
         input: AiSessionConfigOptionMutationInput,
     ) => Promise<void>;
+    sendQueuedPromptNow: (sessionId: string, promptId: string) => Promise<void>;
     verifyCodexBinaryPath: (binaryPath: string) => Promise<AiRuntimeStatus>;
     sendPrompt: (
         tab: RuntimeWorkspaceChatTab,
@@ -164,6 +173,35 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             },
         }));
+    },
+
+    cancelQueuedPromptEdit: (sessionId) => {
+        set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session?.editingQueuedPrompt) {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        draftAttachments: [],
+                        draftFileContexts: [],
+                        editingQueuedPrompt: null,
+                        queue: [
+                            session.editingQueuedPrompt,
+                            ...session.queue.filter(
+                                (candidate) =>
+                                    candidate.id !==
+                                    session.editingQueuedPrompt?.id,
+                            ),
+                        ],
+                    },
+                },
+            };
+        });
     },
 
     addDraftFileContext: (sessionId, context) => {
@@ -217,6 +255,26 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             },
         }));
+    },
+
+    clearQueuedPrompts: (sessionId) => {
+        set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session) {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        editingQueuedPrompt: null,
+                        queue: [],
+                    },
+                },
+            };
+        });
     },
 
     applyRuntimeStatus: (status) => {
@@ -564,6 +622,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 queuedPrompt.composerPartsSnapshot,
             );
 
+            const nextQueue = session.queue.filter(
+                (candidate) => candidate.id !== promptId,
+            );
+
             return {
                 sessions: {
                     ...state.sessions,
@@ -575,10 +637,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         draftFileContexts: cloneDraftFileContexts(
                             queuedPrompt.fileContextsSnapshot,
                         ),
+                        editingQueuedPrompt: queuedPrompt,
                         localError: null,
-                        queue: session.queue.filter(
-                            (candidate) => candidate.id !== promptId,
-                        ),
+                        queue: session.editingQueuedPrompt
+                            ? [session.editingQueuedPrompt, ...nextQueue]
+                            : nextQueue,
                     },
                 },
             };
@@ -597,6 +660,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             },
         }));
+    },
+
+    setQueuedPromptStatus: (sessionId, promptId, status) => {
+        setQueuedPromptStatusInState(sessionId, promptId, status, set);
     },
 
     setSessionDiffZoom: (sessionId, diffZoom) => {
@@ -762,6 +829,67 @@ export const useAiStore = create<AiStore>((set, get) => ({
         );
     },
 
+    sendQueuedPromptNow: async (sessionId, promptId) => {
+        const session = get().sessions[sessionId];
+        const queuedPrompt = session?.queue.find(
+            (candidate) => candidate.id === promptId,
+        );
+        if (!session || !queuedPrompt || queuedPrompt.status === "sending") {
+            return;
+        }
+
+        enqueuePrompt(
+            sessionId,
+            {
+                ...queuedPrompt,
+                status: "queued",
+            },
+            "head",
+            set,
+        );
+
+        const latestSession = get().sessions[sessionId];
+        if (
+            !latestSession?.meta ||
+            latestSession.isDispatching ||
+            !latestSession.snapshot ||
+            isBusySession(latestSession.snapshot)
+        ) {
+            return;
+        }
+
+        setQueuedPromptStatusInState(sessionId, promptId, "sending", set);
+
+        try {
+            const result = await dispatchPrompt(
+                {
+                    projectId: latestSession.meta.projectId,
+                    runtimeId: latestSession.meta.runtimeId,
+                    sessionId,
+                    title: latestSession.meta.title,
+                    worktreeId: latestSession.meta.worktreeId,
+                },
+                queuedPrompt.prompt,
+                queuedPrompt.attachments,
+                {
+                    ...queuedPrompt,
+                    status: "queued",
+                },
+                set,
+            );
+
+            if (result === "sent") {
+                removeQueuedPromptById(sessionId, promptId, set);
+                await drainQueueIfNeeded(sessionId, get, set);
+                return;
+            }
+
+            setQueuedPromptStatusInState(sessionId, promptId, "queued", set);
+        } catch {
+            setQueuedPromptStatusInState(sessionId, promptId, "failed", set);
+        }
+    },
+
     verifyCodexBinaryPath: async (binaryPath) => {
         const normalizedPath = binaryPath.trim();
         const status = await getComandoApi().verifyCodexRuntimeSettings({
@@ -802,6 +930,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 set,
                 buildSessionMeta(tab),
             );
+            clearEditingQueuedPromptState(tab.sessionId, set);
             return;
         }
 
@@ -819,6 +948,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
             set,
         );
 
+        clearEditingQueuedPromptState(tab.sessionId, set);
+
         if (dispatchResult === "sent") {
             await drainQueueIfNeeded(tab.sessionId, get, set);
         }
@@ -830,6 +961,7 @@ function createSessionState(): AiSessionClientState {
         draftAttachments: [],
         draftFileContexts: [],
         diffZoom: DEFAULT_AI_DIFF_ZOOM,
+        editingQueuedPrompt: null,
         hydrated: false,
         isDispatching: false,
         isHydrating: false,
@@ -1015,7 +1147,15 @@ async function dispatchPrompt(
         });
     } catch (error) {
         if (isSessionBusyError(error)) {
-            enqueuePrompt(meta.sessionId, queuedPrompt, "head", set);
+            enqueuePrompt(
+                meta.sessionId,
+                {
+                    ...queuedPrompt,
+                    status: "queued",
+                },
+                "head",
+                set,
+            );
             set((state) => {
                 const session =
                     state.sessions[meta.sessionId] ?? createSessionState();
@@ -1104,7 +1244,12 @@ async function drainQueueIfNeeded(
         return;
     }
 
-    setQueuedPromptStatus(sessionId, nextQueuedPrompt.id, "sending", set);
+    setQueuedPromptStatusInState(
+        sessionId,
+        nextQueuedPrompt.id,
+        "sending",
+        set,
+    );
 
     try {
         const result = await dispatchPrompt(
@@ -1127,9 +1272,19 @@ async function drainQueueIfNeeded(
             return;
         }
 
-        setQueuedPromptStatus(sessionId, nextQueuedPrompt.id, "queued", set);
+        setQueuedPromptStatusInState(
+            sessionId,
+            nextQueuedPrompt.id,
+            "queued",
+            set,
+        );
     } catch {
-        setQueuedPromptStatus(sessionId, nextQueuedPrompt.id, "failed", set);
+        setQueuedPromptStatusInState(
+            sessionId,
+            nextQueuedPrompt.id,
+            "failed",
+            set,
+        );
     }
 }
 
@@ -1184,7 +1339,7 @@ function enqueuePrompt(
     });
 }
 
-function setQueuedPromptStatus(
+function setQueuedPromptStatusInState(
     sessionId: string,
     promptId: string,
     status: QueuedPrompt["status"],
@@ -1222,6 +1377,28 @@ function setQueuedPromptStatus(
                 [sessionId]: {
                     ...session,
                     queue,
+                },
+            },
+        };
+    });
+}
+
+function clearEditingQueuedPromptState(
+    sessionId: string,
+    set: SetAiState,
+): void {
+    set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session?.editingQueuedPrompt) {
+            return state;
+        }
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    editingQueuedPrompt: null,
                 },
             },
         };
