@@ -309,6 +309,13 @@ export function ChatTabView({
             ).length,
         [snapshot.trackedFiles],
     );
+    const hasComposerContext =
+        pendingPermission !== null ||
+        pendingUserInput !== null ||
+        queuedPrompts.length > 0 ||
+        currentError !== null ||
+        composerError !== null ||
+        pendingReviewCount > 0;
 
     useEffect(() => {
         if (isStreaming) {
@@ -1020,50 +1027,65 @@ export function ChatTabView({
                 </div>
 
                 {/* Composer area */}
-                <div className="flex shrink-0 flex-col px-3 pb-3">
-                    {pendingPermission
-                        ? renderPermissionRequest(
-                              pendingPermission,
-                              respondPermission,
-                              tab.sessionId,
-                          )
-                        : null}
-                    {pendingUserInput ? (
-                        <UserInputRequestCard
-                            onRespond={respondUserInput}
-                            request={pendingUserInput}
-                        />
-                    ) : null}
-                    {queuedPrompts.length > 0
-                        ? renderQueuedPrompts(
-                              queuedPrompts,
-                              removeQueuedPrompt,
-                              tab.sessionId,
-                          )
-                        : null}
-                    {currentError ? renderError(currentError) : null}
-                    {composerError ? renderError(composerError) : null}
+                <div
+                    className="flex shrink-0 flex-col border-t"
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--color-accent) 4%, var(--color-bg-panel))",
+                        borderTopColor:
+                            "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
+                    }}
+                >
+                    {hasComposerContext ? (
+                        <div className="flex flex-col gap-2 px-3 pt-3">
+                            {pendingPermission
+                                ? renderPermissionRequest(
+                                      pendingPermission,
+                                      respondPermission,
+                                      tab.sessionId,
+                                  )
+                                : null}
+                            {pendingUserInput ? (
+                                <UserInputRequestCard
+                                    onRespond={respondUserInput}
+                                    request={pendingUserInput}
+                                />
+                            ) : null}
+                            {queuedPrompts.length > 0
+                                ? renderQueuedPrompts(
+                                      queuedPrompts,
+                                      removeQueuedPrompt,
+                                      tab.sessionId,
+                                  )
+                                : null}
+                            {currentError ? renderError(currentError) : null}
+                            {composerError ? renderError(composerError) : null}
 
-                    {pendingReviewCount > 0 ? (
-                        <div className="mb-2 flex items-center justify-between gap-3 rounded-2xl border border-border bg-bg-panel px-4 py-3">
-                            <div>
-                                <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
-                                    Pending Review
+                            {pendingReviewCount > 0 ? (
+                                <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-panel px-4 py-3">
+                                    <div>
+                                        <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
+                                            Pending Review
+                                        </div>
+                                        <div className="mt-1 text-sm text-text-primary">
+                                            {pendingReviewCount} pending tracked
+                                            file
+                                            {pendingReviewCount === 1
+                                                ? ""
+                                                : "s"}
+                                        </div>
+                                    </div>
+                                    <button
+                                        className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
+                                        onClick={() => {
+                                            void onOpenReview();
+                                        }}
+                                        type="button"
+                                    >
+                                        Open Review
+                                    </button>
                                 </div>
-                                <div className="mt-1 text-sm text-text-primary">
-                                    {pendingReviewCount} pending tracked file
-                                    {pendingReviewCount === 1 ? "" : "s"}
-                                </div>
-                            </div>
-                            <button
-                                className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
-                                onClick={() => {
-                                    void onOpenReview();
-                                }}
-                                type="button"
-                            >
-                                Open Review
-                            </button>
+                            ) : null}
                         </div>
                     ) : null}
 

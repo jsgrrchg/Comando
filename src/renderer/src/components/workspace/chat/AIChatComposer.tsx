@@ -835,12 +835,10 @@ export function AIChatComposer({
                 }
             }}
             style={{
-                backgroundColor: "var(--color-bg-tertiary)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 12,
                 boxShadow: isFileDragOver
                     ? "0 0 0 2px color-mix(in srgb, var(--color-accent) 20%, transparent)"
                     : "none",
+                overflow: "hidden",
                 transition: "box-shadow 0.15s ease",
                 ...(customHeight != null ? { height: customHeight } : {}),
             }}
