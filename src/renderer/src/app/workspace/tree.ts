@@ -234,6 +234,38 @@ export function selectPaneTab(
     };
 }
 
+export function selectAdjacentPaneTab(
+    state: WorkspaceTreeState,
+    paneId: string,
+    direction: MoveDirection,
+): WorkspaceTreeState {
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane || pane.tabIds.length === 0) {
+        return state;
+    }
+
+    const activeTabIndex = pane.activeTabId
+        ? pane.tabIds.indexOf(pane.activeTabId)
+        : -1;
+    const baseIndex =
+        activeTabIndex === -1
+            ? direction === "next"
+                ? -1
+                : 0
+            : activeTabIndex;
+    const nextIndex =
+        direction === "next"
+            ? (baseIndex + 1) % pane.tabIds.length
+            : (baseIndex - 1 + pane.tabIds.length) % pane.tabIds.length;
+    const nextTabId = pane.tabIds[nextIndex] ?? null;
+
+    if (!nextTabId) {
+        return state;
+    }
+
+    return selectPaneTab(state, paneId, nextTabId);
+}
+
 export function closeWorkspaceTab(
     state: WorkspaceTreeState,
     tabId: string,

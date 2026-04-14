@@ -435,6 +435,9 @@ function WorkspacePaneView({
     const updateFileDraft = useWorkspaceStore((state) => state.updateFileDraft);
     const reloadFileTab = useWorkspaceStore((state) => state.reloadFileTab);
     const saveFileTab = useWorkspaceStore((state) => state.saveFileTab);
+    const selectAdjacentTab = useWorkspaceStore(
+        (state) => state.selectAdjacentTab,
+    );
     const sendTerminalInput = useWorkspaceStore(
         (state) => state.sendTerminalInput,
     );
@@ -813,6 +816,18 @@ function WorkspacePaneView({
         }
 
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.ctrlKey && !event.metaKey && !event.altKey) {
+                if (event.key === "Tab") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void selectAdjacentTab(
+                        node.id,
+                        event.shiftKey ? "previous" : "next",
+                    );
+                }
+                return;
+            }
+
             if (!(event.metaKey || event.ctrlKey) || event.altKey) {
                 return;
             }
@@ -857,6 +872,8 @@ function WorkspacePaneView({
         handleCreateAgentFromFocusedProvider,
         handleCreateFile,
         isActivePane,
+        node.id,
+        selectAdjacentTab,
     ]);
 
     return (

@@ -30,6 +30,7 @@ import {
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
     resizeSplit,
+    selectAdjacentPaneTab,
     setFileTabExternalChange,
     setFileTabReviewContext,
     selectPaneTab,
@@ -143,6 +144,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         options?: {
             readonly force?: boolean;
         },
+    ) => Promise<void>;
+    selectAdjacentTab: (
+        paneId: string,
+        direction: MoveDirection,
     ) => Promise<void>;
     selectTab: (paneId: string, tabId: string) => Promise<void>;
     sendTerminalInput: (sessionId: string, data: string) => Promise<void>;
@@ -637,6 +642,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 error: message,
             }));
         }
+    },
+
+    selectAdjacentTab: async (paneId, direction) => {
+        const runtimeId = getPaneRuntimeId(get(), paneId);
+        set((state) => ({
+            ...selectAdjacentPaneTab(state, paneId, direction),
+            error: null,
+            ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+        }));
+        await persistWorkspaceState(get);
     },
 
     selectTab: async (paneId, tabId) => {

@@ -5,7 +5,9 @@ export interface ShortcutDefinition {
         | "new_agent_from_focused_provider"
         | "new_file"
         | "new_terminal"
+        | "next_pane_tab"
         | "open_settings"
+        | "previous_pane_tab"
         | "save_file"
         | "toggle_sidebar"
         | "toggle_utility_panel"
@@ -70,6 +72,26 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Cmd+,",
             windows: "Ctrl+,",
+        },
+        section: "General",
+    },
+    {
+        id: "next_pane_tab",
+        label: "Next pane tab",
+        description: "Switch to the next tab in the active pane.",
+        keys: {
+            mac: "Ctrl+Tab",
+            windows: "Ctrl+Tab",
+        },
+        section: "General",
+    },
+    {
+        id: "previous_pane_tab",
+        label: "Previous pane tab",
+        description: "Switch to the previous tab in the active pane.",
+        keys: {
+            mac: "Ctrl+Shift+Tab",
+            windows: "Ctrl+Shift+Tab",
         },
         section: "General",
     },

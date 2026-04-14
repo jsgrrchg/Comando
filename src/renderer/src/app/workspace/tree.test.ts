@@ -15,6 +15,7 @@ import {
     reorderTabInPane,
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
+    selectAdjacentPaneTab,
     setFileTabExternalChange,
     splitPaneInDirection,
     type RuntimeWorkspaceFileTab,
@@ -210,6 +211,70 @@ describe("workspace tree helpers", () => {
             expect(rightPane.tabIds).toEqual(["tab-3", "tab-2"]);
             expect(rightPane.activeTabId).toBe("tab-2");
         }
+    });
+
+    it("selects the next tab in the same pane with wrap-around", () => {
+        const withFirstTab = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeChatTab("tab-1"),
+        );
+        const withSecondTab = attachTabToPane(
+            withFirstTab,
+            "pane-root",
+            makeChatTab("tab-2"),
+        );
+        const withThirdTab = attachTabToPane(
+            withSecondTab,
+            "pane-root",
+            makeChatTab("tab-3"),
+        );
+
+        const selected = selectAdjacentPaneTab(
+            withThirdTab,
+            "pane-root",
+            "next",
+        );
+
+        expect(selected.rootNode.type).toBe("pane");
+        if (selected.rootNode.type !== "pane") {
+            return;
+        }
+
+        expect(selected.rootNode.activeTabId).toBe("tab-1");
+        expect(selected.activePaneId).toBe("pane-root");
+    });
+
+    it("selects the previous tab in the same pane with wrap-around", () => {
+        const withFirstTab = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeChatTab("tab-1"),
+        );
+        const withSecondTab = attachTabToPane(
+            withFirstTab,
+            "pane-root",
+            makeChatTab("tab-2"),
+        );
+        const selectedSecond = selectAdjacentPaneTab(
+            withSecondTab,
+            "pane-root",
+            "next",
+        );
+
+        const selected = selectAdjacentPaneTab(
+            selectedSecond,
+            "pane-root",
+            "previous",
+        );
+
+        expect(selected.rootNode.type).toBe("pane");
+        if (selected.rootNode.type !== "pane") {
+            return;
+        }
+
+        expect(selected.rootNode.activeTabId).toBe("tab-2");
+        expect(selected.activePaneId).toBe("pane-root");
     });
 
     it("reorders tabs within the same pane by insertion index", () => {
