@@ -10,6 +10,7 @@ function createActivity(
     overrides: Partial<AiToolActivity> = {},
 ): AiToolActivity {
     return {
+        createdAt: "2026-04-14T00:00:00.000Z",
         diffs: [],
         id: "tool-1",
         kind: "edit",
@@ -128,8 +129,29 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain("Edit file");
-        expect(markup).toContain("done");
+        expect(markup).not.toContain("done");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
+    });
+
+    it("renderiza turn_started como divisor sutil al estilo reference app", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    id: "neverwrite:status:turn:turn-1",
+                    kind: "other",
+                    summary: "Context window: 128000",
+                    title: "New turn",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain('data-testid="turn-start-divider"');
+        expect(markup).toContain("New turn");
+        expect(markup).not.toContain("Context window: 128000");
     });
 });

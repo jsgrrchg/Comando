@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState, type CSSProperties } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -233,18 +234,7 @@ function renderStatus(activity: AiToolActivity) {
         );
     }
 
-    return (
-        <span
-            style={{
-                color: "var(--color-text-secondary)",
-                fontSize: "0.72em",
-                opacity: 0.78,
-                textTransform: "uppercase",
-            }}
-        >
-            done
-        </span>
-    );
+    return null;
 }
 
 function ChangeReviewFileRow({
@@ -367,7 +357,11 @@ function ChangeReviewFileRow({
                                 fontWeight: 700,
                             }}
                         >
-                            +{formatDiffStat(item.stats.additions, item.stats.approximate)}
+                            +
+                            {formatDiffStat(
+                                item.stats.additions,
+                                item.stats.approximate,
+                            )}
                         </span>
                     ) : null}
                     {item.stats.deletions > 0 ? (
@@ -378,7 +372,11 @@ function ChangeReviewFileRow({
                                 fontWeight: 700,
                             }}
                         >
-                            -{formatDiffStat(item.stats.deletions, item.stats.approximate)}
+                            -
+                            {formatDiffStat(
+                                item.stats.deletions,
+                                item.stats.approximate,
+                            )}
                         </span>
                     ) : null}
                     {onOpen ? (
@@ -428,9 +426,15 @@ function ChangeReviewFileRow({
                         diffZoom={diffZoom}
                         expanded={expanded}
                         file={item.file ?? undefined}
-                        onKeepHunk={item.canResolveHunks ? onKeepHunk ?? undefined : undefined}
+                        onKeepHunk={
+                            item.canResolveHunks
+                                ? (onKeepHunk ?? undefined)
+                                : undefined
+                        }
                         onRejectHunk={
-                            item.canResolveHunks ? onRejectHunk ?? undefined : undefined
+                            item.canResolveHunks
+                                ? (onRejectHunk ?? undefined)
+                                : undefined
                         }
                         testId={`chat-review-diff:${item.key}`}
                     />
@@ -448,6 +452,7 @@ export interface ChangeReviewPanelProps {
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     readonly projectId: string | null;
     readonly trackedFiles?: readonly AiTrackedFile[];
@@ -474,7 +479,8 @@ export function ChangeReviewPanel({
     const setSessionDiffZoom = useAiStore((state) => state.setSessionDiffZoom);
     const diffZoom = useAiStore(
         (state) =>
-            state.sessions[activity.sessionId]?.diffZoom ?? DEFAULT_AI_DIFF_ZOOM,
+            state.sessions[activity.sessionId]?.diffZoom ??
+            DEFAULT_AI_DIFF_ZOOM,
     );
 
     const items = useMemo(
@@ -483,16 +489,18 @@ export function ChangeReviewPanel({
     );
     const summary = useMemo(() => deriveChangeReviewSummary(items), [items]);
     const [expanded, setExpanded] = useState(defaultExpanded);
-    const [expandedFileKeys, setExpandedFileKeys] = useState<ReadonlySet<string>>(
-        () => new Set(defaultExpandedFileKeys),
-    );
+    const [expandedFileKeys, setExpandedFileKeys] = useState<
+        ReadonlySet<string>
+    >(() => new Set(defaultExpandedFileKeys));
 
-    const singleItem = items.length === 1 ? items[0] ?? null : null;
+    const singleItem = items.length === 1 ? (items[0] ?? null) : null;
     const accent = getPanelAccent(activity);
     const actionLabel = getActivityActionLabel(activity.kind);
-    const hasPendingItems = items.some((item) => item.file?.reviewState === "pending");
     const canDecreaseZoom = diffZoom > DIFF_ZOOM_MIN;
     const canIncreaseZoom = diffZoom < DIFF_ZOOM_MAX;
+    const canOpenSingleItem = singleItem
+        ? canOpenItem(singleItem, projectId)
+        : false;
 
     const openItem = useCallback(
         (item: ChangeReviewItem) => {
@@ -500,7 +508,17 @@ export function ChangeReviewPanel({
                 return;
             }
 
-            void onOpenFile(projectId, item.path, worktreeId);
+            void onOpenFile(
+                projectId,
+                item.path,
+                worktreeId,
+                item.file
+                    ? {
+                          path: item.file.path,
+                          sessionId: item.file.sessionId,
+                      }
+                    : null,
+            );
         },
         [onOpenFile, projectId, worktreeId],
     );
@@ -630,10 +648,7 @@ export function ChangeReviewPanel({
                     >
                         <Chevron expanded={expanded} />
                     </span>
-                    <span
-                        className="shrink-0"
-                        style={{ color: accent }}
-                    >
+                    <span className="shrink-0" style={{ color: accent }}>
                         {activity.status === "failed" ? (
                             <WarningIcon />
                         ) : (
@@ -668,54 +683,54 @@ export function ChangeReviewPanel({
                                     {getBadgeLabel(singleItem)}
                                 </span>
                             ) : null}
-                            {!hasPendingItems ? (
-                                <span
-                                    style={{
-                                        ...getStatChipStyle(accent),
-                                        fontSize: "0.68em",
-                                    }}
-                                >
-                                    Preview
-                                </span>
-                            ) : null}
                         </div>
-                        <div
-                            className="truncate"
-                            style={{
-                                color: "var(--color-text-secondary)",
-                                fontSize: "0.74em",
-                                marginTop: 2,
-                            }}
-                        >
-                            {singleItem
-                                ? `${getCompactPath(singleItem.path)} · ${singleItem.summary}`
-                                : `${summary.fileCount} files changed${
-                                      summary.partialCount > 0
-                                          ? ` · ${summary.partialCount} partial`
-                                          : ""
-                                  }`}
-                        </div>
+                        {!singleItem ? (
+                            <div
+                                className="truncate"
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontSize: "0.74em",
+                                    marginTop: 2,
+                                }}
+                            >
+                                {`${summary.fileCount} files changed${
+                                    summary.partialCount > 0
+                                        ? ` · ${summary.partialCount} partial`
+                                        : ""
+                                }`}
+                            </div>
+                        ) : null}
                     </div>
                 </button>
 
                 <div className="flex flex-wrap items-center justify-end gap-2">
                     {summary.additions > 0 ? (
                         <span style={getStatChipStyle("var(--diff-add)")}>
-                            +{formatDiffStat(summary.additions, summary.approximate)}
+                            +
+                            {formatDiffStat(
+                                summary.additions,
+                                summary.approximate,
+                            )}
                         </span>
                     ) : null}
                     {summary.deletions > 0 ? (
                         <span style={getStatChipStyle("var(--diff-remove)")}>
-                            -{formatDiffStat(summary.deletions, summary.approximate)}
+                            -
+                            {formatDiffStat(
+                                summary.deletions,
+                                summary.approximate,
+                            )}
                         </span>
                     ) : null}
                     <div
                         style={{
+                            alignItems: "stretch",
                             backgroundColor:
                                 "color-mix(in srgb, var(--color-bg-primary) 56%, transparent)",
                             border: `1px solid color-mix(in srgb, ${accent} 22%, var(--color-border))`,
                             borderRadius: 8,
                             display: "flex",
+                            height: 28,
                             overflow: "hidden",
                         }}
                     >
@@ -729,35 +744,26 @@ export function ChangeReviewPanel({
                                 )
                             }
                             style={{
+                                alignItems: "center",
                                 background: "none",
                                 border: "none",
                                 color: canDecreaseZoom
                                     ? accent
                                     : "var(--color-text-secondary)",
-                                cursor: canDecreaseZoom ? "pointer" : "not-allowed",
+                                cursor: canDecreaseZoom
+                                    ? "pointer"
+                                    : "not-allowed",
+                                display: "inline-flex",
                                 fontSize: "0.76em",
+                                justifyContent: "center",
                                 opacity: canDecreaseZoom ? 1 : 0.45,
-                                padding: "4px 8px",
+                                minWidth: 28,
+                                padding: "0 8px",
                             }}
                             type="button"
                         >
                             -
                         </button>
-                        <div
-                            style={{
-                                borderLeft:
-                                    "1px solid color-mix(in srgb, var(--color-border) 75%, transparent)",
-                                borderRight:
-                                    "1px solid color-mix(in srgb, var(--color-border) 75%, transparent)",
-                                color: "var(--color-text-secondary)",
-                                fontSize: "0.72em",
-                                minWidth: 44,
-                                padding: "5px 8px",
-                                textAlign: "center",
-                            }}
-                        >
-                            {Math.round(diffZoom * 100)}%
-                        </div>
                         <button
                             aria-label="Increase diff zoom"
                             disabled={!canIncreaseZoom}
@@ -768,27 +774,41 @@ export function ChangeReviewPanel({
                                 )
                             }
                             style={{
+                                alignItems: "center",
                                 background: "none",
                                 border: "none",
                                 color: canIncreaseZoom
                                     ? accent
                                     : "var(--color-text-secondary)",
-                                cursor: canIncreaseZoom ? "pointer" : "not-allowed",
+                                cursor: canIncreaseZoom
+                                    ? "pointer"
+                                    : "not-allowed",
+                                display: "inline-flex",
                                 fontSize: "0.76em",
+                                justifyContent: "center",
                                 opacity: canIncreaseZoom ? 1 : 0.45,
-                                padding: "4px 8px",
+                                minWidth: 28,
+                                padding: "0 8px",
                             }}
                             type="button"
                         >
                             +
                         </button>
                     </div>
-                    {singleItem && canOpenItem(singleItem, projectId) ? (
+                    {singleItem ? (
                         <button
-                            onClick={() => openItem(singleItem)}
+                            disabled={!canOpenSingleItem}
+                            onClick={() => {
+                                if (!canOpenSingleItem) return;
+                                openItem(singleItem);
+                            }}
                             style={{
                                 ...getNeutralButtonStyle(),
                                 ...TOOL_ACTION_BUTTON_STYLE,
+                                cursor: canOpenSingleItem
+                                    ? "pointer"
+                                    : "not-allowed",
+                                opacity: canOpenSingleItem ? 1 : 0.45,
                             }}
                             type="button"
                         >
@@ -834,12 +854,14 @@ export function ChangeReviewPanel({
                             file={singleItem.file ?? undefined}
                             onKeepHunk={
                                 singleItem.canResolveHunks
-                                    ? (hunkId) => handleKeepHunk(singleItem, hunkId)
+                                    ? (hunkId) =>
+                                          handleKeepHunk(singleItem, hunkId)
                                     : undefined
                             }
                             onRejectHunk={
                                 singleItem.canResolveHunks
-                                    ? (hunkId) => handleRejectHunk(singleItem, hunkId)
+                                    ? (hunkId) =>
+                                          handleRejectHunk(singleItem, hunkId)
                                     : undefined
                             }
                             testId={`change-review-panel:${singleItem.key}`}
@@ -853,10 +875,15 @@ export function ChangeReviewPanel({
                                 expanded={expandedFileKeys.has(item.key)}
                                 item={item}
                                 key={item.key}
-                                onKeep={item.canKeep ? () => handleKeepFile(item) : null}
+                                onKeep={
+                                    item.canKeep
+                                        ? () => handleKeepFile(item)
+                                        : null
+                                }
                                 onKeepHunk={
                                     item.canResolveHunks
-                                        ? (hunkId) => handleKeepHunk(item, hunkId)
+                                        ? (hunkId) =>
+                                              handleKeepHunk(item, hunkId)
                                         : null
                                 }
                                 onOpen={
@@ -871,7 +898,8 @@ export function ChangeReviewPanel({
                                 }
                                 onRejectHunk={
                                     item.canResolveHunks
-                                        ? (hunkId) => handleRejectHunk(item, hunkId)
+                                        ? (hunkId) =>
+                                              handleRejectHunk(item, hunkId)
                                         : null
                                 }
                                 onToggle={() => toggleExpandedFile(item.key)}

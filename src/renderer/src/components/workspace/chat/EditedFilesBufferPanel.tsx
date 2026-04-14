@@ -14,24 +14,40 @@ import {
 
 const COMPACT_MAX_LIST_HEIGHT = "208px";
 
-function Chevron({ expanded }: { readonly expanded: boolean }) {
+function CollapseToggle({
+    expanded,
+    onToggle,
+}: {
+    readonly expanded: boolean;
+    readonly onToggle: () => void;
+}) {
     return (
-        <svg
-            fill="none"
-            height="10"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
+        <button
+            aria-expanded={expanded}
+            aria-label={expanded ? "Collapse edits" : "Expand edits"}
+            className="shrink-0"
+            onClick={onToggle}
             style={{
+                alignItems: "center",
+                background: "transparent",
+                border: "none",
+                color: "var(--color-text-secondary)",
+                cursor: "pointer",
+                display: "inline-flex",
+                fontSize: 12,
+                height: 16,
+                justifyContent: "center",
+                lineHeight: 1,
+                padding: 0,
                 transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-                transition: "transform 140ms ease",
+                transition: "transform 140ms ease, color 140ms ease",
+                width: 16,
             }}
-            viewBox="0 0 24 24"
-            width="10"
+            title={expanded ? "Collapse edits" : "Expand edits"}
+            type="button"
         >
-            <polyline points="8 6 14 12 8 18" />
-        </svg>
+            <span aria-hidden="true">&gt;</span>
+        </button>
     );
 }
 
@@ -135,7 +151,7 @@ export function EditedFilesBufferPanel({
             data-testid="edited-files-buffer-panel"
             style={{
                 backgroundColor:
-                    "color-mix(in srgb, var(--color-bg-secondary) 84%, transparent)",
+                    "color-mix(in srgb, var(--color-bg-tertiary) 84%, transparent)",
                 border: "1px solid color-mix(in srgb, var(--color-border) 88%, transparent)",
             }}
         >
@@ -147,30 +163,10 @@ export function EditedFilesBufferPanel({
                         : "none",
                 }}
             >
-                <button
-                    aria-expanded={!collapsed}
-                    aria-label={collapsed ? "Expand edits" : "Collapse edits"}
-                    className="shrink-0"
-                    onClick={() => setCollapsed((value) => !value)}
-                    style={{
-                        alignItems: "center",
-                        background: "transparent",
-                        border: "none",
-                        color: "var(--color-text-secondary)",
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        fontSize: 12,
-                        height: 16,
-                        justifyContent: "center",
-                        lineHeight: 1,
-                        padding: 0,
-                        width: 16,
-                    }}
-                    title={collapsed ? "Expand edits" : "Collapse edits"}
-                    type="button"
-                >
-                    <Chevron expanded={!collapsed} />
-                </button>
+                <CollapseToggle
+                    expanded={!collapsed}
+                    onToggle={() => setCollapsed((value) => !value)}
+                />
                 <span
                     className="text-xs font-medium"
                     style={{ color: "var(--color-text-secondary)" }}
@@ -185,9 +181,7 @@ export function EditedFilesBufferPanel({
                 >
                     ({summary.fileCount})
                 </span>
-                {(summary.additions > 0 ||
-                    summary.deletions > 0 ||
-                    summary.partialCount > 0) && (
+                {(summary.additions > 0 || summary.deletions > 0) && (
                     <span
                         style={{
                             color: "var(--color-text-secondary)",
@@ -221,16 +215,6 @@ export function EditedFilesBufferPanel({
                                     summary.deletions,
                                     summary.approximate,
                                 )}
-                            </span>
-                        ) : null}
-                        {summary.partialCount > 0 ? (
-                            <span
-                                style={{
-                                    color: "var(--diff-warn)",
-                                    marginLeft: 3,
-                                }}
-                            >
-                                {summary.partialCount} partial
                             </span>
                         ) : null}
                     </span>
@@ -277,8 +261,9 @@ export function EditedFilesBufferPanel({
 
             {!collapsed ? (
                 <div
-                    className="flex flex-col gap-2 px-2 py-2"
+                    className="flex flex-col"
                     data-testid="edited-files-buffer-list"
+                    data-scrollbar-active="true"
                     style={{
                         maxHeight: COMPACT_MAX_LIST_HEIGHT,
                         overflowY: "auto",

@@ -126,8 +126,8 @@ describe("ReviewFileRow", () => {
             />,
         );
 
-        expect(markup).toContain("src/app.ts");
-        expect(markup).toContain("Modified");
-        expect(markup).not.toContain("Open");
+        expect(markup).toContain("app.ts");
+        expect(markup).not.toContain("Open File");
+        expect(markup).not.toContain("review-file-diff:file-1");
     });
 });

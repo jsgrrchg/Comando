@@ -90,7 +90,7 @@ function createItem(): ReviewFileItem {
 }
 
 describe("ReviewFileRow compact", () => {
-    it("renderiza acciones icon-only y el preview expandido", () => {
+    it("renderiza la fila compacta alineada con el panel de reference app", () => {
         const markup = renderToStaticMarkup(
             createElement(ReviewFileRow, {
                 diffZoom: 0.72,
@@ -106,10 +106,10 @@ describe("ReviewFileRow compact", () => {
             }),
         );
 
-        expect(markup).toContain("src/app.ts");
+        expect(markup).toContain("app.ts");
         expect(markup).toContain("Open File");
         expect(markup).toContain("Reject");
         expect(markup).toContain("Keep");
-        expect(markup).toContain("review-file-diff:file-1");
+        expect(markup).not.toContain("review-file-diff:file-1");
     });
 });

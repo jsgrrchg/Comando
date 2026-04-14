@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
 
@@ -172,6 +173,10 @@ function looksAbsolutePath(p: string): boolean {
     return p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p);
 }
 
+function isTurnStartedActivity(activity: AiToolActivity): boolean {
+    return activity.id.startsWith("neverwrite:status:turn:");
+}
+
 function summarizeDiff(oldText: string | null, newText: string | null): string {
     const ol = (oldText ?? "").split("\n").filter(Boolean).length;
     const nl = (newText ?? "").split("\n").filter(Boolean).length;
@@ -185,6 +190,46 @@ function summarizeDiff(oldText: string | null, newText: string | null): string {
     return parts.length > 0
         ? `Updates ${nl} line(s) (${parts.join(", ")}).`
         : `Updates ${nl} line(s).`;
+}
+
+function TurnStartedDivider({
+    activity,
+}: {
+    readonly activity: AiToolActivity;
+}) {
+    return (
+        <div
+            className="min-w-0 max-w-full py-2"
+            data-testid="turn-start-divider"
+        >
+            <div className="flex min-w-0 max-w-full items-center gap-3">
+                <div
+                    className="h-px flex-1"
+                    style={{
+                        backgroundColor: "var(--color-border)",
+                        opacity: 0.5,
+                    }}
+                />
+                <span
+                    className="shrink-0 uppercase tracking-[0.14em]"
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: "0.68em",
+                        opacity: 0.7,
+                    }}
+                >
+                    {activity.title}
+                </span>
+                <div
+                    className="h-px flex-1"
+                    style={{
+                        backgroundColor: "var(--color-border)",
+                        opacity: 0.5,
+                    }}
+                />
+            </div>
+        </div>
+    );
 }
 
 /* ─── File tool message (card style) ─── */
@@ -201,6 +246,7 @@ function FileToolMessage({
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     readonly pendingTrackedFiles: readonly AiTrackedFile[];
     readonly projectId: string | null;
@@ -257,17 +303,6 @@ function FileToolMessage({
                         className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
                         style={{ backgroundColor: "var(--color-accent)" }}
                     />
-                ) : null}
-                {isCompleted ? (
-                    <span
-                        style={{
-                            color: "var(--color-text-secondary)",
-                            fontSize: "0.75em",
-                            opacity: 0.8,
-                        }}
-                    >
-                        done
-                    </span>
                 ) : null}
                 {pendingTrackedFiles.length > 0 ? (
                     <span
@@ -511,6 +546,7 @@ export function ToolActivityItem({
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     readonly trackedFiles?: readonly AiTrackedFile[];
     readonly projectId: string | null;
@@ -521,6 +557,10 @@ export function ToolActivityItem({
     );
     const hasInlineReview =
         activity.diffs.length > 0 || trackedFiles.length > 0;
+
+    if (isTurnStartedActivity(activity)) {
+        return <TurnStartedDivider activity={activity} />;
+    }
 
     if (isFileToolActivity(activity, trackedFiles)) {
         if (hasInlineReview) {

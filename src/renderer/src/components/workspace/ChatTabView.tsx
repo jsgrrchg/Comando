@@ -21,7 +21,10 @@ import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
-import type { RuntimeWorkspaceChatTab } from "@renderer/app/workspace/tree";
+import type {
+    RuntimeWorkspaceChatTab,
+    RuntimeWorkspaceFileReviewContext,
+} from "@renderer/app/workspace/tree";
 
 import { AIChatAgentControls } from "./AIChatAgentControls";
 import { LanguageIcon } from "./LanguageIcon";
@@ -55,6 +58,7 @@ interface ChatTabViewProps {
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     readonly onOpenReview: () => Promise<void>;
     readonly tab: RuntimeWorkspaceChatTab;
@@ -404,11 +408,11 @@ export function ChatTabView({
             const aT =
                 a.kind === "message"
                     ? a.message.createdAt
-                    : a.reviewEntry.activity.updatedAt;
+                    : a.reviewEntry.activity.createdAt;
             const bT =
                 b.kind === "message"
                     ? b.message.createdAt
-                    : b.reviewEntry.activity.updatedAt;
+                    : b.reviewEntry.activity.createdAt;
             return aT.localeCompare(bT);
         });
         return rows;
@@ -559,7 +563,11 @@ export function ChatTabView({
 
     const handleEditQueuedPrompt = useCallback(
         (promptId: string) => {
-            const restoredParts = editQueuedPrompt(tab.sessionId, promptId);
+            const restoredParts = editQueuedPrompt(
+                tab.sessionId,
+                promptId,
+                composerPartsRef.current,
+            );
             if (!restoredParts) {
                 return;
             }
@@ -572,10 +580,14 @@ export function ChatTabView({
     );
 
     const handleCancelQueuedPromptEdit = useCallback(() => {
-        cancelQueuedPromptEdit(tab.sessionId);
-        setComposerParts(createEmptyComposerParts());
+        const restoredParts = cancelQueuedPromptEdit(tab.sessionId);
+        if (!restoredParts) {
+            return;
+        }
+
+        setComposerParts([...restoredParts]);
         setComposerResetNonce((current) => current + 1);
-        onDraftChange("");
+        onDraftChange(composerPartsToPlainText(restoredParts));
         setComposerError(null);
     }, [cancelQueuedPromptEdit, onDraftChange, tab.sessionId]);
 
@@ -615,9 +627,13 @@ export function ChatTabView({
                 tab.projectId,
                 item.file.path,
                 tab.worktreeId ?? null,
+                {
+                    path: item.file.path,
+                    sessionId: tab.sessionId,
+                },
             );
         },
-        [onOpenFile, tab.projectId, tab.worktreeId],
+        [onOpenFile, tab.projectId, tab.sessionId, tab.worktreeId],
     );
 
     const handleKeepPendingReviewItem = useCallback(

@@ -8,9 +8,7 @@ import type {
 } from "../review/editedFilesPresentationModel";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 
-function createItem(
-    overrides: Partial<ReviewFileItem> = {},
-): ReviewFileItem {
+function createItem(overrides: Partial<ReviewFileItem> = {}): ReviewFileItem {
     return {
         canOpen: true,
         canReject: true,
@@ -95,9 +93,7 @@ function createItem(
     };
 }
 
-function createSummary(
-    overrides: Partial<ReviewSummary> = {},
-): ReviewSummary {
+function createSummary(overrides: Partial<ReviewSummary> = {}): ReviewSummary {
     return {
         additions: 1,
         approximate: false,
@@ -167,8 +163,8 @@ describe("EditedFilesBufferPanel", () => {
         expect(markup).toContain("Review");
         expect(markup).toContain("Reject All");
         expect(markup).toContain("Keep All");
-        expect(markup).toContain("src/app.ts");
-        expect(markup).toContain("src/secondary.ts");
+        expect(markup).toContain("app.ts");
+        expect(markup).toContain("secondary.ts");
         expect(markup).toContain("Open File");
     });
 

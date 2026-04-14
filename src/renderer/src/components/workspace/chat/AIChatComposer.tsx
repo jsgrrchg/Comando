@@ -937,7 +937,7 @@ export function AIChatComposer({
                             fontSize: composerFontSize,
                             lineHeight: 1.5,
                             opacity: 0.6,
-                            right: 36,
+                            right: 14,
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -948,6 +948,8 @@ export function AIChatComposer({
                     </div>
                 ) : null}
                 <div
+                    autoCapitalize="off"
+                    autoCorrect="off"
                     ref={composerRef}
                     className="app-no-drag h-full w-full outline-none"
                     contentEditable={!disabled}
@@ -955,6 +957,7 @@ export function AIChatComposer({
                     onKeyDown={handleKeyDown}
                     onPaste={handlePaste}
                     role="textbox"
+                    spellCheck={false}
                     style={{
                         color: "var(--color-text-primary)",
                         fontFamily: composerFontFamily,
@@ -962,7 +965,7 @@ export function AIChatComposer({
                         lineHeight: 1.5,
                         minHeight: MIN_COMPOSER_HEIGHT,
                         overflowY: "auto",
-                        padding: "10px 36px 10px 14px",
+                        padding: "10px 14px",
                         whiteSpace: "pre-wrap",
                     }}
                     suppressContentEditableWarning

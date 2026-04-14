@@ -14,60 +14,6 @@ import {
     getToneBorderStyle,
 } from "./reviewStyles";
 
-function OpenFileIcon() {
-    return (
-        <svg
-            fill="none"
-            height="13"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.9"
-            viewBox="0 0 24 24"
-            width="13"
-        >
-            <path d="M14 5h5v5" />
-            <path d="M10 14 19 5" />
-            <path d="M19 14v4a1 1 0 0 1-1 1h-12a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4" />
-        </svg>
-    );
-}
-
-function RejectIcon() {
-    return (
-        <svg
-            fill="none"
-            height="13"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.9"
-            viewBox="0 0 24 24"
-            width="13"
-        >
-            <line x1="18" x2="6" y1="6" y2="18" />
-            <line x1="6" x2="18" y1="6" y2="18" />
-        </svg>
-    );
-}
-
-function KeepIcon() {
-    return (
-        <svg
-            fill="none"
-            height="13"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2.2"
-            viewBox="0 0 24 24"
-            width="13"
-        >
-            <polyline points="20 6 9 17 4 12" />
-        </svg>
-    );
-}
-
 function getReviewBadgeLabel(item: ReviewFileItem): string {
     if (item.tone.badge) {
         return item.tone.badge;
@@ -94,16 +40,6 @@ const ACTION_BUTTON_STYLE: CSSProperties = {
     fontWeight: 600,
     minHeight: 28,
     padding: "0 10px",
-};
-
-const COMPACT_ICON_BUTTON_STYLE: CSSProperties = {
-    alignItems: "center",
-    borderRadius: 8,
-    display: "inline-flex",
-    height: 26,
-    justifyContent: "center",
-    minWidth: 26,
-    padding: 0,
 };
 
 export interface ReviewFileRowProps {
@@ -134,8 +70,8 @@ export function ReviewFileRow({
     variant,
 }: ReviewFileRowProps) {
     const badgeLabel = getReviewBadgeLabel(item);
-    const compactPath = getCompactPath(item.file.path);
     const canShowOpen = item.canOpen && onOpen;
+    const compactPath = getCompactPath(item.file.path);
 
     if (variant === "compact") {
         return (
@@ -143,121 +79,53 @@ export function ReviewFileRow({
                 data-review-file-key={item.file.identityKey}
                 data-review-file-updated-at={item.file.updatedAt}
                 style={{
-                    ...getToneBorderStyle(item.tone.accent),
-                    backgroundColor: "var(--color-bg-elevated)",
-                    border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-                    borderRadius: 12,
                     overflow: "hidden",
+                    borderTop:
+                        "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)",
                 }}
             >
-                <div
-                    style={{
-                        alignItems: "center",
-                        display: "grid",
-                        gap: 10,
-                        gridTemplateColumns:
-                            "auto auto minmax(0, 1fr) auto auto",
-                        padding: "10px 12px",
-                    }}
-                >
-                    <button
-                        aria-label={`${expanded ? "Collapse" : "Expand"} ${item.file.path}`}
-                        onClick={onToggle}
-                        style={{
-                            alignItems: "center",
-                            backgroundColor:
-                                "color-mix(in srgb, var(--color-bg-secondary) 68%, transparent)",
-                            border: "none",
-                            borderRadius: 7,
-                            color: "var(--color-text-secondary)",
-                            cursor: "pointer",
-                            display: "inline-flex",
-                            fontSize: "0.7em",
-                            height: 20,
-                            justifyContent: "center",
-                            transform: expanded
-                                ? "rotate(90deg)"
-                                : "rotate(0deg)",
-                            transition: "transform 140ms ease",
-                            width: 20,
-                        }}
-                        type="button"
-                    >
-                        ▸
-                    </button>
-                    <span
+                <div className="flex items-center gap-2.5 px-2.5 py-1.5">
+                    <div
                         aria-hidden="true"
-                        style={{
-                            backgroundColor: item.tone.accent,
-                            borderRadius: 999,
-                            height: 8,
-                            width: 8,
-                        }}
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: item.tone.accent }}
                     />
-                    <button
-                        className="min-w-0 text-left"
-                        onClick={onToggle}
+                    <span
+                        className="min-w-0 flex-1 truncate"
                         style={{
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            minWidth: 0,
-                            padding: 0,
+                            color: "var(--color-text-primary)",
+                            fontSize: "0.84em",
+                            fontWeight: 600,
                         }}
-                        type="button"
                     >
-                        <div className="flex items-center gap-2">
+                        {getFileNameFromPath(item.file.path)}
+                        {item.tone.badge ? (
                             <span
-                                className="truncate"
+                                className="ml-1.5 rounded-full px-1.5 py-0.5"
                                 style={{
-                                    color: "var(--color-text-primary)",
-                                    fontSize: "0.82em",
-                                    fontWeight: 600,
-                                }}
-                            >
-                                {getFileNameFromPath(item.file.path)}
-                            </span>
-                            <span
-                                style={{
-                                    backgroundColor: `color-mix(in srgb, ${item.tone.accent} 10%, transparent)`,
-                                    borderRadius: 999,
+                                    backgroundColor: `color-mix(in srgb, ${item.tone.accent} 12%, transparent)`,
                                     color: item.tone.accent,
-                                    fontSize: "0.62em",
+                                    fontSize: "0.8em",
                                     fontWeight: 700,
                                     letterSpacing: "0.04em",
-                                    padding: "2px 6px",
                                     textTransform: "uppercase",
                                 }}
                             >
                                 {badgeLabel}
                             </span>
-                        </div>
-                        <div
-                            className="truncate"
-                            style={{
-                                color: "var(--color-text-secondary)",
-                                fontSize: "0.72em",
-                                marginTop: 2,
-                            }}
-                        >
-                            {compactPath} · {item.summary}
-                        </div>
-                    </button>
+                        ) : null}
+                    </span>
                     <div
+                        className="flex shrink-0 items-center gap-1 text-right"
                         style={{
-                            display: "flex",
-                            flexShrink: 0,
-                            gap: 8,
-                            justifyContent: "flex-end",
-                            minWidth: 52,
+                            fontSize: "0.76em",
                         }}
                     >
                         {item.stats.additions > 0 ? (
-                            <span
+                            <div
                                 style={{
                                     color: "var(--diff-add)",
-                                    fontSize: "0.74em",
-                                    fontWeight: 700,
+                                    fontWeight: 600,
                                 }}
                             >
                                 +
@@ -265,14 +133,13 @@ export function ReviewFileRow({
                                     item.stats.additions,
                                     item.stats.approximate,
                                 )}
-                            </span>
+                            </div>
                         ) : null}
                         {item.stats.deletions > 0 ? (
-                            <span
+                            <div
                                 style={{
                                     color: "var(--diff-remove)",
-                                    fontSize: "0.74em",
-                                    fontWeight: 700,
+                                    fontWeight: 600,
                                 }}
                             >
                                 -
@@ -280,73 +147,85 @@ export function ReviewFileRow({
                                     item.stats.deletions,
                                     item.stats.approximate,
                                 )}
-                            </span>
+                            </div>
                         ) : null}
                     </div>
-                    <div
-                        style={{
-                            display: "flex",
-                            flexShrink: 0,
-                            gap: 6,
-                            justifyContent: "flex-end",
-                        }}
-                    >
-                        {canShowOpen ? (
-                            <button
-                                aria-label="Open File"
-                                onClick={onOpen}
-                                style={{
-                                    ...COMPACT_ICON_BUTTON_STYLE,
-                                    ...getNeutralButtonStyle(),
-                                }}
-                                title="Open File"
-                                type="button"
+                    {canShowOpen ? (
+                        <button
+                            aria-label="Open File"
+                            onClick={onOpen}
+                            className="review-action-btn shrink-0 rounded-md p-1"
+                            style={getAccentButtonStyle(item.tone.accent)}
+                            title="Open File"
+                            type="button"
+                        >
+                            <svg
+                                fill="none"
+                                height="12"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="2"
+                                viewBox="0 0 24 24"
+                                width="12"
                             >
-                                <OpenFileIcon />
-                            </button>
-                        ) : null}
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                                <polyline points="15 3 21 3 21 9" />
+                                <line x1="10" x2="21" y1="14" y2="3" />
+                            </svg>
+                        </button>
+                    ) : null}
+                    <div className="flex shrink-0 items-center gap-1">
                         <button
                             aria-label="Reject"
-                            className="review-action-btn"
+                            className="review-action-btn shrink-0 rounded-md p-1"
                             disabled={!item.canReject}
                             onClick={onReject}
                             style={{
-                                ...COMPACT_ICON_BUTTON_STYLE,
                                 ...getDangerButtonStyle(!item.canReject),
                             }}
                             title="Reject"
                             type="button"
                         >
-                            <RejectIcon />
+                            <svg
+                                fill="none"
+                                height="12"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="2.2"
+                                viewBox="0 0 24 24"
+                                width="12"
+                            >
+                                <line x1="18" x2="6" y1="6" y2="18" />
+                                <line x1="6" x2="18" y1="6" y2="18" />
+                            </svg>
                         </button>
                         <button
                             aria-label="Keep"
-                            className="review-action-btn"
+                            className="review-action-btn shrink-0 rounded-md p-1"
                             onClick={onKeep}
                             style={{
-                                ...COMPACT_ICON_BUTTON_STYLE,
-                                ...getAccentButtonStyle(item.tone.accent),
+                                ...getAccentButtonStyle(),
                             }}
                             title="Keep"
                             type="button"
                         >
-                            <KeepIcon />
+                            <svg
+                                fill="none"
+                                height="12"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="2.2"
+                                viewBox="0 0 24 24"
+                                width="12"
+                            >
+                                <polyline points="20 6 9 17 4 12" />
+                            </svg>
                         </button>
                     </div>
                 </div>
-                <EditedFileDiffPreview
-                    compactLineNumbers
-                    diff={item.diff}
-                    diffZoom={diffZoom}
-                    expanded={expanded}
-                    file={item.file}
-                    lineWrapping={lineWrapping}
-                    onKeepHunk={item.canResolveHunks ? onKeepHunk : undefined}
-                    onRejectHunk={
-                        item.canResolveHunks ? onRejectHunk : undefined
-                    }
-                    testId={`review-file-diff:${item.file.identityKey}`}
-                />
             </div>
         );
     }
@@ -403,8 +282,8 @@ export function ReviewFileRow({
                     style={{
                         backgroundColor: item.tone.accent,
                         borderRadius: 999,
-                        height: 8,
-                        width: 8,
+                        height: 6,
+                        width: 6,
                     }}
                 />
                 <button
@@ -470,7 +349,7 @@ export function ReviewFileRow({
                             style={{
                                 color: "var(--diff-add)",
                                 fontSize: "0.78em",
-                                fontWeight: 700,
+                                fontWeight: 600,
                             }}
                         >
                             +
@@ -485,7 +364,7 @@ export function ReviewFileRow({
                             style={{
                                 color: "var(--diff-remove)",
                                 fontSize: "0.78em",
-                                fontWeight: 700,
+                                fontWeight: 600,
                             }}
                         >
                             -
