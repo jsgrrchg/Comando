@@ -17,7 +17,10 @@ import type {
     GeminiAuthMethodId,
 } from "@shared/ipc";
 
-import type { QueuedPrompt } from "@renderer/app/ai/sessionReviewContracts";
+import {
+    DEFAULT_AI_DIFF_ZOOM,
+    type QueuedPrompt,
+} from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -33,12 +36,18 @@ import {
     composerPartsToPlainText,
     createEmptyComposerParts,
 } from "./chat/composerParts";
+import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
     deriveToolActivityReviewEntries,
     type ToolActivityReviewEntry,
 } from "./chat/toolActivityReviewModel";
+import {
+    deriveReviewItems,
+    deriveReviewSummary,
+    type ReviewFileItem,
+} from "./review/editedFilesPresentationModel";
 
 /* ─── Types ─── */
 
@@ -123,8 +132,14 @@ export function ChatTabView({
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const clearDraftAttachments = useAiStore((s) => s.clearDraftAttachments);
 
+    const keepAllTrackedFiles = useAiStore((s) => s.keepAllTrackedFiles);
+    const keepTrackedFile = useAiStore((s) => s.keepTrackedFile);
+    const keepTrackedFileHunks = useAiStore((s) => s.keepTrackedFileHunks);
     const removeDraftFileContext = useAiStore((s) => s.removeDraftFileContext);
     const clearDraftFileContexts = useAiStore((s) => s.clearDraftFileContexts);
+    const rejectAllTrackedFiles = useAiStore((s) => s.rejectAllTrackedFiles);
+    const rejectTrackedFile = useAiStore((s) => s.rejectTrackedFile);
+    const rejectTrackedFileHunks = useAiStore((s) => s.rejectTrackedFileHunks);
     const setSessionConfigOption = useAiStore((s) => s.setSessionConfigOption);
     const setSessionMode = useAiStore((s) => s.setSessionMode);
     const setSessionModel = useAiStore((s) => s.setSessionModel);
@@ -310,13 +325,39 @@ export function ChatTabView({
         snapshot.models.length > 0 ||
         snapshot.modes.length > 0;
 
-    const pendingReviewCount = useMemo(
+    const pendingTrackedFiles = useMemo(
         () =>
             snapshot.trackedFiles.filter(
                 (trackedFile) => trackedFile.reviewState === "pending",
-            ).length,
+            ),
         [snapshot.trackedFiles],
     );
+    const pendingReviewOpenablePathSet = useMemo(() => {
+        if (!tab.projectId) {
+            return new Set<string>();
+        }
+
+        return new Set(
+            pendingTrackedFiles
+                .filter((trackedFile) => trackedFile.kind !== "delete")
+                .filter((trackedFile) => !looksAbsolutePath(trackedFile.path))
+                .map((trackedFile) => trackedFile.path),
+        );
+    }, [pendingTrackedFiles, tab.projectId]);
+    const pendingReviewItems = useMemo(
+        () =>
+            deriveReviewItems(
+                pendingTrackedFiles,
+                pendingReviewOpenablePathSet,
+            ),
+        [pendingReviewOpenablePathSet, pendingTrackedFiles],
+    );
+    const pendingReviewSummary = useMemo(
+        () => deriveReviewSummary(pendingReviewItems),
+        [pendingReviewItems],
+    );
+    const pendingReviewCount = pendingReviewItems.length;
+    const diffZoom = sessionState?.diffZoom ?? DEFAULT_AI_DIFF_ZOOM;
     const hasComposerContext =
         pendingPermission !== null ||
         pendingUserInput !== null ||
@@ -525,6 +566,71 @@ export function ChatTabView({
             setComposerError(null);
         },
         [editQueuedPrompt, onDraftChange, tab.sessionId],
+    );
+
+    const handleKeepAllPendingReview = useCallback(() => {
+        void keepAllTrackedFiles(tab.sessionId);
+    }, [keepAllTrackedFiles, tab.sessionId]);
+
+    const handleRejectAllPendingReview = useCallback(() => {
+        void rejectAllTrackedFiles(tab.sessionId);
+    }, [rejectAllTrackedFiles, tab.sessionId]);
+
+    const handleOpenPendingReviewItem = useCallback(
+        (item: ReviewFileItem) => {
+            if (!tab.projectId || !item.canOpen) {
+                return;
+            }
+
+            void onOpenFile(
+                tab.projectId,
+                item.file.path,
+                tab.worktreeId ?? null,
+            );
+        },
+        [onOpenFile, tab.projectId, tab.worktreeId],
+    );
+
+    const handleKeepPendingReviewItem = useCallback(
+        (item: ReviewFileItem) => {
+            void keepTrackedFile({
+                path: item.file.path,
+                sessionId: tab.sessionId,
+            });
+        },
+        [keepTrackedFile, tab.sessionId],
+    );
+
+    const handleRejectPendingReviewItem = useCallback(
+        (item: ReviewFileItem) => {
+            void rejectTrackedFile({
+                path: item.file.path,
+                sessionId: tab.sessionId,
+            });
+        },
+        [rejectTrackedFile, tab.sessionId],
+    );
+
+    const handleKeepPendingReviewHunk = useCallback(
+        (item: ReviewFileItem, hunkId: string) => {
+            void keepTrackedFileHunks({
+                hunkIds: [hunkId],
+                path: item.file.path,
+                sessionId: tab.sessionId,
+            });
+        },
+        [keepTrackedFileHunks, tab.sessionId],
+    );
+
+    const handleRejectPendingReviewHunk = useCallback(
+        (item: ReviewFileItem, hunkId: string) => {
+            void rejectTrackedFileHunks({
+                hunkIds: [hunkId],
+                path: item.file.path,
+                sessionId: tab.sessionId,
+            });
+        },
+        [rejectTrackedFileHunks, tab.sessionId],
     );
 
     useEffect(() => {
@@ -1046,10 +1152,9 @@ export function ChatTabView({
                                     activity={row.reviewEntry.activity}
                                     key={row.reviewEntry.activity.id}
                                     onOpenFile={onOpenFile}
-                                    pendingTrackedFiles={
-                                        row.reviewEntry.pendingTrackedFiles
-                                    }
+                                    trackedFiles={row.reviewEntry.trackedFiles}
                                     projectId={tab.projectId}
+                                    worktreeId={tab.worktreeId ?? null}
                                 />
                             ),
                         )}
@@ -1096,29 +1201,21 @@ export function ChatTabView({
                             {composerError ? renderError(composerError) : null}
 
                             {pendingReviewCount > 0 ? (
-                                <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-panel px-4 py-3">
-                                    <div>
-                                        <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
-                                            Pending Review
-                                        </div>
-                                        <div className="mt-1 text-sm text-text-primary">
-                                            {pendingReviewCount} pending tracked
-                                            file
-                                            {pendingReviewCount === 1
-                                                ? ""
-                                                : "s"}
-                                        </div>
-                                    </div>
-                                    <button
-                                        className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
-                                        onClick={() => {
-                                            void onOpenReview();
-                                        }}
-                                        type="button"
-                                    >
-                                        Open Review
-                                    </button>
-                                </div>
+                                <EditedFilesBufferPanel
+                                    diffZoom={diffZoom}
+                                    items={pendingReviewItems}
+                                    onKeepAll={handleKeepAllPendingReview}
+                                    onKeepHunk={handleKeepPendingReviewHunk}
+                                    onKeepItem={handleKeepPendingReviewItem}
+                                    onOpenItem={handleOpenPendingReviewItem}
+                                    onOpenReview={() => {
+                                        void onOpenReview();
+                                    }}
+                                    onRejectAll={handleRejectAllPendingReview}
+                                    onRejectHunk={handleRejectPendingReviewHunk}
+                                    onRejectItem={handleRejectPendingReviewItem}
+                                    summary={pendingReviewSummary}
+                                />
                             ) : null}
                         </div>
                     ) : null}
@@ -2814,4 +2911,10 @@ function formatAttachmentSize(sizeBytes: number | null): string {
 
 function toAttachmentDataUrl(attachment: AiImageAttachment): string {
     return `data:${attachment.mimeType};base64,${attachment.dataBase64}`;
+}
+
+function looksAbsolutePath(candidatePath: string): boolean {
+    return (
+        candidatePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(candidatePath)
+    );
 }

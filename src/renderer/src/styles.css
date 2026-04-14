@@ -38,6 +38,10 @@
     font-family: var(--font-sans);
     background: transparent;
     color: var(--color-text-primary);
+    --diff-add: #16a34a;
+    --diff-remove: #dc2626;
+    --diff-warn: #d97706;
+    --diff-move: #7c3aed;
 }
 
 :root.dark {
@@ -61,6 +65,10 @@
     --color-accent-strong: #818cf8;
     --color-selection: rgba(129, 140, 248, 0.2);
     --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
+    --diff-add: #4ade80;
+    --diff-remove: #f87171;
+    --diff-warn: #fbbf24;
+    --diff-move: #a78bfa;
 }
 
 * {
@@ -79,6 +87,98 @@ body {
     overflow: hidden;
     font-size: 13px;
     background: transparent;
+}
+
+.cm-static-code {
+    color: inherit;
+}
+
+.cm-static-token-comment {
+    color: color-mix(in srgb, var(--color-text-secondary) 92%, transparent);
+    font-style: italic;
+}
+
+.cm-static-token-keyword {
+    color: color-mix(in srgb, var(--diff-warn) 78%, var(--color-text-primary));
+}
+
+.cm-static-token-variable {
+    color: color-mix(
+        in srgb,
+        var(--color-text-primary) 88%,
+        var(--color-accent)
+    );
+}
+
+.cm-static-token-definition {
+    color: color-mix(
+        in srgb,
+        var(--color-text-primary) 65%,
+        var(--color-accent)
+    );
+    font-weight: 600;
+}
+
+.cm-static-token-function {
+    color: color-mix(in srgb, #0f766e 86%, var(--color-text-primary));
+}
+
+.cm-static-token-type {
+    color: color-mix(in srgb, #b45309 78%, var(--color-text-primary));
+}
+
+.cm-static-token-property {
+    color: color-mix(in srgb, var(--color-text-primary) 94%, transparent);
+}
+
+.cm-static-token-tag {
+    color: color-mix(
+        in srgb,
+        var(--color-accent) 62%,
+        var(--color-text-primary)
+    );
+}
+
+.cm-static-token-attribute {
+    color: color-mix(
+        in srgb,
+        var(--color-accent) 72%,
+        var(--color-text-primary)
+    );
+}
+
+.cm-static-token-attribute-value,
+.cm-static-token-string {
+    color: color-mix(in srgb, var(--diff-add) 76%, var(--color-text-primary));
+}
+
+.cm-static-token-number,
+.cm-static-token-atom {
+    color: color-mix(in srgb, var(--diff-move) 72%, var(--color-text-primary));
+}
+
+.cm-static-token-operator,
+.cm-static-token-punctuation {
+    color: color-mix(
+        in srgb,
+        var(--color-text-primary) 80%,
+        var(--color-text-secondary)
+    );
+}
+
+.cm-static-token-meta,
+.cm-static-token-escape {
+    color: color-mix(
+        in srgb,
+        var(--color-accent) 66%,
+        var(--color-text-secondary)
+    );
+}
+
+.cm-static-token-invalid {
+    color: var(--diff-remove);
+    text-decoration: wavy underline
+        color-mix(in srgb, var(--diff-remove) 72%, transparent);
 }
 
 button,

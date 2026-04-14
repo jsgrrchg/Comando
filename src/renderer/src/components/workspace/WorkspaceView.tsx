@@ -1424,6 +1424,10 @@ function FileTabView({
             .revealLineInCenter(lineNumber);
     }, [selectedHunk, showInlineReview]);
 
+    const handleEditorBeforeMount = useCallback(() => {
+        applyMonacoThemeFromDom();
+    }, []);
+
     if (!document) {
         return (
             <div className="flex h-full items-center justify-center px-6 text-center">
@@ -1477,9 +1481,6 @@ function FileTabView({
     const editorLineHeightPx = Math.round(
         editorSettings.fontSize * editorSettings.lineHeight,
     );
-    const handleEditorBeforeMount = useCallback(() => {
-        applyMonacoThemeFromDom();
-    }, []);
     const reviewBar = trackedFile
         ? (() => {
               const activeTrackedFile = trackedFile;

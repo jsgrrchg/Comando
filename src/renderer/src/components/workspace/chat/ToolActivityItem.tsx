@@ -2,6 +2,8 @@ import { useState } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
+import { ChangeReviewPanel } from "./ChangeReviewPanel";
+
 /* ─── Tool icon SVGs ─── */
 
 function ReadIcon() {
@@ -157,9 +159,9 @@ function getToolIcon(kind: string) {
 
 function isFileToolActivity(
     activity: AiToolActivity,
-    pendingTrackedFiles: readonly AiTrackedFile[],
+    trackedFiles: readonly AiTrackedFile[],
 ): boolean {
-    if (pendingTrackedFiles.length > 0) return true;
+    if (trackedFiles.length > 0) return true;
     if (FILE_TOOL_KINDS.has(activity.kind)) return true;
     if (activity.locations.length > 0) return true;
     if (activity.diffs.length > 0) return true;
@@ -192,14 +194,17 @@ function FileToolMessage({
     onOpenFile,
     pendingTrackedFiles,
     projectId,
+    worktreeId,
 }: {
     readonly activity: AiToolActivity;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
+        worktreeId?: string | null,
     ) => Promise<void>;
     readonly pendingTrackedFiles: readonly AiTrackedFile[];
     readonly projectId: string | null;
+    readonly worktreeId: string | null;
 }) {
     const [expanded, setExpanded] = useState(false);
     const isInProgress = activity.status === "in_progress";
@@ -315,7 +320,11 @@ function FileToolMessage({
                                             projectId &&
                                             !looksAbsolutePath(loc)
                                         )
-                                            void onOpenFile(projectId, loc);
+                                            void onOpenFile(
+                                                projectId,
+                                                loc,
+                                                worktreeId,
+                                            );
                                     }}
                                     style={{
                                         backgroundColor:
@@ -493,24 +502,46 @@ function GenericToolMessage({
 export function ToolActivityItem({
     activity,
     onOpenFile,
-    pendingTrackedFiles = [],
+    trackedFiles = [],
     projectId,
+    worktreeId = null,
 }: {
     readonly activity: AiToolActivity;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
+        worktreeId?: string | null,
     ) => Promise<void>;
-    readonly pendingTrackedFiles?: readonly AiTrackedFile[];
+    readonly trackedFiles?: readonly AiTrackedFile[];
     readonly projectId: string | null;
+    readonly worktreeId?: string | null;
 }) {
-    if (isFileToolActivity(activity, pendingTrackedFiles)) {
+    const pendingTrackedFiles = trackedFiles.filter(
+        (trackedFile) => trackedFile.reviewState === "pending",
+    );
+    const hasInlineReview =
+        activity.diffs.length > 0 || trackedFiles.length > 0;
+
+    if (isFileToolActivity(activity, trackedFiles)) {
+        if (hasInlineReview) {
+            return (
+                <ChangeReviewPanel
+                    activity={activity}
+                    onOpenFile={onOpenFile}
+                    projectId={projectId}
+                    trackedFiles={trackedFiles}
+                    worktreeId={worktreeId}
+                />
+            );
+        }
+
         return (
             <FileToolMessage
                 activity={activity}
                 onOpenFile={onOpenFile}
                 pendingTrackedFiles={pendingTrackedFiles}
                 projectId={projectId}
+                worktreeId={worktreeId}
             />
         );
     }

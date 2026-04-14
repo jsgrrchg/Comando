@@ -1,6 +1,12 @@
 import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
 
-import { getChatCodeLabelFontSize } from "./chat/chatCodeSizing";
+import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
+import { HighlightedCodeText } from "../../app/editor/staticCodeHighlight";
+import { useMarkdownCodeLanguageSupport } from "../../app/editor/useCodeLanguageSupport";
+import {
+    getChatCodeBlockFontSize,
+    getChatCodeLabelFontSize,
+} from "./chat/chatCodeSizing";
 import { ChatInlinePill } from "./chat/ChatInlinePill";
 import { getChatPillMetrics } from "./chat/chatPillMetrics";
 
@@ -68,7 +74,7 @@ function parseBlocks(text: string): Block[] {
             blocks.push({ content: before, info: "", type: "text" });
         }
         blocks.push({
-            content: match[2] ?? "",
+            content: (match[2] ?? "").replace(/\n$/, ""),
             info: (match[1] ?? "").trim().toLowerCase(),
             type: "code",
         });
@@ -228,6 +234,13 @@ function CodeBlock({
     readonly chatFontSize?: number;
 }) {
     const [copied, setCopied] = useState(false);
+    const languageSupport = useMarkdownCodeLanguageSupport(block.info);
+    const languageToken = extractFenceLanguageToken(block.info ?? "");
+    const codeFontSize = getChatCodeBlockFontSize(chatFontSize);
+    const languageLabel =
+        languageToken?.toLowerCase() === "md"
+            ? "Markdown"
+            : (languageToken ?? block.info?.trim());
 
     const handleCopy = useCallback(() => {
         void navigator.clipboard.writeText(block.content).then(() => {
@@ -269,7 +282,7 @@ function CodeBlock({
                 border: "1px solid var(--color-border)",
             }}
         >
-            {block.info ? (
+            {languageLabel ? (
                 <div
                     className="flex items-center justify-between px-3 py-2 pr-10"
                     style={{
@@ -280,12 +293,12 @@ function CodeBlock({
                         textTransform: "uppercase",
                     }}
                 >
-                    <span>{block.info}</span>
+                    <span>{languageLabel}</span>
                 </div>
             ) : null}
             <div
                 className="absolute right-2"
-                style={{ top: block.info ? 5 : 8 }}
+                style={{ top: languageLabel ? 5 : 8 }}
             >
                 {copyButton}
             </div>
@@ -294,7 +307,7 @@ function CodeBlock({
                 style={{
                     color: "var(--color-text-primary)",
                     fontFamily: "var(--font-mono)",
-                    fontSize: "0.85em",
+                    fontSize: codeFontSize,
                     lineHeight: 1.6,
                     margin: 0,
                     overflowWrap: "anywhere",
@@ -302,7 +315,20 @@ function CodeBlock({
                     wordBreak: "break-word",
                 }}
             >
-                {block.content}
+                <code
+                    style={{
+                        color: "var(--color-text-primary)",
+                        whiteSpace: "inherit",
+                        overflowWrap: "inherit",
+                        wordBreak: "inherit",
+                    }}
+                >
+                    <HighlightedCodeText
+                        text={block.content}
+                        language={languageSupport}
+                        segmentKeyPrefix={`chat-code:${languageToken ?? "plain"}:${block.content.length}`}
+                    />
+                </code>
             </pre>
         </div>
     );
