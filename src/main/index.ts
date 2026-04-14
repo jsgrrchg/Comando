@@ -9,6 +9,7 @@ import {
     type AppBootstrapSnapshot,
     type GitRepositoryInvalidation,
     type GitRepositorySnapshot,
+    type OpenProjectWindowInput,
     type PersistenceSnapshot,
     type ProjectTreeInvalidation,
     type TerminalDataEvent,
@@ -131,6 +132,9 @@ if (!hasSingleInstanceLock) {
             },
             persistenceService,
             gitService,
+            openProjectWindow: (input) => {
+                openOrFocusProjectWindow(input);
+            },
             projectService,
             settingsService,
             terminalService,
@@ -231,13 +235,68 @@ function restoreMainWindows(): void {
 }
 
 function openNewMainWindow(projectId: string | null): void {
+    openNewMainWindowWithOptions({
+        projectId,
+    });
+}
+
+function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
     if (!persistenceService) {
         return;
     }
 
-    if (projectId) {
-        const existingWindow =
-            windowRegistry.getMainWindowByProjectId(projectId);
+    const existingWindow = windowRegistry.getMainWindowByProjectId(
+        input.projectId,
+    );
+    if (!existingWindow) {
+        openNewMainWindowWithOptions({
+            projectId: input.projectId,
+            worktreeId: input.worktreeId,
+        });
+        return;
+    }
+
+    const context = windowRegistry.getContextByBrowserWindow(existingWindow);
+    if (!context || context.windowKind !== "main") {
+        focusExistingWindow(existingWindow);
+        return;
+    }
+
+    if (input.worktreeId !== undefined) {
+        persistenceService.saveActiveProjectId(
+            context.windowId,
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+        windowRegistry.updateMainWindowProjectId(
+            context.windowId,
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+    }
+
+    focusExistingWindow(existingWindow);
+
+    if (input.worktreeId !== undefined || input.branchName !== undefined) {
+        existingWindow.webContents.send(
+            IPC_EVENTS.projectWindowRequested,
+            input,
+        );
+    }
+}
+
+function openNewMainWindowWithOptions(input: {
+    readonly projectId: string | null;
+    readonly worktreeId?: string | null;
+}): void {
+    if (!persistenceService) {
+        return;
+    }
+
+    if (input.projectId) {
+        const existingWindow = windowRegistry.getMainWindowByProjectId(
+            input.projectId,
+        );
         if (existingWindow) {
             focusExistingWindow(existingWindow);
             return;
@@ -255,11 +314,13 @@ function openNewMainWindow(projectId: string | null): void {
     const snapshot = persistenceService.createMainWindowSession(
         sourceShellState === undefined
             ? {
-                  projectId,
+                  projectId: input.projectId,
+                  worktreeId: input.worktreeId,
               }
             : {
-                  projectId,
+                  projectId: input.projectId,
                   shellState: sourceShellState,
+                  worktreeId: input.worktreeId,
               },
     );
 

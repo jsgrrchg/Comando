@@ -7,6 +7,7 @@ export interface ShortcutDefinition {
         | "new_terminal"
         | "open_settings"
         | "save_file"
+        | "toggle_sidebar"
         | "increase_editor_font_size"
         | "decrease_editor_font_size"
         | "reset_editor_font_size";
@@ -22,7 +23,8 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     {
         id: "attach_line_fragment",
         label: "Attach selected lines",
-        description: "Add the selected editor lines to the chat composer.",
+        description:
+            "Insert the selected editor lines into the chat composer as a pill.",
         keys: {
             mac: "Cmd+L",
             windows: "Ctrl+L",
@@ -79,6 +81,16 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
             windows: "Ctrl+S",
         },
         section: "File",
+    },
+    {
+        id: "toggle_sidebar",
+        label: "Toggle sidebar",
+        description: "Collapse or expand the project sidebar.",
+        keys: {
+            mac: "Cmd+B",
+            windows: "Ctrl+B",
+        },
+        section: "General",
     },
     {
         id: "increase_editor_font_size",

@@ -16,16 +16,20 @@ const initialLayout = createDefaultShellLayout();
 
 interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
+    readonly leftCollapsed: boolean;
     readonly viewportWidth: number;
     focusSurface: (surface: ShellSurface) => void;
     hydrate: (snapshot: PersistedShellState | null) => void;
     resizePanel: (side: ShellPanelSide, nextWidth: number) => void;
     nudgePanel: (side: ShellPanelSide, delta: number) => void;
+    setLeftCollapsed: (collapsed: boolean) => void;
+    toggleLeftCollapsed: () => void;
     syncViewport: (viewportWidth: number) => void;
 }
 
 export const useShellStore = create<ShellStore>((set) => ({
     activeSurface: "workspace",
+    leftCollapsed: false,
     leftWidth: initialLayout.leftWidth,
     rightWidth: initialLayout.rightWidth,
     viewportWidth: 1440,
@@ -37,6 +41,7 @@ export const useShellStore = create<ShellStore>((set) => ({
 
         set((state) => ({
             activeSurface: snapshot.activeSurface as ShellSurface,
+            leftCollapsed: snapshot.leftCollapsed ?? false,
             viewportWidth: state.viewportWidth,
             ...normalizeShellLayout(snapshot, state.viewportWidth),
         }));
@@ -49,6 +54,9 @@ export const useShellStore = create<ShellStore>((set) => ({
         set((state) =>
             nudgeShellPanel(state, side, delta, state.viewportWidth),
         ),
+    setLeftCollapsed: (collapsed) => set({ leftCollapsed: collapsed }),
+    toggleLeftCollapsed: () =>
+        set((state) => ({ leftCollapsed: !state.leftCollapsed })),
     syncViewport: (viewportWidth) =>
         set((state) => ({
             viewportWidth,

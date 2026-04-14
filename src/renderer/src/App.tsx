@@ -224,11 +224,15 @@ export function App() {
     const activeSurface = useShellStore((state) => state.activeSurface);
     const focusSurface = useShellStore((state) => state.focusSurface);
     const hydrateShell = useShellStore((state) => state.hydrate);
+    const leftCollapsed = useShellStore((state) => state.leftCollapsed);
     const leftWidth = useShellStore((state) => state.leftWidth);
     const nudgePanel = useShellStore((state) => state.nudgePanel);
     const resizePanel = useShellStore((state) => state.resizePanel);
     const rightWidth = useShellStore((state) => state.rightWidth);
     const syncViewport = useShellStore((state) => state.syncViewport);
+    const toggleLeftCollapsed = useShellStore(
+        (state) => state.toggleLeftCollapsed,
+    );
     const applyAiRuntimeStatus = useAiStore(
         (state) => state.applyRuntimeStatus,
     );
@@ -252,8 +256,10 @@ export function App() {
     void isFileTreeSearchLoading;
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [projectFilter, setProjectFilter] = useState("");
+    const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarSearchVisible, setSidebarSearchVisible] = useState(false);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
+    const overlayDismissRef = useRef<number | null>(null);
 
     useEffect(() => {
         let isDisposed = false;
@@ -344,6 +350,58 @@ export function App() {
 
         return unsubscribe;
     }, [refreshGitProject, refreshProjectTabs, refreshProjectTree]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        const unsubscribe = comandoApi.onProjectWindowRequested((payload) => {
+            void (async () => {
+                if (activeProjectId !== payload.projectId) {
+                    await setActiveProject(payload.projectId);
+                }
+
+                const requestedWorktreeId =
+                    payload.worktreeId !== undefined
+                        ? (payload.worktreeId ?? null)
+                        : (useGitStore.getState().activeWorktreeIds[
+                              payload.projectId
+                          ] ?? null);
+
+                if (payload.worktreeId !== undefined) {
+                    await setActiveWorktree(
+                        payload.projectId,
+                        requestedWorktreeId,
+                    );
+                }
+
+                if (payload.branchName !== undefined) {
+                    selectGitBranch(
+                        payload.projectId,
+                        payload.branchName,
+                        requestedWorktreeId,
+                    );
+                }
+
+                await refreshGitProject(payload.projectId, requestedWorktreeId);
+                await refreshProjectTree(
+                    payload.projectId,
+                    requestedWorktreeId,
+                );
+            })();
+        });
+
+        return unsubscribe;
+    }, [
+        activeProjectId,
+        refreshGitProject,
+        refreshProjectTree,
+        selectGitBranch,
+        setActiveProject,
+        setActiveWorktree,
+    ]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -472,6 +530,7 @@ export function App() {
         const timeout = window.setTimeout(() => {
             void comandoApi.saveShellState({
                 activeSurface,
+                leftCollapsed,
                 leftWidth,
                 rightWidth,
             });
@@ -480,7 +539,7 @@ export function App() {
         return () => {
             window.clearTimeout(timeout);
         };
-    }, [activeSurface, leftWidth, persistenceReady, rightWidth]);
+    }, [activeSurface, leftCollapsed, leftWidth, persistenceReady, rightWidth]);
 
     useEffect(() => {
         if (!persistenceReady || !window.comando) {
@@ -618,11 +677,13 @@ export function App() {
         );
     }, [projectFilter, projects]);
 
-    const gridTemplateColumns = useMemo(
-        () =>
-            `${leftWidth}px ${shellLayoutConstraints.handleWidth}px minmax(0, 1fr) ${shellLayoutConstraints.handleWidth}px ${rightWidth}px`,
-        [leftWidth, rightWidth],
-    );
+    const gridTemplateColumns = useMemo(() => {
+        const leftCol = leftCollapsed ? 0 : leftWidth;
+        const leftHandle = leftCollapsed
+            ? 0
+            : shellLayoutConstraints.handleWidth;
+        return `${leftCol}px ${leftHandle}px minmax(0, 1fr) ${shellLayoutConstraints.handleWidth}px ${rightWidth}px`;
+    }, [leftCollapsed, leftWidth, rightWidth]);
 
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
@@ -1186,23 +1247,38 @@ export function App() {
 
     const handleSelectProject = useCallback(
         async (projectId: string) => {
-            await setActiveProject(projectId);
-            const preferredWorktreeId =
-                useGitStore.getState().activeWorktreeIds[projectId] ?? null;
-            await refreshGitProject(projectId, preferredWorktreeId);
-            await refreshProjectTree(projectId, preferredWorktreeId);
+            if (projectId === activeProjectId) {
+                const preferredWorktreeId =
+                    useGitStore.getState().activeWorktreeIds[projectId] ?? null;
+                await refreshGitProject(projectId, preferredWorktreeId);
+                await refreshProjectTree(projectId, preferredWorktreeId);
+                return;
+            }
+
+            await getComandoApi()?.openProjectWindow({
+                projectId,
+            });
         },
-        [refreshGitProject, refreshProjectTree, setActiveProject],
+        [activeProjectId, refreshGitProject, refreshProjectTree],
     );
 
     const handleSelectWorktree = useCallback(
         async (projectId: string, worktreeId: string) => {
+            if (projectId !== activeProjectId) {
+                await getComandoApi()?.openProjectWindow({
+                    projectId,
+                    worktreeId,
+                });
+                return;
+            }
+
             await setActiveProject(projectId);
             await setActiveWorktree(projectId, worktreeId);
             await refreshGitProject(projectId, worktreeId);
             await refreshProjectTree(projectId, worktreeId);
         },
         [
+            activeProjectId,
             refreshGitProject,
             refreshProjectTree,
             setActiveProject,
@@ -1212,6 +1288,17 @@ export function App() {
 
     const handleSelectBranch = useCallback(
         async (projectId: string, branchName: string) => {
+            if (projectId !== activeProjectId) {
+                await getComandoApi()?.openProjectWindow({
+                    branchName,
+                    projectId,
+                    worktreeId:
+                        useGitStore.getState().activeWorktreeIds[projectId] ??
+                        null,
+                });
+                return;
+            }
+
             selectGitBranch(
                 projectId,
                 branchName,
@@ -1223,7 +1310,7 @@ export function App() {
                 useGitStore.getState().activeWorktreeIds[projectId] ?? null,
             );
         },
-        [refreshGitProject, selectGitBranch, setActiveProject],
+        [activeProjectId, refreshGitProject, selectGitBranch, setActiveProject],
     );
 
     const handleCheckoutBranch = useCallback(
@@ -1729,215 +1816,299 @@ export function App() {
         };
     }, [openSettingsWindow]);
 
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                toggleLeftCollapsed();
+                setSidebarOverlayVisible(false);
+            }
+            if (event.key === "Escape" && sidebarOverlayVisible) {
+                setSidebarOverlayVisible(false);
+            }
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [sidebarOverlayVisible, toggleLeftCollapsed]);
+
+    useEffect(() => {
+        if (!isMac) return;
+        const visible = !leftCollapsed || sidebarOverlayVisible;
+        void window.comando?.setTrafficLightVisibility(visible);
+    }, [isMac, leftCollapsed, sidebarOverlayVisible]);
+
+    const sidebarContent = (
+        <>
+            <div
+                className="app-drag relative px-2 pt-2"
+                style={isMac ? { paddingTop: 42 } : undefined}
+            >
+                {isMac && (
+                    <button
+                        className="app-no-drag"
+                        onClick={() => {
+                            toggleLeftCollapsed();
+                            setSidebarOverlayVisible(false);
+                        }}
+                        style={{
+                            position: "absolute",
+                            top: 14,
+                            right: 8,
+                            background: "none",
+                            border: "none",
+                            padding: 4,
+                            cursor: "pointer",
+                            color: "var(--color-text-secondary)",
+                            borderRadius: 4,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            opacity: 0.6,
+                            transition: "opacity 120ms ease",
+                        }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.opacity = "1";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.opacity = "0.6";
+                        }}
+                        title={
+                            leftCollapsed
+                                ? "Expand sidebar"
+                                : "Collapse sidebar"
+                        }
+                        type="button"
+                    >
+                        <svg
+                            aria-hidden="true"
+                            fill="none"
+                            height="13"
+                            viewBox="0 0 16 16"
+                            width="13"
+                        >
+                            <rect
+                                x="1.5"
+                                y="2.5"
+                                width="13"
+                                height="11"
+                                rx="1.5"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
+                            />
+                            <line
+                                x1="5.5"
+                                y1="2.5"
+                                x2="5.5"
+                                y2="13.5"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
+                            />
+                        </svg>
+                    </button>
+                )}
+                <button
+                    className="sidebar-action-row app-no-drag"
+                    onClick={() => void addProjects()}
+                    type="button"
+                >
+                    <svg
+                        aria-hidden="true"
+                        className="h-4 w-4 shrink-0"
+                        fill="none"
+                        viewBox="0 0 16 16"
+                    >
+                        <path
+                            d="M8 3v10M3 8h10"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeWidth="1.5"
+                        />
+                    </svg>
+                    <span>Add Project</span>
+                </button>
+
+                <button
+                    className="sidebar-action-row app-no-drag"
+                    onClick={() => {
+                        setSidebarSearchVisible((v) => !v);
+                        if (sidebarSearchVisible) setProjectFilter("");
+                    }}
+                    type="button"
+                >
+                    <svg
+                        aria-hidden="true"
+                        className="h-4 w-4 shrink-0"
+                        fill="none"
+                        viewBox="0 0 16 16"
+                    >
+                        <circle
+                            cx="7"
+                            cy="7"
+                            r="4.5"
+                            stroke="currentColor"
+                            strokeWidth="1.3"
+                        />
+                        <path
+                            d="M10.5 10.5L14 14"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeWidth="1.3"
+                        />
+                    </svg>
+                    <span>Search</span>
+                </button>
+
+                {sidebarSearchVisible ? (
+                    <div className="sidebar-search app-no-drag mt-1">
+                        <input
+                            autoFocus
+                            className="sidebar-search-input"
+                            onChange={(event) =>
+                                setProjectFilter(event.target.value)
+                            }
+                            placeholder="Filter projects..."
+                            type="text"
+                            value={projectFilter}
+                        />
+                    </div>
+                ) : null}
+
+                {projectsError ? (
+                    <div className="mt-2 rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-600">
+                        {projectsError}
+                    </div>
+                ) : null}
+            </div>
+
+            <div className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2">
+                {sidebarProjects.length > 0 ? (
+                    <ProjectGitSidebar
+                        onCheckoutBranch={(projectId, branchId) =>
+                            void handleCheckoutBranch(projectId, branchId)
+                        }
+                        onCreateWorktreeFromBranch={(projectId, branchId) =>
+                            void handleCreateWorktreeFromBranch(
+                                projectId,
+                                branchId,
+                            )
+                        }
+                        onSelectBranch={(projectId, branchId) =>
+                            void handleSelectBranch(projectId, branchId)
+                        }
+                        onSelectProject={(projectId) =>
+                            void handleSelectProject(projectId)
+                        }
+                        onSelectWorktree={(projectId, worktreeId) =>
+                            void handleSelectWorktree(projectId, worktreeId)
+                        }
+                        onToggleBranches={toggleGitBranchesExpanded}
+                        onToggleProject={toggleGitProjectExpanded}
+                        onToggleWorktrees={toggleGitWorktreesExpanded}
+                        projects={sidebarProjects}
+                    />
+                ) : (
+                    <div className="px-3 py-4 text-xs text-text-secondary">
+                        Open a folder to start building your git workspace.
+                    </div>
+                )}
+            </div>
+
+            <div className="border-t border-border/50 px-2 py-2">
+                <button
+                    className="sidebar-action-row app-no-drag w-full"
+                    onClick={openSettingsWindow}
+                    type="button"
+                >
+                    <svg
+                        aria-hidden="true"
+                        className="h-4 w-4 shrink-0"
+                        fill="none"
+                        viewBox="0 0 16 16"
+                    >
+                        <path
+                            d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="1"
+                        />
+                        <circle
+                            cx="8"
+                            cy="8"
+                            r="2.1"
+                            stroke="currentColor"
+                            strokeWidth="1.4"
+                        />
+                    </svg>
+                    <span>Settings</span>
+                </button>
+            </div>
+        </>
+    );
+
     return (
         <div className="min-h-screen text-text-primary">
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
                     <div
                         className="grid min-h-0 flex-1"
-                        style={{ gridTemplateColumns }}
+                        style={{
+                            gridTemplateColumns,
+                            transition: dragState
+                                ? undefined
+                                : "grid-template-columns 200ms ease",
+                        }}
                     >
                         <aside
                             className="flex min-h-0 flex-col"
+                            style={
+                                leftCollapsed
+                                    ? { overflow: "hidden" }
+                                    : undefined
+                            }
                             data-active={activeSurface === "projects"}
                             onClick={() => focusSurface("projects")}
                             onFocus={() => focusSurface("projects")}
                             tabIndex={0}
                         >
-                            <div
-                                className="app-drag px-2 pt-2"
-                                style={isMac ? { paddingTop: 42 } : undefined}
-                            >
-                                <button
-                                    className="sidebar-action-row app-no-drag"
-                                    onClick={() => void addProjects()}
-                                    type="button"
-                                >
-                                    <svg
-                                        aria-hidden="true"
-                                        className="h-4 w-4 shrink-0"
-                                        fill="none"
-                                        viewBox="0 0 16 16"
-                                    >
-                                        <path
-                                            d="M8 3v10M3 8h10"
-                                            stroke="currentColor"
-                                            strokeLinecap="round"
-                                            strokeWidth="1.5"
-                                        />
-                                    </svg>
-                                    <span>Add Project</span>
-                                </button>
-
-                                <button
-                                    className="sidebar-action-row app-no-drag"
-                                    onClick={() => {
-                                        setSidebarSearchVisible((v) => !v);
-                                        if (sidebarSearchVisible)
-                                            setProjectFilter("");
-                                    }}
-                                    type="button"
-                                >
-                                    <svg
-                                        aria-hidden="true"
-                                        className="h-4 w-4 shrink-0"
-                                        fill="none"
-                                        viewBox="0 0 16 16"
-                                    >
-                                        <circle
-                                            cx="7"
-                                            cy="7"
-                                            r="4.5"
-                                            stroke="currentColor"
-                                            strokeWidth="1.3"
-                                        />
-                                        <path
-                                            d="M10.5 10.5L14 14"
-                                            stroke="currentColor"
-                                            strokeLinecap="round"
-                                            strokeWidth="1.3"
-                                        />
-                                    </svg>
-                                    <span>Search</span>
-                                </button>
-
-                                {sidebarSearchVisible ? (
-                                    <div className="sidebar-search app-no-drag mt-1">
-                                        <input
-                                            autoFocus
-                                            className="sidebar-search-input"
-                                            onChange={(event) =>
-                                                setProjectFilter(
-                                                    event.target.value,
-                                                )
-                                            }
-                                            placeholder="Filter projects..."
-                                            type="text"
-                                            value={projectFilter}
-                                        />
-                                    </div>
-                                ) : null}
-
-                                {projectsError ? (
-                                    <div className="mt-2 rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-600">
-                                        {projectsError}
-                                    </div>
-                                ) : null}
-                            </div>
-
-                            <div className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2">
-                                {sidebarProjects.length > 0 ? (
-                                    <ProjectGitSidebar
-                                        onCheckoutBranch={(
-                                            projectId,
-                                            branchId,
-                                        ) =>
-                                            void handleCheckoutBranch(
-                                                projectId,
-                                                branchId,
-                                            )
-                                        }
-                                        onCreateWorktreeFromBranch={(
-                                            projectId,
-                                            branchId,
-                                        ) =>
-                                            void handleCreateWorktreeFromBranch(
-                                                projectId,
-                                                branchId,
-                                            )
-                                        }
-                                        onSelectBranch={(projectId, branchId) =>
-                                            void handleSelectBranch(
-                                                projectId,
-                                                branchId,
-                                            )
-                                        }
-                                        onSelectProject={(projectId) =>
-                                            void handleSelectProject(projectId)
-                                        }
-                                        onSelectWorktree={(
-                                            projectId,
-                                            worktreeId,
-                                        ) =>
-                                            void handleSelectWorktree(
-                                                projectId,
-                                                worktreeId,
-                                            )
-                                        }
-                                        onToggleBranches={
-                                            toggleGitBranchesExpanded
-                                        }
-                                        onToggleProject={
-                                            toggleGitProjectExpanded
-                                        }
-                                        onToggleWorktrees={
-                                            toggleGitWorktreesExpanded
-                                        }
-                                        projects={sidebarProjects}
-                                    />
-                                ) : (
-                                    <div className="px-3 py-4 text-xs text-text-secondary">
-                                        Open a folder to start building your git
-                                        workspace.
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="border-t border-border/50 px-2 py-2">
-                                <button
-                                    className="sidebar-action-row app-no-drag w-full"
-                                    onClick={openSettingsWindow}
-                                    type="button"
-                                >
-                                    <svg
-                                        aria-hidden="true"
-                                        className="h-4 w-4 shrink-0"
-                                        fill="none"
-                                        viewBox="0 0 16 16"
-                                    >
-                                        <path
-                                            d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
-                                            stroke="currentColor"
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth="1"
-                                        />
-                                        <circle
-                                            cx="8"
-                                            cy="8"
-                                            r="2.1"
-                                            stroke="currentColor"
-                                            strokeWidth="1.4"
-                                        />
-                                    </svg>
-                                    <span>Settings</span>
-                                </button>
-                            </div>
+                            {!leftCollapsed && sidebarContent}
                         </aside>
 
-                        <SplitHandle
-                            label="Resize project sidebar"
-                            onPointerDown={(event) =>
-                                startDragging(
-                                    "left",
-                                    event,
-                                    leftWidth,
-                                    setDragState,
-                                )
+                        <div
+                            style={
+                                leftCollapsed
+                                    ? {
+                                          overflow: "hidden",
+                                          pointerEvents: "none",
+                                      }
+                                    : undefined
                             }
-                            onStepBackward={() =>
-                                nudgePanel(
-                                    "left",
-                                    -shellLayoutConstraints.keyboardStep,
-                                )
-                            }
-                            onStepForward={() =>
-                                nudgePanel(
-                                    "left",
-                                    shellLayoutConstraints.keyboardStep,
-                                )
-                            }
-                        />
+                        >
+                            <SplitHandle
+                                label="Resize project sidebar"
+                                onPointerDown={(event) =>
+                                    startDragging(
+                                        "left",
+                                        event,
+                                        leftWidth,
+                                        setDragState,
+                                    )
+                                }
+                                onStepBackward={() =>
+                                    nudgePanel(
+                                        "left",
+                                        -shellLayoutConstraints.keyboardStep,
+                                    )
+                                }
+                                onStepForward={() =>
+                                    nudgePanel(
+                                        "left",
+                                        shellLayoutConstraints.keyboardStep,
+                                    )
+                                }
+                            />
+                        </div>
 
                         <main
                             className="surface-focus min-h-0 bg-bg-primary"
@@ -2137,6 +2308,64 @@ export function App() {
                         </aside>
                     </div>
                 </div>
+
+                {leftCollapsed && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            left: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: sidebarOverlayVisible ? 0 : 8,
+                            zIndex: 10,
+                        }}
+                        onMouseEnter={() => setSidebarOverlayVisible(true)}
+                    />
+                )}
+
+                {leftCollapsed && (
+                    <div
+                        className="flex min-h-0 flex-col bg-bg-panel"
+                        style={{
+                            position: "absolute",
+                            left: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: leftWidth,
+                            zIndex: 10,
+                            boxShadow: sidebarOverlayVisible
+                                ? "var(--shadow-soft)"
+                                : "none",
+                            borderRight: "1px solid var(--color-border)",
+                            transition:
+                                "opacity 200ms ease, transform 200ms ease",
+                            opacity: sidebarOverlayVisible ? 1 : 0,
+                            transform: sidebarOverlayVisible
+                                ? "translateX(0)"
+                                : "translateX(-8px)",
+                            pointerEvents: sidebarOverlayVisible
+                                ? "auto"
+                                : "none",
+                        }}
+                        onMouseEnter={() => {
+                            if (overlayDismissRef.current) {
+                                clearTimeout(overlayDismissRef.current);
+                                overlayDismissRef.current = null;
+                            }
+                        }}
+                        onMouseLeave={() => {
+                            overlayDismissRef.current = window.setTimeout(
+                                () => {
+                                    setSidebarOverlayVisible(false);
+                                    overlayDismissRef.current = null;
+                                },
+                                200,
+                            );
+                        }}
+                    >
+                        {sidebarContent}
+                    </div>
+                )}
             </div>
 
             {topStatus ? (

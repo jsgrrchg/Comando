@@ -95,7 +95,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
             const projects = await getComandoApi().addProjectPaths([
                 normalizedPath,
             ]);
-            const nextActiveProjectId = projects[0]?.id ?? null;
+            const currentActiveProjectId = get().activeProjectId;
+            const nextActiveProjectId = projects.some(
+                (project) => project.id === currentActiveProjectId,
+            )
+                ? currentActiveProjectId
+                : (currentActiveProjectId ?? projects[0]?.id ?? null);
 
             set({
                 activeProjectId: nextActiveProjectId,
@@ -119,7 +124,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     addProjects: async () => {
         try {
             const projects = await getComandoApi().openProjects();
-            const nextActiveProjectId = projects[0]?.id ?? null;
+            const currentActiveProjectId = get().activeProjectId;
+            const nextActiveProjectId = projects.some(
+                (project) => project.id === currentActiveProjectId,
+            )
+                ? currentActiveProjectId
+                : (currentActiveProjectId ?? projects[0]?.id ?? null);
 
             set({
                 activeProjectId: nextActiveProjectId,
@@ -223,14 +233,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         try {
             const projects = await getComandoApi().listProjects();
             const currentActiveProjectId = get().activeProjectId;
-            const nextActiveProjectId =
-                projects.find(
-                    (project) =>
-                        project.id === preferredProjectId ||
-                        project.id === currentActiveProjectId,
-                )?.id ??
-                projects[0]?.id ??
-                null;
+            const nextActiveProjectId = preferredProjectId
+                ? (projects.find((project) => project.id === preferredProjectId)
+                      ?.id ?? null)
+                : (projects.find(
+                      (project) => project.id === currentActiveProjectId,
+                  )?.id ?? null);
 
             set({
                 activeProjectId: nextActiveProjectId,
@@ -404,7 +412,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
             set((state) => ({
                 activeProjectId:
                     state.activeProjectId === projectId
-                        ? (projects[0]?.id ?? null)
+                        ? null
                         : state.activeProjectId,
                 error: null,
                 expandedDirectories: omitProjectContexts(

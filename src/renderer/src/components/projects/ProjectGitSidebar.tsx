@@ -65,6 +65,7 @@ export function ProjectGitSidebar({
     onCheckoutBranch,
     onCreateWorktreeFromBranch,
     onSelectBranch,
+    onSelectProject,
     onSelectWorktree,
     onToggleBranches,
     onToggleProject,
@@ -81,7 +82,14 @@ export function ProjectGitSidebar({
                                 ? "text-accent-strong"
                                 : "text-text-secondary hover:text-text-primary",
                         ].join(" ")}
-                        onClick={() => onToggleProject(project.id)}
+                        onClick={() => {
+                            if (project.isActive) {
+                                onToggleProject(project.id);
+                                return;
+                            }
+
+                            onSelectProject(project.id);
+                        }}
                         type="button"
                     >
                         <ChevronIcon isExpanded={project.isExpanded} />

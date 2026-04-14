@@ -7,6 +7,7 @@ export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
     getPersistenceSnapshot: "app:get-persistence-snapshot",
     getWindowContext: "app:get-window-context",
+    openProjectWindow: "app:open-project-window",
     getSettingsSnapshot: "settings:get-snapshot",
     getProjectSettings: "settings:get-project-settings",
     saveCodexRuntimeSettings: "settings:save-codex-runtime-settings",
@@ -21,6 +22,7 @@ export const IPC_CHANNELS = {
     saveActiveProjectId: "app:save-active-project-id",
     saveActiveWorktreeId: "app:save-active-worktree-id",
     saveShellState: "app:save-shell-state",
+    setTrafficLightVisibility: "app:set-traffic-light-visibility",
     getGitRepositorySnapshot: "git:get-repository-snapshot",
     listGitBranches: "git:list-branches",
     listGitWorktrees: "git:list-worktrees",
@@ -78,6 +80,7 @@ export const IPC_CHANNELS = {
 
 export const IPC_EVENTS = {
     projectTreeInvalidated: "projects:tree-invalidated",
+    projectWindowRequested: "app:project-window-requested",
     themeUpdated: "app:theme-updated",
     settingsUpdated: "settings:updated",
     projectSettingsUpdated: "settings:project-updated",
@@ -179,6 +182,7 @@ export interface AppBootstrapSnapshot {
 
 export interface PersistedShellState {
     readonly activeSurface: PersistedShellSurface;
+    readonly leftCollapsed?: boolean;
     readonly leftWidth: number;
     readonly rightWidth: number;
 }
@@ -355,6 +359,12 @@ export interface ProjectSettingsUpdatedEvent {
 
 export interface OpenSettingsWindowInput {
     readonly projectId: string | null;
+}
+
+export interface OpenProjectWindowInput {
+    readonly branchName?: string | null;
+    readonly projectId: string;
+    readonly worktreeId?: string | null;
 }
 
 export type GitRepositoryState =
@@ -1159,6 +1169,7 @@ export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot>;
     getWindowContext: () => Promise<WindowContextSnapshot | null>;
+    openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getProjectSettings: (
         projectId: string,
@@ -1170,6 +1181,7 @@ export interface ComandoApi {
     saveActiveProjectId: (projectId: string | null) => Promise<void>;
     saveActiveWorktreeId: (worktreeId: string | null) => Promise<void>;
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
+    setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     getGitRepositorySnapshot: (
         input: GitRepositoryScopeInput,
     ) => Promise<GitRepositorySnapshot | null>;
@@ -1212,6 +1224,9 @@ export interface ComandoApi {
     addProjectPaths: (paths: string[]) => Promise<ProjectSummary[]>;
     removeProject: (projectId: string) => Promise<void>;
     touchProject: (projectId: string) => Promise<void>;
+    onProjectWindowRequested: (
+        listener: (payload: OpenProjectWindowInput) => void,
+    ) => () => void;
     listProjectTree: (
         input: ListProjectTreeInput,
     ) => Promise<ProjectTreeNode[]>;

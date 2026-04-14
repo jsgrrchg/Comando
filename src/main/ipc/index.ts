@@ -46,6 +46,7 @@ import {
     type GitWorktreeSummary as SharedGitWorktreeSummary,
     type ListProjectTreeInput,
     type OpenProjectFileInput,
+    type OpenProjectWindowInput,
     type OpenSettingsWindowInput,
     type PrepareAiSessionInput,
     type PersistedShellState,
@@ -82,7 +83,10 @@ import type { GitService } from "@main/git/service";
 import type { ProjectService } from "@main/projects/service";
 import type { PersistenceService } from "@main/persistence/service";
 import type { SettingsService } from "@main/settings/service";
-import { applyAppZoomToAllWindows, broadcastSettingsUpdated } from "@main/settings/window-zoom";
+import {
+    applyAppZoomToAllWindows,
+    broadcastSettingsUpdated,
+} from "@main/settings/window-zoom";
 import { openSettingsWindow } from "@main/settings/window";
 import type { TerminalService } from "@main/terminals/service";
 import type { WorkspaceService } from "@main/workspace/service";
@@ -92,6 +96,7 @@ interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
     readonly gitService: GitService;
     readonly getSnapshot: () => AppBootstrapSnapshot;
+    readonly openProjectWindow: (input: OpenProjectWindowInput) => void;
     readonly persistenceService: PersistenceService;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsService;
@@ -103,6 +108,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getBootstrapSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getPersistenceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getWindowContext);
+    ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
@@ -112,6 +118,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveProjectId);
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveWorktreeId);
     ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
+    ipcMain.removeHandler(IPC_CHANNELS.setTrafficLightVisibility);
     ipcMain.removeHandler(IPC_CHANNELS.getGitRepositorySnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.listGitBranches);
     ipcMain.removeHandler(IPC_CHANNELS.listGitWorktrees);
@@ -195,6 +202,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             windowRegistry.getContextByWebContents(event.sender),
     );
     ipcMain.handle(
+        IPC_CHANNELS.openProjectWindow,
+        (_event, input: OpenProjectWindowInput) => {
+            options.openProjectWindow(input);
+        },
+    );
+    ipcMain.handle(
         IPC_CHANNELS.getSettingsSnapshot,
         (): SettingsSnapshot => options.settingsService.loadSnapshot(),
     );
@@ -219,9 +232,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 snapshot.aiChat !== undefined
             ) {
                 const persisted = options.settingsService.loadSnapshot();
-                applyAppZoomToAllWindows(
-                    persisted.appearance?.zoomFactor ?? 1,
-                );
+                applyAppZoomToAllWindows(persisted.appearance?.zoomFactor ?? 1);
                 broadcastSettingsUpdated(
                     persisted.appearance ?? null,
                     persisted.editor ?? null,
@@ -293,6 +304,15 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 context.windowId,
                 shellState,
             );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setTrafficLightVisibility,
+        (event, visible: boolean) => {
+            const win = BrowserWindow.fromWebContents(event.sender);
+            if (win && process.platform === "darwin") {
+                win.setWindowButtonVisibility(visible);
+            }
         },
     );
     ipcMain.handle(
@@ -842,7 +862,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             options.aiService.verifyCodexRuntimeSettings(settings),
     );
 }
-
 
 function broadcastProjectSettingsUpdated(
     payload: ProjectSettingsUpdatedEvent,

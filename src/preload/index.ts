@@ -22,6 +22,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type ListProjectTreeInput,
+    type OpenProjectWindowInput,
     type OpenProjectFileInput,
     type OpenSettingsWindowInput,
     type PersistenceSnapshot,
@@ -82,6 +83,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(
             IPC_CHANNELS.getWindowContext,
         ) as Promise<WindowContextSnapshot | null>,
+    openProjectWindow: (input: OpenProjectWindowInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
     getSettingsSnapshot: () =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getSettingsSnapshot,
@@ -115,6 +118,23 @@ const comandoApi: ComandoApi = {
         return () => {
             ipcRenderer.removeListener(
                 IPC_EVENTS.projectTreeInvalidated,
+                handleEvent,
+            );
+        };
+    },
+    onProjectWindowRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            payload: OpenProjectWindowInput,
+        ) => {
+            listener(payload);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.projectWindowRequested, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.projectWindowRequested,
                 handleEvent,
             );
         };
@@ -282,6 +302,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveActiveWorktreeId, worktreeId),
     saveShellState: (snapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveShellState, snapshot),
+    setTrafficLightVisibility: (visible: boolean) =>
+        ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
     getGitRepositorySnapshot: (input: GitRepositoryScopeInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getGitRepositorySnapshot,

@@ -119,6 +119,11 @@ function buildMenuTemplate(
             },
             { type: "separator" },
             {
+                accelerator: "CmdOrCtrl+B",
+                label: "Toggle Sidebar",
+            },
+            { type: "separator" },
+            {
                 accelerator: "CmdOrCtrl+0",
                 click: () => {
                     options.adjustAppZoom("reset");
