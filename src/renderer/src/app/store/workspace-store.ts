@@ -66,6 +66,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     closeOtherTabs: (tabId: string) => Promise<void>;
     readonly error: string | null;
     readonly hydrated: boolean;
+    readonly lastFocusedChatTabId: string | null;
     readonly lastFocusedRuntimeId: AiRuntimeId;
     readonly lastQuickCreateAction: WorkspaceQuickCreateAction;
     appendTerminalOutput: (event: TerminalDataEvent) => void;
@@ -170,6 +171,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ...createDefaultWorkspaceState(),
     error: null,
     hydrated: false,
+    lastFocusedChatTabId: null,
     lastFocusedRuntimeId: "codex",
     lastQuickCreateAction: "codex",
 
@@ -231,10 +233,17 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             await safeCloseAiSession(tab.sessionId);
         }
 
-        set((state) => ({
-            ...closeWorkspaceTab(state, tabId),
-            error: null,
-        }));
+        set((state) => {
+            const nextState = closeWorkspaceTab(state, tabId);
+            return {
+                ...nextState,
+                error: null,
+                lastFocusedChatTabId:
+                    state.lastFocusedChatTabId === tabId
+                        ? getPaneChatTabId(nextState, nextState.activePaneId)
+                        : state.lastFocusedChatTabId,
+            };
+        });
         await persistWorkspaceState(get);
     },
 
@@ -267,6 +276,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         set((state) => ({
             ...attachTabToPane(state, paneId, tab),
             error: null,
+            lastFocusedChatTabId: tab.id,
             lastFocusedRuntimeId: runtimeId,
             lastQuickCreateAction: runtimeId,
         }));
@@ -323,6 +333,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ...hydratedState,
                 error: null,
                 hydrated: true,
+                lastFocusedChatTabId: getPaneChatTabId(
+                    hydratedState,
+                    snapshot.activePaneId,
+                ),
                 lastFocusedRuntimeId:
                     getPaneRuntimeId(hydratedState, snapshot.activePaneId) ??
                     "codex",
@@ -645,21 +659,43 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     selectAdjacentTab: async (paneId, direction) => {
-        const runtimeId = getPaneRuntimeId(get(), paneId);
         set((state) => ({
-            ...selectAdjacentPaneTab(state, paneId, direction),
-            error: null,
-            ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+            ...(() => {
+                const nextState = selectAdjacentPaneTab(
+                    state,
+                    paneId,
+                    direction,
+                );
+                const runtimeId = getPaneRuntimeId(nextState, paneId);
+                const chatTabId = getPaneChatTabId(nextState, paneId);
+                return {
+                    ...nextState,
+                    error: null,
+                    ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
+                    ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                };
+            })(),
         }));
         await persistWorkspaceState(get);
     },
 
     selectTab: async (paneId, tabId) => {
-        const runtimeId = getWorkspaceTabRuntimeId(get().tabsById[tabId]);
         set((state) => ({
-            ...selectPaneTab(state, paneId, tabId),
-            error: null,
-            ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+            ...(() => {
+                const nextState = selectPaneTab(state, paneId, tabId);
+                const runtimeId = getWorkspaceTabRuntimeId(
+                    nextState.tabsById[tabId],
+                );
+                const chatTabId = getWorkspaceChatTabId(
+                    nextState.tabsById[tabId],
+                );
+                return {
+                    ...nextState,
+                    error: null,
+                    ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
+                    ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                };
+            })(),
         }));
         await persistWorkspaceState(get);
     },
@@ -689,11 +725,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     setActivePane: async (paneId) => {
-        const runtimeId = getPaneRuntimeId(get(), paneId);
         set((state) => ({
-            ...activatePane(state, paneId),
-            error: null,
-            ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+            ...(() => {
+                const nextState = activatePane(state, paneId);
+                const runtimeId = getPaneRuntimeId(nextState, paneId);
+                const chatTabId = getPaneChatTabId(nextState, paneId);
+                return {
+                    ...nextState,
+                    error: null,
+                    ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
+                    ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                };
+            })(),
         }));
         await persistWorkspaceState(get);
     },
@@ -776,6 +819,16 @@ export function getWorkspaceTabRuntimeId(
     return null;
 }
 
+export function getWorkspaceChatTabId(
+    tab: RuntimeWorkspaceTab | null | undefined,
+): string | null {
+    if (!tab || tab.kind !== "chat") {
+        return null;
+    }
+
+    return tab.id;
+}
+
 export function getPaneRuntimeId(
     state: Pick<WorkspaceTreeState, "rootNode" | "tabsById">,
     paneId: string,
@@ -789,6 +842,21 @@ export function getPaneRuntimeId(
     }
 
     return getWorkspaceTabRuntimeId(state.tabsById[pane.activeTabId]);
+}
+
+export function getPaneChatTabId(
+    state: Pick<WorkspaceTreeState, "rootNode" | "tabsById">,
+    paneId: string,
+): string | null {
+    const pane = collectPaneNodes(state.rootNode).find(
+        (candidate) => candidate.id === paneId,
+    );
+
+    if (!pane?.activeTabId) {
+        return null;
+    }
+
+    return getWorkspaceChatTabId(state.tabsById[pane.activeTabId]);
 }
 
 function createHydratedRuntimeTabs(

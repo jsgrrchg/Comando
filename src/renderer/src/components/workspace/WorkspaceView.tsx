@@ -414,6 +414,9 @@ function WorkspacePaneView({
     const lastFocusedRuntimeId = useWorkspaceStore(
         (state) => state.lastFocusedRuntimeId,
     );
+    const lastFocusedChatTabId = useWorkspaceStore(
+        (state) => state.lastFocusedChatTabId,
+    );
     const moveTab = useWorkspaceStore((state) => state.moveTab);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
@@ -606,6 +609,10 @@ function WorkspacePaneView({
 
     const handleAttachLineFragment = useCallback(
         async (context: AiFileContextAttachment) => {
+            const findPaneIdByTabId = (tabId: string) =>
+                collectPaneNodes(rootNode).find((pane) =>
+                    pane.tabIds.includes(tabId),
+                )?.id ?? null;
             const isMatchingChatScope = (tabId: string) => {
                 const tab = tabsById[tabId];
                 return (
@@ -615,8 +622,14 @@ function WorkspacePaneView({
                 );
             };
 
+            const preferredPaneId =
+                lastFocusedChatTabId &&
+                tabsById[lastFocusedChatTabId]?.kind === "chat"
+                    ? findPaneIdByTabId(lastFocusedChatTabId)
+                    : null;
             const currentPaneMatch = node.tabIds.find(isMatchingChatScope);
             const candidateTabId =
+                (preferredPaneId ? lastFocusedChatTabId : null) ??
                 currentPaneMatch ??
                 collectPaneNodes(rootNode)
                     .flatMap((pane) => pane.tabIds)
@@ -624,10 +637,7 @@ function WorkspacePaneView({
                 null;
 
             if (candidateTabId) {
-                const paneId =
-                    collectPaneNodes(rootNode).find((pane) =>
-                        pane.tabIds.includes(candidateTabId),
-                    )?.id ?? node.id;
+                const paneId = findPaneIdByTabId(candidateTabId) ?? node.id;
 
                 await setActivePane(paneId);
                 await selectTab(paneId, candidateTabId);
@@ -675,6 +685,7 @@ function WorkspacePaneView({
             attachSelectionMention,
             createChatTab,
             defaultWorktreeId,
+            lastFocusedChatTabId,
             lastFocusedRuntimeId,
             node.id,
             node.tabIds,
