@@ -876,6 +876,9 @@ export interface AiFileContextAttachment {
     readonly name: string;
     readonly extension: string | null;
     readonly languageId: string;
+    readonly selectedText?: string | null;
+    readonly startLine?: number | null;
+    readonly endLine?: number | null;
 }
 
 export interface AiMessage {

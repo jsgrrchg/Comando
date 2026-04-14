@@ -46,7 +46,7 @@ function buildMenuTemplate(
         label: "File",
         submenu: [
             {
-                accelerator: "CmdOrCtrl+Shift+N",
+                accelerator: "CmdOrCtrl+Alt+Shift+N",
                 click: () => {
                     void options.openNewMainWindow(null);
                 },
@@ -86,7 +86,34 @@ function buildMenuTemplate(
         role: "editMenu",
     };
     const viewMenu: MenuItemConstructorOptions = {
-        role: "viewMenu",
+        label: "View",
+        submenu: [
+            {
+                accelerator: "CmdOrCtrl+Alt+R",
+                role: "reload",
+            },
+            {
+                accelerator: "CmdOrCtrl+Alt+Shift+R",
+                role: "forceReload",
+            },
+            {
+                role: "toggleDevTools",
+            },
+            { type: "separator" },
+            {
+                role: "resetZoom",
+            },
+            {
+                role: "zoomIn",
+            },
+            {
+                role: "zoomOut",
+            },
+            { type: "separator" },
+            {
+                role: "togglefullscreen",
+            },
+        ],
     };
     const windowMenu: MenuItemConstructorOptions = {
         role: "windowMenu",

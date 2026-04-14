@@ -18,6 +18,7 @@ import {
 import { createPortal } from "react-dom";
 
 import type {
+    AiFileContextAttachment,
     AiTrackedFile,
     ProjectFileDocument,
     WorkspaceNode,
@@ -408,6 +409,9 @@ function WorkspacePaneView({
     const lastQuickCreateAction = useWorkspaceStore(
         (state) => state.lastQuickCreateAction,
     );
+    const lastFocusedRuntimeId = useWorkspaceStore(
+        (state) => state.lastFocusedRuntimeId,
+    );
     const moveTab = useWorkspaceStore((state) => state.moveTab);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
@@ -417,6 +421,7 @@ function WorkspacePaneView({
     const paneCount = useWorkspaceStore(
         (state) => collectPaneNodes(state.rootNode).length,
     );
+    const rootNode = useWorkspaceStore((state) => state.rootNode);
     const createEntry = useProjectsStore((state) => state.createEntry);
     const selectTab = useWorkspaceStore((state) => state.selectTab);
     const setActivePane = useWorkspaceStore((state) => state.setActivePane);
@@ -561,7 +566,7 @@ function WorkspacePaneView({
 
         const entry = await createEntry(
             defaultProjectId,
-            null,
+            defaultWorktreeId ?? null,
             trimmedName,
             "file",
         );
@@ -578,6 +583,88 @@ function WorkspacePaneView({
         openFileTab,
         setLastQuickCreateAction,
     ]);
+
+    const handleCreateAgentFromFocusedProvider = useCallback(() => {
+        void createChatTab(
+            defaultProjectId,
+            defaultWorktreeId ?? null,
+            lastFocusedRuntimeId,
+        );
+    }, [
+        createChatTab,
+        defaultProjectId,
+        defaultWorktreeId,
+        lastFocusedRuntimeId,
+    ]);
+
+    const handleAttachLineFragment = useCallback(
+        async (context: AiFileContextAttachment) => {
+            const isMatchingChatScope = (tabId: string) => {
+                const tab = tabsById[tabId];
+                return (
+                    tab?.kind === "chat" &&
+                    tab.projectId === context.projectId &&
+                    (tab.worktreeId ?? null) === (defaultWorktreeId ?? null)
+                );
+            };
+
+            const panes = collectPaneNodes(rootNode);
+            const currentPaneMatch = node.tabIds.find(isMatchingChatScope);
+            const candidateTabId =
+                currentPaneMatch ??
+                panes.flatMap((pane) => pane.tabIds).find(isMatchingChatScope) ??
+                null;
+
+            if (candidateTabId) {
+                const paneId =
+                    panes.find((pane) => pane.tabIds.includes(candidateTabId))
+                        ?.id ?? node.id;
+
+                await setActivePane(paneId);
+                await selectTab(paneId, candidateTabId);
+
+                const targetTab =
+                    useWorkspaceStore.getState().tabsById[candidateTabId];
+                if (targetTab?.kind === "chat") {
+                    addDraftFileContext(targetTab.sessionId, context);
+                }
+                return;
+            }
+
+            const existingTabIds = new Set(Object.keys(tabsById));
+            await createChatTab(
+                context.projectId,
+                defaultWorktreeId ?? null,
+                lastFocusedRuntimeId,
+            );
+
+            const createdChatTab = Object.values(
+                useWorkspaceStore.getState().tabsById,
+            ).find(
+                (tab) =>
+                    tab.kind === "chat" &&
+                    !existingTabIds.has(tab.id) &&
+                    tab.projectId === context.projectId &&
+                    (tab.worktreeId ?? null) === (defaultWorktreeId ?? null),
+            );
+
+            if (createdChatTab?.kind === "chat") {
+                addDraftFileContext(createdChatTab.sessionId, context);
+            }
+        },
+        [
+            addDraftFileContext,
+            createChatTab,
+            defaultWorktreeId,
+            lastFocusedRuntimeId,
+            node.id,
+            node.tabIds,
+            rootNode,
+            selectTab,
+            setActivePane,
+            tabsById,
+        ],
+    );
 
     function handleOpenLastQuickCreateAction() {
         switch (lastQuickCreateAction) {
@@ -700,6 +787,52 @@ function WorkspacePaneView({
         lastQuickCreateAction,
         Boolean(defaultProjectId),
     );
+
+    useEffect(() => {
+        if (!isActivePane) {
+            return;
+        }
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+                return;
+            }
+
+            const key = event.key.toLowerCase();
+
+            if (key === "n") {
+                event.preventDefault();
+
+                if (event.shiftKey) {
+                    handleCreateAgentFromFocusedProvider();
+                    return;
+                }
+
+                void handleCreateFile();
+                return;
+            }
+
+            if (key === "r" && !event.shiftKey) {
+                event.preventDefault();
+                void createTerminalTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                );
+            }
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [
+        createTerminalTab,
+        defaultProjectId,
+        defaultWorktreeId,
+        handleCreateAgentFromFocusedProvider,
+        handleCreateFile,
+        isActivePane,
+    ]);
 
     return (
         <>
@@ -843,6 +976,7 @@ function WorkspacePaneView({
                         activeTab.kind === "file" ? (
                             <FileTabView
                                 isActivePane={isActivePane}
+                                onAttachLineFragment={handleAttachLineFragment}
                                 onDraftChange={updateFileDraft}
                                 onSave={saveFileTab}
                                 tab={activeTab}
@@ -1273,11 +1407,15 @@ function getQuickCreateButtonTitle(
 
 function FileTabView({
     isActivePane,
+    onAttachLineFragment,
     onDraftChange,
     onSave,
     tab,
 }: {
     readonly isActivePane: boolean;
+    readonly onAttachLineFragment: (
+        context: AiFileContextAttachment,
+    ) => Promise<void>;
     readonly onDraftChange: (tabId: string, draft: string) => void;
     readonly onSave: (tabId: string) => Promise<void>;
     readonly tab: RuntimeWorkspaceFileTab;
@@ -1297,6 +1435,7 @@ function FileTabView({
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
     );
+    const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
     const [reviewModeState, setReviewModeState] = useState<{
         readonly key: string | null;
         readonly value: "editor" | "inline" | null;
@@ -1408,6 +1547,46 @@ function FileTabView({
                 return;
             }
 
+            if (key === "l" && !event.shiftKey && !event.altKey) {
+                const editor = editorRef.current;
+                const model = editor?.getModel();
+                const selection = editor?.getSelection();
+
+                if (!editor || !model || !selection || selection.isEmpty()) {
+                    return;
+                }
+
+                const selectedText = model.getValueInRange(selection);
+                if (!selectedText.trim()) {
+                    return;
+                }
+
+                const startOffset = model.getOffsetAt(
+                    selection.getStartPosition(),
+                );
+                const endOffset = model.getOffsetAt(selection.getEndPosition());
+                const effectiveEndOffset = Math.max(startOffset, endOffset - 1);
+                const startLine = model.getPositionAt(startOffset).lineNumber;
+                const endLine =
+                    model.getPositionAt(effectiveEndOffset).lineNumber;
+
+                event.preventDefault();
+                void onAttachLineFragment({
+                    endLine,
+                    extension: tab.relativePath.includes(".")
+                        ? (tab.relativePath.split(".").pop() ?? null)
+                        : null,
+                    id: `file-ctx:${crypto.randomUUID()}`,
+                    languageId: document.languageId,
+                    name: tab.title,
+                    projectId: tab.projectId,
+                    relativePath: tab.relativePath,
+                    selectedText,
+                    startLine,
+                });
+                return;
+            }
+
             if (event.shiftKey || event.altKey) {
                 return;
             }
@@ -1434,7 +1613,17 @@ function FileTabView({
         return () => {
             window.removeEventListener("keydown", handleKeyDown);
         };
-    }, [adjustEditorFontSize, document, isActivePane, onSave, tab.id]);
+    }, [
+        adjustEditorFontSize,
+        document,
+        isActivePane,
+        onAttachLineFragment,
+        onSave,
+        tab.id,
+        tab.projectId,
+        tab.relativePath,
+        tab.title,
+    ]);
 
     useEffect(() => {
         if (!showInlineReview || !selectedHunk) {
@@ -1620,6 +1809,9 @@ function FileTabView({
                         onChange={(value: string | undefined) =>
                             onDraftChange(tab.id, value ?? "")
                         }
+                        onMount={(editor) => {
+                            editorRef.current = editor;
+                        }}
                         options={{
                             automaticLayout: true,
                             fontFamily: editorFontFamily,

@@ -210,7 +210,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const exists = session.draftFileContexts.some(
                 (fc) =>
                     fc.projectId === context.projectId &&
-                    fc.relativePath === context.relativePath,
+                    fc.relativePath === context.relativePath &&
+                    (fc.startLine ?? null) === (context.startLine ?? null) &&
+                    (fc.endLine ?? null) === (context.endLine ?? null),
             );
             if (exists) return state;
             return {

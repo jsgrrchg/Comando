@@ -38,6 +38,11 @@ import {
 } from "./chat/composerParts";
 import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
+import {
+    buildFileContextLabel,
+    buildFileContextTitle,
+    serializePromptWithContexts,
+} from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
@@ -2087,9 +2092,9 @@ function FileContextPill(props: {
 }) {
     return (
         <AttachmentPillFrame
-            label={props.context.name}
+            label={buildFileContextLabel(props.context)}
             onRemove={props.onRemove}
-            title={props.context.relativePath}
+            title={buildFileContextTitle(props.context)}
             variant="file"
         >
             <LanguageIcon languageId={props.context.languageId} size={11} />
@@ -2769,22 +2774,6 @@ function createEmptySnapshot(
         updatedAt: new Date().toISOString(),
         worktreeId: tab.worktreeId ?? null,
     };
-}
-
-function serializePromptWithContexts(
-    draft: string,
-    fileContexts: readonly AiFileContextAttachment[],
-): string {
-    const t = draft.trim();
-    const textMentions = [...(t.matchAll(/(^|\s)@([^\s]+)/g) ?? [])]
-        .map((m) => m[2]?.trim())
-        .filter((v): v is string => Boolean(v));
-    const pillPaths = fileContexts.map((fc) => fc.relativePath);
-    const allPaths = [...new Set([...textMentions, ...pillPaths])];
-    if (!t && allPaths.length === 0) return "";
-    const body = t || "Review these files";
-    if (allPaths.length === 0) return body;
-    return `${body}\n\nContext references:\n${allPaths.map((p) => `- ${p}`).join("\n")}`;
 }
 
 function isComposerDraftEmpty(

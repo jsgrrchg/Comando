@@ -13,6 +13,7 @@ import {
     activatePane,
     appendTerminalOutput,
     attachTabToPane,
+    collectPaneNodes,
     closeOtherWorkspaceTabs,
     closeWorkspacePane,
     closeWorkspaceTab,
@@ -63,6 +64,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     closeOtherTabs: (tabId: string) => Promise<void>;
     readonly error: string | null;
     readonly hydrated: boolean;
+    readonly lastFocusedRuntimeId: AiRuntimeId;
     readonly lastQuickCreateAction: WorkspaceQuickCreateAction;
     appendTerminalOutput: (event: TerminalDataEvent) => void;
     closePane: (paneId: string) => Promise<void>;
@@ -137,6 +139,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     saveFileTab: (tabId: string) => Promise<void>;
     selectTab: (paneId: string, tabId: string) => Promise<void>;
     sendTerminalInput: (sessionId: string, data: string) => Promise<void>;
+    setLastFocusedRuntimeId: (runtimeId: AiRuntimeId) => void;
     setLastQuickCreateAction: (action: WorkspaceQuickCreateAction) => void;
     setActivePane: (paneId: string) => Promise<void>;
     splitPane: (paneId: string, direction: SplitDirection) => Promise<void>;
@@ -155,6 +158,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ...createDefaultWorkspaceState(),
     error: null,
     hydrated: false,
+    lastFocusedRuntimeId: "codex",
     lastQuickCreateAction: "codex",
 
     appendTerminalOutput: (event) => {
@@ -251,6 +255,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         set((state) => ({
             ...attachTabToPane(state, paneId, tab),
             error: null,
+            lastFocusedRuntimeId: runtimeId,
             lastQuickCreateAction: runtimeId,
         }));
         await persistWorkspaceState(get);
@@ -297,13 +302,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     hydrate: async () => {
         try {
             const snapshot = await getComandoApi().getWorkspaceSnapshot();
+            const runtimeTabs = createHydratedRuntimeTabs(snapshot);
+            const hydratedState = workspaceStateFromSnapshot(
+                snapshot,
+                runtimeTabs,
+            );
             set({
-                ...workspaceStateFromSnapshot(
-                    snapshot,
-                    createHydratedRuntimeTabs(snapshot),
-                ),
+                ...hydratedState,
                 error: null,
                 hydrated: true,
+                lastFocusedRuntimeId:
+                    getPaneRuntimeId(hydratedState, snapshot.activePaneId) ??
+                    "codex",
             });
             void hydrateRuntimeTabs(snapshot, get, set);
         } catch (error) {
@@ -449,6 +459,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         set((state) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
+            lastFocusedRuntimeId: input.runtimeId,
         }));
         await persistWorkspaceState(get);
     },
@@ -603,9 +614,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     selectTab: async (paneId, tabId) => {
+        const runtimeId = getWorkspaceTabRuntimeId(get().tabsById[tabId]);
         set((state) => ({
             ...selectPaneTab(state, paneId, tabId),
             error: null,
+            ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
         }));
         await persistWorkspaceState(get);
     },
@@ -626,14 +639,20 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }
     },
 
+    setLastFocusedRuntimeId: (runtimeId) => {
+        set({ lastFocusedRuntimeId: runtimeId });
+    },
+
     setLastQuickCreateAction: (action) => {
         set({ lastQuickCreateAction: action });
     },
 
     setActivePane: async (paneId) => {
+        const runtimeId = getPaneRuntimeId(get(), paneId);
         set((state) => ({
             ...activatePane(state, paneId),
             error: null,
+            ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
         }));
         await persistWorkspaceState(get);
     },
@@ -701,6 +720,35 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 }));
 
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
+
+export function getWorkspaceTabRuntimeId(
+    tab: RuntimeWorkspaceTab | null | undefined,
+): AiRuntimeId | null {
+    if (!tab) {
+        return null;
+    }
+
+    if (tab.kind === "chat" || tab.kind === "review") {
+        return tab.runtimeId;
+    }
+
+    return null;
+}
+
+export function getPaneRuntimeId(
+    state: Pick<WorkspaceTreeState, "rootNode" | "tabsById">,
+    paneId: string,
+): AiRuntimeId | null {
+    const pane = collectPaneNodes(state.rootNode).find(
+        (candidate) => candidate.id === paneId,
+    );
+
+    if (!pane?.activeTabId) {
+        return null;
+    }
+
+    return getWorkspaceTabRuntimeId(state.tabsById[pane.activeTabId]);
+}
 
 function createHydratedRuntimeTabs(
     snapshot: WorkspaceSnapshot,

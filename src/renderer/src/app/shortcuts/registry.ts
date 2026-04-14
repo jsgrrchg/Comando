@@ -1,6 +1,10 @@
 export interface ShortcutDefinition {
     readonly description: string;
     readonly id:
+        | "attach_line_fragment"
+        | "new_agent_from_focused_provider"
+        | "new_file"
+        | "new_terminal"
         | "open_settings"
         | "save_file"
         | "increase_editor_font_size"
@@ -15,6 +19,46 @@ export interface ShortcutDefinition {
 }
 
 export const shortcutDefinitions: readonly ShortcutDefinition[] = [
+    {
+        id: "attach_line_fragment",
+        label: "Attach selected lines",
+        description: "Add the selected editor lines to the chat composer.",
+        keys: {
+            mac: "Cmd+L",
+            windows: "Ctrl+L",
+        },
+        section: "Editor",
+    },
+    {
+        id: "new_file",
+        label: "New file",
+        description: "Create a new file in the active project.",
+        keys: {
+            mac: "Cmd+N",
+            windows: "Ctrl+N",
+        },
+        section: "File",
+    },
+    {
+        id: "new_agent_from_focused_provider",
+        label: "New agent from focused provider",
+        description: "Open a new chat for the provider that was last in focus.",
+        keys: {
+            mac: "Cmd+Shift+N",
+            windows: "Ctrl+Shift+N",
+        },
+        section: "General",
+    },
+    {
+        id: "new_terminal",
+        label: "New terminal",
+        description: "Open a new terminal in the active project.",
+        keys: {
+            mac: "Cmd+R",
+            windows: "Ctrl+R",
+        },
+        section: "File",
+    },
     {
         id: "open_settings",
         label: "Open settings",

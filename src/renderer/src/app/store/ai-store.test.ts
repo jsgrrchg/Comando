@@ -368,4 +368,36 @@ describe("ai-store queue", () => {
             0.82,
         );
     });
+
+    it("permite contexto completo y fragmento de líneas del mismo archivo, pero no duplica el mismo rango", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+
+        const fullFileContext = createFileContext();
+        const lineFragmentContext = createFileContext({
+            endLine: 18,
+            id: "ctx-2",
+            selectedText: "const value = 1;",
+            startLine: 12,
+        });
+        const duplicateLineFragmentContext = createFileContext({
+            endLine: 18,
+            id: "ctx-3",
+            selectedText: "const value = 1;",
+            startLine: 12,
+        });
+
+        useAiStore
+            .getState()
+            .addDraftFileContext(TAB.sessionId, fullFileContext);
+        useAiStore
+            .getState()
+            .addDraftFileContext(TAB.sessionId, lineFragmentContext);
+        useAiStore
+            .getState()
+            .addDraftFileContext(TAB.sessionId, duplicateLineFragmentContext);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.draftFileContexts,
+        ).toEqual([fullFileContext, lineFragmentContext]);
+    });
 });
