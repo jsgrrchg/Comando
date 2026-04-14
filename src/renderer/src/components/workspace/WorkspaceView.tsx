@@ -813,15 +813,18 @@ function WorkspacePaneView({
         }
 
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.ctrlKey && !event.metaKey && !event.altKey) {
-                if (event.key === "Tab") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    void selectAdjacentTab(
-                        node.id,
-                        event.shiftKey ? "previous" : "next",
-                    );
-                }
+            if (
+                event.ctrlKey &&
+                !event.metaKey &&
+                !event.altKey &&
+                event.key === "Tab"
+            ) {
+                event.preventDefault();
+                event.stopPropagation();
+                void selectAdjacentTab(
+                    node.id,
+                    event.shiftKey ? "previous" : "next",
+                );
                 return;
             }
 
