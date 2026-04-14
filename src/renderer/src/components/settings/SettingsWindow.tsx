@@ -406,6 +406,7 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     <SelectField
                         value={state.fontFamilyId}
                         options={state.fontFamilies.map((f) => ({
+                            group: f.group,
                             value: f.id,
                             label: f.label,
                         }))}
@@ -575,6 +576,7 @@ function ProjectContent({
                                         value={projectEditor.fontFamilyId}
                                         options={projectEditor.fontFamilies.map(
                                             (f) => ({
+                                                group: f.group,
                                                 value: f.id,
                                                 label: f.label,
                                             }),
@@ -629,6 +631,7 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     <SelectField
                         value={state.chatFontFamily}
                         options={state.chatFontFamilies.map((f) => ({
+                            group: f.group,
                             value: f.id,
                             label: f.label,
                         }))}
@@ -707,6 +710,7 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     <SelectField
                         value={state.composerFontFamily}
                         options={state.composerFontFamilies.map((f) => ({
+                            group: f.group,
                             value: f.id,
                             label: f.label,
                         }))}

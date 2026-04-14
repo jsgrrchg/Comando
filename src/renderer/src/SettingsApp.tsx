@@ -442,6 +442,7 @@ export function SettingsApp() {
             appEditor={{
                 fontFamilies: EDITOR_FONT_FAMILY_OPTIONS.map((fontFamily) => ({
                     description: fontFamily.description,
+                    group: fontFamily.group,
                     id: fontFamily.id,
                     label: fontFamily.label,
                     preview: fontFamily.preview,
@@ -497,6 +498,7 @@ export function SettingsApp() {
                           fontFamilies: EDITOR_FONT_FAMILY_OPTIONS.map(
                               (fontFamily) => ({
                                   description: fontFamily.description,
+                                  group: fontFamily.group,
                                   id: fontFamily.id,
                                   label: fontFamily.label,
                                   preview: fontFamily.preview,

@@ -1,4 +1,7 @@
 import type { AppIdentity } from "@shared/app-identity";
+import type { ChatFontFamily, EditorFontFamily } from "./typography";
+
+export type { ChatFontFamily, EditorFontFamily } from "./typography";
 
 export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
@@ -115,19 +118,6 @@ export type ThemePreset =
     | "synthwave84"
     | "claude"
     | "codex";
-
-export type EditorFontFamily =
-    | "sf-mono"
-    | "jetbrains-mono"
-    | "cascadia-code"
-    | "ibm-plex-mono";
-
-export type ChatFontFamily =
-    | "system"
-    | "sans"
-    | "mono"
-    | "jetbrains-mono"
-    | "ibm-plex-mono";
 
 export interface AppAiChatSettings {
     readonly chatFontFamily: ChatFontFamily;

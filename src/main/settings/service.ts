@@ -24,9 +24,12 @@ import {
     AI_COMPOSER_FONT_SIZE_MAX,
     AI_COMPOSER_FONT_SIZE_MIN,
     clampRoundedInt,
+    DEFAULT_AI_FONT_FAMILY,
     DEFAULT_AI_CHAT_FONT_SIZE,
     DEFAULT_AI_COMPOSER_FONT_SIZE,
+    DEFAULT_EDITOR_FONT_FAMILY,
     DEFAULT_EDITOR_FONT_SIZE,
+    EDITOR_FONT_FAMILY_IDS,
     EDITOR_FONT_SIZE_MAX,
     EDITOR_FONT_SIZE_MIN,
 } from "@shared/typography";
@@ -67,24 +70,19 @@ const AI_REQUIRE_CMD_ENTER_KEY = "ai.composer.require_cmd_enter";
 const AI_SCREENSHOT_RETENTION_KEY = "ai.composer.screenshot_retention_seconds";
 const AI_HISTORY_RETENTION_KEY = "ai.chat.history_retention_days";
 
-const DEFAULT_CHAT_FONT_FAMILY: ChatFontFamily = "system";
+const DEFAULT_CHAT_FONT_FAMILY: ChatFontFamily = DEFAULT_AI_FONT_FAMILY;
 const DEFAULT_CHAT_FONT_SIZE = DEFAULT_AI_CHAT_FONT_SIZE;
 const DEFAULT_COMPOSER_FONT_SIZE = DEFAULT_AI_COMPOSER_FONT_SIZE;
 const DEFAULT_REQUIRE_CMD_ENTER = false;
 const DEFAULT_SCREENSHOT_RETENTION = 0;
 const DEFAULT_HISTORY_RETENTION = 0;
 
-const VALID_CHAT_FONT_FAMILIES = new Set<ChatFontFamily>([
-    "system",
-    "sans",
-    "mono",
-    "jetbrains-mono",
-    "ibm-plex-mono",
-]);
+const VALID_CHAT_FONT_FAMILIES = new Set<ChatFontFamily>(
+    EDITOR_FONT_FAMILY_IDS,
+);
 
 const DEFAULT_THEME_MODE: ThemeMode = "system";
 const DEFAULT_THEME_PRESET: ThemePreset = "default";
-const DEFAULT_EDITOR_FONT_FAMILY: EditorFontFamily = "sf-mono";
 const DEFAULT_EDITOR_LINE_HEIGHT = 1.55;
 
 const VALID_THEME_MODES = new Set<ThemeMode>(["system", "light", "dark"]);
@@ -111,12 +109,19 @@ const VALID_THEME_PRESETS = new Set<ThemePreset>([
     "claude",
     "codex",
 ]);
-const VALID_EDITOR_FONT_FAMILIES = new Set<EditorFontFamily>([
-    "sf-mono",
-    "jetbrains-mono",
-    "cascadia-code",
-    "ibm-plex-mono",
-]);
+const VALID_EDITOR_FONT_FAMILIES = new Set<EditorFontFamily>(
+    EDITOR_FONT_FAMILY_IDS,
+);
+
+function normalizeFontFamilyAlias(
+    value: string | null | undefined,
+): string | null | undefined {
+    if (value === "jetbrains-mono") {
+        return "jetbrains";
+    }
+
+    return value;
+}
 
 interface SettingRow {
     readonly value: string;
@@ -782,20 +787,26 @@ export class SettingsService {
     #normalizeEditorFontFamily(
         value: string | null | undefined,
     ): EditorFontFamily {
-        return VALID_EDITOR_FONT_FAMILIES.has(value as EditorFontFamily)
-            ? (value as EditorFontFamily)
+        const normalizedValue = normalizeFontFamilyAlias(value);
+        return VALID_EDITOR_FONT_FAMILIES.has(
+            normalizedValue as EditorFontFamily,
+        )
+            ? (normalizedValue as EditorFontFamily)
             : DEFAULT_EDITOR_FONT_FAMILY;
     }
 
     #normalizeOptionalEditorFontFamily(
         value: string | null | undefined,
     ): EditorFontFamily | null {
+        const normalizedValue = normalizeFontFamilyAlias(value);
         if (!value) {
             return null;
         }
 
-        return VALID_EDITOR_FONT_FAMILIES.has(value as EditorFontFamily)
-            ? (value as EditorFontFamily)
+        return VALID_EDITOR_FONT_FAMILIES.has(
+            normalizedValue as EditorFontFamily,
+        )
+            ? (normalizedValue as EditorFontFamily)
             : null;
     }
 
@@ -844,8 +855,9 @@ export class SettingsService {
     }
 
     #normalizeChatFontFamily(value: string | null | undefined): ChatFontFamily {
-        return VALID_CHAT_FONT_FAMILIES.has(value as ChatFontFamily)
-            ? (value as ChatFontFamily)
+        const normalizedValue = normalizeFontFamilyAlias(value);
+        return VALID_CHAT_FONT_FAMILIES.has(normalizedValue as ChatFontFamily)
+            ? (normalizedValue as ChatFontFamily)
             : DEFAULT_CHAT_FONT_FAMILY;
     }
 

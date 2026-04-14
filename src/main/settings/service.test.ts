@@ -35,7 +35,7 @@ describe("SettingsService", () => {
                 themePreset: "ocean",
             },
             editor: {
-                fontFamily: "jetbrains-mono",
+                fontFamily: "jetbrains",
                 fontSize: 15,
                 lineHeight: 1.7,
             },
@@ -243,6 +243,57 @@ describe("SettingsService", () => {
                 fontSize: null,
                 lineHeight: null,
             },
+        });
+    });
+
+    it("normaliza aliases legacy de fuentes al cargar settings", () => {
+        const connection = createFakeSettingsConnection({
+            app: {
+                "editor.font_family": "jetbrains-mono",
+                "ai.chat.font_family": "jetbrains-mono",
+                "ai.composer.font_family": "jetbrains-mono",
+            },
+        });
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        expect(service.loadSnapshot().editor).toMatchObject({
+            fontFamily: "jetbrains",
+        });
+        expect(service.loadSnapshot().aiChat).toMatchObject({
+            chatFontFamily: "jetbrains",
+            composerFontFamily: "jetbrains",
+        });
+    });
+
+    it("guarda y recarga nuevas fuentes de reference app para AI", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveSnapshot({
+            aiChat: {
+                chatFontFamily: "typewriter",
+                chatFontSize: 15,
+                composerFontFamily: "literata",
+                composerFontSize: 16,
+                requireCmdEnterToSend: false,
+                screenshotRetentionSeconds: 0,
+                historyRetentionDays: 0,
+            },
+            shellState: null,
+        });
+
+        expect(service.loadSnapshot().aiChat).toEqual({
+            chatFontFamily: "typewriter",
+            chatFontSize: 15,
+            composerFontFamily: "literata",
+            composerFontSize: 16,
+            requireCmdEnterToSend: false,
+            screenshotRetentionSeconds: 0,
+            historyRetentionDays: 0,
         });
     });
 });
