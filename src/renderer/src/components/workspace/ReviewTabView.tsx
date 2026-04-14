@@ -156,18 +156,63 @@ function useReviewExpansion(
     };
 }
 
-function ReviewEmptyState() {
+function ReviewEmptyState({
+    hasUndo,
+    onUndo,
+}: {
+    readonly hasUndo?: boolean;
+    readonly onUndo?: () => void;
+}) {
     return (
-        <div className="flex h-full items-center justify-center px-6">
-            <div className="max-w-md text-center">
-                <div className="text-sm font-semibold text-text-primary">
-                    No pending changes
+        <div className="flex h-full flex-col items-center justify-center gap-3">
+            <svg
+                fill="none"
+                height="20"
+                stroke="var(--color-text-secondary)"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.5"
+                style={{ opacity: 0.45 }}
+                viewBox="0 0 24 24"
+                width="20"
+            >
+                <path d="M9 12l2 2 4-4" />
+                <circle cx="12" cy="12" r="10" />
+            </svg>
+            <div className="flex flex-col items-center gap-1 text-center">
+                <div
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: "0.85em",
+                        fontWeight: 500,
+                    }}
+                >
+                    No pending AI edits
                 </div>
-                <p className="mt-2 text-sm leading-6 text-text-secondary">
-                    AI edits will appear here automatically as soon as files are
-                    changed.
-                </p>
+                <div
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: "0.75em",
+                        lineHeight: 1.5,
+                        opacity: 0.6,
+                    }}
+                >
+                    New edits will appear here automatically.
+                </div>
             </div>
+            {hasUndo && onUndo ? (
+                <button
+                    className="review-action-btn rounded-md px-3 py-1.5 text-xs"
+                    onClick={onUndo}
+                    style={{
+                        fontWeight: 500,
+                        ...getNeutralButtonStyle(),
+                    }}
+                    type="button"
+                >
+                    Undo Last Reject
+                </button>
+            ) : null}
         </div>
     );
 }
@@ -625,7 +670,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     );
 
     if (items.length === 0 && !currentError) {
-        return <ReviewEmptyState />;
+        return <ReviewEmptyState hasUndo={AI_REVIEW_UNDO_ENABLED} />;
     }
 
     return (
@@ -747,45 +792,21 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                         ) : null}
                         <button
                             className="review-action-btn"
-                            disabled={expansion.allExpanded}
-                            onClick={expansion.expandAll}
+                            onClick={
+                                expansion.allExpanded
+                                    ? expansion.collapseAll
+                                    : expansion.expandAll
+                            }
                             style={{
                                 ...getNeutralButtonStyle(),
                                 borderRadius: 8,
-                                cursor: expansion.allExpanded
-                                    ? "not-allowed"
-                                    : "pointer",
                                 fontSize: "0.75em",
                                 fontWeight: 600,
-                                opacity: expansion.allExpanded ? 0.45 : 1,
                                 padding: "6px 10px",
                             }}
                             type="button"
                         >
-                            Expand All
-                        </button>
-                        <button
-                            className="review-action-btn"
-                            disabled={expansion.expandedKeys.size === 0}
-                            onClick={expansion.collapseAll}
-                            style={{
-                                ...getNeutralButtonStyle(),
-                                borderRadius: 8,
-                                cursor:
-                                    expansion.expandedKeys.size === 0
-                                        ? "not-allowed"
-                                        : "pointer",
-                                fontSize: "0.75em",
-                                fontWeight: 600,
-                                opacity:
-                                    expansion.expandedKeys.size === 0
-                                        ? 0.45
-                                        : 1,
-                                padding: "6px 10px",
-                            }}
-                            type="button"
-                        >
-                            Collapse All
+                            {expansion.allExpanded ? "Collapse" : "Expand"}
                         </button>
                         <button
                             className="review-action-btn"
@@ -861,7 +882,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                     ) : null}
 
                     {items.length === 0 ? (
-                        <ReviewEmptyState />
+                        <ReviewEmptyState hasUndo={AI_REVIEW_UNDO_ENABLED} />
                     ) : (
                         items.map((item) => (
                             <ReviewFileRow

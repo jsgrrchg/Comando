@@ -43,6 +43,78 @@ type VisualSegment =
           readonly lines: readonly DiffLine[];
       };
 
+function getDecisionHunkFingerprint(hunk: {
+    readonly lines: readonly DiffLine[];
+    readonly newEnd: number;
+    readonly newStart: number;
+    readonly oldEnd: number;
+    readonly oldStart: number;
+}): string {
+    return [
+        hunk.oldStart,
+        hunk.oldEnd,
+        hunk.newStart,
+        hunk.newEnd,
+        hunk.lines.map((line) => `${line.type}:${line.text}`).join("\u001f"),
+    ].join("|");
+}
+
+function getTrackedHunkFingerprint(hunk: {
+    readonly lines: readonly {
+        readonly text: string;
+        readonly type: DiffLine["type"];
+    }[];
+    readonly newCount: number;
+    readonly newStart: number;
+    readonly oldCount: number;
+    readonly oldStart: number;
+}): string {
+    return [
+        hunk.oldStart,
+        hunk.oldStart + hunk.oldCount,
+        hunk.newStart,
+        hunk.newStart + hunk.newCount,
+        hunk.lines.map((line) => `${line.type}:${line.text}`).join("\u001f"),
+    ].join("|");
+}
+
+function resolveTrackedHunkId(
+    file: AiTrackedFile | null,
+    diff: AiFileDiff,
+    decisionHunks: readonly {
+        readonly lines: readonly DiffLine[];
+        readonly newEnd: number;
+        readonly newStart: number;
+        readonly oldEnd: number;
+        readonly oldStart: number;
+    }[],
+    decisionHunkIndex: number,
+): string | null {
+    if (!file) {
+        return null;
+    }
+
+    const diffHunk = diff.hunks[decisionHunkIndex] ?? null;
+    if (diffHunk) {
+        const trackedById = file.hunks.find((hunk) => hunk.id === diffHunk.id);
+        if (trackedById) {
+            return trackedById.id;
+        }
+    }
+
+    const decisionHunk = decisionHunks[decisionHunkIndex];
+    if (!decisionHunk) {
+        return null;
+    }
+
+    const decisionFingerprint = getDecisionHunkFingerprint(decisionHunk);
+    const trackedByFingerprint = file.hunks.find(
+        (hunk) => getTrackedHunkFingerprint(hunk) === decisionFingerprint,
+    );
+
+    return trackedByFingerprint?.id ?? null;
+}
+
 function buildRenderBlocks(lines: readonly DiffLine[]): RenderBlock[] {
     const blocks: RenderBlock[] = [];
     let pendingPlain: DiffLine[] = [];
@@ -379,16 +451,12 @@ export function EditedFileDiffPreview({
                                                     );
                                                 }
 
-                                                const trackedHunk =
-                                                    file.hunks[
-                                                        segment.decisionHunkIndex
-                                                    ] ?? null;
-                                                const hunkId =
-                                                    trackedHunk?.id ??
-                                                    decisionHunks[
-                                                        segment.decisionHunkIndex
-                                                    ]?.index.toString() ??
-                                                    null;
+                                                const hunkId = resolveTrackedHunkId(
+                                                    file,
+                                                    diff,
+                                                    decisionHunks,
+                                                    segment.decisionHunkIndex,
+                                                );
 
                                                 return (
                                                     <div

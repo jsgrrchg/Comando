@@ -9,12 +9,19 @@ import type { DiffLine } from "./reviewDiff";
 function getGridTemplateColumns(options: {
     readonly compactLineNumbers: boolean;
     readonly exact: boolean;
+    readonly lineWrapping: boolean;
 }): string {
-    if (!options.exact || options.compactLineNumbers) {
-        return "36px minmax(0, 1fr)";
+    const contentCol = options.lineWrapping ? "minmax(0, 1fr)" : "max-content";
+
+    if (options.exact && !options.compactLineNumbers) {
+        return `56px 56px ${contentCol}`;
     }
 
-    return "56px 56px minmax(0, 1fr)";
+    if (options.exact && options.compactLineNumbers) {
+        return `44px ${contentCol}`;
+    }
+
+    return `36px ${contentCol}`;
 }
 
 function getDisplayedLineNumber(line: DiffLine): number | "" {
@@ -54,12 +61,14 @@ function getTextColor(type: DiffLine["type"]): string {
         return "var(--diff-remove)";
     }
 
-    return "var(--color-text-primary)";
+    return "var(--color-text-secondary)";
 }
 
 function getTextStyles(lineWrapping: boolean) {
     return {
-        overflowWrap: lineWrapping ? ("anywhere" as const) : ("normal" as const),
+        overflowWrap: lineWrapping
+            ? ("anywhere" as const)
+            : ("normal" as const),
         whiteSpace: lineWrapping ? ("pre-wrap" as const) : ("pre" as const),
         wordBreak: lineWrapping ? ("break-all" as const) : ("normal" as const),
     };
@@ -101,12 +110,14 @@ export function DiffLineView({
                 data-diff-line="true"
                 data-line-exact={String(isExact)}
                 data-line-type="separator"
+                data-line-wrapping={String(lineWrapping)}
                 style={{
                     color: "var(--color-text-secondary)",
                     display: "grid",
                     gridTemplateColumns: getGridTemplateColumns({
                         compactLineNumbers,
                         exact: isExact,
+                        lineWrapping,
                     }),
                     opacity: 0.5,
                     padding: "2px 8px",
@@ -125,6 +136,7 @@ export function DiffLineView({
                 data-diff-line="true"
                 data-line-exact="true"
                 data-line-type={line.type}
+                data-line-wrapping={String(lineWrapping)}
                 style={{
                     ...textStyles,
                     alignItems: "stretch",
@@ -132,7 +144,11 @@ export function DiffLineView({
                     borderLeft: getLineBorder(line.type),
                     color: getTextColor(line.type),
                     display: "grid",
-                    gridTemplateColumns: "56px 56px minmax(0, 1fr)",
+                    gridTemplateColumns: getGridTemplateColumns({
+                        compactLineNumbers,
+                        exact: true,
+                        lineWrapping,
+                    }),
                 }}
             >
                 <div
@@ -171,6 +187,7 @@ export function DiffLineView({
             data-diff-line="true"
             data-line-exact={String(isExact)}
             data-line-type={line.type}
+            data-line-wrapping={String(lineWrapping)}
             style={{
                 ...textStyles,
                 alignItems: "stretch",
@@ -178,7 +195,11 @@ export function DiffLineView({
                 borderLeft: getLineBorder(line.type),
                 color: getTextColor(line.type),
                 display: "grid",
-                gridTemplateColumns: "36px minmax(0, 1fr)",
+                gridTemplateColumns: getGridTemplateColumns({
+                    compactLineNumbers,
+                    exact: isExact,
+                    lineWrapping,
+                }),
             }}
         >
             <div
@@ -188,7 +209,7 @@ export function DiffLineView({
                     color: "var(--color-text-secondary)",
                     fontSize: "0.85em",
                     opacity: 0.55,
-                    padding: compactLineNumbers ? "0 6px 0 4px" : "0 4px 0 6px",
+                    padding: "0 4px 0 6px",
                     textAlign: "right",
                     userSelect: "none",
                 }}

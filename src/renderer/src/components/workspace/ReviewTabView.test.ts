@@ -173,8 +173,7 @@ describe("ReviewTabView", () => {
         );
 
         expect(markup).toContain("Pending Changes");
-        expect(markup).toContain("Expand All");
-        expect(markup).toContain("Collapse All");
+        expect(markup).toContain("Collapse");
         expect(markup).toContain("Reject All");
         expect(markup).toContain("Keep All");
         expect(markup).toContain("src/app.ts");
@@ -194,9 +193,9 @@ describe("ReviewTabView", () => {
             }),
         );
 
-        expect(markup).toContain("No pending changes");
+        expect(markup).toContain("No pending AI edits");
         expect(markup).toContain(
-            "AI edits will appear here automatically as soon as files are changed.",
+            "New edits will appear here automatically.",
         );
     });
 });

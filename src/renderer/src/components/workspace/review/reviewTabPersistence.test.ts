@@ -188,6 +188,64 @@ describe("reviewTabPersistence", () => {
             pathAliases: ["src/new-name.ts", "src/old-name.ts"],
         });
     });
+    it("prefers the anchor timestamp when multiple alias candidates match", () => {
+        const sourceItem = createReviewItem("old-key", {
+            path: "src/old-name.ts",
+            previousPath: null,
+            updatedAt: "2026-04-14T12:00:00.000Z",
+        });
+        const exactCandidate = createReviewItem("exact-key", {
+            path: "src/exact-name.ts",
+            previousPath: "src/old-name.ts",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+        });
+        const newerCandidate = createReviewItem("newer-key", {
+            path: "src/newer-name.ts",
+            previousPath: "src/old-name.ts",
+            updatedAt: "2026-04-14T12:20:00.000Z",
+        });
+
+        const anchor = createPersistedReviewAnchor(sourceItem, ["hunk-1"]);
+
+        expect(
+            resolvePersistedReviewAnchor(anchor, [newerCandidate, exactCandidate]),
+        ).toEqual({
+            fileUpdatedAt: "2026-04-14T12:00:00.000Z",
+            hunkIds: ["hunk-1"],
+            identityKey: "exact-key",
+            pathAliases: ["src/exact-name.ts", "src/old-name.ts"],
+        });
+    });
+
+    it("prefers a path-alias candidate whose updatedAt matches the anchor", () => {
+        const previousItem = createReviewItem("old-key", {
+            path: "src/shared.ts",
+            previousPath: null,
+            updatedAt: "2026-04-14T12:00:00.000Z",
+        });
+        const exactUpdatedAtCandidate = createReviewItem("exact-key", {
+            path: "src/exact.ts",
+            previousPath: "src/shared.ts",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+        });
+        const newerCollision = createReviewItem("newer-key", {
+            path: "src/newer.ts",
+            previousPath: "src/shared.ts",
+            updatedAt: "2026-04-14T12:10:00.000Z",
+        });
+
+        const anchor = createPersistedReviewAnchor(previousItem, ["hunk-1"]);
+
+        expect(
+            resolvePersistedReviewAnchor(anchor, [newerCollision, exactUpdatedAtCandidate]),
+        ).toEqual({
+            fileUpdatedAt: "2026-04-14T12:00:00.000Z",
+            hunkIds: ["hunk-1"],
+            identityKey: "exact-key",
+            pathAliases: ["src/exact.ts", "src/shared.ts"],
+        });
+    });
+
 
     it("avoids clobbering newer persisted state and merges expanded keys on stale writes", () => {
         vi.useFakeTimers();

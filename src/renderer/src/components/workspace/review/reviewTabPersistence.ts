@@ -185,11 +185,49 @@ function getCandidatePathAliases(item: ReviewFileItem): string[] {
     return normalizePathAliases(aliases);
 }
 
+function getUpdatedAtDistance(left: string, right: string): number {
+    const leftMs = Date.parse(left);
+    const rightMs = Date.parse(right);
+
+    if (!Number.isFinite(leftMs) || !Number.isFinite(rightMs)) {
+        return Number.POSITIVE_INFINITY;
+    }
+
+    return Math.abs(leftMs - rightMs);
+}
+
+function compareAnchorCandidates(
+    anchorUpdatedAt: string,
+    left: ReviewFileItem,
+    right: ReviewFileItem,
+): number {
+    const leftExact = left.file.updatedAt === anchorUpdatedAt;
+    const rightExact = right.file.updatedAt === anchorUpdatedAt;
+
+    if (leftExact !== rightExact) {
+        return leftExact ? -1 : 1;
+    }
+
+    const leftDistance = getUpdatedAtDistance(left.file.updatedAt, anchorUpdatedAt);
+    const rightDistance = getUpdatedAtDistance(right.file.updatedAt, anchorUpdatedAt);
+
+    if (leftDistance !== rightDistance) {
+        return leftDistance - rightDistance;
+    }
+
+    return right.file.updatedAt.localeCompare(left.file.updatedAt);
+}
+
 function findItemByAnchor(
     anchor: PersistedReviewAnchor,
     items: readonly ReviewFileItem[],
 ): ReviewFileItem | null {
     const identityMatch =
+        items.find(
+            (item) =>
+                item.file.identityKey === anchor.identityKey &&
+                item.file.updatedAt === anchor.fileUpdatedAt,
+        ) ??
         items.find((item) => item.file.identityKey === anchor.identityKey) ??
         null;
 
@@ -210,11 +248,11 @@ function findItemByAnchor(
         return null;
     }
 
-    return (
-        [...candidates].sort((left, right) =>
-            right.file.updatedAt.localeCompare(left.file.updatedAt),
-        )[0] ?? null
+    const sortedCandidates = [...candidates].sort((left, right) =>
+        compareAnchorCandidates(anchor.fileUpdatedAt, left, right),
     );
+
+    return sortedCandidates[0] ?? null;
 }
 
 export function getReviewViewStorageKey(

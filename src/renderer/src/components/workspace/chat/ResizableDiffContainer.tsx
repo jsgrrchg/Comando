@@ -57,7 +57,7 @@ export function ResizableDiffContainer({
     return (
         <div
             style={{
-                borderTop: `1px solid color-mix(in srgb, ${accent} 12%, var(--color-border))`,
+                borderBottom: `1px solid color-mix(in srgb, ${accent} 8%, var(--color-border))`,
             }}
         >
             <div
@@ -95,9 +95,9 @@ export function ResizableDiffContainer({
                     aria-hidden="true"
                     style={{
                         backgroundColor: "var(--color-text-secondary)",
-                        borderRadius: 999,
+                        borderRadius: 1,
                         height: 2,
-                        opacity: 0.32,
+                        opacity: 0.3,
                         width: 32,
                     }}
                 />
