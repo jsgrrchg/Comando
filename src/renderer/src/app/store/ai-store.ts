@@ -25,9 +25,11 @@ import type {
 } from "@shared/ipc";
 
 import {
+    appendSelectionMentionDraftPart,
     cloneComposerDraftParts,
     cloneDraftAttachments,
     cloneDraftFileContexts,
+    createEmptyComposerDraftParts,
     DEFAULT_AI_DIFF_ZOOM,
     normalizeAiDiffZoom,
     type AiComposerDraftPart,
@@ -58,6 +60,7 @@ interface QueuedPromptEditState {
 
 interface AiSessionClientState {
     readonly draftAttachments: readonly AiImageAttachment[];
+    readonly draftComposerParts: readonly AiComposerDraftPart[];
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly diffZoom: number;
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
@@ -96,6 +99,15 @@ interface AiStore {
         sessionId: string,
     ) => readonly AiComposerDraftPart[] | null;
     clearDraftAttachments: (sessionId: string) => void;
+    attachSelectionMention: (
+        sessionId: string,
+        selection: {
+            readonly path: string;
+            readonly selectedText: string;
+            readonly startLine: number;
+            readonly endLine: number;
+        },
+    ) => void;
     clearQueuedPrompts: (sessionId: string) => void;
     addDraftFileContext: (
         sessionId: string,
@@ -136,6 +148,10 @@ interface AiStore {
         settings: KiloRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     saveCodexBinaryPath: (binaryPath: string) => Promise<AiRuntimeStatus>;
+    setDraftComposerParts: (
+        sessionId: string,
+        parts: readonly AiComposerDraftPart[],
+    ) => void;
     setDraftAttachments: (
         sessionId: string,
         attachments: readonly AiImageAttachment[],
@@ -188,6 +204,35 @@ export const useAiStore = create<AiStore>((set, get) => ({
         }));
     },
 
+    attachSelectionMention: (sessionId, selection) => {
+        set((state) => {
+            const session = state.sessions[sessionId] ?? createSessionState();
+            const exists = session.draftComposerParts.some(
+                (part) =>
+                    part.type === "selection_mention" &&
+                    part.path === selection.path &&
+                    part.startLine === selection.startLine &&
+                    part.endLine === selection.endLine,
+            );
+            if (exists) {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        draftComposerParts: appendSelectionMentionDraftPart(
+                            session.draftComposerParts,
+                            selection,
+                        ),
+                    },
+                },
+            };
+        });
+    },
+
     cancelQueuedPromptEdit: (sessionId) => {
         let restoredComposerParts: readonly AiComposerDraftPart[] | null = null;
 
@@ -213,6 +258,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             session.editingQueuedPromptState
                                 .previousDraftAttachments,
                         ),
+                        draftComposerParts: restoredComposerParts,
                         draftFileContexts: cloneDraftFileContexts(
                             session.editingQueuedPromptState
                                 .previousDraftFileContexts,
@@ -567,6 +613,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 ...state.sessions,
                 [tab.sessionId]: {
                     ...(state.sessions[tab.sessionId] ?? createSessionState()),
+                    draftComposerParts:
+                        state.sessions[tab.sessionId]?.draftComposerParts ??
+                        (tab.kind === "chat" && tab.draft.trim().length > 0
+                            ? [{ type: "text", text: tab.draft }]
+                            : createEmptyComposerDraftParts()),
                     meta: buildSessionMeta(tab),
                     snapshot:
                         state.sessions[tab.sessionId]?.snapshot ??
@@ -683,6 +734,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         draftAttachments: cloneDraftAttachments(
                             queuedPrompt.attachments,
                         ),
+                        draftComposerParts: restoredComposerParts,
                         draftFileContexts: cloneDraftFileContexts(
                             queuedPrompt.fileContextsSnapshot,
                         ),
@@ -705,6 +757,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 [sessionId]: {
                     ...(state.sessions[sessionId] ?? createSessionState()),
                     draftAttachments: [...attachments],
+                },
+            },
+        }));
+    },
+
+    setDraftComposerParts: (sessionId, parts) => {
+        set((state) => ({
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...(state.sessions[sessionId] ?? createSessionState()),
+                    draftComposerParts: cloneComposerDraftParts(parts),
                 },
             },
         }));
@@ -1029,6 +1093,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
 function createSessionState(): AiSessionClientState {
     return {
         draftAttachments: [],
+        draftComposerParts: createEmptyComposerDraftParts(),
         draftFileContexts: [],
         diffZoom: DEFAULT_AI_DIFF_ZOOM,
         editingQueuedPromptState: null,

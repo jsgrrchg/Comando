@@ -311,7 +311,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (event, visible: boolean) => {
             const win = BrowserWindow.fromWebContents(event.sender);
             if (win && process.platform === "darwin") {
-                win.setWindowButtonVisibility(visible);
+                win.setWindowButtonPosition(
+                    visible ? { x: 18, y: 18 } : { x: -80, y: -80 },
+                );
             }
         },
     );

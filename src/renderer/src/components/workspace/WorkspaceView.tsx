@@ -1,5 +1,8 @@
 import Editor, { DiffEditor } from "@monaco-editor/react";
-import type { editor as MonacoEditor } from "monaco-editor";
+import type {
+    editor as MonacoEditor,
+    Selection as MonacoSelection,
+} from "monaco-editor";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -396,6 +399,7 @@ function WorkspacePaneView({
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
+    const attachSelectionMention = useAiStore((s) => s.attachSelectionMention);
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
     const closeOtherTabs = useWorkspaceStore((state) => state.closeOtherTabs);
     const closePane = useWorkspaceStore((state) => state.closePane);
@@ -631,7 +635,12 @@ function WorkspacePaneView({
                 const targetTab =
                     useWorkspaceStore.getState().tabsById[candidateTabId];
                 if (targetTab?.kind === "chat") {
-                    addDraftFileContext(targetTab.sessionId, context);
+                    attachSelectionMention(targetTab.sessionId, {
+                        endLine: context.endLine ?? context.startLine ?? 1,
+                        path: context.relativePath,
+                        selectedText: context.selectedText ?? "",
+                        startLine: context.startLine ?? 1,
+                    });
                 }
                 return;
             }
@@ -654,11 +663,16 @@ function WorkspacePaneView({
             );
 
             if (createdChatTab?.kind === "chat") {
-                addDraftFileContext(createdChatTab.sessionId, context);
+                attachSelectionMention(createdChatTab.sessionId, {
+                    endLine: context.endLine ?? context.startLine ?? 1,
+                    path: context.relativePath,
+                    selectedText: context.selectedText ?? "",
+                    startLine: context.startLine ?? 1,
+                });
             }
         },
         [
-            addDraftFileContext,
+            attachSelectionMention,
             createChatTab,
             defaultWorktreeId,
             lastFocusedRuntimeId,
@@ -1434,6 +1448,82 @@ function getQuickCreateButtonTitle(
     }
 }
 
+function isMonacoWholeLineSelection(
+    model: MonacoEditor.ITextModel,
+    selection: MonacoSelection,
+): boolean {
+    if (selection.isEmpty()) {
+        return false;
+    }
+
+    const start = selection.getStartPosition();
+    const end = selection.getEndPosition();
+
+    if (start.column !== 1) {
+        return false;
+    }
+
+    const lineCount = model.getLineCount();
+    const endsAtNextLineStart =
+        end.column === 1 &&
+        end.lineNumber > start.lineNumber &&
+        end.lineNumber <= lineCount + 1;
+    const endsAtCurrentLineEnd =
+        end.lineNumber <= lineCount &&
+        end.column === model.getLineMaxColumn(end.lineNumber);
+
+    return endsAtNextLineStart || endsAtCurrentLineEnd;
+}
+
+function tryAttachEditorSelectionToComposer(input: {
+    readonly documentLanguageId: string;
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly tabTitle: string;
+    readonly editor: MonacoEditor.IStandaloneCodeEditor;
+    readonly onAttachLineFragment: (
+        context: AiFileContextAttachment,
+    ) => Promise<void>;
+}): boolean {
+    const model = input.editor.getModel();
+    const selection = input.editor.getSelection();
+
+    if (!model || !selection || selection.isEmpty()) {
+        return false;
+    }
+
+    if (isMonacoWholeLineSelection(model, selection)) {
+        return false;
+    }
+
+    const selectedText = model.getValueInRange(selection);
+    if (!selectedText.trim()) {
+        return false;
+    }
+
+    const startOffset = model.getOffsetAt(selection.getStartPosition());
+    const endOffset = model.getOffsetAt(selection.getEndPosition());
+    const effectiveEndOffset = Math.max(startOffset, endOffset - 1);
+    const startLine = model.getPositionAt(startOffset).lineNumber;
+    const endLine = model.getPositionAt(effectiveEndOffset).lineNumber;
+
+    void input.onAttachLineFragment({
+        endLine,
+        extension: input.relativePath.includes(".")
+            ? (input.relativePath.split(".").pop() ?? null)
+            : null,
+        id: `file-ctx:${crypto.randomUUID()}`,
+        languageId: input.documentLanguageId,
+        name: input.tabTitle,
+        projectId: input.projectId,
+        relativePath: input.relativePath,
+        selectedText,
+        startLine,
+    });
+
+    return true;
+}
+
 function FileTabView({
     isActivePane,
     onAttachLineFragment,
@@ -1580,46 +1670,6 @@ function FileTabView({
             if (key === "s") {
                 event.preventDefault();
                 void onSave(tab.id);
-                return;
-            }
-
-            if (key === "l" && !event.shiftKey && !event.altKey) {
-                const editor = editorRef.current;
-                const model = editor?.getModel();
-                const selection = editor?.getSelection();
-
-                if (!editor || !model || !selection || selection.isEmpty()) {
-                    return;
-                }
-
-                const selectedText = model.getValueInRange(selection);
-                if (!selectedText.trim()) {
-                    return;
-                }
-
-                const startOffset = model.getOffsetAt(
-                    selection.getStartPosition(),
-                );
-                const endOffset = model.getOffsetAt(selection.getEndPosition());
-                const effectiveEndOffset = Math.max(startOffset, endOffset - 1);
-                const startLine = model.getPositionAt(startOffset).lineNumber;
-                const endLine =
-                    model.getPositionAt(effectiveEndOffset).lineNumber;
-
-                event.preventDefault();
-                void onAttachLineFragment({
-                    endLine,
-                    extension: tab.relativePath.includes(".")
-                        ? (tab.relativePath.split(".").pop() ?? null)
-                        : null,
-                    id: `file-ctx:${crypto.randomUUID()}`,
-                    languageId: document.languageId,
-                    name: tab.title,
-                    projectId: tab.projectId,
-                    relativePath: tab.relativePath,
-                    selectedText,
-                    startLine,
-                });
                 return;
             }
 
@@ -1935,8 +1985,35 @@ function FileTabView({
                         onChange={(value: string | undefined) =>
                             onDraftChange(tab.id, value ?? "")
                         }
-                        onMount={(editor) => {
+                        onMount={(editor, monaco) => {
                             editorRef.current = editor;
+                            editor.onKeyDown((event) => {
+                                if (
+                                    event.keyCode !== monaco.KeyCode.KeyL ||
+                                    !(event.metaKey || event.ctrlKey) ||
+                                    event.altKey ||
+                                    event.shiftKey
+                                ) {
+                                    return;
+                                }
+
+                                const attached =
+                                    tryAttachEditorSelectionToComposer({
+                                        documentLanguageId: document.languageId,
+                                        editor,
+                                        onAttachLineFragment,
+                                        projectId: tab.projectId,
+                                        relativePath: tab.relativePath,
+                                        tabTitle: tab.title,
+                                    });
+
+                                if (!attached) {
+                                    return;
+                                }
+
+                                event.preventDefault();
+                                event.stopPropagation();
+                            });
                         }}
                         options={{
                             automaticLayout: true,

@@ -479,4 +479,36 @@ describe("ai-store queue", () => {
             useAiStore.getState().sessions[TAB.sessionId]?.draftFileContexts,
         ).toEqual([fullFileContext, lineFragmentContext]);
     });
+
+    it("inserta la selección del editor como selection_mention y evita duplicados", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+
+        useAiStore.getState().attachSelectionMention(TAB.sessionId, {
+            endLine: 18,
+            path: "src/app.ts",
+            selectedText: "const value = 1;",
+            startLine: 12,
+        });
+        useAiStore.getState().attachSelectionMention(TAB.sessionId, {
+            endLine: 18,
+            path: "src/app.ts",
+            selectedText: "const value = 1;",
+            startLine: 12,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.draftComposerParts,
+        ).toEqual([
+            { type: "text", text: "" },
+            {
+                type: "selection_mention",
+                endLine: 18,
+                label: "(12:18) const value = 1;",
+                path: "src/app.ts",
+                selectedText: "const value = 1;",
+                startLine: 12,
+            },
+            { type: "text", text: " " },
+        ]);
+    });
 });

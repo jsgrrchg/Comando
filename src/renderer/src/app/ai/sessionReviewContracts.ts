@@ -1,7 +1,4 @@
-import type {
-    AiFileContextAttachment,
-    AiImageAttachment,
-} from "@shared/ipc";
+import type { AiFileContextAttachment, AiImageAttachment } from "@shared/ipc";
 
 export const DEFAULT_AI_DIFF_ZOOM = 0.72;
 
@@ -27,6 +24,14 @@ export type AiComposerDraftPart =
     | { readonly type: "fetch_mention" }
     | { readonly type: "plan_mention" }
     | {
+          readonly type: "selection_mention";
+          readonly label: string;
+          readonly path: string;
+          readonly selectedText: string;
+          readonly startLine: number;
+          readonly endLine: number;
+      }
+    | {
           readonly type: "file_attachment";
           readonly filePath: string;
           readonly mimeType: string;
@@ -47,6 +52,71 @@ export function cloneComposerDraftParts(
     parts: readonly AiComposerDraftPart[],
 ): AiComposerDraftPart[] {
     return parts.map((part) => ({ ...part }));
+}
+
+export function createEmptyComposerDraftParts(): AiComposerDraftPart[] {
+    return [{ type: "text", text: "" }];
+}
+
+export function buildSelectionMentionLabel(
+    selectedText: string,
+    startLine: number,
+    endLine: number,
+): string {
+    const preview = selectedText.replace(/\s+/g, " ").trim();
+    const truncated =
+        preview.length > 20 ? `${preview.slice(0, 20).trimEnd()}...` : preview;
+    const range =
+        startLine === endLine ? `(${startLine})` : `(${startLine}:${endLine})`;
+    return `${range} ${truncated}`.trim();
+}
+
+function ensureTrailingSpace(
+    parts: readonly AiComposerDraftPart[],
+): AiComposerDraftPart[] {
+    const next = cloneComposerDraftParts(parts);
+    const last = next[next.length - 1];
+
+    if (!last) {
+        return createEmptyComposerDraftParts();
+    }
+
+    if (
+        last.type === "text" &&
+        (last.text.length === 0 || last.text.endsWith(" "))
+    ) {
+        return next;
+    }
+
+    return [...next, { type: "text", text: " " }];
+}
+
+export function appendSelectionMentionDraftPart(
+    parts: readonly AiComposerDraftPart[],
+    selection: {
+        readonly path: string;
+        readonly selectedText: string;
+        readonly startLine: number;
+        readonly endLine: number;
+    },
+): AiComposerDraftPart[] {
+    const next = ensureTrailingSpace(parts);
+
+    next.push({
+        type: "selection_mention",
+        endLine: selection.endLine,
+        label: buildSelectionMentionLabel(
+            selection.selectedText,
+            selection.startLine,
+            selection.endLine,
+        ),
+        path: selection.path,
+        selectedText: selection.selectedText,
+        startLine: selection.startLine,
+    });
+    next.push({ type: "text", text: " " });
+
+    return cloneComposerDraftParts(next);
 }
 
 export function cloneDraftAttachments(

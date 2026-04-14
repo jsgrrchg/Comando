@@ -35,6 +35,7 @@ import type { AIComposerPart } from "./chat/composerParts";
 import {
     composerPartsToPlainText,
     createEmptyComposerParts,
+    serializeComposerPartsForPrompt,
 } from "./chat/composerParts";
 import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
@@ -95,6 +96,8 @@ const NEAR_BOTTOM_THRESHOLD = 80;
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
+const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
+    createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
 type AiRuntimeCatalog = Pick<
     AiSessionSnapshot,
@@ -152,6 +155,7 @@ export function ChatTabView({
     const setSessionConfigOption = useAiStore((s) => s.setSessionConfigOption);
     const setSessionMode = useAiStore((s) => s.setSessionMode);
     const setSessionModel = useAiStore((s) => s.setSessionModel);
+    const setDraftComposerParts = useAiStore((s) => s.setDraftComposerParts);
     const setDraftAttachments = useAiStore((s) => s.setDraftAttachments);
     const sendQueuedPromptNow = useAiStore((s) => s.sendQueuedPromptNow);
     const verifyCodexBinaryPath = useAiStore((s) => s.verifyCodexBinaryPath);
@@ -316,6 +320,8 @@ export function ChatTabView({
             : FALLBACK_COMMANDS;
     const draftAttachments =
         sessionState?.draftAttachments ?? EMPTY_DRAFT_ATTACHMENTS;
+    const draftComposerParts =
+        sessionState?.draftComposerParts ?? EMPTY_COMPOSER_PARTS;
     const draftFileContexts =
         sessionState?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
     const editingQueuedPrompt = sessionState?.editingQueuedPrompt ?? null;
@@ -504,7 +510,7 @@ export function ChatTabView({
     );
 
     const handleSubmit = async () => {
-        const plainText = composerPartsToPlainText(composerParts);
+        const plainText = serializeComposerPartsForPrompt(composerParts);
         const prompt = serializePromptWithContexts(
             plainText,
             draftFileContexts,
@@ -523,6 +529,7 @@ export function ChatTabView({
         onDraftChange("");
         setComposerParts(createEmptyComposerParts());
         setComposerResetNonce((current) => current + 1);
+        setDraftComposerParts(tab.sessionId, createEmptyComposerParts());
         clearDraftAttachments(tab.sessionId);
         clearDraftFileContexts(tab.sessionId);
         setComposerError(null);
@@ -550,7 +557,8 @@ export function ChatTabView({
             }
 
             setComposerParts(submittedParts);
-            onDraftChange(plainText);
+            onDraftChange(composerPartsToPlainText(submittedParts));
+            setDraftComposerParts(tab.sessionId, submittedParts);
             setDraftAttachments(tab.sessionId, submittedAttachments);
             for (const fileContext of submittedFileContexts) {
                 addDraftFileContext(tab.sessionId, fileContext);
@@ -562,8 +570,9 @@ export function ChatTabView({
         (newParts: AIComposerPart[]) => {
             setComposerParts(newParts);
             onDraftChange(composerPartsToPlainText(newParts));
+            setDraftComposerParts(tab.sessionId, newParts);
         },
-        [onDraftChange],
+        [onDraftChange, setDraftComposerParts, tab.sessionId],
     );
 
     const handleEditQueuedPrompt = useCallback(
@@ -579,9 +588,10 @@ export function ChatTabView({
 
             setComposerParts([...restoredParts]);
             onDraftChange(composerPartsToPlainText(restoredParts));
+            setDraftComposerParts(tab.sessionId, restoredParts);
             setComposerError(null);
         },
-        [editQueuedPrompt, onDraftChange, tab.sessionId],
+        [editQueuedPrompt, onDraftChange, setDraftComposerParts, tab.sessionId],
     );
 
     const handleCancelQueuedPromptEdit = useCallback(() => {
@@ -593,8 +603,25 @@ export function ChatTabView({
         setComposerParts([...restoredParts]);
         setComposerResetNonce((current) => current + 1);
         onDraftChange(composerPartsToPlainText(restoredParts));
+        setDraftComposerParts(tab.sessionId, restoredParts);
         setComposerError(null);
-    }, [cancelQueuedPromptEdit, onDraftChange, tab.sessionId]);
+    }, [
+        cancelQueuedPromptEdit,
+        onDraftChange,
+        setDraftComposerParts,
+        tab.sessionId,
+    ]);
+
+    useEffect(() => {
+        const currentSerialized = JSON.stringify(composerParts);
+        const nextSerialized = JSON.stringify(draftComposerParts);
+        if (currentSerialized === nextSerialized) {
+            return;
+        }
+
+        setComposerParts(cloneComposerPartsForDraft(draftComposerParts));
+        onDraftChange(composerPartsToPlainText(draftComposerParts));
+    }, [composerParts, draftComposerParts, onDraftChange]);
 
     const handleClearQueuedPrompts = useCallback(() => {
         clearQueuedPrompts(tab.sessionId);
@@ -2843,6 +2870,12 @@ function formatBytes(sizeBytes: number): string {
     }
 
     return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function cloneComposerPartsForDraft(
+    parts: readonly AIComposerPart[],
+): AIComposerPart[] {
+    return parts.map((part) => ({ ...part }));
 }
 
 function formatAttachmentSize(sizeBytes: number | null): string {

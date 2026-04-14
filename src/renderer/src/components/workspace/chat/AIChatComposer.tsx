@@ -117,6 +117,23 @@ function createPlanMentionNode(metrics: ChatPillMetrics): HTMLSpanElement {
     return el;
 }
 
+function createSelectionMentionNode(
+    part: Extract<AIComposerPart, { type: "selection_mention" }>,
+    metrics: ChatPillMetrics,
+): HTMLSpanElement {
+    const el = document.createElement("span");
+    el.contentEditable = "false";
+    el.dataset.kind = "selection_mention";
+    el.dataset.label = part.label;
+    el.dataset.path = part.path;
+    el.dataset.selectedText = part.selectedText;
+    el.dataset.startLine = String(part.startLine);
+    el.dataset.endLine = String(part.endLine);
+    el.textContent = part.label;
+    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.accent);
+    return el;
+}
+
 /* ─── DOM → parts extraction ─── */
 
 function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
@@ -152,6 +169,24 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
                 return;
             case "plan_mention":
                 parts.push({ type: "plan_mention" });
+                return;
+            case "selection_mention":
+                if (
+                    el.dataset.label &&
+                    el.dataset.path &&
+                    el.dataset.selectedText &&
+                    el.dataset.startLine &&
+                    el.dataset.endLine
+                ) {
+                    parts.push({
+                        type: "selection_mention",
+                        endLine: Number(el.dataset.endLine),
+                        label: el.dataset.label,
+                        path: el.dataset.path,
+                        selectedText: el.dataset.selectedText,
+                        startLine: Number(el.dataset.startLine),
+                    });
+                }
                 return;
         }
     }
@@ -212,6 +247,9 @@ function syncComposerDom(
                 break;
             case "plan_mention":
                 root.appendChild(createPlanMentionNode(metrics));
+                break;
+            case "selection_mention":
+                root.appendChild(createSelectionMentionNode(part, metrics));
                 break;
             default:
                 break;

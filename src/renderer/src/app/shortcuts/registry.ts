@@ -8,6 +8,7 @@ export interface ShortcutDefinition {
         | "open_settings"
         | "save_file"
         | "toggle_sidebar"
+        | "toggle_utility_panel"
         | "increase_editor_font_size"
         | "decrease_editor_font_size"
         | "reset_editor_font_size";
@@ -89,6 +90,16 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Cmd+B",
             windows: "Ctrl+B",
+        },
+        section: "General",
+    },
+    {
+        id: "toggle_utility_panel",
+        label: "Toggle utility panel",
+        description: "Collapse or expand the right utility panel.",
+        keys: {
+            mac: "Cmd+J",
+            windows: "Ctrl+J",
         },
         section: "General",
     },

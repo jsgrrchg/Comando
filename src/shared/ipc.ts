@@ -184,6 +184,7 @@ export interface PersistedShellState {
     readonly activeSurface: PersistedShellSurface;
     readonly leftCollapsed?: boolean;
     readonly leftWidth: number;
+    readonly rightCollapsed?: boolean;
     readonly rightWidth: number;
 }
 

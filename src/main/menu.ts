@@ -122,6 +122,10 @@ function buildMenuTemplate(
                 accelerator: "CmdOrCtrl+B",
                 label: "Toggle Sidebar",
             },
+            {
+                accelerator: "CmdOrCtrl+J",
+                label: "Toggle Utility Panel",
+            },
             { type: "separator" },
             {
                 accelerator: "CmdOrCtrl+0",

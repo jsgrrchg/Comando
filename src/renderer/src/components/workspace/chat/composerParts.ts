@@ -1,27 +1,12 @@
+import {
+    appendSelectionMentionDraftPart,
+    createEmptyComposerDraftParts,
+    type AiComposerDraftPart,
+} from "@renderer/app/ai/sessionReviewContracts";
+
 /* ─── Part types ─── */
 
-export type AIComposerPart =
-    | { readonly type: "text"; readonly text: string }
-    | {
-          readonly type: "file_mention";
-          readonly label: string;
-          readonly path: string;
-          readonly relativePath: string;
-          readonly languageId: string;
-      }
-    | {
-          readonly type: "folder_mention";
-          readonly folderPath: string;
-          readonly label: string;
-      }
-    | { readonly type: "fetch_mention" }
-    | { readonly type: "plan_mention" }
-    | {
-          readonly type: "file_attachment";
-          readonly filePath: string;
-          readonly mimeType: string;
-          readonly label: string;
-      };
+export type AIComposerPart = AiComposerDraftPart;
 
 /* ─── Normalization ─── */
 
@@ -68,6 +53,8 @@ export function serializeComposerParts(
                     return `${PILL_OPEN}@fetch${PILL_CLOSE}`;
                 case "plan_mention":
                     return `${PILL_OPEN}/plan${PILL_CLOSE}`;
+                case "selection_mention":
+                    return `${PILL_OPEN}${p.label}${PILL_CLOSE}`;
                 case "file_attachment":
                     return `${PILL_OPEN}📎${p.label}${PILL_CLOSE}`;
             }
@@ -80,7 +67,7 @@ export function cleanPillMarkers(text: string): string {
 }
 
 export function createEmptyComposerParts(): AIComposerPart[] {
-    return [{ type: "text", text: "" }];
+    return createEmptyComposerDraftParts();
 }
 
 /* ─── Plain text extraction ─── */
@@ -101,8 +88,37 @@ export function composerPartsToPlainText(
                     return "@fetch";
                 case "plan_mention":
                     return "/plan";
+                case "selection_mention":
+                    return `[${p.label}]`;
                 case "file_attachment":
                     return `[${p.label}]`;
+            }
+        })
+        .join("");
+}
+
+export function serializeComposerPartsForPrompt(
+    parts: readonly AIComposerPart[],
+): string {
+    return parts
+        .map((part) => {
+            switch (part.type) {
+                case "text":
+                    return part.text;
+                case "file_mention":
+                    return `@${part.relativePath}`;
+                case "folder_mention":
+                    return `@${part.folderPath}`;
+                case "fetch_mention":
+                    return "@fetch";
+                case "plan_mention":
+                    return "/plan";
+                case "selection_mention":
+                    return part.startLine === part.endLine
+                        ? `${part.path}:${part.startLine}`
+                        : `${part.path}:${part.startLine}-${part.endLine}`;
+                case "file_attachment":
+                    return `[${part.label}]`;
             }
         })
         .join("");
@@ -184,6 +200,20 @@ export function appendPlanMentionPart(
     withSpace.push({ type: "plan_mention" });
     withSpace.push({ type: "text", text: " " });
     return normalizeComposerParts(withSpace);
+}
+
+export function appendSelectionMentionPart(
+    parts: readonly AIComposerPart[],
+    selection: {
+        readonly path: string;
+        readonly selectedText: string;
+        readonly startLine: number;
+        readonly endLine: number;
+    },
+): AIComposerPart[] {
+    return normalizeComposerParts(
+        appendSelectionMentionDraftPart(parts, selection),
+    );
 }
 
 /* ─── Emptiness check ─── */

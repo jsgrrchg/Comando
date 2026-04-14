@@ -228,10 +228,14 @@ export function App() {
     const leftWidth = useShellStore((state) => state.leftWidth);
     const nudgePanel = useShellStore((state) => state.nudgePanel);
     const resizePanel = useShellStore((state) => state.resizePanel);
+    const rightCollapsed = useShellStore((state) => state.rightCollapsed);
     const rightWidth = useShellStore((state) => state.rightWidth);
     const syncViewport = useShellStore((state) => state.syncViewport);
     const toggleLeftCollapsed = useShellStore(
         (state) => state.toggleLeftCollapsed,
+    );
+    const toggleRightCollapsed = useShellStore(
+        (state) => state.toggleRightCollapsed,
     );
     const applyAiRuntimeStatus = useAiStore(
         (state) => state.applyRuntimeStatus,
@@ -256,10 +260,12 @@ export function App() {
     void isFileTreeSearchLoading;
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [projectFilter, setProjectFilter] = useState("");
+    const [rightOverlayVisible, setRightOverlayVisible] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarSearchVisible, setSidebarSearchVisible] = useState(false);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const overlayDismissRef = useRef<number | null>(null);
+    const rightOverlayDismissRef = useRef<number | null>(null);
 
     useEffect(() => {
         let isDisposed = false;
@@ -532,6 +538,7 @@ export function App() {
                 activeSurface,
                 leftCollapsed,
                 leftWidth,
+                rightCollapsed,
                 rightWidth,
             });
         }, 120);
@@ -539,7 +546,14 @@ export function App() {
         return () => {
             window.clearTimeout(timeout);
         };
-    }, [activeSurface, leftCollapsed, leftWidth, persistenceReady, rightWidth]);
+    }, [
+        activeSurface,
+        leftCollapsed,
+        leftWidth,
+        persistenceReady,
+        rightCollapsed,
+        rightWidth,
+    ]);
 
     useEffect(() => {
         if (!persistenceReady || !window.comando) {
@@ -682,8 +696,12 @@ export function App() {
         const leftHandle = leftCollapsed
             ? 0
             : shellLayoutConstraints.handleWidth;
-        return `${leftCol}px ${leftHandle}px minmax(0, 1fr) ${shellLayoutConstraints.handleWidth}px ${rightWidth}px`;
-    }, [leftCollapsed, leftWidth, rightWidth]);
+        const rightCol = rightCollapsed ? 0 : rightWidth;
+        const rightHandle = rightCollapsed
+            ? 0
+            : shellLayoutConstraints.handleWidth;
+        return `${leftCol}px ${leftHandle}px minmax(0, 1fr) ${rightHandle}px ${rightCol}px`;
+    }, [leftCollapsed, leftWidth, rightCollapsed, rightWidth]);
 
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
@@ -1823,14 +1841,25 @@ export function App() {
                 toggleLeftCollapsed();
                 setSidebarOverlayVisible(false);
             }
-            if (event.key === "Escape" && sidebarOverlayVisible) {
-                setSidebarOverlayVisible(false);
+            if (event.key === "j" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                toggleRightCollapsed();
+                setRightOverlayVisible(false);
+            }
+            if (event.key === "Escape") {
+                if (sidebarOverlayVisible) setSidebarOverlayVisible(false);
+                if (rightOverlayVisible) setRightOverlayVisible(false);
             }
         };
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [sidebarOverlayVisible, toggleLeftCollapsed]);
+    }, [
+        rightOverlayVisible,
+        sidebarOverlayVisible,
+        toggleLeftCollapsed,
+        toggleRightCollapsed,
+    ]);
 
     useEffect(() => {
         if (!isMac) return;
@@ -2123,191 +2152,396 @@ export function App() {
                             />
                         </main>
 
-                        <SplitHandle
-                            label="Resize files panel"
-                            onPointerDown={(event) =>
-                                startDragging(
-                                    "right",
-                                    event,
-                                    rightWidth,
-                                    setDragState,
-                                )
+                        <div
+                            style={
+                                rightCollapsed
+                                    ? {
+                                          overflow: "hidden",
+                                          pointerEvents: "none",
+                                      }
+                                    : undefined
                             }
-                            onStepBackward={() =>
-                                nudgePanel(
-                                    "right",
-                                    shellLayoutConstraints.keyboardStep,
-                                )
-                            }
-                            onStepForward={() =>
-                                nudgePanel(
-                                    "right",
-                                    -shellLayoutConstraints.keyboardStep,
-                                )
-                            }
-                        />
+                        >
+                            <SplitHandle
+                                label="Resize files panel"
+                                onPointerDown={(event) =>
+                                    startDragging(
+                                        "right",
+                                        event,
+                                        rightWidth,
+                                        setDragState,
+                                    )
+                                }
+                                onStepBackward={() =>
+                                    nudgePanel(
+                                        "right",
+                                        shellLayoutConstraints.keyboardStep,
+                                    )
+                                }
+                                onStepForward={() =>
+                                    nudgePanel(
+                                        "right",
+                                        -shellLayoutConstraints.keyboardStep,
+                                    )
+                                }
+                            />
+                        </div>
 
                         <aside
                             className="surface-focus flex min-h-0 flex-col bg-bg-panel"
+                            style={
+                                rightCollapsed
+                                    ? { overflow: "hidden" }
+                                    : undefined
+                            }
                             data-active={activeSurface === "utility"}
                             onClick={() => focusSurface("utility")}
                             onFocus={() => focusSurface("utility")}
                             tabIndex={0}
                         >
-                            <GitPanel
-                                activeTab={activeGitPanelTab}
-                                changes={{
-                                    activePath: activeGitSelectedDiffPath,
-                                    expandedGroupIds: activeGitExpandedGroups,
-                                    expandedPaths: activeGitExpandedPaths,
-                                    groups: gitChangeGroups,
-                                    onNodeClick: (node) =>
-                                        void handleSelectGitDiffPath(node.path),
-                                    onToggleDirectory: (node) => {
-                                        if (!activeProjectId) {
-                                            return;
-                                        }
-
-                                        toggleGitChangePath(
-                                            activeProjectId,
-                                            node.path,
-                                            activeWorktreeId,
-                                        );
-                                    },
-                                    onToggleGroup: (groupId) => {
-                                        if (!activeProjectId) {
-                                            return;
-                                        }
-
-                                        toggleGitChangeGroup(
-                                            activeProjectId,
-                                            groupId,
-                                            activeWorktreeId,
-                                        );
-                                    },
-                                }}
-                                diffs={{
-                                    activeFileId: activeGitSelectedDiffPath,
-                                    files: activeGitDiffs,
-                                    onSelectFile: (file) =>
-                                        void handleSelectGitDiffPath(file.path),
-                                }}
-                                files={{
-                                    activePath: activeFilePath,
-                                    enableNodeDrag: true,
-                                    expandedPaths: visibleExpandedDirectories,
-                                    nodes: fileTreeNodes,
-                                    onBackgroundContextMenu: ({ x, y }) =>
-                                        setFileTreeContextMenu({
-                                            x,
-                                            y,
-                                            payload: { kind: "background" },
-                                        }),
-                                    onBackgroundDrop: (dragData) =>
-                                        void handleMoveTreeEntry(
-                                            dragData,
-                                            null,
-                                        ),
-                                    onNodeClick: (node) =>
-                                        activeProjectId
-                                            ? void openFileTab(
-                                                  activeProjectId,
-                                                  node.path,
-                                                  activeWorktreeId,
-                                              )
-                                            : undefined,
-                                    onNodeContextMenu: (node, { x, y }) =>
-                                        setFileTreeContextMenu({
-                                            x,
-                                            y,
-                                            payload: {
-                                                kind: "node",
-                                                node,
-                                            },
-                                        }),
-                                    onNodeDrop: (dragData, node) =>
-                                        void handleMoveTreeEntry(
-                                            dragData,
-                                            node.isProjectRoot
-                                                ? null
-                                                : node.path,
-                                        ),
-                                    onNodeDragStart: (node, dataTransfer) => {
-                                        if (!dataTransfer) {
-                                            return;
-                                        }
-
-                                        dataTransfer.effectAllowed = "copyMove";
-                                        dataTransfer.setData(
-                                            COMPOSER_PROJECT_ENTRY_MIME,
-                                            serializeComposerProjectEntryDragData(
-                                                {
-                                                    kind: node.kind,
-                                                    name: node.name,
-                                                    relativePath: node.path,
-                                                },
+                            {!rightCollapsed && (
+                                <GitPanel
+                                    activeTab={activeGitPanelTab}
+                                    changes={{
+                                        activePath: activeGitSelectedDiffPath,
+                                        expandedGroupIds:
+                                            activeGitExpandedGroups,
+                                        expandedPaths: activeGitExpandedPaths,
+                                        groups: gitChangeGroups,
+                                        onNodeClick: (node) =>
+                                            void handleSelectGitDiffPath(
+                                                node.path,
                                             ),
-                                        );
-                                        dataTransfer.setData(
-                                            "text/plain",
-                                            node.path,
-                                        );
-                                    },
-                                    onToggleDirectory: (node) => {
-                                        if (node.isProjectRoot) {
-                                            setProjectRootExpandedByContext(
-                                                (currentState) => ({
-                                                    ...currentState,
-                                                    [activeProjectContextKey]:
-                                                        !isProjectRootExpanded,
-                                                }),
+                                        onToggleDirectory: (node) => {
+                                            if (!activeProjectId) {
+                                                return;
+                                            }
+
+                                            toggleGitChangePath(
+                                                activeProjectId,
+                                                node.path,
+                                                activeWorktreeId,
                                             );
-                                            return;
-                                        }
+                                        },
+                                        onToggleGroup: (groupId) => {
+                                            if (!activeProjectId) {
+                                                return;
+                                            }
 
-                                        if (!activeProjectId) {
-                                            return;
-                                        }
+                                            toggleGitChangeGroup(
+                                                activeProjectId,
+                                                groupId,
+                                                activeWorktreeId,
+                                            );
+                                        },
+                                    }}
+                                    diffs={{
+                                        activeFileId: activeGitSelectedDiffPath,
+                                        files: activeGitDiffs,
+                                        onSelectFile: (file) =>
+                                            void handleSelectGitDiffPath(
+                                                file.path,
+                                            ),
+                                    }}
+                                    files={{
+                                        activePath: activeFilePath,
+                                        enableNodeDrag: true,
+                                        expandedPaths:
+                                            visibleExpandedDirectories,
+                                        nodes: fileTreeNodes,
+                                        onBackgroundContextMenu: ({ x, y }) =>
+                                            setFileTreeContextMenu({
+                                                x,
+                                                y,
+                                                payload: { kind: "background" },
+                                            }),
+                                        onBackgroundDrop: (dragData) =>
+                                            void handleMoveTreeEntry(
+                                                dragData,
+                                                null,
+                                            ),
+                                        onNodeClick: (node) =>
+                                            activeProjectId
+                                                ? void openFileTab(
+                                                      activeProjectId,
+                                                      node.path,
+                                                      activeWorktreeId,
+                                                  )
+                                                : undefined,
+                                        onNodeContextMenu: (node, { x, y }) =>
+                                            setFileTreeContextMenu({
+                                                x,
+                                                y,
+                                                payload: {
+                                                    kind: "node",
+                                                    node,
+                                                },
+                                            }),
+                                        onNodeDrop: (dragData, node) =>
+                                            void handleMoveTreeEntry(
+                                                dragData,
+                                                node.isProjectRoot
+                                                    ? null
+                                                    : node.path,
+                                            ),
+                                        onNodeDragStart: (
+                                            node,
+                                            dataTransfer,
+                                        ) => {
+                                            if (!dataTransfer) {
+                                                return;
+                                            }
 
-                                        const treeNode =
-                                            findProjectTreeNodeByPath(
-                                                visibleFileTreeNodesByParent,
+                                            dataTransfer.effectAllowed =
+                                                "copyMove";
+                                            dataTransfer.setData(
+                                                COMPOSER_PROJECT_ENTRY_MIME,
+                                                serializeComposerProjectEntryDragData(
+                                                    {
+                                                        kind: node.kind,
+                                                        name: node.name,
+                                                        relativePath: node.path,
+                                                    },
+                                                ),
+                                            );
+                                            dataTransfer.setData(
+                                                "text/plain",
                                                 node.path,
                                             );
-                                        if (!treeNode) {
+                                        },
+                                        onToggleDirectory: (node) => {
+                                            if (node.isProjectRoot) {
+                                                setProjectRootExpandedByContext(
+                                                    (currentState) => ({
+                                                        ...currentState,
+                                                        [activeProjectContextKey]:
+                                                            !isProjectRootExpanded,
+                                                    }),
+                                                );
+                                                return;
+                                            }
+
+                                            if (!activeProjectId) {
+                                                return;
+                                            }
+
+                                            const treeNode =
+                                                findProjectTreeNodeByPath(
+                                                    visibleFileTreeNodesByParent,
+                                                    node.path,
+                                                );
+                                            if (!treeNode) {
+                                                return;
+                                            }
+
+                                            void toggleDirectory(
+                                                activeProjectId,
+                                                treeNode,
+                                                activeWorktreeId,
+                                            );
+                                        },
+                                    }}
+                                    onTabChange={(tab) => {
+                                        if (!activeProjectId) {
                                             return;
                                         }
 
-                                        void toggleDirectory(
+                                        setGitPanelTab(
                                             activeProjectId,
-                                            treeNode,
+                                            tab,
                                             activeWorktreeId,
                                         );
-                                    },
-                                }}
-                                onTabChange={(tab) => {
-                                    if (!activeProjectId) {
-                                        return;
-                                    }
-
-                                    setGitPanelTab(
-                                        activeProjectId,
-                                        tab,
-                                        activeWorktreeId,
-                                    );
-                                }}
-                                tabCounts={{
-                                    changes:
-                                        activeGitSnapshot?.status
-                                            .changedCount ?? 0,
-                                    diffs: activeGitDiffs.length,
-                                    files: visibleFileTreeRoots.length,
-                                }}
-                                toolbar={gitToolbar}
-                            />
+                                    }}
+                                    tabCounts={{
+                                        changes:
+                                            activeGitSnapshot?.status
+                                                .changedCount ?? 0,
+                                        diffs: activeGitDiffs.length,
+                                        files: visibleFileTreeRoots.length,
+                                    }}
+                                    toolbar={gitToolbar}
+                                />
+                            )}
                         </aside>
                     </div>
                 </div>
+
+                {rightCollapsed && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: rightOverlayVisible ? 0 : 8,
+                            zIndex: 10,
+                        }}
+                        onMouseEnter={() => setRightOverlayVisible(true)}
+                    />
+                )}
+
+                {rightCollapsed && (
+                    <div
+                        className="surface-focus flex min-h-0 flex-col bg-bg-panel"
+                        style={{
+                            position: "absolute",
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: rightWidth,
+                            zIndex: 10,
+                            boxShadow: rightOverlayVisible
+                                ? "var(--shadow-soft)"
+                                : "none",
+                            borderLeft: "1px solid var(--color-border)",
+                            transition:
+                                "opacity 200ms ease, transform 200ms ease",
+                            opacity: rightOverlayVisible ? 1 : 0,
+                            transform: rightOverlayVisible
+                                ? "translateX(0)"
+                                : "translateX(8px)",
+                            pointerEvents: rightOverlayVisible
+                                ? "auto"
+                                : "none",
+                        }}
+                        onMouseEnter={() => {
+                            if (rightOverlayDismissRef.current) {
+                                clearTimeout(rightOverlayDismissRef.current);
+                                rightOverlayDismissRef.current = null;
+                            }
+                        }}
+                        onMouseLeave={() => {
+                            rightOverlayDismissRef.current = window.setTimeout(
+                                () => {
+                                    setRightOverlayVisible(false);
+                                    rightOverlayDismissRef.current = null;
+                                },
+                                200,
+                            );
+                        }}
+                    >
+                        <GitPanel
+                            activeTab={activeGitPanelTab}
+                            changes={{
+                                activePath: activeGitSelectedDiffPath,
+                                expandedGroupIds: activeGitExpandedGroups,
+                                expandedPaths: activeGitExpandedPaths,
+                                groups: gitChangeGroups,
+                                onNodeClick: (node) =>
+                                    void handleSelectGitDiffPath(node.path),
+                                onToggleDirectory: (node) => {
+                                    if (!activeProjectId) return;
+                                    toggleGitChangePath(
+                                        activeProjectId,
+                                        node.path,
+                                        activeWorktreeId,
+                                    );
+                                },
+                                onToggleGroup: (groupId) => {
+                                    if (!activeProjectId) return;
+                                    toggleGitChangeGroup(
+                                        activeProjectId,
+                                        groupId,
+                                        activeWorktreeId,
+                                    );
+                                },
+                            }}
+                            diffs={{
+                                activeFileId: activeGitSelectedDiffPath,
+                                files: activeGitDiffs,
+                                onSelectFile: (file) =>
+                                    void handleSelectGitDiffPath(file.path),
+                            }}
+                            files={{
+                                activePath: activeFilePath,
+                                enableNodeDrag: true,
+                                expandedPaths: visibleExpandedDirectories,
+                                nodes: fileTreeNodes,
+                                onBackgroundContextMenu: ({ x, y }) =>
+                                    setFileTreeContextMenu({
+                                        x,
+                                        y,
+                                        payload: { kind: "background" },
+                                    }),
+                                onBackgroundDrop: (dragData) =>
+                                    void handleMoveTreeEntry(dragData, null),
+                                onNodeClick: (node) =>
+                                    activeProjectId
+                                        ? void openFileTab(
+                                              activeProjectId,
+                                              node.path,
+                                              activeWorktreeId,
+                                          )
+                                        : undefined,
+                                onNodeContextMenu: (node, { x, y }) =>
+                                    setFileTreeContextMenu({
+                                        x,
+                                        y,
+                                        payload: { kind: "node", node },
+                                    }),
+                                onNodeDrop: (dragData, node) =>
+                                    void handleMoveTreeEntry(
+                                        dragData,
+                                        node.isProjectRoot ? null : node.path,
+                                    ),
+                                onNodeDragStart: (node, dataTransfer) => {
+                                    if (!dataTransfer) return;
+                                    dataTransfer.effectAllowed = "copyMove";
+                                    dataTransfer.setData(
+                                        COMPOSER_PROJECT_ENTRY_MIME,
+                                        serializeComposerProjectEntryDragData({
+                                            kind: node.kind,
+                                            name: node.name,
+                                            relativePath: node.path,
+                                        }),
+                                    );
+                                    dataTransfer.setData(
+                                        "text/plain",
+                                        node.path,
+                                    );
+                                },
+                                onToggleDirectory: (node) => {
+                                    if (node.isProjectRoot) {
+                                        setProjectRootExpandedByContext(
+                                            (currentState) => ({
+                                                ...currentState,
+                                                [activeProjectContextKey]:
+                                                    !isProjectRootExpanded,
+                                            }),
+                                        );
+                                        return;
+                                    }
+                                    if (!activeProjectId) return;
+                                    const treeNode = findProjectTreeNodeByPath(
+                                        visibleFileTreeNodesByParent,
+                                        node.path,
+                                    );
+                                    if (!treeNode) return;
+                                    void toggleDirectory(
+                                        activeProjectId,
+                                        treeNode,
+                                        activeWorktreeId,
+                                    );
+                                },
+                            }}
+                            onTabChange={(tab) => {
+                                if (!activeProjectId) return;
+                                setGitPanelTab(
+                                    activeProjectId,
+                                    tab,
+                                    activeWorktreeId,
+                                );
+                            }}
+                            tabCounts={{
+                                changes:
+                                    activeGitSnapshot?.status.changedCount ?? 0,
+                                diffs: activeGitDiffs.length,
+                                files: visibleFileTreeRoots.length,
+                            }}
+                            toolbar={gitToolbar}
+                        />
+                    </div>
+                )}
 
                 {leftCollapsed && (
                     <div
