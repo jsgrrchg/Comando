@@ -1,10 +1,12 @@
-import Editor from "@monaco-editor/react";
+import Editor, { DiffEditor } from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
     useEffect,
     useEffectEvent,
+    useMemo,
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
@@ -13,16 +15,20 @@ import {
 } from "react";
 
 import type {
+    AiTrackedFile,
+    ProjectFileDocument,
     WorkspaceNode,
     WorkspacePaneNode,
     WorkspaceSplitNode,
 } from "@shared/ipc";
 import { shouldWrapEditorLanguage } from "@shared/editor-language";
 
+import { useAiStore } from "@renderer/app/store/ai-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import {
     collectPaneNodes,
     type RuntimeWorkspaceFileTab,
+    type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceTerminalTab,
 } from "@renderer/app/workspace/tree";
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
@@ -489,8 +495,16 @@ function WorkspacePaneView({
                             />
                         ) : activeTab.kind === "review" ? (
                             <ReviewTabView
-                                onOpenFile={(projectId, relativePath) =>
-                                    openFileTab(projectId, relativePath)
+                                onOpenFile={(
+                                    projectId,
+                                    relativePath,
+                                    reviewContext,
+                                ) =>
+                                    openFileTab(
+                                        projectId,
+                                        relativePath,
+                                        reviewContext,
+                                    )
                                 }
                                 tab={activeTab}
                             />
@@ -568,7 +582,63 @@ function FileTabView({
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const editorTheme = useMonacoTheme();
+    const aiSessions = useAiStore((state) => state.sessions);
+    const keepTrackedFile = useAiStore((state) => state.keepTrackedFile);
+    const keepTrackedFileHunks = useAiStore(
+        (state) => state.keepTrackedFileHunks,
+    );
+    const rejectTrackedFile = useAiStore((state) => state.rejectTrackedFile);
+    const rejectTrackedFileHunks = useAiStore(
+        (state) => state.rejectTrackedFileHunks,
+    );
     const document = tab.document;
+    const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
+        null,
+    );
+    const [reviewModeState, setReviewModeState] = useState<{
+        readonly key: string | null;
+        readonly value: "editor" | "inline" | null;
+    }>({
+        key: null,
+        value: null,
+    });
+    const [selectedHunkState, setSelectedHunkState] = useState<{
+        readonly hunkId: string | null;
+        readonly key: string | null;
+    }>({
+        hunkId: null,
+        key: null,
+    });
+
+    const trackedFile = useMemo(
+        () =>
+            document
+                ? findTrackedFileForDocument(
+                      aiSessions,
+                      document,
+                      tab.reviewContext,
+                  )
+                : null,
+        [aiSessions, document, tab.reviewContext],
+    );
+    const canShowInlineReview = isInlineReviewSupported(trackedFile);
+    const reviewSignature = trackedFile
+        ? `${trackedFile.identityKey}:${trackedFile.hunks.map((hunk) => hunk.id).join(",")}`
+        : null;
+    const reviewMode =
+        reviewModeState.key === reviewSignature ? reviewModeState.value : null;
+    const selectedHunkId =
+        selectedHunkState.key === reviewSignature
+            ? selectedHunkState.hunkId
+            : null;
+    const showInlineReview =
+        canShowInlineReview &&
+        (reviewMode === "inline" ||
+            (reviewMode !== "editor" && Boolean(tab.reviewContext)));
+    const selectedHunk =
+        trackedFile?.hunks.find((hunk) => hunk.id === selectedHunkId) ??
+        trackedFile?.hunks[0] ??
+        null;
 
     useEffect(() => {
         if (
@@ -597,6 +667,17 @@ function FileTabView({
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, [document, isActivePane, onSave, tab.id]);
+
+    useEffect(() => {
+        if (!showInlineReview || !selectedHunk) {
+            return;
+        }
+
+        const lineNumber = Math.max(selectedHunk.newStart || 1, 1);
+        diffEditorRef.current
+            ?.getModifiedEditor()
+            .revealLineInCenter(lineNumber);
+    }, [selectedHunk, showInlineReview]);
 
     if (!document) {
         return (
@@ -636,34 +717,143 @@ function FileTabView({
         );
     }
 
+    const inlineReviewTrackedFile =
+        showInlineReview &&
+        canShowInlineReview &&
+        trackedFile?.oldText !== null &&
+        trackedFile?.newText !== null
+            ? trackedFile
+            : null;
+    const reviewBar = trackedFile
+        ? (() => {
+              const activeTrackedFile = trackedFile;
+              const activeReviewKey =
+                  reviewSignature ?? activeTrackedFile.identityKey;
+
+              return (
+                  <FileReviewBar
+                      canShowInlineReview={canShowInlineReview}
+                      isInlineReviewVisible={showInlineReview}
+                      onKeepFile={() =>
+                          void keepTrackedFile({
+                              path: activeTrackedFile.path,
+                              sessionId: activeTrackedFile.sessionId,
+                          })
+                      }
+                      onKeepHunk={() => {
+                          if (!selectedHunk) {
+                              return;
+                          }
+
+                          void keepTrackedFileHunks({
+                              hunkIds: [selectedHunk.id],
+                              path: activeTrackedFile.path,
+                              sessionId: activeTrackedFile.sessionId,
+                          });
+                      }}
+                      onRejectFile={() =>
+                          void rejectTrackedFile({
+                              path: activeTrackedFile.path,
+                              sessionId: activeTrackedFile.sessionId,
+                          })
+                      }
+                      onRejectHunk={() => {
+                          if (!selectedHunk) {
+                              return;
+                          }
+
+                          void rejectTrackedFileHunks({
+                              hunkIds: [selectedHunk.id],
+                              path: activeTrackedFile.path,
+                              sessionId: activeTrackedFile.sessionId,
+                          });
+                      }}
+                      onSelectHunk={(hunkId) =>
+                          setSelectedHunkState({
+                              hunkId,
+                              key: activeReviewKey,
+                          })
+                      }
+                      onShowEditor={() =>
+                          setReviewModeState({
+                              key: activeReviewKey,
+                              value: "editor",
+                          })
+                      }
+                      onShowInlineReview={() =>
+                          setReviewModeState({
+                              key: activeReviewKey,
+                              value: "inline",
+                          })
+                      }
+                      selectedHunkId={selectedHunk?.id ?? null}
+                      trackedFile={activeTrackedFile}
+                  />
+              );
+          })()
+        : null;
+
     return (
         <div className="flex h-full min-h-0 flex-col">
             <FilePathBar path={document.absolutePath} />
 
+            {reviewBar}
+
             <div className="min-h-0 flex-1">
-                <Editor
-                    language={document.languageId}
-                    onChange={(value: string | undefined) =>
-                        onDraftChange(tab.id, value ?? "")
-                    }
-                    options={{
-                        automaticLayout: true,
-                        fontFamily:
-                            '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
-                        fontLigatures: true,
-                        fontSize: 13,
-                        minimap: { enabled: false },
-                        padding: { top: 16, bottom: 16 },
-                        scrollBeyondLastLine: false,
-                        smoothScrolling: true,
-                        wordWrap: shouldEnableDocumentWrapping(document)
-                            ? "on"
-                            : "off",
-                    }}
-                    path={document.absolutePath}
-                    theme={editorTheme}
-                    value={tab.draftContent}
-                />
+                {inlineReviewTrackedFile ? (
+                    <DiffEditor
+                        language={document.languageId}
+                        modified={inlineReviewTrackedFile.newText ?? ""}
+                        modifiedModelPath={`${document.absolutePath}::review::modified`}
+                        onMount={(editor) => {
+                            diffEditorRef.current = editor;
+                        }}
+                        options={{
+                            automaticLayout: true,
+                            fontFamily:
+                                '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
+                            fontLigatures: true,
+                            fontSize: 13,
+                            minimap: { enabled: false },
+                            originalEditable: false,
+                            padding: { top: 16, bottom: 16 },
+                            readOnly: true,
+                            renderSideBySide: false,
+                            scrollBeyondLastLine: false,
+                            smoothScrolling: true,
+                            wordWrap: shouldEnableDocumentWrapping(document)
+                                ? "on"
+                                : "off",
+                        }}
+                        original={inlineReviewTrackedFile.oldText ?? ""}
+                        originalModelPath={`${document.absolutePath}::review::original`}
+                        theme={editorTheme}
+                    />
+                ) : (
+                    <Editor
+                        language={document.languageId}
+                        onChange={(value: string | undefined) =>
+                            onDraftChange(tab.id, value ?? "")
+                        }
+                        options={{
+                            automaticLayout: true,
+                            fontFamily:
+                                '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
+                            fontLigatures: true,
+                            fontSize: 13,
+                            minimap: { enabled: false },
+                            padding: { top: 16, bottom: 16 },
+                            scrollBeyondLastLine: false,
+                            smoothScrolling: true,
+                            wordWrap: shouldEnableDocumentWrapping(document)
+                                ? "on"
+                                : "off",
+                        }}
+                        path={document.absolutePath}
+                        theme={editorTheme}
+                        value={tab.draftContent}
+                    />
+                )}
             </div>
         </div>
     );
@@ -675,6 +865,175 @@ function FilePathBar({ path }: { readonly path: string }) {
             <div className="min-w-0 truncate" title={path}>
                 {path}
             </div>
+        </div>
+    );
+}
+
+function FileReviewBar({
+    canShowInlineReview,
+    isInlineReviewVisible,
+    onKeepFile,
+    onKeepHunk,
+    onRejectFile,
+    onRejectHunk,
+    onSelectHunk,
+    onShowEditor,
+    onShowInlineReview,
+    selectedHunkId,
+    trackedFile,
+}: {
+    readonly canShowInlineReview: boolean;
+    readonly isInlineReviewVisible: boolean;
+    readonly onKeepFile: () => void;
+    readonly onKeepHunk: () => void;
+    readonly onRejectFile: () => void;
+    readonly onRejectHunk: () => void;
+    readonly onSelectHunk: (hunkId: string) => void;
+    readonly onShowEditor: () => void;
+    readonly onShowInlineReview: () => void;
+    readonly selectedHunkId: string | null;
+    readonly trackedFile: AiTrackedFile;
+}) {
+    return (
+        <div className="border-b border-border bg-bg-panel px-3 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] uppercase tracking-[0.16em] text-text-secondary">
+                            Pending Review
+                        </span>
+                        <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-text-secondary">
+                            {trackedFile.kind}
+                        </span>
+                        {trackedFile.previousPath ? (
+                            <span className="text-[11px] text-text-secondary">
+                                from {trackedFile.previousPath}
+                            </span>
+                        ) : null}
+                    </div>
+                    <div className="mt-1 text-sm text-text-primary">
+                        {trackedFile.path}
+                    </div>
+                    <div className="mt-1 text-[12px] text-text-secondary">
+                        {trackedFile.hunks.length > 0
+                            ? `${trackedFile.hunks.length} pending hunk${trackedFile.hunks.length === 1 ? "" : "s"}`
+                            : "This file still has pending agent changes."}
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                    {canShowInlineReview ? (
+                        <>
+                            <button
+                                className="app-no-drag rounded-full border px-3 py-1.5 text-[11px] transition"
+                                onClick={onShowEditor}
+                                style={{
+                                    borderColor: isInlineReviewVisible
+                                        ? "var(--color-border)"
+                                        : "var(--color-accent)",
+                                    color: isInlineReviewVisible
+                                        ? "var(--color-text-secondary)"
+                                        : "var(--color-text-primary)",
+                                }}
+                                type="button"
+                            >
+                                Editor
+                            </button>
+                            <button
+                                className="app-no-drag rounded-full border px-3 py-1.5 text-[11px] transition"
+                                onClick={onShowInlineReview}
+                                style={{
+                                    borderColor: isInlineReviewVisible
+                                        ? "var(--color-accent)"
+                                        : "var(--color-border)",
+                                    color: isInlineReviewVisible
+                                        ? "var(--color-text-primary)"
+                                        : "var(--color-text-secondary)",
+                                }}
+                                type="button"
+                            >
+                                Inline Review
+                            </button>
+                        </>
+                    ) : (
+                        <span className="text-[11px] text-text-secondary">
+                            Inline review is available for text updates only.
+                        </span>
+                    )}
+                    <button
+                        className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
+                        onClick={onKeepFile}
+                        type="button"
+                    >
+                        Keep File
+                    </button>
+                    <button
+                        className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
+                        onClick={onRejectFile}
+                        type="button"
+                    >
+                        Reject File
+                    </button>
+                </div>
+            </div>
+
+            {trackedFile.hunks.length > 0 ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {trackedFile.hunks.map((hunk, index) => {
+                        const isSelected = hunk.id === selectedHunkId;
+                        return (
+                            <button
+                                className="app-no-drag rounded-full border px-3 py-1.5 text-[11px] transition"
+                                key={hunk.id}
+                                onClick={() => onSelectHunk(hunk.id)}
+                                style={{
+                                    backgroundColor: isSelected
+                                        ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
+                                        : "transparent",
+                                    borderColor: isSelected
+                                        ? "var(--color-accent)"
+                                        : "var(--color-border)",
+                                    color: isSelected
+                                        ? "var(--color-text-primary)"
+                                        : "var(--color-text-secondary)",
+                                }}
+                                type="button"
+                            >
+                                Hunk {index + 1}
+                            </button>
+                        );
+                    })}
+
+                    <span className="mx-1 h-4 w-px bg-border" />
+
+                    <button
+                        className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
+                        disabled={!selectedHunkId}
+                        onClick={onKeepHunk}
+                        type="button"
+                    >
+                        Keep Hunk
+                    </button>
+                    <button
+                        className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
+                        disabled={!selectedHunkId}
+                        onClick={onRejectHunk}
+                        type="button"
+                    >
+                        Reject Hunk
+                    </button>
+                    {selectedHunkId ? (
+                        <span className="text-[11px] text-text-secondary">
+                            {
+                                trackedFile.hunks.find(
+                                    (hunk) => hunk.id === selectedHunkId,
+                                )?.lines.length
+                            }{" "}
+                            line(s) in focus
+                        </span>
+                    ) : null}
+                </div>
+            ) : null}
         </div>
     );
 }
@@ -850,6 +1209,60 @@ function TabIcon({
             <path d="M9.5 2.5V5a.5.5 0 0 0 .5.5h2.5" strokeWidth="0.8" />
             <path d="M6 8.5h4M6 10.5h2.5" strokeWidth="0.8" />
         </svg>
+    );
+}
+
+function findTrackedFileForDocument(
+    sessions: ReturnType<typeof useAiStore.getState>["sessions"],
+    document: ProjectFileDocument,
+    reviewContext: RuntimeWorkspaceFileReviewContext | null,
+): AiTrackedFile | null {
+    const pendingTrackedFiles = Object.values(sessions)
+        .flatMap((session) => session.snapshot?.trackedFiles ?? [])
+        .filter((trackedFile) => trackedFile.reviewState === "pending");
+
+    const contextMatch =
+        reviewContext &&
+        pendingTrackedFiles.find(
+            (trackedFile) =>
+                trackedFile.sessionId === reviewContext.sessionId &&
+                trackedFile.path === reviewContext.path,
+        );
+
+    if (contextMatch) {
+        return contextMatch;
+    }
+
+    return (
+        pendingTrackedFiles
+            .filter((trackedFile) =>
+                matchesTrackedFileDocument(trackedFile, document),
+            )
+            .sort((left, right) =>
+                right.updatedAt.localeCompare(left.updatedAt),
+            )[0] ?? null
+    );
+}
+
+function matchesTrackedFileDocument(
+    trackedFile: AiTrackedFile,
+    document: ProjectFileDocument,
+): boolean {
+    return (
+        trackedFile.path === document.relativePath ||
+        trackedFile.path === document.absolutePath ||
+        trackedFile.previousPath === document.relativePath ||
+        trackedFile.previousPath === document.absolutePath
+    );
+}
+
+function isInlineReviewSupported(trackedFile: AiTrackedFile | null): boolean {
+    return Boolean(
+        trackedFile &&
+        trackedFile.isText &&
+        trackedFile.kind === "update" &&
+        trackedFile.oldText !== null &&
+        trackedFile.newText !== null,
     );
 }
 

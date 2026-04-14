@@ -34,8 +34,11 @@ export const IPC_CHANNELS = {
     cancelAiSession: "ai:cancel-session",
     closeAiSession: "ai:close-session",
     respondAiPermission: "ai:respond-permission",
+    respondAiUserInput: "ai:respond-user-input",
     keepAiTrackedFile: "ai:keep-tracked-file",
     rejectAiTrackedFile: "ai:reject-tracked-file",
+    keepAiTrackedFileHunks: "ai:keep-tracked-file-hunks",
+    rejectAiTrackedFileHunks: "ai:reject-tracked-file-hunks",
     keepAllAiTrackedFiles: "ai:keep-all-tracked-files",
     rejectAllAiTrackedFiles: "ai:reject-all-tracked-files",
 } as const;
@@ -363,9 +366,14 @@ export type AiSessionStatus =
     | "idle"
     | "starting"
     | "streaming"
-    | "waiting_permission";
+    | "waiting_permission"
+    | "waiting_user_input";
 
-export type AiMessageKind = "assistant" | "thinking" | "user";
+export type AiMessageKind =
+    | "assistant"
+    | "thinking"
+    | "user"
+    | "user_input_request";
 
 export interface AiMessage {
     readonly content: string;
@@ -375,11 +383,33 @@ export interface AiMessage {
     readonly status: "completed" | "streaming";
 }
 
+export interface AiDiffHunkLine {
+    readonly id: string;
+    readonly text: string;
+    readonly type: "add" | "context" | "remove";
+}
+
+export interface AiDiffHunk {
+    readonly id: string;
+    readonly lines: readonly AiDiffHunkLine[];
+    readonly newCount: number;
+    readonly newStart: number;
+    readonly oldCount: number;
+    readonly oldStart: number;
+}
+
+export type AiFileDiffHunk = AiDiffHunk;
+export type AiFileDiffHunkLine = AiDiffHunkLine;
+
 export interface AiFileDiff {
-    readonly kind: "create" | "delete" | "update";
+    readonly hunks: readonly AiDiffHunk[];
+    readonly isText: boolean;
+    readonly kind: "create" | "delete" | "move" | "update";
     readonly newText: string | null;
     readonly oldText: string | null;
     readonly path: string;
+    readonly previousPath: string | null;
+    readonly reversible: boolean;
 }
 
 export interface AiToolActivity {
@@ -433,14 +463,41 @@ export interface AiPermissionRequest {
     readonly updatedAt: string;
 }
 
+export interface AiUserInputQuestionOption {
+    readonly description: string | null;
+    readonly label: string;
+}
+
+export interface AiUserInputQuestion {
+    readonly header: string;
+    readonly id: string;
+    readonly isOther: boolean;
+    readonly isSecret: boolean;
+    readonly options: readonly AiUserInputQuestionOption[];
+    readonly question: string;
+}
+
+export interface AiUserInputRequest {
+    readonly questions: readonly AiUserInputQuestion[];
+    readonly requestId: string;
+    readonly sessionId: string;
+    readonly title: string;
+    readonly toolCallId: string;
+    readonly turnId: string | null;
+    readonly updatedAt: string;
+}
+
 export interface AiTrackedFile {
     readonly identityKey: string;
+    readonly hunks: readonly AiDiffHunk[];
     readonly isText: boolean;
-    readonly kind: "create" | "delete" | "update";
+    readonly kind: "create" | "delete" | "move" | "update";
     readonly newText: string | null;
     readonly oldText: string | null;
     readonly path: string;
+    readonly previousPath: string | null;
     readonly reviewState: "kept" | "pending" | "rejected";
+    readonly reversible: boolean;
     readonly sessionId: string;
     readonly toolCallId: string | null;
     readonly updatedAt: string;
@@ -451,6 +508,7 @@ export interface AiSessionSnapshot {
     readonly lastError: string | null;
     readonly messages: readonly AiMessage[];
     readonly pendingPermission: AiPermissionRequest | null;
+    readonly pendingUserInput: AiUserInputRequest | null;
     readonly plan: AiPlan | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
@@ -482,7 +540,24 @@ export interface AiPermissionResponseInput {
     readonly sessionId: string;
 }
 
+export interface AiUserInputAnswer {
+    readonly answers: readonly string[];
+    readonly questionId: string;
+}
+
+export interface AiUserInputResponseInput {
+    readonly answers: readonly AiUserInputAnswer[];
+    readonly requestId: string;
+    readonly sessionId: string;
+}
+
 export interface AiTrackedFileMutationInput {
+    readonly path: string;
+    readonly sessionId: string;
+}
+
+export interface AiTrackedFileHunkMutationInput {
+    readonly hunkIds: readonly string[];
     readonly path: string;
     readonly sessionId: string;
 }
@@ -532,8 +607,15 @@ export interface ComandoApi {
     cancelAiSession: (sessionId: string) => Promise<void>;
     closeAiSession: (sessionId: string) => Promise<void>;
     respondAiPermission: (input: AiPermissionResponseInput) => Promise<void>;
+    respondAiUserInput: (input: AiUserInputResponseInput) => Promise<void>;
     keepAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
     rejectAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
+    keepAiTrackedFileHunks: (
+        input: AiTrackedFileHunkMutationInput,
+    ) => Promise<void>;
+    rejectAiTrackedFileHunks: (
+        input: AiTrackedFileHunkMutationInput,
+    ) => Promise<void>;
     keepAllAiTrackedFiles: (sessionId: string) => Promise<void>;
     rejectAllAiTrackedFiles: (sessionId: string) => Promise<void>;
     saveCodexRuntimeSettings: (

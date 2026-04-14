@@ -9,6 +9,7 @@ import {
 
 import type {
     AiAvailableCommand,
+    AiUserInputRequest,
     AiSessionSnapshot,
     AiToolActivity,
     ProjectTreeNode,
@@ -86,6 +87,7 @@ export function ChatTabView({
     const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
     const removeQueuedPrompt = useAiStore((s) => s.removeQueuedPrompt);
     const respondPermission = useAiStore((s) => s.respondPermission);
+    const respondUserInput = useAiStore((s) => s.respondUserInput);
     const saveCodexBinaryPath = useAiStore((s) => s.saveCodexBinaryPath);
     const sendPrompt = useAiStore((s) => s.sendPrompt);
     const sessionState = useAiStore((s) => s.sessions[tab.sessionId]);
@@ -102,6 +104,9 @@ export function ChatTabView({
     const [composerSelectionStart, setComposerSelectionStart] = useState(
         tab.draft.length,
     );
+    const [pendingComposerSelection, setPendingComposerSelection] = useState<{
+        readonly cursor: number;
+    } | null>(null);
     const [isSavingRuntime, setIsSavingRuntime] = useState(false);
     const [showRuntimeConfig, setShowRuntimeConfig] = useState(false);
     const [projectSuggestions, setProjectSuggestions] = useState<
@@ -149,6 +154,7 @@ export function ChatTabView({
             : FALLBACK_COMMANDS;
     const queuedPrompts = sessionState?.queue ?? [];
     const pendingPermission = snapshot.pendingPermission;
+    const pendingUserInput = snapshot.pendingUserInput;
 
     const pendingReviewCount = useMemo(
         () =>
@@ -249,6 +255,20 @@ export function ChatTabView({
         return undefined;
     }, [isStreaming, streamStartTime]);
 
+    useEffect(() => {
+        if (!pendingComposerSelection) {
+            return;
+        }
+
+        const nextCursor = pendingComposerSelection.cursor;
+
+        window.requestAnimationFrame(() => {
+            textareaRef.current?.focus();
+            textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+            setComposerSelectionStart(nextCursor);
+        });
+    }, [pendingComposerSelection]);
+
     const timeline = useMemo((): TimelineRow[] => {
         const rows: TimelineRow[] = [];
         for (const message of snapshot.messages)
@@ -257,9 +277,13 @@ export function ChatTabView({
             rows.push({ activity, kind: "tool" });
         rows.sort((a, b) => {
             const aT =
-                a.kind === "message" ? a.message.id : a.activity.updatedAt;
+                a.kind === "message"
+                    ? a.message.createdAt
+                    : a.activity.updatedAt;
             const bT =
-                b.kind === "message" ? b.message.id : b.activity.updatedAt;
+                b.kind === "message"
+                    ? b.message.createdAt
+                    : b.activity.updatedAt;
             return aT.localeCompare(bT);
         });
         return rows;
@@ -291,11 +315,7 @@ export function ChatTabView({
         );
         const nextCursor = activeToken.start + suggestion.insertText.length + 1;
         onDraftChange(nextDraft);
-        window.requestAnimationFrame(() => {
-            textareaRef.current?.focus();
-            textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-            setComposerSelectionStart(nextCursor);
-        });
+        setPendingComposerSelection({ cursor: nextCursor });
     };
 
     const handleSubmit = async () => {
@@ -401,6 +421,12 @@ export function ChatTabView({
                               tab.sessionId,
                           )
                         : null}
+                    {pendingUserInput ? (
+                        <UserInputRequestCard
+                            onRespond={respondUserInput}
+                            request={pendingUserInput}
+                        />
+                    ) : null}
                     {queuedPrompts.length > 0
                         ? renderQueuedPrompts(
                               queuedPrompts,
@@ -410,15 +436,15 @@ export function ChatTabView({
                         : null}
                     {currentError ? renderError(currentError) : null}
 
-                    {snapshot.trackedFiles.length > 0 ? (
+                    {pendingReviewCount > 0 ? (
                         <div className="mb-2 flex items-center justify-between gap-3 rounded-2xl border border-border bg-bg-panel px-4 py-3">
                             <div>
                                 <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
                                     Pending Review
                                 </div>
                                 <div className="mt-1 text-sm text-text-primary">
-                                    {pendingReviewCount} pending changes across{" "}
-                                    {snapshot.trackedFiles.length} tracked files
+                                    {pendingReviewCount} pending tracked file
+                                    {pendingReviewCount === 1 ? "" : "s"}
                                 </div>
                             </div>
                             <button
@@ -497,7 +523,8 @@ export function ChatTabView({
                             </span>
                             <div className="flex shrink-0 items-center gap-1.5">
                                 {isStreaming ||
-                                snapshot.status === "waiting_permission" ? (
+                                snapshot.status === "waiting_permission" ||
+                                snapshot.status === "waiting_user_input" ? (
                                     <button
                                         className="app-no-drag flex shrink-0 items-center justify-center rounded-full"
                                         onClick={() =>
@@ -740,7 +767,7 @@ function renderPermissionRequest(
         optionId: string | null;
         requestId: string;
         sessionId: string;
-    }) => void,
+    }) => Promise<void>,
     sessionId: string,
 ) {
     return (
@@ -891,6 +918,241 @@ function renderError(error: string) {
     );
 }
 
+function UserInputRequestCard({
+    onRespond,
+    request,
+}: {
+    readonly onRespond: (input: {
+        answers: readonly {
+            answers: readonly string[];
+            questionId: string;
+        }[];
+        requestId: string;
+        sessionId: string;
+    }) => Promise<void>;
+    readonly request: AiUserInputRequest;
+}) {
+    const [selectedOptionsByQuestionId, setSelectedOptionsByQuestionId] =
+        useState<Record<string, readonly string[]>>({});
+    const [freeTextByQuestionId, setFreeTextByQuestionId] = useState<
+        Record<string, string>
+    >({});
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    const answers = useMemo(
+        () =>
+            request.questions
+                .map((question) => {
+                    const selectedOptions =
+                        selectedOptionsByQuestionId[question.id] ?? [];
+                    const freeText =
+                        freeTextByQuestionId[question.id]?.trim() ?? "";
+                    const nextAnswers = freeText
+                        ? [...selectedOptions, freeText]
+                        : [...selectedOptions];
+
+                    if (nextAnswers.length === 0) {
+                        return null;
+                    }
+
+                    return {
+                        answers: nextAnswers,
+                        questionId: question.id,
+                    };
+                })
+                .filter((answer): answer is NonNullable<typeof answer> =>
+                    Boolean(answer),
+                ),
+        [freeTextByQuestionId, request.questions, selectedOptionsByQuestionId],
+    );
+
+    return (
+        <div
+            className="mb-2 overflow-hidden rounded-2xl border px-4 py-3"
+            style={{
+                backgroundColor:
+                    "color-mix(in srgb, #2563eb 5%, var(--color-bg-secondary))",
+                borderColor:
+                    "color-mix(in srgb, #2563eb 18%, var(--color-border))",
+            }}
+        >
+            <div className="flex items-start justify-between gap-3">
+                <div>
+                    <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
+                        Input Required
+                    </div>
+                    <div className="mt-1 text-sm font-medium text-text-primary">
+                        {request.title}
+                    </div>
+                </div>
+                <div className="text-[11px] text-text-secondary">
+                    {request.questions.length} question
+                    {request.questions.length === 1 ? "" : "s"}
+                </div>
+            </div>
+
+            <div className="mt-3 space-y-3">
+                {request.questions.map((question) => {
+                    const selectedOptions =
+                        selectedOptionsByQuestionId[question.id] ?? [];
+                    const freeText = freeTextByQuestionId[question.id] ?? "";
+                    const needsFreeText =
+                        question.isOther || question.options.length === 0;
+
+                    return (
+                        <div
+                            className="rounded-xl border border-border bg-bg-panel px-3 py-3"
+                            key={question.id}
+                        >
+                            {question.header ? (
+                                <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
+                                    {question.header}
+                                </div>
+                            ) : null}
+                            <div className="mt-1 text-sm text-text-primary">
+                                {question.question}
+                            </div>
+                            {question.isSecret ? (
+                                <div className="mt-1 text-[11px] text-text-secondary">
+                                    This response will be treated as sensitive
+                                    input.
+                                </div>
+                            ) : null}
+
+                            {question.options.length > 0 ? (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    {question.options.map((option) => {
+                                        const isSelected =
+                                            selectedOptions.includes(
+                                                option.label,
+                                            );
+                                        return (
+                                            <button
+                                                className="app-no-drag rounded-full border px-3 py-1.5 text-left text-[12px] transition"
+                                                key={option.label}
+                                                onClick={() =>
+                                                    setSelectedOptionsByQuestionId(
+                                                        (current) => {
+                                                            const existing =
+                                                                current[
+                                                                    question.id
+                                                                ] ?? [];
+                                                            const next =
+                                                                isSelected
+                                                                    ? existing.filter(
+                                                                          (
+                                                                              value,
+                                                                          ) =>
+                                                                              value !==
+                                                                              option.label,
+                                                                      )
+                                                                    : [
+                                                                          ...existing,
+                                                                          option.label,
+                                                                      ];
+                                                            return {
+                                                                ...current,
+                                                                [question.id]:
+                                                                    next,
+                                                            };
+                                                        },
+                                                    )
+                                                }
+                                                style={{
+                                                    backgroundColor: isSelected
+                                                        ? "color-mix(in srgb, var(--color-accent) 16%, transparent)"
+                                                        : "transparent",
+                                                    borderColor: isSelected
+                                                        ? "var(--color-accent)"
+                                                        : "var(--color-border)",
+                                                    color: "var(--color-text-primary)",
+                                                }}
+                                                type="button"
+                                            >
+                                                <div>{option.label}</div>
+                                                {option.description ? (
+                                                    <div className="mt-0.5 text-[11px] text-text-secondary">
+                                                        {option.description}
+                                                    </div>
+                                                ) : null}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ) : null}
+
+                            {needsFreeText ? (
+                                <div className="mt-3">
+                                    {question.isSecret ? (
+                                        <input
+                                            className="ide-input app-no-drag w-full"
+                                            onChange={(event) =>
+                                                setFreeTextByQuestionId(
+                                                    (current) => ({
+                                                        ...current,
+                                                        [question.id]:
+                                                            event.target.value,
+                                                    }),
+                                                )
+                                            }
+                                            placeholder="Type your answer"
+                                            type="password"
+                                            value={freeText}
+                                        />
+                                    ) : (
+                                        <textarea
+                                            className="ide-input app-no-drag w-full resize-y"
+                                            onChange={(event) =>
+                                                setFreeTextByQuestionId(
+                                                    (current) => ({
+                                                        ...current,
+                                                        [question.id]:
+                                                            event.target.value,
+                                                    }),
+                                                )
+                                            }
+                                            placeholder={
+                                                question.options.length > 0
+                                                    ? "Add another answer"
+                                                    : "Type your answer"
+                                            }
+                                            rows={
+                                                question.options.length > 0
+                                                    ? 2
+                                                    : 3
+                                            }
+                                            value={freeText}
+                                        />
+                                    )}
+                                </div>
+                            ) : null}
+                        </div>
+                    );
+                })}
+            </div>
+
+            <div className="mt-3 flex items-center justify-end">
+                <button
+                    className="app-no-drag rounded-full px-4 py-2 text-[12px] font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={answers.length === 0 || isSubmitting}
+                    onClick={() => {
+                        setIsSubmitting(true);
+                        void onRespond({
+                            answers,
+                            requestId: request.requestId,
+                            sessionId: request.sessionId,
+                        }).finally(() => setIsSubmitting(false));
+                    }}
+                    style={{ backgroundColor: "var(--color-accent)" }}
+                    type="button"
+                >
+                    {isSubmitting ? "Sending..." : "Send Response"}
+                </button>
+            </div>
+        </div>
+    );
+}
+
 function renderSuggestions(
     suggestions: readonly ComposerSuggestion[],
     activeIndex: number,
@@ -969,6 +1231,9 @@ function ChatMessageRow({
 }) {
     if (message.kind === "user")
         return <UserMessage content={message.content} />;
+    if (message.kind === "user_input_request") {
+        return <UserInputRequestMessage content={message.content} />;
+    }
     if (message.kind === "thinking")
         return (
             <ThinkingMessage
@@ -1005,6 +1270,43 @@ function AssistantMessage({ content }: { readonly content: string }) {
             style={{ color: "var(--color-text-primary)", fontSize: "0.85em" }}
         >
             <MarkdownContent content={content} />
+        </div>
+    );
+}
+
+function UserInputRequestMessage({ content }: { readonly content: string }) {
+    return (
+        <div
+            className="max-w-full rounded-xl border px-3 py-2"
+            style={{
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-panel))",
+                borderColor:
+                    "color-mix(in srgb, var(--color-accent) 22%, var(--color-border))",
+            }}
+        >
+            <div
+                style={{
+                    color: "var(--color-text-secondary)",
+                    fontSize: "0.7em",
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                }}
+            >
+                Input Requested
+            </div>
+            <div
+                className="mt-1 whitespace-pre-wrap"
+                style={{
+                    color: "var(--color-text-primary)",
+                    fontSize: "0.84em",
+                    lineHeight: 1.55,
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
+                {content}
+            </div>
         </div>
     );
 }
@@ -1335,6 +1637,7 @@ function createEmptySnapshot(tab: RuntimeWorkspaceChatTab): AiSessionSnapshot {
         lastError: null,
         messages: [],
         pendingPermission: null,
+        pendingUserInput: null,
         plan: null,
         projectId: tab.projectId,
         runtimeId: tab.runtimeId,

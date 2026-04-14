@@ -6,7 +6,9 @@ import type {
     AiRuntimeStatus,
     AiSessionSnapshot,
     AiSettingsSnapshot,
+    AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
+    AiUserInputResponseInput,
 } from "@shared/ipc";
 
 import type {
@@ -49,12 +51,19 @@ interface AiStore {
     hydrateSettings: (settings: AiSettingsSnapshot | null | undefined) => void;
     keepAllTrackedFiles: (sessionId: string) => Promise<void>;
     keepTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
+    keepTrackedFileHunks: (
+        input: AiTrackedFileHunkMutationInput,
+    ) => Promise<void>;
     refreshRuntimeStatus: (runtimeId: AiRuntimeId) => Promise<void>;
     registerSessionTab: (tab: RuntimeAiSessionTab) => void;
     rejectAllTrackedFiles: (sessionId: string) => Promise<void>;
     rejectTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
+    rejectTrackedFileHunks: (
+        input: AiTrackedFileHunkMutationInput,
+    ) => Promise<void>;
     removeQueuedPrompt: (sessionId: string, promptId: string) => void;
     respondPermission: (input: AiPermissionResponseInput) => Promise<void>;
+    respondUserInput: (input: AiUserInputResponseInput) => Promise<void>;
     saveCodexBinaryPath: (binaryPath: string) => Promise<AiRuntimeStatus>;
     sendPrompt: (tab: RuntimeWorkspaceChatTab, prompt: string) => Promise<void>;
 }
@@ -173,13 +182,38 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     keepAllTrackedFiles: async (sessionId) => {
-        await getComandoApi().keepAllAiTrackedFiles(sessionId);
+        await runOptimisticSnapshotMutation(
+            sessionId,
+            (snapshot) => ({
+                ...snapshot,
+                trackedFiles: [],
+                updatedAt: new Date().toISOString(),
+            }),
+            () => getComandoApi().keepAllAiTrackedFiles(sessionId),
+            set,
+            get,
+        );
     },
 
     keepTrackedFile: async (input) => {
-        await getComandoApi().keepAiTrackedFile(input);
+        await runOptimisticSnapshotMutation(
+            input.sessionId,
+            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
+            () => getComandoApi().keepAiTrackedFile(input),
+            set,
+            get,
+        );
     },
 
+    keepTrackedFileHunks: async (input) => {
+        await runOptimisticSnapshotMutation(
+            input.sessionId,
+            (snapshot) => resolveTrackedFileHunksInSnapshot(snapshot, input),
+            () => getComandoApi().keepAiTrackedFileHunks(input),
+            set,
+            get,
+        );
+    },
     refreshRuntimeStatus: async (runtimeId) => {
         const status = await getComandoApi().getAiRuntimeStatus(runtimeId);
         get().applyRuntimeStatus(status);
@@ -201,13 +235,38 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     rejectAllTrackedFiles: async (sessionId) => {
-        await getComandoApi().rejectAllAiTrackedFiles(sessionId);
+        await runOptimisticSnapshotMutation(
+            sessionId,
+            (snapshot) => ({
+                ...snapshot,
+                trackedFiles: [],
+                updatedAt: new Date().toISOString(),
+            }),
+            () => getComandoApi().rejectAllAiTrackedFiles(sessionId),
+            set,
+            get,
+        );
     },
 
     rejectTrackedFile: async (input) => {
-        await getComandoApi().rejectAiTrackedFile(input);
+        await runOptimisticSnapshotMutation(
+            input.sessionId,
+            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
+            () => getComandoApi().rejectAiTrackedFile(input),
+            set,
+            get,
+        );
     },
 
+    rejectTrackedFileHunks: async (input) => {
+        await runOptimisticSnapshotMutation(
+            input.sessionId,
+            (snapshot) => resolveTrackedFileHunksInSnapshot(snapshot, input),
+            () => getComandoApi().rejectAiTrackedFileHunks(input),
+            set,
+            get,
+        );
+    },
     removeQueuedPrompt: (sessionId, promptId) => {
         set((state) => {
             const session = state.sessions[sessionId];
@@ -231,6 +290,22 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     respondPermission: async (input) => {
         await getComandoApi().respondAiPermission(input);
+    },
+
+    respondUserInput: async (input) => {
+        await runOptimisticSnapshotMutation(
+            input.sessionId,
+            (snapshot) => ({
+                ...snapshot,
+                lastError: null,
+                pendingUserInput: null,
+                status: "starting",
+                updatedAt: new Date().toISOString(),
+            }),
+            () => getComandoApi().respondAiUserInput(input),
+            set,
+            get,
+        );
     },
 
     saveCodexBinaryPath: async (binaryPath) => {
@@ -319,6 +394,7 @@ function createEmptySessionSnapshot(
         lastError: null,
         messages: [],
         pendingPermission: null,
+        pendingUserInput: null,
         plan: null,
         projectId: tab.projectId,
         runtimeId: tab.runtimeId,
@@ -458,11 +534,100 @@ async function drainQueueIfNeeded(
     );
 }
 
+async function runOptimisticSnapshotMutation(
+    sessionId: string,
+    mutateSnapshot: (snapshot: AiSessionSnapshot) => AiSessionSnapshot,
+    runRemote: () => Promise<void>,
+    set: SetAiState,
+    get: GetAiState,
+): Promise<void> {
+    const previousSession = get().sessions[sessionId] ?? null;
+    const previousSnapshot = previousSession?.snapshot ?? null;
+
+    if (previousSession && previousSnapshot) {
+        set((state) => ({
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...previousSession,
+                    snapshot: mutateSnapshot(previousSnapshot),
+                },
+            },
+        }));
+    }
+
+    try {
+        await runRemote();
+    } catch (error) {
+        if (previousSession) {
+            set((state) => ({
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: previousSession,
+                },
+            }));
+        }
+        throw error;
+    }
+}
+
+function removeTrackedFileFromSnapshot(
+    snapshot: AiSessionSnapshot,
+    path: string,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        trackedFiles: snapshot.trackedFiles.filter(
+            (trackedFile) => trackedFile.path !== path,
+        ),
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function resolveTrackedFileHunksInSnapshot(
+    snapshot: AiSessionSnapshot,
+    input: AiTrackedFileHunkMutationInput,
+): AiSessionSnapshot {
+    const selectedHunkIds = new Set(input.hunkIds);
+    const nextTrackedFiles = snapshot.trackedFiles.flatMap((trackedFile) => {
+        if (trackedFile.path !== input.path) {
+            return [trackedFile];
+        }
+
+        if (trackedFile.hunks.length === 0) {
+            return [];
+        }
+
+        const remainingHunks = trackedFile.hunks.filter(
+            (hunk) => !selectedHunkIds.has(hunk.id),
+        );
+
+        if (remainingHunks.length === 0) {
+            return [];
+        }
+
+        return [
+            {
+                ...trackedFile,
+                hunks: remainingHunks,
+                updatedAt: new Date().toISOString(),
+            },
+        ];
+    });
+
+    return {
+        ...snapshot,
+        trackedFiles: nextTrackedFiles,
+        updatedAt: new Date().toISOString(),
+    };
+}
+
 function isBusySession(snapshot: AiSessionSnapshot): boolean {
     return (
         snapshot.status === "starting" ||
         snapshot.status === "streaming" ||
-        snapshot.status === "waiting_permission"
+        snapshot.status === "waiting_permission" ||
+        snapshot.status === "waiting_user_input"
     );
 }
 

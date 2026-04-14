@@ -8,7 +8,9 @@ import {
     type AiRuntimeId,
     type AiRuntimeStatus,
     type AiSessionSnapshot,
+    type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
+    type AiUserInputResponseInput,
     type ComandoApi,
     type CodexRuntimeSettings,
     type CreateProjectEntryInput,
@@ -156,10 +158,16 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.closeAiSession, sessionId),
     respondAiPermission: (input: AiPermissionResponseInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.respondAiPermission, input),
+    respondAiUserInput: (input: AiUserInputResponseInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.respondAiUserInput, input),
     keepAiTrackedFile: (input: AiTrackedFileMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.keepAiTrackedFile, input),
     rejectAiTrackedFile: (input: AiTrackedFileMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.rejectAiTrackedFile, input),
+    keepAiTrackedFileHunks: (input: AiTrackedFileHunkMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.keepAiTrackedFileHunks, input),
+    rejectAiTrackedFileHunks: (input: AiTrackedFileHunkMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.rejectAiTrackedFileHunks, input),
     keepAllAiTrackedFiles: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.keepAllAiTrackedFiles, sessionId),
     rejectAllAiTrackedFiles: (sessionId: string) =>

@@ -15,6 +15,11 @@ import type {
 export type SplitDirection = "down" | "left" | "right" | "up";
 export type MoveDirection = "next" | "previous";
 
+export interface RuntimeWorkspaceFileReviewContext {
+    readonly path: string;
+    readonly sessionId: string;
+}
+
 export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
@@ -22,6 +27,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly isLoading: boolean;
     readonly isSaving: boolean;
     readonly loadError: string | null;
+    readonly reviewContext: RuntimeWorkspaceFileReviewContext | null;
     readonly saveError: string | null;
     readonly savedContent: string;
 }
@@ -543,6 +549,28 @@ export function updateFileDraft(
                 draftContent,
                 isDirty: draftContent !== tab.savedContent,
                 saveError: null,
+            },
+        },
+    };
+}
+
+export function setFileTabReviewContext(
+    state: WorkspaceTreeState,
+    tabId: string,
+    reviewContext: RuntimeWorkspaceFileReviewContext | null,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file") {
+        return state;
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                reviewContext,
             },
         },
     };

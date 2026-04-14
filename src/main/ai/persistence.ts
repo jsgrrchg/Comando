@@ -2,12 +2,14 @@ import type Database from "better-sqlite3";
 
 import type {
     AiAvailableCommand,
+    AiDiffHunk,
     AiMessage,
     AiPermissionRequest,
     AiPlan,
     AiSessionSnapshot,
     AiToolActivity,
     AiTrackedFile,
+    AiUserInputRequest,
 } from "@shared/ipc";
 
 interface PersistedAiSessionRow {
@@ -81,6 +83,7 @@ export class AiPersistence {
             pendingPermission: normalizePermissionRequest(
                 raw.pendingPermission,
             ),
+            pendingUserInput: normalizeUserInputRequest(raw.pendingUserInput),
             plan: normalizePlan(raw.plan),
             projectId: row.project_id,
             runtimeId:
@@ -218,6 +221,7 @@ export function createEmptyAiSessionSnapshot(options: {
         lastError: null,
         messages: [],
         pendingPermission: null,
+        pendingUserInput: null,
         plan: null,
         projectId: options.projectId,
         runtimeId: options.runtimeId,
@@ -248,7 +252,8 @@ function normalizeSessionStatus(value: unknown): AiSessionSnapshot["status"] {
         value === "idle" ||
         value === "starting" ||
         value === "streaming" ||
-        value === "waiting_permission"
+        value === "waiting_permission" ||
+        value === "waiting_user_input"
         ? value
         : "idle";
 }
@@ -266,7 +271,8 @@ function normalizeMessages(value: unknown): readonly AiMessage[] {
         const kind =
             entry.kind === "assistant" ||
             entry.kind === "thinking" ||
-            entry.kind === "user"
+            entry.kind === "user" ||
+            entry.kind === "user_input_request"
                 ? entry.kind
                 : "assistant";
         const status =
@@ -489,14 +495,25 @@ function normalizeTrackedFiles(value: unknown): readonly AiTrackedFile[] {
                 kind:
                     entry.kind === "create" ||
                     entry.kind === "delete" ||
+                    entry.kind === "move" ||
                     entry.kind === "update"
                         ? entry.kind
                         : "update",
+                hunks: normalizeDiffHunks(entry.hunks),
                 newText:
                     typeof entry.newText === "string" ? entry.newText : null,
                 oldText:
                     typeof entry.oldText === "string" ? entry.oldText : null,
                 path: entry.path,
+                previousPath:
+                    typeof entry.previousPath === "string"
+                        ? entry.previousPath
+                        : null,
+                reversible:
+                    typeof entry.reversible === "boolean"
+                        ? entry.reversible
+                        : entry.kind === "create" ||
+                          typeof entry.oldText === "string",
                 reviewState:
                     entry.reviewState === "kept" ||
                     entry.reviewState === "pending" ||
@@ -532,15 +549,152 @@ function normalizeFileDiffs(value: unknown): AiToolActivity["diffs"] {
                 kind:
                     entry.kind === "create" ||
                     entry.kind === "delete" ||
+                    entry.kind === "move" ||
                     entry.kind === "update"
                         ? entry.kind
                         : "update",
+                hunks: normalizeDiffHunks(entry.hunks),
                 newText:
                     typeof entry.newText === "string" ? entry.newText : null,
                 oldText:
                     typeof entry.oldText === "string" ? entry.oldText : null,
+                isText: typeof entry.isText === "boolean" ? entry.isText : true,
                 path: entry.path,
+                previousPath:
+                    typeof entry.previousPath === "string"
+                        ? entry.previousPath
+                        : null,
+                reversible:
+                    typeof entry.reversible === "boolean"
+                        ? entry.reversible
+                        : entry.kind === "create" ||
+                          typeof entry.oldText === "string",
             },
+        ];
+    });
+}
+
+function normalizeUserInputRequest(value: unknown): AiUserInputRequest | null {
+    if (!isRecord(value)) {
+        return null;
+    }
+
+    if (
+        typeof value.requestId !== "string" ||
+        typeof value.sessionId !== "string" ||
+        typeof value.title !== "string" ||
+        typeof value.toolCallId !== "string" ||
+        (typeof value.turnId !== "string" && value.turnId !== null)
+    ) {
+        return null;
+    }
+
+    return {
+        questions: Array.isArray(value.questions)
+            ? value.questions.flatMap((entry) => {
+                  if (!isRecord(entry) || typeof entry.id !== "string") {
+                      return [];
+                  }
+
+                  return [
+                      {
+                          header:
+                              typeof entry.header === "string"
+                                  ? entry.header
+                                  : "",
+                          id: entry.id,
+                          isOther: Boolean(entry.isOther),
+                          isSecret: Boolean(entry.isSecret),
+                          options: Array.isArray(entry.options)
+                              ? entry.options.flatMap((option) => {
+                                    if (!isRecord(option)) {
+                                        return [];
+                                    }
+
+                                    return [
+                                        {
+                                            description:
+                                                typeof option.description ===
+                                                "string"
+                                                    ? option.description
+                                                    : "",
+                                            label:
+                                                typeof option.label === "string"
+                                                    ? option.label
+                                                    : "",
+                                        },
+                                    ];
+                                })
+                              : [],
+                          question:
+                              typeof entry.question === "string"
+                                  ? entry.question
+                                  : "",
+                      },
+                  ];
+              })
+            : [],
+        requestId: value.requestId,
+        sessionId: value.sessionId,
+        title: value.title,
+        toolCallId: value.toolCallId,
+        turnId: typeof value.turnId === "string" ? value.turnId : null,
+        updatedAt:
+            typeof value.updatedAt === "string"
+                ? value.updatedAt
+                : new Date().toISOString(),
+    };
+}
+
+function normalizeDiffHunks(value: unknown): readonly AiDiffHunk[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry, index) => {
+        if (!isRecord(entry)) {
+            return [];
+        }
+
+        const lines = Array.isArray(entry.lines)
+            ? entry.lines.flatMap((line, lineIndex) => {
+                  if (!isRecord(line) || typeof line.text !== "string") {
+                      return [];
+                  }
+
+                  const lineType: "add" | "context" | "remove" =
+                      line.type === "add" ||
+                      line.type === "context" ||
+                      line.type === "remove"
+                          ? line.type
+                          : "context";
+
+                  return [
+                      {
+                          id:
+                              typeof line.id === "string"
+                                  ? line.id
+                                  : `line-${index}-${lineIndex}`,
+                          text: line.text,
+                          type: lineType,
+                      },
+                  ];
+              })
+            : [];
+
+        return [
+            {
+                id: typeof entry.id === "string" ? entry.id : `hunk-${index}`,
+                lines,
+                newCount:
+                    typeof entry.newCount === "number" ? entry.newCount : 0,
+                newStart:
+                    typeof entry.newStart === "number" ? entry.newStart : 1,
+                oldCount:
+                    typeof entry.oldCount === "number" ? entry.oldCount : 0,
+                oldStart:
+                    typeof entry.oldStart === "number" ? entry.oldStart : 1,
+            } satisfies AiDiffHunk,
         ];
     });
 }

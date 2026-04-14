@@ -13,7 +13,9 @@ import {
     type AppBootstrapSnapshot,
     type AiPermissionResponseInput,
     type AiRuntimeId,
+    type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
+    type AiUserInputResponseInput,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -83,8 +85,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.cancelAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.closeAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.respondAiPermission);
+    ipcMain.removeHandler(IPC_CHANNELS.respondAiUserInput);
     ipcMain.removeHandler(IPC_CHANNELS.keepAiTrackedFile);
     ipcMain.removeHandler(IPC_CHANNELS.rejectAiTrackedFile);
+    ipcMain.removeHandler(IPC_CHANNELS.keepAiTrackedFileHunks);
+    ipcMain.removeHandler(IPC_CHANNELS.rejectAiTrackedFileHunks);
     ipcMain.removeHandler(IPC_CHANNELS.keepAllAiTrackedFiles);
     ipcMain.removeHandler(IPC_CHANNELS.rejectAllAiTrackedFiles);
     ipcMain.removeHandler(IPC_CHANNELS.saveCodexRuntimeSettings);
@@ -274,6 +279,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             options.aiService.respondPermission(input),
     );
     ipcMain.handle(
+        IPC_CHANNELS.respondAiUserInput,
+        (_event, input: AiUserInputResponseInput) =>
+            options.aiService.respondUserInput(input),
+    );
+    ipcMain.handle(
         IPC_CHANNELS.keepAiTrackedFile,
         (_event, input: AiTrackedFileMutationInput) =>
             options.aiService.keepTrackedFile(input),
@@ -282,6 +292,16 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.rejectAiTrackedFile,
         (_event, input: AiTrackedFileMutationInput) =>
             options.aiService.rejectTrackedFile(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.rejectAiTrackedFileHunks,
+        (_event, input: AiTrackedFileHunkMutationInput) =>
+            options.aiService.rejectTrackedFileHunks(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.keepAiTrackedFileHunks,
+        (_event, input: AiTrackedFileHunkMutationInput) =>
+            options.aiService.keepTrackedFileHunks(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.keepAllAiTrackedFiles,

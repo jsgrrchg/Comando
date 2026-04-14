@@ -25,6 +25,7 @@ import {
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
     resizeSplit,
+    setFileTabReviewContext,
     selectPaneTab,
     setFileTabLoading,
     setFileTabLoadError,
@@ -37,6 +38,7 @@ import {
     workspaceStateFromSnapshot,
     workspaceStateToSnapshot,
     type MoveDirection,
+    type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceReviewTab,
     type RuntimeWorkspaceTab,
@@ -59,7 +61,11 @@ interface WorkspaceStore extends WorkspaceTreeState {
     hydrate: () => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
     moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
-    openFileTab: (projectId: string, relativePath: string) => Promise<void>;
+    openFileTab: (
+        projectId: string,
+        relativePath: string,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void>;
     openReviewTab: (input: {
         readonly projectId: string | null;
         readonly runtimeId: "codex";
@@ -260,7 +266,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
-    openFileTab: async (projectId, relativePath) => {
+    openFileTab: async (projectId, relativePath, reviewContext = null) => {
         try {
             const existingTab = findExistingFileTab(
                 get(),
@@ -274,7 +280,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 }
 
                 set((state) => ({
-                    ...selectPaneTab(state, paneId, existingTab.id),
+                    ...setFileTabReviewContext(
+                        selectPaneTab(state, paneId, existingTab.id),
+                        existingTab.id,
+                        reviewContext,
+                    ),
                     error: null,
                 }));
 
@@ -296,6 +306,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 isSaving: false,
                 kind: "file",
                 loadError: null,
+                reviewContext,
                 projectId,
                 relativePath,
                 savedContent: "",
@@ -600,6 +611,7 @@ function createHydratedRuntimeTabs(
                     isLoading: true,
                     isSaving: false,
                     loadError: null,
+                    reviewContext: null,
                     saveError: null,
                     savedContent: "",
                     title: getFileTitle(tab.relativePath),

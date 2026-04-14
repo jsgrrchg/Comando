@@ -21,6 +21,7 @@ import {
     type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 import type {
+    AiDiffHunk,
     AiFileDiff,
     AiPermissionRequest,
     AiPermissionResponseInput,
@@ -29,7 +30,10 @@ import type {
     AiRuntimeStatus,
     AiSessionSnapshot,
     AiTrackedFile,
+    AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
+    AiUserInputRequest,
+    AiUserInputResponseInput,
     CodexRuntimeSettings,
     SendAiPromptInput,
 } from "@shared/ipc";
@@ -39,6 +43,13 @@ import type { SettingsService } from "@main/settings/service";
 
 import { createEmptyAiSessionSnapshot, AiPersistence } from "./persistence";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
+
+const NEVERWRITE_DIFF_HUNKS_KEY = "neverwriteHunks";
+const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
+const NEVERWRITE_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
+const NEVERWRITE_USER_INPUT_EVENT_TYPE = "user_input_request";
+const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX =
+    "__neverwrite_user_input_response__:";
 
 interface AiServiceOptions {
     readonly projectService: ProjectService;
@@ -126,7 +137,8 @@ export class AiService {
         if (
             liveSession.snapshot.status === "starting" ||
             liveSession.snapshot.status === "streaming" ||
-            liveSession.snapshot.status === "waiting_permission"
+            liveSession.snapshot.status === "waiting_permission" ||
+            liveSession.snapshot.status === "waiting_user_input"
         ) {
             throw new Error("La sesión todavía está ocupada.");
         }
@@ -151,6 +163,7 @@ export class AiService {
                 },
             ],
             pendingPermission: null,
+            pendingUserInput: null,
             projectId: input.projectId,
             status: "starting",
             title: input.title,
@@ -173,6 +186,7 @@ export class AiService {
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
                 pendingPermission: null,
+                pendingUserInput: null,
                 status: "idle",
                 updatedAt: new Date().toISOString(),
             });
@@ -191,6 +205,7 @@ export class AiService {
                 ...liveSession.snapshot,
                 lastError: message,
                 pendingPermission: null,
+                pendingUserInput: null,
                 status: "error",
                 updatedAt: new Date().toISOString(),
             });
@@ -273,19 +288,108 @@ export class AiService {
         return Promise.resolve();
     }
 
+    async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
+        const liveSession = this.#sessions.get(input.sessionId);
+        if (!liveSession) {
+            throw new Error("No se encontró la sesión AI.");
+        }
+
+        const pendingUserInput = liveSession.snapshot.pendingUserInput;
+        if (!pendingUserInput) {
+            throw new Error("No hay una solicitud de input pendiente.");
+        }
+
+        if (pendingUserInput.requestId !== input.requestId) {
+            throw new Error("La solicitud de input ya no coincide.");
+        }
+
+        const answers = input.answers
+            .filter(
+                (answer) =>
+                    answer.questionId.trim().length > 0 &&
+                    answer.answers.some((value) => value.trim().length > 0),
+            )
+            .map((answer) => ({
+                answers: answer.answers
+                    .map((value) => value.trim())
+                    .filter(Boolean),
+                questionId: answer.questionId,
+            }))
+            .filter((answer) => answer.answers.length > 0);
+
+        if (!pendingUserInput.turnId) {
+            throw new Error("La solicitud de input no tiene un turnId válido.");
+        }
+
+        const promptText = buildUserInputResponsePrompt(
+            pendingUserInput.turnId,
+            answers,
+        );
+        const now = new Date().toISOString();
+
+        liveSession.snapshot = finalizeStreamingMessages({
+            ...liveSession.snapshot,
+            lastError: null,
+            messages: [
+                ...liveSession.snapshot.messages,
+                {
+                    content: summarizeUserInputAnswers(
+                        pendingUserInput.questions,
+                        answers,
+                    ),
+                    createdAt: now,
+                    id: randomUUID(),
+                    kind: "user",
+                    status: "completed",
+                },
+            ],
+            pendingUserInput: null,
+            status: "starting",
+            updatedAt: now,
+        });
+        this.#persistAndBroadcast(liveSession);
+
+        try {
+            await liveSession.connection.prompt({
+                messageId: randomUUID(),
+                prompt: [
+                    {
+                        text: promptText,
+                        type: "text",
+                    },
+                ],
+                sessionId: this.#requireRuntimeSessionId(liveSession),
+            });
+
+            liveSession.snapshot = finalizeStreamingMessages({
+                ...liveSession.snapshot,
+                status: "idle",
+                updatedAt: new Date().toISOString(),
+            });
+            this.#persistAndBroadcast(liveSession);
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Codex ACP no pudo enviar la respuesta guiada.";
+            liveSession.snapshot = finalizeStreamingMessages({
+                ...liveSession.snapshot,
+                lastError: message,
+                pendingUserInput,
+                status: "error",
+                updatedAt: new Date().toISOString(),
+            });
+            this.#persistAndBroadcast(liveSession);
+            throw error;
+        }
+    }
+
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
         const liveSession = await this.#loadSessionForReview(input.sessionId);
         liveSession.snapshot = {
             ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.map(
-                (trackedFile) =>
-                    trackedFile.path === input.path
-                        ? {
-                              ...trackedFile,
-                              reviewState: "kept",
-                              updatedAt: new Date().toISOString(),
-                          }
-                        : trackedFile,
+            trackedFiles: liveSession.snapshot.trackedFiles.filter(
+                (trackedFile) => trackedFile.path !== input.path,
             ),
             updatedAt: new Date().toISOString(),
         };
@@ -305,14 +409,73 @@ export class AiService {
         await this.#revertTrackedFile(liveSession, trackedFile);
         liveSession.snapshot = {
             ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.map((candidate) =>
-                candidate.path === input.path
-                    ? {
-                          ...candidate,
-                          reviewState: "rejected",
-                          updatedAt: new Date().toISOString(),
-                      }
-                    : candidate,
+            trackedFiles: liveSession.snapshot.trackedFiles.filter(
+                (candidate) => candidate.path !== input.path,
+            ),
+            updatedAt: new Date().toISOString(),
+        };
+        this.#persistAndBroadcast(liveSession);
+    }
+
+    async keepTrackedFileHunks(
+        input: AiTrackedFileHunkMutationInput,
+    ): Promise<void> {
+        const liveSession = await this.#loadSessionForReview(input.sessionId);
+        const trackedFile = liveSession.snapshot.trackedFiles.find(
+            (candidate) => candidate.path === input.path,
+        );
+
+        if (!trackedFile) {
+            throw new Error("No se encontró el archivo a revisar.");
+        }
+
+        const nextTrackedFile = resolveTrackedFileHunks(
+            trackedFile,
+            input.hunkIds,
+            "keep",
+        );
+        liveSession.snapshot = {
+            ...liveSession.snapshot,
+            trackedFiles: replaceTrackedFile(
+                liveSession.snapshot.trackedFiles,
+                trackedFile.path,
+                nextTrackedFile,
+            ),
+            updatedAt: new Date().toISOString(),
+        };
+        this.#persistAndBroadcast(liveSession);
+    }
+
+    async rejectTrackedFileHunks(
+        input: AiTrackedFileHunkMutationInput,
+    ): Promise<void> {
+        const liveSession = await this.#loadSessionForReview(input.sessionId);
+        const trackedFile = liveSession.snapshot.trackedFiles.find(
+            (candidate) => candidate.path === input.path,
+        );
+
+        if (!trackedFile) {
+            throw new Error("No se encontró el archivo a revisar.");
+        }
+
+        const nextTrackedFile = resolveTrackedFileHunks(
+            trackedFile,
+            input.hunkIds,
+            "reject",
+        );
+
+        if (!nextTrackedFile) {
+            await this.#revertTrackedFile(liveSession, trackedFile);
+        } else if (nextTrackedFile.newText !== null) {
+            await this.#applyTrackedFileText(liveSession, nextTrackedFile);
+        }
+
+        liveSession.snapshot = {
+            ...liveSession.snapshot,
+            trackedFiles: replaceTrackedFile(
+                liveSession.snapshot.trackedFiles,
+                trackedFile.path,
+                nextTrackedFile,
             ),
             updatedAt: new Date().toISOString(),
         };
@@ -323,13 +486,7 @@ export class AiService {
         const liveSession = await this.#loadSessionForReview(sessionId);
         liveSession.snapshot = {
             ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.map(
-                (trackedFile) => ({
-                    ...trackedFile,
-                    reviewState: "kept",
-                    updatedAt: new Date().toISOString(),
-                }),
-            ),
+            trackedFiles: [],
             updatedAt: new Date().toISOString(),
         };
         this.#persistAndBroadcast(liveSession);
@@ -339,22 +496,12 @@ export class AiService {
         const liveSession = await this.#loadSessionForReview(sessionId);
 
         for (const trackedFile of liveSession.snapshot.trackedFiles) {
-            if (trackedFile.reviewState === "rejected") {
-                continue;
-            }
-
             await this.#revertTrackedFile(liveSession, trackedFile);
         }
 
         liveSession.snapshot = {
             ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.map(
-                (trackedFile) => ({
-                    ...trackedFile,
-                    reviewState: "rejected",
-                    updatedAt: new Date().toISOString(),
-                }),
-            ),
+            trackedFiles: [],
             updatedAt: new Date().toISOString(),
         };
         this.#persistAndBroadcast(liveSession);
@@ -550,6 +697,7 @@ export class AiService {
         liveSession.snapshot = {
             ...liveSession.snapshot,
             pendingPermission,
+            pendingUserInput: null,
             status: "waiting_permission",
             updatedAt: new Date().toISOString(),
         };
@@ -582,7 +730,9 @@ export class AiService {
         const nextStatus: AiSessionSnapshot["status"] =
             liveSession.snapshot.status === "waiting_permission"
                 ? "waiting_permission"
-                : "streaming";
+                : liveSession.snapshot.status === "waiting_user_input"
+                  ? "waiting_user_input"
+                  : "streaming";
         let nextSnapshot: AiSessionSnapshot = {
             ...liveSession.snapshot,
             status: nextStatus,
@@ -607,10 +757,10 @@ export class AiService {
                 );
                 break;
             case "tool_call":
-                nextSnapshot = upsertToolActivity(nextSnapshot, update, now);
+                nextSnapshot = mapToolCallUpdate(nextSnapshot, update, now);
                 break;
             case "tool_call_update":
-                nextSnapshot = mergeToolActivity(nextSnapshot, update, now);
+                nextSnapshot = mapToolCallUpdate(nextSnapshot, update, now);
                 break;
             case "plan":
                 nextSnapshot = {
@@ -717,12 +867,23 @@ export class AiService {
             ...liveSession.snapshot,
             trackedFiles: upsertTrackedFile(liveSession.snapshot.trackedFiles, {
                 identityKey: trackedPath,
+                hunks:
+                    previousContent === null
+                        ? []
+                        : computeDiffHunks(
+                              previousContent,
+                              params.content,
+                              trackedPath,
+                          ),
                 isText: true,
                 kind: previousContent === null ? "create" : "update",
                 newText: params.content,
                 oldText: previousContent,
                 path: trackedPath,
+                previousPath: null,
                 reviewState: "pending",
+                reversible:
+                    previousContent === null || previousContent !== null,
                 sessionId: liveSession.snapshot.sessionId,
                 toolCallId: null,
                 updatedAt: now,
@@ -772,6 +933,49 @@ export class AiService {
         liveSession: LiveCodexSession,
         trackedFile: AiTrackedFile,
     ): Promise<void> {
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            const nextPath = this.#resolveSessionPathInfo(
+                liveSession,
+                trackedFile.path,
+            );
+            const previousPath = this.#resolveSessionPathInfo(
+                liveSession,
+                trackedFile.previousPath,
+            );
+
+            if (trackedFile.oldText !== null) {
+                if (previousPath.relativePath && liveSession.snapshot.projectId) {
+                    await this.#projectService.saveProjectFile({
+                        content: trackedFile.oldText,
+                        projectId: liveSession.snapshot.projectId,
+                        relativePath: previousPath.relativePath,
+                    });
+                } else {
+                    await fs.promises.mkdir(path.dirname(previousPath.absolutePath), {
+                        recursive: true,
+                    });
+                    await fs.promises.writeFile(
+                        previousPath.absolutePath,
+                        trackedFile.oldText,
+                        "utf8",
+                    );
+                }
+            }
+
+            if (nextPath.relativePath && liveSession.snapshot.projectId) {
+                if (fs.existsSync(nextPath.absolutePath)) {
+                    await this.#projectService.deleteProjectEntry({
+                        projectId: liveSession.snapshot.projectId,
+                        relativePath: nextPath.relativePath,
+                    });
+                }
+            } else {
+                await fs.promises.rm(nextPath.absolutePath, { force: true });
+            }
+
+            return;
+        }
+
         const resolvedPath = this.#resolveSessionPathInfo(
             liveSession,
             trackedFile.path,
@@ -811,6 +1015,38 @@ export class AiService {
         await fs.promises.writeFile(
             resolvedPath.absolutePath,
             trackedFile.oldText,
+            "utf8",
+        );
+    }
+
+    async #applyTrackedFileText(
+        liveSession: LiveCodexSession,
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        if (trackedFile.newText === null) {
+            return;
+        }
+
+        const resolvedPath = this.#resolveSessionPathInfo(
+            liveSession,
+            trackedFile.path,
+        );
+
+        if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
+            await this.#projectService.saveProjectFile({
+                content: trackedFile.newText,
+                projectId: liveSession.snapshot.projectId,
+                relativePath: resolvedPath.relativePath,
+            });
+            return;
+        }
+
+        await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
+            recursive: true,
+        });
+        await fs.promises.writeFile(
+            resolvedPath.absolutePath,
+            trackedFile.newText,
             "utf8",
         );
     }
@@ -915,6 +1151,7 @@ export class AiService {
                 stderrText ||
                 `Codex ACP terminó inesperadamente (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`,
             pendingPermission: null,
+            pendingUserInput: null,
             status: "error",
             updatedAt: new Date().toISOString(),
         });
@@ -990,53 +1227,24 @@ function finalizeStreamingMessages(
     };
 }
 
-function upsertToolActivity(
+function mapToolCallUpdate(
     snapshot: AiSessionSnapshot,
-    toolCall: ToolCall,
-    updatedAt: string,
-): AiSessionSnapshot {
-    const activity = {
-        diffs: collectDiffs(toolCall.content),
-        id: toolCall.toolCallId,
-        kind: toolCall.kind ?? "unknown",
-        locations: (toolCall.locations ?? []).map((location) => location.path),
-        rawInputJson: stringifyJson(toolCall.rawInput),
-        rawOutputJson: stringifyJson(toolCall.rawOutput),
-        sessionId: snapshot.sessionId,
-        status: toolCall.status ?? "pending",
-        summary: buildToolSummary(toolCall.title, toolCall.content),
-        title: toolCall.title,
-        updatedAt,
-    };
-
-    return {
-        ...snapshot,
-        toolActivity: [
-            ...snapshot.toolActivity.filter(
-                (candidate) => candidate.id !== toolCall.toolCallId,
-            ),
-            activity,
-        ],
-        trackedFiles: collectDiffTrackedFiles(snapshot, toolCall, updatedAt),
-    };
-}
-
-function mergeToolActivity(
-    snapshot: AiSessionSnapshot,
-    update: ToolCallUpdate,
+    update: ToolCall | ToolCallUpdate,
     updatedAt: string,
 ): AiSessionSnapshot {
     const existing =
         snapshot.toolActivity.find(
             (candidate) => candidate.id === update.toolCallId,
         ) ?? null;
-    const diffs = update.content
-        ? collectDiffs(update.content)
-        : (existing?.diffs ?? []);
+    const toolKind = update.kind ?? existing?.kind ?? "unknown";
+    const content = update.content ?? null;
+    const pendingUserInput = parseUserInputRequest(snapshot, update, updatedAt);
     const nextActivity = {
-        diffs,
+        diffs: content
+            ? collectDiffs(content, toolKind)
+            : (existing?.diffs ?? []),
         id: update.toolCallId,
-        kind: update.kind ?? existing?.kind ?? "unknown",
+        kind: toolKind,
         locations:
             update.locations?.map((location) => location.path) ??
             existing?.locations ??
@@ -1054,7 +1262,7 @@ function mergeToolActivity(
         summary:
             buildToolSummary(
                 update.title ?? existing?.title ?? "Tool call",
-                update.content,
+                content,
             ) ??
             existing?.summary ??
             null,
@@ -1064,21 +1272,25 @@ function mergeToolActivity(
 
     return {
         ...snapshot,
+        pendingPermission: pendingUserInput ? null : snapshot.pendingPermission,
+        pendingUserInput: pendingUserInput ?? snapshot.pendingUserInput,
+        status: pendingUserInput ? "waiting_user_input" : snapshot.status,
         toolActivity: [
             ...snapshot.toolActivity.filter(
                 (candidate) => candidate.id !== update.toolCallId,
             ),
             nextActivity,
         ],
-        trackedFiles: update.content
-            ? update.content.reduce(
-                  (trackedFiles, content) =>
-                      content.type === "diff"
+        trackedFiles: content
+            ? content.reduce(
+                  (trackedFiles, entry) =>
+                      entry.type === "diff"
                           ? upsertTrackedFile(
                                 trackedFiles,
                                 diffToTrackedFile(
                                     snapshot,
-                                    content,
+                                    entry,
+                                    toolKind,
                                     update.toolCallId,
                                     updatedAt,
                                 ),
@@ -1090,76 +1302,674 @@ function mergeToolActivity(
     };
 }
 
-function collectDiffTrackedFiles(
-    snapshot: AiSessionSnapshot,
-    toolCall: ToolCall,
-    updatedAt: string,
-): readonly AiTrackedFile[] {
-    return (toolCall.content ?? []).reduce(
-        (trackedFiles, content) =>
-            content.type === "diff"
-                ? upsertTrackedFile(
-                      trackedFiles,
-                      diffToTrackedFile(
-                          snapshot,
-                          content,
-                          toolCall.toolCallId,
-                          updatedAt,
-                      ),
-                  )
-                : trackedFiles,
-        snapshot.trackedFiles,
-    );
-}
-
 function collectDiffs(
     content: readonly ToolCallContent[] | null | undefined,
+    toolKind: string,
 ): readonly AiFileDiff[] {
     return (content ?? []).flatMap((entry) =>
-        entry.type === "diff" ? [diffToAiFileDiff(entry)] : [],
+        entry.type === "diff" ? [diffToAiFileDiff(entry, toolKind)] : [],
     );
 }
 
-function diffToAiFileDiff(diff: Diff): AiFileDiff {
+function diffToAiFileDiff(diff: Diff, toolKind: string): AiFileDiff {
+    const previousPath = readDiffMetaString(
+        diff._meta,
+        NEVERWRITE_DIFF_PREVIOUS_PATH_KEY,
+    );
+    const kind = inferDiffKind(diff, toolKind, previousPath);
+    const oldText = normalizeOldText(diff.oldText ?? null);
+    const newText = normalizeNewText(kind, diff.newText ?? null);
+
     return {
-        kind: diff.oldText == null ? "create" : "update",
-        newText: diff.newText,
-        oldText: diff.oldText ?? null,
+        hunks: readDiffHunks(diff._meta, diff.path),
+        isText: true,
+        kind,
+        newText,
+        oldText,
         path: diff.path,
+        previousPath,
+        reversible: isDiffReversible(kind, oldText),
     };
 }
 
 function diffToTrackedFile(
     snapshot: AiSessionSnapshot,
     diff: Diff,
+    toolKind: string,
     toolCallId: string,
     updatedAt: string,
 ): AiTrackedFile {
+    const fileDiff = diffToAiFileDiff(diff, toolKind);
+    const hunks =
+        fileDiff.hunks.length > 0
+            ? fileDiff.hunks
+            : fileDiff.isText &&
+                (fileDiff.oldText !== null || fileDiff.newText !== null)
+              ? computeDiffHunks(
+                    fileDiff.oldText ?? "",
+                    fileDiff.newText ?? "",
+                    diff.path,
+                )
+              : [];
+
     return {
-        identityKey: diff.path,
+        identityKey: fileDiff.previousPath
+            ? `${fileDiff.previousPath}->${fileDiff.path}`
+            : fileDiff.path,
+        hunks,
         isText: true,
-        kind: diff.oldText == null ? "create" : "update",
-        newText: diff.newText,
-        oldText: diff.oldText ?? null,
-        path: diff.path,
+        kind: fileDiff.kind,
+        newText: fileDiff.newText,
+        oldText: fileDiff.oldText,
+        path: fileDiff.path,
+        previousPath: fileDiff.previousPath,
         reviewState: "pending",
+        reversible: fileDiff.reversible,
         sessionId: snapshot.sessionId,
         toolCallId,
         updatedAt,
     };
 }
 
+function inferDiffKind(
+    diff: Diff,
+    toolKind: string,
+    previousPath: string | null,
+): AiTrackedFile["kind"] {
+    if (previousPath || toolKind === "move") {
+        return "move";
+    }
+
+    if (
+        toolKind === "delete" ||
+        (diff.oldText !== null && diff.oldText !== undefined && diff.newText == null)
+    ) {
+        return "delete";
+    }
+
+    if (diff.oldText == null) {
+        return "create";
+    }
+
+    return "update";
+}
+
+function normalizeOldText(value: string | null): string | null {
+    if (value === "[file deleted]") {
+        return null;
+    }
+
+    return value;
+}
+
+function normalizeNewText(
+    kind: AiTrackedFile["kind"],
+    value: string | null,
+): string | null {
+    if (kind === "delete") {
+        return null;
+    }
+
+    return value ?? "";
+}
+
+function isDiffReversible(
+    kind: AiTrackedFile["kind"],
+    oldText: string | null,
+): boolean {
+    if (kind === "create") {
+        return true;
+    }
+
+    return oldText !== null;
+}
+
 function upsertTrackedFile(
     trackedFiles: readonly AiTrackedFile[],
     nextTrackedFile: AiTrackedFile,
 ): readonly AiTrackedFile[] {
-    return [
-        ...trackedFiles.filter(
-            (trackedFile) =>
-                trackedFile.identityKey !== nextTrackedFile.identityKey,
-        ),
+    return replaceTrackedFile(
+        trackedFiles,
+        nextTrackedFile.path,
         nextTrackedFile,
+    );
+}
+
+function replaceTrackedFile(
+    trackedFiles: readonly AiTrackedFile[],
+    path: string,
+    nextTrackedFile: AiTrackedFile | null,
+): readonly AiTrackedFile[] {
+    const nextTrackedFiles = trackedFiles.filter(
+        (trackedFile) => trackedFile.path !== path,
+    );
+    if (!nextTrackedFile) {
+        return nextTrackedFiles;
+    }
+
+    return [...nextTrackedFiles, nextTrackedFile];
+}
+
+function parseUserInputRequest(
+    snapshot: AiSessionSnapshot,
+    update: ToolCall | ToolCallUpdate,
+    updatedAt: string,
+): AiUserInputRequest | null {
+    if (
+        !isRecord(update._meta) ||
+        update._meta[NEVERWRITE_STATUS_EVENT_TYPE_KEY] !==
+            NEVERWRITE_USER_INPUT_EVENT_TYPE ||
+        !isRecord(update.rawInput)
+    ) {
+        return null;
+    }
+
+    const questionsValue = update.rawInput.questions;
+    if (!Array.isArray(questionsValue)) {
+        return null;
+    }
+
+    const questions = questionsValue
+        .map((question, index) => parseUserInputQuestion(question, index))
+        .filter((question): question is NonNullable<typeof question> =>
+            Boolean(question),
+        );
+    if (questions.length === 0) {
+        return null;
+    }
+
+    const headerTitle = questions
+        .find((question) => question.header.trim().length > 0)
+        ?.header.trim();
+    const requestId =
+        typeof update.rawInput.request_id === "string" &&
+        update.rawInput.request_id.trim().length > 0
+            ? update.rawInput.request_id
+            : update.toolCallId;
+    const turnId =
+        typeof update.rawInput.turn_id === "string" &&
+        update.rawInput.turn_id.trim().length > 0
+            ? update.rawInput.turn_id
+            : requestId;
+    if (!turnId) {
+        return null;
+    }
+
+    return {
+        questions,
+        requestId,
+        sessionId: snapshot.sessionId,
+        title:
+            headerTitle ||
+            (update.title ?? snapshot.title).trim() ||
+            "Input requested",
+        toolCallId: update.toolCallId,
+        turnId,
+        updatedAt,
+    };
+}
+
+function parseUserInputQuestion(
+    value: unknown,
+    index: number,
+): AiUserInputRequest["questions"][number] | null {
+    if (!isRecord(value)) {
+        return null;
+    }
+
+    const options = Array.isArray(value.options)
+        ? value.options
+              .map((option) => {
+                  if (!isRecord(option) || typeof option.label !== "string") {
+                      return null;
+                  }
+
+                  return {
+                      description:
+                          typeof option.description === "string"
+                              ? option.description
+                              : null,
+                      label: option.label,
+                  };
+              })
+              .filter((option): option is NonNullable<typeof option> =>
+                  Boolean(option),
+              )
+        : [];
+
+    return {
+        header: typeof value.header === "string" ? value.header : "",
+        id:
+            typeof value.id === "string" && value.id.trim().length > 0
+                ? value.id
+                : `question-${index + 1}`,
+        isOther: value.is_other === true,
+        isSecret: value.is_secret === true,
+        options,
+        question:
+            typeof value.question === "string"
+                ? value.question
+                : typeof value.label === "string"
+                  ? value.label
+                  : "Provide the requested input.",
+    };
+}
+
+function buildUserInputResponsePrompt(
+    turnId: string | null,
+    answers: AiUserInputResponseInput["answers"],
+): string {
+    const payload = {
+        response: {
+            answers: Object.fromEntries(
+                answers.map((answer) => [
+                    answer.questionId,
+                    {
+                        answers: [...answer.answers],
+                    },
+                ]),
+            ),
+        },
+        turn_id: turnId ?? "",
+    };
+
+    return `${NEVERWRITE_USER_INPUT_RESPONSE_PREFIX}${JSON.stringify(payload)}`;
+}
+
+function summarizeUserInputAnswers(
+    questions: readonly AiUserInputRequest["questions"][number][],
+    answers: AiUserInputResponseInput["answers"],
+): string {
+    if (answers.length === 0) {
+        return "Responded to guided input.";
+    }
+
+    return answers
+        .map((answer) => {
+            const question = questions.find(
+                (candidate) => candidate.id === answer.questionId,
+            );
+            const label =
+                question?.header || question?.question || answer.questionId;
+            return `${label}: ${answer.answers.join(", ")}`;
+        })
+        .join("\n");
+}
+
+function resolveTrackedFileHunks(
+    trackedFile: AiTrackedFile,
+    hunkIds: readonly string[],
+    decision: "keep" | "reject",
+): AiTrackedFile | null {
+    if (
+        hunkIds.length === 0 ||
+        !trackedFile.isText ||
+        trackedFile.hunks.length === 0
+    ) {
+        return trackedFile;
+    }
+
+    const selectedIds = new Set(hunkIds);
+    const selectedHunks = trackedFile.hunks.filter((hunk) =>
+        selectedIds.has(hunk.id),
+    );
+    if (selectedHunks.length === 0) {
+        return trackedFile;
+    }
+
+    const baseOldText = trackedFile.oldText ?? "";
+    const baseNewText = trackedFile.newText ?? "";
+    const remainingHunks = trackedFile.hunks.filter(
+        (hunk) => !selectedIds.has(hunk.id),
+    );
+    const oldText =
+        decision === "keep"
+            ? applyHunksToBase(baseOldText, selectedHunks)
+            : baseOldText;
+    const newText =
+        decision === "keep"
+            ? baseNewText
+            : applyHunksToBase(baseOldText, remainingHunks);
+    const nextHunks = computeDiffHunks(oldText, newText, trackedFile.path);
+
+    if (oldText === newText) {
+        return null;
+    }
+
+    const nextOldText = finalizeTrackedTextSide(trackedFile.oldText, oldText);
+    const nextNewText = finalizeTrackedTextSide(trackedFile.newText, newText);
+
+    return {
+        ...trackedFile,
+        hunks: nextHunks,
+        kind: inferResolvedTrackedFileKind(trackedFile, nextOldText, nextNewText),
+        newText: nextNewText,
+        oldText: nextOldText,
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function inferResolvedTrackedFileKind(
+    trackedFile: AiTrackedFile,
+    oldText: string | null,
+    newText: string | null,
+): AiTrackedFile["kind"] {
+    if (trackedFile.previousPath) {
+        return "move";
+    }
+
+    if (oldText === null) {
+        return "create";
+    }
+
+    if (newText === null) {
+        return "delete";
+    }
+
+    return "update";
+}
+
+function finalizeTrackedTextSide(
+    originalValue: string | null,
+    nextValue: string,
+): string | null {
+    if (originalValue === null && nextValue.length === 0) {
+        return null;
+    }
+
+    return nextValue;
+}
+
+function applyHunksToBase(
+    baseText: string,
+    hunks: readonly AiDiffHunk[],
+): string {
+    const baseLines = splitTextLines(baseText);
+    const output: string[] = [];
+    let cursor = 0;
+
+    for (const hunk of [...hunks].sort(
+        (left, right) => left.oldStart - right.oldStart,
+    )) {
+        const startIndex = Math.max(hunk.oldStart - 1, cursor);
+        output.push(...baseLines.slice(cursor, startIndex));
+        let localCursor = startIndex;
+
+        for (const line of hunk.lines) {
+            if (line.type === "context") {
+                output.push(baseLines[localCursor] ?? line.text);
+                localCursor += 1;
+                continue;
+            }
+
+            if (line.type === "remove") {
+                localCursor += 1;
+                continue;
+            }
+
+            output.push(line.text);
+        }
+
+        cursor = localCursor;
+    }
+
+    output.push(...baseLines.slice(cursor));
+    return output.join("\n");
+}
+
+function computeDiffHunks(
+    oldText: string,
+    newText: string,
+    seed: string,
+): readonly AiDiffHunk[] {
+    const oldLines = splitTextLines(oldText);
+    const newLines = splitTextLines(newText);
+    const maxMatrixCells = 400_000;
+
+    if (oldLines.length * newLines.length > maxMatrixCells) {
+        return buildSingleHunk(seed, oldLines, newLines);
+    }
+
+    const matrix = Array.from(
+        { length: oldLines.length + 1 },
+        () => new Uint32Array(newLines.length + 1),
+    );
+
+    for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
+        for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
+            matrix[oldIndex][newIndex] =
+                oldLines[oldIndex] === newLines[newIndex]
+                    ? matrix[oldIndex + 1][newIndex + 1] + 1
+                    : Math.max(
+                          matrix[oldIndex + 1][newIndex],
+                          matrix[oldIndex][newIndex + 1],
+                      );
+        }
+    }
+
+    const operations: Array<{
+        readonly text: string;
+        readonly type: "add" | "context" | "remove";
+    }> = [];
+    let oldIndex = 0;
+    let newIndex = 0;
+
+    while (oldIndex < oldLines.length && newIndex < newLines.length) {
+        if (oldLines[oldIndex] === newLines[newIndex]) {
+            operations.push({ text: oldLines[oldIndex], type: "context" });
+            oldIndex += 1;
+            newIndex += 1;
+            continue;
+        }
+
+        if (matrix[oldIndex + 1][newIndex] >= matrix[oldIndex][newIndex + 1]) {
+            operations.push({ text: oldLines[oldIndex], type: "remove" });
+            oldIndex += 1;
+            continue;
+        }
+
+        operations.push({ text: newLines[newIndex], type: "add" });
+        newIndex += 1;
+    }
+
+    while (oldIndex < oldLines.length) {
+        operations.push({ text: oldLines[oldIndex], type: "remove" });
+        oldIndex += 1;
+    }
+    while (newIndex < newLines.length) {
+        operations.push({ text: newLines[newIndex], type: "add" });
+        newIndex += 1;
+    }
+
+    const hunks: AiDiffHunk[] = [];
+    let pendingLines: Array<{
+        readonly id: string;
+        readonly text: string;
+        readonly type: "add" | "context" | "remove";
+    }> = [];
+    let pendingOldStart = 1;
+    let pendingNewStart = 1;
+    let pendingOldCount = 0;
+    let pendingNewCount = 0;
+    oldIndex = 1;
+    newIndex = 1;
+
+    const flushPending = () => {
+        if (pendingLines.length === 0) {
+            return;
+        }
+
+        hunks.push({
+            id: `${seed}:${pendingOldStart}:${pendingNewStart}:${hunks.length}`,
+            lines: pendingLines,
+            newCount: pendingNewCount,
+            newStart: pendingNewStart,
+            oldCount: pendingOldCount,
+            oldStart: pendingOldStart,
+        });
+        pendingLines = [];
+        pendingOldCount = 0;
+        pendingNewCount = 0;
+    };
+
+    for (const operation of operations) {
+        if (operation.type === "context") {
+            flushPending();
+            oldIndex += 1;
+            newIndex += 1;
+            continue;
+        }
+
+        if (pendingLines.length === 0) {
+            pendingOldStart = oldIndex;
+            pendingNewStart = newIndex;
+        }
+
+        pendingLines.push({
+            id: `line:${seed}:${pendingOldStart}:${pendingNewStart}:${pendingLines.length}`,
+            text: operation.text,
+            type: operation.type,
+        });
+        if (operation.type !== "add") {
+            pendingOldCount += 1;
+            oldIndex += 1;
+        }
+        if (operation.type !== "remove") {
+            pendingNewCount += 1;
+            newIndex += 1;
+        }
+    }
+    flushPending();
+
+    return hunks;
+}
+
+function buildSingleHunk(
+    seed: string,
+    oldLines: readonly string[],
+    newLines: readonly string[],
+): readonly AiDiffHunk[] {
+    const lines = [
+        ...oldLines.map((text, index) => ({
+            id: `line:${seed}:remove:${index}`,
+            text,
+            type: "remove" as const,
+        })),
+        ...newLines.map((text, index) => ({
+            id: `line:${seed}:add:${index}`,
+            text,
+            type: "add" as const,
+        })),
     ];
+    if (lines.length === 0) {
+        return [];
+    }
+
+    return [
+        {
+            id: `${seed}:1:1:0`,
+            lines,
+            newCount: newLines.length,
+            newStart: 1,
+            oldCount: oldLines.length,
+            oldStart: 1,
+        },
+    ];
+}
+
+function splitTextLines(text: string): string[] {
+    if (text.length === 0) {
+        return [];
+    }
+
+    return text.split("\n");
+}
+
+function readDiffMetaString(meta: unknown, key: string): string | null {
+    if (!isRecord(meta)) {
+        return null;
+    }
+
+    const value = meta[key];
+    return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readDiffHunks(meta: unknown, seed: string): readonly AiDiffHunk[] {
+    if (!isRecord(meta) || !Array.isArray(meta[NEVERWRITE_DIFF_HUNKS_KEY])) {
+        return [];
+    }
+
+    return meta[NEVERWRITE_DIFF_HUNKS_KEY].map((hunk, index) =>
+        parseDiffHunk(hunk, `${seed}:${index}`),
+    ).filter((hunk): hunk is NonNullable<typeof hunk> => Boolean(hunk));
+}
+
+function parseDiffHunk(value: unknown, seed: string): AiDiffHunk | null {
+    if (!isRecord(value) || !Array.isArray(value.lines)) {
+        return null;
+    }
+
+    const lines = value.lines
+        .map((line, lineIndex) => {
+            if (!isRecord(line) || typeof line.text !== "string") {
+                return null;
+            }
+            if (
+                line.type !== "add" &&
+                line.type !== "context" &&
+                line.type !== "remove"
+            ) {
+                return null;
+            }
+
+            const lineType: "add" | "context" | "remove" = line.type;
+
+            return {
+                id:
+                    typeof line.id === "string"
+                        ? line.id
+                        : `line:${seed}:${lineIndex}`,
+                text: line.text,
+                type: lineType,
+            };
+        })
+        .filter((line): line is NonNullable<typeof line> => Boolean(line));
+    if (lines.length === 0) {
+        return null;
+    }
+
+    return {
+        id: seed,
+        lines,
+        newCount:
+            typeof value.newCount === "number"
+                ? value.newCount
+                : typeof value.new_count === "number"
+                  ? value.new_count
+                  : 0,
+        newStart:
+            typeof value.newStart === "number"
+                ? value.newStart
+                : typeof value.new_start === "number"
+                  ? value.new_start
+                  : 1,
+        oldCount:
+            typeof value.oldCount === "number"
+                ? value.oldCount
+                : typeof value.old_count === "number"
+                  ? value.old_count
+                  : 0,
+        oldStart:
+            typeof value.oldStart === "number"
+                ? value.oldStart
+                : typeof value.old_start === "number"
+                  ? value.old_start
+                  : 1,
+    };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
 }
 
 function stringifyJson(value: unknown): string | null {

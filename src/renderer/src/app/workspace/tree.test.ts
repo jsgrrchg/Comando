@@ -55,6 +55,7 @@ function makeFileTab(
         loadError: null,
         projectId,
         relativePath,
+        reviewContext: null,
         savedContent: "",
         saveError: null,
         title: relativePath.split("/").at(-1) ?? relativePath,

@@ -1,14 +1,18 @@
 import { useEffect, useMemo } from "react";
 
-import type { AiSessionSnapshot, AiTrackedFile } from "@shared/ipc";
+import type { AiDiffHunk, AiSessionSnapshot, AiTrackedFile } from "@shared/ipc";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
-import type { RuntimeWorkspaceReviewTab } from "@renderer/app/workspace/tree";
+import type {
+    RuntimeWorkspaceFileReviewContext,
+    RuntimeWorkspaceReviewTab,
+} from "@renderer/app/workspace/tree";
 
 interface ReviewTabViewProps {
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     readonly tab: RuntimeWorkspaceReviewTab;
 }
@@ -19,10 +23,16 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
         (state) => state.keepAllTrackedFiles,
     );
     const keepTrackedFile = useAiStore((state) => state.keepTrackedFile);
+    const keepTrackedFileHunks = useAiStore(
+        (state) => state.keepTrackedFileHunks,
+    );
     const rejectAllTrackedFiles = useAiStore(
         (state) => state.rejectAllTrackedFiles,
     );
     const rejectTrackedFile = useAiStore((state) => state.rejectTrackedFile);
+    const rejectTrackedFileHunks = useAiStore(
+        (state) => state.rejectTrackedFileHunks,
+    );
     const sessionState = useAiStore((state) => state.sessions[tab.sessionId]);
 
     const sessionTab = useMemo(
@@ -54,21 +64,14 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const trackedFiles = useMemo(
         () =>
-            [...snapshot.trackedFiles].sort(
-                (left, right) =>
-                    Number(right.reviewState === "pending") -
-                        Number(left.reviewState === "pending") ||
+            snapshot.trackedFiles
+                .filter((trackedFile) => trackedFile.reviewState === "pending")
+                .sort((left, right) =>
                     right.updatedAt.localeCompare(left.updatedAt),
-            ),
+                ),
         [snapshot.trackedFiles],
     );
-    const pendingCount = useMemo(
-        () =>
-            trackedFiles.filter(
-                (trackedFile) => trackedFile.reviewState === "pending",
-            ).length,
-        [trackedFiles],
-    );
+    const pendingCount = trackedFiles.length;
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-bg-secondary">
@@ -79,15 +82,13 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
                             Pending Review
                         </div>
                         <div className="mt-1 text-sm text-text-primary">
-                            {pendingCount} pending changes
+                            {pendingCount} pending file{pendingCount === 1 ? "" : "s"}
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
                         <button
                             className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
-                            onClick={() =>
-                                void keepAllTrackedFiles(tab.sessionId)
-                            }
+                            onClick={() => void keepAllTrackedFiles(tab.sessionId)}
                             type="button"
                         >
                             Keep All
@@ -128,6 +129,13 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
                                         sessionId: tab.sessionId,
                                     })
                                 }
+                                onKeepHunk={(hunkId) =>
+                                    void keepTrackedFileHunks({
+                                        hunkIds: [hunkId],
+                                        path: trackedFile.path,
+                                        sessionId: tab.sessionId,
+                                    })
+                                }
                                 onOpen={() => {
                                     if (
                                         tab.projectId &&
@@ -136,11 +144,22 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
                                         void onOpenFile(
                                             tab.projectId,
                                             trackedFile.path,
+                                            {
+                                                path: trackedFile.path,
+                                                sessionId: tab.sessionId,
+                                            },
                                         );
                                     }
                                 }}
                                 onReject={() =>
                                     void rejectTrackedFile({
+                                        path: trackedFile.path,
+                                        sessionId: tab.sessionId,
+                                    })
+                                }
+                                onRejectHunk={(hunkId) =>
+                                    void rejectTrackedFileHunks({
+                                        hunkIds: [hunkId],
                                         path: trackedFile.path,
                                         sessionId: tab.sessionId,
                                     })
@@ -158,17 +177,23 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
 
 function TrackedFileCard({
     onKeep,
+    onKeepHunk,
     onOpen,
     onReject,
+    onRejectHunk,
     tab,
     trackedFile,
 }: {
     readonly onKeep: () => void;
+    readonly onKeepHunk: (hunkId: string) => void;
     readonly onOpen: () => void;
     readonly onReject: () => void;
+    readonly onRejectHunk: (hunkId: string) => void;
     readonly tab: RuntimeWorkspaceReviewTab;
     readonly trackedFile: AiTrackedFile;
 }) {
+    const hasHunks = trackedFile.hunks.length > 0;
+
     return (
         <div className="rounded-2xl border border-border bg-bg-tertiary p-3">
             <div className="flex items-start justify-between gap-3">
@@ -176,8 +201,20 @@ function TrackedFileCard({
                     <div className="truncate text-sm text-text-primary">
                         {trackedFile.path}
                     </div>
-                    <div className="mt-1 text-[11px] uppercase tracking-[0.14em] text-text-secondary">
-                        {trackedFile.kind} · {trackedFile.reviewState}
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-text-secondary">
+                        <span>{trackedFile.kind}</span>
+                        <span>pending</span>
+                        {trackedFile.previousPath ? (
+                            <span className="normal-case tracking-normal text-text-secondary/80">
+                                from {trackedFile.previousPath}
+                            </span>
+                        ) : null}
+                        {hasHunks ? (
+                            <span>
+                                {trackedFile.hunks.length} hunk
+                                {trackedFile.hunks.length === 1 ? "" : "s"}
+                            </span>
+                        ) : null}
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -195,25 +232,90 @@ function TrackedFileCard({
                         onClick={onKeep}
                         type="button"
                     >
-                        Keep
+                        Keep File
                     </button>
                     <button
                         className="app-no-drag rounded-full border border-border px-2 py-1 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
                         onClick={onReject}
                         type="button"
                     >
-                        Reject
+                        Reject File
                     </button>
                 </div>
             </div>
 
-            <div className="mt-3 grid gap-3">
-                {trackedFile.oldText !== null ? (
-                    <DiffPreview label="Before" text={trackedFile.oldText} />
-                ) : null}
-                {trackedFile.newText !== null ? (
-                    <DiffPreview label="After" text={trackedFile.newText} />
-                ) : null}
+            {hasHunks ? (
+                <div className="mt-3 space-y-3">
+                    {trackedFile.hunks.map((hunk) => (
+                        <HunkCard
+                            hunk={hunk}
+                            key={hunk.id}
+                            onKeep={() => onKeepHunk(hunk.id)}
+                            onReject={() => onRejectHunk(hunk.id)}
+                        />
+                    ))}
+                </div>
+            ) : (
+                <div className="mt-3 grid gap-3">
+                    {trackedFile.oldText !== null ? (
+                        <DiffPreview label="Before" text={trackedFile.oldText} />
+                    ) : null}
+                    {trackedFile.newText !== null ? (
+                        <DiffPreview label="After" text={trackedFile.newText} />
+                    ) : null}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function HunkCard({
+    hunk,
+    onKeep,
+    onReject,
+}: {
+    readonly hunk: AiDiffHunk;
+    readonly onKeep: () => void;
+    readonly onReject: () => void;
+}) {
+    return (
+        <div className="overflow-hidden rounded-2xl border border-border bg-bg-panel">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
+                <div className="text-[11px] font-medium tracking-[0.08em] text-text-secondary">
+                    {formatHunkHeader(hunk)}
+                </div>
+                <div className="flex items-center gap-2">
+                    <button
+                        className="app-no-drag rounded-full border border-border px-2 py-1 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
+                        onClick={onKeep}
+                        type="button"
+                    >
+                        Keep Hunk
+                    </button>
+                    <button
+                        className="app-no-drag rounded-full border border-border px-2 py-1 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
+                        onClick={onReject}
+                        type="button"
+                    >
+                        Reject Hunk
+                    </button>
+                </div>
+            </div>
+            <div className="max-h-72 overflow-auto font-mono text-[11px] leading-5">
+                {hunk.lines.map((line) => (
+                    <div
+                        className="flex items-start gap-3 px-3 py-0.5"
+                        key={line.id}
+                        style={{ backgroundColor: getHunkLineBackground(line.type) }}
+                    >
+                        <span className="w-4 shrink-0 text-center text-text-secondary/70">
+                            {getHunkLinePrefix(line.type)}
+                        </span>
+                        <span className="min-w-0 flex-1 whitespace-pre-wrap break-all text-text-primary">
+                            {line.text || " "}
+                        </span>
+                    </div>
+                ))}
             </div>
         </div>
     );
@@ -238,7 +340,9 @@ function DiffPreview({
     );
 }
 
-function createEmptySnapshot(tab: RuntimeWorkspaceReviewTab): AiSessionSnapshot {
+function createEmptySnapshot(
+    tab: RuntimeWorkspaceReviewTab,
+): AiSessionSnapshot {
     const now = new Date().toISOString();
 
     return {
@@ -246,6 +350,7 @@ function createEmptySnapshot(tab: RuntimeWorkspaceReviewTab): AiSessionSnapshot 
         lastError: null,
         messages: [],
         pendingPermission: null,
+        pendingUserInput: null,
         plan: null,
         projectId: tab.projectId,
         runtimeId: tab.runtimeId,
@@ -259,6 +364,34 @@ function createEmptySnapshot(tab: RuntimeWorkspaceReviewTab): AiSessionSnapshot 
     };
 }
 
+function formatHunkHeader(hunk: AiDiffHunk): string {
+    return `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`;
+}
+
+function getHunkLineBackground(
+    type: AiDiffHunk["lines"][number]["type"],
+): string {
+    if (type === "add") {
+        return "color-mix(in srgb, #16a34a 12%, transparent)";
+    }
+    if (type === "remove") {
+        return "color-mix(in srgb, #dc2626 12%, transparent)";
+    }
+    return "transparent";
+}
+
+function getHunkLinePrefix(
+    type: AiDiffHunk["lines"][number]["type"],
+): string {
+    if (type === "add") {
+        return "+";
+    }
+    if (type === "remove") {
+        return "-";
+    }
+    return " ";
+}
+
 function truncateDiffText(text: string): string {
     const maxLength = 1600;
     if (text.length <= maxLength) {
@@ -269,5 +402,7 @@ function truncateDiffText(text: string): string {
 }
 
 function looksAbsolutePath(candidatePath: string): boolean {
-    return candidatePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(candidatePath);
+    return (
+        candidatePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(candidatePath)
+    );
 }
