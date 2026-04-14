@@ -11,9 +11,14 @@ import {
     ndJsonStream,
     type Client,
     type Diff,
+    type LoadSessionResponse,
+    type NewSessionResponse,
     type ReadTextFileRequest,
     type RequestPermissionRequest,
     type RequestPermissionResponse,
+    type SessionConfigOption,
+    type SessionModeState,
+    type SessionModelState,
     type SessionNotification,
     type ToolCall,
     type ToolCallContent,
@@ -23,26 +28,64 @@ import {
 import type {
     AiDiffHunk,
     AiFileDiff,
+    AiImageAttachment,
     AiPermissionRequest,
     AiPermissionResponseInput,
     AiPromptResult,
+    PrepareAiSessionInput,
+    AiRuntimeAuthLaunchInput,
     AiRuntimeId,
     AiRuntimeStatus,
+    AiSessionConfigOption,
+    AiSessionConfigOptionMutationInput,
+    AiSessionMode,
+    AiSessionModeMutationInput,
+    AiSessionModel,
+    AiSessionModelMutationInput,
     AiSessionSnapshot,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputRequest,
     AiUserInputResponseInput,
+    ClaudeRuntimeSettingsInput,
     CodexRuntimeSettings,
+    GeminiRuntimeSettingsInput,
+    KiloRuntimeSettingsInput,
+    SecretValuePatch,
     SendAiPromptInput,
 } from "@shared/ipc";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsService } from "@main/settings/service";
+import type { SecretStoreService } from "@main/ai/secret-store";
 
 import { createEmptyAiSessionSnapshot, AiPersistence } from "./persistence";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
+import {
+    applyClaudeAuthEnv,
+    getClaudeRuntimeStatus,
+    launchClaudeLogin,
+    loadClaudeSecretBundle,
+    markClaudeAuthInvalidated,
+    resolveClaudeRuntime,
+    saveClaudeSecrets,
+} from "./claude/setup";
+import {
+    applyGeminiAuthEnv,
+    getGeminiRuntimeStatus,
+    launchGeminiLogin,
+    markGeminiAuthInvalidated,
+    resolveGeminiRuntime,
+    saveGeminiSecrets,
+} from "./gemini/setup";
+import {
+    getKiloRuntimeStatus,
+    isKiloAuthenticationError,
+    launchKiloLogin,
+    markKiloAuthInvalidated,
+    resolveKiloRuntime,
+} from "./kilo/setup";
 
 const NEVERWRITE_DIFF_HUNKS_KEY = "neverwriteHunks";
 const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
@@ -54,39 +97,72 @@ const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX =
 interface AiServiceOptions {
     readonly projectService: ProjectService;
     readonly settingsService: SettingsService;
+    readonly secretStore: SecretStoreService;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
-    readonly onSessionSnapshot: (snapshot: AiSessionSnapshot) => void;
+    readonly onSessionSnapshot: (
+        ownerWindowId: string,
+        snapshot: AiSessionSnapshot,
+    ) => void;
     readonly persistence: AiPersistence;
 }
 
-interface LiveCodexSession {
+interface LiveAcpSession {
     child: ChildProcessWithoutNullStreams;
     closing: boolean;
     connection: ClientSideConnection;
     cwd: string;
     isRestoring: boolean;
+    ownerWindowId: string;
     pendingPermission: {
         readonly requestId: string;
         readonly resolve: (response: RequestPermissionResponse) => void;
     } | null;
     projectRoot: string | null;
+    runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
     stderrChunks: string[];
 }
 
+interface ResolvedAcpRuntime {
+    readonly args: readonly string[];
+    readonly command: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly executable: string;
+    readonly status: AiRuntimeStatus;
+}
+
+type AcpSessionCatalogPayload = Pick<
+    LoadSessionResponse | NewSessionResponse,
+    "configOptions" | "models" | "modes"
+>;
+
+interface OpenRuntimeSessionResult extends AcpSessionCatalogPayload {
+    readonly runtimeSessionId: string;
+}
+
+type SessionDescriptor = Pick<
+    PrepareAiSessionInput,
+    "projectId" | "runtimeId" | "sessionId" | "title" | "worktreeId"
+>;
+
 export class AiService {
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
-    readonly #onSessionSnapshot: (snapshot: AiSessionSnapshot) => void;
+    readonly #onSessionSnapshot: (
+        ownerWindowId: string,
+        snapshot: AiSessionSnapshot,
+    ) => void;
     readonly #persistence: AiPersistence;
     readonly #projectService: ProjectService;
+    readonly #secretStore: SecretStoreService;
     readonly #settingsService: SettingsService;
-    readonly #sessions = new Map<string, LiveCodexSession>();
+    readonly #sessions = new Map<string, LiveAcpSession>();
 
     constructor(options: AiServiceOptions) {
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionSnapshot = options.onSessionSnapshot;
         this.#persistence = options.persistence;
         this.#projectService = options.projectService;
+        this.#secretStore = options.secretStore;
         this.#settingsService = options.settingsService;
     }
 
@@ -101,20 +177,119 @@ export class AiService {
     }
 
     getRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
-        if (runtimeId !== "codex") {
-            throw new Error("Runtime no soportado.");
-        }
-
-        const status = resolveCodexRuntime(
-            this.#settingsService.loadCodexRuntimeSettings(),
-        ).status;
+        const status = this.#withPersistedRuntimeCatalog(
+            this.#resolveRuntimeStatus(runtimeId),
+        );
         this.#onRuntimeStatus(status);
         return status;
     }
 
     saveCodexRuntimeSettings(settings: CodexRuntimeSettings): AiRuntimeStatus {
         this.#settingsService.saveCodexRuntimeSettings(settings);
-        const status = resolveCodexRuntime(settings).status;
+        const status = this.#withPersistedRuntimeCatalog(
+            resolveCodexRuntime(settings).status,
+        );
+        this.#onRuntimeStatus(status);
+        return status;
+    }
+
+    saveClaudeRuntimeSettings(
+        settings: ClaudeRuntimeSettingsInput,
+    ): AiRuntimeStatus {
+        const currentSettings =
+            this.#settingsService.loadClaudeRuntimeSettings();
+        const currentSecrets = loadClaudeSecretBundle(this.#secretStore);
+        const gatewayAuthToken = applySecretValuePatch(
+            currentSecrets.anthropicAuthToken,
+            settings.gatewayAuthToken,
+        );
+        const gatewayCustomHeaders = applySecretValuePatch(
+            currentSecrets.anthropicCustomHeaders,
+            settings.gatewayCustomHeaders,
+        );
+        const secretFlags = saveClaudeSecrets(this.#secretStore, {
+            gatewayAuthToken,
+            gatewayCustomHeaders,
+        });
+        const nextSettings = {
+            authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
+            authMethod: settings.authMethod,
+            binaryPath: normalizeOptionalText(settings.binaryPath),
+            gatewayBaseUrl: normalizeOptionalText(settings.gatewayBaseUrl),
+            hasGatewayAuthToken: secretFlags.hasGatewayAuthToken,
+            hasGatewayCustomHeaders: secretFlags.hasGatewayCustomHeaders,
+        };
+
+        this.#settingsService.saveClaudeRuntimeSettings(nextSettings);
+        const status = this.#withPersistedRuntimeCatalog(
+            getClaudeRuntimeStatus(nextSettings, this.#secretStore),
+        );
+        this.#onRuntimeStatus(status);
+        return status;
+    }
+
+    saveGeminiRuntimeSettings(
+        settings: GeminiRuntimeSettingsInput,
+    ): AiRuntimeStatus {
+        const currentSettings =
+            this.#settingsService.loadGeminiRuntimeSettings();
+        const geminiApiKey = applySecretValuePatch(
+            this.#secretStore.loadSecret("ai.gemini", "gemini_api_key"),
+            settings.geminiApiKey,
+        );
+        const googleApiKey = applySecretValuePatch(
+            this.#secretStore.loadSecret("ai.gemini", "google_api_key"),
+            settings.googleApiKey,
+        );
+        const secretFlags = saveGeminiSecrets(this.#secretStore, {
+            geminiApiKey,
+            googleApiKey,
+        });
+        const nextSettings = {
+            authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
+            authMethod: settings.authMethod,
+            binaryPath: normalizeOptionalText(settings.binaryPath),
+            googleCloudLocation: normalizeOptionalText(
+                settings.googleCloudLocation,
+            ),
+            googleCloudProject: normalizeOptionalText(
+                settings.googleCloudProject,
+            ),
+            hasGeminiApiKey: secretFlags.hasGeminiApiKey,
+            hasGoogleApiKey: secretFlags.hasGoogleApiKey,
+        };
+
+        this.#settingsService.saveGeminiRuntimeSettings(nextSettings);
+        const status = this.#withPersistedRuntimeCatalog(
+            getGeminiRuntimeStatus(nextSettings, this.#secretStore),
+        );
+        this.#onRuntimeStatus(status);
+        return status;
+    }
+
+    saveKiloRuntimeSettings(
+        settings: KiloRuntimeSettingsInput,
+    ): AiRuntimeStatus {
+        const currentSettings = this.#settingsService.loadKiloRuntimeSettings();
+        const nextSettings = {
+            authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
+            binaryPath: normalizeOptionalText(settings.binaryPath),
+        };
+
+        this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+        const status = this.#withPersistedRuntimeCatalog(
+            getKiloRuntimeStatus(nextSettings),
+        );
+        this.#onRuntimeStatus(status);
+        return status;
+    }
+
+    verifyCodexRuntimeSettings(
+        settings: CodexRuntimeSettings,
+    ): AiRuntimeStatus {
+        const status = this.#withPersistedRuntimeCatalog(
+            resolveCodexRuntime(settings).status,
+        );
         this.#onRuntimeStatus(status);
         return status;
     }
@@ -128,12 +303,25 @@ export class AiService {
         return this.#persistence.loadSessionSnapshot(sessionId);
     }
 
-    async sendPrompt(input: SendAiPromptInput): Promise<AiPromptResult> {
-        if (input.runtimeId !== "codex") {
-            throw new Error("Runtime no soportado.");
-        }
+    async prepareSession(
+        input: PrepareAiSessionInput,
+        ownerWindowId: string,
+    ): Promise<AiSessionSnapshot> {
+        const liveSession = await this.#ensureRuntimeSession(
+            input,
+            ownerWindowId,
+        );
+        return liveSession.snapshot;
+    }
 
-        const liveSession = await this.#ensureCodexSession(input);
+    async sendPrompt(
+        input: SendAiPromptInput,
+        ownerWindowId: string,
+    ): Promise<AiPromptResult> {
+        const liveSession = await this.#ensureRuntimeSession(
+            input,
+            ownerWindowId,
+        );
         if (
             liveSession.snapshot.status === "starting" ||
             liveSession.snapshot.status === "streaming" ||
@@ -145,7 +333,7 @@ export class AiService {
 
         const now = new Date().toISOString();
         const promptText = input.prompt.trim();
-        if (!promptText) {
+        if (!promptText && input.attachments.length === 0) {
             throw new Error("Escribe un prompt antes de enviarlo.");
         }
 
@@ -155,6 +343,7 @@ export class AiService {
             messages: [
                 ...liveSession.snapshot.messages,
                 {
+                    attachments: input.attachments,
                     content: promptText,
                     createdAt: now,
                     id: randomUUID(),
@@ -168,18 +357,14 @@ export class AiService {
             status: "starting",
             title: input.title,
             updatedAt: now,
+            worktreeId: input.worktreeId ?? null,
         });
         this.#persistAndBroadcast(liveSession);
 
         try {
             const response = await liveSession.connection.prompt({
                 messageId: randomUUID(),
-                prompt: [
-                    {
-                        text: promptText,
-                        type: "text",
-                    },
-                ],
+                prompt: buildPromptContentBlocks(promptText, input.attachments),
                 sessionId: this.#requireRuntimeSessionId(liveSession),
             });
 
@@ -200,7 +385,8 @@ export class AiService {
             const message =
                 error instanceof Error
                     ? error.message
-                    : "Codex ACP no pudo completar el prompt.";
+                    : `${getRuntimeDisplayName(input.runtimeId)} ACP no pudo completar el prompt.`;
+            this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, message);
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
                 lastError: message,
@@ -212,6 +398,52 @@ export class AiService {
             this.#persistAndBroadcast(liveSession);
             throw error;
         }
+    }
+
+    async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
+        const liveSession = this.#sessions.get(input.sessionId);
+        if (!liveSession) {
+            this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+                setModeOnSnapshot(snapshot, input.modeId),
+            );
+            return;
+        }
+
+        await this.#setSessionModeOnLiveSession(liveSession, input.modeId);
+    }
+
+    async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
+        const liveSession = this.#sessions.get(input.sessionId);
+        if (!liveSession) {
+            this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+                setModelOnSnapshot(snapshot, input.modelId),
+            );
+            return;
+        }
+
+        await this.#setSessionModelOnLiveSession(liveSession, input.modelId);
+    }
+
+    async setSessionConfigOption(
+        input: AiSessionConfigOptionMutationInput,
+    ): Promise<void> {
+        const liveSession = this.#sessions.get(input.sessionId);
+        if (!liveSession) {
+            this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+                setConfigOptionOnSnapshot(
+                    snapshot,
+                    input.optionId,
+                    input.value,
+                ),
+            );
+            return;
+        }
+
+        await this.#setSessionConfigOptionOnLiveSession(
+            liveSession,
+            input.optionId,
+            input.value,
+        );
     }
 
     async cancelSession(sessionId: string): Promise<void> {
@@ -247,6 +479,127 @@ export class AiService {
 
         liveSession.child.kill();
         this.#sessions.delete(sessionId);
+    }
+
+    closeOwnedByWindow(ownerWindowId: string): void {
+        const sessionIds = [...this.#sessions.entries()]
+            .filter(
+                ([, liveSession]) =>
+                    liveSession.ownerWindowId === ownerWindowId,
+            )
+            .map(([sessionId]) => sessionId);
+
+        for (const sessionId of sessionIds) {
+            const liveSession = this.#sessions.get(sessionId);
+            if (!liveSession) {
+                continue;
+            }
+
+            liveSession.closing = true;
+            this.#resolvePendingPermission(liveSession, null);
+            liveSession.child.kill();
+            this.#sessions.delete(sessionId);
+        }
+    }
+
+    async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
+        const cwd = input.projectId
+            ? this.#projectService.getProjectRootPath(
+                  input.projectId,
+                  input.worktreeId ?? null,
+              )
+            : process.cwd();
+
+        if (input.runtimeId === "claude") {
+            const currentSettings =
+                this.#settingsService.loadClaudeRuntimeSettings();
+            const authMethod =
+                input.methodId === "gateway"
+                    ? "gateway"
+                    : input.methodId === "claude-login" ||
+                        input.methodId === "claude-ai-login" ||
+                        input.methodId === "console-login"
+                      ? input.methodId
+                      : null;
+
+            if (authMethod === null || authMethod === "gateway") {
+                throw new Error(
+                    "Selecciona un método de login de Claude antes de abrir la autenticación.",
+                );
+            }
+
+            const nextSettings = markClaudeAuthInvalidated({
+                ...currentSettings,
+                authMethod,
+            });
+            this.#settingsService.saveClaudeRuntimeSettings(nextSettings);
+
+            const resolvedRuntime = resolveClaudeRuntime(
+                nextSettings,
+                this.#secretStore,
+            );
+
+            await launchClaudeLogin(resolvedRuntime, authMethod, cwd);
+            this.#onRuntimeStatus(
+                getClaudeRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            return;
+        }
+
+        if (input.runtimeId === "gemini") {
+            const currentSettings =
+                this.#settingsService.loadGeminiRuntimeSettings();
+            const authMethod =
+                input.methodId === "login_with_google" ||
+                input.methodId === "use_gemini"
+                    ? input.methodId
+                    : null;
+
+            if (authMethod === null) {
+                throw new Error(
+                    "Selecciona un método válido de Gemini antes de abrir la autenticación.",
+                );
+            }
+
+            if (authMethod === "use_gemini") {
+                throw new Error(
+                    "Gemini API key no necesita abrir un terminal de login. Guarda la API key desde la configuración.",
+                );
+            }
+
+            const nextSettings = markGeminiAuthInvalidated({
+                ...currentSettings,
+                authMethod,
+            });
+            this.#settingsService.saveGeminiRuntimeSettings(nextSettings);
+
+            await launchGeminiLogin(nextSettings, cwd);
+            this.#onRuntimeStatus(
+                getGeminiRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            return;
+        }
+
+        if (input.runtimeId === "kilo") {
+            if (input.methodId !== "kilo-login") {
+                throw new Error(
+                    "Selecciona Kilo login antes de abrir la autenticación.",
+                );
+            }
+
+            const nextSettings = markKiloAuthInvalidated(
+                this.#settingsService.loadKiloRuntimeSettings(),
+            );
+            this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+
+            await launchKiloLogin(nextSettings, cwd);
+            this.#onRuntimeStatus(getKiloRuntimeStatus(nextSettings));
+            return;
+        }
+
+        throw new Error(
+            `${getRuntimeDisplayName(input.runtimeId)} no soporta este flujo de autenticación todavía.`,
+        );
     }
 
     respondPermission(input: AiPermissionResponseInput): Promise<void> {
@@ -333,6 +686,7 @@ export class AiService {
             messages: [
                 ...liveSession.snapshot.messages,
                 {
+                    attachments: [],
                     content: summarizeUserInputAnswers(
                         pendingUserInput.questions,
                         answers,
@@ -371,7 +725,8 @@ export class AiService {
             const message =
                 error instanceof Error
                     ? error.message
-                    : "Codex ACP no pudo enviar la respuesta guiada.";
+                    : `${getRuntimeDisplayName(liveSession.runtimeId)} ACP no pudo enviar la respuesta guiada.`;
+            this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, message);
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
                 lastError: message,
@@ -507,25 +862,32 @@ export class AiService {
         this.#persistAndBroadcast(liveSession);
     }
 
-    async #ensureCodexSession(
-        input: SendAiPromptInput,
-    ): Promise<LiveCodexSession> {
+    async #ensureRuntimeSession(
+        input: SessionDescriptor,
+        ownerWindowId: string,
+    ): Promise<LiveAcpSession> {
         const existing = this.#sessions.get(input.sessionId);
-        if (existing?.snapshot.runtimeSessionId) {
+        if (
+            existing?.snapshot.runtimeSessionId &&
+            existing.runtimeId === input.runtimeId
+        ) {
+            existing.ownerWindowId = ownerWindowId;
             return existing;
         }
         if (existing) {
             this.#disposeLiveSession(input.sessionId, existing);
         }
 
-        const settings = this.#settingsService.loadCodexRuntimeSettings();
-        const resolvedRuntime = resolveCodexRuntime(settings);
+        const resolvedRuntime = this.#resolveRuntimeCommand(input.runtimeId);
         this.#onRuntimeStatus(resolvedRuntime.status);
 
-        if (resolvedRuntime.status.state !== "ready") {
+        if (
+            resolvedRuntime.status.state !== "ready" ||
+            resolvedRuntime.status.onboardingRequired
+        ) {
             throw new Error(
                 resolvedRuntime.status.message ??
-                    "Codex ACP no está disponible en esta máquina.",
+                    `${getRuntimeDisplayName(input.runtimeId)} ACP no está disponible en esta máquina.`,
             );
         }
 
@@ -533,12 +895,16 @@ export class AiService {
             this.#persistence.loadSessionSnapshot(input.sessionId) ??
             createEmptyAiSessionSnapshot({
                 projectId: input.projectId,
-                runtimeId: "codex",
+                runtimeId: input.runtimeId,
                 sessionId: input.sessionId,
                 title: input.title,
+                worktreeId: input.worktreeId ?? null,
             });
         const projectRoot = input.projectId
-            ? this.#projectService.getProjectRootPath(input.projectId)
+            ? this.#projectService.getProjectRootPath(
+                  input.projectId,
+                  input.worktreeId ?? null,
+              )
             : null;
         const cwd = projectRoot ?? process.cwd();
         const child = spawn(
@@ -546,11 +912,11 @@ export class AiService {
             [...resolvedRuntime.args],
             {
                 cwd,
-                env: process.env,
+                env: resolvedRuntime.env,
                 stdio: ["pipe", "pipe", "pipe"],
             },
         );
-        const liveSession = {} as LiveCodexSession;
+        const liveSession = {} as LiveAcpSession;
 
         const client: Client = {
             readTextFile: async (params) =>
@@ -574,18 +940,21 @@ export class AiService {
             connection,
             cwd,
             isRestoring: false,
+            ownerWindowId,
             pendingPermission: null,
             projectRoot,
+            runtimeId: input.runtimeId,
             snapshot: {
                 ...persistedSnapshot,
                 projectId: input.projectId,
-                runtimeId: "codex",
-                status: "starting",
+                runtimeId: input.runtimeId,
+                status: getPreparedSessionStatus(persistedSnapshot),
                 title: input.title,
                 updatedAt: new Date().toISOString(),
+                worktreeId: input.worktreeId ?? null,
             },
             stderrChunks: [],
-        } satisfies LiveCodexSession);
+        } satisfies LiveAcpSession);
 
         child.stderr.on("data", (chunk: Buffer | string) => {
             const text =
@@ -617,12 +986,26 @@ export class AiService {
                 protocolVersion: PROTOCOL_VERSION,
             });
 
-            const runtimeSessionId =
-                await this.#openRuntimeSession(liveSession);
+            const desiredSelections = {
+                configOptions: persistedSnapshot.configOptions,
+                modeId: persistedSnapshot.modeId,
+                modelId: persistedSnapshot.modelId,
+            };
+            const openedSession = await this.#openRuntimeSession(liveSession);
+            liveSession.snapshot = {
+                ...applySessionCatalogToSnapshot(
+                    liveSession.snapshot,
+                    openedSession,
+                ),
+                runtimeSessionId: openedSession.runtimeSessionId,
+            };
+            await this.#applyStoredSessionSelections(
+                liveSession,
+                desiredSelections,
+            );
             liveSession.snapshot = {
                 ...liveSession.snapshot,
-                runtimeSessionId,
-                status: "idle",
+                status: getPreparedSessionStatus(liveSession.snapshot),
                 updatedAt: new Date().toISOString(),
             };
             this.#persistAndBroadcast(liveSession);
@@ -638,7 +1021,8 @@ export class AiService {
                 stderrText ||
                 (error instanceof Error
                     ? error.message
-                    : "No se pudo iniciar Codex ACP.");
+                    : `No se pudo iniciar ${getRuntimeDisplayName(input.runtimeId)} ACP.`);
+            this.#invalidateRuntimeAuthIfNeeded(input.runtimeId, message);
             liveSession.snapshot = {
                 ...liveSession.snapshot,
                 lastError: message,
@@ -651,16 +1035,23 @@ export class AiService {
         }
     }
 
-    async #openRuntimeSession(liveSession: LiveCodexSession): Promise<string> {
+    async #openRuntimeSession(
+        liveSession: LiveAcpSession,
+    ): Promise<OpenRuntimeSessionResult> {
         if (liveSession.snapshot.runtimeSessionId) {
             try {
                 liveSession.isRestoring = true;
-                await liveSession.connection.loadSession({
+                const response = await liveSession.connection.loadSession({
                     cwd: liveSession.cwd,
                     mcpServers: [],
                     sessionId: liveSession.snapshot.runtimeSessionId,
                 });
-                return liveSession.snapshot.runtimeSessionId;
+                return {
+                    configOptions: response.configOptions ?? null,
+                    models: response.models ?? null,
+                    modes: response.modes ?? null,
+                    runtimeSessionId: liveSession.snapshot.runtimeSessionId,
+                };
             } catch {
                 // Si no se puede reanudar, abrimos una nueva.
             } finally {
@@ -673,11 +1064,16 @@ export class AiService {
             mcpServers: [],
         });
 
-        return response.sessionId;
+        return {
+            configOptions: response.configOptions ?? null,
+            models: response.models ?? null,
+            modes: response.modes ?? null,
+            runtimeSessionId: response.sessionId,
+        };
     }
 
     async #requestPermission(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         params: RequestPermissionRequest,
     ): Promise<RequestPermissionResponse> {
         const requestId = randomUUID();
@@ -712,7 +1108,7 @@ export class AiService {
     }
 
     #handleSessionUpdate(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         params: SessionNotification,
     ): Promise<void> {
         const now = new Date().toISOString();
@@ -727,12 +1123,22 @@ export class AiService {
         ) {
             return Promise.resolve();
         }
+        const shouldMarkStreaming =
+            update.sessionUpdate === "agent_message_chunk" ||
+            update.sessionUpdate === "agent_thought_chunk" ||
+            update.sessionUpdate === "plan" ||
+            update.sessionUpdate === "tool_call" ||
+            update.sessionUpdate === "tool_call_update" ||
+            (update.sessionUpdate === "available_commands_update" &&
+                liveSession.snapshot.status === "starting");
         const nextStatus: AiSessionSnapshot["status"] =
             liveSession.snapshot.status === "waiting_permission"
                 ? "waiting_permission"
                 : liveSession.snapshot.status === "waiting_user_input"
                   ? "waiting_user_input"
-                  : "streaming";
+                  : shouldMarkStreaming
+                    ? "streaming"
+                    : liveSession.snapshot.status;
         let nextSnapshot: AiSessionSnapshot = {
             ...liveSession.snapshot,
             status: nextStatus,
@@ -741,18 +1147,18 @@ export class AiService {
 
         switch (update.sessionUpdate) {
             case "agent_message_chunk":
-                nextSnapshot = appendChunkToSnapshot(
+                nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
                     "assistant",
-                    formatContentBlock(update.content),
+                    update.content,
                     update.messageId ?? null,
                 );
                 break;
             case "agent_thought_chunk":
-                nextSnapshot = appendChunkToSnapshot(
+                nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
                     "thinking",
-                    formatContentBlock(update.content),
+                    update.content,
                     update.messageId ?? null,
                 );
                 break;
@@ -788,6 +1194,24 @@ export class AiService {
                     ),
                 };
                 break;
+            case "current_mode_update":
+                nextSnapshot = setModeOnSnapshot(
+                    nextSnapshot,
+                    update.currentModeId,
+                    now,
+                );
+                break;
+            case "config_option_update":
+                nextSnapshot = applySessionCatalogToSnapshot(
+                    {
+                        ...nextSnapshot,
+                        updatedAt: now,
+                    },
+                    {
+                        configOptions: update.configOptions,
+                    },
+                );
+                break;
             case "session_info_update":
                 nextSnapshot = {
                     ...nextSnapshot,
@@ -808,7 +1232,7 @@ export class AiService {
     }
 
     async #readTextFile(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         params: ReadTextFileRequest,
     ): Promise<{ content: string }> {
         const absolutePath = this.#resolveAbsoluteSessionPath(
@@ -835,7 +1259,7 @@ export class AiService {
     }
 
     async #writeTextFile(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         params: WriteTextFileRequest,
     ): Promise<Record<string, never>> {
         const resolvedPath = this.#resolveSessionPathInfo(
@@ -852,6 +1276,7 @@ export class AiService {
                 content: params.content,
                 projectId: liveSession.snapshot.projectId,
                 relativePath: resolvedPath.relativePath,
+                worktreeId: liveSession.snapshot.worktreeId ?? null,
             });
         } else {
             await fs.promises.writeFile(
@@ -895,7 +1320,7 @@ export class AiService {
         return {};
     }
 
-    #loadSessionForReview(sessionId: string): Promise<LiveCodexSession> {
+    #loadSessionForReview(sessionId: string): Promise<LiveAcpSession> {
         const liveSession = this.#sessions.get(sessionId);
         if (liveSession) {
             return Promise.resolve(liveSession);
@@ -914,23 +1339,27 @@ export class AiService {
                 snapshot.projectId !== null
                     ? this.#projectService.getProjectRootPath(
                           snapshot.projectId,
+                          snapshot.worktreeId ?? null,
                       )
                     : process.cwd(),
             isRestoring: false,
+            ownerWindowId: "",
             pendingPermission: null,
             projectRoot:
                 snapshot.projectId !== null
                     ? this.#projectService.getProjectRootPath(
                           snapshot.projectId,
+                          snapshot.worktreeId ?? null,
                       )
                     : null,
+            runtimeId: snapshot.runtimeId,
             snapshot,
             stderrChunks: [],
         });
     }
 
     async #revertTrackedFile(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         trackedFile: AiTrackedFile,
     ): Promise<void> {
         if (trackedFile.kind === "move" && trackedFile.previousPath) {
@@ -944,16 +1373,23 @@ export class AiService {
             );
 
             if (trackedFile.oldText !== null) {
-                if (previousPath.relativePath && liveSession.snapshot.projectId) {
+                if (
+                    previousPath.relativePath &&
+                    liveSession.snapshot.projectId
+                ) {
                     await this.#projectService.saveProjectFile({
                         content: trackedFile.oldText,
                         projectId: liveSession.snapshot.projectId,
                         relativePath: previousPath.relativePath,
+                        worktreeId: liveSession.snapshot.worktreeId ?? null,
                     });
                 } else {
-                    await fs.promises.mkdir(path.dirname(previousPath.absolutePath), {
-                        recursive: true,
-                    });
+                    await fs.promises.mkdir(
+                        path.dirname(previousPath.absolutePath),
+                        {
+                            recursive: true,
+                        },
+                    );
                     await fs.promises.writeFile(
                         previousPath.absolutePath,
                         trackedFile.oldText,
@@ -967,6 +1403,7 @@ export class AiService {
                     await this.#projectService.deleteProjectEntry({
                         projectId: liveSession.snapshot.projectId,
                         relativePath: nextPath.relativePath,
+                        worktreeId: liveSession.snapshot.worktreeId ?? null,
                     });
                 }
             } else {
@@ -987,6 +1424,7 @@ export class AiService {
                     await this.#projectService.deleteProjectEntry({
                         projectId: liveSession.snapshot.projectId,
                         relativePath: resolvedPath.relativePath,
+                        worktreeId: liveSession.snapshot.worktreeId ?? null,
                     });
                 }
                 return;
@@ -1005,6 +1443,7 @@ export class AiService {
                 content: trackedFile.oldText,
                 projectId: liveSession.snapshot.projectId,
                 relativePath: resolvedPath.relativePath,
+                worktreeId: liveSession.snapshot.worktreeId ?? null,
             });
             return;
         }
@@ -1020,7 +1459,7 @@ export class AiService {
     }
 
     async #applyTrackedFileText(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         trackedFile: AiTrackedFile,
     ): Promise<void> {
         if (trackedFile.newText === null) {
@@ -1037,6 +1476,7 @@ export class AiService {
                 content: trackedFile.newText,
                 projectId: liveSession.snapshot.projectId,
                 relativePath: resolvedPath.relativePath,
+                worktreeId: liveSession.snapshot.worktreeId ?? null,
             });
             return;
         }
@@ -1051,13 +1491,197 @@ export class AiService {
         );
     }
 
-    #persistAndBroadcast(liveSession: LiveCodexSession): void {
+    #persistAndBroadcast(liveSession: LiveAcpSession): void {
         this.#persistence.saveSessionSnapshot(liveSession.snapshot);
-        this.#onSessionSnapshot(liveSession.snapshot);
+        this.#onSessionSnapshot(
+            liveSession.ownerWindowId,
+            liveSession.snapshot,
+        );
+    }
+
+    async #applyStoredSessionSelections(
+        liveSession: LiveAcpSession,
+        desiredSelections: Pick<
+            AiSessionSnapshot,
+            "configOptions" | "modeId" | "modelId"
+        >,
+    ): Promise<void> {
+        const desiredModeId = desiredSelections.modeId?.trim() ?? "";
+        const desiredModelId = desiredSelections.modelId?.trim() ?? "";
+        const modeConfig = getModeConfigOption(
+            liveSession.snapshot.configOptions,
+        );
+        const modelConfig = getModelConfigOption(
+            liveSession.snapshot.configOptions,
+        );
+
+        if (
+            desiredModeId &&
+            desiredModeId !== liveSession.snapshot.modeId &&
+            modeConfig?.type === "select" &&
+            hasSelectConfigValue(modeConfig, desiredModeId)
+        ) {
+            await this.#setSessionConfigOptionOnLiveSession(
+                liveSession,
+                modeConfig.id,
+                desiredModeId,
+            );
+        } else if (
+            desiredModeId &&
+            desiredModeId !== liveSession.snapshot.modeId &&
+            liveSession.snapshot.modes.some((mode) => mode.id === desiredModeId)
+        ) {
+            await this.#setSessionModeOnLiveSession(liveSession, desiredModeId);
+        }
+
+        if (
+            desiredModelId &&
+            desiredModelId !== liveSession.snapshot.modelId &&
+            modelConfig?.type === "select" &&
+            hasSelectConfigValue(modelConfig, desiredModelId)
+        ) {
+            await this.#setSessionConfigOptionOnLiveSession(
+                liveSession,
+                modelConfig.id,
+                desiredModelId,
+            );
+        } else if (
+            desiredModelId &&
+            desiredModelId !== liveSession.snapshot.modelId &&
+            liveSession.snapshot.models.some(
+                (model) => model.id === desiredModelId,
+            )
+        ) {
+            await this.#setSessionModelOnLiveSession(
+                liveSession,
+                desiredModelId,
+            );
+        }
+
+        for (const desiredOption of desiredSelections.configOptions) {
+            if (
+                desiredOption.category === "mode" ||
+                desiredOption.category === "model"
+            ) {
+                continue;
+            }
+
+            const currentOption = liveSession.snapshot.configOptions.find(
+                (option) => option.id === desiredOption.id,
+            );
+            if (!currentOption || currentOption.type !== desiredOption.type) {
+                continue;
+            }
+
+            if (
+                currentOption.type === "boolean" &&
+                currentOption.value !== desiredOption.value
+            ) {
+                await this.#setSessionConfigOptionOnLiveSession(
+                    liveSession,
+                    desiredOption.id,
+                    desiredOption.value,
+                );
+            }
+
+            if (
+                currentOption.type === "select" &&
+                desiredOption.type === "select" &&
+                currentOption.value !== desiredOption.value &&
+                hasSelectConfigValue(currentOption, desiredOption.value)
+            ) {
+                await this.#setSessionConfigOptionOnLiveSession(
+                    liveSession,
+                    desiredOption.id,
+                    desiredOption.value,
+                );
+            }
+        }
+    }
+
+    async #setSessionModeOnLiveSession(
+        liveSession: LiveAcpSession,
+        modeId: string,
+    ): Promise<void> {
+        await liveSession.connection.setSessionMode({
+            modeId,
+            sessionId: this.#requireRuntimeSessionId(liveSession),
+        });
+
+        liveSession.snapshot = setModeOnSnapshot(liveSession.snapshot, modeId);
+        this.#persistAndBroadcast(liveSession);
+    }
+
+    async #setSessionModelOnLiveSession(
+        liveSession: LiveAcpSession,
+        modelId: string,
+    ): Promise<void> {
+        await liveSession.connection.unstable_setSessionModel({
+            modelId,
+            sessionId: this.#requireRuntimeSessionId(liveSession),
+        });
+
+        liveSession.snapshot = setModelOnSnapshot(
+            liveSession.snapshot,
+            modelId,
+        );
+        this.#persistAndBroadcast(liveSession);
+    }
+
+    async #setSessionConfigOptionOnLiveSession(
+        liveSession: LiveAcpSession,
+        optionId: string,
+        value: boolean | string,
+    ): Promise<void> {
+        const response =
+            typeof value === "boolean"
+                ? await liveSession.connection.setSessionConfigOption({
+                      configId: optionId,
+                      sessionId: this.#requireRuntimeSessionId(liveSession),
+                      type: "boolean",
+                      value,
+                  })
+                : await liveSession.connection.setSessionConfigOption({
+                      configId: optionId,
+                      sessionId: this.#requireRuntimeSessionId(liveSession),
+                      value,
+                  });
+
+        liveSession.snapshot = applySessionCatalogToSnapshot(
+            {
+                ...liveSession.snapshot,
+                updatedAt: new Date().toISOString(),
+            },
+            {
+                configOptions: response.configOptions,
+            },
+        );
+        this.#persistAndBroadcast(liveSession);
+    }
+
+    #updateSessionSnapshot(
+        sessionId: string,
+        mutate: (snapshot: AiSessionSnapshot) => AiSessionSnapshot,
+    ): void {
+        const liveSession = this.#sessions.get(sessionId);
+        if (liveSession) {
+            liveSession.snapshot = mutate(liveSession.snapshot);
+            this.#persistAndBroadcast(liveSession);
+            return;
+        }
+
+        const snapshot = this.#persistence.loadSessionSnapshot(sessionId);
+        if (!snapshot) {
+            throw new Error("No se encontró la sesión AI.");
+        }
+
+        const nextSnapshot = mutate(snapshot);
+        this.#persistence.saveSessionSnapshot(nextSnapshot);
+        this.#onSessionSnapshot("", nextSnapshot);
     }
 
     #resolvePendingPermission(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         response: RequestPermissionResponse | null,
     ): void {
         if (!liveSession.pendingPermission) {
@@ -1075,7 +1699,7 @@ export class AiService {
         liveSession.pendingPermission = null;
     }
 
-    #requireRuntimeSessionId(liveSession: LiveCodexSession): string {
+    #requireRuntimeSessionId(liveSession: LiveAcpSession): string {
         if (!liveSession.snapshot.runtimeSessionId) {
             throw new Error("La sesión ACP todavía no está inicializada.");
         }
@@ -1084,7 +1708,7 @@ export class AiService {
     }
 
     #resolveAbsoluteSessionPath(
-        liveSession: LiveCodexSession,
+        liveSession: LiveAcpSession,
         candidatePath: string,
     ): string {
         return this.#resolveSessionPathInfo(liveSession, candidatePath)
@@ -1092,7 +1716,10 @@ export class AiService {
     }
 
     #resolveSessionPathInfo(
-        liveSession: Pick<LiveCodexSession, "cwd" | "projectRoot" | "snapshot">,
+        liveSession: Pick<
+            LiveAcpSession,
+            "cwd" | "projectRoot" | "runtimeId" | "snapshot"
+        >,
         candidatePath: string,
     ): {
         readonly absolutePath: string;
@@ -1109,7 +1736,7 @@ export class AiService {
             !absolutePath.startsWith(`${scopeRoot}${path.sep}`)
         ) {
             throw new Error(
-                "Codex intentó acceder a un path fuera del proyecto.",
+                `${getRuntimeDisplayName(liveSession.runtimeId)} intentó acceder a un path fuera del proyecto.`,
             );
         }
 
@@ -1145,11 +1772,13 @@ export class AiService {
             .split("\n")
             .slice(-4)
             .join("\n");
+        const lastError =
+            stderrText ||
+            `${getRuntimeDisplayName(liveSession.runtimeId)} ACP terminó inesperadamente (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
+        this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, lastError);
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
-            lastError:
-                stderrText ||
-                `Codex ACP terminó inesperadamente (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`,
+            lastError,
             pendingPermission: null,
             pendingUserInput: null,
             status: "error",
@@ -1159,15 +1788,508 @@ export class AiService {
         this.#resolvePendingPermission(liveSession, null);
     }
 
-    #disposeLiveSession(
-        sessionId: string,
-        liveSession: LiveCodexSession,
-    ): void {
+    #disposeLiveSession(sessionId: string, liveSession: LiveAcpSession): void {
         this.#sessions.delete(sessionId);
         liveSession.closing = true;
         this.#resolvePendingPermission(liveSession, null);
         liveSession.child.kill();
     }
+
+    #resolveRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
+        if (runtimeId === "claude") {
+            return getClaudeRuntimeStatus(
+                this.#settingsService.loadClaudeRuntimeSettings(),
+                this.#secretStore,
+            );
+        }
+
+        if (runtimeId === "gemini") {
+            return getGeminiRuntimeStatus(
+                this.#settingsService.loadGeminiRuntimeSettings(),
+                this.#secretStore,
+            );
+        }
+
+        if (runtimeId === "kilo") {
+            return getKiloRuntimeStatus(
+                this.#settingsService.loadKiloRuntimeSettings(),
+            );
+        }
+
+        return resolveCodexRuntime(
+            this.#settingsService.loadCodexRuntimeSettings(),
+        ).status;
+    }
+
+    #withPersistedRuntimeCatalog(status: AiRuntimeStatus): AiRuntimeStatus {
+        const catalog = this.#persistence.loadLatestRuntimeCatalog(
+            status.runtimeId,
+        );
+
+        if (!catalog) {
+            return status;
+        }
+
+        return {
+            ...status,
+            availableCommands: catalog.availableCommands,
+            configOptions: catalog.configOptions,
+            modeId: catalog.modeId,
+            modes: catalog.modes,
+            modelId: catalog.modelId,
+            models: catalog.models,
+        };
+    }
+
+    #resolveRuntimeCommand(runtimeId: AiRuntimeId): ResolvedAcpRuntime {
+        if (runtimeId === "claude") {
+            const settings = this.#settingsService.loadClaudeRuntimeSettings();
+            const resolved = resolveClaudeRuntime(settings, this.#secretStore);
+
+            return {
+                args: resolved.args,
+                command: resolved.command,
+                env: applyClaudeAuthEnv(
+                    process.env,
+                    settings,
+                    this.#secretStore,
+                ),
+                executable: resolved.program,
+                status: resolved.status,
+            };
+        }
+
+        if (runtimeId === "gemini") {
+            const settings = this.#settingsService.loadGeminiRuntimeSettings();
+            const resolved = resolveGeminiRuntime(settings, this.#secretStore);
+
+            return {
+                args: resolved.args,
+                command: resolved.command,
+                env: applyGeminiAuthEnv(
+                    process.env,
+                    settings,
+                    this.#secretStore,
+                ),
+                executable: resolved.program,
+                status: resolved.status,
+            };
+        }
+
+        if (runtimeId === "kilo") {
+            const settings = this.#settingsService.loadKiloRuntimeSettings();
+            const resolved = resolveKiloRuntime(settings);
+
+            return {
+                args: resolved.args,
+                command: resolved.command,
+                env: process.env,
+                executable: resolved.program,
+                status: resolved.status,
+            };
+        }
+
+        const resolved = resolveCodexRuntime(
+            this.#settingsService.loadCodexRuntimeSettings(),
+        );
+
+        return {
+            args: resolved.args,
+            command: resolved.command,
+            env: process.env,
+            executable: resolved.executable,
+            status: resolved.status,
+        };
+    }
+
+    #invalidateRuntimeAuthIfNeeded(
+        runtimeId: AiRuntimeId,
+        message: string,
+    ): void {
+        if (runtimeId !== "kilo" || !isKiloAuthenticationError(message)) {
+            return;
+        }
+
+        const nextSettings = markKiloAuthInvalidated(
+            this.#settingsService.loadKiloRuntimeSettings(),
+        );
+        this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+        this.#onRuntimeStatus(getKiloRuntimeStatus(nextSettings));
+    }
+}
+
+function normalizeOptionalText(value: string | null): string | null {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function applySecretValuePatch(
+    currentValue: string | null,
+    patch: SecretValuePatch,
+): string | null {
+    if (patch.kind === "clear") {
+        return null;
+    }
+
+    if (patch.kind === "set") {
+        return normalizeOptionalText(patch.value);
+    }
+
+    return currentValue;
+}
+
+function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
+    switch (runtimeId) {
+        case "claude":
+            return "Claude";
+        case "gemini":
+            return "Gemini";
+        case "kilo":
+            return "Kilo";
+        case "codex":
+        default:
+            return "Codex";
+    }
+}
+
+function applySessionCatalogToSnapshot(
+    snapshot: AiSessionSnapshot,
+    payload: AcpSessionCatalogPayload,
+): AiSessionSnapshot {
+    const configOptions =
+        payload.configOptions !== undefined
+            ? mapSessionConfigOptions(payload.configOptions)
+            : snapshot.configOptions;
+    const modes =
+        payload.modes !== undefined
+            ? mapSessionModes(payload.modes, configOptions)
+            : snapshot.modes.length > 0
+              ? snapshot.modes
+              : buildModesFromConfigOptions(configOptions);
+    const models =
+        payload.models !== undefined
+            ? mapSessionModels(payload.models, configOptions)
+            : snapshot.models.length > 0
+              ? snapshot.models
+              : buildModelsFromConfigOptions(configOptions);
+    const modeId =
+        payload.modes !== undefined || payload.configOptions !== undefined
+            ? deriveModeId(payload.modes, configOptions, snapshot.modeId)
+            : snapshot.modeId;
+    const modelId =
+        payload.models !== undefined || payload.configOptions !== undefined
+            ? deriveModelId(payload.models, configOptions, snapshot.modelId)
+            : snapshot.modelId;
+
+    return {
+        ...snapshot,
+        configOptions,
+        modeId,
+        modes,
+        modelId,
+        models,
+    };
+}
+
+function mapSessionModes(
+    state: SessionModeState | null | undefined,
+    configOptions: readonly AiSessionConfigOption[],
+): readonly AiSessionMode[] {
+    if (state?.availableModes?.length) {
+        return state.availableModes.map((mode) => ({
+            description: mode.description ?? null,
+            id: mode.id,
+            name: mode.name,
+        }));
+    }
+
+    return buildModesFromConfigOptions(configOptions);
+}
+
+function mapSessionModels(
+    state: SessionModelState | null | undefined,
+    configOptions: readonly AiSessionConfigOption[],
+): readonly AiSessionModel[] {
+    if (state?.availableModels?.length) {
+        return state.availableModels.map((model) => ({
+            description: model.description ?? null,
+            id: model.modelId,
+            name: model.name,
+        }));
+    }
+
+    return buildModelsFromConfigOptions(configOptions);
+}
+
+function mapSessionConfigOptions(
+    options: readonly SessionConfigOption[] | null | undefined,
+): readonly AiSessionConfigOption[] {
+    if (!options?.length) {
+        return [];
+    }
+
+    return options.map((option) =>
+        option.type === "boolean"
+            ? {
+                  category: mapConfigOptionCategory(option.category),
+                  description: option.description ?? null,
+                  id: option.id,
+                  label: option.name,
+                  type: "boolean",
+                  value: option.currentValue,
+              }
+            : {
+                  category: mapConfigOptionCategory(option.category),
+                  description: option.description ?? null,
+                  id: option.id,
+                  label: option.name,
+                  options: mapSessionSelectOptions(option),
+                  type: "select",
+                  value: option.currentValue,
+              },
+    );
+}
+
+function mapSessionSelectOptions(
+    option: Extract<SessionConfigOption, { type: "select" }>,
+): readonly {
+    description: string | null;
+    groupLabel: string | null;
+    label: string;
+    value: string;
+}[] {
+    const items: {
+        description: string | null;
+        groupLabel: string | null;
+        label: string;
+        value: string;
+    }[] = [];
+
+    for (const entry of option.options) {
+        if ("group" in entry) {
+            for (const childOption of entry.options) {
+                items.push({
+                    description: childOption.description ?? null,
+                    groupLabel: entry.name,
+                    label: childOption.name,
+                    value: childOption.value,
+                });
+            }
+            continue;
+        }
+
+        items.push({
+            description: entry.description ?? null,
+            groupLabel: null,
+            label: entry.name,
+            value: entry.value,
+        });
+    }
+
+    return items;
+}
+
+function mapConfigOptionCategory(
+    category: string | null | undefined,
+): AiSessionConfigOption["category"] {
+    if (category === "mode" || category === "model") {
+        return category;
+    }
+
+    if (category === "thought_level") {
+        return "reasoning";
+    }
+
+    return "other";
+}
+
+function deriveModeId(
+    state: SessionModeState | null | undefined,
+    configOptions: readonly AiSessionConfigOption[],
+    fallback: string | null,
+): string | null {
+    const modeConfig = getModeConfigOption(configOptions);
+    if (modeConfig?.type === "select" && modeConfig.value.trim()) {
+        return modeConfig.value;
+    }
+
+    if (state?.currentModeId?.trim()) {
+        return state.currentModeId;
+    }
+
+    return fallback;
+}
+
+function deriveModelId(
+    state: SessionModelState | null | undefined,
+    configOptions: readonly AiSessionConfigOption[],
+    fallback: string | null,
+): string | null {
+    const modelConfig = getModelConfigOption(configOptions);
+    if (modelConfig?.type === "select" && modelConfig.value.trim()) {
+        return modelConfig.value;
+    }
+
+    if (state?.currentModelId?.trim()) {
+        return state.currentModelId;
+    }
+
+    return fallback;
+}
+
+function buildModesFromConfigOptions(
+    configOptions: readonly AiSessionConfigOption[],
+): readonly AiSessionMode[] {
+    const modeConfig = getModeConfigOption(configOptions);
+    if (!modeConfig || modeConfig.type !== "select") {
+        return [];
+    }
+
+    return modeConfig.options.map((option) => ({
+        description: option.description,
+        id: option.value,
+        name: option.label,
+    }));
+}
+
+function buildModelsFromConfigOptions(
+    configOptions: readonly AiSessionConfigOption[],
+): readonly AiSessionModel[] {
+    const modelConfig = getModelConfigOption(configOptions);
+    if (!modelConfig || modelConfig.type !== "select") {
+        return [];
+    }
+
+    return modelConfig.options.map((option) => ({
+        description: option.description,
+        id: option.value,
+        name: option.label,
+    }));
+}
+
+function getModeConfigOption(
+    configOptions: readonly AiSessionConfigOption[],
+): AiSessionConfigOption | null {
+    return (
+        configOptions.find(
+            (option) =>
+                option.category === "mode" ||
+                option.id.toLowerCase() === "mode",
+        ) ?? null
+    );
+}
+
+function getModelConfigOption(
+    configOptions: readonly AiSessionConfigOption[],
+): AiSessionConfigOption | null {
+    return (
+        configOptions.find(
+            (option) =>
+                option.category === "model" ||
+                option.id.toLowerCase() === "model",
+        ) ?? null
+    );
+}
+
+function hasSelectConfigValue(
+    option: AiSessionConfigOption,
+    value: string,
+): boolean {
+    return (
+        option.type === "select" &&
+        option.options.some((candidate) => candidate.value === value)
+    );
+}
+
+function setModeOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    modeId: string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        configOptions: snapshot.configOptions.map((option) =>
+            option.type === "select" &&
+            (option.category === "mode" ||
+                option.id.toLowerCase() === "mode") &&
+            hasSelectConfigValue(option, modeId)
+                ? {
+                      ...option,
+                      value: modeId,
+                  }
+                : option,
+        ),
+        modeId,
+        updatedAt,
+    };
+}
+
+function setModelOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    modelId: string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        configOptions: snapshot.configOptions.map((option) =>
+            option.type === "select" &&
+            (option.category === "model" ||
+                option.id.toLowerCase() === "model") &&
+            hasSelectConfigValue(option, modelId)
+                ? {
+                      ...option,
+                      value: modelId,
+                  }
+                : option,
+        ),
+        modelId,
+        updatedAt,
+    };
+}
+
+function setConfigOptionOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    optionId: string,
+    value: boolean | string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    const nextConfigOptions = snapshot.configOptions.map((option) =>
+        option.id !== optionId
+            ? option
+            : option.type === "boolean" && typeof value === "boolean"
+              ? {
+                    ...option,
+                    value,
+                }
+              : option.type === "select" &&
+                  typeof value === "string" &&
+                  hasSelectConfigValue(option, value)
+                ? {
+                      ...option,
+                      value,
+                  }
+                : option,
+    );
+    const updatedOption =
+        nextConfigOptions.find((option) => option.id === optionId) ?? null;
+
+    return {
+        ...snapshot,
+        configOptions: nextConfigOptions,
+        modeId:
+            updatedOption?.type === "select" &&
+            updatedOption.category === "mode" &&
+            typeof value === "string"
+                ? value
+                : snapshot.modeId,
+        modelId:
+            updatedOption?.type === "select" &&
+            updatedOption.category === "model" &&
+            typeof value === "string"
+                ? value
+                : snapshot.modelId,
+        updatedAt,
+    };
 }
 
 function appendChunkToSnapshot(
@@ -1201,7 +2323,73 @@ function appendChunkToSnapshot(
         messages: [
             ...finalizeStreamingMessages(snapshot).messages,
             {
+                attachments: [],
                 content,
+                createdAt: new Date().toISOString(),
+                id: messageId ?? randomUUID(),
+                kind,
+                status: "streaming",
+            },
+        ],
+    };
+}
+
+function appendContentBlockToSnapshot(
+    snapshot: AiSessionSnapshot,
+    kind: "assistant" | "thinking",
+    content: ContentBlock,
+    messageId: string | null,
+): AiSessionSnapshot {
+    if (content.type === "image") {
+        return appendAttachmentToSnapshot(
+            snapshot,
+            kind,
+            imageContentToAttachment(content, messageId),
+            messageId,
+        );
+    }
+
+    return appendChunkToSnapshot(
+        snapshot,
+        kind,
+        formatContentBlock(content),
+        messageId,
+    );
+}
+
+function appendAttachmentToSnapshot(
+    snapshot: AiSessionSnapshot,
+    kind: "assistant" | "thinking",
+    attachment: AiImageAttachment,
+    messageId: string | null,
+): AiSessionSnapshot {
+    const messages = [...snapshot.messages];
+    const lastMessage = messages.at(-1);
+
+    if (
+        lastMessage &&
+        lastMessage.kind === kind &&
+        lastMessage.status === "streaming" &&
+        (!messageId || lastMessage.id === messageId)
+    ) {
+        messages[messages.length - 1] = {
+            ...lastMessage,
+            attachments: [...lastMessage.attachments, attachment],
+        };
+
+        return {
+            ...snapshot,
+            messages,
+        };
+    }
+
+    return {
+        ...snapshot,
+        messages: [
+            ...finalizeStreamingMessages(snapshot).messages,
+            {
+                attachments: [attachment],
+                content: "",
                 createdAt: new Date().toISOString(),
                 id: messageId ?? randomUUID(),
                 kind,
@@ -1382,7 +2570,9 @@ function inferDiffKind(
 
     if (
         toolKind === "delete" ||
-        (diff.oldText !== null && diff.oldText !== undefined && diff.newText == null)
+        (diff.oldText !== null &&
+            diff.oldText !== undefined &&
+            diff.newText == null)
     ) {
         return "delete";
     }
@@ -1642,7 +2832,11 @@ function resolveTrackedFileHunks(
     return {
         ...trackedFile,
         hunks: nextHunks,
-        kind: inferResolvedTrackedFileKind(trackedFile, nextOldText, nextNewText),
+        kind: inferResolvedTrackedFileKind(
+            trackedFile,
+            nextOldText,
+            nextNewText,
+        ),
         newText: nextNewText,
         oldText: nextOldText,
         updatedAt: new Date().toISOString(),
@@ -1996,7 +3190,7 @@ function buildToolSummary(
         return `${title} · ${diffCount} diff${diffCount === 1 ? "" : "s"}`;
     }
 
-    return title || null;
+    return null;
 }
 
 function formatContentBlock(content: ContentBlock): string {
@@ -2004,11 +3198,80 @@ function formatContentBlock(content: ContentBlock): string {
         return content.text;
     }
 
+    if (content.type === "image") {
+        return content.uri ?? "";
+    }
+
     if (content.type === "resource_link") {
         return content.uri;
     }
 
     return `[${content.type}]`;
+}
+
+function imageContentToAttachment(
+    content: Extract<ContentBlock, { type: "image" }>,
+    messageId: string | null,
+): AiImageAttachment {
+    return {
+        dataBase64: content.data,
+        id: messageId ? `${messageId}:image:${randomUUID()}` : randomUUID(),
+        mimeType: content.mimeType,
+        name: null,
+        sizeBytes: estimateBase64Size(content.data),
+    };
+}
+
+function buildPromptContentBlocks(
+    promptText: string,
+    attachments: readonly AiImageAttachment[],
+): ContentBlock[] {
+    const prompt: ContentBlock[] = [];
+
+    if (promptText) {
+        prompt.push({
+            text: promptText,
+            type: "text",
+        });
+    }
+
+    for (const attachment of attachments) {
+        prompt.push({
+            data: attachment.dataBase64,
+            mimeType: attachment.mimeType,
+            type: "image",
+        });
+    }
+
+    return prompt;
+}
+
+function estimateBase64Size(dataBase64: string): number {
+    const padding = dataBase64.endsWith("==")
+        ? 2
+        : dataBase64.endsWith("=")
+          ? 1
+          : 0;
+
+    return Math.max(0, Math.floor((dataBase64.length * 3) / 4) - padding);
+}
+
+function getPreparedSessionStatus(
+    snapshot: Pick<
+        AiSessionSnapshot,
+        "lastError" | "pendingPermission" | "pendingUserInput"
+    >,
+): AiSessionSnapshot["status"] {
+    if (snapshot.pendingPermission) {
+        return "waiting_permission";
+    }
+    if (snapshot.pendingUserInput) {
+        return "waiting_user_input";
+    }
+    if (snapshot.lastError) {
+        return "error";
+    }
+    return "idle";
 }
 
 async function readTextIfExists(absolutePath: string): Promise<string | null> {

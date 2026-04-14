@@ -3,12 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
     attachTabToPane,
     closeOtherWorkspaceTabs,
+    closeWorkspaceTab,
     closeWorkspacePane,
     closeWorkspaceTabsForProjectPath,
     closeWorkspaceTabsToRight,
     createDefaultWorkspaceState,
+    moveTabToPaneAtIndex,
+    moveTabToSplit,
     moveActiveTabBetweenPanes,
     moveWorkspaceTabBetweenPanes,
+    reorderTabInPane,
     renameWorkspaceTabsForProjectPath,
     splitPaneInDirection,
     type RuntimeWorkspaceFileTab,
@@ -38,13 +42,17 @@ function makeFileTab(
         document: {
             absolutePath: `/tmp/${relativePath}`,
             content: "",
+            imageDataBase64: null,
             isBinary: false,
             isTooLarge: false,
+            kind: "text",
             languageId: "markdown",
             languageLabel: "Markdown",
+            mimeType: "text/markdown",
             name: relativePath.split("/").at(-1) ?? relativePath,
             projectId,
             relativePath,
+            sizeBytes: 0,
         },
         draftContent: "",
         id,
@@ -76,6 +84,51 @@ describe("workspace tree helpers", () => {
 
         expect(state.activePaneId).toBe("pane-2");
         expect(state.rootNode.type).toBe("split");
+        if (state.rootNode.type === "split") {
+            expect(state.rootNode.axis).toBe("horizontal");
+            expect(state.rootNode.children[0]?.id).toBe("pane-root");
+            expect(state.rootNode.children[1]?.id).toBe("pane-2");
+        }
+    });
+
+    it("creates a vertical split when splitting down", () => {
+        const state = splitPaneInDirection(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            "down",
+            {
+                paneId: "pane-2",
+                splitId: "split-1",
+            },
+        );
+
+        expect(state.activePaneId).toBe("pane-2");
+        expect(state.rootNode.type).toBe("split");
+        if (state.rootNode.type === "split") {
+            expect(state.rootNode.axis).toBe("vertical");
+            expect(state.rootNode.children[0]?.id).toBe("pane-root");
+            expect(state.rootNode.children[1]?.id).toBe("pane-2");
+        }
+    });
+
+    it("places the new pane before the current pane when splitting up", () => {
+        const state = splitPaneInDirection(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            "up",
+            {
+                paneId: "pane-2",
+                splitId: "split-1",
+            },
+        );
+
+        expect(state.activePaneId).toBe("pane-2");
+        expect(state.rootNode.type).toBe("split");
+        if (state.rootNode.type === "split") {
+            expect(state.rootNode.axis).toBe("vertical");
+            expect(state.rootNode.children[0]?.id).toBe("pane-2");
+            expect(state.rootNode.children[1]?.id).toBe("pane-root");
+        }
     });
 
     it("moves the active tab to the next pane", () => {
@@ -95,20 +148,16 @@ describe("workspace tree helpers", () => {
         );
         const moved = moveActiveTabBetweenPanes(withTab, "pane-root", "next");
 
+        expect(moved.activePaneId).toBe("pane-2");
         const rootNode = moved.rootNode;
-        expect(rootNode.type).toBe("split");
-        if (rootNode.type !== "split") {
+        expect(rootNode.type).toBe("pane");
+        if (rootNode.type !== "pane") {
             return;
         }
 
-        expect(rootNode.children[0].type).toBe("pane");
-        expect(rootNode.children[1].type).toBe("pane");
-        if (rootNode.children[0].type === "pane") {
-            expect(rootNode.children[0].tabIds).toEqual([]);
-        }
-        if (rootNode.children[1].type === "pane") {
-            expect(rootNode.children[1].tabIds).toEqual(["tab-1"]);
-        }
+        expect(rootNode.id).toBe("pane-2");
+        expect(rootNode.tabIds).toEqual(["tab-1"]);
+        expect(rootNode.activeTabId).toBe("tab-1");
     });
 
     it("moves a specific inactive tab to the previous pane", () => {
@@ -159,6 +208,143 @@ describe("workspace tree helpers", () => {
         }
     });
 
+    it("reorders tabs within the same pane by insertion index", () => {
+        const withFirstTab = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeChatTab("tab-1"),
+        );
+        const withSecondTab = attachTabToPane(
+            withFirstTab,
+            "pane-root",
+            makeChatTab("tab-2"),
+        );
+        const withThirdTab = attachTabToPane(
+            withSecondTab,
+            "pane-root",
+            makeChatTab("tab-3"),
+        );
+
+        const reordered = reorderTabInPane(
+            withThirdTab,
+            "pane-root",
+            "tab-1",
+            2,
+        );
+
+        expect(reordered.rootNode.type).toBe("pane");
+        if (reordered.rootNode.type === "pane") {
+            expect(reordered.rootNode.tabIds).toEqual([
+                "tab-2",
+                "tab-3",
+                "tab-1",
+            ]);
+            expect(reordered.rootNode.activeTabId).toBe("tab-3");
+        }
+        expect(reordered.activePaneId).toBe("pane-root");
+    });
+
+    it("moves a tab to another pane at a specific index", () => {
+        const splitState = splitPaneInDirection(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            "right",
+            {
+                paneId: "pane-2",
+                splitId: "split-1",
+            },
+        );
+        const withSourceTabs = attachTabToPane(
+            attachTabToPane(splitState, "pane-root", makeChatTab("tab-1")),
+            "pane-root",
+            makeChatTab("tab-2"),
+        );
+        const withTargetTabs = attachTabToPane(
+            attachTabToPane(withSourceTabs, "pane-2", makeChatTab("tab-3")),
+            "pane-2",
+            makeChatTab("tab-4"),
+        );
+
+        const moved = moveTabToPaneAtIndex(
+            withTargetTabs,
+            "tab-2",
+            "pane-root",
+            "pane-2",
+            1,
+        );
+
+        expect(moved.rootNode.type).toBe("split");
+        if (moved.rootNode.type !== "split") {
+            return;
+        }
+
+        const [leftPane, rightPane] = moved.rootNode.children;
+        expect(leftPane.type).toBe("pane");
+        expect(rightPane.type).toBe("pane");
+        if (leftPane.type === "pane") {
+            expect(leftPane.tabIds).toEqual(["tab-1"]);
+            expect(leftPane.activeTabId).toBe("tab-1");
+        }
+        if (rightPane.type === "pane") {
+            expect(rightPane.tabIds).toEqual(["tab-3", "tab-2", "tab-4"]);
+            expect(rightPane.activeTabId).toBe("tab-2");
+        }
+        expect(moved.activePaneId).toBe("pane-2");
+    });
+
+    it("creates a split from a drop target and moves the tab into the new pane", () => {
+        const splitState = splitPaneInDirection(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            "right",
+            {
+                paneId: "pane-2",
+                splitId: "split-1",
+            },
+        );
+        const withSourceTab = attachTabToPane(
+            splitState,
+            "pane-root",
+            makeChatTab("tab-1"),
+        );
+        const withTargetTab = attachTabToPane(
+            withSourceTab,
+            "pane-2",
+            makeChatTab("tab-2"),
+        );
+
+        const moved = moveTabToSplit(
+            withTargetTab,
+            "tab-1",
+            "pane-root",
+            "pane-2",
+            "down",
+            {
+                paneId: "pane-3",
+                splitId: "split-2",
+            },
+        );
+
+        expect(moved.activePaneId).toBe("pane-3");
+        expect(moved.rootNode.type).toBe("split");
+        if (moved.rootNode.type !== "split") {
+            return;
+        }
+
+        expect(moved.rootNode.axis).toBe("vertical");
+        expect(moved.rootNode.children[0]?.type).toBe("pane");
+        expect(moved.rootNode.children[1]?.type).toBe("pane");
+        if (moved.rootNode.children[0]?.type === "pane") {
+            expect(moved.rootNode.children[0].id).toBe("pane-2");
+            expect(moved.rootNode.children[0].tabIds).toEqual(["tab-2"]);
+        }
+        if (moved.rootNode.children[1]?.type === "pane") {
+            expect(moved.rootNode.children[1].id).toBe("pane-3");
+            expect(moved.rootNode.children[1].tabIds).toEqual(["tab-1"]);
+            expect(moved.rootNode.children[1].activeTabId).toBe("tab-1");
+        }
+    });
+
     it("closes other tabs in the same pane", () => {
         const withFirstTab = attachTabToPane(
             createDefaultWorkspaceState(),
@@ -183,6 +369,41 @@ describe("workspace tree helpers", () => {
             expect(closed.rootNode.activeTabId).toBe("tab-2");
         }
         expect(Object.keys(closed.tabsById)).toEqual(["tab-2"]);
+    });
+
+    it("closes an empty pane after closing its last tab", () => {
+        const splitState = splitPaneInDirection(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            "right",
+            {
+                paneId: "pane-2",
+                splitId: "split-1",
+            },
+        );
+        const withLeftTab = attachTabToPane(
+            splitState,
+            "pane-root",
+            makeChatTab("tab-1"),
+        );
+        const withRightTab = attachTabToPane(
+            withLeftTab,
+            "pane-2",
+            makeChatTab("tab-2"),
+        );
+
+        const closed = closeWorkspaceTab(withRightTab, "tab-1");
+
+        expect(closed.activePaneId).toBe("pane-2");
+        expect(closed.rootNode.type).toBe("pane");
+        if (closed.rootNode.type !== "pane") {
+            return;
+        }
+
+        expect(closed.rootNode.id).toBe("pane-2");
+        expect(closed.rootNode.tabIds).toEqual(["tab-2"]);
+        expect(closed.rootNode.activeTabId).toBe("tab-2");
+        expect(closed.tabsById["tab-1"]).toBeUndefined();
     });
 
     it("closes tabs to the right within the same pane", () => {
@@ -259,6 +480,7 @@ describe("workspace tree helpers", () => {
         const closed = closeWorkspaceTabsForProjectPath(
             withOtherFile,
             "project-1",
+            null,
             "docs",
             "directory",
         );
@@ -281,6 +503,7 @@ describe("workspace tree helpers", () => {
         const renamed = renameWorkspaceTabsForProjectPath(
             withGuide,
             "project-1",
+            null,
             "docs",
             "knowledge-base",
             "directory",

@@ -12,6 +12,7 @@ interface ReviewTabViewProps {
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
+        worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     readonly tab: RuntimeWorkspaceReviewTab;
@@ -44,6 +45,7 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
             runtimeId: tab.runtimeId,
             sessionId: tab.sessionId,
             title: tab.title,
+            worktreeId: tab.worktreeId ?? null,
         }),
         [
             tab.createdAt,
@@ -53,6 +55,7 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
             tab.runtimeId,
             tab.sessionId,
             tab.title,
+            tab.worktreeId,
         ],
     );
 
@@ -82,13 +85,16 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
                             Pending Review
                         </div>
                         <div className="mt-1 text-sm text-text-primary">
-                            {pendingCount} pending file{pendingCount === 1 ? "" : "s"}
+                            {pendingCount} pending file
+                            {pendingCount === 1 ? "" : "s"}
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
                         <button
                             className="app-no-drag rounded-full border border-border px-3 py-1.5 text-[11px] text-text-secondary transition hover:border-accent hover:text-text-primary"
-                            onClick={() => void keepAllTrackedFiles(tab.sessionId)}
+                            onClick={() =>
+                                void keepAllTrackedFiles(tab.sessionId)
+                            }
                             type="button"
                         >
                             Keep All
@@ -144,6 +150,7 @@ export function ReviewTabView({ onOpenFile, tab }: ReviewTabViewProps) {
                                         void onOpenFile(
                                             tab.projectId,
                                             trackedFile.path,
+                                            tab.worktreeId ?? null,
                                             {
                                                 path: trackedFile.path,
                                                 sessionId: tab.sessionId,
@@ -258,7 +265,10 @@ function TrackedFileCard({
             ) : (
                 <div className="mt-3 grid gap-3">
                     {trackedFile.oldText !== null ? (
-                        <DiffPreview label="Before" text={trackedFile.oldText} />
+                        <DiffPreview
+                            label="Before"
+                            text={trackedFile.oldText}
+                        />
                     ) : null}
                     {trackedFile.newText !== null ? (
                         <DiffPreview label="After" text={trackedFile.newText} />
@@ -306,7 +316,9 @@ function HunkCard({
                     <div
                         className="flex items-start gap-3 px-3 py-0.5"
                         key={line.id}
-                        style={{ backgroundColor: getHunkLineBackground(line.type) }}
+                        style={{
+                            backgroundColor: getHunkLineBackground(line.type),
+                        }}
                     >
                         <span className="w-4 shrink-0 text-center text-text-secondary/70">
                             {getHunkLinePrefix(line.type)}
@@ -347,8 +359,13 @@ function createEmptySnapshot(
 
     return {
         availableCommands: [],
+        configOptions: [],
         lastError: null,
         messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
         pendingPermission: null,
         pendingUserInput: null,
         plan: null,
@@ -361,6 +378,7 @@ function createEmptySnapshot(
         toolActivity: [],
         trackedFiles: [],
         updatedAt: now,
+        worktreeId: tab.worktreeId ?? null,
     };
 }
 
@@ -380,9 +398,7 @@ function getHunkLineBackground(
     return "transparent";
 }
 
-function getHunkLinePrefix(
-    type: AiDiffHunk["lines"][number]["type"],
-): string {
+function getHunkLinePrefix(type: AiDiffHunk["lines"][number]["type"]): string {
     if (type === "add") {
         return "+";
     }

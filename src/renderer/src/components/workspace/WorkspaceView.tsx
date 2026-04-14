@@ -4,8 +4,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
+    useCallback,
     useEffect,
     useEffectEvent,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -13,6 +15,7 @@ import {
     type PointerEvent as ReactPointerEvent,
     type WheelEvent as ReactWheelEvent,
 } from "react";
+import { createPortal } from "react-dom";
 
 import type {
     AiTrackedFile,
@@ -21,9 +24,32 @@ import type {
     WorkspacePaneNode,
     WorkspaceSplitNode,
 } from "@shared/ipc";
-import { shouldWrapEditorLanguage } from "@shared/editor-language";
+import {
+    resolveEditorLanguage,
+    shouldWrapEditorLanguage,
+} from "@shared/editor-language";
+import {
+    clampRoundedInt,
+    DEFAULT_EDITOR_FONT_SIZE,
+    EDITOR_FONT_SIZE_MAX,
+    EDITOR_FONT_SIZE_MIN,
+} from "@shared/typography";
 
+import {
+    applyMonacoThemeFromDom,
+    getMonacoThemeFromDom,
+    type ComandoMonacoTheme,
+} from "@renderer/app/editor/monaco";
+import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
+import {
+    loadAppEditorSettings,
+    loadProjectEditorSettings,
+    saveAppEditorSettings,
+    saveProjectEditorSettings,
+} from "@renderer/app/settings/client";
+import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import {
     collectPaneNodes,
@@ -34,13 +60,20 @@ import {
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import {
+    useWorkspaceTabDrag,
+    type WorkspaceTabDropTarget,
+} from "@renderer/components/workspace/useWorkspaceTabDrag";
+import {
     ContextMenu,
     type ContextMenuEntry,
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
+import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
+import type { WorkspaceQuickCreateAction } from "@renderer/app/store/workspace-store";
 
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
+    readonly defaultWorktreeId: string | null;
 }
 
 type SplitDragState = {
@@ -53,14 +86,65 @@ type TabContextMenuPayload = {
     readonly tabId: string;
 };
 
-export function WorkspaceView({ defaultProjectId }: WorkspaceViewProps) {
+type QuickCreateMenuState = {
+    readonly x: number;
+    readonly y: number;
+} | null;
+
+type QuickCreateMenuItem = {
+    readonly action?: () => void;
+    readonly children?: readonly QuickCreateMenuEntry[];
+    readonly disabled?: boolean;
+    readonly label: string;
+    readonly type?: "item";
+};
+
+type QuickCreateMenuSeparator = {
+    readonly type: "separator";
+};
+
+type QuickCreateMenuEntry = QuickCreateMenuItem | QuickCreateMenuSeparator;
+
+type QuickCreateSubmenuState = {
+    readonly entries: readonly QuickCreateMenuEntry[];
+    readonly x: number;
+    readonly y: number;
+} | null;
+
+function isQuickCreateMenuSeparator(
+    entry: QuickCreateMenuEntry,
+): entry is QuickCreateMenuSeparator {
+    return entry.type === "separator";
+}
+
+export function WorkspaceView({
+    defaultProjectId,
+    defaultWorktreeId,
+}: WorkspaceViewProps) {
     const rootNode = useWorkspaceStore((state) => state.rootNode);
+    const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
+    const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
+    const reorderTab = useWorkspaceStore((state) => state.reorderTab);
+    const tabDrag = useWorkspaceTabDrag({
+        onDropToSplit: dropTabToSplit,
+        onMoveToPane: moveTabToPane,
+        onReorder: reorderTab,
+    });
 
     return (
         <div className="h-full min-h-0 bg-bg-primary">
             <WorkspaceNodeView
                 defaultProjectId={defaultProjectId}
+                defaultWorktreeId={defaultWorktreeId}
                 node={rootNode}
+                tabDrag={tabDrag}
+            />
+            <WorkspaceTabDragOverlay
+                draggedTab={tabDrag.draggedTab}
+                pointerCurrent={tabDrag.pointerCurrent}
+                pointerOffset={tabDrag.pointerOffset}
+                target={tabDrag.activeDropTarget}
+                visible={tabDrag.isDragging}
             />
         </div>
     );
@@ -68,31 +152,46 @@ export function WorkspaceView({ defaultProjectId }: WorkspaceViewProps) {
 
 function WorkspaceNodeView({
     defaultProjectId,
+    defaultWorktreeId,
     node,
+    tabDrag,
 }: {
     readonly defaultProjectId: string | null;
+    readonly defaultWorktreeId: string | null;
     readonly node: WorkspaceNode;
+    readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     if (node.type === "pane") {
         return (
             <WorkspacePaneView
                 defaultProjectId={defaultProjectId}
+                defaultWorktreeId={defaultWorktreeId}
                 node={node}
+                tabDrag={tabDrag}
             />
         );
     }
 
     return (
-        <WorkspaceSplitView defaultProjectId={defaultProjectId} node={node} />
+        <WorkspaceSplitView
+            defaultProjectId={defaultProjectId}
+            defaultWorktreeId={defaultWorktreeId}
+            node={node}
+            tabDrag={tabDrag}
+        />
     );
 }
 
 function WorkspaceSplitView({
     defaultProjectId,
+    defaultWorktreeId,
     node,
+    tabDrag,
 }: {
     readonly defaultProjectId: string | null;
+    readonly defaultWorktreeId: string | null;
     readonly node: WorkspaceSplitNode;
+    readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const resizeSplit = useWorkspaceStore((state) => state.resizeSplit);
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -164,6 +263,7 @@ function WorkspaceSplitView({
                 <FragmentPane
                     axis={node.axis}
                     defaultProjectId={defaultProjectId}
+                    defaultWorktreeId={defaultWorktreeId}
                     handleIndex={index}
                     isLast={index === node.children.length - 1}
                     key={child.id}
@@ -179,6 +279,7 @@ function WorkspaceSplitView({
                         })
                     }
                     size={node.sizes[index] ?? 1 / node.children.length}
+                    tabDrag={tabDrag}
                 />
             ))}
         </div>
@@ -188,19 +289,23 @@ function WorkspaceSplitView({
 function FragmentPane({
     axis,
     defaultProjectId,
+    defaultWorktreeId,
     handleIndex,
     isLast,
     node,
     onPointerDown,
     size,
+    tabDrag,
 }: {
     readonly axis: "horizontal" | "vertical";
     readonly defaultProjectId: string | null;
+    readonly defaultWorktreeId: string | null;
     readonly handleIndex: number;
     readonly isLast: boolean;
     readonly node: WorkspaceNode;
     readonly onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
     readonly size: number;
+    readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     return (
         <>
@@ -214,7 +319,9 @@ function FragmentPane({
             >
                 <WorkspaceNodeView
                     defaultProjectId={defaultProjectId}
+                    defaultWorktreeId={defaultWorktreeId}
                     node={node}
+                    tabDrag={tabDrag}
                 />
             </div>
 
@@ -225,17 +332,22 @@ function FragmentPane({
                         axis === "horizontal" ? "vertical" : "horizontal"
                     }
                     className={[
-                        "group flex items-center justify-center bg-transparent",
+                        "group relative z-2 flex items-center justify-center bg-transparent",
                         axis === "horizontal"
-                            ? "w-2 cursor-col-resize"
-                            : "h-2 cursor-row-resize",
+                            ? "cursor-col-resize"
+                            : "cursor-row-resize",
                     ].join(" ")}
                     onPointerDown={onPointerDown}
                     role="separator"
+                    style={
+                        axis === "horizontal"
+                            ? { marginLeft: -3, marginRight: -3, width: 7 }
+                            : { height: 7, marginBottom: -3, marginTop: -3 }
+                    }
                 >
                     <div
                         className={[
-                            "workspace-divider rounded-full bg-border transition-colors group-hover:bg-accent",
+                            "workspace-divider bg-border transition-colors duration-100 group-hover:bg-accent",
                             axis === "horizontal"
                                 ? "h-full w-px"
                                 : "h-px w-full",
@@ -249,11 +361,16 @@ function FragmentPane({
 
 function WorkspacePaneView({
     defaultProjectId,
+    defaultWorktreeId,
     node,
+    tabDrag,
 }: {
     readonly defaultProjectId: string | null;
+    readonly defaultWorktreeId: string | null;
     readonly node: WorkspacePaneNode;
+    readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
+    const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
     const closeOtherTabs = useWorkspaceStore((state) => state.closeOtherTabs);
     const closePane = useWorkspaceStore((state) => state.closePane);
@@ -265,15 +382,21 @@ function WorkspacePaneView({
     const createTerminalTab = useWorkspaceStore(
         (state) => state.createTerminalTab,
     );
+    const lastQuickCreateAction = useWorkspaceStore(
+        (state) => state.lastQuickCreateAction,
+    );
     const moveTab = useWorkspaceStore((state) => state.moveTab);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
+    const setLastQuickCreateAction = useWorkspaceStore(
+        (state) => state.setLastQuickCreateAction,
+    );
     const paneCount = useWorkspaceStore(
         (state) => collectPaneNodes(state.rootNode).length,
     );
+    const createEntry = useProjectsStore((state) => state.createEntry);
     const selectTab = useWorkspaceStore((state) => state.selectTab);
     const setActivePane = useWorkspaceStore((state) => state.setActivePane);
-    const splitPane = useWorkspaceStore((state) => state.splitPane);
     const tabsById = useWorkspaceStore((state) => state.tabsById);
     const updateChatDraft = useWorkspaceStore((state) => state.updateChatDraft);
     const updateFileDraft = useWorkspaceStore((state) => state.updateFileDraft);
@@ -287,6 +410,8 @@ function WorkspacePaneView({
     const tabStripRef = useRef<HTMLDivElement | null>(null);
     const [tabContextMenu, setTabContextMenu] =
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
+    const [quickCreateMenu, setQuickCreateMenu] =
+        useState<QuickCreateMenuState>(null);
 
     const activeTab = node.activeTabId ? tabsById[node.activeTabId] : null;
     const isActivePane = activePaneId === node.id;
@@ -320,7 +445,12 @@ function WorkspacePaneView({
             return [];
         }
 
-        return [
+        const contextTab = tabsById[tabContextMenu.payload.tabId];
+        const activeChatTab = Object.values(tabsById).find(
+            (t) => t.kind === "chat",
+        );
+
+        const entries: ContextMenuEntry[] = [
             {
                 label: "Close",
                 action: () => void closeTab(tabContextMenu.payload.tabId),
@@ -350,6 +480,30 @@ function WorkspacePaneView({
                 disabled: paneCount < 2,
             },
         ];
+
+        if (contextTab?.kind === "file" && activeChatTab?.kind === "chat") {
+            const ext = contextTab.relativePath.split(".").pop() ?? null;
+            entries.push(
+                { type: "separator" },
+                {
+                    label: "Add to Chat",
+                    action: () => {
+                        addDraftFileContext(activeChatTab.sessionId, {
+                            id: `file-ctx:${crypto.randomUUID()}`,
+                            projectId: contextTab.projectId,
+                            relativePath: contextTab.relativePath,
+                            name: contextTab.title,
+                            extension: ext,
+                            languageId: resolveEditorLanguage({
+                                filePath: contextTab.relativePath,
+                            }).id,
+                        });
+                    },
+                },
+            );
+        }
+
+        return entries;
     })();
 
     function handleTabContextMenu(
@@ -367,6 +521,163 @@ function WorkspacePaneView({
         });
     }
 
+    const handleCreateFile = useCallback(async () => {
+        if (!defaultProjectId) {
+            return;
+        }
+
+        const name = window.prompt("New file name", "untitled.txt");
+        if (name === null) {
+            return;
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            return;
+        }
+
+        const entry = await createEntry(
+            defaultProjectId,
+            null,
+            trimmedName,
+            "file",
+        );
+        setLastQuickCreateAction("file");
+        await openFileTab(
+            defaultProjectId,
+            entry.relativePath,
+            defaultWorktreeId ?? null,
+        );
+    }, [
+        createEntry,
+        defaultProjectId,
+        defaultWorktreeId,
+        openFileTab,
+        setLastQuickCreateAction,
+    ]);
+
+    function handleOpenLastQuickCreateAction() {
+        switch (lastQuickCreateAction) {
+            case "claude":
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "claude",
+                );
+                return;
+            case "gemini":
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "gemini",
+                );
+                return;
+            case "kilo":
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "kilo",
+                );
+                return;
+            case "terminal":
+                void createTerminalTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                );
+                return;
+            case "file":
+                if (defaultProjectId) {
+                    void handleCreateFile();
+                    return;
+                }
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "codex",
+                );
+                return;
+            case "codex":
+            default:
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "codex",
+                );
+        }
+    }
+
+    const quickCreateMenuEntries = useMemo<readonly QuickCreateMenuEntry[]>(
+        () => [
+            {
+                label: "Agents",
+                children: [
+                    {
+                        action: () =>
+                            void createChatTab(
+                                defaultProjectId,
+                                defaultWorktreeId ?? null,
+                                "codex",
+                            ),
+                        label: "Codex",
+                    },
+                    {
+                        action: () =>
+                            void createChatTab(
+                                defaultProjectId,
+                                defaultWorktreeId ?? null,
+                                "claude",
+                            ),
+                        label: "Claude",
+                    },
+                    {
+                        action: () =>
+                            void createChatTab(
+                                defaultProjectId,
+                                defaultWorktreeId ?? null,
+                                "gemini",
+                            ),
+                        label: "Gemini",
+                    },
+                    {
+                        action: () =>
+                            void createChatTab(
+                                defaultProjectId,
+                                defaultWorktreeId ?? null,
+                                "kilo",
+                            ),
+                        label: "Kilo",
+                    },
+                ],
+            },
+            { type: "separator" },
+            {
+                action: () =>
+                    void createTerminalTab(
+                        defaultProjectId,
+                        defaultWorktreeId ?? null,
+                    ),
+                label: "New Terminal",
+            },
+            {
+                action: () => void handleCreateFile(),
+                disabled: !defaultProjectId,
+                label: "New File",
+            },
+        ],
+        [
+            createChatTab,
+            createTerminalTab,
+            defaultProjectId,
+            defaultWorktreeId,
+            handleCreateFile,
+        ],
+    );
+
+    const lastQuickCreateTitle = getQuickCreateButtonTitle(
+        lastQuickCreateAction,
+        Boolean(defaultProjectId),
+    );
+
     return (
         <>
             <section
@@ -377,12 +688,19 @@ function WorkspacePaneView({
                         : "border-transparent",
                 ].join(" ")}
                 onMouseDown={() => void setActivePane(node.id)}
+                ref={(element) => {
+                    tabDrag.setPaneElement(node.id, element);
+                }}
             >
                 <div className="app-drag flex items-center justify-between border-b border-border bg-bg-chrome px-0">
                     <div
                         className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
+                        data-workspace-pane-id={node.id}
                         onWheel={handleTabStripWheel}
-                        ref={tabStripRef}
+                        ref={(element) => {
+                            tabStripRef.current = element;
+                            tabDrag.setTabStripElement(node.id, element);
+                        }}
                     >
                         {node.tabIds.length === 0 ? (
                             <span className="px-2.5 py-1.5 text-[11px] text-text-secondary">
@@ -401,16 +719,44 @@ function WorkspacePaneView({
                                     <button
                                         className={[
                                             "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-border-subtle px-3 text-[12px] transition",
+                                            tabDrag.draggedTab?.tabId ===
+                                                tabId && tabDrag.isDragging
+                                                ? "opacity-35"
+                                                : "",
                                             isActive
                                                 ? "z-10 bg-bg-primary text-text-primary shadow-[inset_0_-2px_0_0_var(--color-accent)]"
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
+                                        data-workspace-tab-id={tabId}
                                         key={tabId}
-                                        onClick={() =>
-                                            void selectTab(node.id, tabId)
-                                        }
+                                        onClick={(event) => {
+                                            if (tabDrag.handleTabClick(event)) {
+                                                return;
+                                            }
+
+                                            void selectTab(node.id, tabId);
+                                        }}
                                         onContextMenu={(event) =>
                                             handleTabContextMenu(event, tabId)
+                                        }
+                                        onPointerDown={(event) =>
+                                            tabDrag.beginTabPointerDown(
+                                                {
+                                                    isDirty:
+                                                        "isDirty" in tab
+                                                            ? tab.isDirty
+                                                            : false,
+                                                    kind: tab.kind,
+                                                    paneId: node.id,
+                                                    sourceIndex:
+                                                        node.tabIds.indexOf(
+                                                            tabId,
+                                                        ),
+                                                    tabId,
+                                                    title: tab.title,
+                                                },
+                                                event,
+                                            )
                                         }
                                         type="button"
                                     >
@@ -430,6 +776,7 @@ function WorkspacePaneView({
                                                     ? "text-text-secondary opacity-70"
                                                     : "text-text-secondary opacity-0 group-hover:opacity-70",
                                             ].join(" ")}
+                                            data-workspace-tab-close="true"
                                             onClick={(e) => {
                                                 e.stopPropagation();
                                                 void closeTab(tabId);
@@ -448,26 +795,16 @@ function WorkspacePaneView({
                     <div className="flex shrink-0 items-center">
                         <PaneActionButton
                             label="+"
-                            onClick={() => void createChatTab(defaultProjectId)}
-                            title="New chat"
-                        />
-                        <PaneActionButton
-                            label="▸"
-                            onClick={() =>
-                                void createTerminalTab(defaultProjectId)
-                            }
-                            title="New terminal"
-                        />
-                        <span className="mx-1 h-3 w-px bg-border" />
-                        <PaneActionButton
-                            label="◧"
-                            onClick={() => void splitPane(node.id, "left")}
-                            title="Split left"
-                        />
-                        <PaneActionButton
-                            label="◨"
-                            onClick={() => void splitPane(node.id, "right")}
-                            title="Split right"
+                            onClick={handleOpenLastQuickCreateAction}
+                            onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setQuickCreateMenu({
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                });
+                            }}
+                            title={lastQuickCreateTitle}
                         />
                         <span className="mx-1 h-3 w-px bg-border" />
                         <PaneActionButton
@@ -498,12 +835,16 @@ function WorkspacePaneView({
                                 onOpenFile={(
                                     projectId,
                                     relativePath,
+                                    worktreeId,
                                     reviewContext,
                                 ) =>
                                     openFileTab(
                                         projectId,
                                         relativePath,
-                                        reviewContext,
+                                        worktreeId ??
+                                            activeTab.worktreeId ??
+                                            null,
+                                        reviewContext ?? null,
                                     )
                                 }
                                 tab={activeTab}
@@ -514,7 +855,11 @@ function WorkspacePaneView({
                                     void updateChatDraft(activeTab.id, draft)
                                 }
                                 onOpenFile={(projectId, relativePath) =>
-                                    openFileTab(projectId, relativePath)
+                                    openFileTab(
+                                        projectId,
+                                        relativePath,
+                                        activeTab.worktreeId ?? null,
+                                    )
                                 }
                                 onOpenReview={() =>
                                     openReviewTab({
@@ -522,6 +867,8 @@ function WorkspacePaneView({
                                         runtimeId: activeTab.runtimeId,
                                         sessionId: activeTab.sessionId,
                                         title: activeTab.title,
+                                        worktreeId:
+                                            activeTab.worktreeId ?? null,
                                     })
                                 }
                                 tab={activeTab}
@@ -545,29 +892,360 @@ function WorkspacePaneView({
                     onClose={() => setTabContextMenu(null)}
                 />
             ) : null}
+
+            {quickCreateMenu ? (
+                <QuickCreateMenu
+                    entries={quickCreateMenuEntries}
+                    menu={quickCreateMenu}
+                    onClose={() => setQuickCreateMenu(null)}
+                />
+            ) : null}
         </>
+    );
+}
+
+function WorkspaceTabDragOverlay({
+    draggedTab,
+    pointerCurrent,
+    pointerOffset,
+    target,
+    visible,
+}: {
+    readonly draggedTab: ReturnType<typeof useWorkspaceTabDrag>["draggedTab"];
+    readonly pointerCurrent: ReturnType<
+        typeof useWorkspaceTabDrag
+    >["pointerCurrent"];
+    readonly pointerOffset: ReturnType<
+        typeof useWorkspaceTabDrag
+    >["pointerOffset"];
+    readonly target: WorkspaceTabDropTarget | null;
+    readonly visible: boolean;
+}) {
+    if (
+        !visible ||
+        !draggedTab ||
+        !pointerCurrent ||
+        !pointerOffset ||
+        typeof document === "undefined"
+    ) {
+        return null;
+    }
+
+    const ghostLeft = pointerCurrent.x - pointerOffset.x;
+    const ghostTop = pointerCurrent.y - pointerOffset.y;
+
+    return createPortal(
+        <>
+            {target?.type === "strip" ? (
+                <div
+                    className="pointer-events-none fixed rounded-full bg-accent shadow-[0_0_0_1px_var(--color-accent)]"
+                    style={{
+                        height: target.lineRect.height,
+                        left: target.lineRect.left,
+                        top: target.lineRect.top,
+                        width: target.lineRect.width,
+                        zIndex: 10030,
+                    }}
+                />
+            ) : null}
+
+            {target?.type === "pane-center" ? (
+                <div
+                    className="pointer-events-none fixed rounded-xl border-2 border-accent/90 bg-accent/8 shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                    style={{
+                        height: target.rect.height,
+                        left: target.rect.left,
+                        top: target.rect.top,
+                        width: target.rect.width,
+                        zIndex: 10029,
+                    }}
+                />
+            ) : null}
+
+            {target?.type === "split" ? (
+                <div
+                    className="pointer-events-none fixed rounded-xl border border-accent/90 bg-accent/12 shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                    style={{
+                        height: target.rect.height,
+                        left: target.rect.left,
+                        top: target.rect.top,
+                        width: target.rect.width,
+                        zIndex: 10029,
+                    }}
+                />
+            ) : null}
+
+            <div
+                className="pointer-events-none fixed"
+                style={{
+                    left: ghostLeft,
+                    top: ghostTop,
+                    zIndex: 10031,
+                }}
+            >
+                <div className="flex h-7.75 max-w-72 items-center gap-1.5 rounded-md border border-border-strong bg-bg-panel/96 px-3 text-[12px] text-text-primary shadow-[0_10px_30px_rgba(15,23,42,0.22)] backdrop-blur-sm">
+                    <TabIcon kind={draggedTab.kind} />
+                    <span className="truncate">{draggedTab.title}</span>
+                    {draggedTab.isDirty ? (
+                        <span className="text-[9px] text-amber-500">●</span>
+                    ) : null}
+                </div>
+            </div>
+        </>,
+        document.body,
     );
 }
 
 function PaneActionButton({
     label,
     onClick,
+    onContextMenu,
     title,
 }: {
     readonly label: string;
     readonly onClick: () => void;
+    readonly onContextMenu?: (
+        event: ReactMouseEvent<HTMLButtonElement>,
+    ) => void;
     readonly title: string;
 }) {
     return (
         <button
             className="app-no-drag rounded px-1.5 py-0.5 text-[11px] text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary"
             onClick={onClick}
+            onContextMenu={onContextMenu}
             title={title}
             type="button"
         >
             {label}
         </button>
     );
+}
+
+function QuickCreateMenu({
+    entries,
+    menu,
+    onClose,
+}: {
+    readonly entries: readonly QuickCreateMenuEntry[];
+    readonly menu: Exclude<QuickCreateMenuState, null>;
+    readonly onClose: () => void;
+}) {
+    const rootRef = useRef<HTMLDivElement | null>(null);
+    const submenuRef = useRef<HTMLDivElement | null>(null);
+    const [rootPosition, setRootPosition] = useState({ x: menu.x, y: menu.y });
+    const [submenu, setSubmenu] = useState<QuickCreateSubmenuState>(null);
+    const [submenuPosition, setSubmenuPosition] = useState<{
+        readonly x: number;
+        readonly y: number;
+    } | null>(null);
+
+    useLayoutEffect(() => {
+        const element = rootRef.current;
+        if (!element) {
+            return;
+        }
+
+        const rect = element.getBoundingClientRect();
+        setRootPosition(
+            getViewportSafeMenuPosition(
+                menu.x,
+                menu.y,
+                rect.width,
+                rect.height,
+            ),
+        );
+    }, [entries.length, menu.x, menu.y]);
+
+    useLayoutEffect(() => {
+        if (!submenu || !submenuRef.current) {
+            return;
+        }
+
+        const rect = submenuRef.current.getBoundingClientRect();
+        setSubmenuPosition(
+            getViewportSafeMenuPosition(
+                submenu.x,
+                submenu.y,
+                rect.width,
+                rect.height,
+            ),
+        );
+    }, [submenu]);
+
+    useEffect(() => {
+        const handleMouseDown = (event: MouseEvent) => {
+            const target = event.target as Node;
+            if (
+                rootRef.current?.contains(target) ||
+                submenuRef.current?.contains(target)
+            ) {
+                return;
+            }
+
+            onClose();
+        };
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                onClose();
+            }
+        };
+
+        document.addEventListener("mousedown", handleMouseDown);
+        document.addEventListener("keydown", handleKeyDown);
+
+        return () => {
+            document.removeEventListener("mousedown", handleMouseDown);
+            document.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [onClose]);
+
+    const closeAndRunAction = (action?: () => void) => {
+        onClose();
+        if (!action) {
+            return;
+        }
+
+        queueMicrotask(action);
+    };
+
+    const openSubmenu = (
+        event: ReactMouseEvent<HTMLButtonElement>,
+        children: readonly QuickCreateMenuEntry[],
+    ) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setSubmenu({
+            entries: children,
+            x: rect.right + 4,
+            y: rect.top,
+        });
+    };
+
+    const renderEntries = (
+        list: readonly QuickCreateMenuEntry[],
+        isRoot: boolean,
+    ) =>
+        list.map((entry, index) => {
+            if (isQuickCreateMenuSeparator(entry)) {
+                return (
+                    <div
+                        className="my-1 border-t border-border"
+                        key={`separator-${index}`}
+                    />
+                );
+            }
+
+            const hasChildren = Boolean(entry.children?.length);
+
+            return (
+                <button
+                    className={[
+                        "flex w-full items-center justify-between rounded-md px-3 py-1.5 text-left text-xs transition",
+                        entry.disabled
+                            ? "cursor-not-allowed text-text-secondary/50"
+                            : "text-text-primary hover:bg-bg-secondary",
+                    ].join(" ")}
+                    disabled={entry.disabled}
+                    key={`${entry.label}-${index}`}
+                    onClick={() => {
+                        if (hasChildren) {
+                            return;
+                        }
+
+                        closeAndRunAction(entry.action);
+                    }}
+                    onMouseEnter={(event) => {
+                        if (hasChildren && entry.children) {
+                            openSubmenu(event, entry.children);
+                            return;
+                        }
+
+                        if (isRoot) {
+                            setSubmenu(null);
+                            setSubmenuPosition(null);
+                        }
+                    }}
+                    type="button"
+                >
+                    <span>{entry.label}</span>
+                    {hasChildren ? (
+                        <span className="text-[10px] text-text-secondary">
+                            ▸
+                        </span>
+                    ) : null}
+                </button>
+            );
+        });
+
+    return createPortal(
+        <>
+            <div
+                className="fixed rounded-lg border border-border bg-bg-panel p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)]"
+                ref={rootRef}
+                style={{
+                    left: rootPosition.x,
+                    minWidth: 196,
+                    top: rootPosition.y,
+                    zIndex: 10020,
+                }}
+            >
+                {renderEntries(entries, true)}
+            </div>
+
+            {submenu && submenuPosition ? (
+                <div
+                    className="fixed rounded-lg border border-border bg-bg-panel p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)]"
+                    ref={submenuRef}
+                    style={{
+                        left: submenuPosition.x,
+                        minWidth: 176,
+                        top: submenuPosition.y,
+                        zIndex: 10021,
+                    }}
+                >
+                    {renderEntries(submenu.entries, false)}
+                </div>
+            ) : submenu ? (
+                <div
+                    className="fixed rounded-lg border border-border bg-bg-panel p-1 opacity-0 pointer-events-none"
+                    ref={submenuRef}
+                    style={{
+                        left: submenu.x,
+                        minWidth: 176,
+                        top: submenu.y,
+                        zIndex: 10021,
+                    }}
+                >
+                    {renderEntries(submenu.entries, false)}
+                </div>
+            ) : null}
+        </>,
+        document.body,
+    );
+}
+
+function getQuickCreateButtonTitle(
+    action: WorkspaceQuickCreateAction,
+    hasProject: boolean,
+) {
+    switch (action) {
+        case "claude":
+            return "Open last item: Claude chat";
+        case "gemini":
+            return "Open last item: Gemini chat";
+        case "kilo":
+            return "Open last item: Kilo chat";
+        case "terminal":
+            return "Open last item: terminal";
+        case "file":
+            return hasProject
+                ? "Open last item: new file"
+                : "Open last item: Codex chat";
+        case "codex":
+        default:
+            return "Open last item: Codex chat";
+    }
 }
 
 function FileTabView({
@@ -582,6 +1260,7 @@ function FileTabView({
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const editorTheme = useMonacoTheme();
+    const editorSettings = useResolvedEditorSettings(tab.projectId);
     const aiSessions = useAiStore((state) => state.sessions);
     const keepTrackedFile = useAiStore((state) => state.keepTrackedFile);
     const keepTrackedFileHunks = useAiStore(
@@ -639,6 +1318,49 @@ function FileTabView({
         trackedFile?.hunks.find((hunk) => hunk.id === selectedHunkId) ??
         trackedFile?.hunks[0] ??
         null;
+    const adjustEditorFontSize = useCallback(
+        async (mode: "decrease" | "increase" | "reset") => {
+            const clampFontSize = (value: number) =>
+                clampRoundedInt(
+                    value,
+                    EDITOR_FONT_SIZE_MIN,
+                    EDITOR_FONT_SIZE_MAX,
+                );
+            const nextFontSizeFrom = (currentFontSize: number) => {
+                if (mode === "reset") {
+                    return DEFAULT_EDITOR_FONT_SIZE;
+                }
+
+                return clampFontSize(
+                    currentFontSize + (mode === "increase" ? 1 : -1),
+                );
+            };
+            const projectEditor = await loadProjectEditorSettings(
+                tab.projectId,
+            );
+            const hasProjectOverride =
+                projectEditor.fontFamily !== null ||
+                projectEditor.fontSize !== null ||
+                projectEditor.lineHeight !== null;
+
+            if (hasProjectOverride) {
+                await saveProjectEditorSettings(tab.projectId, {
+                    ...projectEditor,
+                    fontSize: nextFontSizeFrom(
+                        projectEditor.fontSize ?? editorSettings.fontSize,
+                    ),
+                });
+                return;
+            }
+
+            const appEditor = await loadAppEditorSettings();
+            await saveAppEditorSettings({
+                ...appEditor,
+                fontSize: nextFontSizeFrom(appEditor.fontSize),
+            });
+        },
+        [editorSettings.fontSize, tab.projectId],
+    );
 
     useEffect(() => {
         if (
@@ -651,22 +1373,45 @@ function FileTabView({
         }
 
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (
-                !(event.metaKey || event.ctrlKey) ||
-                event.key.toLowerCase() !== "s"
-            ) {
+            if (!(event.metaKey || event.ctrlKey)) {
                 return;
             }
 
-            event.preventDefault();
-            void onSave(tab.id);
+            const key = event.key.toLowerCase();
+
+            if (key === "s") {
+                event.preventDefault();
+                void onSave(tab.id);
+                return;
+            }
+
+            if (event.shiftKey || event.altKey) {
+                return;
+            }
+
+            if (event.key === "=" || event.key === "+") {
+                event.preventDefault();
+                void adjustEditorFontSize("increase");
+                return;
+            }
+
+            if (event.key === "-") {
+                event.preventDefault();
+                void adjustEditorFontSize("decrease");
+                return;
+            }
+
+            if (key === "0") {
+                event.preventDefault();
+                void adjustEditorFontSize("reset");
+            }
         };
 
         window.addEventListener("keydown", handleKeyDown);
         return () => {
             window.removeEventListener("keydown", handleKeyDown);
         };
-    }, [document, isActivePane, onSave, tab.id]);
+    }, [adjustEditorFontSize, document, isActivePane, onSave, tab.id]);
 
     useEffect(() => {
         if (!showInlineReview || !selectedHunk) {
@@ -697,6 +1442,10 @@ function FileTabView({
         );
     }
 
+    if (document.kind === "image") {
+        return <ImageFileView document={document} />;
+    }
+
     const canEdit = !document.isBinary && !document.isTooLarge;
 
     if (!canEdit) {
@@ -724,6 +1473,13 @@ function FileTabView({
         trackedFile?.newText !== null
             ? trackedFile
             : null;
+    const editorFontFamily = buildEditorFontFamily(editorSettings.fontFamily);
+    const editorLineHeightPx = Math.round(
+        editorSettings.fontSize * editorSettings.lineHeight,
+    );
+    const handleEditorBeforeMount = useCallback(() => {
+        applyMonacoThemeFromDom();
+    }, []);
     const reviewBar = trackedFile
         ? (() => {
               const activeTrackedFile = trackedFile;
@@ -802,6 +1558,7 @@ function FileTabView({
             <div className="min-h-0 flex-1">
                 {inlineReviewTrackedFile ? (
                     <DiffEditor
+                        beforeMount={handleEditorBeforeMount}
                         language={document.languageId}
                         modified={inlineReviewTrackedFile.newText ?? ""}
                         modifiedModelPath={`${document.absolutePath}::review::modified`}
@@ -810,10 +1567,10 @@ function FileTabView({
                         }}
                         options={{
                             automaticLayout: true,
-                            fontFamily:
-                                '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
+                            fontFamily: editorFontFamily,
                             fontLigatures: true,
-                            fontSize: 13,
+                            fontSize: editorSettings.fontSize,
+                            lineHeight: editorLineHeightPx,
                             minimap: { enabled: false },
                             originalEditable: false,
                             padding: { top: 16, bottom: 16 },
@@ -831,16 +1588,17 @@ function FileTabView({
                     />
                 ) : (
                     <Editor
+                        beforeMount={handleEditorBeforeMount}
                         language={document.languageId}
                         onChange={(value: string | undefined) =>
                             onDraftChange(tab.id, value ?? "")
                         }
                         options={{
                             automaticLayout: true,
-                            fontFamily:
-                                '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
+                            fontFamily: editorFontFamily,
                             fontLigatures: true,
-                            fontSize: 13,
+                            fontSize: editorSettings.fontSize,
+                            lineHeight: editorLineHeightPx,
                             minimap: { enabled: false },
                             padding: { top: 16, bottom: 16 },
                             scrollBeyondLastLine: false,
@@ -864,6 +1622,38 @@ function FilePathBar({ path }: { readonly path: string }) {
         <div className="flex h-6 items-center border-b border-border bg-bg-secondary px-3 text-[10px] leading-none text-text-secondary">
             <div className="min-w-0 truncate" title={path}>
                 {path}
+            </div>
+        </div>
+    );
+}
+
+function ImageFileView({
+    document,
+}: {
+    readonly document: ProjectFileDocument;
+}) {
+    const imageSrc = buildImageDataUrl(document);
+
+    return (
+        <div className="flex h-full min-h-0 flex-col">
+            <FilePathBar path={document.absolutePath} />
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-bg-primary px-6 py-6">
+                {imageSrc ? (
+                    <img
+                        alt={document.name}
+                        className="max-h-full max-w-full rounded-xl border border-border bg-white/40 object-contain shadow-[0_12px_40px_rgba(15,23,42,0.12)]"
+                        src={imageSrc}
+                    />
+                ) : (
+                    <div className="max-w-lg text-center">
+                        <div className="text-sm font-medium text-text-primary">
+                            {document.name}
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-text-secondary">
+                            {document.content}
+                        </p>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -1266,30 +2056,40 @@ function isInlineReviewSupported(trackedFile: AiTrackedFile | null): boolean {
     );
 }
 
-function useMonacoTheme(): "vs" | "vs-dark" {
-    const [theme, setTheme] = useState<"vs" | "vs-dark">(() =>
-        document.documentElement.classList.contains("dark") ? "vs-dark" : "vs",
+function useMonacoTheme(): ComandoMonacoTheme {
+    const [theme, setTheme] = useState<ComandoMonacoTheme>(() =>
+        getMonacoThemeFromDom(),
     );
 
     useEffect(() => {
+        let frameHandle = 0;
+
         const updateTheme = () => {
-            setTheme(
-                document.documentElement.classList.contains("dark")
-                    ? "vs-dark"
-                    : "vs",
-            );
+            frameHandle = 0;
+            setTheme(applyMonacoThemeFromDom());
         };
 
-        updateTheme();
+        const scheduleThemeUpdate = () => {
+            if (frameHandle !== 0) {
+                return;
+            }
 
-        const observer = new MutationObserver(updateTheme);
+            frameHandle = window.requestAnimationFrame(updateTheme);
+        };
+
+        scheduleThemeUpdate();
+
+        const observer = new MutationObserver(scheduleThemeUpdate);
         observer.observe(document.documentElement, {
-            attributeFilter: ["class"],
+            attributeFilter: ["class", "style"],
             attributes: true,
         });
 
         return () => {
             observer.disconnect();
+            if (frameHandle !== 0) {
+                window.cancelAnimationFrame(frameHandle);
+            }
         };
     }, []);
 
@@ -1302,20 +2102,26 @@ function shouldEnableDocumentWrapping(document: {
     return shouldWrapEditorLanguage(document.languageId);
 }
 
-function getTerminalTheme() {
-    const isDark = document.documentElement.classList.contains("dark");
+function buildImageDataUrl(document: ProjectFileDocument): string | null {
+    if (
+        document.kind !== "image" ||
+        !document.mimeType ||
+        !document.imageDataBase64
+    ) {
+        return null;
+    }
 
-    return isDark
-        ? {
-              background: "#1e1f22",
-              cursor: "#5b9cf6",
-              foreground: "#d4d5d8",
-              selectionBackground: "rgba(91, 156, 246, 0.18)",
-          }
-        : {
-              background: "#ffffff",
-              cursor: "#3b82f6",
-              foreground: "#1f2430",
-              selectionBackground: "rgba(59, 130, 246, 0.16)",
-          };
+    return `data:${document.mimeType};base64,${document.imageDataBase64}`;
+}
+
+function getTerminalTheme() {
+    const style = getComputedStyle(document.documentElement);
+    const v = (name: string) => style.getPropertyValue(name).trim();
+
+    return {
+        background: v("--color-editor") || v("--color-bg-primary"),
+        cursor: v("--color-accent"),
+        foreground: v("--color-editor-text") || v("--color-text-primary"),
+        selectionBackground: v("--color-selection"),
+    };
 }

@@ -1,0 +1,97 @@
+import { safeStorage } from "electron";
+
+import type Database from "better-sqlite3";
+
+interface SettingRow {
+    readonly value: string;
+}
+
+interface StoredSecretRecord {
+    readonly scheme: "electron-safe-storage-v1" | "plain-text-v1";
+    readonly value: string;
+}
+
+export class SecretStoreService {
+    readonly #connection: Database.Database;
+
+    constructor(connection: Database.Database) {
+        this.#connection = connection;
+    }
+
+    loadSecret(namespace: string, secretId: string): string | null {
+        const row = this.#connection
+            .prepare<
+                [string],
+                SettingRow | undefined
+            >("SELECT value FROM app_settings WHERE key = ?")
+            .get(this.#secretKey(namespace, secretId));
+
+        if (!row) {
+            return null;
+        }
+
+        try {
+            const stored = JSON.parse(row.value) as StoredSecretRecord;
+            if (stored.scheme === "electron-safe-storage-v1") {
+                const decrypted = safeStorage.decryptString(
+                    Buffer.from(stored.value, "base64"),
+                );
+
+                return decrypted.trim() ? decrypted : null;
+            }
+
+            return stored.value.trim() ? stored.value : null;
+        } catch {
+            return null;
+        }
+    }
+
+    saveSecret(namespace: string, secretId: string, value: string | null): void {
+        const normalizedValue = value?.trim() ?? "";
+        const key = this.#secretKey(namespace, secretId);
+
+        if (!normalizedValue) {
+            this.#connection
+                .prepare<[string], void>(
+                    "DELETE FROM app_settings WHERE key = ?",
+                )
+                .run(key);
+            return;
+        }
+
+        const payload = this.#serializeSecret(normalizedValue);
+
+        this.#connection
+            .prepare<[string, string, string], void>(
+                `
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                `,
+            )
+            .run(key, payload, new Date().toISOString());
+    }
+
+    #secretKey(namespace: string, secretId: string): string {
+        return `secret.${namespace}.${secretId}`;
+    }
+
+    #serializeSecret(value: string): string {
+        const payload: StoredSecretRecord =
+            safeStorage.isEncryptionAvailable()
+                ? {
+                      scheme: "electron-safe-storage-v1",
+                      value: safeStorage
+                          .encryptString(value)
+                          .toString("base64"),
+                  }
+                : {
+                      scheme: "plain-text-v1",
+                      value,
+                  };
+
+        return JSON.stringify(payload);
+    }
+}

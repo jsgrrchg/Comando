@@ -1,38 +1,59 @@
 import {
+    useCallback,
     useEffect,
     useEffectEvent,
     useMemo,
     useRef,
     useState,
-    type MouseEvent as ReactMouseEvent,
-    type ReactNode,
     type PointerEvent as ReactPointerEvent,
 } from "react";
 
 import type {
     ComandoApi,
-    GitStatusBadge,
+    GitBranchSummary,
+    GitChangeEntry,
+    GitFileDiff as SharedGitFileDiff,
+    GitRepositorySnapshot,
+    GitRepositoryState,
+    GitWorktreeSummary,
     PersistenceSnapshot,
-    ProjectEntryKind,
     ProjectSummary,
-    ProjectTreeNode,
     SettingsSnapshot,
 } from "@shared/ipc";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
+import {
+    buildGitTreeNodesFromProjectTree,
+    findProjectTreeNodeByPath,
+} from "./app/projects/git-tree";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import { buildFilteredProjectTree } from "./app/projects/tree-filter";
+import {
+    COMPOSER_PROJECT_ENTRY_MIME,
+    serializeComposerProjectEntryDragData,
+} from "./app/drag-and-drop";
 import { useAppStore } from "./app/store/app-store";
 import { useAiStore } from "./app/store/ai-store";
+import { useGitStore } from "./app/store/git-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
 import { findPaneById } from "./app/workspace/tree";
 import {
-    ContextMenu,
-    type ContextMenuEntry,
-    type ContextMenuState,
-} from "./components/context-menu/ContextMenu";
+    GitPanel,
+    type GitAction,
+    type GitChangeGroup,
+    type GitChangeGroupId,
+    type GitDiffFile,
+    type GitNodeStatus,
+    type GitRepositorySummary,
+    type GitTreeNode,
+} from "./components/git";
+import {
+    ProjectGitSidebar,
+    type ProjectGitSidebarProject,
+    type ProjectGitSidebarWorktree,
+} from "./components/projects";
 import { SplitHandle } from "./components/SplitHandle";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 
@@ -42,14 +63,13 @@ type DragState = {
     readonly startX: number;
 } | null;
 
-type FileTreeContextMenuPayload =
-    | {
-          readonly kind: "blank";
-      }
-    | {
-          readonly kind: "directory" | "file";
-          readonly node: ProjectTreeNode;
-      };
+type MutableGitChangeTreeNode = {
+    readonly kind: "directory" | "file";
+    readonly name: string;
+    readonly path: string;
+    readonly children: Map<string, MutableGitChangeTreeNode>;
+    change: GitChangeEntry | null;
+};
 
 const ROOT_NODE_KEY = "__root__";
 
@@ -62,13 +82,9 @@ export function App() {
 
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
     const addProjects = useProjectsStore((state) => state.addProjects);
-    const createEntry = useProjectsStore((state) => state.createEntry);
-    const deleteEntry = useProjectsStore((state) => state.deleteEntry);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
-    const isActiveProjectTreeFullyLoaded = useProjectsStore((state) =>
-        activeProjectId
-            ? Boolean(state.fullyLoadedTreeProjects[activeProjectId])
-            : false,
+    const fullyLoadedTreeProjects = useProjectsStore(
+        (state) => state.fullyLoadedTreeProjects,
     );
     const loadEntireProjectTree = useProjectsStore(
         (state) => state.loadEntireProjectTree,
@@ -79,9 +95,11 @@ export function App() {
     const refreshProjectTree = useProjectsStore(
         (state) => state.refreshProjectTree,
     );
+    const removeProject = useProjectsStore((state) => state.removeProject);
+    const createEntry = useProjectsStore((state) => state.createEntry);
+    const deleteEntry = useProjectsStore((state) => state.deleteEntry);
     const renameEntry = useProjectsStore((state) => state.renameEntry);
     const revealEntry = useProjectsStore((state) => state.revealEntry);
-    const removeProject = useProjectsStore((state) => state.removeProject);
     const setActiveProject = useProjectsStore(
         (state) => state.setActiveProject,
     );
@@ -90,6 +108,73 @@ export function App() {
     const expandedDirectories = useProjectsStore(
         (state) => state.expandedDirectories,
     );
+    const gitHydrate = useGitStore((state) => state.hydrate);
+    const gitErrors = useGitStore((state) => state.errors);
+    const refreshGitProject = useGitStore((state) => state.refreshProject);
+    const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
+    const gitSnapshots = useGitStore((state) => state.snapshots);
+    const gitBranchesByProject = useGitStore(
+        (state) => state.branchesByProject,
+    );
+    const gitPanelTabs = useGitStore((state) => state.panelTabs);
+    const gitCommitMessages = useGitStore((state) => state.commitMessages);
+    const gitExpandedGroups = useGitStore(
+        (state) => state.expandedChangeGroups,
+    );
+    const gitExpandedPaths = useGitStore((state) => state.changeExpandedPaths);
+    const gitSelectedDiffPaths = useGitStore(
+        (state) => state.selectedDiffPaths,
+    );
+    const gitDiffsByContext = useGitStore((state) => state.diffsByContext);
+    const gitLoadingContexts = useGitStore((state) => state.loadingContexts);
+    const gitSelectedBranchNames = useGitStore(
+        (state) => state.selectedBranchNames,
+    );
+    const gitSelectedBranchNamesByContext = useGitStore(
+        (state) => state.selectedBranchNamesByContext,
+    );
+    const gitExpandedProjects = useGitStore((state) => state.expandedProjects);
+    const gitExpandedBranches = useGitStore(
+        (state) => state.expandedBranchSections,
+    );
+    const gitExpandedWorktrees = useGitStore(
+        (state) => state.expandedWorktreeSections,
+    );
+    const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
+    const selectGitBranch = useGitStore((state) => state.selectBranch);
+    const checkoutGitBranch = useGitStore((state) => state.checkoutBranch);
+    const createGitWorktree = useGitStore((state) => state.createWorktree);
+    const removeGitWorktree = useGitStore((state) => state.removeWorktree);
+    const selectGitDiffPath = useGitStore((state) => state.selectDiffPath);
+    const stageGitPaths = useGitStore((state) => state.stagePaths);
+    const unstageGitPaths = useGitStore((state) => state.unstagePaths);
+    const discardGitPaths = useGitStore((state) => state.discardPaths);
+    const commitGitChanges = useGitStore((state) => state.commitChanges);
+    const fetchGitRepository = useGitStore((state) => state.fetchRepository);
+    const pullGitRepository = useGitStore((state) => state.pullRepository);
+    const pushGitRepository = useGitStore((state) => state.pushRepository);
+    const setGitCommitMessage = useGitStore((state) => state.setCommitMessage);
+    const setGitPanelTab = useGitStore((state) => state.setPanelTab);
+    const toggleGitBranchesExpanded = useGitStore(
+        (state) => state.toggleBranchesExpanded,
+    );
+    const toggleGitProjectExpanded = useGitStore(
+        (state) => state.toggleProjectExpanded,
+    );
+    const toggleGitWorktreesExpanded = useGitStore(
+        (state) => state.toggleWorktreesExpanded,
+    );
+    const toggleGitChangePath = useGitStore((state) => state.toggleChangePath);
+    const toggleGitChangeGroup = useGitStore(
+        (state) => state.toggleChangeGroup,
+    );
+
+    void loadingNodeKeys;
+    void removeProject;
+    void createEntry;
+    void deleteEntry;
+    void renameEntry;
+    void revealEntry;
 
     const workspaceHydrate = useWorkspaceStore((state) => state.hydrate);
     const appendTerminalOutput = useWorkspaceStore(
@@ -107,9 +192,6 @@ export function App() {
     );
     const renameTabsForProjectPath = useWorkspaceStore(
         (state) => state.renameTabsForProjectPath,
-    );
-    const removeProjectTabs = useWorkspaceStore(
-        (state) => state.removeProjectTabs,
     );
     const workspaceActivePaneId = useWorkspaceStore(
         (state) => state.activePaneId,
@@ -135,12 +217,11 @@ export function App() {
     const hydrateAiSettings = useAiStore((state) => state.hydrateSettings);
 
     const [dragState, setDragState] = useState<DragState>(null);
-    const [fileTreeContextMenu, setFileTreeContextMenu] =
-        useState<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
     const [isFileTreeSearchOpen, setIsFileTreeSearchOpen] = useState(false);
     const [isFileTreeSearchLoading, setIsFileTreeSearchLoading] =
         useState(false);
     const [fileTreeFilter, setFileTreeFilter] = useState("");
+    void isFileTreeSearchLoading;
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [projectFilter, setProjectFilter] = useState("");
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
@@ -170,10 +251,28 @@ export function App() {
                 }
 
                 hydrateAiSettings(settingsSnapshot?.ai ?? null);
-                hydrateShell(settingsSnapshot?.shellState ?? null);
-                await hydrateProjects(
-                    persistenceSnapshot?.activeProjectId ?? null,
-                );
+                hydrateShell(persistenceSnapshot?.shellState ?? null);
+                const persistedProjectId =
+                    persistenceSnapshot?.activeProjectId ?? null;
+                const persistedWorktreeId =
+                    persistenceSnapshot?.activeWorktreeId ?? null;
+
+                await hydrateProjects(persistedProjectId);
+                await gitHydrate({
+                    activeProjectId: persistedProjectId,
+                    activeWorktreeId: persistedWorktreeId,
+                    projects: useProjectsStore.getState().projects,
+                });
+                if (persistedProjectId) {
+                    const resolvedWorktreeId =
+                        useGitStore.getState().activeWorktreeIds[
+                            persistedProjectId
+                        ] ?? persistedWorktreeId;
+                    await refreshProjectTree(
+                        persistedProjectId,
+                        resolvedWorktreeId,
+                    );
+                }
                 await workspaceHydrate();
             } finally {
                 if (!isDisposed) {
@@ -190,8 +289,10 @@ export function App() {
     }, [
         hydrateAiSettings,
         hydrateBootstrap,
+        gitHydrate,
         hydrateProjects,
         hydrateShell,
+        refreshProjectTree,
         workspaceHydrate,
     ]);
 
@@ -202,12 +303,59 @@ export function App() {
         }
 
         const unsubscribe = comandoApi.onProjectTreeInvalidated((payload) => {
-            void refreshProjectTree(payload.projectId);
-            void refreshProjectTabs(payload.projectId);
+            const preferredWorktreeId =
+                payload.worktreeId ??
+                useGitStore.getState().activeWorktreeIds[payload.projectId] ??
+                null;
+
+            void refreshProjectTree(payload.projectId, preferredWorktreeId);
+            void refreshProjectTabs(payload.projectId, preferredWorktreeId);
+            void refreshGitProject(payload.projectId, preferredWorktreeId);
         });
 
         return unsubscribe;
-    }, [refreshProjectTabs, refreshProjectTree]);
+    }, [refreshGitProject, refreshProjectTabs, refreshProjectTree]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        const unsubscribeInvalidation = comandoApi.onGitRepositoryInvalidated(
+            (payload) => {
+                const preferredWorktreeId =
+                    payload.worktreeId ??
+                    useGitStore.getState().activeWorktreeIds[
+                        payload.projectId
+                    ] ??
+                    null;
+                void refreshGitProject(payload.projectId, preferredWorktreeId);
+            },
+        );
+        const unsubscribeSnapshot = comandoApi.onGitRepositorySnapshotUpdated(
+            (snapshot) => {
+                ingestGitSnapshot(snapshot);
+            },
+        );
+        const unsubscribeWorktrees = comandoApi.onGitWorktreesUpdated(
+            (payload) => {
+                const preferredWorktreeId =
+                    payload.worktreeId ??
+                    useGitStore.getState().activeWorktreeIds[
+                        payload.projectId
+                    ] ??
+                    null;
+                void refreshGitProject(payload.projectId, preferredWorktreeId);
+            },
+        );
+
+        return () => {
+            unsubscribeInvalidation();
+            unsubscribeSnapshot();
+            unsubscribeWorktrees();
+        };
+    }, [ingestGitSnapshot, refreshGitProject]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -269,12 +417,10 @@ export function App() {
         }
 
         const timeout = window.setTimeout(() => {
-            void comandoApi.saveSettingsSnapshot({
-                shellState: {
-                    activeSurface,
-                    leftWidth,
-                    rightWidth,
-                },
+            void comandoApi.saveShellState({
+                activeSurface,
+                leftWidth,
+                rightWidth,
             });
         }, 120);
 
@@ -291,11 +437,36 @@ export function App() {
         void window.comando.saveActiveProjectId(activeProjectId);
     }, [activeProjectId, persistenceReady]);
 
+    const activeWorktreeId = useGitStore((state) =>
+        activeProjectId
+            ? (state.activeWorktreeIds[activeProjectId] ?? null)
+            : null,
+    );
+    const activeProjectContextKey = getProjectContextKey(
+        activeProjectId,
+        activeWorktreeId,
+    );
+    const activeGitContextKey = getGitContextKey(
+        activeProjectId,
+        activeWorktreeId,
+    );
+    const isActiveProjectTreeFullyLoaded = activeProjectId
+        ? Boolean(fullyLoadedTreeProjects[activeProjectContextKey])
+        : false;
+
     useEffect(() => {
         setFileTreeFilter("");
         setIsFileTreeSearchLoading(false);
         setIsFileTreeSearchOpen(false);
-    }, [activeProjectId]);
+    }, [activeProjectId, activeWorktreeId]);
+
+    useEffect(() => {
+        if (!persistenceReady || !window.comando) {
+            return;
+        }
+
+        void window.comando.saveActiveWorktreeId(activeWorktreeId);
+    }, [activeWorktreeId, persistenceReady]);
 
     useEffect(() => {
         if (!isFileTreeSearchOpen) {
@@ -320,17 +491,20 @@ export function App() {
         let isCancelled = false;
         setIsFileTreeSearchLoading(true);
 
-        void loadEntireProjectTree(activeProjectId).finally(() => {
-            if (!isCancelled) {
-                setIsFileTreeSearchLoading(false);
-            }
-        });
+        void loadEntireProjectTree(activeProjectId, activeWorktreeId).finally(
+            () => {
+                if (!isCancelled) {
+                    setIsFileTreeSearchLoading(false);
+                }
+            },
+        );
 
         return () => {
             isCancelled = true;
         };
     }, [
         activeProjectId,
+        activeWorktreeId,
         fileTreeFilter,
         isActiveProjectTreeFullyLoaded,
         loadEntireProjectTree,
@@ -390,13 +564,6 @@ export function App() {
         );
     }, [projectFilter, projects]);
 
-    const recentProjects = filteredProjects.filter(
-        (project) => project.lastOpenedAt,
-    );
-    const otherProjects = filteredProjects.filter(
-        (project) => !project.lastOpenedAt,
-    );
-
     const gridTemplateColumns = useMemo(
         () =>
             `${leftWidth}px ${shellLayoutConstraints.handleWidth}px minmax(0, 1fr) ${shellLayoutConstraints.handleWidth}px ${rightWidth}px`,
@@ -406,12 +573,12 @@ export function App() {
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
     const activeTreeNodesByParent = useMemo(
-        () => treeNodes[activeProjectId ?? ""] ?? {},
-        [activeProjectId, treeNodes],
+        () => treeNodes[activeProjectContextKey] ?? {},
+        [activeProjectContextKey, treeNodes],
     );
     const activeProjectTree = activeTreeNodesByParent[ROOT_NODE_KEY] ?? [];
     const activeExpandedDirectories =
-        expandedDirectories[activeProjectId ?? ""] ?? [];
+        expandedDirectories[activeProjectContextKey] ?? [];
     const normalizedFileTreeFilter = fileTreeFilter.trim();
     const filteredFileTree = useMemo(
         () =>
@@ -438,299 +605,561 @@ export function App() {
     const activeWorkspaceTab = activeWorkspacePane?.activeTabId
         ? (workspaceTabsById[activeWorkspacePane.activeTabId] ?? null)
         : null;
+    void closeTabsForProjectPath;
+    void renameTabsForProjectPath;
     const activeFilePath =
         activeWorkspaceTab?.kind === "file"
             ? activeWorkspaceTab.relativePath
             : null;
+    const activeGitSnapshot = gitSnapshots[activeGitContextKey] ?? null;
+    const activeGitBranches =
+        (activeProjectId ? gitBranchesByProject[activeProjectId] : []) ?? [];
+    void activeGitBranches;
+    const activeGitPanelTab = gitPanelTabs[activeGitContextKey] ?? "changes";
+    const activeGitCommitMessage = gitCommitMessages[activeGitContextKey] ?? "";
+    const activeGitExpandedGroups = gitExpandedGroups[activeGitContextKey] ?? [
+        "conflicts",
+        "changes",
+        "staged",
+        "untracked",
+    ];
+    const activeGitExpandedPaths = gitExpandedPaths[activeGitContextKey] ?? [];
+    const activeGitSelectedDiffPath =
+        gitSelectedDiffPaths[activeGitContextKey] ?? null;
+    const activeGitDiffCache = useMemo(
+        () => gitDiffsByContext[activeGitContextKey] ?? {},
+        [activeGitContextKey, gitDiffsByContext],
+    );
+    const activeGitError = gitErrors[activeGitContextKey] ?? null;
+    const activeGitLoading = gitLoadingContexts[activeGitContextKey] ?? false;
     const isMac = bootstrap?.platform === "darwin";
-    const topStatus = [bootstrapError, projectsError, workspaceError]
+    const topStatus = [
+        bootstrapError,
+        projectsError,
+        workspaceError,
+        activeGitError,
+    ]
         .filter(Boolean)
         .join(" ");
 
-    async function handleRemoveProject(projectId: string): Promise<void> {
-        await removeProject(projectId);
+    const handleSelectProject = useCallback(
+        async (projectId: string) => {
+            await setActiveProject(projectId);
+            const preferredWorktreeId =
+                useGitStore.getState().activeWorktreeIds[projectId] ?? null;
+            await refreshGitProject(projectId, preferredWorktreeId);
+            await refreshProjectTree(projectId, preferredWorktreeId);
+        },
+        [refreshGitProject, refreshProjectTree, setActiveProject],
+    );
 
-        const stillExists = useProjectsStore
-            .getState()
-            .projects.some((project) => project.id === projectId);
-        if (!stillExists) {
-            await removeProjectTabs(projectId);
-        }
-    }
+    const handleSelectWorktree = useCallback(
+        async (projectId: string, worktreeId: string) => {
+            await setActiveProject(projectId);
+            await setActiveWorktree(projectId, worktreeId);
+            await refreshGitProject(projectId, worktreeId);
+            await refreshProjectTree(projectId, worktreeId);
+        },
+        [
+            refreshGitProject,
+            refreshProjectTree,
+            setActiveProject,
+            setActiveWorktree,
+        ],
+    );
 
-    function handleTreeNodeContextMenu(
-        event: ReactMouseEvent<HTMLButtonElement>,
-        node: ProjectTreeNode,
-    ) {
-        event.preventDefault();
-        focusSurface("utility");
-        setFileTreeContextMenu({
-            x: event.clientX,
-            y: event.clientY,
-            payload: {
-                kind: node.kind,
-                node,
-            },
-        });
-    }
-
-    function handleBlankTreeContextMenu(
-        event: ReactMouseEvent<HTMLDivElement>,
-    ) {
-        if (event.target !== event.currentTarget || !activeProject) {
-            return;
-        }
-
-        event.preventDefault();
-        focusSurface("utility");
-        setFileTreeContextMenu({
-            x: event.clientX,
-            y: event.clientY,
-            payload: { kind: "blank" },
-        });
-    }
-
-    async function handleCreateProjectEntry(
-        kind: ProjectEntryKind,
-        parentRelativePath: string | null,
-    ): Promise<void> {
-        if (!activeProject) {
-            return;
-        }
-
-        const suggestedName = kind === "file" ? "untitled.txt" : "New Folder";
-        const name = window.prompt(
-            kind === "file" ? "New file name" : "New folder name",
-            suggestedName,
-        );
-
-        if (name === null) {
-            return;
-        }
-
-        const trimmedName = name.trim();
-        if (!trimmedName) {
-            return;
-        }
-
-        try {
-            const entry = await createEntry(
-                activeProject.id,
-                parentRelativePath,
-                trimmedName,
-                kind,
+    const handleSelectBranch = useCallback(
+        async (projectId: string, branchName: string) => {
+            selectGitBranch(
+                projectId,
+                branchName,
+                useGitStore.getState().activeWorktreeIds[projectId] ?? null,
             );
+            await setActiveProject(projectId);
+            void refreshGitProject(
+                projectId,
+                useGitStore.getState().activeWorktreeIds[projectId] ?? null,
+            );
+        },
+        [refreshGitProject, selectGitBranch, setActiveProject],
+    );
 
-            if (kind === "file") {
-                await openFileTab(activeProject.id, entry.relativePath);
+    const handleCheckoutBranch = useCallback(
+        async (projectId: string, branchName: string) => {
+            try {
+                await checkoutGitBranch(
+                    projectId,
+                    branchName,
+                    useGitStore.getState().activeWorktreeIds[projectId] ?? null,
+                );
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not checkout the selected branch.",
+                );
             }
-        } catch {
-            return;
-        }
-    }
+        },
+        [checkoutGitBranch],
+    );
 
-    async function handleRenameProjectEntry(
-        node: ProjectTreeNode,
-    ): Promise<void> {
-        if (!activeProject) {
-            return;
-        }
+    const handleCreateWorktreeFromBranch = useCallback(
+        async (projectId: string, branchName: string) => {
+            const project = projects.find((entry) => entry.id === projectId);
+            if (!project) {
+                return;
+            }
 
-        const nextName = window.prompt("Rename entry", node.name);
-        if (nextName === null) {
-            return;
-        }
-
-        const trimmedName = nextName.trim();
-        if (!trimmedName || trimmedName === node.name) {
-            return;
-        }
-
-        try {
-            const renamedEntry = await renameEntry(
-                activeProject.id,
-                node.relativePath,
-                trimmedName,
+            const suggestedPath = `${project.rootPath}-${sanitizeBranchName(branchName)}`;
+            const nextPath = window.prompt(
+                `Create a worktree for "${branchName}"`,
+                suggestedPath,
             );
 
-            await renameTabsForProjectPath(
-                activeProject.id,
-                node.relativePath,
-                renamedEntry.relativePath,
-                node.kind,
+            if (!nextPath?.trim()) {
+                return;
+            }
+
+            try {
+                const worktree = await createGitWorktree({
+                    branchName,
+                    path: nextPath.trim(),
+                    projectId,
+                    worktreeId:
+                        useGitStore.getState().activeWorktreeIds[projectId] ??
+                        null,
+                });
+                await handleSelectWorktree(projectId, worktree.id);
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not create the worktree.",
+                );
+            }
+        },
+        [createGitWorktree, handleSelectWorktree, projects],
+    );
+
+    const handleRemoveWorktree = useCallback(
+        async (projectId: string, worktree: GitWorktreeSummary) => {
+            if (worktree.isPrimary) {
+                return;
+            }
+
+            const confirmed = window.confirm(
+                `Remove worktree "${worktree.rootPath}"?`,
             );
-            await refreshProjectTabs(activeProject.id);
-        } catch {
+            if (!confirmed) {
+                return;
+            }
+
+            try {
+                const snapshot = await removeGitWorktree(
+                    projectId,
+                    worktree.rootPath,
+                    useGitStore.getState().activeWorktreeIds[projectId] ?? null,
+                );
+                const fallbackWorktreeId =
+                    snapshot.currentWorktreeId ??
+                    snapshot.worktrees.find((entry) => entry.isPrimary)?.id ??
+                    null;
+                await setActiveWorktree(projectId, fallbackWorktreeId);
+                await refreshProjectTree(projectId, fallbackWorktreeId);
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not remove the worktree.",
+                );
+            }
+        },
+        [refreshProjectTree, removeGitWorktree, setActiveWorktree],
+    );
+
+    const handleSelectGitDiffPath = useCallback(
+        async (relativePath: string | null) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            await selectGitDiffPath(
+                activeProjectId,
+                relativePath,
+                activeWorktreeId,
+            );
+        },
+        [activeProjectId, activeWorktreeId, selectGitDiffPath],
+    );
+
+    const handleStageAllChanges = useCallback(() => {
+        if (!activeProjectId || !activeGitSnapshot?.changedPaths.length) {
             return;
         }
-    }
 
-    async function handleDeleteProjectEntry(
-        node: ProjectTreeNode,
-    ): Promise<void> {
-        if (!activeProject) {
+        void stageGitPaths(
+            activeProjectId,
+            activeGitSnapshot.changedPaths,
+            activeWorktreeId,
+        );
+    }, [activeGitSnapshot, activeProjectId, activeWorktreeId, stageGitPaths]);
+
+    const handleUnstageAllChanges = useCallback(() => {
+        if (!activeProjectId) {
+            return;
+        }
+
+        const stagedPaths =
+            activeGitSnapshot?.changes
+                .filter((change) => change.scope === "staged")
+                .map((change) => change.path) ?? [];
+        if (stagedPaths.length === 0) {
+            return;
+        }
+
+        void unstageGitPaths(activeProjectId, stagedPaths, activeWorktreeId);
+    }, [activeGitSnapshot, activeProjectId, activeWorktreeId, unstageGitPaths]);
+
+    const handleDiscardAllChanges = useCallback(() => {
+        if (!activeProjectId || !activeGitSnapshot?.changedPaths.length) {
             return;
         }
 
         const confirmed = window.confirm(
-            node.kind === "directory"
-                ? `Delete folder "${node.name}" and all of its contents?`
-                : `Delete file "${node.name}"?`,
+            "Discard all current changes in the active worktree?",
         );
-
         if (!confirmed) {
             return;
         }
 
-        try {
-            await deleteEntry(activeProject.id, node.relativePath);
-            await closeTabsForProjectPath(
-                activeProject.id,
-                node.relativePath,
-                node.kind,
+        void discardGitPaths(
+            activeProjectId,
+            activeGitSnapshot.changedPaths,
+            activeWorktreeId,
+        );
+    }, [activeGitSnapshot, activeProjectId, activeWorktreeId, discardGitPaths]);
+
+    const handleCommitChanges = useCallback(() => {
+        if (!activeProjectId) {
+            return;
+        }
+
+        const message = activeGitCommitMessage.trim();
+        if (!message) {
+            window.alert("Write a commit message first.");
+            return;
+        }
+
+        void commitGitChanges({
+            message,
+            projectId: activeProjectId,
+            worktreeId: activeWorktreeId,
+        }).catch((error: unknown) => {
+            window.alert(
+                error instanceof Error
+                    ? error.message
+                    : "Could not create the commit.",
             );
-        } catch {
+        });
+    }, [
+        activeGitCommitMessage,
+        activeProjectId,
+        activeWorktreeId,
+        commitGitChanges,
+    ]);
+
+    const sidebarProjects = useMemo(
+        () =>
+            buildSidebarProjects({
+                activeProjectId,
+                activeWorktreeIds: useGitStore.getState().activeWorktreeIds,
+                branchesByProject: gitBranchesByProject,
+                expandedBranches: gitExpandedBranches,
+                expandedProjects: gitExpandedProjects,
+                expandedWorktrees: gitExpandedWorktrees,
+                projects: filteredProjects,
+                selectedBranchNames: gitSelectedBranchNames,
+                selectedBranchNamesByContext: gitSelectedBranchNamesByContext,
+                snapshots: gitSnapshots,
+                onRemoveWorktree: handleRemoveWorktree,
+            }),
+        [
+            activeProjectId,
+            filteredProjects,
+            gitBranchesByProject,
+            gitExpandedBranches,
+            gitExpandedProjects,
+            gitExpandedWorktrees,
+            gitSelectedBranchNames,
+            gitSelectedBranchNamesByContext,
+            gitSnapshots,
+            handleRemoveWorktree,
+        ],
+    );
+
+    const gitFileNodes = useMemo(
+        () =>
+            activeGitPanelTab === "files"
+                ? buildGitTreeNodesFromProjectTree(
+                      visibleFileTreeRoots,
+                      visibleFileTreeNodesByParent,
+                      visibleExpandedDirectories,
+                  )
+                : [],
+        [
+            activeGitPanelTab,
+            visibleExpandedDirectories,
+            visibleFileTreeNodesByParent,
+            visibleFileTreeRoots,
+        ],
+    );
+
+    const gitChangeGroups = useMemo(
+        () =>
+            buildGitChangeGroups(activeGitSnapshot?.changes ?? [], {
+                onDiscardPath: (path) => {
+                    if (!activeProjectId) {
+                        return;
+                    }
+
+                    const worktreeLabel =
+                        activeGitSnapshot?.worktrees.find(
+                            (worktree) => worktree.id === activeWorktreeId,
+                        )?.branchName ??
+                        getPathBase(activeGitSnapshot?.rootPath) ??
+                        "current worktree";
+                    const confirmed = window.confirm(
+                        `Discard changes in "${path}" from ${worktreeLabel}?`,
+                    );
+                    if (!confirmed) {
+                        return;
+                    }
+
+                    void discardGitPaths(
+                        activeProjectId,
+                        [path],
+                        activeWorktreeId,
+                    ).catch((error: unknown) => {
+                        window.alert(
+                            error instanceof Error
+                                ? error.message
+                                : `Could not discard changes for "${path}".`,
+                        );
+                    });
+                },
+                onOpenDiff: (path) => {
+                    void handleSelectGitDiffPath(path);
+                },
+                onStagePath: (path) => {
+                    if (!activeProjectId) {
+                        return;
+                    }
+
+                    void stageGitPaths(
+                        activeProjectId,
+                        [path],
+                        activeWorktreeId,
+                    );
+                },
+                onUnstagePath: (path) => {
+                    if (!activeProjectId) {
+                        return;
+                    }
+
+                    void unstageGitPaths(
+                        activeProjectId,
+                        [path],
+                        activeWorktreeId,
+                    );
+                },
+            }),
+        [
+            activeGitSnapshot,
+            activeProjectId,
+            activeWorktreeId,
+            discardGitPaths,
+            handleSelectGitDiffPath,
+            stageGitPaths,
+            unstageGitPaths,
+        ],
+    );
+
+    const activeGitDiffs = useMemo(
+        () =>
+            buildGitDiffFiles(
+                activeGitSelectedDiffPath,
+                activeGitDiffCache,
+                activeGitSnapshot?.changes ?? [],
+            ),
+        [activeGitDiffCache, activeGitSelectedDiffPath, activeGitSnapshot],
+    );
+
+    const gitToolbar = useMemo(
+        () => ({
+            commit: activeProjectId
+                ? {
+                      commitLabel: "Commit",
+                      disabled:
+                          !activeGitSnapshot ||
+                          activeGitSnapshot.status.stagedCount === 0 ||
+                          activeGitSnapshot.status.conflictedCount > 0 ||
+                          !activeGitCommitMessage.trim(),
+                      hint: activeGitLoading
+                          ? "Refreshing git state..."
+                          : !activeGitSnapshot
+                            ? "Git state is not available."
+                            : activeGitSnapshot.status.conflictedCount > 0
+                              ? "Resolve conflicts before committing."
+                              : activeGitSnapshot.status.stagedCount === 0
+                                ? "Stage at least one change to commit."
+                                : "Ready to commit from Changes.",
+                      message: activeGitCommitMessage,
+                      onChange: (message: string) =>
+                          setGitCommitMessage(
+                              activeProjectId,
+                              message,
+                              activeWorktreeId,
+                          ),
+                      onCommit: handleCommitChanges,
+                      placeholder: "Describe the work in this worktree...",
+                  }
+                : null,
+            primaryActions: [
+                {
+                    id: "stage-all",
+                    label: "Stage All",
+                    onClick: handleStageAllChanges,
+                    disabled:
+                        !activeGitSnapshot ||
+                        activeGitSnapshot.changedPaths.length === 0,
+                } satisfies GitAction,
+            ],
+            secondaryActions: [
+                {
+                    id: "unstage-all",
+                    label: "Unstage",
+                    onClick: handleUnstageAllChanges,
+                    disabled:
+                        !activeGitSnapshot ||
+                        activeGitSnapshot.status.stagedCount === 0,
+                } satisfies GitAction,
+                {
+                    id: "discard-all",
+                    label: "Discard",
+                    onClick: handleDiscardAllChanges,
+                    disabled:
+                        !activeGitSnapshot ||
+                        activeGitSnapshot.changedPaths.length === 0,
+                    tone: "danger",
+                } satisfies GitAction,
+            ],
+            summary: summarizeGitRepository(activeProject, activeGitSnapshot),
+            syncActions: activeProjectId
+                ? {
+                      fetch: {
+                          id: "fetch",
+                          label: "Fetch",
+                          onClick: () =>
+                              void fetchGitRepository(
+                                  activeProjectId,
+                                  activeWorktreeId,
+                              ),
+                      } satisfies GitAction,
+                      pull: {
+                          id: "pull",
+                          label: "Pull",
+                          onClick: () =>
+                              void pullGitRepository(
+                                  activeProjectId,
+                                  activeWorktreeId,
+                              ),
+                      } satisfies GitAction,
+                      push: {
+                          id: "push",
+                          label: "Push",
+                          onClick: () =>
+                              void pushGitRepository(
+                                  activeProjectId,
+                                  activeWorktreeId,
+                              ),
+                      } satisfies GitAction,
+                  }
+                : null,
+        }),
+        [
+            activeGitCommitMessage,
+            activeGitLoading,
+            activeGitSnapshot,
+            activeProject,
+            activeProjectId,
+            activeWorktreeId,
+            fetchGitRepository,
+            handleCommitChanges,
+            handleDiscardAllChanges,
+            handleStageAllChanges,
+            handleUnstageAllChanges,
+            pullGitRepository,
+            pushGitRepository,
+            setGitCommitMessage,
+        ],
+    );
+
+    useEffect(() => {
+        if (!activeProjectId) {
             return;
         }
-    }
 
-    async function handleRevealProjectEntry(
-        relativePath: string | null,
-    ): Promise<void> {
-        if (!activeProject) {
+        const preferredPath =
+            activeGitSelectedDiffPath ??
+            activeGitSnapshot?.changedPaths[0] ??
+            null;
+        if (!preferredPath || preferredPath in activeGitDiffCache) {
             return;
         }
 
-        try {
-            await revealEntry(activeProject.id, relativePath);
-        } catch {
+        void selectGitDiffPath(
+            activeProjectId,
+            preferredPath,
+            activeWorktreeId,
+        );
+    }, [
+        activeGitDiffCache,
+        activeGitSelectedDiffPath,
+        activeGitSnapshot,
+        activeProjectId,
+        activeWorktreeId,
+        selectGitDiffPath,
+    ]);
+
+    const openSettingsWindow = useCallback(() => {
+        if (!window.comando) {
             return;
         }
-    }
 
-    const fileTreeContextMenuEntries: ContextMenuEntry[] = (() => {
-        if (!fileTreeContextMenu || !activeProject) {
-            return [];
-        }
+        void window.comando.openSettingsWindow({
+            projectId: activeProjectId,
+        });
+    }, [activeProjectId]);
 
-        const refreshEntry: ContextMenuEntry = {
-            label: "Refresh Project Tree",
-            action: () => void refreshProjectTree(activeProject.id),
-        };
-
-        if (fileTreeContextMenu.payload.kind === "blank") {
-            return [
-                {
-                    label: "New File",
-                    action: () => void handleCreateProjectEntry("file", null),
-                },
-                {
-                    label: "New Folder",
-                    action: () =>
-                        void handleCreateProjectEntry("directory", null),
-                },
-                { type: "separator" },
-                {
-                    label: "Reveal Project Root",
-                    action: () => void handleRevealProjectEntry(null),
-                },
-                { type: "separator" },
-                refreshEntry,
-            ];
-        }
-
-        const { node } = fileTreeContextMenu.payload;
-
-        if (node.kind === "directory") {
-            const isExpanded = activeExpandedDirectories.includes(
-                node.relativePath,
-            );
-
-            return [
-                {
-                    label: "New File Here",
-                    action: () =>
-                        void handleCreateProjectEntry(
-                            "file",
-                            node.relativePath,
-                        ),
-                },
-                {
-                    label: "New Folder Here",
-                    action: () =>
-                        void handleCreateProjectEntry(
-                            "directory",
-                            node.relativePath,
-                        ),
-                },
-                { type: "separator" },
-                {
-                    label: isExpanded ? "Collapse" : "Expand",
-                    action: () => void toggleDirectory(activeProject.id, node),
-                },
-                {
-                    label: "Rename",
-                    action: () => void handleRenameProjectEntry(node),
-                },
-                {
-                    label: "Delete Folder",
-                    action: () => void handleDeleteProjectEntry(node),
-                },
-                {
-                    label: "Reveal in File Manager",
-                    action: () =>
-                        void handleRevealProjectEntry(node.relativePath),
-                },
-                {
-                    label: "Copy Relative Path",
-                    action: () =>
-                        void navigator.clipboard.writeText(node.relativePath),
-                },
-                { type: "separator" },
-                refreshEntry,
-            ];
-        }
-
-        return [
-            {
-                label: "Open",
-                action: () =>
-                    void openFileTab(activeProject.id, node.relativePath),
-            },
-            {
-                label: "Rename",
-                action: () => void handleRenameProjectEntry(node),
-            },
-            {
-                label: "Delete File",
-                action: () => void handleDeleteProjectEntry(node),
-            },
-            {
-                label: "Reveal in File Manager",
-                action: () => void handleRevealProjectEntry(node.relativePath),
-            },
-            {
-                label: "Copy Relative Path",
-                action: () =>
-                    void navigator.clipboard.writeText(node.relativePath),
-            },
-            { type: "separator" },
-            refreshEntry,
-        ];
-    })();
-
-    function handleToggleFileTreeSearch(): void {
-        setIsFileTreeSearchOpen((currentValue) => {
-            const nextValue = !currentValue;
-
-            if (!nextValue) {
-                setFileTreeFilter("");
-                setIsFileTreeSearchLoading(false);
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== ",") {
+                return;
             }
 
-            return nextValue;
-        });
-    }
+            if (!event.metaKey && !event.ctrlKey) {
+                return;
+            }
+
+            event.preventDefault();
+            openSettingsWindow();
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [openSettingsWindow]);
 
     return (
         <div className="min-h-screen text-text-primary">
@@ -781,6 +1210,34 @@ export function App() {
                                             />
                                         </svg>
                                     </button>
+                                    <button
+                                        aria-label="Open settings"
+                                        className="sidebar-tool-button app-no-drag"
+                                        onClick={openSettingsWindow}
+                                        type="button"
+                                    >
+                                        <svg
+                                            aria-hidden="true"
+                                            className="h-3.5 w-3.5"
+                                            fill="none"
+                                            viewBox="0 0 16 16"
+                                        >
+                                            <path
+                                                d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
+                                                stroke="currentColor"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                                strokeWidth="1"
+                                            />
+                                            <circle
+                                                cx="8"
+                                                cy="8"
+                                                r="2.1"
+                                                stroke="currentColor"
+                                                strokeWidth="1.4"
+                                            />
+                                        </svg>
+                                    </button>
                                 </div>
 
                                 <div className="sidebar-search app-no-drag mt-2">
@@ -822,58 +1279,62 @@ export function App() {
                                 ) : null}
                             </div>
 
-                            <div className="shell-scrollbar flex-1 overflow-y-auto px-2 py-1">
-                                <ProjectSection
-                                    emptyCopy="Open a folder to start building your project library."
-                                    projects={recentProjects}
-                                    title="Recent"
-                                >
-                                    {(project) => (
-                                        <ProjectRow
-                                            isActive={
-                                                project.id === activeProjectId
-                                            }
-                                            key={project.id}
-                                            onActivate={() =>
-                                                void setActiveProject(
-                                                    project.id,
-                                                )
-                                            }
-                                            onRemove={() =>
-                                                void handleRemoveProject(
-                                                    project.id,
-                                                )
-                                            }
-                                            project={project}
-                                        />
-                                    )}
-                                </ProjectSection>
-
-                                <ProjectSection
-                                    emptyCopy="No additional projects yet."
-                                    projects={otherProjects}
-                                    title="Library"
-                                >
-                                    {(project) => (
-                                        <ProjectRow
-                                            isActive={
-                                                project.id === activeProjectId
-                                            }
-                                            key={project.id}
-                                            onActivate={() =>
-                                                void setActiveProject(
-                                                    project.id,
-                                                )
-                                            }
-                                            onRemove={() =>
-                                                void handleRemoveProject(
-                                                    project.id,
-                                                )
-                                            }
-                                            project={project}
-                                        />
-                                    )}
-                                </ProjectSection>
+                            <div className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2">
+                                {sidebarProjects.length > 0 ? (
+                                    <ProjectGitSidebar
+                                        onCheckoutBranch={(
+                                            projectId,
+                                            branchId,
+                                        ) =>
+                                            void handleCheckoutBranch(
+                                                projectId,
+                                                branchId,
+                                            )
+                                        }
+                                        onCreateWorktreeFromBranch={(
+                                            projectId,
+                                            branchId,
+                                        ) =>
+                                            void handleCreateWorktreeFromBranch(
+                                                projectId,
+                                                branchId,
+                                            )
+                                        }
+                                        onSelectBranch={(projectId, branchId) =>
+                                            void handleSelectBranch(
+                                                projectId,
+                                                branchId,
+                                            )
+                                        }
+                                        onSelectProject={(projectId) =>
+                                            void handleSelectProject(projectId)
+                                        }
+                                        onSelectWorktree={(
+                                            projectId,
+                                            worktreeId,
+                                        ) =>
+                                            void handleSelectWorktree(
+                                                projectId,
+                                                worktreeId,
+                                            )
+                                        }
+                                        onToggleBranches={
+                                            toggleGitBranchesExpanded
+                                        }
+                                        onToggleProject={
+                                            toggleGitProjectExpanded
+                                        }
+                                        onToggleWorktrees={
+                                            toggleGitWorktreesExpanded
+                                        }
+                                        projects={sidebarProjects}
+                                    />
+                                ) : (
+                                    <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-text-secondary">
+                                        Open a folder to start building your git
+                                        workspace.
+                                    </div>
+                                )}
                             </div>
                         </aside>
 
@@ -908,7 +1369,10 @@ export function App() {
                             onFocus={() => focusSurface("workspace")}
                             tabIndex={0}
                         >
-                            <WorkspaceView defaultProjectId={activeProjectId} />
+                            <WorkspaceView
+                                defaultProjectId={activeProjectId}
+                                defaultWorktreeId={activeWorktreeId}
+                            />
                         </main>
 
                         <SplitHandle
@@ -936,199 +1400,125 @@ export function App() {
                         />
 
                         <aside
-                            className="surface-focus flex min-h-0 flex-col border-l border-border bg-bg-panel"
+                            className="surface-focus flex min-h-0 flex-col bg-bg-panel"
                             data-active={activeSurface === "utility"}
                             onClick={() => focusSurface("utility")}
                             onFocus={() => focusSurface("utility")}
                             tabIndex={0}
                         >
-                            <div className="border-b border-border px-3 py-2.5">
-                                <div className="flex items-center justify-between gap-2">
-                                    <p className="text-[11px] uppercase tracking-[0.18em] text-text-secondary">
-                                        Files
-                                    </p>
-                                    <button
-                                        aria-expanded={isFileTreeSearchOpen}
-                                        aria-label="Search files"
-                                        className={[
-                                            "sidebar-tool-button app-no-drag",
-                                            isFileTreeSearchOpen
-                                                ? "bg-bg-secondary text-text-primary"
-                                                : "",
-                                        ].join(" ")}
-                                        onClick={handleToggleFileTreeSearch}
-                                        type="button"
-                                    >
-                                        <svg
-                                            aria-hidden="true"
-                                            className="h-3.25 w-3.25"
-                                            fill="none"
-                                            viewBox="0 0 16 16"
-                                        >
-                                            <circle
-                                                cx="7"
-                                                cy="7"
-                                                r="4.5"
-                                                stroke="currentColor"
-                                                strokeWidth="1.25"
-                                            />
-                                            <path
-                                                d="M10.5 10.5L14 14"
-                                                stroke="currentColor"
-                                                strokeLinecap="round"
-                                                strokeWidth="1.25"
-                                            />
-                                        </svg>
-                                    </button>
-                                </div>
+                            <GitPanel
+                                activeTab={activeGitPanelTab}
+                                changes={{
+                                    activePath: activeGitSelectedDiffPath,
+                                    expandedGroupIds: activeGitExpandedGroups,
+                                    expandedPaths: activeGitExpandedPaths,
+                                    groups: gitChangeGroups,
+                                    onNodeClick: (node) =>
+                                        void handleSelectGitDiffPath(node.path),
+                                    onToggleDirectory: (node) => {
+                                        if (!activeProjectId) {
+                                            return;
+                                        }
 
-                                {isFileTreeSearchOpen ? (
-                                    <div className="sidebar-search app-no-drag mt-2">
-                                        <svg
-                                            aria-hidden="true"
-                                            className="h-3 w-3 shrink-0 text-text-secondary"
-                                            fill="none"
-                                            viewBox="0 0 16 16"
-                                        >
-                                            <circle
-                                                cx="7"
-                                                cy="7"
-                                                r="4.5"
-                                                stroke="currentColor"
-                                                strokeWidth="1.25"
-                                            />
-                                            <path
-                                                d="M10.5 10.5L14 14"
-                                                stroke="currentColor"
-                                                strokeLinecap="round"
-                                                strokeWidth="1.25"
-                                            />
-                                        </svg>
-                                        <input
-                                            aria-label="Filter files in tree"
-                                            className="app-no-drag sidebar-search-input"
-                                            onChange={(event) =>
-                                                setFileTreeFilter(
-                                                    event.target.value,
-                                                )
-                                            }
-                                            onKeyDown={(event) => {
-                                                if (event.key !== "Escape") {
-                                                    return;
-                                                }
+                                        toggleGitChangePath(
+                                            activeProjectId,
+                                            node.path,
+                                            activeWorktreeId,
+                                        );
+                                    },
+                                    onToggleGroup: (groupId) => {
+                                        if (!activeProjectId) {
+                                            return;
+                                        }
 
-                                                if (fileTreeFilter) {
-                                                    setFileTreeFilter("");
-                                                    return;
-                                                }
+                                        toggleGitChangeGroup(
+                                            activeProjectId,
+                                            groupId,
+                                            activeWorktreeId,
+                                        );
+                                    },
+                                }}
+                                diffs={{
+                                    activeFileId: activeGitSelectedDiffPath,
+                                    files: activeGitDiffs,
+                                    onSelectFile: (file) =>
+                                        void handleSelectGitDiffPath(file.path),
+                                }}
+                                files={{
+                                    activePath: activeFilePath,
+                                    enableNodeDrag: true,
+                                    expandedPaths: visibleExpandedDirectories,
+                                    nodes: gitFileNodes,
+                                    onNodeClick: (node) =>
+                                        activeProjectId
+                                            ? void openFileTab(
+                                                  activeProjectId,
+                                                  node.path,
+                                                  activeWorktreeId,
+                                              )
+                                            : undefined,
+                                    onNodeDragStart: (node, dataTransfer) => {
+                                        if (!dataTransfer) {
+                                            return;
+                                        }
 
-                                                setIsFileTreeSearchOpen(false);
-                                            }}
-                                            placeholder="Search files..."
-                                            ref={fileTreeSearchInputRef}
-                                            type="text"
-                                            value={fileTreeFilter}
-                                        />
-                                        {fileTreeFilter ? (
-                                            <button
-                                                aria-label="Clear file search"
-                                                className="sidebar-tool-button h-5 w-5 shrink-0"
-                                                onClick={() =>
-                                                    setFileTreeFilter("")
-                                                }
-                                                type="button"
-                                            >
-                                                <span aria-hidden="true">
-                                                    ×
-                                                </span>
-                                            </button>
-                                        ) : null}
-                                    </div>
-                                ) : null}
-                            </div>
+                                        dataTransfer.effectAllowed = "copy";
+                                        dataTransfer.setData(
+                                            COMPOSER_PROJECT_ENTRY_MIME,
+                                            serializeComposerProjectEntryDragData(
+                                                {
+                                                    kind: node.kind,
+                                                    name: node.name,
+                                                    relativePath: node.path,
+                                                },
+                                            ),
+                                        );
+                                        dataTransfer.setData(
+                                            "text/plain",
+                                            node.path,
+                                        );
+                                    },
+                                    onToggleDirectory: (node) => {
+                                        if (!activeProjectId) {
+                                            return;
+                                        }
 
-                            <div
-                                className="shell-scrollbar min-h-0 flex-1 overflow-auto px-2 py-2"
-                                onContextMenu={handleBlankTreeContextMenu}
-                            >
-                                {activeProject ? (
-                                    visibleFileTreeRoots.length > 0 ? (
-                                        <div className="min-w-full w-max space-y-1">
-                                            {visibleFileTreeRoots.map(
-                                                (node) => (
-                                                    <TreeNodeRow
-                                                        activeFilePath={
-                                                            activeFilePath
-                                                        }
-                                                        expandedDirectories={
-                                                            visibleExpandedDirectories
-                                                        }
-                                                        isFilterActive={
-                                                            isFilteringFileTree
-                                                        }
-                                                        key={node.id}
-                                                        loadingNodeKeys={
-                                                            loadingNodeKeys
-                                                        }
-                                                        nodesByParent={
-                                                            visibleFileTreeNodesByParent
-                                                        }
-                                                        onOpenFile={(
-                                                            relativePath,
-                                                        ) =>
-                                                            void openFileTab(
-                                                                activeProject.id,
-                                                                relativePath,
-                                                            )
-                                                        }
-                                                        onOpenMenu={(
-                                                            event,
-                                                            treeNode,
-                                                        ) =>
-                                                            handleTreeNodeContextMenu(
-                                                                event,
-                                                                treeNode,
-                                                            )
-                                                        }
-                                                        onToggleDirectory={(
-                                                            treeNode,
-                                                        ) =>
-                                                            void toggleDirectory(
-                                                                activeProject.id,
-                                                                treeNode,
-                                                            )
-                                                        }
-                                                        projectId={
-                                                            activeProject.id
-                                                        }
-                                                        rootNode={node}
-                                                    />
-                                                ),
-                                            )}
-                                        </div>
-                                    ) : isFilteringFileTree &&
-                                      isFileTreeSearchLoading ? (
-                                        <div className="px-2 py-2 text-xs text-text-secondary">
-                                            Scanning project tree...
-                                        </div>
-                                    ) : isFilteringFileTree ? (
-                                        <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-text-secondary">
-                                            No files match "
-                                            {normalizedFileTreeFilter}
-                                            ".
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-text-secondary">
-                                            This project is empty.
-                                        </div>
-                                    )
-                                ) : (
-                                    <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-text-secondary">
-                                        Add a project and select it to browse
-                                        its tree.
-                                    </div>
-                                )}
-                            </div>
+                                        const treeNode =
+                                            findProjectTreeNodeByPath(
+                                                visibleFileTreeNodesByParent,
+                                                node.path,
+                                            );
+                                        if (!treeNode) {
+                                            return;
+                                        }
+
+                                        void toggleDirectory(
+                                            activeProjectId,
+                                            treeNode,
+                                            activeWorktreeId,
+                                        );
+                                    },
+                                }}
+                                onTabChange={(tab) => {
+                                    if (!activeProjectId) {
+                                        return;
+                                    }
+
+                                    setGitPanelTab(
+                                        activeProjectId,
+                                        tab,
+                                        activeWorktreeId,
+                                    );
+                                }}
+                                tabCounts={{
+                                    changes:
+                                        activeGitSnapshot?.status
+                                            .changedCount ?? 0,
+                                    diffs: activeGitDiffs.length,
+                                    files: visibleFileTreeRoots.length,
+                                }}
+                                toolbar={gitToolbar}
+                            />
                         </aside>
                     </div>
                 </div>
@@ -1139,448 +1529,669 @@ export function App() {
                     {topStatus}
                 </div>
             ) : null}
-
-            {fileTreeContextMenu ? (
-                <ContextMenu
-                    entries={fileTreeContextMenuEntries}
-                    menu={fileTreeContextMenu}
-                    minWidth={180}
-                    onClose={() => setFileTreeContextMenu(null)}
-                />
-            ) : null}
         </div>
     );
 }
 
-function ProjectSection({
-    children,
-    emptyCopy,
+function buildSidebarProjects({
+    activeProjectId,
+    activeWorktreeIds,
+    branchesByProject,
+    expandedBranches,
+    expandedProjects,
+    expandedWorktrees,
+    onRemoveWorktree,
     projects,
-    title,
+    selectedBranchNames,
+    selectedBranchNamesByContext,
+    snapshots,
 }: {
-    readonly children: (project: ProjectSummary) => ReactNode;
-    readonly emptyCopy: string;
+    readonly activeProjectId: string | null;
+    readonly activeWorktreeIds: Record<string, string | null>;
+    readonly branchesByProject: Record<string, readonly GitBranchSummary[]>;
+    readonly expandedBranches: Record<string, boolean>;
+    readonly expandedProjects: Record<string, boolean>;
+    readonly expandedWorktrees: Record<string, boolean>;
+    readonly onRemoveWorktree?: (
+        projectId: string,
+        worktree: GitWorktreeSummary,
+    ) => void | Promise<void>;
     readonly projects: readonly ProjectSummary[];
-    readonly title: string;
-}) {
-    return (
-        <section className="mb-4">
-            <div className="mb-1.5 px-2 text-[11px] font-medium uppercase tracking-[0.16em] text-text-secondary">
-                {title}
-            </div>
-            <div className="space-y-0.5">
-                {projects.length === 0 ? (
-                    <div className="px-2 py-2 text-xs text-text-secondary">
-                        {emptyCopy}
-                    </div>
-                ) : (
-                    projects.map((project) => children(project))
-                )}
-            </div>
-        </section>
-    );
-}
-
-function ProjectRow({
-    isActive,
-    onActivate,
-    onRemove,
-    project,
-}: {
-    readonly isActive: boolean;
-    readonly onActivate: () => void;
-    readonly onRemove: () => void;
-    readonly project: ProjectSummary;
-}) {
-    return (
-        <div
-            className={[
-                "group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors",
-                isActive
-                    ? "bg-accent/12 text-accent-strong"
-                    : "hover:bg-bg-secondary/80",
-            ].join(" ")}
-        >
-            <button
-                className="app-no-drag min-w-0 flex-1 text-left"
-                onClick={onActivate}
-                type="button"
-            >
-                <div className="truncate text-[13px] font-medium text-text-primary">
-                    {project.name}
-                </div>
-                <div className="truncate text-[11px] text-text-secondary">
-                    {project.rootPath}
-                </div>
-            </button>
-
-            <button
-                aria-label={`Remove ${project.name}`}
-                className="app-no-drag rounded-md px-1 py-0.5 text-[11px] text-text-secondary opacity-0 transition hover:bg-bg-tertiary hover:text-text-primary group-hover:opacity-100"
-                onClick={onRemove}
-                type="button"
-            >
-                ×
-            </button>
-        </div>
-    );
-}
-
-function TreeNodeRow({
-    activeFilePath,
-    expandedDirectories,
-    isFilterActive,
-    loadingNodeKeys,
-    nodesByParent,
-    onOpenFile,
-    onOpenMenu,
-    onToggleDirectory,
-    projectId,
-    rootNode,
-}: {
-    readonly activeFilePath: string | null;
-    readonly expandedDirectories: readonly string[];
-    readonly isFilterActive: boolean;
-    readonly loadingNodeKeys: readonly string[];
-    readonly nodesByParent: Record<string, readonly ProjectTreeNode[]>;
-    readonly onOpenFile: (relativePath: string) => void;
-    readonly onOpenMenu: (
-        event: ReactMouseEvent<HTMLButtonElement>,
-        node: ProjectTreeNode,
-    ) => void;
-    readonly onToggleDirectory: (node: ProjectTreeNode) => void;
-    readonly projectId: string;
-    readonly rootNode: ProjectTreeNode;
-}) {
-    const isDirectory = rootNode.kind === "directory";
-    const isExpanded = expandedDirectories.includes(rootNode.relativePath);
-    const nodeKey = `${projectId}:${getParentKey(rootNode.relativePath)}`;
-    const isLoading = loadingNodeKeys.includes(nodeKey);
-    const childNodes = nodesByParent[getParentKey(rootNode.relativePath)] ?? [];
-    const isActiveFile = activeFilePath === rootNode.relativePath;
-
-    return (
-        <div>
-            <button
-                className={[
-                    "app-no-drag tree-row flex min-w-full w-max items-center gap-1 rounded-md px-1.5 py-1 text-left transition",
-                    isDirectory && isFilterActive ? "cursor-default" : "",
-                    isActiveFile
-                        ? "bg-selection text-text-primary"
-                        : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary",
-                ].join(" ")}
-                onClick={() =>
-                    isDirectory
-                        ? isFilterActive
-                            ? undefined
-                            : onToggleDirectory(rootNode)
-                        : onOpenFile(rootNode.relativePath)
-                }
-                onContextMenu={(event) => onOpenMenu(event, rootNode)}
-                type="button"
-            >
-                <span className="inline-flex w-3 justify-center text-[10px] text-text-secondary">
-                    {isDirectory ? <TreeChevronIcon open={isExpanded} /> : null}
-                </span>
-                <span className="inline-flex w-4 justify-center text-text-secondary">
-                    <TreeEntryIcon node={rootNode} open={isExpanded} />
-                </span>
-                <span className="flex-1 whitespace-nowrap pr-2 text-[13px]">
-                    {rootNode.name}
-                </span>
-                {rootNode.gitStatus ? (
-                    <GitBadge status={rootNode.gitStatus} />
-                ) : null}
-            </button>
-
-            {isDirectory && isExpanded ? (
-                <div className="ml-4 min-w-full w-max border-l border-border pl-2">
-                    {isLoading ? (
-                        <div className="px-1.5 py-1 text-[11px] text-text-secondary">
-                            Loading...
-                        </div>
-                    ) : (
-                        childNodes.map((node) => (
-                            <TreeNodeRow
-                                activeFilePath={activeFilePath}
-                                expandedDirectories={expandedDirectories}
-                                isFilterActive={isFilterActive}
-                                key={node.id}
-                                loadingNodeKeys={loadingNodeKeys}
-                                nodesByParent={nodesByParent}
-                                onOpenFile={onOpenFile}
-                                onOpenMenu={onOpenMenu}
-                                onToggleDirectory={onToggleDirectory}
-                                projectId={projectId}
-                                rootNode={node}
-                            />
-                        ))
-                    )}
-                </div>
-            ) : null}
-        </div>
-    );
-}
-
-function TreeChevronIcon({ open }: { readonly open: boolean }) {
-    return (
-        <svg
-            aria-hidden="true"
-            className="h-3 w-3 opacity-55 transition-transform duration-100"
-            fill="none"
-            style={{
-                transform: open ? "rotate(90deg)" : "rotate(0deg)",
-            }}
-            viewBox="0 0 16 16"
-        >
-            <path
-                d="M6 4l4 4-4 4"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.5"
-            />
-        </svg>
-    );
-}
-
-function TreeEntryIcon({
-    node,
-    open,
-}: {
-    readonly node: ProjectTreeNode;
-    readonly open: boolean;
-}) {
-    if (node.kind === "directory") {
-        return <TreeFolderIcon open={open} />;
-    }
-
-    if (isMarkdownExtension(node.extension)) {
-        return <TreeNoteIcon />;
-    }
-
-    if (node.extension?.toLowerCase() === "pdf") {
-        return <TreePdfIcon />;
-    }
-
-    if (isImageExtension(node.extension)) {
-        return <TreeImageIcon />;
-    }
-
-    return <TreeGenericFileIcon />;
-}
-
-function TreeFolderIcon({ open }: { readonly open: boolean }) {
-    if (open) {
-        return (
-            <svg
-                aria-hidden="true"
-                className="h-3.75 w-3.75 shrink-0"
-                fill="none"
-                viewBox="0 0 16 16"
-            >
-                <path
-                    d="M1.5 3.5A1 1 0 0 1 2.5 2.5H6l1.5 1.5h5a1 1 0 0 1 1 1V5H2.5V3.5Z"
-                    fill="#f4c44c"
-                    opacity="0.92"
-                />
-                <path
-                    d="M1 5.5h13l-1.5 7.5H2.5L1 5.5Z"
-                    fill="#e6b33e"
-                    opacity="0.84"
-                />
-            </svg>
+    readonly selectedBranchNames: Record<string, string | null>;
+    readonly selectedBranchNamesByContext: Record<string, string | null>;
+    readonly snapshots: Record<string, GitRepositorySnapshot | null>;
+}): readonly ProjectGitSidebarProject[] {
+    return projects.map((project) => {
+        const projectWorktreeId = activeWorktreeIds[project.id] ?? null;
+        const projectContextKey = getGitContextKey(
+            project.id,
+            projectWorktreeId,
         );
+        const snapshot =
+            snapshots[projectContextKey] ??
+            snapshots[getGitContextKey(project.id, null)] ??
+            null;
+        const worktrees = snapshot?.worktrees ?? [];
+        const branches = branchesByProject[project.id] ?? [];
+        const branchWorktreeCounts = new Map<string, number>();
+
+        for (const worktree of worktrees) {
+            if (!worktree.branchName) {
+                continue;
+            }
+
+            branchWorktreeCounts.set(
+                worktree.branchName,
+                (branchWorktreeCounts.get(worktree.branchName) ?? 0) + 1,
+            );
+        }
+
+        return {
+            branches: branches.map((branch) => ({
+                aheadCount: branch.aheadBy,
+                behindCount: branch.behindBy,
+                description: branch.upstreamName ?? null,
+                id: branch.name,
+                isActive:
+                    (selectedBranchNamesByContext[projectContextKey] ??
+                        selectedBranchNames[project.id] ??
+                        snapshot?.branch?.name) === branch.name ||
+                    branch.isCurrent,
+                isRemote: branch.isRemote,
+                label: branch.name,
+                worktreeCount: branchWorktreeCounts.get(branch.name) ?? 0,
+            })),
+            branchesExpanded: expandedBranches[project.id] ?? true,
+            id: project.id,
+            isActive: project.id === activeProjectId,
+            isExpanded:
+                expandedProjects[project.id] ?? project.id === activeProjectId,
+            name: project.name,
+            rootPath: snapshot?.canonicalRootPath ?? project.rootPath,
+            worktrees: worktrees.map((worktree) => ({
+                aheadCount: worktree.branchName
+                    ? (branches.find(
+                          (branch) => branch.name === worktree.branchName,
+                      )?.aheadBy ?? null)
+                    : null,
+                badges: [
+                    ...(worktree.isPrimary
+                        ? [{ label: "Primary", tone: "neutral" as const }]
+                        : []),
+                    ...(worktree.isCurrent
+                        ? [{ label: "Current", tone: "accent" as const }]
+                        : []),
+                    ...(worktree.isLocked
+                        ? [{ label: "Locked", tone: "warning" as const }]
+                        : []),
+                ],
+                behindCount: worktree.branchName
+                    ? (branches.find(
+                          (branch) => branch.name === worktree.branchName,
+                      )?.behindBy ?? null)
+                    : null,
+                id: worktree.id,
+                isActive:
+                    worktree.id === projectWorktreeId || worktree.isCurrent,
+                label:
+                    worktree.branchName ??
+                    getPathBase(worktree.rootPath) ??
+                    worktree.rootPath,
+                branchName: worktree.branchName,
+                description: worktree.rootPath,
+                status:
+                    worktree.id ===
+                    (projectWorktreeId ?? snapshot?.currentWorktreeId)
+                        ? deriveWorktreeSidebarStatus(snapshot, worktree)
+                        : undefined,
+                trailingActions:
+                    !worktree.isPrimary && onRemoveWorktree
+                        ? [
+                              {
+                                  label: "Remove",
+                                  onClick: () =>
+                                      void onRemoveWorktree(
+                                          project.id,
+                                          worktree,
+                                      ),
+                              },
+                          ]
+                        : [],
+            })),
+            worktreesExpanded: expandedWorktrees[project.id] ?? true,
+        } satisfies ProjectGitSidebarProject;
+    });
+}
+
+function buildGitChangeGroups(
+    changes: readonly GitChangeEntry[],
+    actions: {
+        readonly onDiscardPath: (path: string) => void;
+        readonly onOpenDiff: (path: string) => void;
+        readonly onStagePath: (path: string) => void;
+        readonly onUnstagePath: (path: string) => void;
+    },
+): readonly GitChangeGroup[] {
+    const groups: readonly GitChangeGroupId[] = [
+        "conflicts",
+        "changes",
+        "staged",
+        "untracked",
+    ];
+
+    return groups.map((groupId) => {
+        const groupChanges = changes.filter((change) => {
+            switch (groupId) {
+                case "conflicts":
+                    return change.scope === "conflicted";
+                case "staged":
+                    return change.scope === "staged";
+                case "untracked":
+                    return change.scope === "untracked";
+                case "changes":
+                default:
+                    return change.scope === "unstaged";
+            }
+        });
+
+        return {
+            actions: [],
+            count: groupChanges.length,
+            description:
+                groupChanges.length > 0
+                    ? `${groupChanges.length} path${groupChanges.length === 1 ? "" : "s"}`
+                    : null,
+            emptyLabel: `No ${groupId} entries.`,
+            id: groupId,
+            nodes: buildGitChangeTreeNodes(groupChanges, actions),
+            title:
+                groupId === "conflicts"
+                    ? "Conflicts"
+                    : groupId === "changes"
+                      ? "Changes"
+                      : groupId === "staged"
+                        ? "Staged"
+                        : "Untracked",
+        } satisfies GitChangeGroup;
+    });
+}
+
+function buildGitDiffFiles(
+    selectedDiffPath: string | null,
+    diffCache: Record<string, SharedGitFileDiff | null>,
+    changes: readonly GitChangeEntry[],
+): readonly GitDiffFile[] {
+    const orderedPaths = [
+        ...(selectedDiffPath ? [selectedDiffPath] : []),
+        ...changes.map((change) => change.path),
+        ...Object.keys(diffCache),
+    ];
+
+    const uniquePaths = Array.from(new Set(orderedPaths));
+
+    return uniquePaths.map((path) => {
+        const change = changes.find((entry) => entry.path === path) ?? null;
+        const diff = diffCache[path] ?? null;
+
+        if (diff) {
+            return convertSharedGitDiff(diff, change);
+        }
+
+        return {
+            hunks: [],
+            id: path,
+            isText: !(change?.isBinary ?? false),
+            kind: mapChangeKindToDiffKind(change),
+            newText: null,
+            oldText: null,
+            path,
+            previousPath: change?.previousPath ?? null,
+            reversible: change?.scope !== "untracked",
+            statusLabel: formatChangeLabel(change),
+            summary: formatGitCountLabel(
+                change?.additions ?? null,
+                change?.deletions ?? null,
+            ),
+        } satisfies GitDiffFile;
+    });
+}
+
+function summarizeGitRepository(
+    project: ProjectSummary | null,
+    snapshot: GitRepositorySnapshot | null,
+): GitRepositorySummary | null {
+    if (!snapshot) {
+        return null;
     }
 
-    return (
-        <svg
-            aria-hidden="true"
-            className="h-3.75 w-3.75 shrink-0"
-            fill="none"
-            viewBox="0 0 16 16"
-        >
-            <path
-                d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
-                fill="#f0be49"
-                opacity="0.78"
-            />
-        </svg>
+    const activeWorktree = snapshot.worktrees.find(
+        (worktree) => worktree.id === snapshot.currentWorktreeId,
     );
+
+    return {
+        aheadBy: snapshot.aheadBy,
+        behindBy: snapshot.behindBy,
+        branchName: snapshot.branch?.name ?? null,
+        detached: snapshot.branch?.isDetached ?? false,
+        repositoryName: project?.name ?? getPathBase(snapshot.rootPath),
+        stateLabel: describeRepositoryState(snapshot.repositoryState, snapshot),
+        upstreamName: snapshot.branch?.upstreamName ?? null,
+        worktreeName:
+            activeWorktree?.branchName ?? getPathBase(activeWorktree?.rootPath),
+        worktreePath: activeWorktree?.rootPath ?? snapshot.rootPath,
+    };
 }
 
-function TreeNoteIcon() {
-    return (
-        <svg
-            aria-hidden="true"
-            className="h-3.25 w-3.25 shrink-0 opacity-55"
-            fill="none"
-            viewBox="0 0 16 16"
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke="currentColor"
-                strokeWidth="1"
-            />
-            <path
-                d="M6 8h4M6 10.5h3"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeWidth="0.8"
-            />
-        </svg>
-    );
+function mapGitChangeToNodeStatus(
+    change: GitChangeEntry,
+): GitTreeNode["status"] {
+    switch (change.kind) {
+        case "conflicted":
+            return "conflict";
+        case "added":
+            return change.scope === "staged" ? "staged" : "added";
+        case "deleted":
+            return "deleted";
+        case "renamed":
+            return "renamed";
+        case "untracked":
+            return "untracked";
+        case "typechange":
+        case "copied":
+        case "modified":
+        default:
+            return change.scope === "staged" ? "staged" : "modified";
+    }
 }
 
-function TreePdfIcon() {
-    return (
-        <svg
-            aria-hidden="true"
-            className="h-3.25 w-3.25 shrink-0"
-            fill="none"
-            viewBox="0 0 16 16"
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke="#e24b3b"
-                strokeWidth="1"
-            />
-            <path
-                d="M9.5 1.5V5H13"
-                stroke="#e24b3b"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="0.8"
-            />
-            <text
-                fill="#e24b3b"
-                fontFamily="sans-serif"
-                fontSize="4.5"
-                fontWeight="700"
-                x="5"
-                y="12"
-            >
-                PDF
-            </text>
-        </svg>
-    );
+function deriveWorktreeSidebarStatus(
+    snapshot: GitRepositorySnapshot | null,
+    worktree: GitWorktreeSummary,
+): ProjectGitSidebarWorktree["status"] | undefined {
+    if (worktree.isBare) {
+        return "missing";
+    }
+
+    if (!snapshot || snapshot.currentWorktreeId !== worktree.id) {
+        return undefined;
+    }
+
+    if (snapshot.repositoryState !== "ready") {
+        return "missing";
+    }
+
+    if (snapshot.status.conflictedCount > 0) {
+        return "conflicted";
+    }
+
+    return snapshot.status.changedCount > 0 ? "dirty" : "clean";
 }
 
-function TreeImageIcon() {
-    return (
-        <svg
-            aria-hidden="true"
-            className="h-3.25 w-3.25 shrink-0 opacity-58"
-            fill="none"
-            viewBox="0 0 16 16"
-        >
-            <rect
-                height="11"
-                rx="1.5"
-                stroke="currentColor"
-                strokeWidth="1"
-                width="12"
-                x="2"
-                y="2.5"
-            />
-            <circle
-                cx="5.5"
-                cy="5.8"
-                r="1.2"
-                stroke="currentColor"
-                strokeWidth="0.8"
-            />
-            <path
-                d="M2.5 11l3-3.5 2.5 2.5 1.5-1.5 4 3.5"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="0.8"
-            />
-        </svg>
-    );
+function buildGitChangeTreeNodes(
+    changes: readonly GitChangeEntry[],
+    actions: {
+        readonly onDiscardPath: (path: string) => void;
+        readonly onOpenDiff: (path: string) => void;
+        readonly onStagePath: (path: string) => void;
+        readonly onUnstagePath: (path: string) => void;
+    },
+): readonly GitTreeNode[] {
+    const roots = new Map<string, MutableGitChangeTreeNode>();
+
+    for (const change of changes) {
+        const parts = change.path.split("/").filter(Boolean);
+        if (parts.length === 0) {
+            continue;
+        }
+
+        let currentMap = roots;
+        let currentPath = "";
+
+        for (const [index, part] of parts.entries()) {
+            currentPath = currentPath ? `${currentPath}/${part}` : part;
+            const isLeaf = index === parts.length - 1;
+            const existing = currentMap.get(currentPath);
+
+            if (existing) {
+                if (isLeaf) {
+                    existing.change = change;
+                }
+                currentMap = existing.children;
+                continue;
+            }
+
+            const nextNode: MutableGitChangeTreeNode = {
+                change: isLeaf ? change : null,
+                children: new Map<string, MutableGitChangeTreeNode>(),
+                kind: isLeaf && !change.hasChildren ? "file" : "directory",
+                name: part,
+                path: currentPath,
+            };
+
+            currentMap.set(currentPath, nextNode);
+            currentMap = nextNode.children;
+        }
+    }
+
+    return Array.from(roots.values())
+        .map((node) => finalizeGitChangeTreeNode(node, actions))
+        .sort(compareGitTreeNodes);
 }
 
-function TreeGenericFileIcon() {
-    return (
-        <svg
-            aria-hidden="true"
-            className="h-3.25 w-3.25 shrink-0 opacity-58"
-            fill="none"
-            viewBox="0 0 16 16"
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke="currentColor"
-                strokeWidth="1"
-            />
-            <path
-                d="M9.5 1.5V5H13"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="0.8"
-            />
-        </svg>
-    );
+function finalizeGitChangeTreeNode(
+    node: MutableGitChangeTreeNode,
+    actions: {
+        readonly onDiscardPath: (path: string) => void;
+        readonly onOpenDiff: (path: string) => void;
+        readonly onStagePath: (path: string) => void;
+        readonly onUnstagePath: (path: string) => void;
+    },
+): GitTreeNode {
+    const children = Array.from(node.children.values())
+        .map((child) => finalizeGitChangeTreeNode(child, actions))
+        .sort(compareGitTreeNodes);
+    const status =
+        node.change !== null
+            ? mapGitChangeToNodeStatus(node.change)
+            : deriveDirectoryStatus(children);
+
+    return {
+        actions:
+            node.kind === "file" && node.change
+                ? buildGitChangeActions(node.change, actions)
+                : [],
+        children,
+        hasChildren: children.length > 0,
+        id: node.path,
+        kind: node.kind,
+        meta:
+            node.change &&
+            (node.change.additions !== null ||
+                node.change.deletions !== null) ? (
+                <span className="font-mono text-[11px] text-text-secondary">
+                    {formatGitCountMeta(
+                        node.change.additions,
+                        node.change.deletions,
+                    )}
+                </span>
+            ) : null,
+        name: node.name,
+        path: node.path,
+        secondaryText: node.change?.previousPath
+            ? `from ${node.change.previousPath}`
+            : node.change?.isBinary
+              ? "Binary file"
+              : null,
+        status,
+    };
 }
 
-function GitBadge({ status }: { readonly status: GitStatusBadge }) {
-    const label =
-        status === "modified"
-            ? "M"
-            : status === "added"
-              ? "A"
-              : status === "deleted"
-                ? "D"
-                : status === "untracked"
-                  ? "?"
-                  : "•";
+function buildGitChangeActions(
+    change: GitChangeEntry,
+    actions: {
+        readonly onDiscardPath: (path: string) => void;
+        readonly onOpenDiff: (path: string) => void;
+        readonly onStagePath: (path: string) => void;
+        readonly onUnstagePath: (path: string) => void;
+    },
+): readonly GitAction[] {
+    const nextActions: GitAction[] = [
+        {
+            id: `${change.path}:diff`,
+            label: "Diff",
+            onClick: () => actions.onOpenDiff(change.path),
+        },
+    ];
 
-    const className =
-        status === "deleted"
-            ? "bg-red-50 text-red-600"
-            : status === "added"
-              ? "bg-emerald-50 text-emerald-600"
-              : status === "modified"
-                ? "bg-amber-50 text-amber-700"
-                : status === "untracked"
-                  ? "bg-slate-100 text-slate-600"
-                  : "bg-sky-50 text-sky-600";
+    if (change.scope === "staged") {
+        nextActions.push({
+            id: `${change.path}:unstage`,
+            label: "Unstage",
+            onClick: () => actions.onUnstagePath(change.path),
+        });
+    } else {
+        nextActions.push({
+            id: `${change.path}:stage`,
+            label: "Stage",
+            onClick: () => actions.onStagePath(change.path),
+        });
+    }
 
-    return (
-        <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${className}`}
-        >
-            {label}
-        </span>
-    );
+    nextActions.push({
+        id: `${change.path}:discard`,
+        label: "Discard",
+        onClick: () => actions.onDiscardPath(change.path),
+        tone: "danger",
+    });
+
+    return nextActions;
+}
+
+function deriveDirectoryStatus(
+    children: readonly GitTreeNode[],
+): GitNodeStatus | null {
+    const childStatuses = Array.from(
+        new Set(children.map((child) => child.status).filter(Boolean)),
+    ) as GitNodeStatus[];
+
+    if (childStatuses.length === 0) {
+        return null;
+    }
+
+    if (childStatuses.length === 1) {
+        return childStatuses[0] ?? null;
+    }
+
+    return "mixed";
+}
+
+function compareGitTreeNodes(left: GitTreeNode, right: GitTreeNode): number {
+    if (left.kind !== right.kind) {
+        return left.kind === "directory" ? -1 : 1;
+    }
+
+    return left.path.localeCompare(right.path);
+}
+
+function convertSharedGitDiff(
+    diff: SharedGitFileDiff,
+    change: GitChangeEntry | null,
+): GitDiffFile {
+    return {
+        hunks: diff.hunks.map((hunk) => {
+            let oldLine = hunk.oldStart;
+            let newLine = hunk.newStart;
+
+            return {
+                header: `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`,
+                id: hunk.id,
+                lines: hunk.lines.map((line) => {
+                    if (line.type === "add") {
+                        return {
+                            id: line.id,
+                            kind: "add" as const,
+                            newLineNumber: newLine++,
+                            oldLineNumber: null,
+                            text: line.text,
+                        };
+                    }
+
+                    if (line.type === "remove") {
+                        return {
+                            id: line.id,
+                            kind: "remove" as const,
+                            newLineNumber: null,
+                            oldLineNumber: oldLine++,
+                            text: line.text,
+                        };
+                    }
+
+                    return {
+                        id: line.id,
+                        kind: "context" as const,
+                        newLineNumber: newLine++,
+                        oldLineNumber: oldLine++,
+                        text: line.text,
+                    };
+                }),
+                newCount: hunk.newCount,
+                newStart: hunk.newStart,
+                oldCount: hunk.oldCount,
+                oldStart: hunk.oldStart,
+            };
+        }),
+        id: diff.path,
+        isText: diff.isText,
+        kind: diff.kind,
+        newText: diff.newText,
+        oldText: diff.oldText,
+        path: diff.path,
+        previousPath: diff.previousPath,
+        reversible: diff.reversible,
+        statusLabel: formatChangeLabel(change),
+        summary: formatGitCountLabel(
+            change?.additions ?? null,
+            change?.deletions ?? null,
+        ),
+    };
+}
+
+function mapChangeKindToDiffKind(
+    change: GitChangeEntry | null,
+): GitDiffFile["kind"] {
+    if (!change) {
+        return "update";
+    }
+
+    switch (change.kind) {
+        case "added":
+        case "untracked":
+            return "create";
+        case "deleted":
+            return "delete";
+        case "renamed":
+            return "move";
+        default:
+            return "update";
+    }
+}
+
+function formatChangeLabel(change: GitChangeEntry | null): string | null {
+    if (!change) {
+        return null;
+    }
+
+    switch (change.kind) {
+        case "added":
+            return "added";
+        case "deleted":
+            return "deleted";
+        case "renamed":
+            return "renamed";
+        case "conflicted":
+            return "conflict";
+        case "untracked":
+            return "untracked";
+        default:
+            return change.scope === "staged" ? "staged" : "modified";
+    }
+}
+
+function formatGitCountMeta(
+    additions: number | null,
+    deletions: number | null,
+): string {
+    const parts: string[] = [];
+
+    if (typeof additions === "number") {
+        parts.push(`+${additions}`);
+    }
+
+    if (typeof deletions === "number") {
+        parts.push(`-${deletions}`);
+    }
+
+    return parts.join(" ");
+}
+
+function formatGitCountLabel(
+    additions: number | null,
+    deletions: number | null,
+): string | null {
+    const label = formatGitCountMeta(additions, deletions);
+    return label.length > 0 ? label : null;
+}
+
+function describeRepositoryState(
+    repositoryState: GitRepositoryState,
+    snapshot: GitRepositorySnapshot,
+): string | null {
+    if (repositoryState !== "ready") {
+        switch (repositoryState) {
+            case "not_repo":
+                return "Not a git repository";
+            case "missing":
+                return "Missing worktree";
+            case "bare":
+                return "Bare repository";
+            case "error":
+                return "Git error";
+            default:
+                return repositoryState;
+        }
+    }
+
+    if (snapshot.status.conflictedCount > 0) {
+        return "Conflicts";
+    }
+
+    switch (snapshot.syncStatus) {
+        case "ahead":
+            return "Ahead";
+        case "behind":
+            return "Behind";
+        case "diverged":
+            return "Diverged";
+        default:
+            return null;
+    }
+}
+
+function getGitContextKey(
+    projectId: string | null,
+    worktreeId: string | null,
+): string {
+    return `${projectId ?? "__none__"}::${worktreeId ?? "__primary__"}`;
+}
+
+function sanitizeBranchName(branchName: string): string {
+    return branchName
+        .trim()
+        .replace(/[^a-zA-Z0-9._/-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .replace(/[\\/]+/g, "-")
+        .slice(0, 64);
+}
+
+function getPathBase(value: string | null | undefined): string | null {
+    if (!value) {
+        return null;
+    }
+
+    const normalized = value.replace(/\\/g, "/").replace(/\/+$/, "");
+    const parts = normalized.split("/").filter(Boolean);
+    return parts.at(-1) ?? null;
 }
 
 function getComandoApi(): ComandoApi | null {
     return "comando" in window ? window.comando : null;
 }
 
-function getParentKey(parentRelativePath: string | null): string {
-    return parentRelativePath ?? ROOT_NODE_KEY;
-}
-
-function isImageExtension(extension: string | null): boolean {
-    if (!extension) {
-        return false;
-    }
-
-    return ["avif", "gif", "jpeg", "jpg", "png", "svg", "webp"].includes(
-        extension.toLowerCase(),
-    );
-}
-
-function isMarkdownExtension(extension: string | null): boolean {
-    if (!extension) {
-        return false;
-    }
-
-    return ["markdown", "md", "mdx"].includes(extension.toLowerCase());
+function getProjectContextKey(
+    projectId: string | null,
+    worktreeId: string | null,
+): string {
+    return `${projectId ?? "__none__"}::${worktreeId ?? "__primary__"}`;
 }
 
 function startDragging(

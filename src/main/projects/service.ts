@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 import type Database from "better-sqlite3";
 import { simpleGit } from "simple-git";
@@ -9,12 +10,15 @@ import type {
     CreateProjectEntryInput,
     DeleteProjectEntryInput,
     GitStatusBadge,
+    ListProjectTreeInput,
+    OpenProjectFileInput,
     ProjectEntryMutationResult,
     ProjectFileDocument,
     ProjectSummary,
     ProjectTreeNode,
     ProjectTreeInvalidation,
     RenameProjectEntryInput,
+    SaveProjectFileInput,
     SearchProjectEntriesInput,
 } from "@shared/ipc";
 
@@ -33,10 +37,27 @@ import { shouldIgnoreEntry } from "./ignore";
 interface PersistedProjectRow {
     readonly id: string;
     readonly name: string;
-    readonly root_path: string;
+    readonly canonical_root_path: string;
     readonly created_at: string;
     readonly updated_at: string;
     readonly last_opened_at: string | null;
+}
+
+interface PersistedProjectWorktreeRow {
+    readonly branch_name: string | null;
+    readonly head_sha: string | null;
+    readonly id: string;
+    readonly is_primary: number;
+    readonly project_id: string;
+    readonly root_path: string;
+    readonly updated_at: string;
+}
+
+interface ResolvedProjectScope {
+    readonly canonicalRootPath: string;
+    readonly id: string;
+    readonly rootPath: string;
+    readonly worktreeId: string | null;
 }
 
 interface GitSnapshot {
@@ -49,6 +70,7 @@ interface ProjectServiceOptions {
     readonly onProjectTreeInvalidated: (
         payload: ProjectTreeInvalidation,
     ) => void;
+    readonly onProjectTouched?: (projectPath: string) => void;
 }
 
 export class ProjectService {
@@ -56,6 +78,7 @@ export class ProjectService {
     readonly #onProjectTreeInvalidated: (
         payload: ProjectTreeInvalidation,
     ) => void;
+    readonly #onProjectTouched?: (projectPath: string) => void;
     readonly #watchers = new Map<string, fs.FSWatcher>();
     readonly #gitSnapshots = new Map<string, GitSnapshot>();
     readonly #pendingInvalidations = new Map<string, NodeJS.Timeout>();
@@ -63,6 +86,7 @@ export class ProjectService {
     constructor(options: ProjectServiceOptions) {
         this.#connection = options.connection;
         this.#onProjectTreeInvalidated = options.onProjectTreeInvalidated;
+        this.#onProjectTouched = options.onProjectTouched;
     }
 
     listProjects(): ProjectSummary[] {
@@ -72,14 +96,11 @@ export class ProjectService {
                 SELECT
                     projects.id,
                     projects.name,
-                    project_roots.root_path,
+                    projects.canonical_root_path,
                     projects.created_at,
                     projects.updated_at,
                     recent_projects.last_opened_at
                 FROM projects
-                INNER JOIN project_roots
-                    ON project_roots.project_id = projects.id
-                    AND project_roots.is_primary = 1
                 LEFT JOIN recent_projects
                     ON recent_projects.project_id = projects.id
                 ORDER BY
@@ -91,7 +112,7 @@ export class ProjectService {
             .all();
 
         for (const row of rows) {
-            this.#ensureWatcher(row.id, row.root_path);
+            this.#ensureWatcher(row.id, row.canonical_root_path);
         }
 
         return rows.map((row) => ({
@@ -99,19 +120,19 @@ export class ProjectService {
             id: row.id,
             lastOpenedAt: row.last_opened_at,
             name: row.name,
-            rootPath: row.root_path,
+            rootPath: row.canonical_root_path,
             updatedAt: row.updated_at,
         }));
     }
 
     addProjectPaths(projectPaths: readonly string[]): ProjectSummary[] {
         const insertProject = this.#connection.prepare<
-            [string, string, string, string],
+            [string, string, string, string, string],
             void
         >(
             `
-            INSERT INTO projects (id, name, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO projects (id, name, canonical_root_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             `,
         );
         const insertRoot = this.#connection.prepare<
@@ -119,8 +140,35 @@ export class ProjectService {
             void
         >(
             `
-            INSERT INTO project_roots (project_id, root_path, is_primary)
+            INSERT OR IGNORE INTO project_roots (project_id, root_path, is_primary)
             VALUES (?, ?, ?)
+            `,
+        );
+        const insertWorktree = this.#connection.prepare<
+            [
+                string,
+                string,
+                string,
+                string | null,
+                string | null,
+                number,
+                string,
+                string,
+            ],
+            void
+        >(
+            `
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             `,
         );
         const touchRecent = this.#connection.prepare<[string, string], void>(
@@ -133,11 +181,21 @@ export class ProjectService {
         );
         const findExisting = this.#connection.prepare<
             [string],
-            { project_id: string } | undefined
+            { id: string } | undefined
         >(
             `
-            SELECT project_id
-            FROM project_roots
+            SELECT id
+            FROM projects
+            WHERE canonical_root_path = ?
+            `,
+        );
+        const findExistingWorktree = this.#connection.prepare<
+            [string],
+            { id: string } | undefined
+        >(
+            `
+            SELECT id
+            FROM project_worktrees
             WHERE root_path = ?
             `,
         );
@@ -145,23 +203,77 @@ export class ProjectService {
         const transaction = this.#connection.transaction(
             (normalizedPaths: readonly string[]) => {
                 for (const normalizedPath of normalizedPaths) {
+                    const projectPathMeta =
+                        resolveProjectPathMetadata(normalizedPath);
                     const now = new Date().toISOString();
-                    const existing = findExisting.get(normalizedPath);
+                    const existing = findExisting.get(
+                        projectPathMeta.canonicalRootPath,
+                    );
 
                     if (existing) {
-                        touchRecent.run(existing.project_id, now);
+                        ensureProjectRoots({
+                            canonicalRootPath:
+                                projectPathMeta.canonicalRootPath,
+                            connection: this.#connection,
+                            insertRoot,
+                            projectId: existing.id,
+                            selectedRootPath: projectPathMeta.worktreeRootPath,
+                        });
+                        ensureProjectWorktree({
+                            connection: this.#connection,
+                            findExistingWorktree,
+                            insertWorktree,
+                            now,
+                            projectId: existing.id,
+                            rootPath: projectPathMeta.worktreeRootPath,
+                        });
+                        touchRecent.run(existing.id, now);
+                        this.#onProjectTouched?.(
+                            projectPathMeta.worktreeRootPath,
+                        );
                         continue;
                     }
 
                     const projectId = randomUUID();
                     insertProject.run(
                         projectId,
-                        path.basename(normalizedPath),
+                        path.basename(projectPathMeta.canonicalRootPath),
+                        projectPathMeta.canonicalRootPath,
                         now,
                         now,
                     );
-                    insertRoot.run(projectId, normalizedPath, 1);
+                    ensureProjectRoots({
+                        canonicalRootPath: projectPathMeta.canonicalRootPath,
+                        connection: this.#connection,
+                        insertRoot,
+                        projectId,
+                        selectedRootPath: projectPathMeta.worktreeRootPath,
+                    });
+                    insertWorktree.run(
+                        `${projectId}:primary`,
+                        projectId,
+                        projectPathMeta.canonicalRootPath,
+                        null,
+                        null,
+                        1,
+                        now,
+                        now,
+                    );
+                    if (
+                        projectPathMeta.worktreeRootPath !==
+                        projectPathMeta.canonicalRootPath
+                    ) {
+                        ensureProjectWorktree({
+                            connection: this.#connection,
+                            findExistingWorktree,
+                            insertWorktree,
+                            now,
+                            projectId,
+                            rootPath: projectPathMeta.worktreeRootPath,
+                        });
+                    }
                     touchRecent.run(projectId, now);
+                    this.#onProjectTouched?.(projectPathMeta.worktreeRootPath);
                 }
             },
         );
@@ -182,7 +294,9 @@ export class ProjectService {
 
     removeProject(projectId: string): void {
         this.#closeWatcher(projectId);
-        this.#gitSnapshots.delete(projectId);
+        for (const worktree of this.listProjectWorktrees(projectId)) {
+            this.#gitSnapshots.delete(worktree.rootPath);
+        }
 
         this.#connection
             .prepare<[string], void>("DELETE FROM projects WHERE id = ?")
@@ -191,6 +305,7 @@ export class ProjectService {
 
     touchProject(projectId: string): void {
         const now = new Date().toISOString();
+        const project = this.#getProjectById(projectId);
 
         this.#connection
             .prepare<[string, string], void>(
@@ -209,17 +324,18 @@ export class ProjectService {
                 void
             >("UPDATE projects SET updated_at = ? WHERE id = ?")
             .run(now, projectId);
+        this.#onProjectTouched?.(project.rootPath);
     }
 
-    async listProjectTreeChildren(input: {
-        readonly projectId: string;
-        readonly parentRelativePath: string | null;
-    }): Promise<ProjectTreeNode[]> {
-        const project = this.#getProjectById(input.projectId);
-        const gitSnapshot = await this.#getGitSnapshot(
-            project.id,
-            project.rootPath,
+    async listProjectTreeChildren(
+        input: ListProjectTreeInput,
+    ): Promise<ProjectTreeNode[]> {
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
         );
+        this.#ensureWatcher(project.id, project.rootPath);
+        const gitSnapshot = await this.#getGitSnapshot(project.rootPath);
 
         return listProjectTreeChildren({
             gitSnapshot,
@@ -229,11 +345,13 @@ export class ProjectService {
         });
     }
 
-    async openProjectFile(input: {
-        readonly projectId: string;
-        readonly relativePath: string;
-    }): Promise<ProjectFileDocument> {
-        const project = this.#getProjectById(input.projectId);
+    async openProjectFile(
+        input: OpenProjectFileInput,
+    ): Promise<ProjectFileDocument> {
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
         this.touchProject(input.projectId);
 
         return readProjectFile({
@@ -251,11 +369,12 @@ export class ProjectService {
             return [];
         }
 
-        const project = this.#getProjectById(input.projectId);
-        const gitSnapshot = await this.#getGitSnapshot(
-            project.id,
-            project.rootPath,
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
         );
+        this.#ensureWatcher(project.id, project.rootPath);
+        const gitSnapshot = await this.#getGitSnapshot(project.rootPath);
         const limit = Math.max(1, input.limit ?? 20);
         const scoredEntries: {
             readonly node: ProjectTreeNode;
@@ -345,29 +464,42 @@ export class ProjectService {
             .map((entry) => entry.node);
     }
 
-    async saveProjectFile(input: {
-        readonly projectId: string;
-        readonly relativePath: string;
-        readonly content: string;
-    }): Promise<ProjectFileDocument> {
-        const project = this.#getProjectById(input.projectId);
+    async saveProjectFile(
+        input: SaveProjectFileInput,
+    ): Promise<ProjectFileDocument> {
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(input.projectId);
+        this.#gitSnapshots.delete(project.rootPath);
 
         return writeProjectFile({
             content: input.content,
             projectId: input.projectId,
             relativePath: input.relativePath,
             rootPath: project.rootPath,
+        }).then((document) => {
+            this.#scheduleInvalidation(
+                input.projectId,
+                this.#normalizeWorktreeIdForInvalidation(
+                    input.projectId,
+                    project.worktreeId,
+                ),
+            );
+            return document;
         });
     }
 
     async createProjectEntry(
         input: CreateProjectEntryInput,
     ): Promise<ProjectEntryMutationResult> {
-        const project = this.#getProjectById(input.projectId);
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(input.projectId);
+        this.#gitSnapshots.delete(project.rootPath);
 
         const entry = await createProjectEntry({
             kind: input.kind,
@@ -376,16 +508,25 @@ export class ProjectService {
             rootPath: project.rootPath,
         });
 
-        this.#scheduleInvalidation(input.projectId);
+        this.#scheduleInvalidation(
+            input.projectId,
+            this.#normalizeWorktreeIdForInvalidation(
+                input.projectId,
+                project.worktreeId,
+            ),
+        );
         return entry;
     }
 
     async renameProjectEntry(
         input: RenameProjectEntryInput,
     ): Promise<ProjectEntryMutationResult> {
-        const project = this.#getProjectById(input.projectId);
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(input.projectId);
+        this.#gitSnapshots.delete(project.rootPath);
 
         const entry = await renameProjectEntry({
             nextName: input.nextName,
@@ -393,32 +534,249 @@ export class ProjectService {
             rootPath: project.rootPath,
         });
 
-        this.#scheduleInvalidation(input.projectId);
+        this.#scheduleInvalidation(
+            input.projectId,
+            this.#normalizeWorktreeIdForInvalidation(
+                input.projectId,
+                project.worktreeId,
+            ),
+        );
         return entry;
     }
 
     async deleteProjectEntry(input: DeleteProjectEntryInput): Promise<void> {
-        const project = this.#getProjectById(input.projectId);
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(input.projectId);
+        this.#gitSnapshots.delete(project.rootPath);
 
         await deleteProjectEntry({
             relativePath: input.relativePath,
             rootPath: project.rootPath,
         });
 
-        this.#scheduleInvalidation(input.projectId);
+        this.#scheduleInvalidation(
+            input.projectId,
+            this.#normalizeWorktreeIdForInvalidation(
+                input.projectId,
+                project.worktreeId,
+            ),
+        );
     }
 
-    getProjectRootPath(projectId: string): string {
-        return this.#getProjectById(projectId).rootPath;
+    getProjectRootPath(
+        projectId: string,
+        worktreeId: string | null = null,
+    ): string {
+        return this.#resolveProjectScope(projectId, worktreeId).rootPath;
+    }
+
+    getProjectCanonicalRootPath(projectId: string): string {
+        return this.#getProjectById(projectId).canonicalRootPath;
+    }
+
+    getPrimaryWorktreeId(projectId: string): string | null {
+        return (
+            this.listProjectWorktrees(projectId).find(
+                (worktree) => worktree.isPrimary,
+            )?.id ?? null
+        );
+    }
+
+    listProjectWorktrees(projectId: string): readonly {
+        readonly branchName: string | null;
+        readonly headSha: string | null;
+        readonly id: string;
+        readonly isPrimary: boolean;
+        readonly projectId: string;
+        readonly rootPath: string;
+        readonly updatedAt: string;
+    }[] {
+        return this.#connection
+            .prepare<[string], PersistedProjectWorktreeRow>(
+                `
+                SELECT
+                    id,
+                    project_id,
+                    root_path,
+                    branch_name,
+                    head_sha,
+                    is_primary,
+                    updated_at
+                FROM project_worktrees
+                WHERE project_id = ?
+                ORDER BY is_primary DESC, root_path COLLATE NOCASE ASC
+                `,
+            )
+            .all(projectId)
+            .map((row) => ({
+                branchName: row.branch_name,
+                headSha: row.head_sha,
+                id: row.id,
+                isPrimary: row.is_primary === 1,
+                projectId: row.project_id,
+                rootPath: row.root_path,
+                updatedAt: row.updated_at,
+            }));
+    }
+
+    syncProjectWorktrees(
+        projectId: string,
+        worktrees: readonly {
+            readonly branchName: string | null;
+            readonly headSha: string | null;
+            readonly rootPath: string;
+        }[],
+    ): readonly {
+        readonly branchName: string | null;
+        readonly headSha: string | null;
+        readonly id: string;
+        readonly isPrimary: boolean;
+        readonly projectId: string;
+        readonly rootPath: string;
+        readonly updatedAt: string;
+    }[] {
+        const canonicalRootPath = this.getProjectCanonicalRootPath(projectId);
+        const desiredWorktrees = new Map(
+            worktrees.map((worktree) => [
+                path.resolve(worktree.rootPath),
+                {
+                    branchName: worktree.branchName,
+                    headSha: worktree.headSha,
+                    rootPath: path.resolve(worktree.rootPath),
+                },
+            ]),
+        );
+
+        if (!desiredWorktrees.has(canonicalRootPath)) {
+            desiredWorktrees.set(canonicalRootPath, {
+                branchName: null,
+                headSha: null,
+                rootPath: canonicalRootPath,
+            });
+        }
+
+        const existingRows = this.#connection
+            .prepare<[string], PersistedProjectWorktreeRow>(
+                `
+                SELECT
+                    id,
+                    project_id,
+                    root_path,
+                    branch_name,
+                    head_sha,
+                    is_primary,
+                    updated_at
+                FROM project_worktrees
+                WHERE project_id = ?
+                `,
+            )
+            .all(projectId);
+        const existingByPath = new Map(
+            existingRows.map((row) => [path.resolve(row.root_path), row]),
+        );
+        const upsertWorktree = this.#connection.prepare<
+            [
+                string,
+                string,
+                string,
+                string | null,
+                string | null,
+                number,
+                string,
+                string,
+            ],
+            void
+        >(
+            `
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                root_path = excluded.root_path,
+                branch_name = excluded.branch_name,
+                head_sha = excluded.head_sha,
+                is_primary = excluded.is_primary,
+                updated_at = excluded.updated_at
+            `,
+        );
+        const deleteWorktree = this.#connection.prepare<[string], void>(
+            "DELETE FROM project_worktrees WHERE id = ?",
+        );
+        const now = new Date().toISOString();
+
+        const transaction = this.#connection.transaction(() => {
+            for (const existingRow of existingRows) {
+                const normalizedRootPath = path.resolve(existingRow.root_path);
+                if (desiredWorktrees.has(normalizedRootPath)) {
+                    continue;
+                }
+
+                if (existingRow.is_primary === 1) {
+                    continue;
+                }
+
+                deleteWorktree.run(existingRow.id);
+            }
+
+            for (const desiredWorktree of desiredWorktrees.values()) {
+                const existingRow = existingByPath.get(
+                    desiredWorktree.rootPath,
+                );
+                const isPrimary =
+                    desiredWorktree.rootPath === canonicalRootPath;
+                upsertWorktree.run(
+                    existingRow?.id ??
+                        (isPrimary ? `${projectId}:primary` : randomUUID()),
+                    projectId,
+                    desiredWorktree.rootPath,
+                    desiredWorktree.branchName,
+                    desiredWorktree.headSha,
+                    isPrimary ? 1 : 0,
+                    existingRow?.updated_at ?? now,
+                    now,
+                );
+            }
+        });
+
+        transaction();
+        return this.listProjectWorktrees(projectId);
+    }
+
+    getWorktreeRootPath(worktreeId: string): string {
+        const row = this.#connection
+            .prepare<[string], { root_path: string } | undefined>(
+                `
+                SELECT root_path
+                FROM project_worktrees
+                WHERE id = ?
+                `,
+            )
+            .get(worktreeId);
+
+        if (!row) {
+            throw new Error("The requested worktree does not exist anymore.");
+        }
+
+        return row.root_path;
     }
 
     resolveProjectEntryPath(
         projectId: string,
         relativePath: string | null,
+        worktreeId: string | null = null,
     ): string {
-        const project = this.#getProjectById(projectId);
+        const project = this.#resolveProjectScope(projectId, worktreeId);
         return resolveProjectPath(project.rootPath, relativePath);
     }
 
@@ -436,15 +794,30 @@ export class ProjectService {
         this.#pendingInvalidations.clear();
     }
 
-    #getProjectById(projectId: string): { id: string; rootPath: string } {
+    #getProjectById(projectId: string): {
+        readonly canonicalRootPath: string;
+        readonly id: string;
+        readonly rootPath: string;
+    } {
         const row = this.#connection
-            .prepare<[string], { id: string; root_path: string } | undefined>(
+            .prepare<
+                [string],
+                | {
+                      canonical_root_path: string;
+                      id: string;
+                      root_path: string | null;
+                  }
+                | undefined
+            >(
                 `
-                SELECT projects.id, project_roots.root_path
+                SELECT
+                    projects.id,
+                    projects.canonical_root_path,
+                    project_worktrees.root_path
                 FROM projects
-                INNER JOIN project_roots
-                    ON project_roots.project_id = projects.id
-                    AND project_roots.is_primary = 1
+                LEFT JOIN project_worktrees
+                    ON project_worktrees.project_id = projects.id
+                    AND project_worktrees.is_primary = 1
                 WHERE projects.id = ?
                 `,
             )
@@ -455,16 +828,67 @@ export class ProjectService {
         }
 
         return {
+            canonicalRootPath: row.canonical_root_path,
             id: row.id,
-            rootPath: row.root_path,
+            rootPath: row.root_path ?? row.canonical_root_path,
         };
     }
 
-    async #getGitSnapshot(
+    #resolveProjectScope(
         projectId: string,
-        rootPath: string,
-    ): Promise<GitSnapshot> {
-        const cachedSnapshot = this.#gitSnapshots.get(projectId);
+        worktreeId: string | null,
+    ): ResolvedProjectScope {
+        const project = this.#getProjectById(projectId);
+
+        if (!worktreeId) {
+            return {
+                ...project,
+                worktreeId: this.getPrimaryWorktreeId(projectId),
+            };
+        }
+
+        const worktree = this.#getProjectWorktreeById(worktreeId);
+        if (worktree.project_id !== projectId) {
+            throw new Error(
+                "The requested worktree does not belong to this project.",
+            );
+        }
+
+        return {
+            canonicalRootPath: project.canonicalRootPath,
+            id: project.id,
+            rootPath: worktree.root_path,
+            worktreeId: worktree.id,
+        };
+    }
+
+    #getProjectWorktreeById(worktreeId: string): PersistedProjectWorktreeRow {
+        const row = this.#connection
+            .prepare<[string], PersistedProjectWorktreeRow | undefined>(
+                `
+                SELECT
+                    id,
+                    project_id,
+                    root_path,
+                    branch_name,
+                    head_sha,
+                    is_primary,
+                    updated_at
+                FROM project_worktrees
+                WHERE id = ?
+                `,
+            )
+            .get(worktreeId);
+
+        if (!row) {
+            throw new Error("The requested worktree does not exist anymore.");
+        }
+
+        return row;
+    }
+
+    async #getGitSnapshot(rootPath: string): Promise<GitSnapshot> {
+        const cachedSnapshot = this.#gitSnapshots.get(rootPath);
         if (cachedSnapshot) {
             return cachedSnapshot;
         }
@@ -498,7 +922,7 @@ export class ProjectService {
                 exactBadges,
             } satisfies GitSnapshot;
 
-            this.#gitSnapshots.set(projectId, snapshot);
+            this.#gitSnapshots.set(rootPath, snapshot);
             return snapshot;
         } catch {
             const emptySnapshot = {
@@ -506,13 +930,14 @@ export class ProjectService {
                 exactBadges: new Map<string, GitStatusBadge>(),
             } satisfies GitSnapshot;
 
-            this.#gitSnapshots.set(projectId, emptySnapshot);
+            this.#gitSnapshots.set(rootPath, emptySnapshot);
             return emptySnapshot;
         }
     }
 
     #ensureWatcher(projectId: string, rootPath: string): void {
-        if (this.#watchers.has(projectId)) {
+        const watcherKey = `${projectId}:${rootPath}`;
+        if (this.#watchers.has(watcherKey)) {
             return;
         }
 
@@ -521,50 +946,192 @@ export class ProjectService {
                 rootPath,
                 { recursive: process.platform !== "linux" },
                 () => {
-                    this.#gitSnapshots.delete(projectId);
-                    this.#scheduleInvalidation(projectId);
+                    this.#gitSnapshots.delete(rootPath);
+                    this.#scheduleInvalidation(
+                        projectId,
+                        this.#findWorktreeIdByRootPath(projectId, rootPath),
+                    );
                 },
             );
 
-            this.#watchers.set(projectId, watcher);
+            this.#watchers.set(watcherKey, watcher);
         } catch {
             // Some file systems do not support recursive watching. The tree still
             // works, only live refresh is reduced until a stronger watcher lands.
         }
     }
 
-    #scheduleInvalidation(projectId: string): void {
-        const existingTimeout = this.#pendingInvalidations.get(projectId);
+    #scheduleInvalidation(
+        projectId: string,
+        worktreeId: string | null = null,
+    ): void {
+        const invalidationKey = `${projectId}:${worktreeId ?? "primary"}`;
+        const existingTimeout = this.#pendingInvalidations.get(invalidationKey);
         if (existingTimeout) {
             clearTimeout(existingTimeout);
         }
 
         const timeout = setTimeout(() => {
-            this.#pendingInvalidations.delete(projectId);
+            this.#pendingInvalidations.delete(invalidationKey);
             this.#onProjectTreeInvalidated({
                 occurredAt: new Date().toISOString(),
                 projectId,
+                worktreeId,
             });
         }, 140);
 
-        this.#pendingInvalidations.set(projectId, timeout);
+        this.#pendingInvalidations.set(invalidationKey, timeout);
     }
 
     #closeWatcher(projectId: string): void {
-        const watcher = this.#watchers.get(projectId);
-        watcher?.close();
-        this.#watchers.delete(projectId);
+        for (const [watcherKey, watcher] of this.#watchers.entries()) {
+            if (!watcherKey.startsWith(`${projectId}:`)) {
+                continue;
+            }
 
-        const timeout = this.#pendingInvalidations.get(projectId);
-        if (timeout) {
-            clearTimeout(timeout);
-            this.#pendingInvalidations.delete(projectId);
+            watcher.close();
+            this.#watchers.delete(watcherKey);
         }
+
+        for (const [invalidationKey, timeout] of this.#pendingInvalidations) {
+            if (!invalidationKey.startsWith(`${projectId}:`)) {
+                continue;
+            }
+
+            clearTimeout(timeout);
+            this.#pendingInvalidations.delete(invalidationKey);
+        }
+    }
+
+    #findWorktreeIdByRootPath(
+        projectId: string,
+        rootPath: string,
+    ): string | null {
+        const normalizedRootPath = path.resolve(rootPath);
+        const matchedWorktree = this.listProjectWorktrees(projectId).find(
+            (worktree) =>
+                path.resolve(worktree.rootPath) === normalizedRootPath,
+        );
+
+        return matchedWorktree && !matchedWorktree.isPrimary
+            ? matchedWorktree.id
+            : null;
+    }
+
+    #normalizeWorktreeIdForInvalidation(
+        projectId: string,
+        worktreeId: string | null,
+    ): string | null {
+        if (!worktreeId) {
+            return null;
+        }
+
+        const matchedWorktree = this.listProjectWorktrees(projectId).find(
+            (worktree) => worktree.id === worktreeId,
+        );
+
+        return matchedWorktree?.isPrimary ? null : worktreeId;
     }
 }
 
 function normalizeGitPath(filePath: string): string {
     return filePath.split(path.sep).join("/");
+}
+
+function ensureProjectRoots(options: {
+    readonly canonicalRootPath: string;
+    readonly connection: Database.Database;
+    readonly insertRoot: Database.Statement<[string, string, number]>;
+    readonly projectId: string;
+    readonly selectedRootPath: string;
+}): void {
+    options.insertRoot.run(options.projectId, options.canonicalRootPath, 1);
+
+    if (options.selectedRootPath !== options.canonicalRootPath) {
+        options.insertRoot.run(options.projectId, options.selectedRootPath, 0);
+    }
+}
+
+function ensureProjectWorktree(options: {
+    readonly connection: Database.Database;
+    readonly findExistingWorktree: Database.Statement<
+        [string],
+        { id: string } | undefined
+    >;
+    readonly insertWorktree: Database.Statement<
+        [
+            string,
+            string,
+            string,
+            string | null,
+            string | null,
+            number,
+            string,
+            string,
+        ]
+    >;
+    readonly now: string;
+    readonly projectId: string;
+    readonly rootPath: string;
+}): string {
+    const existing = options.findExistingWorktree.get(options.rootPath);
+    if (existing) {
+        return existing.id;
+    }
+
+    const worktreeId = randomUUID();
+    options.insertWorktree.run(
+        worktreeId,
+        options.projectId,
+        options.rootPath,
+        null,
+        null,
+        0,
+        options.now,
+        options.now,
+    );
+    return worktreeId;
+}
+
+function resolveProjectPathMetadata(projectPath: string): {
+    readonly canonicalRootPath: string;
+    readonly worktreeRootPath: string;
+} {
+    const resolvedPath = path.resolve(projectPath);
+    const worktreeRootPath =
+        runGitPathCommand(resolvedPath, ["rev-parse", "--show-toplevel"]) ??
+        resolvedPath;
+    const commonDir = runGitPathCommand(resolvedPath, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    ]);
+    const canonicalRootPath =
+        commonDir && path.basename(commonDir) === ".git"
+            ? path.dirname(commonDir)
+            : worktreeRootPath;
+
+    return {
+        canonicalRootPath: path.resolve(canonicalRootPath),
+        worktreeRootPath: path.resolve(worktreeRootPath),
+    };
+}
+
+function runGitPathCommand(
+    cwd: string,
+    args: readonly string[],
+): string | null {
+    try {
+        const output = execFileSync("git", args, {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+
+        return output.length > 0 ? output : null;
+    } catch {
+        return null;
+    }
 }
 
 function directoryHasVisibleChildren(directoryPath: string): boolean {

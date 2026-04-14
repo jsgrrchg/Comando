@@ -3,9 +3,13 @@ import type Database from "better-sqlite3";
 import type {
     AiAvailableCommand,
     AiDiffHunk,
+    AiImageAttachment,
     AiMessage,
     AiPermissionRequest,
     AiPlan,
+    AiSessionConfigOption,
+    AiSessionMode,
+    AiSessionModel,
     AiSessionSnapshot,
     AiToolActivity,
     AiTrackedFile,
@@ -20,10 +24,15 @@ interface PersistedAiSessionRow {
     readonly title: string;
     readonly transcript_json: string | null;
     readonly updated_at: string;
+    readonly worktree_id: string | null;
 }
 
 interface ExistingDraftRow {
     readonly draft: string;
+}
+
+interface PersistedRuntimeCatalogRow {
+    readonly transcript_json: string | null;
 }
 
 export class AiPersistence {
@@ -39,6 +48,7 @@ export class AiPersistence {
                 `
                 SELECT
                     chat_sessions.project_id,
+                    chat_sessions.worktree_id,
                     chat_sessions.title,
                     chat_sessions.runtime,
                     chat_sessions.status,
@@ -59,11 +69,15 @@ export class AiPersistence {
 
         const fallback = createEmptyAiSessionSnapshot({
             projectId: row.project_id,
-            runtimeId: row.runtime === "codex" ? "codex" : "codex",
+            runtimeId:
+                row.runtime === "claude" || row.runtime === "codex"
+                    ? row.runtime
+                    : "codex",
             sessionId,
             status: normalizeSessionStatus(row.status),
             title: row.title,
             updatedAt: row.updated_at,
+            worktreeId: row.worktree_id,
         });
         const raw = parseJsonWithFallback<Record<string, unknown> | null>(
             row.transcript_json,
@@ -78,8 +92,13 @@ export class AiPersistence {
             availableCommands: normalizeAvailableCommands(
                 raw.availableCommands,
             ),
+            configOptions: normalizeConfigOptions(raw.configOptions),
             lastError: typeof raw.lastError === "string" ? raw.lastError : null,
             messages: normalizeMessages(raw.messages),
+            modeId: typeof raw.modeId === "string" ? raw.modeId : null,
+            modes: normalizeSessionModes(raw.modes),
+            modelId: typeof raw.modelId === "string" ? raw.modelId : null,
+            models: normalizeSessionModels(raw.models),
             pendingPermission: normalizePermissionRequest(
                 raw.pendingPermission,
             ),
@@ -87,7 +106,12 @@ export class AiPersistence {
             plan: normalizePlan(raw.plan),
             projectId: row.project_id,
             runtimeId:
-                raw.runtimeId === "codex" ? raw.runtimeId : fallback.runtimeId,
+                raw.runtimeId === "claude" ||
+                raw.runtimeId === "codex" ||
+                raw.runtimeId === "gemini" ||
+                raw.runtimeId === "kilo"
+                    ? raw.runtimeId
+                    : fallback.runtimeId,
             runtimeSessionId:
                 typeof raw.runtimeSessionId === "string"
                     ? raw.runtimeSessionId
@@ -104,6 +128,63 @@ export class AiPersistence {
                 typeof raw.updatedAt === "string"
                     ? raw.updatedAt
                     : fallback.updatedAt,
+            worktreeId:
+                typeof raw.worktreeId === "string" || raw.worktreeId === null
+                    ? raw.worktreeId
+                    : fallback.worktreeId,
+        };
+    }
+
+    loadLatestRuntimeCatalog(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+    ): Pick<
+        AiSessionSnapshot,
+        | "availableCommands"
+        | "configOptions"
+        | "modeId"
+        | "modes"
+        | "modelId"
+        | "models"
+    > | null {
+        const row = this.#connection
+            .prepare<
+                [AiSessionSnapshot["runtimeId"]],
+                PersistedRuntimeCatalogRow | undefined
+            >(
+                `
+                SELECT chat_transcripts.transcript_json
+                FROM chat_sessions
+                LEFT JOIN chat_transcripts
+                    ON chat_transcripts.session_id = chat_sessions.id
+                WHERE chat_sessions.runtime = ?
+                ORDER BY chat_sessions.updated_at DESC
+                LIMIT 1
+                `,
+            )
+            .get(runtimeId);
+
+        if (!row?.transcript_json) {
+            return null;
+        }
+
+        const raw = parseJsonWithFallback<Record<string, unknown> | null>(
+            row.transcript_json,
+            null,
+        );
+
+        if (!raw) {
+            return null;
+        }
+
+        return {
+            availableCommands: normalizeAvailableCommands(
+                raw.availableCommands,
+            ),
+            configOptions: normalizeConfigOptions(raw.configOptions),
+            modeId: typeof raw.modeId === "string" ? raw.modeId : null,
+            modes: normalizeSessionModes(raw.modes),
+            modelId: typeof raw.modelId === "string" ? raw.modelId : null,
+            models: normalizeSessionModels(raw.models),
         };
     }
 
@@ -116,6 +197,7 @@ export class AiPersistence {
             .prepare<
                 [
                     string,
+                    string | null,
                     string | null,
                     string,
                     string,
@@ -131,6 +213,7 @@ export class AiPersistence {
                 INSERT INTO chat_sessions (
                     id,
                     project_id,
+                    worktree_id,
                     title,
                     runtime,
                     status,
@@ -139,9 +222,10 @@ export class AiPersistence {
                     updated_at,
                     last_opened_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     project_id = excluded.project_id,
+                    worktree_id = excluded.worktree_id,
                     title = excluded.title,
                     runtime = excluded.runtime,
                     status = excluded.status,
@@ -153,6 +237,7 @@ export class AiPersistence {
             .run(
                 snapshot.sessionId,
                 snapshot.projectId,
+                snapshot.worktreeId ?? null,
                 snapshot.title,
                 snapshot.runtimeId,
                 snapshot.status,
@@ -213,13 +298,19 @@ export function createEmptyAiSessionSnapshot(options: {
     readonly status?: AiSessionSnapshot["status"];
     readonly title: string;
     readonly updatedAt?: string;
+    readonly worktreeId?: string | null;
 }): AiSessionSnapshot {
     const now = options.updatedAt ?? new Date().toISOString();
 
     return {
         availableCommands: [],
+        configOptions: [],
         lastError: null,
         messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
         pendingPermission: null,
         pendingUserInput: null,
         plan: null,
@@ -232,7 +323,154 @@ export function createEmptyAiSessionSnapshot(options: {
         toolActivity: [],
         trackedFiles: [],
         updatedAt: now,
+        worktreeId: options.worktreeId ?? null,
     };
+}
+
+function normalizeSessionModes(value: unknown): readonly AiSessionMode[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry) => {
+        if (
+            !isRecord(entry) ||
+            typeof entry.id !== "string" ||
+            typeof entry.name !== "string"
+        ) {
+            return [];
+        }
+
+        return [
+            {
+                description:
+                    typeof entry.description === "string"
+                        ? entry.description
+                        : null,
+                id: entry.id,
+                name: entry.name,
+            },
+        ];
+    });
+}
+
+function normalizeSessionModels(value: unknown): readonly AiSessionModel[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry) => {
+        if (
+            !isRecord(entry) ||
+            typeof entry.id !== "string" ||
+            typeof entry.name !== "string"
+        ) {
+            return [];
+        }
+
+        return [
+            {
+                description:
+                    typeof entry.description === "string"
+                        ? entry.description
+                        : null,
+                id: entry.id,
+                name: entry.name,
+            },
+        ];
+    });
+}
+
+function normalizeConfigOptions(
+    value: unknown,
+): readonly AiSessionConfigOption[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    const normalized: AiSessionConfigOption[] = [];
+
+    for (const entry of value) {
+        if (
+            !isRecord(entry) ||
+            typeof entry.id !== "string" ||
+            typeof entry.label !== "string" ||
+            typeof entry.category !== "string" ||
+            typeof entry.type !== "string"
+        ) {
+            continue;
+        }
+
+        if (entry.type === "boolean" && typeof entry.value === "boolean") {
+            normalized.push({
+                category: normalizeConfigCategory(entry.category),
+                description:
+                    typeof entry.description === "string"
+                        ? entry.description
+                        : null,
+                id: entry.id,
+                label: entry.label,
+                type: "boolean",
+                value: entry.value,
+            });
+            continue;
+        }
+
+        if (entry.type === "select" && typeof entry.value === "string") {
+            const options = Array.isArray(entry.options)
+                ? entry.options.flatMap((option) => {
+                      if (
+                          !isRecord(option) ||
+                          typeof option.label !== "string" ||
+                          typeof option.value !== "string"
+                      ) {
+                          return [];
+                      }
+
+                      return [
+                          {
+                              description:
+                                  typeof option.description === "string"
+                                      ? option.description
+                                      : null,
+                              groupLabel:
+                                  typeof option.groupLabel === "string"
+                                      ? option.groupLabel
+                                      : null,
+                              label: option.label,
+                              value: option.value,
+                          },
+                      ];
+                  })
+                : [];
+
+            normalized.push({
+                category: normalizeConfigCategory(entry.category),
+                description:
+                    typeof entry.description === "string"
+                        ? entry.description
+                        : null,
+                id: entry.id,
+                label: entry.label,
+                options,
+                type: "select",
+                value: entry.value,
+            });
+        }
+    }
+
+    return normalized;
+}
+
+function normalizeConfigCategory(
+    value: unknown,
+): AiSessionConfigOption["category"] {
+    return value === "mode" ||
+        value === "model" ||
+        value === "other" ||
+        value === "reasoning"
+        ? value
+        : "other";
 }
 
 function parseJsonWithFallback<T>(value: string | null, fallback: T): T {
@@ -282,6 +520,7 @@ function normalizeMessages(value: unknown): readonly AiMessage[] {
 
         return [
             {
+                attachments: normalizeImageAttachments(entry.attachments),
                 content: entry.content,
                 createdAt:
                     typeof entry.createdAt === "string"
@@ -294,6 +533,38 @@ function normalizeMessages(value: unknown): readonly AiMessage[] {
                 kind,
                 status,
             } satisfies AiMessage,
+        ];
+    });
+}
+
+function normalizeImageAttachments(
+    value: unknown,
+): readonly AiImageAttachment[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry) => {
+        if (
+            !isRecord(entry) ||
+            typeof entry.id !== "string" ||
+            typeof entry.dataBase64 !== "string" ||
+            typeof entry.mimeType !== "string"
+        ) {
+            return [];
+        }
+
+        return [
+            {
+                dataBase64: entry.dataBase64,
+                id: entry.id,
+                mimeType: entry.mimeType,
+                name: typeof entry.name === "string" ? entry.name : null,
+                sizeBytes:
+                    typeof entry.sizeBytes === "number"
+                        ? entry.sizeBytes
+                        : null,
+            } satisfies AiImageAttachment,
         ];
     });
 }

@@ -1,6 +1,7 @@
 .personal/
 agents.md
 claude.md
+.DS_Store
 node_modules/
 dist/
 dist-electron/
@@ -8,3 +9,14 @@ out/
 coverage/
 *.log
 *.tsbuildinfo
+electron.vite.config.js
+electron.vite.config.d.ts
+vitest.config.js
+vitest.config.d.ts
+src/**/*.js
+src/**/*.d.ts
+vendor/codex-acp/target/
+resources/ai/binaries/*
+!resources/ai/binaries/.gitkeep
+resources/ai/embedded/*
+!resources/ai/embedded/.gitkeep

@@ -29,25 +29,39 @@ interface ProjectsState {
         parentRelativePath: string | null,
         name: string,
         kind: ProjectEntryKind,
+        worktreeId?: string | null,
     ) => Promise<ProjectEntryMutationResult>;
-    deleteEntry: (projectId: string, relativePath: string) => Promise<void>;
+    deleteEntry: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
     hydrate: (preferredProjectId?: string | null) => Promise<void>;
-    loadEntireProjectTree: (projectId: string) => Promise<void>;
-    refreshProjectTree: (projectId: string) => Promise<void>;
+    loadEntireProjectTree: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    refreshProjectTree: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
     renameEntry: (
         projectId: string,
         relativePath: string,
         nextName: string,
+        worktreeId?: string | null,
     ) => Promise<ProjectEntryMutationResult>;
     removeProject: (projectId: string) => Promise<void>;
     revealEntry: (
         projectId: string,
         relativePath: string | null,
+        worktreeId?: string | null,
     ) => Promise<void>;
     setActiveProject: (projectId: string) => Promise<void>;
     toggleDirectory: (
         projectId: string,
         node: ProjectTreeNode,
+        worktreeId?: string | null,
     ) => Promise<void>;
 }
 
@@ -125,27 +139,35 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
-    createEntry: async (projectId, parentRelativePath, name, kind) => {
+    createEntry: async (
+        projectId,
+        parentRelativePath,
+        name,
+        kind,
+        worktreeId = null,
+    ) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
         try {
             const entry = await getComandoApi().createProjectEntry({
                 kind,
                 name,
                 parentRelativePath,
                 projectId,
+                worktreeId,
             });
 
             set((state) => ({
                 error: null,
                 fullyLoadedTreeProjects: {
                     ...state.fullyLoadedTreeProjects,
-                    [projectId]: false,
+                    [contextKey]: false,
                 },
                 treeNodes: {
                     ...state.treeNodes,
-                    [projectId]: {},
+                    [contextKey]: {},
                 },
             }));
-            void get().refreshProjectTree(projectId);
+            void get().refreshProjectTree(projectId, worktreeId);
             return entry;
         } catch (error) {
             const message =
@@ -157,32 +179,34 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
-    deleteEntry: async (projectId, relativePath) => {
+    deleteEntry: async (projectId, relativePath, worktreeId = null) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
         try {
             await getComandoApi().deleteProjectEntry({
                 projectId,
                 relativePath,
+                worktreeId,
             });
 
             set((state) => ({
                 error: null,
                 expandedDirectories: {
                     ...state.expandedDirectories,
-                    [projectId]: removeMatchingPaths(
-                        state.expandedDirectories[projectId] ?? [],
+                    [contextKey]: removeMatchingPaths(
+                        state.expandedDirectories[contextKey] ?? [],
                         relativePath,
                     ),
                 },
                 fullyLoadedTreeProjects: {
                     ...state.fullyLoadedTreeProjects,
-                    [projectId]: false,
+                    [contextKey]: false,
                 },
                 treeNodes: {
                     ...state.treeNodes,
-                    [projectId]: {},
+                    [contextKey]: {},
                 },
             }));
-            void get().refreshProjectTree(projectId);
+            void get().refreshProjectTree(projectId, worktreeId);
         } catch (error) {
             set({
                 error:
@@ -226,10 +250,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
-    loadEntireProjectTree: async (projectId) => {
-        await loadDirectory(projectId, null, set, get);
+    loadEntireProjectTree: async (projectId, worktreeId = null) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        await loadDirectory(projectId, null, set, get, worktreeId);
 
-        const queue = [...(get().treeNodes[projectId]?.[ROOT_NODE_KEY] ?? [])];
+        const queue = [...(get().treeNodes[contextKey]?.[ROOT_NODE_KEY] ?? [])];
         const visitedDirectories = new Set<string>();
 
         while (queue.length > 0) {
@@ -247,7 +272,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
             visitedDirectories.add(currentNode.relativePath);
 
             const parentKey = getParentKey(currentNode.relativePath);
-            const currentTree = get().treeNodes[projectId] ?? {};
+            const currentTree = get().treeNodes[contextKey] ?? {};
 
             if (!(parentKey in currentTree)) {
                 await loadDirectory(
@@ -255,10 +280,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                     currentNode.relativePath,
                     set,
                     get,
+                    worktreeId,
                 );
             }
 
-            const childNodes = get().treeNodes[projectId]?.[parentKey] ?? [];
+            const childNodes = get().treeNodes[contextKey]?.[parentKey] ?? [];
 
             queue.push(...childNodes);
         }
@@ -266,14 +292,15 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         set((state) => ({
             fullyLoadedTreeProjects: {
                 ...state.fullyLoadedTreeProjects,
-                [projectId]: true,
+                [contextKey]: true,
             },
         }));
     },
 
-    refreshProjectTree: async (projectId) => {
+    refreshProjectTree: async (projectId, worktreeId = null) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
         const state = get();
-        const expandedDirectories = state.expandedDirectories[projectId] ?? [];
+        const expandedDirectories = state.expandedDirectories[contextKey] ?? [];
         const parentPaths = [null, ...expandedDirectories];
 
         try {
@@ -282,6 +309,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                     nodes: await getComandoApi().listProjectTree({
                         parentRelativePath,
                         projectId,
+                        worktreeId,
                     }),
                     parentRelativePath,
                 })),
@@ -289,7 +317,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
             set((currentState) => {
                 const projectTree = {
-                    ...(currentState.treeNodes[projectId] ?? {}),
+                    ...(currentState.treeNodes[contextKey] ?? {}),
                 };
 
                 for (const entry of entries) {
@@ -301,11 +329,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                     error: null,
                     fullyLoadedTreeProjects: {
                         ...currentState.fullyLoadedTreeProjects,
-                        [projectId]: false,
+                        [contextKey]: false,
                     },
                     treeNodes: {
                         ...currentState.treeNodes,
-                        [projectId]: projectTree,
+                        [contextKey]: projectTree,
                     },
                 };
             });
@@ -319,34 +347,41 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
-    renameEntry: async (projectId, relativePath, nextName) => {
+    renameEntry: async (
+        projectId,
+        relativePath,
+        nextName,
+        worktreeId = null,
+    ) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
         try {
             const entry = await getComandoApi().renameProjectEntry({
                 nextName,
                 projectId,
                 relativePath,
+                worktreeId,
             });
 
             set((state) => ({
                 error: null,
                 expandedDirectories: {
                     ...state.expandedDirectories,
-                    [projectId]: renameMatchingPaths(
-                        state.expandedDirectories[projectId] ?? [],
+                    [contextKey]: renameMatchingPaths(
+                        state.expandedDirectories[contextKey] ?? [],
                         relativePath,
                         entry.relativePath,
                     ),
                 },
                 fullyLoadedTreeProjects: {
                     ...state.fullyLoadedTreeProjects,
-                    [projectId]: false,
+                    [contextKey]: false,
                 },
                 treeNodes: {
                     ...state.treeNodes,
-                    [projectId]: {},
+                    [contextKey]: {},
                 },
             }));
-            void get().refreshProjectTree(projectId);
+            void get().refreshProjectTree(projectId, worktreeId);
             return entry;
         } catch (error) {
             const message =
@@ -369,16 +404,16 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         ? (projects[0]?.id ?? null)
                         : state.activeProjectId,
                 error: null,
-                expandedDirectories: omitProjectKey(
+                expandedDirectories: omitProjectContexts(
                     state.expandedDirectories,
                     projectId,
                 ),
-                fullyLoadedTreeProjects: omitProjectKey(
+                fullyLoadedTreeProjects: omitProjectContexts(
                     state.fullyLoadedTreeProjects,
                     projectId,
                 ),
                 projects,
-                treeNodes: omitProjectKey(state.treeNodes, projectId),
+                treeNodes: omitProjectContexts(state.treeNodes, projectId),
             }));
 
             const nextProjectId = get().activeProjectId;
@@ -395,11 +430,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
-    revealEntry: async (projectId, relativePath) => {
+    revealEntry: async (projectId, relativePath, worktreeId = null) => {
         try {
             await getComandoApi().revealProjectEntry({
                 projectId,
                 relativePath,
+                worktreeId,
             });
             set({ error: null });
         } catch (error) {
@@ -434,18 +470,19 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
-    toggleDirectory: async (projectId, node) => {
+    toggleDirectory: async (projectId, node, worktreeId = null) => {
         if (node.kind !== "directory") {
             return;
         }
 
-        const expandedDirectories = get().expandedDirectories[projectId] ?? [];
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        const expandedDirectories = get().expandedDirectories[contextKey] ?? [];
         const isExpanded = expandedDirectories.includes(node.relativePath);
 
         set((state) => ({
             expandedDirectories: {
                 ...state.expandedDirectories,
-                [projectId]: isExpanded
+                [contextKey]: isExpanded
                     ? expandedDirectories.filter(
                           (path) => path !== node.relativePath,
                       )
@@ -454,7 +491,13 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }));
 
         if (!isExpanded) {
-            await loadDirectory(projectId, node.relativePath, set, get);
+            await loadDirectory(
+                projectId,
+                node.relativePath,
+                set,
+                get,
+                worktreeId,
+            );
         }
     },
 }));
@@ -468,8 +511,10 @@ async function loadDirectory(
     parentRelativePath: string | null,
     set: SetProjectsState,
     get: GetProjectsState,
+    worktreeId: string | null = null,
 ): Promise<void> {
-    const nodeKey = `${projectId}:${getParentKey(parentRelativePath)}`;
+    const contextKey = getTreeContextKey(projectId, worktreeId);
+    const nodeKey = `${contextKey}:${getParentKey(parentRelativePath)}`;
 
     if (get().loadingNodeKeys.includes(nodeKey)) {
         return;
@@ -483,14 +528,15 @@ async function loadDirectory(
         const nodes = await getComandoApi().listProjectTree({
             parentRelativePath,
             projectId,
+            worktreeId,
         });
 
         set((state) => ({
             error: null,
             treeNodes: {
                 ...state.treeNodes,
-                [projectId]: {
-                    ...(state.treeNodes[projectId] ?? {}),
+                [contextKey]: {
+                    ...(state.treeNodes[contextKey] ?? {}),
                     [getParentKey(parentRelativePath)]: nodes,
                 },
             },
@@ -521,13 +567,22 @@ function getComandoApi() {
     return window.comando;
 }
 
-function omitProjectKey<TValue>(
+function omitProjectContexts<TValue>(
     record: Record<string, TValue>,
     projectId: string,
 ): Record<string, TValue> {
     return Object.fromEntries(
-        Object.entries(record).filter(([key]) => key !== projectId),
+        Object.entries(record).filter(
+            ([key]) => !key.startsWith(`${projectId}::`),
+        ),
     );
+}
+
+function getTreeContextKey(
+    projectId: string,
+    worktreeId: string | null | undefined,
+): string {
+    return `${projectId}::${worktreeId ?? "__primary__"}`;
 }
 
 function removeMatchingPaths(

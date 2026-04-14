@@ -8,21 +8,28 @@ import type { PersistedWindowState } from "@shared/ipc";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 
-export function createMainWindow(
-    restoredState: PersistedWindowState | null = null,
-): BrowserWindow {
+function createBaseWindow(options: {
+    readonly backgroundColor: string;
+    readonly height: number;
+    readonly minHeight: number;
+    readonly minWidth: number;
+    readonly restoredState?: PersistedWindowState | null;
+    readonly search?: string;
+    readonly title: string;
+    readonly width: number;
+}): BrowserWindow {
     const isMac = process.platform === "darwin";
     const isWindows = process.platform === "win32";
 
     const window = new BrowserWindow({
-        title: appIdentity.windowTitle,
-        width: restoredState?.width ?? 1480,
-        height: restoredState?.height ?? 960,
-        x: restoredState?.x ?? undefined,
-        y: restoredState?.y ?? undefined,
-        minWidth: 1180,
-        minHeight: 760,
-        backgroundColor: isMac ? "#00000000" : "#f3f4f7",
+        title: options.title,
+        width: options.restoredState?.width ?? options.width,
+        height: options.restoredState?.height ?? options.height,
+        x: options.restoredState?.x ?? undefined,
+        y: options.restoredState?.y ?? undefined,
+        minWidth: options.minWidth,
+        minHeight: options.minHeight,
+        backgroundColor: isMac ? "#00000000" : options.backgroundColor,
         titleBarOverlay: isWindows
             ? {
                   color: "#f5f5f5",
@@ -42,18 +49,58 @@ export function createMainWindow(
     });
 
     if (process.env.ELECTRON_RENDERER_URL) {
-        void window.loadURL(process.env.ELECTRON_RENDERER_URL);
+        const url = new URL(process.env.ELECTRON_RENDERER_URL);
+        url.search = options.search ?? "";
+        void window.loadURL(url.toString());
     } else {
-        void window.loadFile(path.join(rootDir, "out/renderer/index.html"));
+        void window.loadFile(path.join(rootDir, "out/renderer/index.html"), {
+            search: options.search,
+        });
     }
 
-    if (restoredState?.isMaximized) {
+    if (options.restoredState?.isMaximized) {
         window.maximize();
     }
 
-    if (restoredState?.isFullScreen) {
+    if (options.restoredState?.isFullScreen) {
         window.setFullScreen(true);
     }
 
     return window;
+}
+
+export function createMainWindow(
+    restoredState: PersistedWindowState | null = null,
+): BrowserWindow {
+    return createBaseWindow({
+        backgroundColor: "#ffffff",
+        height: 960,
+        minHeight: 760,
+        minWidth: 1180,
+        restoredState,
+        title: appIdentity.windowTitle,
+        width: 1480,
+    });
+}
+
+export function createSettingsWindow(
+    projectId: string | null = null,
+): BrowserWindow {
+    const searchParams = new URLSearchParams({
+        window: "settings",
+    });
+
+    if (projectId) {
+        searchParams.set("projectId", projectId);
+    }
+
+    return createBaseWindow({
+        backgroundColor: "#eef0f3",
+        height: 720,
+        minHeight: 560,
+        minWidth: 780,
+        search: `?${searchParams.toString()}`,
+        title: `${appIdentity.name} Settings`,
+        width: 980,
+    });
 }

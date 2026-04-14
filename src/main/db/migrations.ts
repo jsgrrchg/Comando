@@ -144,4 +144,180 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ON chat_session_events(session_id, sequence);
     `,
     },
+    {
+        id: "0005-project-settings",
+        sql: `
+	      CREATE TABLE IF NOT EXISTS project_settings (
+	        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, key)
+	      );
+	    `,
+    },
+    {
+        id: "0006-workspace-session-shell-state",
+        sql: `
+          ALTER TABLE workspace_sessions
+            ADD COLUMN shell_state_json TEXT;
+
+          ALTER TABLE workspace_sessions
+            ADD COLUMN is_open INTEGER NOT NULL DEFAULT 1;
+
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_sessions_window_id
+            ON workspace_sessions(window_id);
+        `,
+    },
+    {
+        id: "0007-git-worktrees",
+        sql: `
+      ALTER TABLE projects
+        ADD COLUMN canonical_root_path TEXT NOT NULL DEFAULT '';
+
+      CREATE TABLE IF NOT EXISTS project_worktrees (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        root_path TEXT NOT NULL UNIQUE,
+        branch_name TEXT,
+        head_sha TEXT,
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      UPDATE project_roots
+      SET is_primary = CASE
+        WHEN id = (
+          SELECT candidate.id
+          FROM project_roots AS candidate
+          WHERE candidate.project_id = project_roots.project_id
+          ORDER BY candidate.is_primary DESC, candidate.id ASC
+          LIMIT 1
+        ) THEN 1
+        ELSE 0
+      END
+      WHERE project_id IN (
+        SELECT DISTINCT project_id
+        FROM project_roots
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_project_roots_project_id
+        ON project_roots(project_id);
+
+      CREATE INDEX IF NOT EXISTS idx_project_roots_project_id_primary
+        ON project_roots(project_id, is_primary);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_roots_primary
+        ON project_roots(project_id)
+        WHERE is_primary = 1;
+
+      CREATE INDEX IF NOT EXISTS idx_projects_canonical_root_path
+        ON projects(canonical_root_path);
+
+      CREATE INDEX IF NOT EXISTS idx_project_worktrees_project_id
+        ON project_worktrees(project_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_worktrees_primary
+        ON project_worktrees(project_id)
+        WHERE is_primary = 1;
+
+      ALTER TABLE workspace_sessions
+        ADD COLUMN active_worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL;
+
+      ALTER TABLE chat_sessions
+        ADD COLUMN worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL;
+
+      ALTER TABLE workspace_tabs
+        ADD COLUMN worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL;
+
+      INSERT INTO project_worktrees (
+        id,
+        project_id,
+        root_path,
+        branch_name,
+        head_sha,
+        is_primary,
+        created_at,
+        updated_at
+      )
+      SELECT
+        projects.id || ':primary',
+        projects.id,
+        project_roots.root_path,
+        NULL,
+        NULL,
+        1,
+        projects.created_at,
+        projects.updated_at
+      FROM projects
+      INNER JOIN project_roots
+        ON project_roots.project_id = projects.id
+       AND project_roots.is_primary = 1;
+
+      UPDATE projects
+      SET canonical_root_path = COALESCE(
+        NULLIF(canonical_root_path, ''),
+        (
+          SELECT project_roots.root_path
+          FROM project_roots
+          WHERE project_roots.project_id = projects.id
+            AND project_roots.is_primary = 1
+          LIMIT 1
+        ),
+        (
+          SELECT project_roots.root_path
+          FROM project_roots
+          WHERE project_roots.project_id = projects.id
+          ORDER BY project_roots.id ASC
+          LIMIT 1
+        )
+      );
+
+      UPDATE workspace_sessions
+      SET active_worktree_id = (
+        SELECT project_worktrees.id
+        FROM project_worktrees
+        WHERE project_worktrees.project_id = workspace_sessions.active_project_id
+          AND project_worktrees.is_primary = 1
+        LIMIT 1
+      )
+      WHERE active_project_id IS NOT NULL
+        AND active_worktree_id IS NULL;
+
+      UPDATE chat_sessions
+      SET worktree_id = (
+        SELECT project_worktrees.id
+        FROM project_worktrees
+        WHERE project_worktrees.project_id = chat_sessions.project_id
+          AND project_worktrees.is_primary = 1
+        LIMIT 1
+      )
+      WHERE project_id IS NOT NULL
+        AND worktree_id IS NULL;
+
+      UPDATE workspace_tabs
+      SET worktree_id = (
+        SELECT project_worktrees.id
+        FROM project_worktrees
+        INNER JOIN projects
+          ON projects.id = project_worktrees.project_id
+        WHERE projects.id = json_extract(workspace_tabs.payload_json, '$.projectId')
+          AND project_worktrees.is_primary = 1
+        LIMIT 1
+      )
+      WHERE worktree_id IS NULL
+        AND json_valid(payload_json)
+        AND json_extract(payload_json, '$.projectId') IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_workspace_sessions_active_worktree_id
+        ON workspace_sessions(active_worktree_id);
+
+      CREATE INDEX IF NOT EXISTS idx_chat_sessions_worktree_id
+        ON chat_sessions(worktree_id);
+
+      CREATE INDEX IF NOT EXISTS idx_workspace_tabs_worktree_id
+        ON workspace_tabs(worktree_id);
+    `,
+    },
 ];

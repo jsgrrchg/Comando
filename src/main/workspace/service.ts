@@ -13,8 +13,6 @@ import type {
     WorkspaceTerminalTab,
 } from "@shared/ipc";
 
-const PRIMARY_WORKSPACE_ID = "primary";
-
 interface WorkspaceLayoutRow {
     readonly active_pane_id: string;
     readonly root_node_json: string;
@@ -26,6 +24,7 @@ interface WorkspaceTabRow {
     readonly kind: string;
     readonly payload_json: string;
     readonly title: string;
+    readonly worktree_id: string | null;
 }
 
 interface ChatSessionEventRow {
@@ -72,7 +71,7 @@ export class WorkspaceService {
         this.#connection = connection;
     }
 
-    loadSnapshot(): WorkspaceSnapshot {
+    loadSnapshot(workspaceId: string): WorkspaceSnapshot {
         const layoutRow = this.#connection
             .prepare<[string], WorkspaceLayoutRow | undefined>(
                 `
@@ -81,7 +80,7 @@ export class WorkspaceService {
                 WHERE id = ?
                 `,
             )
-            .get(PRIMARY_WORKSPACE_ID);
+            .get(workspaceId);
 
         if (!layoutRow) {
             return createDefaultWorkspaceSnapshot();
@@ -90,13 +89,13 @@ export class WorkspaceService {
         const tabRows = this.#connection
             .prepare<[string], WorkspaceTabRow>(
                 `
-                SELECT id, kind, title, payload_json, created_at
+                SELECT id, kind, title, payload_json, created_at, worktree_id
                 FROM workspace_tabs
                 WHERE workspace_id = ?
                 ORDER BY position ASC
                 `,
             )
-            .all(PRIMARY_WORKSPACE_ID);
+            .all(workspaceId);
 
         return {
             activePaneId: layoutRow.active_pane_id,
@@ -110,7 +109,7 @@ export class WorkspaceService {
         };
     }
 
-    saveSnapshot(snapshot: WorkspaceSnapshot): void {
+    saveSnapshot(workspaceId: string, snapshot: WorkspaceSnapshot): void {
         const now = new Date().toISOString();
         const upsertLayout = this.#connection.prepare<
             [string, string, string, string, string],
@@ -135,7 +134,16 @@ export class WorkspaceService {
             "DELETE FROM workspace_tabs WHERE workspace_id = ?",
         );
         const insertTab = this.#connection.prepare<
-            [string, string, string, string, string, string, number],
+            [
+                string,
+                string,
+                string,
+                string,
+                string,
+                string,
+                string | null,
+                number,
+            ],
             void
         >(
             `
@@ -146,31 +154,33 @@ export class WorkspaceService {
                 title,
                 payload_json,
                 created_at,
+                worktree_id,
                 position
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             `,
         );
 
         const transaction = this.#connection.transaction(
             (nextSnapshot: WorkspaceSnapshot) => {
                 upsertLayout.run(
-                    PRIMARY_WORKSPACE_ID,
+                    workspaceId,
                     JSON.stringify(nextSnapshot.rootNode),
                     nextSnapshot.activePaneId,
                     now,
                     now,
                 );
-                deleteTabs.run(PRIMARY_WORKSPACE_ID);
+                deleteTabs.run(workspaceId);
 
                 nextSnapshot.tabs.forEach((tab, index) => {
                     insertTab.run(
                         tab.id,
-                        PRIMARY_WORKSPACE_ID,
+                        workspaceId,
                         tab.kind,
                         tab.title,
                         JSON.stringify(serializeTab(tab)),
                         tab.createdAt,
+                        tab.worktreeId ?? null,
                         index,
                     );
                 });
@@ -193,12 +203,14 @@ export class WorkspaceService {
                       transcript_json: string;
                       title: string;
                       updated_at: string;
+                      worktree_id: string | null;
                   }
                 | undefined
             >(
                 `
                 SELECT
                     chat_sessions.project_id,
+                    chat_sessions.worktree_id,
                     chat_sessions.title,
                     chat_sessions.draft,
                     chat_sessions.updated_at,
@@ -280,6 +292,7 @@ export class WorkspaceService {
                 sessionId,
             ),
             updatedAt: row.updated_at,
+            worktreeId: row.worktree_id ?? null,
         };
     }
 }
@@ -312,7 +325,10 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                     ? chatPayload.projectId
                     : null,
             runtimeId:
-                chatPayload.runtimeId === "codex"
+                chatPayload.runtimeId === "claude" ||
+                chatPayload.runtimeId === "codex" ||
+                chatPayload.runtimeId === "gemini" ||
+                chatPayload.runtimeId === "kilo"
                     ? chatPayload.runtimeId
                     : "codex",
             sessionId:
@@ -320,6 +336,11 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                     ? chatPayload.sessionId
                     : row.id,
             title: row.title,
+            worktreeId:
+                typeof chatPayload.worktreeId === "string" ||
+                chatPayload.worktreeId === null
+                    ? chatPayload.worktreeId
+                    : row.worktree_id,
         };
     }
 
@@ -336,7 +357,10 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                     ? reviewPayload.projectId
                     : null,
             runtimeId:
-                reviewPayload.runtimeId === "codex"
+                reviewPayload.runtimeId === "claude" ||
+                reviewPayload.runtimeId === "codex" ||
+                reviewPayload.runtimeId === "gemini" ||
+                reviewPayload.runtimeId === "kilo"
                     ? reviewPayload.runtimeId
                     : "codex",
             sessionId:
@@ -344,6 +368,11 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                     ? reviewPayload.sessionId
                     : row.id,
             title: row.title,
+            worktreeId:
+                typeof reviewPayload.worktreeId === "string" ||
+                reviewPayload.worktreeId === null
+                    ? reviewPayload.worktreeId
+                    : row.worktree_id,
         };
     }
 
@@ -352,6 +381,11 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
         createdAt: row.created_at,
         id: row.id,
         title: row.title,
+        worktreeId:
+            typeof payload.worktreeId === "string" ||
+            payload.worktreeId === null
+                ? payload.worktreeId
+                : row.worktree_id,
     } as WorkspaceTab;
 }
 
@@ -367,6 +401,7 @@ function serializeTab(
             kind: tab.kind,
             projectId: tab.projectId,
             relativePath: tab.relativePath,
+            worktreeId: tab.worktreeId ?? null,
         };
     }
 
@@ -377,6 +412,7 @@ function serializeTab(
             projectId: tab.projectId,
             runtimeId: tab.runtimeId,
             sessionId: tab.sessionId,
+            worktreeId: tab.worktreeId ?? null,
         };
     }
 
@@ -386,6 +422,7 @@ function serializeTab(
             projectId: tab.projectId,
             runtimeId: tab.runtimeId,
             sessionId: tab.sessionId,
+            worktreeId: tab.worktreeId ?? null,
         };
     }
 
@@ -393,6 +430,7 @@ function serializeTab(
         kind: tab.kind,
         projectId: tab.projectId,
         sessionId: tab.sessionId,
+        worktreeId: tab.worktreeId ?? null,
     };
 }
 
@@ -421,13 +459,24 @@ function syncChatPersistence(
         { id: string } | undefined
     >("SELECT id FROM chat_sessions WHERE id = ?");
     const upsertChatSession = connection.prepare<
-        [string, string | null, string, string, string, string, string, string],
+        [
+            string,
+            string | null,
+            string | null,
+            string,
+            string,
+            string,
+            string,
+            string,
+            string,
+        ],
         void
     >(
         `
         INSERT INTO chat_sessions (
             id,
             project_id,
+            worktree_id,
             title,
             runtime,
             status,
@@ -436,9 +485,10 @@ function syncChatPersistence(
             updated_at,
             last_opened_at
         )
-        VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             project_id = excluded.project_id,
+            worktree_id = excluded.worktree_id,
             title = excluded.title,
             runtime = excluded.runtime,
             draft = excluded.draft,
@@ -524,6 +574,7 @@ function syncChatPersistence(
         upsertChatSession.run(
             tab.sessionId,
             tab.projectId,
+            tab.worktreeId ?? null,
             tab.title,
             tab.runtimeId,
             tab.draft,
@@ -558,6 +609,7 @@ function syncChatPersistence(
                     source: "workspace-sync",
                     tabId: tab.id,
                     title: tab.title,
+                    worktreeId: tab.worktreeId ?? null,
                 }),
                 now,
             );

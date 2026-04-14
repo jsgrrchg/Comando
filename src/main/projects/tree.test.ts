@@ -65,8 +65,10 @@ describe("project tree helpers", () => {
         expect(document.relativePath).toBe(relativePath);
         expect(document.isBinary).toBe(false);
         expect(document.content).toContain("console.log");
+        expect(document.kind).toBe("text");
         expect(document.languageId).toBe("typescript");
         expect(document.languageLabel).toBe("TypeScript");
+        expect(document.imageDataBase64).toBeNull();
     });
 
     it("detects scripts without extension from the shebang", async () => {
@@ -87,6 +89,31 @@ describe("project tree helpers", () => {
 
         expect(document.languageId).toBe("python");
         expect(document.languageLabel).toBe("Python");
+    });
+
+    it("reads images with inline preview metadata", async () => {
+        const rootPath = createProjectFixture();
+        const relativePath = "assets/logo.png";
+
+        fs.mkdirSync(path.join(rootPath, "assets"));
+        fs.writeFileSync(
+            path.join(rootPath, relativePath),
+            Buffer.from(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0J8AAAAASUVORK5CYII=",
+                "base64",
+            ),
+        );
+
+        const document = await readProjectFile({
+            projectId: "project-1",
+            relativePath,
+            rootPath,
+        });
+
+        expect(document.kind).toBe("image");
+        expect(document.mimeType).toBe("image/png");
+        expect(document.imageDataBase64).toMatch(/^iVBORw0KGgo/);
+        expect(document.isBinary).toBe(false);
     });
 
     it("creates, renames and deletes project entries safely", async () => {

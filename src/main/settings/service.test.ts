@@ -4,13 +4,22 @@ import { describe, expect, it } from "vitest";
 import { SettingsService } from "./service";
 
 describe("SettingsService", () => {
-    it("guarda y recarga el snapshot de settings", () => {
+    it("guarda y recarga el snapshot global de settings", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
         );
 
         service.saveSnapshot({
+            appearance: {
+                themeMode: "dark",
+                themePreset: "ocean",
+            },
+            editor: {
+                fontFamily: "jetbrains-mono",
+                fontSize: 15,
+                lineHeight: 1.7,
+            },
             shellState: {
                 activeSurface: "workspace",
                 leftWidth: 280,
@@ -19,10 +28,16 @@ describe("SettingsService", () => {
         });
 
         expect(service.loadSnapshot()).toEqual({
-            ai: {
-                codex: {
-                    binaryPath: null,
-                },
+            ai: createEmptyAiSettings(),
+            aiChat: createDefaultAiChatSettings(),
+            appearance: {
+                themeMode: "dark",
+                themePreset: "ocean",
+            },
+            editor: {
+                fontFamily: "jetbrains-mono",
+                fontSize: 15,
+                lineHeight: 1.7,
             },
             shellState: {
                 activeSurface: "workspace",
@@ -32,22 +47,46 @@ describe("SettingsService", () => {
         });
     });
 
-    it("tolera settings corruptos y devuelve null", () => {
+    it("tolera settings corruptos y devuelve defaults", () => {
         const connection = createFakeSettingsConnection({
-            "shell.state": "{invalid json",
+            app: {
+                "shell.state": "{invalid json",
+                "appearance.theme_mode": "??",
+                "appearance.theme_preset": "??",
+                "editor.font_family": "??",
+                "editor.font_size": "??",
+                "editor.line_height": "??",
+            },
+            project: {
+                "project-a": {
+                    "appearance.theme_mode": "nope",
+                    "appearance.theme_preset": "nope",
+                    "editor.font_family": "bad",
+                    "editor.font_size": "bad",
+                    "editor.line_height": "bad",
+                },
+            },
         });
         const service = new SettingsService(
             connection as unknown as Database.Database,
         );
 
         expect(service.loadSnapshot()).toEqual({
-            ai: {
-                codex: {
-                    binaryPath: null,
-                },
+            ai: createEmptyAiSettings(),
+            aiChat: createDefaultAiChatSettings(),
+            appearance: {
+                themeMode: "system",
+                themePreset: "default",
+            },
+            editor: {
+                fontFamily: "sf-mono",
+                fontSize: 14,
+                lineHeight: 1.55,
             },
             shellState: null,
         });
+
+        expect(service.loadProjectSettings("project-a")).toEqual(null);
     });
 
     it("guarda y recarga el path configurado de codex", () => {
@@ -64,44 +103,289 @@ describe("SettingsService", () => {
             binaryPath: "/usr/local/bin/codex-acp",
         });
         expect(service.loadSnapshot().ai).toEqual({
+            ...createEmptyAiSettings(),
             codex: {
                 binaryPath: "/usr/local/bin/codex-acp",
             },
         });
     });
+
+    it("guarda y recarga settings Gemini", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveGeminiRuntimeSettings({
+            authInvalidatedAtMs: 1234,
+            authMethod: "login_with_google",
+            binaryPath: "/opt/homebrew/bin/gemini",
+            googleCloudLocation: "us-central1",
+            googleCloudProject: "demo-project",
+            hasGeminiApiKey: true,
+            hasGoogleApiKey: false,
+        });
+
+        expect(service.loadGeminiRuntimeSettings()).toEqual({
+            authInvalidatedAtMs: 1234,
+            authMethod: "login_with_google",
+            binaryPath: "/opt/homebrew/bin/gemini",
+            googleCloudLocation: "us-central1",
+            googleCloudProject: "demo-project",
+            hasGeminiApiKey: true,
+            hasGoogleApiKey: false,
+        });
+        expect(service.loadSnapshot().ai).toEqual({
+            ...createEmptyAiSettings(),
+            gemini: {
+                authInvalidatedAtMs: 1234,
+                authMethod: "login_with_google",
+                binaryPath: "/opt/homebrew/bin/gemini",
+                googleCloudLocation: "us-central1",
+                googleCloudProject: "demo-project",
+                hasGeminiApiKey: true,
+                hasGoogleApiKey: false,
+            },
+        });
+    });
+
+    it("guarda y recarga settings Kilo", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveKiloRuntimeSettings({
+            authInvalidatedAtMs: 5678,
+            binaryPath: "/opt/homebrew/bin/kilo",
+        });
+
+        expect(service.loadKiloRuntimeSettings()).toEqual({
+            authInvalidatedAtMs: 5678,
+            binaryPath: "/opt/homebrew/bin/kilo",
+        });
+        expect(service.loadSnapshot().ai).toEqual({
+            ...createEmptyAiSettings(),
+            kilo: {
+                authInvalidatedAtMs: 5678,
+                binaryPath: "/opt/homebrew/bin/kilo",
+            },
+        });
+    });
+
+    it("guarda y recarga settings por proyecto", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveProjectSettings({
+            projectId: "project-a",
+            appearance: {
+                themeMode: "light",
+                themePreset: "rose",
+            },
+            editor: {
+                fontFamily: "ibm-plex-mono",
+                fontSize: 16,
+                lineHeight: 1.8,
+            },
+        });
+
+        expect(service.loadProjectSettings("project-a")).toEqual({
+            projectId: "project-a",
+            appearance: {
+                themeMode: "light",
+                themePreset: "rose",
+            },
+            editor: {
+                fontFamily: "ibm-plex-mono",
+                fontSize: 16,
+                lineHeight: 1.8,
+            },
+        });
+    });
+
+    it("acepta presets traidos desde reference app", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveSnapshot({
+            appearance: {
+                themeMode: "dark",
+                themePreset: "tokyoNight",
+            },
+            shellState: null,
+        });
+        service.saveProjectSettings({
+            projectId: "project-b",
+            appearance: {
+                themeMode: "light",
+                themePreset: "rosePine",
+            },
+            editor: null,
+        });
+
+        expect(service.loadSnapshot().appearance).toEqual({
+            themeMode: "dark",
+            themePreset: "tokyoNight",
+        });
+        expect(service.loadProjectSettings("project-b")).toEqual({
+            projectId: "project-b",
+            appearance: {
+                themeMode: "light",
+                themePreset: "rosePine",
+            },
+            editor: {
+                fontFamily: null,
+                fontSize: null,
+                lineHeight: null,
+            },
+        });
+    });
 });
 
-function createFakeSettingsConnection(seed: Record<string, string> = {}) {
-    const settings = new Map(Object.entries(seed));
+function createEmptyClaudeSettings() {
+    return {
+        authInvalidatedAtMs: null,
+        authMethod: null,
+        binaryPath: null,
+        gatewayBaseUrl: null,
+        hasGatewayAuthToken: false,
+        hasGatewayCustomHeaders: false,
+    };
+}
+
+function createEmptyGeminiSettings() {
+    return {
+        authInvalidatedAtMs: null,
+        authMethod: null,
+        binaryPath: null,
+        googleCloudLocation: null,
+        googleCloudProject: null,
+        hasGeminiApiKey: false,
+        hasGoogleApiKey: false,
+    };
+}
+
+function createEmptyAiSettings() {
+    return {
+        claude: createEmptyClaudeSettings(),
+        codex: {
+            binaryPath: null,
+        },
+        gemini: createEmptyGeminiSettings(),
+        kilo: {
+            authInvalidatedAtMs: null,
+            binaryPath: null,
+        },
+    };
+}
+
+function createDefaultAiChatSettings() {
+    return {
+        chatFontFamily: "system",
+        chatFontSize: 14,
+        composerFontFamily: "system",
+        composerFontSize: 14,
+        requireCmdEnterToSend: false,
+        screenshotRetentionSeconds: 0,
+        historyRetentionDays: 0,
+    };
+}
+
+function createFakeSettingsConnection(
+    seed: {
+        app?: Record<string, string>;
+        project?: Record<string, Record<string, string>>;
+    } = {},
+) {
+    const appSettings = new Map(Object.entries(seed.app ?? {}));
+    const projectSettings = new Map<string, string>();
+
+    for (const [projectId, values] of Object.entries(seed.project ?? {})) {
+        for (const [key, value] of Object.entries(values)) {
+            projectSettings.set(`${projectId}:${key}`, value);
+        }
+    }
 
     return {
         prepare(sql: string) {
-            if (sql.includes("SELECT value FROM app_settings WHERE key = ?")) {
+            const normalizedSql = sql.replace(/\s+/g, " ").trim();
+            const normalizedLowerSql = normalizedSql.toLowerCase();
+
+            if (
+                normalizedLowerSql.includes(
+                    "select value from app_settings where key = ?",
+                )
+            ) {
                 return {
                     get(key: string) {
-                        const value = settings.get(key);
-                        return value ? { value } : undefined;
+                        const value = appSettings.get(key);
+                        return value !== undefined ? { value } : undefined;
                     },
                 };
             }
 
-            if (sql.includes("INSERT INTO app_settings")) {
+            if (normalizedLowerSql.includes("insert into app_settings")) {
                 return {
                     run(key: string, value: string) {
-                        settings.set(key, value);
+                        appSettings.set(key, value);
                     },
                 };
             }
 
-            if (sql.includes("DELETE FROM app_settings WHERE key = ?")) {
+            if (
+                normalizedLowerSql.includes(
+                    "delete from app_settings where key = ?",
+                )
+            ) {
                 return {
                     run(key: string) {
-                        settings.delete(key);
+                        appSettings.delete(key);
                     },
                 };
             }
 
-            throw new Error(`Unsupported SQL in fake settings test:\n${sql}`);
+            if (
+                normalizedLowerSql.includes(
+                    "select value from project_settings where project_id = ? and key = ?",
+                )
+            ) {
+                return {
+                    get(projectId: string, key: string) {
+                        const value = projectSettings.get(
+                            `${projectId}:${key}`,
+                        );
+                        return value !== undefined ? { value } : undefined;
+                    },
+                };
+            }
+
+            if (normalizedLowerSql.includes("insert into project_settings")) {
+                return {
+                    run(projectId: string, key: string, value: string) {
+                        projectSettings.set(`${projectId}:${key}`, value);
+                    },
+                };
+            }
+
+            if (
+                normalizedLowerSql.includes(
+                    "delete from project_settings where project_id = ? and key = ?",
+                )
+            ) {
+                return {
+                    run(projectId: string, key: string) {
+                        projectSettings.delete(`${projectId}:${key}`);
+                    },
+                };
+            }
+
+            throw new Error(`Unsupported SQL in fake settings test:
+${sql}`);
         },
     };
 }

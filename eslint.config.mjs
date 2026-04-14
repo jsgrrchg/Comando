@@ -11,11 +11,17 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 export default tseslint.config(
     {
         ignores: [
+            "**/*.d.ts",
             "coverage/**",
             "dist/**",
             "dist-electron/**",
             "node_modules/**",
             "out/**",
+            "resources/**",
+            "scripts/**",
+            "vendor/**",
+            "electron.vite.config.js",
+            "vitest.config.js",
         ],
     },
     js.configs.recommended,

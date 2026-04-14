@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type {
+    AiRuntimeId,
     TerminalDataEvent,
     TerminalExitEvent,
     WorkspaceChatTab,
@@ -20,8 +21,11 @@ import {
     createDefaultWorkspaceState,
     markTerminalExited,
     moveActiveTabBetweenPanes,
+    moveTabToPaneAtIndex,
+    moveTabToSplit,
     moveWorkspaceTabBetweenPanes,
     removeProjectTabs,
+    reorderTabInPane,
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
     resizeSplit,
@@ -47,37 +51,76 @@ import {
     type WorkspaceTreeState,
 } from "../workspace/tree";
 
+export type WorkspaceQuickCreateAction =
+    | "claude"
+    | "codex"
+    | "gemini"
+    | "kilo"
+    | "file"
+    | "terminal";
+
 interface WorkspaceStore extends WorkspaceTreeState {
     closeOtherTabs: (tabId: string) => Promise<void>;
     readonly error: string | null;
     readonly hydrated: boolean;
+    readonly lastQuickCreateAction: WorkspaceQuickCreateAction;
     appendTerminalOutput: (event: TerminalDataEvent) => void;
     closePane: (paneId: string) => Promise<void>;
     closeTab: (tabId: string) => Promise<void>;
     closeTabsToRight: (tabId: string) => Promise<void>;
-    createChatTab: (projectId: string | null) => Promise<void>;
-    createTerminalTab: (projectId: string | null) => Promise<void>;
+    createChatTab: (
+        projectId: string | null,
+        worktreeId?: string | null,
+        runtimeId?: AiRuntimeId,
+    ) => Promise<void>;
+    createTerminalTab: (
+        projectId: string | null,
+        worktreeId?: string | null,
+    ) => Promise<void>;
     handleTerminalExit: (event: TerminalExitEvent) => void;
     hydrate: () => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
     moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
+    moveTabToPane: (
+        tabId: string,
+        sourcePaneId: string,
+        targetPaneId: string,
+        targetIndex: number,
+    ) => Promise<void>;
     openFileTab: (
         projectId: string,
         relativePath: string,
+        worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     openReviewTab: (input: {
         readonly projectId: string | null;
-        readonly runtimeId: "codex";
+        readonly runtimeId: AiRuntimeId;
         readonly sessionId: string;
         readonly title: string;
+        readonly worktreeId?: string | null;
     }) => Promise<void>;
-    refreshProjectTabs: (projectId: string) => Promise<void>;
+    refreshProjectTabs: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
+    reorderTab: (
+        paneId: string,
+        tabId: string,
+        targetIndex: number,
+    ) => Promise<void>;
     closeTabsForProjectPath: (
         projectId: string,
+        worktreeId: string | null,
         relativePath: string,
         kind: "directory" | "file",
+    ) => Promise<void>;
+    dropTabToSplit: (
+        tabId: string,
+        sourcePaneId: string,
+        targetPaneId: string,
+        direction: SplitDirection,
     ) => Promise<void>;
     resizeSplit: (
         splitId: string,
@@ -85,6 +128,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     ) => Promise<void>;
     renameTabsForProjectPath: (
         projectId: string,
+        worktreeId: string | null,
         previousRelativePath: string,
         nextRelativePath: string,
         kind: "directory" | "file",
@@ -93,6 +137,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     saveFileTab: (tabId: string) => Promise<void>;
     selectTab: (paneId: string, tabId: string) => Promise<void>;
     sendTerminalInput: (sessionId: string, data: string) => Promise<void>;
+    setLastQuickCreateAction: (action: WorkspaceQuickCreateAction) => void;
     setActivePane: (paneId: string) => Promise<void>;
     splitPane: (paneId: string, direction: SplitDirection) => Promise<void>;
     updateChatDraft: (tabId: string, draft: string) => Promise<void>;
@@ -110,6 +155,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ...createDefaultWorkspaceState(),
     error: null,
     hydrated: false,
+    lastQuickCreateAction: "codex",
 
     appendTerminalOutput: (event) => {
         set((state) => ({
@@ -133,11 +179,17 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
-    closeTabsForProjectPath: async (projectId, relativePath, kind) => {
+    closeTabsForProjectPath: async (
+        projectId: string,
+        worktreeId: string | null,
+        relativePath: string,
+        kind: "directory" | "file",
+    ) => {
         set((state) => ({
             ...closeWorkspaceTabsForProjectPath(
                 state,
                 projectId,
+                worktreeId,
                 relativePath,
                 kind,
             ),
@@ -170,27 +222,41 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
-    createChatTab: async (projectId) => {
+    createChatTab: async (
+        projectId: string | null,
+        worktreeId: string | null = null,
+        runtimeId: AiRuntimeId = "codex",
+    ) => {
         const paneId = get().activePaneId;
+        const runtimeTitle =
+            runtimeId === "claude"
+                ? "Claude"
+                : runtimeId === "gemini"
+                  ? "Gemini"
+                  : runtimeId === "kilo"
+                    ? "Kilo"
+                    : "Codex";
         const tab: WorkspaceChatTab = {
             createdAt: new Date().toISOString(),
             draft: "",
             id: crypto.randomUUID(),
             kind: "chat",
             projectId,
-            runtimeId: "codex",
+            runtimeId,
             sessionId: crypto.randomUUID(),
-            title: `Session ${countTabs(get, "chat") + 1}`,
+            title: `${runtimeTitle} ${countRuntimeChatTabs(get, runtimeId) + 1}`,
+            worktreeId,
         };
 
         set((state) => ({
             ...attachTabToPane(state, paneId, tab),
             error: null,
+            lastQuickCreateAction: runtimeId,
         }));
         await persistWorkspaceState(get);
     },
 
-    createTerminalTab: async (projectId) => {
+    createTerminalTab: async (projectId, worktreeId = null) => {
         const sessionId = crypto.randomUUID();
         const tab: RuntimeWorkspaceTerminalTab = {
             createdAt: new Date().toISOString(),
@@ -205,11 +271,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             sessionId,
             signalCode: null,
             title: `Terminal ${countTabs(get, "terminal") + 1}`,
+            worktreeId,
         };
 
         set((state) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
+            lastQuickCreateAction: "terminal",
         }));
         await persistWorkspaceState(get);
         await bootTerminalSession(get, set, tab.id);
@@ -266,12 +334,32 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
-    openFileTab: async (projectId, relativePath, reviewContext = null) => {
+    moveTabToPane: async (tabId, sourcePaneId, targetPaneId, targetIndex) => {
+        set((state) => ({
+            ...moveTabToPaneAtIndex(
+                state,
+                tabId,
+                sourcePaneId,
+                targetPaneId,
+                targetIndex,
+            ),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    openFileTab: async (
+        projectId: string,
+        relativePath: string,
+        worktreeId: string | null = null,
+        reviewContext: RuntimeWorkspaceFileReviewContext | null = null,
+    ) => {
         try {
             const existingTab = findExistingFileTab(
                 get(),
                 projectId,
                 relativePath,
+                worktreeId,
             );
             if (existingTab) {
                 const paneId = findPaneIdByTabId(get(), existingTab.id);
@@ -312,6 +400,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 savedContent: "",
                 saveError: null,
                 title: getFileTitle(relativePath),
+                worktreeId,
             };
 
             set((state) => ({
@@ -354,6 +443,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             runtimeId: input.runtimeId,
             sessionId: input.sessionId,
             title: `Review · ${input.title}`,
+            worktreeId: input.worktreeId ?? null,
         };
 
         set((state) => ({
@@ -363,10 +453,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
-    refreshProjectTabs: async (projectId) => {
+    refreshProjectTabs: async (
+        projectId: string,
+        worktreeId: string | null = null,
+    ) => {
         const fileTabs = Object.values(get().tabsById).filter(
             (tab): tab is RuntimeWorkspaceFileTab =>
-                tab.kind === "file" && tab.projectId === projectId,
+                tab.kind === "file" &&
+                tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId),
         );
 
         if (fileTabs.length === 0) {
@@ -403,16 +499,26 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
+    reorderTab: async (paneId, tabId, targetIndex) => {
+        set((state) => ({
+            ...reorderTabInPane(state, paneId, tabId, targetIndex),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
     renameTabsForProjectPath: async (
-        projectId,
-        previousRelativePath,
-        nextRelativePath,
-        kind,
+        projectId: string,
+        worktreeId: string | null,
+        previousRelativePath: string,
+        nextRelativePath: string,
+        kind: "directory" | "file",
     ) => {
         set((state) => ({
             ...renameWorkspaceTabsForProjectPath(
                 state,
                 projectId,
+                worktreeId,
                 previousRelativePath,
                 nextRelativePath,
                 kind,
@@ -471,6 +577,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 content: tab.draftContent,
                 projectId: tab.projectId,
                 relativePath: tab.relativePath,
+                worktreeId: tab.worktreeId ?? null,
             });
 
             set((state) => ({
@@ -519,9 +626,31 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }
     },
 
+    setLastQuickCreateAction: (action) => {
+        set({ lastQuickCreateAction: action });
+    },
+
     setActivePane: async (paneId) => {
         set((state) => ({
             ...activatePane(state, paneId),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    dropTabToSplit: async (tabId, sourcePaneId, targetPaneId, direction) => {
+        set((state) => ({
+            ...moveTabToSplit(
+                state,
+                tabId,
+                sourcePaneId,
+                targetPaneId,
+                direction,
+                {
+                    paneId: crypto.randomUUID(),
+                    splitId: crypto.randomUUID(),
+                },
+            ),
             error: null,
         }));
         await persistWorkspaceState(get);
@@ -648,6 +777,7 @@ async function hydrateRuntimeTabs(
                                 draft: persistedSession.draft,
                                 projectId: persistedSession.projectId,
                                 title: persistedSession.title,
+                                worktreeId: persistedSession.worktreeId ?? null,
                             },
                         },
                     }));
@@ -702,6 +832,7 @@ async function reloadFileTab(
         const document = await getComandoApi().openProjectFile({
             projectId: tab.projectId,
             relativePath: tab.relativePath,
+            worktreeId: tab.worktreeId ?? null,
         });
 
         set((state) => ({
@@ -739,6 +870,7 @@ async function bootTerminalSession(
         const session = await getComandoApi().createTerminalSession({
             preferredSessionId: tab.sessionId,
             projectId: tab.projectId,
+            worktreeId: tab.worktreeId ?? null,
         });
 
         set((state) => ({
@@ -786,6 +918,15 @@ function countTabs(
         .length;
 }
 
+function countRuntimeChatTabs(
+    get: GetWorkspaceState,
+    runtimeId: AiRuntimeId,
+): number {
+    return Object.values(get().tabsById).filter(
+        (tab) => tab.kind === "chat" && tab.runtimeId === runtimeId,
+    ).length;
+}
+
 function getFileTitle(relativePath: string): string {
     return relativePath.split("/").at(-1) ?? relativePath;
 }
@@ -794,12 +935,15 @@ function findExistingFileTab(
     state: WorkspaceTreeState,
     projectId: string,
     relativePath: string,
+    worktreeId: string | null,
 ): RuntimeWorkspaceFileTab | null {
     return (
         Object.values(state.tabsById).find(
             (tab): tab is RuntimeWorkspaceFileTab =>
                 tab.kind === "file" &&
                 tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId) &&
                 tab.relativePath === relativePath,
         ) ?? null
     );
@@ -850,4 +994,10 @@ function getComandoApi() {
     }
 
     return window.comando;
+}
+
+function normalizeWorktreeId(
+    worktreeId: string | null | undefined,
+): string | null {
+    return worktreeId ?? null;
 }

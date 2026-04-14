@@ -21,7 +21,7 @@ export function SplitHandle({
             onKeyDown={handleKeyDown}
             onPointerDown={onPointerDown}
             role="separator"
-            style={{ marginLeft: -5, marginRight: -5, width: 11 }}
+            style={{ marginLeft: -3, marginRight: -3, width: 7 }}
             tabIndex={0}
         >
             <div className="h-full w-px bg-border transition-colors duration-100 group-hover:bg-accent group-focus-visible:bg-accent group-focus-visible:outline-none" />

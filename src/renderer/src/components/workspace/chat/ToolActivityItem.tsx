@@ -1,0 +1,462 @@
+import { useState } from "react";
+
+import type { AiToolActivity } from "@shared/ipc";
+
+/* ─── Tool icon SVGs ─── */
+
+function ReadIcon() {
+    return (
+        <svg
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="13"
+        >
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" x2="16.65" y1="21" y2="16.65" />
+        </svg>
+    );
+}
+
+function EditIcon() {
+    return (
+        <svg
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="13"
+        >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <path d="m9 15 2 2 4-4" />
+        </svg>
+    );
+}
+
+function DeleteIcon() {
+    return (
+        <svg
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="13"
+        >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="9" x2="15" y1="13" y2="13" />
+        </svg>
+    );
+}
+
+function ExecuteIcon() {
+    return (
+        <svg
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="13"
+        >
+            <polygon points="5 3 19 12 5 21 5 3" />
+        </svg>
+    );
+}
+
+function DefaultIcon() {
+    return (
+        <svg
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="13"
+        >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+    );
+}
+
+function Chevron({ expanded }: { readonly expanded: boolean }) {
+    return (
+        <svg
+            fill="none"
+            height="10"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            style={{
+                opacity: 0.6,
+                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 0.15s ease",
+            }}
+            viewBox="0 0 24 24"
+            width="10"
+        >
+            <polyline points="6 9 12 15 18 9" />
+        </svg>
+    );
+}
+
+/* ─── Helpers ─── */
+
+const FILE_TOOL_KINDS = new Set([
+    "edit",
+    "create",
+    "delete",
+    "move",
+    "read",
+    "search",
+    "write",
+    "Write",
+    "Edit",
+    "Read",
+]);
+
+function getToolAccent(kind: string): string {
+    const lk = kind.toLowerCase();
+    if (lk === "delete" || lk === "remove") return "#ef4444";
+    return "#6b7280";
+}
+
+function getToolIcon(kind: string) {
+    const lk = kind.toLowerCase();
+    if (lk === "read" || lk === "search") return <ReadIcon />;
+    if (lk === "delete" || lk === "remove") return <DeleteIcon />;
+    if (lk === "execute" || lk === "bash" || lk === "shell")
+        return <ExecuteIcon />;
+    if (
+        lk === "edit" ||
+        lk === "write" ||
+        lk === "create" ||
+        lk === "move" ||
+        lk === "update"
+    )
+        return <EditIcon />;
+    return <DefaultIcon />;
+}
+
+function isFileToolActivity(activity: AiToolActivity): boolean {
+    if (FILE_TOOL_KINDS.has(activity.kind)) return true;
+    if (activity.locations.length > 0) return true;
+    if (activity.diffs.length > 0) return true;
+    return false;
+}
+
+function looksAbsolutePath(p: string): boolean {
+    return p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p);
+}
+
+function summarizeDiff(oldText: string | null, newText: string | null): string {
+    const ol = (oldText ?? "").split("\n").filter(Boolean).length;
+    const nl = (newText ?? "").split("\n").filter(Boolean).length;
+    if (ol === 0 && nl > 0) return `Creates ${nl} line(s).`;
+    if (nl === 0 && ol > 0) return `Removes ${ol} line(s).`;
+    const added = Math.max(0, nl - ol);
+    const removed = Math.max(0, ol - nl);
+    const parts: string[] = [];
+    if (added > 0) parts.push(`+${added}`);
+    if (removed > 0) parts.push(`-${removed}`);
+    return parts.length > 0
+        ? `Updates ${nl} line(s) (${parts.join(", ")}).`
+        : `Updates ${nl} line(s).`;
+}
+
+/* ─── File tool message (card style) ─── */
+
+function FileToolMessage({
+    activity,
+    onOpenFile,
+    projectId,
+}: {
+    readonly activity: AiToolActivity;
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+    ) => Promise<void>;
+    readonly projectId: string | null;
+}) {
+    const [expanded, setExpanded] = useState(false);
+    const isInProgress = activity.status === "in_progress";
+    const isCompleted = activity.status === "completed";
+    const accent = getToolAccent(activity.kind);
+
+    const hasDetail =
+        !!activity.summary ||
+        activity.locations.length > 0 ||
+        activity.diffs.length > 0;
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
+                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--color-border))`,
+                opacity: isCompleted ? 0.65 : 1,
+                transition: "opacity 0.2s ease",
+            }}
+        >
+            <button
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
+                onClick={() => hasDetail && setExpanded(!expanded)}
+                style={{
+                    background: "none",
+                    border: "none",
+                    borderBottom: expanded
+                        ? `1px solid color-mix(in srgb, ${accent} 15%, var(--color-border))`
+                        : "1px solid transparent",
+                    color: accent,
+                    cursor: hasDetail ? "pointer" : "default",
+                    fontSize: "0.83em",
+                }}
+                type="button"
+            >
+                <span className="shrink-0">{getToolIcon(activity.kind)}</span>
+                <span
+                    className="min-w-0 flex-1 truncate"
+                    style={{
+                        color: "var(--color-text-primary)",
+                        fontWeight: 500,
+                    }}
+                >
+                    {activity.title}
+                </span>
+                {isInProgress ? (
+                    <span
+                        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                        style={{ backgroundColor: "var(--color-accent)" }}
+                    />
+                ) : null}
+                {isCompleted ? (
+                    <span
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontSize: "0.75em",
+                            opacity: 0.8,
+                        }}
+                    >
+                        done
+                    </span>
+                ) : null}
+                {hasDetail ? (
+                    <span className="shrink-0">
+                        <Chevron expanded={expanded} />
+                    </span>
+                ) : null}
+            </button>
+
+            {expanded ? (
+                <div className="px-3 py-1.5" style={{ fontSize: "0.78em" }}>
+                    {activity.summary ? (
+                        <pre
+                            className="mb-1 max-h-32 overflow-y-auto rounded px-2 py-1.5"
+                            style={{
+                                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`,
+                                border: `1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`,
+                                color: "var(--color-text-secondary)",
+                                fontFamily: "inherit",
+                                fontSize: "0.82em",
+                                lineHeight: 1.4,
+                                margin: 0,
+                                overflowWrap: "anywhere",
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                            }}
+                        >
+                            {activity.summary}
+                        </pre>
+                    ) : null}
+                    {activity.locations.length > 0 ? (
+                        <div className="mb-1 flex flex-wrap gap-1">
+                            {activity.locations.map((loc) => (
+                                <button
+                                    className="app-no-drag rounded-md px-2 py-0.5"
+                                    key={loc}
+                                    onClick={() => {
+                                        if (
+                                            projectId &&
+                                            !looksAbsolutePath(loc)
+                                        )
+                                            void onOpenFile(projectId, loc);
+                                    }}
+                                    style={{
+                                        backgroundColor:
+                                            "var(--color-bg-tertiary)",
+                                        border: "1px solid var(--color-border)",
+                                        color: "var(--color-text-secondary)",
+                                        cursor: "pointer",
+                                        fontSize: "0.9em",
+                                    }}
+                                    type="button"
+                                >
+                                    {loc}
+                                </button>
+                            ))}
+                        </div>
+                    ) : null}
+                    {activity.diffs.map((diff) => (
+                        <div
+                            className="mb-1 rounded-md px-2 py-1.5"
+                            key={`${activity.id}:${diff.path}`}
+                            style={{
+                                backgroundColor: "var(--color-bg-tertiary)",
+                                border: "1px solid var(--color-border)",
+                            }}
+                        >
+                            <div className="flex items-center justify-between gap-2">
+                                <span
+                                    className="min-w-0 truncate"
+                                    style={{
+                                        color: "var(--color-text-primary)",
+                                        fontSize: "0.9em",
+                                    }}
+                                >
+                                    {diff.path}
+                                </span>
+                                <span
+                                    style={{
+                                        color: "var(--color-text-secondary)",
+                                        fontSize: "0.8em",
+                                        letterSpacing: "0.06em",
+                                        textTransform: "uppercase",
+                                    }}
+                                >
+                                    {diff.kind}
+                                </span>
+                            </div>
+                            <div
+                                className="mt-0.5"
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontSize: "0.85em",
+                                }}
+                            >
+                                {summarizeDiff(diff.oldText, diff.newText)}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+/* ─── Generic tool message (compact single-liner) ─── */
+
+function GenericToolMessage({
+    activity,
+}: {
+    readonly activity: AiToolActivity;
+}) {
+    const [expanded, setExpanded] = useState(false);
+    const isInProgress = activity.status === "in_progress";
+    const isCompleted = activity.status === "completed";
+    const hasDetail = !!activity.summary;
+
+    return (
+        <div
+            className="min-w-0 max-w-full"
+            style={{
+                color: "var(--color-text-secondary)",
+                fontSize: "0.85em",
+                opacity: isCompleted ? 0.45 : 0.7,
+                transition: "opacity 0.2s ease",
+            }}
+        >
+            <button
+                className="flex w-full items-center gap-2 py-0.5 text-left"
+                onClick={() => hasDetail && setExpanded(!expanded)}
+                style={{
+                    background: "none",
+                    border: "none",
+                    color: "inherit",
+                    cursor: hasDetail ? "pointer" : "default",
+                }}
+                type="button"
+            >
+                <span className="shrink-0">{getToolIcon(activity.kind)}</span>
+                <span className="min-w-0 flex-1 truncate">
+                    {activity.title}
+                </span>
+                {isInProgress ? (
+                    <span
+                        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                        style={{ backgroundColor: "var(--color-accent)" }}
+                    />
+                ) : null}
+                {hasDetail ? (
+                    <span className="shrink-0">
+                        <Chevron expanded={expanded} />
+                    </span>
+                ) : null}
+            </button>
+
+            {expanded && activity.summary ? (
+                <pre
+                    className="mt-1 max-h-32 overflow-y-auto rounded px-2 py-1.5"
+                    style={{
+                        backgroundColor: "var(--color-bg-tertiary)",
+                        border: "1px solid var(--color-border)",
+                        color: "var(--color-text-secondary)",
+                        fontFamily: "inherit",
+                        fontSize: "0.82em",
+                        lineHeight: 1.4,
+                        margin: 0,
+                        marginTop: 4,
+                        overflowWrap: "anywhere",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                    }}
+                >
+                    {activity.summary}
+                </pre>
+            ) : null}
+        </div>
+    );
+}
+
+/* ─── Public component ─── */
+
+export function ToolActivityItem({
+    activity,
+    onOpenFile,
+    projectId,
+}: {
+    readonly activity: AiToolActivity;
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+    ) => Promise<void>;
+    readonly projectId: string | null;
+}) {
+    if (isFileToolActivity(activity)) {
+        return (
+            <FileToolMessage
+                activity={activity}
+                onOpenFile={onOpenFile}
+                projectId={projectId}
+            />
+        );
+    }
+
+    return <GenericToolMessage activity={activity} />;
+}

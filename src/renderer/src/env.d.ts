@@ -1,9 +1,9 @@
-import type { ComandoApi } from '@shared/ipc';
+import type { ComandoApi } from "@shared/ipc";
 
 declare global {
-  interface Window {
-    comando: ComandoApi;
-  }
+    interface Window {
+        comando: ComandoApi;
+    }
 }
 
 export {};

@@ -7,14 +7,19 @@
     "packageManager": "pnpm@10.33.0",
     "main": "out/main/index.js",
     "scripts": {
+        "predev": "pnpm run stage:ai",
         "dev": "electron-vite dev",
+        "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
         "lint": "eslint .",
         "postinstall": "pnpm run rebuild:native",
         "rebuild:native": "electron-rebuild -f -w better-sqlite3,node-pty",
+        "stage:ai": "node scripts/ai/stage-ai-runtimes.mjs",
+        "stage:codex-runtime": "node scripts/ai/stage-codex-runtime.mjs",
         "test": "vitest run",
         "test:watch": "vitest",
         "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+        "verify:ai-runtimes": "node scripts/ai/verify-ai-runtimes.mjs",
         "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build"
     },
     "dependencies": {

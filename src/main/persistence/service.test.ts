@@ -1,31 +1,61 @@
-import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+
+import { databaseMigrations } from "@main/db/migrations";
+import {
+    applyMigrations,
+    createSqliteCompatConnection,
+} from "@main/testing/sqlite-compat";
 
 import { PersistenceService } from "./service";
 
 describe("PersistenceService", () => {
-    it("restaura ventana y proyecto activo desde la ultima sesion", () => {
-        const connection = createFakePersistenceConnection();
-        const service = new PersistenceService(
-            connection as unknown as Database.Database,
-        );
+    it("crea y restaura una sesion principal aislada por windowId", () => {
+        const connection = createTestConnection();
+        seedProject(connection, "project-1");
+
+        const service = new PersistenceService(connection);
+        const created = service.createMainWindowSession({
+            projectId: "project-1",
+            shellState: {
+                activeSurface: "workspace",
+                leftWidth: 280,
+                rightWidth: 360,
+            },
+        });
+        const windowId = created.windowContext?.windowId;
+
+        expect(windowId).toBeTruthy();
 
         service.saveWindowState({
             height: 900,
-            id: "main",
+            id: windowId!,
             isFullScreen: false,
             isMaximized: true,
             width: 1440,
             x: 24,
             y: 32,
         });
-        service.saveActiveProjectId("project-1");
+        service.saveActiveProjectId(windowId!, "project-1");
 
-        expect(service.loadSnapshot()).toEqual({
+        expect(service.loadSnapshot(windowId!)).toEqual({
             activeProjectId: "project-1",
+            activeWorktreeId: null,
+            shellState: {
+                activeSurface: "workspace",
+                leftWidth: 280,
+                rightWidth: 360,
+            },
+            windowContext: {
+                projectId: "project-1",
+                windowId,
+                windowKind: "main",
+                worktreeId: null,
+                workspaceId: expect.any(String),
+                workspaceSessionId: expect.any(String),
+            },
             windowState: {
                 height: 900,
-                id: "main",
+                id: windowId!,
                 isFullScreen: false,
                 isMaximized: true,
                 width: 1440,
@@ -34,101 +64,53 @@ describe("PersistenceService", () => {
             },
         });
     });
+
+    it("no restaura sesiones marcadas como cerradas", () => {
+        const connection = createTestConnection();
+        const service = new PersistenceService(connection);
+
+        const snapshotA = service.createMainWindowSession();
+        const snapshotB = service.createMainWindowSession();
+
+        service.markWindowClosed(snapshotA.windowContext!.windowId);
+
+        expect(service.listRestorableMainWindowSnapshots()).toEqual([
+            expect.objectContaining({
+                windowContext: expect.objectContaining({
+                    windowId: snapshotB.windowContext!.windowId,
+                }),
+            }),
+        ]);
+    });
 });
 
-function createFakePersistenceConnection() {
-    const windows = new Map<
-        string,
-        {
-            height: number;
-            id: string;
-            is_full_screen: number;
-            is_maximized: number;
-            width: number;
-            x: number | null;
-            y: number | null;
-        }
-    >();
-    const sessions = new Map<
-        string,
-        {
-            active_project_id: string | null;
-            window_id: string;
-            workspace_id: string;
-        }
-    >();
+function createTestConnection() {
+    const connection = createSqliteCompatConnection();
+    applyMigrations(connection, databaseMigrations);
+    return connection;
+}
 
-    return {
-        prepare(sql: string) {
-            if (sql.includes("INSERT INTO app_windows")) {
-                return {
-                    run(
-                        id: string,
-                        _kind: string,
-                        _title: string,
-                        x: number | null,
-                        y: number | null,
-                        width: number,
-                        height: number,
-                        isMaximized: number,
-                        isFullScreen: number,
-                    ) {
-                        windows.set(id, {
-                            height,
-                            id,
-                            is_full_screen: isFullScreen,
-                            is_maximized: isMaximized,
-                            width,
-                            x,
-                            y,
-                        });
-                    },
-                };
-            }
+function seedProject(
+    connection: ReturnType<typeof createTestConnection>,
+    projectId: string,
+): void {
+    const now = new Date().toISOString();
 
-            if (sql.includes("SELECT active_project_id")) {
-                return {
-                    get(id: string) {
-                        return sessions.get(id);
-                    },
-                };
-            }
+    connection
+        .prepare(
+            `
+            INSERT INTO projects (id, name, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            `,
+        )
+        .run(projectId, "Project", now, now);
 
-            if (sql.includes("SELECT\n                    id,")) {
-                return {
-                    get(id: string) {
-                        return windows.get(id);
-                    },
-                };
-            }
-
-            if (sql.includes("INSERT INTO workspace_sessions")) {
-                return {
-                    run(
-                        id: string,
-                        windowId: string,
-                        workspaceId: string,
-                        activeProjectIdOrCreatedAt: string | null,
-                    ) {
-                        const existing = sessions.get(id);
-                        const activeProjectId =
-                            activeProjectIdOrCreatedAt &&
-                            activeProjectIdOrCreatedAt.includes("T")
-                                ? (existing?.active_project_id ?? null)
-                                : activeProjectIdOrCreatedAt;
-
-                        sessions.set(id, {
-                            active_project_id: activeProjectId ?? null,
-                            window_id: windowId,
-                            workspace_id: workspaceId,
-                        });
-                    },
-                };
-            }
-
-            throw new Error(
-                `Unsupported SQL in fake persistence test:\n${sql}`,
-            );
-        },
-    };
+    connection
+        .prepare(
+            `
+            INSERT INTO project_roots (project_id, root_path, is_primary)
+            VALUES (?, ?, 1)
+            `,
+        )
+        .run(projectId, `/tmp/${projectId}`);
 }

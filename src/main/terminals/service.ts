@@ -13,19 +13,20 @@ import type {
 import type { ProjectService } from "@main/projects/service";
 
 interface ManagedTerminalSession {
+    readonly ownerWindowId: string;
     readonly ptyProcess: pty.IPty;
     readonly session: TerminalSession;
 }
 
 interface TerminalServiceOptions {
-    readonly onData: (event: TerminalDataEvent) => void;
-    readonly onExit: (event: TerminalExitEvent) => void;
+    readonly onData: (ownerWindowId: string, event: TerminalDataEvent) => void;
+    readonly onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly projectService: ProjectService;
 }
 
 export class TerminalService {
-    readonly #onData: (event: TerminalDataEvent) => void;
-    readonly #onExit: (event: TerminalExitEvent) => void;
+    readonly #onData: (ownerWindowId: string, event: TerminalDataEvent) => void;
+    readonly #onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly #projectService: ProjectService;
     readonly #sessions = new Map<string, ManagedTerminalSession>();
 
@@ -35,7 +36,10 @@ export class TerminalService {
         this.#projectService = options.projectService;
     }
 
-    createSession(input: CreateTerminalSessionInput): TerminalSession {
+    createSession(
+        input: CreateTerminalSessionInput,
+        ownerWindowId: string,
+    ): TerminalSession {
         const sessionId = input.preferredSessionId ?? randomUUID();
         const existingSession = this.#sessions.get(sessionId);
         if (existingSession) {
@@ -43,7 +47,10 @@ export class TerminalService {
         }
 
         const cwd = input.projectId
-            ? this.#projectService.getProjectRootPath(input.projectId)
+            ? this.#projectService.getProjectRootPath(
+                  input.projectId,
+                  input.worktreeId ?? null,
+              )
             : process.cwd();
         const shell = getDefaultShell();
         const shellArgs = getDefaultShellArgs(shell);
@@ -62,22 +69,24 @@ export class TerminalService {
             cwd,
             projectId: input.projectId,
             sessionId,
+            worktreeId: input.worktreeId ?? null,
         };
 
         const managedSession: ManagedTerminalSession = {
+            ownerWindowId,
             ptyProcess,
             session,
         };
 
         ptyProcess.onData((data) => {
-            this.#onData({
+            this.#onData(ownerWindowId, {
                 data,
                 sessionId,
             });
         });
         ptyProcess.onExit((event) => {
             this.#sessions.delete(sessionId);
-            this.#onExit({
+            this.#onExit(ownerWindowId, {
                 exitCode: event.exitCode,
                 sessionId,
                 signalCode: event.signal ?? null,
@@ -113,6 +122,16 @@ export class TerminalService {
 
     close(): void {
         for (const sessionId of this.#sessions.keys()) {
+            this.closeSession(sessionId);
+        }
+    }
+
+    closeOwnedByWindow(ownerWindowId: string): void {
+        const ownedSessionIds = [...this.#sessions.entries()]
+            .filter(([, session]) => session.ownerWindowId === ownerWindowId)
+            .map(([sessionId]) => sessionId);
+
+        for (const sessionId of ownedSessionIds) {
             this.closeSession(sessionId);
         }
     }

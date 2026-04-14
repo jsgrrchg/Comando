@@ -1,23 +1,8 @@
-import { useEffect } from "react";
+import { useProjectsStore } from "../store/projects-store";
+import { useResolvedAppearance } from "./use-resolved-appearance";
 
 export function useSystemTheme(): void {
-    useEffect(() => {
-        if (!window.comando) {
-            return;
-        }
+    const activeProjectId = useProjectsStore((state) => state.activeProjectId);
 
-        void window.comando.getSystemTheme().then((theme) => {
-            applyTheme(theme.isDark);
-        });
-
-        const unsubscribe = window.comando.onThemeUpdated((theme) => {
-            applyTheme(theme.isDark);
-        });
-
-        return unsubscribe;
-    }, []);
-}
-
-function applyTheme(isDark: boolean): void {
-    document.documentElement.classList.toggle("dark", isDark);
+    useResolvedAppearance(activeProjectId);
 }

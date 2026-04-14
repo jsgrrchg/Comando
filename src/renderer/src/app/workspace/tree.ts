@@ -177,7 +177,7 @@ export function attachTabToPane(
 ): WorkspaceTreeState {
     const existingPaneId = findPaneIdForTab(state.rootNode, tab.id);
     const stateWithoutTab =
-        existingPaneId !== null
+        existingPaneId !== null && existingPaneId !== paneId
             ? moveTabBetweenPanes(state, tab.id, existingPaneId, paneId)
             : state;
 
@@ -262,11 +262,13 @@ export function closeWorkspaceTab(
         };
     });
 
-    return {
+    const nextState = {
         ...state,
         rootNode: nextRootNode,
         tabsById: omitTabFromMap(state.tabsById, tabId),
     };
+
+    return closeEmptyPaneIfNeeded(nextState, paneId);
 }
 
 export function closeWorkspacePane(
@@ -375,7 +377,162 @@ export function moveWorkspaceTabBetweenPanes(
             : (sourceIndex - 1 + paneIds.length) % paneIds.length;
     const targetPaneId = paneIds[targetIndex];
 
-    return moveTabBetweenPanes(state, tabId, sourcePaneId, targetPaneId);
+    const targetPane = findPaneById(state.rootNode, targetPaneId);
+    if (!targetPane) {
+        return state;
+    }
+
+    return moveTabToPaneAtIndex(
+        state,
+        tabId,
+        sourcePaneId,
+        targetPaneId,
+        targetPane.tabIds.length,
+    );
+}
+
+export function reorderTabInPane(
+    state: WorkspaceTreeState,
+    paneId: string,
+    tabId: string,
+    targetIndex: number,
+): WorkspaceTreeState {
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane || !pane.tabIds.includes(tabId)) {
+        return state;
+    }
+
+    const remainingTabIds = pane.tabIds.filter(
+        (currentTabId) => currentTabId !== tabId,
+    );
+    const nextIndex = normalizeTabInsertionIndex(
+        targetIndex,
+        remainingTabIds.length,
+    );
+    const nextTabIds = [
+        ...remainingTabIds.slice(0, nextIndex),
+        tabId,
+        ...remainingTabIds.slice(nextIndex),
+    ];
+
+    return {
+        activePaneId: paneId,
+        rootNode: replaceNode(state.rootNode, paneId, (node) => {
+            if (node.type !== "pane") {
+                return node;
+            }
+
+            return {
+                ...node,
+                activeTabId: node.activeTabId ?? tabId,
+                tabIds: nextTabIds,
+            };
+        }),
+        tabsById: state.tabsById,
+    };
+}
+
+export function moveTabToPaneAtIndex(
+    state: WorkspaceTreeState,
+    tabId: string,
+    sourcePaneId: string,
+    targetPaneId: string,
+    targetIndex: number,
+): WorkspaceTreeState {
+    if (sourcePaneId === targetPaneId) {
+        return reorderTabInPane(state, targetPaneId, tabId, targetIndex);
+    }
+
+    const sourcePane = findPaneById(state.rootNode, sourcePaneId);
+    const targetPane = findPaneById(state.rootNode, targetPaneId);
+    if (!sourcePane || !targetPane || !sourcePane.tabIds.includes(tabId)) {
+        return state;
+    }
+
+    const withoutSourceTab = replacePaneTabs(
+        state,
+        sourcePaneId,
+        (existingTabIds, activeTabId) => {
+            const nextTabIds = existingTabIds.filter(
+                (currentTabId) => currentTabId !== tabId,
+            );
+            return {
+                activeTabId:
+                    activeTabId === tabId
+                        ? (nextTabIds.at(-1) ?? null)
+                        : activeTabId,
+                tabIds: nextTabIds,
+            };
+        },
+    );
+
+    const nextState = {
+        activePaneId: targetPaneId,
+        rootNode: replaceNode(
+            withoutSourceTab.rootNode,
+            targetPaneId,
+            (node) => {
+                if (node.type !== "pane") {
+                    return node;
+                }
+
+                const existingTabIds = node.tabIds.filter(
+                    (currentTabId) => currentTabId !== tabId,
+                );
+                const nextIndex = normalizeTabInsertionIndex(
+                    targetIndex,
+                    existingTabIds.length,
+                );
+                const nextTabIds = [
+                    ...existingTabIds.slice(0, nextIndex),
+                    tabId,
+                    ...existingTabIds.slice(nextIndex),
+                ];
+
+                return {
+                    ...node,
+                    activeTabId: tabId,
+                    tabIds: nextTabIds,
+                };
+            },
+        ),
+        tabsById: withoutSourceTab.tabsById,
+    };
+
+    return closeEmptyPaneIfNeeded(nextState, sourcePaneId);
+}
+
+export function moveTabToSplit(
+    state: WorkspaceTreeState,
+    tabId: string,
+    sourcePaneId: string,
+    targetPaneId: string,
+    direction: SplitDirection,
+    nextIds: {
+        readonly paneId: string;
+        readonly splitId: string;
+    },
+): WorkspaceTreeState {
+    const sourcePane = findPaneById(state.rootNode, sourcePaneId);
+    const targetPane = findPaneById(state.rootNode, targetPaneId);
+    if (!sourcePane || !targetPane || !sourcePane.tabIds.includes(tabId)) {
+        return state;
+    }
+
+    const splitState = splitPaneInDirection(
+        state,
+        targetPaneId,
+        direction,
+        nextIds,
+    );
+
+    return moveTabToPaneAtIndex(
+        splitState,
+        tabId,
+        sourcePaneId,
+        nextIds.paneId,
+        0,
+    );
 }
 
 export function closeOtherWorkspaceTabs(
@@ -434,6 +591,7 @@ export function closeWorkspaceTabsToRight(
 export function closeWorkspaceTabsForProjectPath(
     state: WorkspaceTreeState,
     projectId: string,
+    worktreeId: string | null,
     relativePath: string,
     kind: "directory" | "file",
 ): WorkspaceTreeState {
@@ -442,6 +600,8 @@ export function closeWorkspaceTabsForProjectPath(
             (tab): tab is RuntimeWorkspaceFileTab =>
                 tab.kind === "file" &&
                 tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId) &&
                 matchesProjectPath(tab.relativePath, relativePath, kind),
         )
         .map((tab) => tab.id);
@@ -455,6 +615,7 @@ export function closeWorkspaceTabsForProjectPath(
 export function renameWorkspaceTabsForProjectPath(
     state: WorkspaceTreeState,
     projectId: string,
+    worktreeId: string | null,
     previousRelativePath: string,
     nextRelativePath: string,
     kind: "directory" | "file",
@@ -464,6 +625,8 @@ export function renameWorkspaceTabsForProjectPath(
             if (
                 tab.kind !== "file" ||
                 tab.projectId !== projectId ||
+                normalizeWorktreeId(tab.worktreeId) !==
+                    normalizeWorktreeId(worktreeId) ||
                 !matchesProjectPath(
                     tab.relativePath,
                     previousRelativePath,
@@ -846,48 +1009,18 @@ function moveTabBetweenPanes(
     sourcePaneId: string,
     targetPaneId: string,
 ): WorkspaceTreeState {
-    if (sourcePaneId === targetPaneId) {
-        return selectPaneTab(state, targetPaneId, tabId);
+    const targetPane = findPaneById(state.rootNode, targetPaneId);
+    if (!targetPane) {
+        return state;
     }
 
-    const withoutSourceTab = replacePaneTabs(
+    return moveTabToPaneAtIndex(
         state,
+        tabId,
         sourcePaneId,
-        (existingTabIds, activeTabId) => {
-            const nextTabIds = existingTabIds.filter(
-                (currentTabId) => currentTabId !== tabId,
-            );
-            return {
-                activeTabId:
-                    activeTabId === tabId
-                        ? (nextTabIds.at(-1) ?? null)
-                        : activeTabId,
-                tabIds: nextTabIds,
-            };
-        },
+        targetPaneId,
+        targetPane.tabIds.length,
     );
-
-    return {
-        activePaneId: targetPaneId,
-        rootNode: replaceNode(
-            withoutSourceTab.rootNode,
-            targetPaneId,
-            (node) => {
-                if (node.type !== "pane") {
-                    return node;
-                }
-
-                return {
-                    ...node,
-                    activeTabId: tabId,
-                    tabIds: node.tabIds.includes(tabId)
-                        ? node.tabIds
-                        : [...node.tabIds, tabId],
-                };
-            },
-        ),
-        tabsById: withoutSourceTab.tabsById,
-    };
 }
 
 function replacePaneTabs(
@@ -965,11 +1098,36 @@ function removePane(node: WorkspaceNode, paneId: string): WorkspaceNode | null {
     };
 }
 
+function closeEmptyPaneIfNeeded(
+    state: WorkspaceTreeState,
+    paneId: string,
+): WorkspaceTreeState {
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane || pane.tabIds.length > 0) {
+        return state;
+    }
+
+    const paneCount = collectPaneNodes(state.rootNode).length;
+    if (paneCount <= 1) {
+        return state;
+    }
+
+    return closeWorkspacePane(state, paneId);
+}
+
 function normalizeSizes(sizes: readonly number[]): readonly number[] {
     const minSize = 0.12;
     const clamped = sizes.map((size) => Math.max(minSize, size));
     const total = clamped.reduce((sum, size) => sum + size, 0) || 1;
     return clamped.map((size) => size / total);
+}
+
+function normalizeTabInsertionIndex(index: number, length: number): number {
+    if (!Number.isFinite(index)) {
+        return length;
+    }
+
+    return Math.min(Math.max(Math.trunc(index), 0), length);
 }
 
 function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
@@ -981,6 +1139,7 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
             projectId: tab.projectId,
             relativePath: tab.relativePath,
             title: tab.title,
+            worktreeId: tab.worktreeId ?? null,
         };
     }
 
@@ -992,6 +1151,7 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
             projectId: tab.projectId,
             sessionId: tab.sessionId,
             title: tab.title,
+            worktreeId: tab.worktreeId ?? null,
         };
     }
 
@@ -1041,6 +1201,12 @@ function matchesProjectPath(
         candidatePath === targetPath ||
         candidatePath.startsWith(`${targetPath}/`)
     );
+}
+
+function normalizeWorktreeId(
+    worktreeId: string | null | undefined,
+): string | null {
+    return worktreeId ?? null;
 }
 
 function rebaseAbsolutePath(

@@ -13,6 +13,7 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 import { shouldIgnoreEntry } from "./ignore";
 
 const DEFAULT_INLINE_EDITOR_MAX_BYTES = 4 * 1024 * 1024;
+const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
 
 interface GitSnapshot {
     readonly changedPaths: readonly string[];
@@ -81,15 +82,32 @@ export async function readProjectFile(options: {
     const maxBytes = options.maxBytes ?? DEFAULT_INLINE_EDITOR_MAX_BYTES;
     const stats = await fs.promises.stat(absolutePath);
     const isTooLarge = stats.size > maxBytes;
+    const mimeType = resolveMimeType(absolutePath);
+    const isImage = isImageMimeType(mimeType);
     const binaryProbe = await readProbeBuffer(absolutePath, 4096);
-    const isBinary = bufferLooksBinary(binaryProbe);
+    const isBinary = isImage ? false : bufferLooksBinary(binaryProbe);
     const language = resolveEditorLanguage({
         filePath: absolutePath,
         probeContent: isBinary ? "" : binaryProbe.toString("utf8"),
     });
 
     let content = "";
-    if (isBinary) {
+    let imageDataBase64: string | null = null;
+    let kind: ProjectFileDocument["kind"] = "text";
+
+    if (isImage) {
+        kind = "image";
+        if (stats.size > IMAGE_PREVIEW_MAX_BYTES) {
+            content = `This image is ${formatByteSize(stats.size)} and exceeds the ${formatByteSize(IMAGE_PREVIEW_MAX_BYTES)} preview limit.`;
+        } else {
+            imageDataBase64 = await fs.promises.readFile(
+                absolutePath,
+                "base64",
+            );
+            content = "Image preview ready.";
+        }
+    } else if (isBinary) {
+        kind = "binary";
         content =
             "Binary file preview is not available yet. Open it in the system editor if you need the raw bytes.";
     } else if (isTooLarge) {
@@ -101,13 +119,17 @@ export async function readProjectFile(options: {
     return {
         absolutePath,
         content,
+        imageDataBase64,
         isBinary,
         isTooLarge,
+        kind,
         languageId: language.id,
         languageLabel: language.label,
+        mimeType,
         name: path.basename(absolutePath),
         projectId: options.projectId,
         relativePath: normalizeRelativePath(options.relativePath),
+        sizeBytes: stats.size,
     };
 }
 
@@ -311,6 +333,32 @@ function formatByteSize(bytes: number): string {
     }
 
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resolveMimeType(filePath: string): string | null {
+    const extension = path.extname(filePath).slice(1).toLowerCase();
+
+    switch (extension) {
+        case "avif":
+            return "image/avif";
+        case "gif":
+            return "image/gif";
+        case "jpeg":
+        case "jpg":
+            return "image/jpeg";
+        case "png":
+            return "image/png";
+        case "svg":
+            return "image/svg+xml";
+        case "webp":
+            return "image/webp";
+        default:
+            return null;
+    }
+}
+
+function isImageMimeType(mimeType: string | null): boolean {
+    return Boolean(mimeType?.startsWith("image/"));
 }
 
 function validateEntryName(name: string): string {

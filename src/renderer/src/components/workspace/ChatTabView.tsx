@@ -4,21 +4,37 @@ import {
     useMemo,
     useRef,
     useState,
-    type KeyboardEvent as ReactKeyboardEvent,
+    type ReactNode,
 } from "react";
 
 import type {
     AiAvailableCommand,
+    AiFileContextAttachment,
+    AiImageAttachment,
     AiUserInputRequest,
     AiSessionSnapshot,
     AiToolActivity,
-    ProjectTreeNode,
+    ClaudeAuthMethodId,
+    GeminiAuthMethodId,
 } from "@shared/ipc";
 
+import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
+import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import type { RuntimeWorkspaceChatTab } from "@renderer/app/workspace/tree";
 
+import { AIChatAgentControls } from "./AIChatAgentControls";
+import { LanguageIcon } from "./LanguageIcon";
 import { MarkdownContent } from "./MarkdownContent";
+import { AIChatComposer } from "./chat/AIChatComposer";
+import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
+import type { AIComposerPart } from "./chat/composerParts";
+import {
+    composerPartsToPlainText,
+    createEmptyComposerParts,
+} from "./chat/composerParts";
+import { PlanMessage } from "./chat/PlanMessage";
+import { ToolActivityItem } from "./chat/ToolActivityItem";
 
 /* ─── Types ─── */
 
@@ -27,32 +43,11 @@ interface ChatTabViewProps {
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
+        worktreeId?: string | null,
     ) => Promise<void>;
     readonly onOpenReview: () => Promise<void>;
     readonly tab: RuntimeWorkspaceChatTab;
 }
-
-interface TokenRange {
-    readonly end: number;
-    readonly start: number;
-    readonly token: string;
-}
-
-type ComposerSuggestion =
-    | {
-          readonly description: string;
-          readonly id: string;
-          readonly insertText: string;
-          readonly kind: "command";
-          readonly label: string;
-      }
-    | {
-          readonly description: string;
-          readonly id: string;
-          readonly insertText: string;
-          readonly kind: "entry";
-          readonly label: string;
-      };
 
 type TimelineRow =
     | {
@@ -65,7 +60,8 @@ type TimelineRow =
 
 const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
     {
-        description: "Ask Codex to create or update the working plan.",
+        description:
+            "Ask the active runtime to create or update the working plan.",
         id: "plan",
         insertText: "/plan ",
         label: "/plan",
@@ -73,6 +69,19 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 ];
 
 const NEAR_BOTTOM_THRESHOLD = 80;
+const MAX_IMAGE_ATTACHMENTS = 4;
+const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
+const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
+type AiRuntimeCatalog = Pick<
+    AiSessionSnapshot,
+    | "availableCommands"
+    | "configOptions"
+    | "modeId"
+    | "modes"
+    | "modelId"
+    | "models"
+>;
 
 /* ─── Main component ─── */
 
@@ -82,39 +91,109 @@ export function ChatTabView({
     onOpenReview,
     tab,
 }: ChatTabViewProps) {
+    const aiChatSettings = useAiChatSettings();
+    const claudeSettings = useAiStore((s) => s.claudeSettings);
     const codexBinaryPath = useAiStore((s) => s.codexBinaryPath);
     const ensureSession = useAiStore((s) => s.ensureSession);
+    const geminiSettings = useAiStore((s) => s.geminiSettings);
+    const kiloSettings = useAiStore((s) => s.kiloSettings);
+    const launchRuntimeAuth = useAiStore((s) => s.launchRuntimeAuth);
     const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
     const removeQueuedPrompt = useAiStore((s) => s.removeQueuedPrompt);
     const respondPermission = useAiStore((s) => s.respondPermission);
     const respondUserInput = useAiStore((s) => s.respondUserInput);
+    const saveClaudeRuntimeSettings = useAiStore(
+        (s) => s.saveClaudeRuntimeSettings,
+    );
+    const saveGeminiRuntimeSettings = useAiStore(
+        (s) => s.saveGeminiRuntimeSettings,
+    );
+    const saveKiloRuntimeSettings = useAiStore(
+        (s) => s.saveKiloRuntimeSettings,
+    );
     const saveCodexBinaryPath = useAiStore((s) => s.saveCodexBinaryPath);
+    const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
+    const clearDraftAttachments = useAiStore((s) => s.clearDraftAttachments);
+
+    const removeDraftFileContext = useAiStore((s) => s.removeDraftFileContext);
+    const clearDraftFileContexts = useAiStore((s) => s.clearDraftFileContexts);
+    const setSessionConfigOption = useAiStore((s) => s.setSessionConfigOption);
+    const setSessionMode = useAiStore((s) => s.setSessionMode);
+    const setSessionModel = useAiStore((s) => s.setSessionModel);
+    const setDraftAttachments = useAiStore((s) => s.setDraftAttachments);
+    const verifyCodexBinaryPath = useAiStore((s) => s.verifyCodexBinaryPath);
     const sendPrompt = useAiStore((s) => s.sendPrompt);
+    const runtimeCatalog = useAiStore(
+        (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
+    );
     const sessionState = useAiStore((s) => s.sessions[tab.sessionId]);
     const runtimeStatus = useAiStore(
         (s) => s.runtimeStatusById[tab.runtimeId] ?? null,
     );
 
-    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const wasNearBottom = useRef(true);
+    const composerPartsRef = useRef<AIComposerPart[]>(
+        createEmptyComposerParts(),
+    );
 
     const [binaryPathDraft, setBinaryPathDraft] = useState(codexBinaryPath);
-    const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
-    const [composerSelectionStart, setComposerSelectionStart] = useState(
-        tab.draft.length,
+    const [claudeAuthMethodDraft, setClaudeAuthMethodDraft] =
+        useState<ClaudeAuthMethodId | null>(claudeSettings.authMethod);
+    const [claudeBinaryPathDraft, setClaudeBinaryPathDraft] = useState(
+        claudeSettings.binaryPath ?? "",
     );
-    const [pendingComposerSelection, setPendingComposerSelection] = useState<{
-        readonly cursor: number;
-    } | null>(null);
+    const [claudeGatewayAuthTokenDraft, setClaudeGatewayAuthTokenDraft] =
+        useState("");
+    const [claudeGatewayBaseUrlDraft, setClaudeGatewayBaseUrlDraft] = useState(
+        claudeSettings.gatewayBaseUrl ?? "",
+    );
+    const [
+        claudeGatewayCustomHeadersDraft,
+        setClaudeGatewayCustomHeadersDraft,
+    ] = useState("");
+    const [geminiAuthMethodDraft, setGeminiAuthMethodDraft] =
+        useState<GeminiAuthMethodId | null>(geminiSettings.authMethod);
+    const [geminiBinaryPathDraft, setGeminiBinaryPathDraft] = useState(
+        geminiSettings.binaryPath ?? "",
+    );
+    const [kiloBinaryPathDraft, setKiloBinaryPathDraft] = useState(
+        kiloSettings.binaryPath ?? "",
+    );
+    const [geminiApiKeyDraft, setGeminiApiKeyDraft] = useState("");
+    const [googleApiKeyDraft, setGoogleApiKeyDraft] = useState("");
+    const [googleCloudProjectDraft, setGoogleCloudProjectDraft] = useState(
+        geminiSettings.googleCloudProject ?? "",
+    );
+    const [googleCloudLocationDraft, setGoogleCloudLocationDraft] = useState(
+        geminiSettings.googleCloudLocation ?? "",
+    );
+    const [composerParts, setComposerParts] = useState<AIComposerPart[]>(
+        createEmptyComposerParts,
+    );
+    const [composerResetNonce, setComposerResetNonce] = useState(0);
     const [isSavingRuntime, setIsSavingRuntime] = useState(false);
-    const [showRuntimeConfig, setShowRuntimeConfig] = useState(false);
-    const [projectSuggestions, setProjectSuggestions] = useState<
-        readonly ProjectTreeNode[]
-    >([]);
+    const [isLaunchingRuntimeAuth, setIsLaunchingRuntimeAuth] = useState(false);
+    const [runtimeConfigError, setRuntimeConfigError] = useState<string | null>(
+        null,
+    );
+    const [showRuntimeConfig] = useState(false);
+    const [
+        shouldClearClaudeGatewayAuthToken,
+        setShouldClearClaudeGatewayAuthToken,
+    ] = useState(false);
+    const [
+        shouldClearClaudeGatewayCustomHeaders,
+        setShouldClearClaudeGatewayCustomHeaders,
+    ] = useState(false);
+    const [shouldClearGeminiApiKey, setShouldClearGeminiApiKey] =
+        useState(false);
+    const [shouldClearGoogleApiKey, setShouldClearGoogleApiKey] =
+        useState(false);
     const [streamStartTime, setStreamStartTime] = useState<number | null>(null);
     const [elapsed, setElapsed] = useState("");
-
+    const [composerError, setComposerError] = useState<string | null>(null);
     const sessionTab = useMemo(
         () => ({
             createdAt: tab.createdAt,
@@ -125,6 +204,7 @@ export function ChatTabView({
             runtimeId: tab.runtimeId,
             sessionId: tab.sessionId,
             title: tab.title,
+            worktreeId: tab.worktreeId ?? null,
         }),
         [
             tab.createdAt,
@@ -134,17 +214,66 @@ export function ChatTabView({
             tab.runtimeId,
             tab.sessionId,
             tab.title,
+            tab.worktreeId,
         ],
     );
 
     useEffect(() => {
-        setBinaryPathDraft(codexBinaryPath);
-    }, [codexBinaryPath]);
+        if (tab.runtimeId === "codex") {
+            setBinaryPathDraft(codexBinaryPath);
+        }
+    }, [codexBinaryPath, tab.runtimeId]);
+    useEffect(() => {
+        if (tab.runtimeId !== "claude") {
+            return;
+        }
+
+        setClaudeAuthMethodDraft(claudeSettings.authMethod);
+        setClaudeBinaryPathDraft(claudeSettings.binaryPath ?? "");
+        setClaudeGatewayBaseUrlDraft(claudeSettings.gatewayBaseUrl ?? "");
+        setClaudeGatewayAuthTokenDraft("");
+        setClaudeGatewayCustomHeadersDraft("");
+        setShouldClearClaudeGatewayAuthToken(false);
+        setShouldClearClaudeGatewayCustomHeaders(false);
+    }, [
+        claudeSettings.authMethod,
+        claudeSettings.binaryPath,
+        claudeSettings.gatewayBaseUrl,
+        tab.runtimeId,
+    ]);
+    useEffect(() => {
+        if (tab.runtimeId !== "gemini") {
+            return;
+        }
+
+        setGeminiAuthMethodDraft(geminiSettings.authMethod);
+        setGeminiBinaryPathDraft(geminiSettings.binaryPath ?? "");
+        setGeminiApiKeyDraft("");
+        setGoogleApiKeyDraft("");
+        setGoogleCloudProjectDraft(geminiSettings.googleCloudProject ?? "");
+        setGoogleCloudLocationDraft(geminiSettings.googleCloudLocation ?? "");
+        setShouldClearGeminiApiKey(false);
+        setShouldClearGoogleApiKey(false);
+    }, [
+        geminiSettings.authMethod,
+        geminiSettings.binaryPath,
+        geminiSettings.googleCloudLocation,
+        geminiSettings.googleCloudProject,
+        tab.runtimeId,
+    ]);
+    useEffect(() => {
+        if (tab.runtimeId !== "kilo") {
+            return;
+        }
+
+        setKiloBinaryPathDraft(kiloSettings.binaryPath ?? "");
+    }, [kiloSettings.binaryPath, tab.runtimeId]);
     useEffect(() => {
         void ensureSession(sessionTab);
     }, [ensureSession, sessionTab]);
 
-    const snapshot = sessionState?.snapshot ?? createEmptySnapshot(tab);
+    const snapshot =
+        sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
     const isStreaming =
         snapshot.status === "starting" || snapshot.status === "streaming";
     const currentError = sessionState?.localError ?? snapshot.lastError;
@@ -152,9 +281,26 @@ export function ChatTabView({
         snapshot.availableCommands.length > 0
             ? snapshot.availableCommands
             : FALLBACK_COMMANDS;
+    const draftAttachments =
+        sessionState?.draftAttachments ?? EMPTY_DRAFT_ATTACHMENTS;
+    const draftFileContexts =
+        sessionState?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
     const queuedPrompts = sessionState?.queue ?? [];
     const pendingPermission = snapshot.pendingPermission;
     const pendingUserInput = snapshot.pendingUserInput;
+    const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
+    const chatFontFamily = useMemo(
+        () => buildChatFontFamily(aiChatSettings.chatFontFamily),
+        [aiChatSettings.chatFontFamily],
+    );
+    const composerFontFamily = useMemo(
+        () => buildChatFontFamily(aiChatSettings.composerFontFamily),
+        [aiChatSettings.composerFontFamily],
+    );
+    const hasAgentControls =
+        snapshot.configOptions.length > 0 ||
+        snapshot.models.length > 0 ||
+        snapshot.modes.length > 0;
 
     const pendingReviewCount = useMemo(
         () =>
@@ -163,76 +309,6 @@ export function ChatTabView({
             ).length,
         [snapshot.trackedFiles],
     );
-
-    const activeToken = useMemo(
-        () => findActiveToken(tab.draft, composerSelectionStart),
-        [composerSelectionStart, tab.draft],
-    );
-
-    const composerSuggestions = useMemo(() => {
-        if (!activeToken) return [];
-        if (activeToken.token.startsWith("/")) {
-            const q = activeToken.token.slice(1).toLowerCase();
-            return availableCommands
-                .filter((c) =>
-                    `${c.label} ${c.description}`.toLowerCase().includes(q),
-                )
-                .slice(0, 8)
-                .map((c) => ({
-                    description: c.description,
-                    id: c.id,
-                    insertText: c.insertText,
-                    kind: "command" as const,
-                    label: c.label,
-                }));
-        }
-        if (!activeToken.token.startsWith("@")) return [];
-        return projectSuggestions.slice(0, 8).map((e) => ({
-            description:
-                e.kind === "directory" ? `${e.relativePath}/` : e.relativePath,
-            id: e.id,
-            insertText: `@${e.relativePath}`,
-            kind: "entry" as const,
-            label:
-                e.kind === "directory" ? `${e.relativePath}/` : e.relativePath,
-        }));
-    }, [activeToken, availableCommands, projectSuggestions]);
-
-    useEffect(() => {
-        setActiveSuggestionIndex(0);
-    }, [composerSuggestions.length, activeToken?.token]);
-
-    useEffect(() => {
-        const projectId = tab.projectId;
-        if (
-            !activeToken ||
-            !activeToken.token.startsWith("@") ||
-            !projectId ||
-            activeToken.token.length < 2
-        ) {
-            setProjectSuggestions([]);
-            return;
-        }
-        let cancelled = false;
-        const timeout = window.setTimeout(() => {
-            void window.comando
-                .searchProjectEntries({
-                    limit: 8,
-                    projectId,
-                    query: activeToken.token.slice(1),
-                })
-                .then((entries) => {
-                    if (!cancelled) setProjectSuggestions(entries);
-                })
-                .catch(() => {
-                    if (!cancelled) setProjectSuggestions([]);
-                });
-        }, 120);
-        return () => {
-            cancelled = true;
-            window.clearTimeout(timeout);
-        };
-    }, [activeToken, tab.projectId]);
 
     useEffect(() => {
         if (isStreaming) {
@@ -254,20 +330,6 @@ export function ChatTabView({
         setElapsed("");
         return undefined;
     }, [isStreaming, streamStartTime]);
-
-    useEffect(() => {
-        if (!pendingComposerSelection) {
-            return;
-        }
-
-        const nextCursor = pendingComposerSelection.cursor;
-
-        window.requestAnimationFrame(() => {
-            textareaRef.current?.focus();
-            textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-            setComposerSelectionStart(nextCursor);
-        });
-    }, [pendingComposerSelection]);
 
     const timeline = useMemo((): TimelineRow[] => {
         const rows: TimelineRow[] = [];
@@ -306,59 +368,154 @@ export function ChatTabView({
             NEAR_BOTTOM_THRESHOLD;
     }, []);
 
-    const handleInsertSuggestion = (suggestion: ComposerSuggestion) => {
-        if (!activeToken) return;
-        const nextDraft = replaceToken(
-            tab.draft,
-            activeToken,
-            `${suggestion.insertText} `,
-        );
-        const nextCursor = activeToken.start + suggestion.insertText.length + 1;
-        onDraftChange(nextDraft);
-        setPendingComposerSelection({ cursor: nextCursor });
-    };
+    const updateDraftAttachments = useCallback(
+        (attachments: readonly AiImageAttachment[]) => {
+            setDraftAttachments(tab.sessionId, attachments);
+        },
+        [setDraftAttachments, tab.sessionId],
+    );
 
-    const handleSubmit = async () => {
-        const prompt = serializePrompt(tab.draft);
-        if (!prompt) return;
-        await sendPrompt(tab, prompt);
-        onDraftChange("");
-        setComposerSelectionStart(0);
-    };
-
-    const handleKeyDown = async (
-        event: ReactKeyboardEvent<HTMLTextAreaElement>,
-    ) => {
-        if (composerSuggestions.length > 0) {
-            if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setActiveSuggestionIndex((i) =>
-                    Math.min(i + 1, composerSuggestions.length - 1),
+    const appendImageFiles = useCallback(
+        async (files: readonly File[]) => {
+            const imageFiles = files.filter((file) =>
+                file.type.startsWith("image/"),
+            );
+            if (imageFiles.length === 0) {
+                setComposerError("Only image files are supported.");
+                return;
+            }
+            if (draftAttachments.length >= MAX_IMAGE_ATTACHMENTS) {
+                setComposerError(
+                    `You can attach up to ${MAX_IMAGE_ATTACHMENTS} images per message.`,
                 );
                 return;
             }
-            if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setActiveSuggestionIndex((i) => Math.max(i - 1, 0));
+            const availableSlots =
+                MAX_IMAGE_ATTACHMENTS - draftAttachments.length;
+            const nextFiles = imageFiles.slice(0, availableSlots);
+            try {
+                const nextAttachments = await Promise.all(
+                    nextFiles.map(readImageFileAsAttachment),
+                );
+                updateDraftAttachments([
+                    ...draftAttachments,
+                    ...nextAttachments,
+                ]);
+                if (imageFiles.length > availableSlots) {
+                    setComposerError(
+                        `Only the first ${MAX_IMAGE_ATTACHMENTS} images were kept.`,
+                    );
+                } else {
+                    setComposerError(null);
+                }
+            } catch (error) {
+                setComposerError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not attach the selected image.",
+                );
+            }
+        },
+        [draftAttachments, updateDraftAttachments],
+    );
+
+    const removeDraftAttachment = useCallback(
+        (attachmentId: string) => {
+            updateDraftAttachments(
+                draftAttachments.filter(
+                    (attachment) => attachment.id !== attachmentId,
+                ),
+            );
+            setComposerError(null);
+        },
+        [draftAttachments, updateDraftAttachments],
+    );
+
+    const handleSubmit = async () => {
+        const plainText = composerPartsToPlainText(composerParts);
+        const prompt = serializePromptWithContexts(
+            plainText,
+            draftFileContexts,
+        );
+        if (
+            !prompt &&
+            draftAttachments.length === 0 &&
+            draftFileContexts.length === 0
+        )
+            return;
+
+        const submittedParts = [...composerParts];
+        const submittedAttachments = [...draftAttachments];
+        const submittedFileContexts = [...draftFileContexts];
+
+        onDraftChange("");
+        setComposerParts(createEmptyComposerParts());
+        setComposerResetNonce((current) => current + 1);
+        clearDraftAttachments(tab.sessionId);
+        clearDraftFileContexts(tab.sessionId);
+        setComposerError(null);
+
+        try {
+            await sendPrompt(tab, prompt, submittedAttachments);
+        } catch {
+            const latestSession = useAiStore.getState().sessions[tab.sessionId];
+            const latestDraftAttachments =
+                latestSession?.draftAttachments ?? EMPTY_DRAFT_ATTACHMENTS;
+            const latestDraftFileContexts =
+                latestSession?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
+            const shouldRestoreDraft = isComposerDraftEmpty(
+                composerPartsRef.current,
+                latestDraftAttachments,
+                latestDraftFileContexts,
+            );
+
+            if (!shouldRestoreDraft) {
                 return;
             }
-            if (event.key === "Tab") {
-                event.preventDefault();
-                const s = composerSuggestions[activeSuggestionIndex];
-                if (s) handleInsertSuggestion(s);
-                return;
+
+            setComposerParts(submittedParts);
+            onDraftChange(plainText);
+            setDraftAttachments(tab.sessionId, submittedAttachments);
+            for (const fileContext of submittedFileContexts) {
+                addDraftFileContext(tab.sessionId, fileContext);
             }
-        }
-        if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            if (composerSuggestions.length > 0) {
-                const s = composerSuggestions[activeSuggestionIndex];
-                if (s) handleInsertSuggestion(s);
-                return;
-            }
-            await handleSubmit();
         }
     };
+
+    const handleComposerPartsChange = useCallback(
+        (newParts: AIComposerPart[]) => {
+            setComposerParts(newParts);
+            onDraftChange(composerPartsToPlainText(newParts));
+        },
+        [onDraftChange],
+    );
+
+    useEffect(() => {
+        composerPartsRef.current = composerParts;
+    }, [composerParts]);
+
+    const handlePasteImage = useCallback(
+        (file: File) => {
+            void appendImageFiles([file]);
+        },
+        [appendImageFiles],
+    );
+
+    const handleSearchProjectEntries = useCallback(
+        async (query: string) => {
+            if (!tab.projectId || query.length < 1) return [];
+            try {
+                return await window.comando.searchProjectEntries({
+                    limit: 10,
+                    projectId: tab.projectId,
+                    query,
+                });
+            } catch {
+                return [];
+            }
+        },
+        [tab.projectId],
+    );
 
     return (
         <div
@@ -366,23 +523,468 @@ export function ChatTabView({
             style={{ backgroundColor: "var(--color-bg-secondary)" }}
         >
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                {renderRuntimeBar(
-                    runtimeStatus,
-                    showRuntimeConfig,
-                    setShowRuntimeConfig,
-                )}
+                {renderRuntimeBar()}
                 {showRuntimeConfig
-                    ? renderRuntimeConfig(
-                          binaryPathDraft,
-                          setBinaryPathDraft,
-                          isSavingRuntime,
-                          setIsSavingRuntime,
-                          refreshRuntimeStatus,
-                          saveCodexBinaryPath,
-                          tab.runtimeId,
-                      )
+                    ? tab.runtimeId === "codex"
+                        ? renderCodexRuntimeConfig({
+                              binaryPathDraft,
+                              isSaving: isSavingRuntime,
+                              onChangeBinaryPath: setBinaryPathDraft,
+                              onSave: async () => {
+                                  setRuntimeConfigError(null);
+                                  setIsSavingRuntime(true);
+                                  try {
+                                      await saveCodexBinaryPath(
+                                          binaryPathDraft,
+                                      );
+                                  } catch (error) {
+                                      setRuntimeConfigError(
+                                          error instanceof Error
+                                              ? error.message
+                                              : "Could not save the Codex runtime settings.",
+                                      );
+                                  } finally {
+                                      setIsSavingRuntime(false);
+                                  }
+                              },
+                              onVerify: async () => {
+                                  setRuntimeConfigError(null);
+                                  setIsSavingRuntime(true);
+                                  try {
+                                      await verifyCodexBinaryPath(
+                                          binaryPathDraft,
+                                      );
+                                  } catch (error) {
+                                      setRuntimeConfigError(
+                                          error instanceof Error
+                                              ? error.message
+                                              : "Could not verify the Codex runtime.",
+                                      );
+                                  } finally {
+                                      setIsSavingRuntime(false);
+                                  }
+                              },
+                              runtimeConfigError,
+                          })
+                        : tab.runtimeId === "claude"
+                          ? renderClaudeRuntimeConfig({
+                                authMethodDraft: claudeAuthMethodDraft,
+                                authMethods: runtimeStatus?.authMethods ?? [],
+                                binaryPathDraft: claudeBinaryPathDraft,
+                                gatewayAuthTokenDraft:
+                                    claudeGatewayAuthTokenDraft,
+                                gatewayBaseUrlDraft: claudeGatewayBaseUrlDraft,
+                                gatewayCustomHeadersDraft:
+                                    claudeGatewayCustomHeadersDraft,
+                                hasStoredGatewayAuthToken:
+                                    claudeSettings.hasGatewayAuthToken,
+                                hasStoredGatewayCustomHeaders:
+                                    claudeSettings.hasGatewayCustomHeaders,
+                                isLaunchingAuth: isLaunchingRuntimeAuth,
+                                isSaving: isSavingRuntime,
+                                onAuthMethodChange: setClaudeAuthMethodDraft,
+                                onChangeBinaryPath: setClaudeBinaryPathDraft,
+                                onChangeGatewayAuthToken: (value) => {
+                                    setShouldClearClaudeGatewayAuthToken(false);
+                                    setClaudeGatewayAuthTokenDraft(value);
+                                },
+                                onChangeGatewayBaseUrl:
+                                    setClaudeGatewayBaseUrlDraft,
+                                onChangeGatewayCustomHeaders: (value) => {
+                                    setShouldClearClaudeGatewayCustomHeaders(
+                                        false,
+                                    );
+                                    setClaudeGatewayCustomHeadersDraft(value);
+                                },
+                                onClearGatewayAuthToken: () => {
+                                    setClaudeGatewayAuthTokenDraft("");
+                                    setShouldClearClaudeGatewayAuthToken(true);
+                                },
+                                onClearGatewayCustomHeaders: () => {
+                                    setClaudeGatewayCustomHeadersDraft("");
+                                    setShouldClearClaudeGatewayCustomHeaders(
+                                        true,
+                                    );
+                                },
+                                onLaunchAuth: async () => {
+                                    if (
+                                        !claudeAuthMethodDraft ||
+                                        claudeAuthMethodDraft === "gateway"
+                                    ) {
+                                        setRuntimeConfigError(
+                                            "Choose a Claude login method before launching auth.",
+                                        );
+                                        return;
+                                    }
+
+                                    setRuntimeConfigError(null);
+                                    setIsSavingRuntime(true);
+                                    try {
+                                        await saveClaudeRuntimeSettings({
+                                            authMethod: claudeAuthMethodDraft,
+                                            binaryPath:
+                                                claudeBinaryPathDraft.trim() ||
+                                                null,
+                                            gatewayAuthToken:
+                                                toSecretValuePatch(
+                                                    claudeGatewayAuthTokenDraft,
+                                                    shouldClearClaudeGatewayAuthToken,
+                                                ),
+                                            gatewayBaseUrl:
+                                                claudeGatewayBaseUrlDraft.trim() ||
+                                                null,
+                                            gatewayCustomHeaders:
+                                                toSecretValuePatch(
+                                                    claudeGatewayCustomHeadersDraft,
+                                                    shouldClearClaudeGatewayCustomHeaders,
+                                                ),
+                                        });
+                                    } catch (error) {
+                                        setRuntimeConfigError(
+                                            error instanceof Error
+                                                ? error.message
+                                                : "Could not save the Claude runtime settings.",
+                                        );
+                                        return;
+                                    } finally {
+                                        setIsSavingRuntime(false);
+                                    }
+
+                                    setIsLaunchingRuntimeAuth(true);
+                                    try {
+                                        await launchRuntimeAuth({
+                                            methodId: claudeAuthMethodDraft,
+                                            projectId: tab.projectId,
+                                            runtimeId: "claude",
+                                            worktreeId: tab.worktreeId ?? null,
+                                        });
+                                        setRuntimeConfigError(null);
+                                    } catch (error) {
+                                        setRuntimeConfigError(
+                                            error instanceof Error
+                                                ? error.message
+                                                : "Could not launch the Claude auth flow.",
+                                        );
+                                    } finally {
+                                        setIsLaunchingRuntimeAuth(false);
+                                    }
+                                },
+                                onSave: async () => {
+                                    setRuntimeConfigError(null);
+                                    setIsSavingRuntime(true);
+                                    try {
+                                        await saveClaudeRuntimeSettings({
+                                            authMethod: claudeAuthMethodDraft,
+                                            binaryPath:
+                                                claudeBinaryPathDraft.trim() ||
+                                                null,
+                                            gatewayAuthToken:
+                                                toSecretValuePatch(
+                                                    claudeGatewayAuthTokenDraft,
+                                                    shouldClearClaudeGatewayAuthToken,
+                                                ),
+                                            gatewayBaseUrl:
+                                                claudeGatewayBaseUrlDraft.trim() ||
+                                                null,
+                                            gatewayCustomHeaders:
+                                                toSecretValuePatch(
+                                                    claudeGatewayCustomHeadersDraft,
+                                                    shouldClearClaudeGatewayCustomHeaders,
+                                                ),
+                                        });
+                                        setClaudeGatewayAuthTokenDraft("");
+                                        setClaudeGatewayCustomHeadersDraft("");
+                                        setShouldClearClaudeGatewayAuthToken(
+                                            false,
+                                        );
+                                        setShouldClearClaudeGatewayCustomHeaders(
+                                            false,
+                                        );
+                                    } catch (error) {
+                                        setRuntimeConfigError(
+                                            error instanceof Error
+                                                ? error.message
+                                                : "Could not save the Claude runtime settings.",
+                                        );
+                                    } finally {
+                                        setIsSavingRuntime(false);
+                                    }
+                                },
+                                onVerify: async () => {
+                                    setRuntimeConfigError(null);
+                                    setIsSavingRuntime(true);
+                                    try {
+                                        await refreshRuntimeStatus("claude");
+                                    } catch (error) {
+                                        setRuntimeConfigError(
+                                            error instanceof Error
+                                                ? error.message
+                                                : "Could not verify the Claude runtime.",
+                                        );
+                                    } finally {
+                                        setIsSavingRuntime(false);
+                                    }
+                                },
+                                runtimeConfigError,
+                                shouldClearGatewayAuthToken:
+                                    shouldClearClaudeGatewayAuthToken,
+                                shouldClearGatewayCustomHeaders:
+                                    shouldClearClaudeGatewayCustomHeaders,
+                            })
+                          : tab.runtimeId === "gemini"
+                            ? renderGeminiRuntimeConfig({
+                                  authMethodDraft: geminiAuthMethodDraft,
+                                  authMethods: runtimeStatus?.authMethods ?? [],
+                                  binaryPathDraft: geminiBinaryPathDraft,
+                                  geminiApiKeyDraft,
+                                  googleApiKeyDraft,
+                                  googleCloudLocationDraft,
+                                  googleCloudProjectDraft,
+                                  hasStoredGeminiApiKey:
+                                      geminiSettings.hasGeminiApiKey,
+                                  hasStoredGoogleApiKey:
+                                      geminiSettings.hasGoogleApiKey,
+                                  isLaunchingAuth: isLaunchingRuntimeAuth,
+                                  isSaving: isSavingRuntime,
+                                  onAuthMethodChange: setGeminiAuthMethodDraft,
+                                  onChangeBinaryPath: setGeminiBinaryPathDraft,
+                                  onChangeGeminiApiKey: (value) => {
+                                      setShouldClearGeminiApiKey(false);
+                                      setGeminiApiKeyDraft(value);
+                                  },
+                                  onChangeGoogleApiKey: (value) => {
+                                      setShouldClearGoogleApiKey(false);
+                                      setGoogleApiKeyDraft(value);
+                                  },
+                                  onChangeGoogleCloudLocation:
+                                      setGoogleCloudLocationDraft,
+                                  onChangeGoogleCloudProject:
+                                      setGoogleCloudProjectDraft,
+                                  onClearGeminiApiKey: () => {
+                                      setGeminiApiKeyDraft("");
+                                      setShouldClearGeminiApiKey(true);
+                                  },
+                                  onClearGoogleApiKey: () => {
+                                      setGoogleApiKeyDraft("");
+                                      setShouldClearGoogleApiKey(true);
+                                  },
+                                  onLaunchAuth: async () => {
+                                      if (
+                                          geminiAuthMethodDraft !==
+                                          "login_with_google"
+                                      ) {
+                                          setRuntimeConfigError(
+                                              "Choose Google login before launching Gemini auth.",
+                                          );
+                                          return;
+                                      }
+
+                                      setRuntimeConfigError(null);
+                                      setIsSavingRuntime(true);
+                                      try {
+                                          await saveGeminiRuntimeSettings({
+                                              authMethod: geminiAuthMethodDraft,
+                                              binaryPath:
+                                                  geminiBinaryPathDraft.trim() ||
+                                                  null,
+                                              geminiApiKey: toSecretValuePatch(
+                                                  geminiApiKeyDraft,
+                                                  shouldClearGeminiApiKey,
+                                              ),
+                                              googleApiKey: toSecretValuePatch(
+                                                  googleApiKeyDraft,
+                                                  shouldClearGoogleApiKey,
+                                              ),
+                                              googleCloudLocation:
+                                                  googleCloudLocationDraft.trim() ||
+                                                  null,
+                                              googleCloudProject:
+                                                  googleCloudProjectDraft.trim() ||
+                                                  null,
+                                          });
+                                      } catch (error) {
+                                          setRuntimeConfigError(
+                                              error instanceof Error
+                                                  ? error.message
+                                                  : "Could not save the Gemini runtime settings.",
+                                          );
+                                          return;
+                                      } finally {
+                                          setIsSavingRuntime(false);
+                                      }
+
+                                      setIsLaunchingRuntimeAuth(true);
+                                      try {
+                                          await launchRuntimeAuth({
+                                              methodId: "login_with_google",
+                                              projectId: tab.projectId,
+                                              runtimeId: "gemini",
+                                              worktreeId:
+                                                  tab.worktreeId ?? null,
+                                          });
+                                          setRuntimeConfigError(null);
+                                      } catch (error) {
+                                          setRuntimeConfigError(
+                                              error instanceof Error
+                                                  ? error.message
+                                                  : "Could not launch the Gemini auth flow.",
+                                          );
+                                      } finally {
+                                          setIsLaunchingRuntimeAuth(false);
+                                      }
+                                  },
+                                  onSave: async () => {
+                                      setRuntimeConfigError(null);
+                                      setIsSavingRuntime(true);
+                                      try {
+                                          await saveGeminiRuntimeSettings({
+                                              authMethod: geminiAuthMethodDraft,
+                                              binaryPath:
+                                                  geminiBinaryPathDraft.trim() ||
+                                                  null,
+                                              geminiApiKey: toSecretValuePatch(
+                                                  geminiApiKeyDraft,
+                                                  shouldClearGeminiApiKey,
+                                              ),
+                                              googleApiKey: toSecretValuePatch(
+                                                  googleApiKeyDraft,
+                                                  shouldClearGoogleApiKey,
+                                              ),
+                                              googleCloudLocation:
+                                                  googleCloudLocationDraft.trim() ||
+                                                  null,
+                                              googleCloudProject:
+                                                  googleCloudProjectDraft.trim() ||
+                                                  null,
+                                          });
+                                          setGeminiApiKeyDraft("");
+                                          setGoogleApiKeyDraft("");
+                                          setShouldClearGeminiApiKey(false);
+                                          setShouldClearGoogleApiKey(false);
+                                      } catch (error) {
+                                          setRuntimeConfigError(
+                                              error instanceof Error
+                                                  ? error.message
+                                                  : "Could not save the Gemini runtime settings.",
+                                          );
+                                      } finally {
+                                          setIsSavingRuntime(false);
+                                      }
+                                  },
+                                  onVerify: async () => {
+                                      setRuntimeConfigError(null);
+                                      setIsSavingRuntime(true);
+                                      try {
+                                          await refreshRuntimeStatus("gemini");
+                                      } catch (error) {
+                                          setRuntimeConfigError(
+                                              error instanceof Error
+                                                  ? error.message
+                                                  : "Could not verify the Gemini runtime.",
+                                          );
+                                      } finally {
+                                          setIsSavingRuntime(false);
+                                      }
+                                  },
+                                  runtimeConfigError,
+                                  shouldClearGeminiApiKey,
+                                  shouldClearGoogleApiKey,
+                              })
+                            : tab.runtimeId === "kilo"
+                              ? renderKiloRuntimeConfig({
+                                    binaryPathDraft: kiloBinaryPathDraft,
+                                    isLaunchingAuth: isLaunchingRuntimeAuth,
+                                    isSaving: isSavingRuntime,
+                                    onChangeBinaryPath: setKiloBinaryPathDraft,
+                                    onLaunchAuth: async () => {
+                                        setRuntimeConfigError(null);
+                                        setIsSavingRuntime(true);
+                                        try {
+                                            await saveKiloRuntimeSettings({
+                                                binaryPath:
+                                                    kiloBinaryPathDraft.trim() ||
+                                                    null,
+                                            });
+                                        } catch (error) {
+                                            setRuntimeConfigError(
+                                                error instanceof Error
+                                                    ? error.message
+                                                    : "Could not save the Kilo runtime settings.",
+                                            );
+                                            return;
+                                        } finally {
+                                            setIsSavingRuntime(false);
+                                        }
+
+                                        setIsLaunchingRuntimeAuth(true);
+                                        try {
+                                            await launchRuntimeAuth({
+                                                methodId: "kilo-login",
+                                                projectId: tab.projectId,
+                                                runtimeId: "kilo",
+                                                worktreeId:
+                                                    tab.worktreeId ?? null,
+                                            });
+                                            setRuntimeConfigError(null);
+                                        } catch (error) {
+                                            setRuntimeConfigError(
+                                                error instanceof Error
+                                                    ? error.message
+                                                    : "Could not launch the Kilo auth flow.",
+                                            );
+                                        } finally {
+                                            setIsLaunchingRuntimeAuth(false);
+                                        }
+                                    },
+                                    onSave: async () => {
+                                        setRuntimeConfigError(null);
+                                        setIsSavingRuntime(true);
+                                        try {
+                                            await saveKiloRuntimeSettings({
+                                                binaryPath:
+                                                    kiloBinaryPathDraft.trim() ||
+                                                    null,
+                                            });
+                                        } catch (error) {
+                                            setRuntimeConfigError(
+                                                error instanceof Error
+                                                    ? error.message
+                                                    : "Could not save the Kilo runtime settings.",
+                                            );
+                                        } finally {
+                                            setIsSavingRuntime(false);
+                                        }
+                                    },
+                                    onVerify: async () => {
+                                        setRuntimeConfigError(null);
+                                        setIsSavingRuntime(true);
+                                        try {
+                                            await refreshRuntimeStatus("kilo");
+                                        } catch (error) {
+                                            setRuntimeConfigError(
+                                                error instanceof Error
+                                                    ? error.message
+                                                    : "Could not verify the Kilo runtime.",
+                                            );
+                                        } finally {
+                                            setIsSavingRuntime(false);
+                                        }
+                                    },
+                                    runtimeConfigError,
+                                })
+                              : null
                     : null}
-                {snapshot.plan ? renderPinnedPlan(snapshot.plan) : null}
+                {snapshot.plan ? (
+                    <div
+                        className="shrink-0 px-3 pb-1 pt-2"
+                        style={{
+                            borderBottom:
+                                "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                        }}
+                    >
+                        <PlanMessage plan={snapshot.plan} />
+                    </div>
+                ) : null}
 
                 {/* Message timeline */}
                 <div
@@ -390,15 +992,20 @@ export function ChatTabView({
                     className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
                     onScroll={handleScroll}
                 >
-                    <div className="min-w-0 space-y-2">
+                    <div
+                        className="min-w-0 space-y-2"
+                        style={{ fontFamily: chatFontFamily }}
+                    >
                         {timeline.map((row) =>
                             row.kind === "message" ? (
                                 <ChatMessageRow
+                                    chatFontFamily={chatFontFamily}
+                                    chatFontSize={aiChatSettings.chatFontSize}
                                     key={row.message.id}
                                     message={row.message}
                                 />
                             ) : (
-                                <ToolActivityRow
+                                <ToolActivityItem
                                     key={row.activity.id}
                                     activity={row.activity}
                                     onOpenFile={onOpenFile}
@@ -435,6 +1042,7 @@ export function ChatTabView({
                           )
                         : null}
                     {currentError ? renderError(currentError) : null}
+                    {composerError ? renderError(composerError) : null}
 
                     {pendingReviewCount > 0 ? (
                         <div className="mb-2 flex items-center justify-between gap-3 rounded-2xl border border-border bg-bg-panel px-4 py-3">
@@ -459,152 +1067,85 @@ export function ChatTabView({
                         </div>
                     ) : null}
 
-                    <div
-                        className="relative flex flex-col"
-                        style={{
-                            backgroundColor: "var(--color-bg-tertiary)",
-                            border: "1px solid var(--color-border)",
-                            borderRadius: 12,
+                    <AIChatComposer
+                        composerFontFamily={composerFontFamily}
+                        composerFontSize={aiChatSettings.composerFontSize}
+                        agentControls={
+                            hasAgentControls ? (
+                                <AIChatAgentControls
+                                    configOptions={snapshot.configOptions}
+                                    disabled={
+                                        isStreaming ||
+                                        snapshot.status ===
+                                            "waiting_permission" ||
+                                        snapshot.status === "waiting_user_input"
+                                    }
+                                    modeId={snapshot.modeId ?? ""}
+                                    modelId={snapshot.modelId ?? ""}
+                                    modes={snapshot.modes}
+                                    models={snapshot.models}
+                                    onConfigOptionChange={(optionId, value) => {
+                                        void setSessionConfigOption({
+                                            optionId,
+                                            sessionId: tab.sessionId,
+                                            value,
+                                        });
+                                    }}
+                                    onModeChange={(modeId) => {
+                                        void setSessionMode({
+                                            modeId,
+                                            sessionId: tab.sessionId,
+                                        });
+                                    }}
+                                    onModelChange={(modelId) => {
+                                        void setSessionModel({
+                                            modelId,
+                                            sessionId: tab.sessionId,
+                                        });
+                                    }}
+                                    runtimeId={tab.runtimeId}
+                                />
+                            ) : undefined
+                        }
+                        availableCommands={availableCommands}
+                        draftAttachments={draftAttachments}
+                        draftFileContexts={draftFileContexts}
+                        fileInputRef={fileInputRef}
+                        onChange={handleComposerPartsChange}
+                        onAttachFile={() => fileInputRef.current?.click()}
+                        onPasteImage={handlePasteImage}
+                        onRemoveAttachment={removeDraftAttachment}
+                        onRemoveFileContext={(contextId) =>
+                            removeDraftFileContext(tab.sessionId, contextId)
+                        }
+                        onSearchProjectEntries={handleSearchProjectEntries}
+                        onStop={() =>
+                            void useAiStore
+                                .getState()
+                                .cancelSession(tab.sessionId)
+                        }
+                        onSubmit={() => {
+                            void handleSubmit();
                         }}
-                    >
-                        {composerSuggestions.length > 0
-                            ? renderSuggestions(
-                                  composerSuggestions,
-                                  activeSuggestionIndex,
-                                  handleInsertSuggestion,
-                              )
-                            : null}
-                        <textarea
-                            ref={textareaRef}
-                            className="chat-composer-input app-no-drag w-full resize-none bg-transparent outline-none"
-                            onChange={(e) => {
-                                onDraftChange(e.target.value);
-                                setComposerSelectionStart(
-                                    e.target.selectionStart,
-                                );
-                            }}
-                            onClick={(e) =>
-                                setComposerSelectionStart(
-                                    e.currentTarget.selectionStart,
-                                )
-                            }
-                            onKeyDown={(e) => {
-                                void handleKeyDown(e);
-                            }}
-                            onKeyUp={(e) =>
-                                setComposerSelectionStart(
-                                    e.currentTarget.selectionStart,
-                                )
-                            }
-                            placeholder="Message Codex — @ to include context, / for commands"
-                            rows={3}
-                            style={{
-                                color: "var(--color-text-primary)",
-                                fontFamily: "inherit",
-                                fontSize: 14,
-                                lineHeight: 1.5,
-                                maxHeight: 200,
-                                minHeight: 64,
-                                padding: "10px 36px 10px 14px",
-                            }}
-                            value={tab.draft}
-                        />
-                        <div className="mt-auto flex items-center justify-between gap-2 px-2 pb-1.5">
-                            <span
-                                className="min-w-0 truncate"
-                                style={{
-                                    color: "var(--color-text-secondary)",
-                                    fontSize: 12,
-                                    opacity: isStreaming ? 0.8 : 0,
-                                    transition: "opacity 0.15s ease",
-                                }}
-                            >
-                                {isStreaming ? "Codex is working…" : ""}
-                            </span>
-                            <div className="flex shrink-0 items-center gap-1.5">
-                                {isStreaming ||
-                                snapshot.status === "waiting_permission" ||
-                                snapshot.status === "waiting_user_input" ? (
-                                    <button
-                                        className="app-no-drag flex shrink-0 items-center justify-center rounded-full"
-                                        onClick={() =>
-                                            void useAiStore
-                                                .getState()
-                                                .cancelSession(tab.sessionId)
-                                        }
-                                        style={{
-                                            backgroundColor: "#b91c1c",
-                                            border: "none",
-                                            color: "#fff",
-                                            cursor: "pointer",
-                                            height: 28,
-                                            transition: "all 0.15s ease",
-                                            width: 28,
-                                        }}
-                                        type="button"
-                                    >
-                                        <svg
-                                            fill="currentColor"
-                                            height="14"
-                                            viewBox="0 0 24 24"
-                                            width="14"
-                                        >
-                                            <rect
-                                                height="14"
-                                                rx="2"
-                                                width="14"
-                                                x="5"
-                                                y="5"
-                                            />
-                                        </svg>
-                                    </button>
-                                ) : (
-                                    <button
-                                        className="app-no-drag flex shrink-0 items-center justify-center rounded-full"
-                                        onClick={() => {
-                                            void handleSubmit();
-                                        }}
-                                        style={{
-                                            backgroundColor: tab.draft.trim()
-                                                ? "var(--color-accent)"
-                                                : "transparent",
-                                            border: "none",
-                                            color: tab.draft.trim()
-                                                ? "#fff"
-                                                : "var(--color-text-secondary)",
-                                            cursor: tab.draft.trim()
-                                                ? "pointer"
-                                                : "default",
-                                            height: 28,
-                                            opacity: tab.draft.trim() ? 1 : 0.4,
-                                            transition: "all 0.15s ease",
-                                            width: 28,
-                                        }}
-                                        type="button"
-                                    >
-                                        <svg
-                                            fill="none"
-                                            height="16"
-                                            stroke="currentColor"
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth="2"
-                                            viewBox="0 0 24 24"
-                                            width="16"
-                                        >
-                                            <line
-                                                x1="12"
-                                                x2="12"
-                                                y1="19"
-                                                y2="5"
-                                            />
-                                            <polyline points="5 12 12 5 19 12" />
-                                        </svg>
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    </div>
+                        resetNonce={composerResetNonce}
+                        parts={composerParts}
+                        renderFileContextPill={(fc) => (
+                            <FileContextPill
+                                context={fc}
+                                onRemove={() =>
+                                    removeDraftFileContext(tab.sessionId, fc.id)
+                                }
+                            />
+                        )}
+                        renderImageChip={(att) => (
+                            <ImageAttachmentChip
+                                attachment={att}
+                                onRemove={removeDraftAttachment}
+                            />
+                        )}
+                        runtimeName={runtimeDisplayName}
+                        status={snapshot.status}
+                    />
                 </div>
             </div>
         </div>
@@ -613,69 +1154,21 @@ export function ChatTabView({
 
 /* ─── Render helpers (static fragments) ─── */
 
-function renderRuntimeBar(
-    runtimeStatus: {
-        command?: string | null;
-        message?: string | null;
-        state: "error" | "missing" | "ready";
-    } | null,
-    showConfig: boolean,
-    setShowConfig: (v: boolean) => void,
-) {
-    return (
-        <div
-            className="flex items-center gap-2 border-b px-3 py-1.5"
-            style={{
-                borderColor: "var(--color-border)",
-                backgroundColor: "var(--color-bg-panel)",
-            }}
-        >
-            <RuntimeBadge state={runtimeStatus?.state ?? "missing"} />
-            <span
-                className="min-w-0 flex-1 truncate"
-                style={{
-                    color: "var(--color-text-secondary)",
-                    fontSize: "0.75em",
-                }}
-            >
-                {runtimeStatus?.command ?? "codex runtime not resolved"}
-            </span>
-            {runtimeStatus?.message ? (
-                <span style={{ color: "#d97706", fontSize: "0.7em" }}>
-                    {runtimeStatus.message}
-                </span>
-            ) : null}
-            <button
-                className="app-no-drag"
-                onClick={() => setShowConfig(!showConfig)}
-                style={{
-                    background: "none",
-                    color: "var(--color-text-secondary)",
-                    cursor: "pointer",
-                    fontSize: "0.75em",
-                    opacity: 0.7,
-                    padding: "2px 6px",
-                }}
-                type="button"
-            >
-                {showConfig ? "Hide" : "Configure"}
-            </button>
-        </div>
-    );
+function renderRuntimeBar() {
+    return null;
 }
 
-function renderRuntimeConfig(
-    binaryPathDraft: string,
-    setBinaryPathDraft: (v: string) => void,
-    isSaving: boolean,
-    setIsSaving: (v: boolean) => void,
-    refreshRuntime: (id: "codex") => Promise<unknown>,
-    savePath: (v: string) => Promise<unknown>,
-    runtimeId: "codex",
-) {
+function renderCodexRuntimeConfig(props: {
+    readonly binaryPathDraft: string;
+    readonly isSaving: boolean;
+    readonly onChangeBinaryPath: (value: string) => void;
+    readonly onSave: () => Promise<void>;
+    readonly onVerify: () => Promise<void>;
+    readonly runtimeConfigError: string | null;
+}) {
     return (
         <div
-            className="flex items-center gap-2 border-b px-3 py-2"
+            className="flex flex-col gap-2 border-b px-3 py-2"
             style={{
                 borderColor: "var(--color-border)",
                 backgroundColor: "var(--color-bg-elevated)",
@@ -683,80 +1176,508 @@ function renderRuntimeConfig(
         >
             <input
                 className="ide-input app-no-drag flex-1"
-                onChange={(e) => setBinaryPathDraft(e.target.value)}
+                onChange={(event) =>
+                    props.onChangeBinaryPath(event.target.value)
+                }
                 placeholder="Custom ACP runtime path (for example codex-acp)"
-                value={binaryPathDraft}
+                value={props.binaryPathDraft}
             />
-            <button
-                className="ide-button app-no-drag"
-                disabled={isSaving}
-                onClick={() => {
-                    setIsSaving(true);
-                    void refreshRuntime(runtimeId).finally(() =>
-                        setIsSaving(false),
-                    );
-                }}
-                type="button"
-            >
-                Verify
-            </button>
-            <button
-                className="ide-button app-no-drag"
-                disabled={isSaving}
-                onClick={() => {
-                    setIsSaving(true);
-                    void savePath(binaryPathDraft).finally(() =>
-                        setIsSaving(false),
-                    );
-                }}
-                type="button"
-            >
-                Save
-            </button>
+            <div className="flex items-center gap-2">
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onVerify();
+                    }}
+                    type="button"
+                >
+                    Verify
+                </button>
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onSave();
+                    }}
+                    type="button"
+                >
+                    Save
+                </button>
+            </div>
+            {props.runtimeConfigError ? (
+                <div className="text-[12px] text-rose-500">
+                    {props.runtimeConfigError}
+                </div>
+            ) : null}
         </div>
     );
 }
 
-function renderPinnedPlan(plan: NonNullable<AiSessionSnapshot["plan"]>) {
+function renderClaudeRuntimeConfig(props: {
+    readonly authMethodDraft: ClaudeAuthMethodId | null;
+    readonly authMethods: readonly {
+        readonly description: string;
+        readonly id: string;
+        readonly name: string;
+    }[];
+    readonly binaryPathDraft: string;
+    readonly gatewayAuthTokenDraft: string;
+    readonly gatewayBaseUrlDraft: string;
+    readonly gatewayCustomHeadersDraft: string;
+    readonly hasStoredGatewayAuthToken: boolean;
+    readonly hasStoredGatewayCustomHeaders: boolean;
+    readonly isLaunchingAuth: boolean;
+    readonly isSaving: boolean;
+    readonly onAuthMethodChange: (value: ClaudeAuthMethodId | null) => void;
+    readonly onChangeBinaryPath: (value: string) => void;
+    readonly onChangeGatewayAuthToken: (value: string) => void;
+    readonly onChangeGatewayBaseUrl: (value: string) => void;
+    readonly onChangeGatewayCustomHeaders: (value: string) => void;
+    readonly onClearGatewayAuthToken: () => void;
+    readonly onClearGatewayCustomHeaders: () => void;
+    readonly onLaunchAuth: () => Promise<void>;
+    readonly onSave: () => Promise<void>;
+    readonly onVerify: () => Promise<void>;
+    readonly runtimeConfigError: string | null;
+    readonly shouldClearGatewayAuthToken: boolean;
+    readonly shouldClearGatewayCustomHeaders: boolean;
+}) {
+    const showGatewayFields = props.authMethodDraft === "gateway";
+
     return (
         <div
-            className="shrink-0 px-3 pb-1 pt-2"
+            className="flex flex-col gap-3 border-b px-3 py-3"
             style={{
-                borderBottom:
-                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                borderColor: "var(--color-border)",
+                backgroundColor: "var(--color-bg-elevated)",
             }}
         >
-            <div
-                className="mb-1"
-                style={{
-                    color: "var(--color-text-secondary)",
-                    fontSize: "0.7em",
-                    letterSpacing: "0.12em",
-                    textTransform: "uppercase",
-                }}
-            >
-                Plan
-            </div>
-            <div className="space-y-1 pb-1">
-                {plan.entries.map((entry, i) => (
-                    <div
-                        className="flex items-start gap-2"
-                        key={`${entry.content}-${i}`}
-                    >
-                        <PlanStatusDot status={entry.status} />
-                        <span
-                            className="min-w-0 flex-1"
+            <input
+                className="ide-input app-no-drag"
+                onChange={(event) =>
+                    props.onChangeBinaryPath(event.target.value)
+                }
+                placeholder="Custom Claude runtime path (for example claude-agent-acp)"
+                value={props.binaryPathDraft}
+            />
+
+            <div className="flex flex-wrap gap-2">
+                {props.authMethods.map((method) => {
+                    const isSelected = props.authMethodDraft === method.id;
+
+                    return (
+                        <button
+                            className="app-no-drag rounded-full border px-3 py-1.5 text-[11px] transition"
+                            key={method.id}
+                            onClick={() =>
+                                props.onAuthMethodChange(
+                                    method.id as ClaudeAuthMethodId,
+                                )
+                            }
                             style={{
-                                color: "var(--color-text-primary)",
-                                fontSize: "0.8em",
-                                lineHeight: 1.5,
+                                backgroundColor: isSelected
+                                    ? "var(--color-accent)"
+                                    : "transparent",
+                                borderColor: isSelected
+                                    ? "var(--color-accent)"
+                                    : "var(--color-border)",
+                                color: isSelected
+                                    ? "#fff"
+                                    : "var(--color-text-secondary)",
                             }}
+                            title={method.description}
+                            type="button"
                         >
-                            {entry.content}
-                        </span>
-                    </div>
-                ))}
+                            {method.name}
+                        </button>
+                    );
+                })}
             </div>
+
+            {showGatewayFields ? (
+                <div className="grid gap-2">
+                    <input
+                        className="ide-input app-no-drag"
+                        onChange={(event) =>
+                            props.onChangeGatewayBaseUrl(event.target.value)
+                        }
+                        placeholder="Gateway base URL"
+                        value={props.gatewayBaseUrlDraft}
+                    />
+                    <div className="flex items-center justify-between text-[11px] text-text-secondary">
+                        <span>
+                            Auth token{" "}
+                            {props.hasStoredGatewayAuthToken &&
+                            !props.shouldClearGatewayAuthToken
+                                ? "(stored)"
+                                : ""}
+                        </span>
+                        <button
+                            className="app-no-drag text-text-secondary transition hover:text-text-primary"
+                            onClick={props.onClearGatewayAuthToken}
+                            type="button"
+                        >
+                            Clear stored token
+                        </button>
+                    </div>
+                    <textarea
+                        className="ide-input app-no-drag min-h-[74px] resize-y"
+                        onChange={(event) =>
+                            props.onChangeGatewayAuthToken(event.target.value)
+                        }
+                        placeholder="Optional gateway auth token"
+                        value={props.gatewayAuthTokenDraft}
+                    />
+                    <div className="flex items-center justify-between text-[11px] text-text-secondary">
+                        <span>
+                            Custom headers{" "}
+                            {props.hasStoredGatewayCustomHeaders &&
+                            !props.shouldClearGatewayCustomHeaders
+                                ? "(stored)"
+                                : ""}
+                        </span>
+                        <button
+                            className="app-no-drag text-text-secondary transition hover:text-text-primary"
+                            onClick={props.onClearGatewayCustomHeaders}
+                            type="button"
+                        >
+                            Clear stored headers
+                        </button>
+                    </div>
+                    <textarea
+                        className="ide-input app-no-drag min-h-[88px] resize-y"
+                        onChange={(event) =>
+                            props.onChangeGatewayCustomHeaders(
+                                event.target.value,
+                            )
+                        }
+                        placeholder='Optional custom headers JSON, for example {"x-api-key":"..."}'
+                        value={props.gatewayCustomHeadersDraft}
+                    />
+                </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-2">
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onVerify();
+                    }}
+                    type="button"
+                >
+                    Verify
+                </button>
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onSave();
+                    }}
+                    type="button"
+                >
+                    Save
+                </button>
+                {props.authMethodDraft &&
+                props.authMethodDraft !== "gateway" ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isLaunchingAuth || props.isSaving}
+                        onClick={() => {
+                            void props.onLaunchAuth();
+                        }}
+                        type="button"
+                    >
+                        {props.isLaunchingAuth
+                            ? "Opening login…"
+                            : "Open login"}
+                    </button>
+                ) : null}
+            </div>
+
+            {props.runtimeConfigError ? (
+                <div className="text-[12px] text-rose-500">
+                    {props.runtimeConfigError}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function renderKiloRuntimeConfig(props: {
+    readonly binaryPathDraft: string;
+    readonly isLaunchingAuth: boolean;
+    readonly isSaving: boolean;
+    readonly onChangeBinaryPath: (value: string) => void;
+    readonly onLaunchAuth: () => Promise<void>;
+    readonly onSave: () => Promise<void>;
+    readonly onVerify: () => Promise<void>;
+    readonly runtimeConfigError: string | null;
+}) {
+    return (
+        <div
+            className="flex flex-col gap-3 border-b px-3 py-3"
+            style={{
+                borderColor: "var(--color-border)",
+                backgroundColor: "var(--color-bg-elevated)",
+            }}
+        >
+            <input
+                className="ide-input app-no-drag"
+                onChange={(event) =>
+                    props.onChangeBinaryPath(event.target.value)
+                }
+                placeholder="Custom Kilo runtime path (for example kilo)"
+                value={props.binaryPathDraft}
+            />
+
+            <div className="text-[11px] leading-5 text-text-secondary">
+                Kilo uses the local CLI login state. Open the system terminal to
+                run <code>kilo auth login</code>, then verify the runtime again.
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onVerify();
+                    }}
+                    type="button"
+                >
+                    Verify
+                </button>
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onSave();
+                    }}
+                    type="button"
+                >
+                    Save
+                </button>
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isLaunchingAuth || props.isSaving}
+                    onClick={() => {
+                        void props.onLaunchAuth();
+                    }}
+                    type="button"
+                >
+                    {props.isLaunchingAuth ? "Opening login…" : "Open login"}
+                </button>
+            </div>
+
+            {props.runtimeConfigError ? (
+                <div className="text-[12px] text-rose-500">
+                    {props.runtimeConfigError}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function renderGeminiRuntimeConfig(props: {
+    readonly authMethodDraft: GeminiAuthMethodId | null;
+    readonly authMethods: readonly {
+        readonly description: string;
+        readonly id: string;
+        readonly name: string;
+    }[];
+    readonly binaryPathDraft: string;
+    readonly geminiApiKeyDraft: string;
+    readonly googleApiKeyDraft: string;
+    readonly googleCloudLocationDraft: string;
+    readonly googleCloudProjectDraft: string;
+    readonly hasStoredGeminiApiKey: boolean;
+    readonly hasStoredGoogleApiKey: boolean;
+    readonly isLaunchingAuth: boolean;
+    readonly isSaving: boolean;
+    readonly onAuthMethodChange: (value: GeminiAuthMethodId | null) => void;
+    readonly onChangeBinaryPath: (value: string) => void;
+    readonly onChangeGeminiApiKey: (value: string) => void;
+    readonly onChangeGoogleApiKey: (value: string) => void;
+    readonly onChangeGoogleCloudLocation: (value: string) => void;
+    readonly onChangeGoogleCloudProject: (value: string) => void;
+    readonly onClearGeminiApiKey: () => void;
+    readonly onClearGoogleApiKey: () => void;
+    readonly onLaunchAuth: () => Promise<void>;
+    readonly onSave: () => Promise<void>;
+    readonly onVerify: () => Promise<void>;
+    readonly runtimeConfigError: string | null;
+    readonly shouldClearGeminiApiKey: boolean;
+    readonly shouldClearGoogleApiKey: boolean;
+}) {
+    return (
+        <div
+            className="flex flex-col gap-3 border-b px-3 py-3"
+            style={{
+                borderColor: "var(--color-border)",
+                backgroundColor: "var(--color-bg-elevated)",
+            }}
+        >
+            <input
+                className="ide-input app-no-drag"
+                onChange={(event) =>
+                    props.onChangeBinaryPath(event.target.value)
+                }
+                placeholder="Custom Gemini runtime path (for example gemini)"
+                value={props.binaryPathDraft}
+            />
+
+            <div className="flex flex-wrap gap-2">
+                {props.authMethods.map((method) => {
+                    const isSelected = props.authMethodDraft === method.id;
+
+                    return (
+                        <button
+                            className="app-no-drag rounded-full border px-3 py-1.5 text-[11px] transition"
+                            key={method.id}
+                            onClick={() =>
+                                props.onAuthMethodChange(
+                                    method.id as GeminiAuthMethodId,
+                                )
+                            }
+                            style={{
+                                backgroundColor: isSelected
+                                    ? "var(--color-accent)"
+                                    : "transparent",
+                                borderColor: isSelected
+                                    ? "var(--color-accent)"
+                                    : "var(--color-border)",
+                                color: isSelected
+                                    ? "#fff"
+                                    : "var(--color-text-secondary)",
+                            }}
+                            title={method.description}
+                            type="button"
+                        >
+                            {method.name}
+                        </button>
+                    );
+                })}
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-2">
+                <div className="grid gap-2">
+                    <div className="flex items-center justify-between text-[11px] text-text-secondary">
+                        <span>
+                            Gemini API key{" "}
+                            {props.hasStoredGeminiApiKey &&
+                            !props.shouldClearGeminiApiKey
+                                ? "(stored)"
+                                : ""}
+                        </span>
+                        <button
+                            className="app-no-drag text-text-secondary transition hover:text-text-primary"
+                            onClick={props.onClearGeminiApiKey}
+                            type="button"
+                        >
+                            Clear stored key
+                        </button>
+                    </div>
+                    <input
+                        className="ide-input app-no-drag"
+                        onChange={(event) =>
+                            props.onChangeGeminiApiKey(event.target.value)
+                        }
+                        placeholder="Optional GEMINI_API_KEY"
+                        type="password"
+                        value={props.geminiApiKeyDraft}
+                    />
+                </div>
+
+                <div className="grid gap-2">
+                    <div className="flex items-center justify-between text-[11px] text-text-secondary">
+                        <span>
+                            Google API key{" "}
+                            {props.hasStoredGoogleApiKey &&
+                            !props.shouldClearGoogleApiKey
+                                ? "(stored)"
+                                : ""}
+                        </span>
+                        <button
+                            className="app-no-drag text-text-secondary transition hover:text-text-primary"
+                            onClick={props.onClearGoogleApiKey}
+                            type="button"
+                        >
+                            Clear stored key
+                        </button>
+                    </div>
+                    <input
+                        className="ide-input app-no-drag"
+                        onChange={(event) =>
+                            props.onChangeGoogleApiKey(event.target.value)
+                        }
+                        placeholder="Optional GOOGLE_API_KEY"
+                        type="password"
+                        value={props.googleApiKeyDraft}
+                    />
+                </div>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-2">
+                <input
+                    className="ide-input app-no-drag"
+                    onChange={(event) =>
+                        props.onChangeGoogleCloudProject(event.target.value)
+                    }
+                    placeholder="Optional Google Cloud project"
+                    value={props.googleCloudProjectDraft}
+                />
+                <input
+                    className="ide-input app-no-drag"
+                    onChange={(event) =>
+                        props.onChangeGoogleCloudLocation(event.target.value)
+                    }
+                    placeholder="Optional Google Cloud location"
+                    value={props.googleCloudLocationDraft}
+                />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onVerify();
+                    }}
+                    type="button"
+                >
+                    Verify
+                </button>
+                <button
+                    className="ide-button app-no-drag"
+                    disabled={props.isSaving}
+                    onClick={() => {
+                        void props.onSave();
+                    }}
+                    type="button"
+                >
+                    Save
+                </button>
+                {props.authMethodDraft === "login_with_google" ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isLaunchingAuth || props.isSaving}
+                        onClick={() => {
+                            void props.onLaunchAuth();
+                        }}
+                        type="button"
+                    >
+                        {props.isLaunchingAuth
+                            ? "Opening login…"
+                            : "Open login"}
+                    </button>
+                ) : null}
+            </div>
+
+            {props.runtimeConfigError ? (
+                <div className="text-[12px] text-rose-500">
+                    {props.runtimeConfigError}
+                </div>
+            ) : null}
         </div>
     );
 }
@@ -779,43 +1700,74 @@ function renderPermissionRequest(
                 border: "1px solid color-mix(in srgb, #d97706 25%, var(--color-border))",
             }}
         >
+            <div className="flex items-center gap-2 px-3 py-2">
+                <svg
+                    className="shrink-0"
+                    fill="none"
+                    height="14"
+                    stroke="#d97706"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="1.5"
+                    viewBox="0 0 24 24"
+                    width="14"
+                >
+                    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" x2="12" y1="9" y2="13" />
+                    <line x1="12" x2="12.01" y1="17" y2="17" />
+                </svg>
+                <span
+                    className="min-w-0 flex-1 truncate font-medium"
+                    style={{
+                        color: "var(--color-text-primary)",
+                        fontSize: "0.85em",
+                    }}
+                >
+                    {perm.title}
+                </span>
+            </div>
             <div
-                className="px-3 py-2"
+                className="flex flex-wrap gap-2 px-3 py-2"
                 style={{
-                    color: "var(--color-text-primary)",
-                    fontSize: "0.85em",
-                    fontWeight: 500,
+                    borderTop:
+                        "1px solid color-mix(in srgb, #d97706 15%, var(--color-border))",
                 }}
             >
-                {perm.title}
-            </div>
-            <div className="flex flex-wrap gap-2 px-3 pb-2">
-                {perm.options.map((opt) => (
-                    <button
-                        className="app-no-drag rounded-md px-3 py-1.5"
-                        key={opt.optionId}
-                        onClick={() =>
-                            void respond({
-                                optionId: opt.optionId,
-                                requestId: perm.requestId,
-                                sessionId,
-                            })
-                        }
-                        style={{
-                            backgroundColor:
-                                "color-mix(in srgb, #d97706 10%, transparent)",
-                            border: "1px solid color-mix(in srgb, #d97706 30%, var(--color-border))",
-                            color: "var(--color-text-primary)",
-                            cursor: "pointer",
-                            fontSize: "0.78em",
-                        }}
-                        type="button"
-                    >
-                        {opt.name}
-                    </button>
-                ))}
+                {perm.options.map((opt) => {
+                    const isApprove =
+                        opt.kind === "allow_once" ||
+                        opt.kind === "allow_always";
+                    return (
+                        <button
+                            className="app-no-drag rounded-md px-3 py-1 font-medium"
+                            key={opt.optionId}
+                            onClick={() =>
+                                void respond({
+                                    optionId: opt.optionId,
+                                    requestId: perm.requestId,
+                                    sessionId,
+                                })
+                            }
+                            style={{
+                                backgroundColor: isApprove
+                                    ? "var(--color-accent)"
+                                    : "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
+                                border: "none",
+                                color: isApprove
+                                    ? "#fff"
+                                    : "var(--color-text-secondary)",
+                                cursor: "pointer",
+                                fontSize: "0.79em",
+                                transitionProperty: "opacity",
+                            }}
+                            type="button"
+                        >
+                            {opt.name}
+                        </button>
+                    );
+                })}
                 <button
-                    className="app-no-drag rounded-md px-3 py-1.5"
+                    className="app-no-drag rounded-md px-3 py-1 font-medium"
                     onClick={() =>
                         void respond({
                             optionId: null,
@@ -824,11 +1776,12 @@ function renderPermissionRequest(
                         })
                     }
                     style={{
-                        backgroundColor: "transparent",
-                        border: "1px solid var(--color-border)",
+                        backgroundColor:
+                            "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
+                        border: "none",
                         color: "var(--color-text-secondary)",
                         cursor: "pointer",
-                        fontSize: "0.78em",
+                        fontSize: "0.79em",
                     }}
                     type="button"
                 >
@@ -893,7 +1846,7 @@ function renderQueuedPrompts(
 function renderError(error: string) {
     return (
         <div
-            className="mb-2 flex items-start gap-2 rounded-lg px-2.5 py-2"
+            className="mb-2 flex min-w-0 max-w-full items-start gap-2 rounded-lg px-2.5 py-2"
             style={{
                 backgroundColor: "color-mix(in srgb, #dc2626 8%, transparent)",
                 color: "#fca5a5",
@@ -905,16 +1858,109 @@ function renderError(error: string) {
                 fill="none"
                 height="14"
                 stroke="#f87171"
-                strokeWidth="2"
-                viewBox="0 0 24 24"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.5"
+                viewBox="0 0 14 14"
                 width="14"
             >
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" x2="12" y1="8" y2="12" />
-                <line x1="12" x2="12.01" y1="16" y2="16" />
+                <circle cx="7" cy="7" r="6" />
+                <line x1="7" x2="7" y1="4.5" y2="7" />
+                <line x1="7" x2="7.01" y1="9.5" y2="9.5" />
             </svg>
-            <span className="min-w-0 whitespace-pre-wrap">{error}</span>
+            <span
+                className="min-w-0 whitespace-pre-wrap"
+                style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
+            >
+                {error}
+            </span>
         </div>
+    );
+}
+
+function AttachmentPillFrame(props: {
+    readonly children?: ReactNode;
+    readonly label: string;
+    readonly onRemove: () => void;
+    readonly title?: string;
+    readonly variant?: keyof typeof CHAT_PILL_VARIANTS;
+}) {
+    const palette = CHAT_PILL_VARIANTS[props.variant ?? "file"];
+
+    return (
+        <div
+            className="flex items-center gap-1 rounded-md py-0.5 pl-2 pr-1"
+            style={{
+                backgroundColor: palette.background,
+            }}
+        >
+            {props.children ? (
+                <span
+                    style={{
+                        color: palette.color,
+                        display: "flex",
+                        opacity: 0.8,
+                    }}
+                >
+                    {props.children}
+                </span>
+            ) : null}
+            <span
+                className="max-w-[150px] truncate text-xs"
+                style={{
+                    color: palette.color,
+                }}
+                title={props.title ?? props.label}
+            >
+                {props.label}
+            </span>
+            <button
+                className="app-no-drag flex items-center justify-center rounded p-0.5 text-xs"
+                onClick={props.onRemove}
+                style={{
+                    backgroundColor: "transparent",
+                    border: "none",
+                    color: palette.color,
+                    opacity: 0.6,
+                }}
+                type="button"
+            >
+                ×
+            </button>
+        </div>
+    );
+}
+
+function FileContextPill(props: {
+    readonly context: AiFileContextAttachment;
+    readonly onRemove: () => void;
+}) {
+    return (
+        <AttachmentPillFrame
+            label={props.context.name}
+            onRemove={props.onRemove}
+            title={props.context.relativePath}
+            variant="file"
+        >
+            <LanguageIcon languageId={props.context.languageId} size={11} />
+        </AttachmentPillFrame>
+    );
+}
+
+function ImageAttachmentChip(props: {
+    readonly attachment: AiImageAttachment;
+    readonly onRemove: (attachmentId: string) => void;
+}) {
+    const label = props.attachment.name ?? "Screenshot";
+    const sizeLabel = formatAttachmentSize(props.attachment.sizeBytes);
+
+    return (
+        <AttachmentPillFrame
+            label={label}
+            onRemove={() => props.onRemove(props.attachment.id)}
+            title={`${label} • ${sizeLabel}`}
+            variant="file"
+        />
     );
 }
 
@@ -968,30 +2014,48 @@ function UserInputRequestCard({
 
     return (
         <div
-            className="mb-2 overflow-hidden rounded-2xl border px-4 py-3"
+            className="mb-2 overflow-hidden rounded-lg"
             style={{
                 backgroundColor:
-                    "color-mix(in srgb, #2563eb 5%, var(--color-bg-secondary))",
-                borderColor:
-                    "color-mix(in srgb, #2563eb 18%, var(--color-border))",
+                    "color-mix(in srgb, #c2410c 4%, var(--color-bg-secondary))",
+                border: "1px solid color-mix(in srgb, #c2410c 24%, var(--color-border))",
             }}
         >
-            <div className="flex items-start justify-between gap-3">
-                <div>
-                    <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
-                        Input Required
-                    </div>
-                    <div className="mt-1 text-sm font-medium text-text-primary">
-                        {request.title}
-                    </div>
-                </div>
-                <div className="text-[11px] text-text-secondary">
+            <div className="flex items-center gap-2 px-3 py-2">
+                <svg
+                    className="shrink-0"
+                    fill="none"
+                    height="14"
+                    stroke="#c2410c"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="1.5"
+                    viewBox="0 0 24 24"
+                    width="14"
+                >
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+                <span
+                    className="flex-1 font-medium"
+                    style={{
+                        color: "var(--color-text-primary)",
+                        fontSize: "0.85em",
+                    }}
+                >
+                    {request.title}
+                </span>
+                <span
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: "0.76em",
+                    }}
+                >
                     {request.questions.length} question
                     {request.questions.length === 1 ? "" : "s"}
-                </div>
+                </span>
             </div>
 
-            <div className="mt-3 space-y-3">
+            <div className="flex flex-col gap-3 px-3 py-3">
                 {request.questions.map((question) => {
                     const selectedOptions =
                         selectedOptionsByQuestionId[question.id] ?? [];
@@ -1000,27 +2064,43 @@ function UserInputRequestCard({
                         question.isOther || question.options.length === 0;
 
                     return (
-                        <div
-                            className="rounded-xl border border-border bg-bg-panel px-3 py-3"
-                            key={question.id}
-                        >
+                        <div key={question.id}>
                             {question.header ? (
-                                <div className="text-[11px] uppercase tracking-[0.14em] text-text-secondary">
+                                <div
+                                    className="mb-1"
+                                    style={{
+                                        color: "var(--color-text-primary)",
+                                        fontSize: "0.8em",
+                                        fontWeight: 600,
+                                    }}
+                                >
                                     {question.header}
                                 </div>
                             ) : null}
-                            <div className="mt-1 text-sm text-text-primary">
+                            <div
+                                className="mb-2"
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontSize: "0.79em",
+                                }}
+                            >
                                 {question.question}
                             </div>
                             {question.isSecret ? (
-                                <div className="mt-1 text-[11px] text-text-secondary">
+                                <div
+                                    className="mb-2"
+                                    style={{
+                                        color: "var(--color-text-secondary)",
+                                        fontSize: "0.72em",
+                                    }}
+                                >
                                     This response will be treated as sensitive
                                     input.
                                 </div>
                             ) : null}
 
                             {question.options.length > 0 ? (
-                                <div className="mt-3 flex flex-wrap gap-2">
+                                <div className="flex flex-wrap gap-2">
                                     {question.options.map((option) => {
                                         const isSelected =
                                             selectedOptions.includes(
@@ -1028,7 +2108,7 @@ function UserInputRequestCard({
                                             );
                                         return (
                                             <button
-                                                className="app-no-drag rounded-full border px-3 py-1.5 text-left text-[12px] transition"
+                                                className="app-no-drag rounded-md px-2.5 py-1 text-left transition-colors"
                                                 key={option.label}
                                                 onClick={() =>
                                                     setSelectedOptionsByQuestionId(
@@ -1060,18 +2140,28 @@ function UserInputRequestCard({
                                                 }
                                                 style={{
                                                     backgroundColor: isSelected
-                                                        ? "color-mix(in srgb, var(--color-accent) 16%, transparent)"
-                                                        : "transparent",
-                                                    borderColor: isSelected
-                                                        ? "var(--color-accent)"
-                                                        : "var(--color-border)",
-                                                    color: "var(--color-text-primary)",
+                                                        ? "#c2410c"
+                                                        : "color-mix(in srgb, #c2410c 7%, var(--color-bg-tertiary))",
+                                                    border: `1px solid color-mix(in srgb, #c2410c 18%, var(--color-border))`,
+                                                    color: isSelected
+                                                        ? "#fff"
+                                                        : "var(--color-text-primary)",
+                                                    cursor: "pointer",
+                                                    fontSize: "0.78em",
                                                 }}
                                                 type="button"
                                             >
                                                 <div>{option.label}</div>
                                                 {option.description ? (
-                                                    <div className="mt-0.5 text-[11px] text-text-secondary">
+                                                    <div
+                                                        className="mt-0.5"
+                                                        style={{
+                                                            fontSize: "0.9em",
+                                                            opacity: isSelected
+                                                                ? 0.85
+                                                                : 0.7,
+                                                        }}
+                                                    >
                                                         {option.description}
                                                     </div>
                                                 ) : null}
@@ -1082,10 +2172,10 @@ function UserInputRequestCard({
                             ) : null}
 
                             {needsFreeText ? (
-                                <div className="mt-3">
+                                <div className="mt-2">
                                     {question.isSecret ? (
                                         <input
-                                            className="ide-input app-no-drag w-full"
+                                            className="ide-input app-no-drag w-full rounded-md px-2.5 py-2"
                                             onChange={(event) =>
                                                 setFreeTextByQuestionId(
                                                     (current) => ({
@@ -1096,12 +2186,19 @@ function UserInputRequestCard({
                                                 )
                                             }
                                             placeholder="Type your answer"
+                                            style={{
+                                                backgroundColor:
+                                                    "var(--color-bg-tertiary)",
+                                                border: "1px solid var(--color-border)",
+                                                color: "var(--color-text-primary)",
+                                                fontSize: "0.8em",
+                                            }}
                                             type="password"
                                             value={freeText}
                                         />
                                     ) : (
                                         <textarea
-                                            className="ide-input app-no-drag w-full resize-y"
+                                            className="ide-input app-no-drag w-full resize-y rounded-md px-2.5 py-2"
                                             onChange={(event) =>
                                                 setFreeTextByQuestionId(
                                                     (current) => ({
@@ -1121,6 +2218,13 @@ function UserInputRequestCard({
                                                     ? 2
                                                     : 3
                                             }
+                                            style={{
+                                                backgroundColor:
+                                                    "var(--color-bg-tertiary)",
+                                                border: "1px solid var(--color-border)",
+                                                color: "var(--color-text-primary)",
+                                                fontSize: "0.8em",
+                                            }}
                                             value={freeText}
                                         />
                                     )}
@@ -1131,9 +2235,36 @@ function UserInputRequestCard({
                 })}
             </div>
 
-            <div className="mt-3 flex items-center justify-end">
+            <div
+                className="flex flex-wrap gap-2 px-3 py-2"
+                style={{
+                    borderTop:
+                        "1px solid color-mix(in srgb, #c2410c 15%, var(--color-border))",
+                }}
+            >
                 <button
-                    className="app-no-drag rounded-full px-4 py-2 text-[12px] font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+                    className="app-no-drag rounded-md px-3 py-1 font-medium"
+                    onClick={() =>
+                        void onRespond({
+                            answers: [],
+                            requestId: request.requestId,
+                            sessionId: request.sessionId,
+                        })
+                    }
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
+                        border: "none",
+                        color: "var(--color-text-secondary)",
+                        cursor: "pointer",
+                        fontSize: "0.79em",
+                    }}
+                    type="button"
+                >
+                    Cancel
+                </button>
+                <button
+                    className="app-no-drag rounded-md px-3 py-1 font-medium text-white disabled:opacity-50"
                     disabled={answers.length === 0 || isSubmitting}
                     onClick={() => {
                         setIsSubmitting(true);
@@ -1143,108 +2274,74 @@ function UserInputRequestCard({
                             sessionId: request.sessionId,
                         }).finally(() => setIsSubmitting(false));
                     }}
-                    style={{ backgroundColor: "var(--color-accent)" }}
+                    style={{
+                        backgroundColor: "var(--color-accent)",
+                        border: "none",
+                        cursor:
+                            answers.length === 0 || isSubmitting
+                                ? "not-allowed"
+                                : "pointer",
+                        fontSize: "0.79em",
+                    }}
                     type="button"
                 >
-                    {isSubmitting ? "Sending..." : "Send Response"}
+                    {isSubmitting ? "Sending..." : "Submit"}
                 </button>
             </div>
         </div>
     );
 }
 
-function renderSuggestions(
-    suggestions: readonly ComposerSuggestion[],
-    activeIndex: number,
-    onInsert: (s: ComposerSuggestion) => void,
-) {
-    return (
-        <div
-            className="absolute inset-x-0 bottom-full mb-1 p-1"
-            style={{
-                backgroundColor: "var(--color-bg-elevated)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 10,
-                boxShadow: "var(--shadow-soft)",
-            }}
-        >
-            <div className="space-y-0.5">
-                {suggestions.map((s, i) => (
-                    <button
-                        className="app-no-drag flex w-full items-start justify-between gap-3 rounded-md px-3 py-1.5 text-left"
-                        key={s.id}
-                        onClick={() => onInsert(s)}
-                        style={{
-                            backgroundColor:
-                                i === activeIndex
-                                    ? "var(--color-bg-tertiary)"
-                                    : "transparent",
-                            cursor: "pointer",
-                        }}
-                        type="button"
-                    >
-                        <div className="min-w-0">
-                            <div
-                                className="truncate"
-                                style={{
-                                    color: "var(--color-text-primary)",
-                                    fontSize: "0.85em",
-                                }}
-                            >
-                                {s.label}
-                            </div>
-                            <div
-                                className="mt-0.5 truncate"
-                                style={{
-                                    color: "var(--color-text-secondary)",
-                                    fontSize: "0.75em",
-                                }}
-                            >
-                                {s.description}
-                            </div>
-                        </div>
-                        <span
-                            className="rounded-full px-2 py-0.5"
-                            style={{
-                                border: "1px solid var(--color-border)",
-                                color: "var(--color-text-secondary)",
-                                fontSize: "0.65em",
-                                letterSpacing: "0.08em",
-                                textTransform: "uppercase",
-                            }}
-                        >
-                            {s.kind}
-                        </span>
-                    </button>
-                ))}
-            </div>
-        </div>
-    );
-}
-
-/* ─── Message row (reference app style) ─── */
+/* ─── Message row ─── */
 
 function ChatMessageRow({
+    chatFontFamily,
+    chatFontSize,
     message,
 }: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
     readonly message: AiSessionSnapshot["messages"][number];
 }) {
     if (message.kind === "user")
-        return <UserMessage content={message.content} />;
+        return (
+            <UserMessage
+                attachments={message.attachments}
+                chatFontSize={chatFontSize}
+                content={message.content}
+            />
+        );
     if (message.kind === "user_input_request") {
-        return <UserInputRequestMessage content={message.content} />;
+        return (
+            <UserInputRequestMessage
+                chatFontSize={chatFontSize}
+                content={message.content}
+            />
+        );
     }
     if (message.kind === "thinking")
         return (
             <ThinkingMessage
+                chatFontSize={chatFontSize}
                 content={message.content}
                 inProgress={message.status === "streaming"}
             />
         );
-    return <AssistantMessage content={message.content} />;
+    return (
+        <AssistantMessage
+            attachments={message.attachments}
+            chatFontFamily={chatFontFamily}
+            chatFontSize={chatFontSize}
+            content={message.content}
+        />
+    );
 }
 
-function UserMessage({ content }: { readonly content: string }) {
+function UserMessage(props: {
+    readonly attachments: readonly AiImageAttachment[];
+    readonly chatFontSize?: number;
+    readonly content: string;
+}) {
     return (
         <div
             className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
@@ -1252,29 +2349,79 @@ function UserMessage({ content }: { readonly content: string }) {
                 backgroundColor: "var(--color-bg-tertiary)",
                 border: "1px solid var(--color-border)",
                 color: "var(--color-text-primary)",
-                fontSize: "0.85em",
+                fontSize: props.chatFontSize,
                 lineHeight: 1.6,
                 overflowWrap: "anywhere",
                 wordBreak: "break-word",
             }}
         >
-            {content}
+            {props.content ? <div>{props.content}</div> : null}
+            {props.attachments.length > 0 ? (
+                <MessageImageGrid attachments={props.attachments} />
+            ) : null}
         </div>
     );
 }
 
-function AssistantMessage({ content }: { readonly content: string }) {
+function AssistantMessage(props: {
+    readonly attachments: readonly AiImageAttachment[];
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly content: string;
+}) {
     return (
         <div
             className="min-w-0 max-w-full"
-            style={{ color: "var(--color-text-primary)", fontSize: "0.85em" }}
+            style={{
+                color: "var(--color-text-primary)",
+                fontSize: props.chatFontSize,
+            }}
         >
-            <MarkdownContent content={content} />
+            {props.content ? (
+                <MarkdownContent
+                    content={props.content}
+                    chatFontFamily={props.chatFontFamily}
+                    chatFontSize={props.chatFontSize}
+                />
+            ) : null}
+            {props.attachments.length > 0 ? (
+                <MessageImageGrid attachments={props.attachments} />
+            ) : null}
         </div>
     );
 }
 
-function UserInputRequestMessage({ content }: { readonly content: string }) {
+function MessageImageGrid(props: {
+    readonly attachments: readonly AiImageAttachment[];
+}) {
+    return (
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {props.attachments.map((attachment) => (
+                <a
+                    className="overflow-hidden rounded-xl border border-border bg-bg-panel"
+                    href={toAttachmentDataUrl(attachment)}
+                    key={attachment.id}
+                    rel="noreferrer"
+                    target="_blank"
+                >
+                    <img
+                        alt={attachment.name ?? "Chat image"}
+                        className="h-48 w-full object-cover"
+                        src={toAttachmentDataUrl(attachment)}
+                    />
+                </a>
+            ))}
+        </div>
+    );
+}
+
+function UserInputRequestMessage({
+    chatFontSize,
+    content,
+}: {
+    readonly chatFontSize?: number;
+    readonly content: string;
+}) {
     return (
         <div
             className="max-w-full rounded-xl border px-3 py-2"
@@ -1283,6 +2430,7 @@ function UserInputRequestMessage({ content }: { readonly content: string }) {
                     "color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-panel))",
                 borderColor:
                     "color-mix(in srgb, var(--color-accent) 22%, var(--color-border))",
+                fontSize: chatFontSize,
             }}
         >
             <div
@@ -1312,9 +2460,11 @@ function UserInputRequestMessage({ content }: { readonly content: string }) {
 }
 
 function ThinkingMessage({
+    chatFontSize,
     content,
     inProgress,
 }: {
+    readonly chatFontSize?: number;
     readonly content: string;
     readonly inProgress: boolean;
 }) {
@@ -1329,7 +2479,7 @@ function ThinkingMessage({
                     border: "none",
                     color: "var(--color-text-secondary)",
                     cursor: "pointer",
-                    fontSize: "0.85em",
+                    fontSize: chatFontSize,
                     opacity: 0.7,
                 }}
                 type="button"
@@ -1371,154 +2521,6 @@ function ThinkingMessage({
 
 /* ─── Tool activity row (reference app style) ─── */
 
-function ToolActivityRow({
-    activity,
-    onOpenFile,
-    projectId,
-}: {
-    readonly activity: AiToolActivity;
-    readonly onOpenFile: (
-        projectId: string,
-        relativePath: string,
-    ) => Promise<void>;
-    readonly projectId: string | null;
-}) {
-    const [expanded, setExpanded] = useState(false);
-    const isInProgress = activity.status === "in_progress";
-
-    return (
-        <div
-            className="min-w-0 max-w-full"
-            style={{ opacity: isInProgress ? 1 : 0.7 }}
-        >
-            <button
-                className="flex w-full items-center gap-2 py-0.5 text-left"
-                onClick={() => setExpanded(!expanded)}
-                style={{
-                    background: "none",
-                    border: "none",
-                    color: "var(--color-text-secondary)",
-                    cursor: "pointer",
-                    fontSize: "0.78em",
-                }}
-                type="button"
-            >
-                <span
-                    className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
-                    style={{
-                        backgroundColor: isInProgress
-                            ? "var(--color-accent)"
-                            : activity.status === "completed"
-                              ? "#16a34a"
-                              : activity.status === "failed"
-                                ? "#dc2626"
-                                : "#94a3b8",
-                        animation: isInProgress
-                            ? "pulse 2s infinite"
-                            : undefined,
-                    }}
-                />
-                <span className="min-w-0 flex-1 truncate">
-                    {activity.title}
-                </span>
-                {!isInProgress ? (
-                    <span style={{ fontSize: "0.9em", opacity: 0.6 }}>
-                        {activity.status}
-                    </span>
-                ) : null}
-            </button>
-
-            {expanded ? (
-                <div className="mt-1 pl-4" style={{ fontSize: "0.78em" }}>
-                    {activity.summary ? (
-                        <div
-                            className="mb-1"
-                            style={{ color: "var(--color-text-secondary)" }}
-                        >
-                            {activity.summary}
-                        </div>
-                    ) : null}
-                    {activity.locations.length > 0 ? (
-                        <div className="mb-1 flex flex-wrap gap-1">
-                            {activity.locations.map((loc) => (
-                                <button
-                                    className="app-no-drag rounded-md px-2 py-0.5"
-                                    key={loc}
-                                    onClick={() => {
-                                        if (
-                                            projectId &&
-                                            !looksAbsolutePath(loc)
-                                        )
-                                            void onOpenFile(projectId, loc);
-                                    }}
-                                    style={{
-                                        backgroundColor:
-                                            "var(--color-bg-tertiary)",
-                                        border: "1px solid var(--color-border)",
-                                        color: "var(--color-text-secondary)",
-                                        cursor: "pointer",
-                                        fontSize: "0.9em",
-                                    }}
-                                    type="button"
-                                >
-                                    {loc}
-                                </button>
-                            ))}
-                        </div>
-                    ) : null}
-                    {activity.diffs.length > 0
-                        ? activity.diffs.map((diff) => (
-                              <div
-                                  className="mb-1 rounded-md px-2 py-1.5"
-                                  key={`${activity.id}:${diff.path}`}
-                                  style={{
-                                      backgroundColor:
-                                          "var(--color-bg-tertiary)",
-                                      border: "1px solid var(--color-border)",
-                                  }}
-                              >
-                                  <div className="flex items-center justify-between gap-2">
-                                      <span
-                                          className="min-w-0 truncate"
-                                          style={{
-                                              color: "var(--color-text-primary)",
-                                              fontSize: "0.9em",
-                                          }}
-                                      >
-                                          {diff.path}
-                                      </span>
-                                      <span
-                                          style={{
-                                              color: "var(--color-text-secondary)",
-                                              fontSize: "0.8em",
-                                              letterSpacing: "0.06em",
-                                              textTransform: "uppercase",
-                                          }}
-                                      >
-                                          {diff.kind}
-                                      </span>
-                                  </div>
-                                  <div
-                                      className="mt-0.5"
-                                      style={{
-                                          color: "var(--color-text-secondary)",
-                                          fontSize: "0.85em",
-                                      }}
-                                  >
-                                      {summarizeDiff(
-                                          diff.oldText,
-                                          diff.newText,
-                                      )}
-                                  </div>
-                              </div>
-                          ))
-                        : null}
-                </div>
-            ) : null}
-        </div>
-    );
-}
-
 /* ─── Streaming indicator ─── */
 
 function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
@@ -1556,86 +2558,53 @@ function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
     );
 }
 
-/* ─── Utility components ─── */
-
-function RuntimeBadge({
-    state,
-}: {
-    readonly state: "error" | "missing" | "ready";
-}) {
-    const label =
-        state === "ready" ? "Ready" : state === "error" ? "Error" : "Missing";
-    const dotColor =
-        state === "ready"
-            ? "#16a34a"
-            : state === "error"
-              ? "#dc2626"
-              : "#d97706";
-    return (
-        <span className="flex items-center gap-1.5">
-            <span
-                className="inline-block h-2 w-2 rounded-full"
-                style={{ backgroundColor: dotColor }}
-            />
-            <span
-                style={{
-                    color: "var(--color-text-secondary)",
-                    fontSize: "0.7em",
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                }}
-            >
-                {label}
-            </span>
-        </span>
-    );
-}
-
-function PlanStatusDot({
-    status,
-}: {
-    readonly status: "completed" | "in_progress" | "pending";
-}) {
-    const bg =
-        status === "completed"
-            ? "#16a34a"
-            : status === "in_progress"
-              ? "#2563eb"
-              : "#94a3b8";
-    return (
-        <span
-            className="mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full"
-            style={{ backgroundColor: bg }}
-        />
-    );
-}
-
 /* ─── Utility functions ─── */
 
-function findActiveToken(draft: string, cursor: number): TokenRange | null {
-    const c = Math.max(0, Math.min(cursor, draft.length));
-    let start = c;
-    while (start > 0 && !/\s/.test(draft[start - 1] ?? "")) start -= 1;
-    let end = c;
-    while (end < draft.length && !/\s/.test(draft[end] ?? "")) end += 1;
-    const token = draft.slice(start, end);
-    if (!token.startsWith("@") && !token.startsWith("/")) return null;
-    return { end, start, token };
+function toSecretValuePatch(value: string, shouldClear: boolean) {
+    if (shouldClear) {
+        return { kind: "clear" } as const;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+        return {
+            kind: "set",
+            value: trimmed,
+        } as const;
+    }
+
+    return { kind: "unchanged" } as const;
 }
 
-function replaceToken(
-    draft: string,
-    range: TokenRange,
-    replacement: string,
-): string {
-    return `${draft.slice(0, range.start)}${replacement}${draft.slice(range.end)}`;
+function getRuntimeDisplayName(
+    runtimeId: RuntimeWorkspaceChatTab["runtimeId"],
+) {
+    switch (runtimeId) {
+        case "claude":
+            return "Claude";
+        case "gemini":
+            return "Gemini";
+        case "kilo":
+            return "Kilo";
+        case "codex":
+        default:
+            return "Codex";
+    }
 }
 
-function createEmptySnapshot(tab: RuntimeWorkspaceChatTab): AiSessionSnapshot {
+function createEmptySnapshot(
+    tab: RuntimeWorkspaceChatTab,
+    catalog: AiRuntimeCatalog | null = null,
+): AiSessionSnapshot {
     return {
-        availableCommands: [],
+        availableCommands: catalog?.availableCommands ?? [],
+        configOptions: catalog?.configOptions ?? [],
         lastError: null,
         messages: [],
+        modeId: catalog?.modeId ?? null,
+        modes: catalog?.modes ?? [],
+        modelId: catalog?.modelId ?? null,
+        models: catalog?.models ?? [],
         pendingPermission: null,
         pendingUserInput: null,
         plan: null,
@@ -1648,31 +2617,103 @@ function createEmptySnapshot(tab: RuntimeWorkspaceChatTab): AiSessionSnapshot {
         toolActivity: [],
         trackedFiles: [],
         updatedAt: new Date().toISOString(),
+        worktreeId: tab.worktreeId ?? null,
     };
 }
 
-function serializePrompt(draft: string): string {
+function serializePromptWithContexts(
+    draft: string,
+    fileContexts: readonly AiFileContextAttachment[],
+): string {
     const t = draft.trim();
-    if (!t) return "";
-    const paths = [...t.matchAll(/(^|\s)@([^\s]+)/g)]
+    const textMentions = [...(t.matchAll(/(^|\s)@([^\s]+)/g) ?? [])]
         .map((m) => m[2]?.trim())
         .filter((v): v is string => Boolean(v));
-    if (paths.length === 0) return t;
-    return `${t}\n\nContext references:\n${[...new Set(paths)].map((p) => `- ${p}`).join("\n")}`;
+    const pillPaths = fileContexts.map((fc) => fc.relativePath);
+    const allPaths = [...new Set([...textMentions, ...pillPaths])];
+    if (!t && allPaths.length === 0) return "";
+    const body = t || "Review these files";
+    if (allPaths.length === 0) return body;
+    return `${body}\n\nContext references:\n${allPaths.map((p) => `- ${p}`).join("\n")}`;
 }
 
-function summarizeDiff(oldText: string | null, newText: string | null): string {
-    if (oldText === null && newText !== null)
-        return `Creates ${countLines(newText)} line(s).`;
-    if (oldText !== null && newText === null)
-        return `Removes ${countLines(oldText)} line(s).`;
-    return `Updates ${Math.max(countLines(oldText ?? ""), countLines(newText ?? ""))} line(s).`;
+function isComposerDraftEmpty(
+    parts: readonly AIComposerPart[],
+    attachments: readonly AiImageAttachment[],
+    fileContexts: readonly AiFileContextAttachment[],
+): boolean {
+    return (
+        parts.every(
+            (part) => part.type === "text" && part.text.trim().length === 0,
+        ) &&
+        attachments.length === 0 &&
+        fileContexts.length === 0
+    );
 }
 
-function countLines(text: string): number {
-    return text ? text.split("\n").length : 0;
+async function readImageFileAsAttachment(
+    file: File,
+): Promise<AiImageAttachment> {
+    if (!file.type.startsWith("image/")) {
+        throw new Error("Only image files are supported.");
+    }
+
+    if (file.size > MAX_IMAGE_ATTACHMENT_BYTES) {
+        throw new Error(
+            `"${file.name}" exceeds the ${formatBytes(
+                MAX_IMAGE_ATTACHMENT_BYTES,
+            )} limit.`,
+        );
+    }
+
+    const dataUrl = await readFileAsDataUrl(file);
+    const [, dataBase64 = ""] = dataUrl.split(",", 2);
+
+    return {
+        dataBase64,
+        id: `draft-image:${crypto.randomUUID()}`,
+        mimeType: file.type,
+        name: file.name || null,
+        sizeBytes: file.size,
+    };
 }
 
-function looksAbsolutePath(p: string): boolean {
-    return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onerror = () => {
+            reject(new Error(`Could not read "${file.name}".`));
+        };
+        reader.onload = () => {
+            if (typeof reader.result !== "string") {
+                reject(new Error(`Could not read "${file.name}".`));
+                return;
+            }
+
+            resolve(reader.result);
+        };
+
+        reader.readAsDataURL(file);
+    });
+}
+
+function formatBytes(sizeBytes: number): string {
+    if (sizeBytes < 1024 * 1024) {
+        return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+    }
+
+    return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatAttachmentSize(sizeBytes: number | null): string {
+    if (typeof sizeBytes !== "number") {
+        return "Image";
+    }
+
+    return formatBytes(sizeBytes);
+}
+
+function toAttachmentDataUrl(attachment: AiImageAttachment): string {
+    return `data:${attachment.mimeType};base64,${attachment.dataBase64}`;
 }
