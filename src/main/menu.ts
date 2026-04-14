@@ -4,10 +4,18 @@ import { appIdentity } from "@shared/app-identity";
 import type { WindowContextSnapshot } from "@shared/ipc";
 
 interface InstallApplicationMenuOptions {
+    readonly adjustAppZoom: (
+        direction: "decrease" | "increase" | "reset",
+    ) => void;
+    readonly closeFocusedWindowSurface: () => void;
     readonly focusProjectWindow: (projectId: string) => boolean;
     readonly getFocusedMainWindowContext: () => WindowContextSnapshot | null;
-    readonly openNewMainWindow: (projectId?: string | null) => Promise<void> | void;
-    readonly openSettingsWindow: (projectId: string | null) => Promise<void>;
+    readonly openNewMainWindow: (
+        projectId?: string | null,
+    ) => Promise<void> | void;
+    readonly openSettingsWindow: (
+        projectId: string | null,
+    ) => Promise<void> | void;
 }
 
 export function installApplicationMenu(
@@ -29,7 +37,9 @@ export function installApplicationMenu(
                 {
                     click: () => {
                         const context = options.getFocusedMainWindowContext();
-                        void options.openSettingsWindow(context?.projectId ?? null);
+                        void options.openSettingsWindow(
+                            context?.projectId ?? null,
+                        );
                     },
                     label: "Settings",
                 },
@@ -78,7 +88,15 @@ function buildMenuTemplate(
                 label: "Settings",
             },
             { type: "separator" },
-            isMac ? { role: "close" } : { role: "quit" },
+            isMac
+                ? {
+                      accelerator: "CmdOrCtrl+W",
+                      click: () => {
+                          options.closeFocusedWindowSurface();
+                      },
+                      label: "Close",
+                  }
+                : { role: "quit" },
         ],
     };
 
@@ -101,13 +119,25 @@ function buildMenuTemplate(
             },
             { type: "separator" },
             {
-                role: "resetZoom",
+                accelerator: "CmdOrCtrl+0",
+                click: () => {
+                    options.adjustAppZoom("reset");
+                },
+                label: "Actual Size",
             },
             {
-                role: "zoomIn",
+                accelerator: "CmdOrCtrl+Plus",
+                click: () => {
+                    options.adjustAppZoom("increase");
+                },
+                label: "Zoom In",
             },
             {
-                role: "zoomOut",
+                accelerator: "CmdOrCtrl+-",
+                click: () => {
+                    options.adjustAppZoom("decrease");
+                },
+                label: "Zoom Out",
             },
             { type: "separator" },
             {
@@ -123,7 +153,9 @@ function buildMenuTemplate(
         submenu: [
             {
                 click: () => {
-                    void shell.openExternal("https://github.com/electron/electron");
+                    void shell.openExternal(
+                        "https://github.com/electron/electron",
+                    );
                 },
                 label: `About ${appIdentity.name}`,
             },

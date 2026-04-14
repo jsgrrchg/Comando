@@ -23,6 +23,10 @@ const ROW_BOX: CSSProperties = {
     boxSizing: "border-box",
 };
 
+function scalePx(value: number): string {
+    return `calc(${value}px * var(--file-tree-scale, 1))`;
+}
+
 export function GitTreeView({
     activePath = null,
     className,
@@ -106,7 +110,7 @@ function GitTreeNodeRow({
         | ((node: GitTreeNode, dataTransfer: DataTransfer | null) => void)
         | undefined;
 
-    const paddingLeft = BASE_PADDING + depth * INDENT_STEP;
+    const paddingLeft = scalePx(BASE_PADDING + depth * INDENT_STEP);
 
     return (
         <>
@@ -125,12 +129,12 @@ function GitTreeNodeRow({
                     position: "relative",
                     display: "flex",
                     alignItems: "center",
-                    gap: 6,
-                    height: ROW_HEIGHT,
+                    gap: scalePx(6),
+                    height: scalePx(ROW_HEIGHT),
                     paddingLeft,
-                    paddingRight: 8,
-                    fontSize: FONT_SIZE,
-                    borderRadius: 4,
+                    paddingRight: scalePx(8),
+                    fontSize: scalePx(FONT_SIZE),
+                    borderRadius: scalePx(4),
                     cursor: canOpen || canToggle ? "pointer" : "default",
                     color: isDirectory
                         ? "var(--color-text-secondary)"
@@ -158,7 +162,7 @@ function GitTreeNodeRow({
                 {isDirectory && layout === "tree" ? (
                     <ChevronIcon open={isExpanded} />
                 ) : (
-                    <span style={{ width: ICON_SM, flexShrink: 0 }} />
+                    <span style={{ width: scalePx(ICON_SM), flexShrink: 0 }} />
                 )}
 
                 {isDirectory ? (
@@ -183,7 +187,7 @@ function GitTreeNodeRow({
                 {node.secondaryText ? (
                     <span
                         style={{
-                            fontSize: 11,
+                            fontSize: scalePx(11),
                             color: "var(--color-text-secondary)",
                             whiteSpace: "nowrap",
                             flexShrink: 0,
@@ -197,7 +201,7 @@ function GitTreeNodeRow({
                     style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: 4,
+                        gap: scalePx(4),
                         flexShrink: 0,
                         marginLeft: "auto",
                     }}
@@ -214,7 +218,7 @@ function GitTreeNodeRow({
                             style={{
                                 display: "flex",
                                 alignItems: "center",
-                                gap: 4,
+                                gap: scalePx(4),
                             }}
                         >
                             {node.actions.map((action) => (
@@ -259,12 +263,12 @@ function ChevronIcon({
     size = ICON_SM,
 }: {
     open: boolean;
-    size?: number;
+    size?: number | string;
 }) {
     return (
         <svg
-            width={size}
-            height={size}
+            width={typeof size === "number" ? scalePx(size) : size}
+            height={typeof size === "number" ? scalePx(size) : size}
             viewBox="0 0 16 16"
             fill="currentColor"
             style={{
@@ -291,14 +295,14 @@ function FolderIcon({
     size = ICON_MD,
 }: {
     open: boolean;
-    size?: number;
+    size?: number | string;
 }) {
     const fill = "var(--color-text-secondary)";
     if (open) {
         return (
             <svg
-                width={size}
-                height={size}
+                width={typeof size === "number" ? scalePx(size) : size}
+                height={typeof size === "number" ? scalePx(size) : size}
                 viewBox="0 0 16 16"
                 fill="none"
                 style={{ flexShrink: 0 }}
@@ -318,8 +322,8 @@ function FolderIcon({
     }
     return (
         <svg
-            width={size}
-            height={size}
+            width={typeof size === "number" ? scalePx(size) : size}
+            height={typeof size === "number" ? scalePx(size) : size}
             viewBox="0 0 16 16"
             fill="none"
             style={{ flexShrink: 0 }}
@@ -338,13 +342,13 @@ function FileIcon({
     size = ICON_SM,
 }: {
     status: GitNodeStatus | null;
-    size?: number;
+    size?: number | string;
 }) {
     const strokeColor = status ? statusStrokeColor(status) : "currentColor";
     return (
         <svg
-            width={size}
-            height={size}
+            width={typeof size === "number" ? scalePx(size) : size}
+            height={typeof size === "number" ? scalePx(size) : size}
             viewBox="0 0 16 16"
             fill="none"
             style={{ flexShrink: 0, opacity: 0.58 }}
@@ -388,7 +392,7 @@ function TreeIndentGuides({ depth }: { depth: number }) {
                         key={level}
                         style={{
                             position: "absolute",
-                            left: x,
+                            left: scalePx(x),
                             top: 0,
                             bottom: 0,
                             width: 1,
@@ -409,11 +413,11 @@ function StatusIndicator({ status }: { status: GitNodeStatus }) {
     return (
         <span
             style={{
-                fontSize: 10,
+                fontSize: scalePx(10),
                 fontWeight: 600,
                 lineHeight: 1,
                 color,
-                width: 14,
+                width: scalePx(14),
                 textAlign: "center",
                 flexShrink: 0,
             }}

@@ -268,16 +268,23 @@
 :root {
     color-scheme: light;
     font-family: var(--font-sans);
-    background: transparent;
+    --vibrancy-opacity: 50%;
+    background: color-mix(
+        in srgb,
+        var(--color-bg-primary) var(--vibrancy-opacity),
+        transparent
+    );
     color: var(--color-text-primary);
-    --diff-add: #16a34a;
-    --diff-remove: #dc2626;
-    --diff-warn: #d97706;
-    --diff-move: #7c3aed;
+    --diff-add: #15803d;
+    --diff-remove: #b91c1c;
+    --diff-warn: #92400e;
+    --diff-move: #a16207;
+    --diff-update: #1d4ed8;
 }
 
 :root.dark {
     color-scheme: dark;
+    --vibrancy-opacity: 85%;
     --color-app: #1c1c1c;
     --color-bg-primary: #1c1c1c;
     --color-bg-secondary: #252525;
@@ -300,7 +307,8 @@
     --diff-add: #4ade80;
     --diff-remove: #f87171;
     --diff-warn: #fbbf24;
-    --diff-move: #a78bfa;
+    --diff-move: #fcd34d;
+    --diff-update: #60a5fa;
 }
 
 * {
@@ -318,7 +326,6 @@ body {
     min-height: 100vh;
     overflow: hidden;
     font-size: 13px;
-    background: transparent;
 }
 
 .cm-static-code {
@@ -331,7 +338,11 @@ body {
 }
 
 .cm-static-token-keyword {
-    color: color-mix(in srgb, var(--diff-warn) 82%, var(--color-text-primary));
+    color: color-mix(
+        in srgb,
+        var(--diff-update) 82%,
+        var(--color-text-primary)
+    );
 }
 
 .cm-static-token-variable {
@@ -378,7 +389,7 @@ body {
 .cm-static-token-attribute {
     color: color-mix(
         in srgb,
-        var(--color-accent) 72%,
+        var(--diff-update) 72%,
         var(--color-text-primary)
     );
 }
@@ -628,6 +639,25 @@ button {
 .sidebar-tool-button:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
     outline-offset: 1px;
+}
+
+.sidebar-action-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 8px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--color-text-secondary);
+    transition:
+        background-color 120ms ease,
+        color 120ms ease;
+}
+
+.sidebar-action-row:hover {
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
 }
 
 .tree-row {

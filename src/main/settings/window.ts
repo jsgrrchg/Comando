@@ -1,5 +1,6 @@
 import type { BrowserWindow } from "electron";
 
+import { applyAppZoomToWindow } from "@main/settings/window-zoom";
 import { createSettingsWindow as createSettingsBrowserWindow } from "@main/window";
 import { windowRegistry } from "@main/windows/registry";
 import type { OpenSettingsWindowInput } from "@shared/ipc";
@@ -8,9 +9,10 @@ const SETTINGS_WINDOW_KEY_PREFIX = "settings";
 
 const activeSettingsWindows = new Map<string, BrowserWindow>();
 
-export async function openSettingsWindow(
+export function openSettingsWindow(
     input: OpenSettingsWindowInput,
-): Promise<void> {
+    zoomFactor = 1,
+): void {
     const windowKey = getSettingsWindowKey(input.projectId);
     const existingWindow = activeSettingsWindows.get(windowKey);
 
@@ -24,6 +26,7 @@ export async function openSettingsWindow(
     }
 
     const settingsWindow = createSettingsBrowserWindow(input.projectId);
+    applyAppZoomToWindow(settingsWindow, zoomFactor);
 
     activeSettingsWindows.set(windowKey, settingsWindow);
     windowRegistry.register(settingsWindow, {

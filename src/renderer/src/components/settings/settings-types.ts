@@ -17,12 +17,16 @@ export interface ThemePresetOption {
 }
 
 export interface SettingsThemeControlState {
+    readonly fileTreeScale?: number;
     readonly mode: ThemeMode;
     readonly presetId: string;
     readonly presets: readonly ThemePresetOption[];
+    readonly zoomFactor?: number;
     readonly disabled?: boolean;
+    readonly onFileTreeScaleChange?: (fileTreeScale: number) => void;
     readonly onModeChange?: (mode: ThemeMode) => void;
     readonly onPresetChange?: (presetId: string) => void;
+    readonly onZoomFactorChange?: (zoomFactor: number) => void;
 }
 
 export interface ProjectAppearanceState extends SettingsThemeControlState {

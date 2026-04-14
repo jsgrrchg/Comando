@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from "electron";
 
+import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
 import { appIdentity } from "@shared/app-identity";
 import {
     IPC_EVENTS,
@@ -24,8 +25,12 @@ import { installApplicationMenu } from "./menu";
 import { PersistenceService } from "./persistence/service";
 import { ProjectService } from "./projects/service";
 import { registerIpcHandlers } from "./ipc";
-import { openSettingsWindow } from "./settings/window";
 import { SettingsService } from "./settings/service";
+import {
+    applyAppZoomToWindow,
+    broadcastSettingsUpdated,
+} from "./settings/window-zoom";
+import { openSettingsWindow } from "./settings/window";
 import { TerminalService } from "./terminals/service";
 import { createMainWindow } from "./window";
 import { windowRegistry } from "./windows/registry";
@@ -61,7 +66,7 @@ if (!hasSingleInstanceLock) {
         void openNewMainWindow(null);
     });
 
-    void app.whenReady().then(async () => {
+    void app.whenReady().then(() => {
         database = bootstrapDatabase({
             dataDir: app.getPath("userData"),
         });
@@ -133,6 +138,26 @@ if (!hasSingleInstanceLock) {
         });
 
         installApplicationMenu({
+            adjustAppZoom: (direction) => {
+                updateAppZoom(direction);
+            },
+            closeFocusedWindowSurface: () => {
+                const focusedWindow = BrowserWindow.getFocusedWindow();
+                if (!focusedWindow) {
+                    return;
+                }
+
+                const context =
+                    windowRegistry.getContextByBrowserWindow(focusedWindow);
+                if (context?.windowKind === "main") {
+                    focusedWindow.webContents.send(
+                        IPC_EVENTS.workspaceCloseActiveTab,
+                    );
+                    return;
+                }
+
+                focusedWindow.close();
+            },
             focusProjectWindow: (projectId) => {
                 const existingWindow =
                     windowRegistry.getMainWindowByProjectId(projectId);
@@ -152,10 +177,10 @@ if (!hasSingleInstanceLock) {
             openNewMainWindow: (projectId) =>
                 openNewMainWindow(projectId ?? null),
             openSettingsWindow: (projectId) =>
-                openSettingsWindow({ projectId }),
+                openSettingsWindow({ projectId }, loadCurrentAppZoomFactor()),
         });
 
-        await restoreMainWindows();
+        restoreMainWindows();
 
         app.on("activate", () => {
             if (windowRegistry.listMainWindowContexts().length === 0) {
@@ -192,11 +217,11 @@ app.on("will-quit", () => {
     database = null;
 });
 
-async function restoreMainWindows(): Promise<void> {
+function restoreMainWindows(): void {
     const snapshots =
         persistenceService?.listRestorableMainWindowSnapshots() ?? [];
     if (snapshots.length === 0) {
-        await openNewMainWindow(null);
+        openNewMainWindow(null);
         return;
     }
 
@@ -205,7 +230,7 @@ async function restoreMainWindows(): Promise<void> {
     }
 }
 
-async function openNewMainWindow(projectId: string | null): Promise<void> {
+function openNewMainWindow(projectId: string | null): void {
     if (!persistenceService) {
         return;
     }
@@ -254,12 +279,49 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
     const window = createMainWindow(snapshot.windowState);
     const context = snapshot.windowContext;
 
+    applyAppZoomToWindow(window, loadCurrentAppZoomFactor());
     windowRegistry.register(window, context);
     attachMainWindowLifecycle(window, context);
     persistenceService?.markWindowOpen(context.windowId);
     updateMainWindowTitle(window, context.projectId);
 
     return window;
+}
+
+function loadCurrentAppZoomFactor(): number {
+    return (
+        settingsService?.loadAppAppearanceSettings().zoomFactor ??
+        APP_ZOOM_FACTOR_DEFAULT
+    );
+}
+
+function persistAppAppearanceSettings(): void {
+    if (!settingsService) {
+        return;
+    }
+
+    const snapshot = settingsService.loadSnapshot();
+    const appearance = snapshot.appearance;
+    if (appearance) {
+        for (const window of BrowserWindow.getAllWindows()) {
+            applyAppZoomToWindow(window, appearance.zoomFactor);
+        }
+    }
+
+    broadcastSettingsUpdated(appearance ?? null, snapshot.editor ?? null);
+}
+
+function updateAppZoom(direction: "decrease" | "increase" | "reset"): void {
+    if (!settingsService) {
+        return;
+    }
+
+    const currentAppearance = settingsService.loadAppAppearanceSettings();
+    settingsService.saveAppAppearanceSettings({
+        ...currentAppearance,
+        zoomFactor: stepAppZoomFactor(currentAppearance.zoomFactor, direction),
+    });
+    persistAppAppearanceSettings();
 }
 
 function attachMainWindowLifecycle(

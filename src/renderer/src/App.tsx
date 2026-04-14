@@ -187,6 +187,7 @@ export function App() {
     const closeTabsForProjectPath = useWorkspaceStore(
         (state) => state.closeTabsForProjectPath,
     );
+    const closeWorkspaceTab = useWorkspaceStore((state) => state.closeTab);
     const refreshProjectTabs = useWorkspaceStore(
         (state) => state.refreshProjectTabs,
     );
@@ -224,6 +225,7 @@ export function App() {
     void isFileTreeSearchLoading;
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [projectFilter, setProjectFilter] = useState("");
+    const [sidebarSearchVisible, setSidebarSearchVisible] = useState(false);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
@@ -396,6 +398,30 @@ export function App() {
             unsubscribeExit();
         };
     }, [appendTerminalOutput, handleTerminalExit]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        const unsubscribe = comandoApi.onWorkspaceCloseActiveTab(() => {
+            const activePane = findPaneById(
+                useWorkspaceStore.getState().rootNode,
+                useWorkspaceStore.getState().activePaneId,
+            );
+            const activeTabId = activePane?.activeTabId ?? null;
+            if (!activeTabId) {
+                return;
+            }
+
+            void closeWorkspaceTab(activeTabId);
+        });
+
+        return () => {
+            unsubscribe();
+        };
+    }, [closeWorkspaceTab]);
 
     useEffect(() => {
         syncViewport(window.innerWidth);
@@ -1176,74 +1202,43 @@ export function App() {
                             onFocus={() => focusSurface("projects")}
                             tabIndex={0}
                         >
-                            <div className="app-drag px-3 pb-2 pt-2">
-                                <div
-                                    className="flex min-h-7 items-center justify-between"
-                                    style={
-                                        isMac
-                                            ? {
-                                                  paddingLeft: 84,
-                                              }
-                                            : undefined
-                                    }
+                            <div
+                                className="app-drag px-2 pt-2"
+                                style={isMac ? { paddingTop: 42 } : undefined}
+                            >
+                                <button
+                                    className="sidebar-action-row app-no-drag"
+                                    onClick={() => void addProjects()}
+                                    type="button"
                                 >
-                                    <h1 className="text-[11px] font-medium uppercase tracking-[0.16em] text-text-secondary">
-                                        Projects
-                                    </h1>
-                                    <button
-                                        aria-label="Add project"
-                                        className="sidebar-tool-button app-no-drag"
-                                        onClick={() => void addProjects()}
-                                        type="button"
-                                    >
-                                        <svg
-                                            aria-hidden="true"
-                                            className="h-3.5 w-3.5"
-                                            fill="none"
-                                            viewBox="0 0 16 16"
-                                        >
-                                            <path
-                                                d="M8 3v10M3 8h10"
-                                                stroke="currentColor"
-                                                strokeLinecap="round"
-                                                strokeWidth="1.5"
-                                            />
-                                        </svg>
-                                    </button>
-                                    <button
-                                        aria-label="Open settings"
-                                        className="sidebar-tool-button app-no-drag"
-                                        onClick={openSettingsWindow}
-                                        type="button"
-                                    >
-                                        <svg
-                                            aria-hidden="true"
-                                            className="h-3.5 w-3.5"
-                                            fill="none"
-                                            viewBox="0 0 16 16"
-                                        >
-                                            <path
-                                                d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
-                                                stroke="currentColor"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                strokeWidth="1"
-                                            />
-                                            <circle
-                                                cx="8"
-                                                cy="8"
-                                                r="2.1"
-                                                stroke="currentColor"
-                                                strokeWidth="1.4"
-                                            />
-                                        </svg>
-                                    </button>
-                                </div>
-
-                                <div className="sidebar-search app-no-drag mt-2">
                                     <svg
                                         aria-hidden="true"
-                                        className="h-3 w-3 shrink-0 text-text-secondary"
+                                        className="h-4 w-4 shrink-0"
+                                        fill="none"
+                                        viewBox="0 0 16 16"
+                                    >
+                                        <path
+                                            d="M8 3v10M3 8h10"
+                                            stroke="currentColor"
+                                            strokeLinecap="round"
+                                            strokeWidth="1.5"
+                                        />
+                                    </svg>
+                                    <span>Add Project</span>
+                                </button>
+
+                                <button
+                                    className="sidebar-action-row app-no-drag"
+                                    onClick={() => {
+                                        setSidebarSearchVisible((v) => !v);
+                                        if (sidebarSearchVisible)
+                                            setProjectFilter("");
+                                    }}
+                                    type="button"
+                                >
+                                    <svg
+                                        aria-hidden="true"
+                                        className="h-4 w-4 shrink-0"
                                         fill="none"
                                         viewBox="0 0 16 16"
                                     >
@@ -1261,16 +1256,25 @@ export function App() {
                                             strokeWidth="1.3"
                                         />
                                     </svg>
-                                    <input
-                                        className="app-no-drag sidebar-search-input"
-                                        onChange={(event) =>
-                                            setProjectFilter(event.target.value)
-                                        }
-                                        placeholder="Filter..."
-                                        type="text"
-                                        value={projectFilter}
-                                    />
-                                </div>
+                                    <span>Search</span>
+                                </button>
+
+                                {sidebarSearchVisible ? (
+                                    <div className="sidebar-search app-no-drag mt-1">
+                                        <input
+                                            autoFocus
+                                            className="sidebar-search-input"
+                                            onChange={(event) =>
+                                                setProjectFilter(
+                                                    event.target.value,
+                                                )
+                                            }
+                                            placeholder="Filter projects..."
+                                            type="text"
+                                            value={projectFilter}
+                                        />
+                                    </div>
+                                ) : null}
 
                                 {projectsError ? (
                                     <div className="mt-2 rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-600">
@@ -1330,11 +1334,42 @@ export function App() {
                                         projects={sidebarProjects}
                                     />
                                 ) : (
-                                    <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-text-secondary">
+                                    <div className="px-3 py-4 text-xs text-text-secondary">
                                         Open a folder to start building your git
                                         workspace.
                                     </div>
                                 )}
+                            </div>
+
+                            <div className="border-t border-border/50 px-2 py-2">
+                                <button
+                                    className="sidebar-action-row app-no-drag w-full"
+                                    onClick={openSettingsWindow}
+                                    type="button"
+                                >
+                                    <svg
+                                        aria-hidden="true"
+                                        className="h-4 w-4 shrink-0"
+                                        fill="none"
+                                        viewBox="0 0 16 16"
+                                    >
+                                        <path
+                                            d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
+                                            stroke="currentColor"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth="1"
+                                        />
+                                        <circle
+                                            cx="8"
+                                            cy="8"
+                                            r="2.1"
+                                            stroke="currentColor"
+                                            strokeWidth="1.4"
+                                        />
+                                    </svg>
+                                    <span>Settings</span>
+                                </button>
                             </div>
                         </aside>
 
@@ -1601,7 +1636,7 @@ function buildSidebarProjects({
                 label: branch.name,
                 worktreeCount: branchWorktreeCounts.get(branch.name) ?? 0,
             })),
-            branchesExpanded: expandedBranches[project.id] ?? true,
+            branchesExpanded: expandedBranches[project.id] ?? false,
             id: project.id,
             isActive: project.id === activeProjectId,
             isExpanded:

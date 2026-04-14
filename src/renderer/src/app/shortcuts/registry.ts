@@ -62,7 +62,8 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     {
         id: "open_settings",
         label: "Open settings",
-        description: "Open the standalone settings window for the current scope.",
+        description:
+            "Open the standalone settings window for the current scope.",
         keys: {
             mac: "Cmd+,",
             windows: "Ctrl+,",
@@ -81,31 +82,34 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     },
     {
         id: "increase_editor_font_size",
-        label: "Increase editor size",
-        description: "Increase the editor font size for the current project scope.",
+        label: "Increase editor text size",
+        description:
+            "Increase the editor font size for the current project scope.",
         keys: {
-            mac: "Cmd+=",
-            windows: "Ctrl+=",
+            mac: "Cmd+Alt+Plus",
+            windows: "Ctrl+Alt+Plus",
         },
         section: "Editor",
     },
     {
         id: "decrease_editor_font_size",
-        label: "Decrease editor size",
-        description: "Decrease the editor font size for the current project scope.",
+        label: "Decrease editor text size",
+        description:
+            "Decrease the editor font size for the current project scope.",
         keys: {
-            mac: "Cmd+-",
-            windows: "Ctrl+-",
+            mac: "Cmd+Alt+-",
+            windows: "Ctrl+Alt+-",
         },
         section: "Editor",
     },
     {
         id: "reset_editor_font_size",
-        label: "Reset editor size",
-        description: "Reset the editor font size to the default for the current scope.",
+        label: "Reset editor text size",
+        description:
+            "Reset the editor font size to the default for the current scope.",
         keys: {
-            mac: "Cmd+0",
-            windows: "Ctrl+0",
+            mac: "Cmd+Alt+0",
+            windows: "Ctrl+Alt+0",
         },
         section: "Editor",
     },

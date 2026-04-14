@@ -1,5 +1,10 @@
 import type Database from "better-sqlite3";
 
+import { clampAppZoomFactor } from "@shared/app-zoom";
+import {
+    FILE_TREE_SCALE_DEFAULT,
+    clampFileTreeScale,
+} from "@shared/file-tree-scale";
 import type {
     AppAiChatSettings,
     AppAppearanceSettings,
@@ -51,8 +56,10 @@ const GEMINI_HAS_GEMINI_API_KEY_KEY = "ai.gemini.has_gemini_api_key";
 const GEMINI_HAS_GOOGLE_API_KEY_KEY = "ai.gemini.has_google_api_key";
 const KILO_AUTH_INVALIDATED_AT_KEY = "ai.kilo.auth_invalidated_at_ms";
 const KILO_BINARY_PATH_KEY = "ai.kilo.binary_path";
+const APP_FILE_TREE_SCALE_KEY = "appearance.file_tree_scale";
 const APP_THEME_MODE_KEY = "appearance.theme_mode";
 const APP_THEME_PRESET_KEY = "appearance.theme_preset";
+const APP_ZOOM_FACTOR_KEY = "appearance.zoom_factor";
 const APP_EDITOR_FONT_FAMILY_KEY = "editor.font_family";
 const APP_EDITOR_FONT_SIZE_KEY = "editor.font_size";
 const APP_EDITOR_LINE_HEIGHT_KEY = "editor.line_height";
@@ -194,16 +201,26 @@ export class SettingsService {
 
     loadAppAppearanceSettings(): AppAppearanceSettings {
         return {
+            fileTreeScale: this.#normalizeFileTreeScale(
+                this.#loadNumberSetting(APP_FILE_TREE_SCALE_KEY),
+            ),
             themeMode: this.#normalizeThemeMode(
                 this.#loadStringSetting(APP_THEME_MODE_KEY),
             ),
             themePreset: this.#normalizeThemePreset(
                 this.#loadStringSetting(APP_THEME_PRESET_KEY),
             ),
+            zoomFactor: this.#normalizeAppZoomFactor(
+                this.#loadNumberSetting(APP_ZOOM_FACTOR_KEY),
+            ),
         };
     }
 
     saveAppAppearanceSettings(settings: AppAppearanceSettings): void {
+        this.#saveSetting(
+            APP_FILE_TREE_SCALE_KEY,
+            String(this.#normalizeFileTreeScale(settings.fileTreeScale)),
+        );
         this.#saveSetting(
             APP_THEME_MODE_KEY,
             this.#normalizeThemeMode(settings.themeMode),
@@ -211,6 +228,10 @@ export class SettingsService {
         this.#saveSetting(
             APP_THEME_PRESET_KEY,
             this.#normalizeThemePreset(settings.themePreset),
+        );
+        this.#saveSetting(
+            APP_ZOOM_FACTOR_KEY,
+            String(this.#normalizeAppZoomFactor(settings.zoomFactor)),
         );
     }
 
@@ -782,6 +803,18 @@ export class SettingsService {
         return VALID_THEME_PRESETS.has(value as ThemePreset)
             ? (value as ThemePreset)
             : null;
+    }
+
+    #normalizeAppZoomFactor(value: number | null | undefined): number {
+        return clampAppZoomFactor(value ?? Number.NaN);
+    }
+
+    #normalizeFileTreeScale(value: number | null | undefined): number {
+        if (typeof value !== "number") {
+            return FILE_TREE_SCALE_DEFAULT;
+        }
+
+        return clampFileTreeScale(value);
     }
 
     #normalizeEditorFontFamily(

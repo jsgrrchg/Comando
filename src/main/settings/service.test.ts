@@ -12,8 +12,10 @@ describe("SettingsService", () => {
 
         service.saveSnapshot({
             appearance: {
+                fileTreeScale: 1.1,
                 themeMode: "dark",
                 themePreset: "ocean",
+                zoomFactor: 1.15,
             },
             editor: {
                 fontFamily: "jetbrains-mono",
@@ -31,8 +33,10 @@ describe("SettingsService", () => {
             ai: createEmptyAiSettings(),
             aiChat: createDefaultAiChatSettings(),
             appearance: {
+                fileTreeScale: 1.1,
                 themeMode: "dark",
                 themePreset: "ocean",
+                zoomFactor: 1.15,
             },
             editor: {
                 fontFamily: "jetbrains",
@@ -50,9 +54,11 @@ describe("SettingsService", () => {
     it("tolera settings corruptos y devuelve defaults", () => {
         const connection = createFakeSettingsConnection({
             app: {
+                "appearance.file_tree_scale": "??",
                 "shell.state": "{invalid json",
                 "appearance.theme_mode": "??",
                 "appearance.theme_preset": "??",
+                "appearance.zoom_factor": "??",
                 "editor.font_family": "??",
                 "editor.font_size": "??",
                 "editor.line_height": "??",
@@ -75,8 +81,10 @@ describe("SettingsService", () => {
             ai: createEmptyAiSettings(),
             aiChat: createDefaultAiChatSettings(),
             appearance: {
+                fileTreeScale: 1,
                 themeMode: "system",
                 themePreset: "default",
+                zoomFactor: 1,
             },
             editor: {
                 fontFamily: "sf-mono",
@@ -214,8 +222,10 @@ describe("SettingsService", () => {
 
         service.saveSnapshot({
             appearance: {
+                fileTreeScale: 0.95,
                 themeMode: "dark",
                 themePreset: "tokyoNight",
+                zoomFactor: 0.9,
             },
             shellState: null,
         });
@@ -229,8 +239,10 @@ describe("SettingsService", () => {
         });
 
         expect(service.loadSnapshot().appearance).toEqual({
+            fileTreeScale: 0.95,
             themeMode: "dark",
             themePreset: "tokyoNight",
+            zoomFactor: 0.9,
         });
         expect(service.loadProjectSettings("project-b")).toEqual({
             projectId: "project-b",

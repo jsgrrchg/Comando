@@ -1,3 +1,8 @@
+import { APP_ZOOM_FACTOR_DEFAULT, clampAppZoomFactor } from "@shared/app-zoom";
+import {
+    FILE_TREE_SCALE_DEFAULT,
+    clampFileTreeScale,
+} from "@shared/file-tree-scale";
 import type {
     AppAiChatSettings,
     AppAppearanceSettings,
@@ -934,8 +939,10 @@ function getThemeTokens(preset: ThemePreset, isDark: boolean): ThemeTokens {
 
 export function getDefaultAppAppearance(): AppAppearanceSettings {
     return {
+        fileTreeScale: FILE_TREE_SCALE_DEFAULT,
         themeMode: "system",
         themePreset: "default",
+        zoomFactor: APP_ZOOM_FACTOR_DEFAULT,
     };
 }
 
@@ -991,15 +998,23 @@ export function resolveAppearance(
     appAppearance: AppAppearanceSettings | null | undefined,
     projectAppearance: ProjectAppearanceSettings | null | undefined,
 ): AppAppearanceSettings {
+    const defaults = getDefaultAppAppearance();
+
     return {
+        fileTreeScale: clampFileTreeScale(
+            appAppearance?.fileTreeScale ?? defaults.fileTreeScale,
+        ),
         themeMode:
             projectAppearance?.themeMode ??
             appAppearance?.themeMode ??
-            getDefaultAppAppearance().themeMode,
+            defaults.themeMode,
         themePreset:
             projectAppearance?.themePreset ??
             appAppearance?.themePreset ??
-            getDefaultAppAppearance().themePreset,
+            defaults.themePreset,
+        zoomFactor: clampAppZoomFactor(
+            appAppearance?.zoomFactor ?? defaults.zoomFactor,
+        ),
     };
 }
 
@@ -1125,4 +1140,8 @@ export function applyAppearance(
     root.style.setProperty("--color-accent-strong", palette.accentStrong);
     root.style.setProperty("--color-selection", palette.selection);
     root.style.setProperty("--shadow-soft", palette.shadowSoft);
+    root.style.setProperty(
+        "--file-tree-scale",
+        String(clampFileTreeScale(appearance.fileTreeScale)),
+    );
 }

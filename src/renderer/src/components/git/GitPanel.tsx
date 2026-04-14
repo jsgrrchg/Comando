@@ -1,4 +1,4 @@
-import { GitActionButton, GitBadge } from "./GitUi";
+import { GitActionButton } from "./GitUi";
 import { GitChangesView } from "./GitChangesView";
 import { GitDiffsView } from "./GitDiffsView";
 import { GitFilesView } from "./GitFilesView";
@@ -12,7 +12,6 @@ export function GitPanel({
     files,
     onTabChange,
     tabCounts,
-    title = "Git",
     toolbar,
 }: GitPanelProps) {
     return (
@@ -21,62 +20,7 @@ export function GitPanel({
                 .filter(Boolean)
                 .join(" ")}
         >
-            <div className="border-b border-border bg-bg-panel px-3 py-2.5">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-secondary">
-                            {title}
-                        </p>
-                        {toolbar?.summary?.repositoryName ? (
-                            <p className="truncate text-[11px] text-text-secondary">
-                                {toolbar.summary.repositoryName}
-                            </p>
-                        ) : null}
-                    </div>
-                    {toolbar?.summary ? (
-                        <div className="flex flex-wrap items-center justify-end gap-1.5">
-                            <GitBadge tone="neutral">
-                                {toolbar.summary.worktreeName ??
-                                    toolbar.summary.worktreePath ??
-                                    "worktree"}
-                            </GitBadge>
-                            <GitBadge
-                                tone={
-                                    toolbar.summary.detached
-                                        ? "warning"
-                                        : "neutral"
-                                }
-                            >
-                                {toolbar.summary.detached
-                                    ? "detached"
-                                    : (toolbar.summary.branchName ?? "branch")}
-                            </GitBadge>
-                            {toolbar.summary.upstreamName ? (
-                                <GitBadge tone="accent">
-                                    {toolbar.summary.upstreamName}
-                                </GitBadge>
-                            ) : null}
-                            {toolbar.summary.aheadBy !== null &&
-                            toolbar.summary.aheadBy !== undefined ? (
-                                <GitBadge tone="success">
-                                    +{toolbar.summary.aheadBy}
-                                </GitBadge>
-                            ) : null}
-                            {toolbar.summary.behindBy !== null &&
-                            toolbar.summary.behindBy !== undefined ? (
-                                <GitBadge tone="danger">
-                                    -{toolbar.summary.behindBy}
-                                </GitBadge>
-                            ) : null}
-                            {toolbar.summary.stateLabel ? (
-                                <GitBadge tone="warning">
-                                    {toolbar.summary.stateLabel}
-                                </GitBadge>
-                            ) : null}
-                        </div>
-                    ) : null}
-                </div>
-
+            <div className="flex h-7.75 items-center border-b border-border bg-bg-panel px-3">
                 <GitPanelTabs
                     activeTab={activeTab}
                     counts={tabCounts}
@@ -135,7 +79,7 @@ export function GitPanelTabs({
     return (
         <div
             aria-label="Git panel tabs"
-            className="flex items-center gap-1 rounded-lg border border-border bg-bg-secondary p-1"
+            className="inline-flex h-[25px] items-center gap-0.5 rounded-md border border-border/70 bg-bg-secondary/70 p-0.5"
             role="tablist"
         >
             {tabs.map((tab) => {
@@ -146,10 +90,10 @@ export function GitPanelTabs({
                     <button
                         aria-selected={isActive}
                         className={[
-                            "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors",
+                            "inline-flex h-[21px] items-center gap-1 rounded-[7px] px-2.5 text-[11px] font-medium leading-4 transition-colors",
                             isActive
-                                ? "bg-bg-elevated text-text-primary shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
-                                : "text-text-secondary hover:text-text-primary",
+                                ? "bg-bg-elevated text-text-primary"
+                                : "text-text-secondary hover:bg-bg-elevated/45 hover:text-text-primary",
                         ].join(" ")}
                         key={tab.id}
                         onClick={() => onTabChange(tab.id)}
@@ -158,7 +102,14 @@ export function GitPanelTabs({
                     >
                         <span>{tab.label}</span>
                         {typeof count === "number" ? (
-                            <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                            <span
+                                className={[
+                                    "min-w-4 rounded-full px-1.5 py-0 text-center text-[10px] leading-4",
+                                    isActive
+                                        ? "bg-bg-tertiary text-text-secondary"
+                                        : "bg-bg-tertiary/70 text-text-secondary/80",
+                                ].join(" ")}
+                            >
                                 {count}
                             </span>
                         ) : null}

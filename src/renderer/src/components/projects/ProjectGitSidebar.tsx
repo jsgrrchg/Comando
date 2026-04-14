@@ -5,7 +5,6 @@ import {
     type SidebarBadge,
     type SidebarNodeRowAction,
 } from "../sidebar/SidebarNodeRow";
-import { SidebarSection } from "../sidebar/SidebarSection";
 
 export interface ProjectGitSidebarProject {
     readonly branches: readonly ProjectGitSidebarBranch[];
@@ -66,214 +65,177 @@ export function ProjectGitSidebar({
     onCheckoutBranch,
     onCreateWorktreeFromBranch,
     onSelectBranch,
-    onSelectProject,
     onSelectWorktree,
     onToggleBranches,
     onToggleProject,
-    onToggleWorktrees,
     projects,
 }: ProjectGitSidebarProps) {
     return (
-        <div className={["space-y-3", className].filter(Boolean).join(" ")}>
+        <div className={["space-y-4", className].filter(Boolean).join(" ")}>
             {projects.map((project) => (
-                <section
-                    className="overflow-hidden rounded-lg border border-border bg-bg-panel"
-                    key={project.id}
-                >
-                    <div
+                <div key={project.id}>
+                    <button
                         className={[
-                            "group flex items-stretch gap-2 border-b border-border px-2 py-2 transition-colors",
+                            "app-no-drag group flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors",
                             project.isActive
-                                ? "bg-accent/8"
-                                : "hover:bg-bg-secondary/60",
+                                ? "text-accent-strong"
+                                : "text-text-secondary hover:text-text-primary",
                         ].join(" ")}
+                        onClick={() => onToggleProject(project.id)}
+                        type="button"
                     >
-                        <button
-                            className="app-no-drag min-w-0 flex-1 text-left"
-                            onClick={() => onSelectProject(project.id)}
-                            type="button"
-                        >
-                            <div className="flex min-w-0 items-center gap-2">
-                                <span className="truncate text-[13px] font-semibold text-text-primary">
-                                    {project.name}
-                                </span>
-                                {project.isActive ? (
-                                    <span className="rounded-full border border-accent/25 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-strong">
-                                        Active
-                                    </span>
-                                ) : null}
-                            </div>
-                            <div className="truncate text-[11px] text-text-secondary">
-                                {project.rootPath}
-                            </div>
-                        </button>
-
-                        <div className="app-no-drag flex items-start gap-1 pt-0.5">
-                            <span className="rounded-full border border-border bg-bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-text-secondary">
-                                {project.worktrees.length} WT
-                            </span>
-                            <span className="rounded-full border border-border bg-bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-text-secondary">
-                                {project.branches.length} BR
-                            </span>
-                            <button
-                                aria-expanded={project.isExpanded}
-                                aria-label={`${project.isExpanded ? "Collapse" : "Expand"} ${project.name}`}
-                                className="sidebar-tool-button h-5 w-5 shrink-0"
-                                onClick={() => onToggleProject(project.id)}
-                                type="button"
-                            >
-                                <ChevronIcon isExpanded={project.isExpanded} />
-                            </button>
-                        </div>
-                    </div>
+                        <ChevronIcon isExpanded={project.isExpanded} />
+                        <FolderIcon />
+                        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em]">
+                            {project.name}
+                        </span>
+                    </button>
 
                     {project.isExpanded ? (
-                        <div className="space-y-3 px-2 py-2.5">
-                            <SidebarSection
-                                count={project.worktrees.length}
-                                emptyState="No worktrees yet."
-                                isExpanded={project.worktreesExpanded}
-                                onToggleExpanded={() =>
-                                    onToggleWorktrees(project.id)
-                                }
-                                title="Worktrees"
-                            >
-                                {project.worktrees.map((worktree) => {
-                                    const badges = buildWorktreeBadges(worktree);
+                        <div className="mt-0.5 space-y-px">
+                            {project.worktrees.map((worktree) => (
+                                <button
+                                    className={[
+                                        "app-no-drag flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors",
+                                        worktree.isActive
+                                            ? "bg-accent/10 font-medium text-accent-strong"
+                                            : "text-text-primary hover:bg-bg-secondary/80",
+                                    ].join(" ")}
+                                    key={worktree.id}
+                                    onClick={() =>
+                                        onSelectWorktree(
+                                            project.id,
+                                            worktree.id,
+                                        )
+                                    }
+                                    style={{ paddingLeft: 28 }}
+                                    type="button"
+                                >
+                                    <span className="min-w-0 flex-1 truncate">
+                                        {worktree.label}
+                                    </span>
+                                    <StatusDot status={worktree.status} />
+                                </button>
+                            ))}
 
-                                    return (
-                                        <SidebarNodeRow
-                                            actions={worktree.trailingActions}
-                                            badges={badges}
-                                            description={
-                                                worktree.description ??
-                                                worktree.branchName ??
-                                                null
+                            {project.worktrees.length === 0 ? (
+                                <div className="px-7 py-1 text-[11px] text-text-secondary">
+                                    No worktrees
+                                </div>
+                            ) : null}
+
+                            {project.branches.length > 0 ? (
+                                <div className="mt-1">
+                                    <button
+                                        className="app-no-drag flex w-full items-center gap-1.5 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-text-secondary hover:text-text-primary"
+                                        onClick={() =>
+                                            onToggleBranches(project.id)
+                                        }
+                                        style={{ paddingLeft: 28 }}
+                                        type="button"
+                                    >
+                                        <ChevronIcon
+                                            isExpanded={
+                                                project.branchesExpanded
                                             }
-                                            isActive={worktree.isActive}
-                                            key={worktree.id}
-                                            leading={<WorktreeGlyph />}
-                                            onClick={() =>
-                                                onSelectWorktree(
-                                                    project.id,
-                                                    worktree.id,
-                                                )
-                                            }
-                                            title={worktree.label}
                                         />
-                                    );
-                                })}
-                            </SidebarSection>
+                                        <span>Branches</span>
+                                        <span className="text-text-secondary/60">
+                                            {project.branches.length}
+                                        </span>
+                                    </button>
 
-                            <SidebarSection
-                                count={project.branches.length}
-                                emptyState="No branches available."
-                                isExpanded={project.branchesExpanded}
-                                onToggleExpanded={() =>
-                                    onToggleBranches(project.id)
-                                }
-                                title="Branches"
-                            >
-                                {project.branches.map((branch) => {
-                                    const actions = [
-                                        ...(onCheckoutBranch
-                                            ? [
-                                                  {
-                                                      label: "Checkout",
-                                                      onClick: () =>
-                                                          onCheckoutBranch(
-                                                              project.id,
-                                                              branch.id,
-                                                          ),
-                                                  },
-                                              ]
-                                            : []),
-                                        ...(onCreateWorktreeFromBranch
-                                            ? [
-                                                  {
-                                                      label: "Worktree",
-                                                      onClick: () =>
-                                                          onCreateWorktreeFromBranch(
-                                                              project.id,
-                                                              branch.id,
-                                                          ),
-                                                  },
-                                              ]
-                                            : []),
-                                        ...(branch.trailingActions ?? []),
-                                    ];
+                                    {project.branchesExpanded ? (
+                                        <div className="space-y-px">
+                                            {project.branches.map((branch) => {
+                                                const actions = [
+                                                    ...(onCheckoutBranch
+                                                        ? [
+                                                              {
+                                                                  label: "Checkout",
+                                                                  onClick: () =>
+                                                                      onCheckoutBranch(
+                                                                          project.id,
+                                                                          branch.id,
+                                                                      ),
+                                                              },
+                                                          ]
+                                                        : []),
+                                                    ...(onCreateWorktreeFromBranch
+                                                        ? [
+                                                              {
+                                                                  label: "Worktree",
+                                                                  onClick: () =>
+                                                                      onCreateWorktreeFromBranch(
+                                                                          project.id,
+                                                                          branch.id,
+                                                                      ),
+                                                              },
+                                                          ]
+                                                        : []),
+                                                    ...(branch.trailingActions ??
+                                                        []),
+                                                ];
 
-                                    return (
-                                        <SidebarNodeRow
-                                            actions={actions}
-                                            badges={buildBranchBadges(branch)}
-                                            description={branch.description}
-                                            isActive={branch.isActive}
-                                            key={branch.id}
-                                            leading={<BranchGlyph />}
-                                            onClick={() =>
-                                                onSelectBranch(
-                                                    project.id,
-                                                    branch.id,
-                                                )
-                                            }
-                                            title={branch.label}
-                                        />
-                                    );
-                                })}
-                            </SidebarSection>
+                                                return (
+                                                    <SidebarNodeRow
+                                                        actions={actions}
+                                                        depth={2}
+                                                        description={
+                                                            branch.description
+                                                        }
+                                                        isActive={
+                                                            branch.isActive
+                                                        }
+                                                        key={branch.id}
+                                                        leading={
+                                                            <BranchGlyph />
+                                                        }
+                                                        onClick={() =>
+                                                            onSelectBranch(
+                                                                project.id,
+                                                                branch.id,
+                                                            )
+                                                        }
+                                                        title={branch.label}
+                                                    />
+                                                );
+                                            })}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            ) : null}
                         </div>
                     ) : null}
-                </section>
+                </div>
             ))}
         </div>
     );
 }
 
-function buildWorktreeBadges(worktree: ProjectGitSidebarWorktree): SidebarBadge[] {
-    const badges: SidebarBadge[] = [];
+function StatusDot({
+    status,
+}: {
+    readonly status?: ProjectGitSidebarWorktree["status"];
+}) {
+    if (!status) return null;
 
-    if (worktree.status) {
-        badges.push({
-            label: formatStatusLabel(worktree.status),
-            tone: getStatusTone(worktree.status),
-        });
-    }
+    const colors: Record<NonNullable<typeof status>, string> = {
+        clean: "bg-emerald-500",
+        conflicted: "bg-red-500",
+        dirty: "bg-amber-500",
+        missing: "bg-neutral-400",
+    };
 
-    if (typeof worktree.aheadCount === "number" && worktree.aheadCount > 0) {
-        badges.push({ label: `+${worktree.aheadCount}`, tone: "success" });
-    }
-
-    if (typeof worktree.behindCount === "number" && worktree.behindCount > 0) {
-        badges.push({ label: `-${worktree.behindCount}`, tone: "warning" });
-    }
-
-    return [...badges, ...(worktree.badges ?? [])];
-}
-
-function buildBranchBadges(branch: ProjectGitSidebarBranch): SidebarBadge[] {
-    const badges: SidebarBadge[] = [];
-
-    if (branch.isRemote) {
-        badges.push({ label: "Remote", tone: "neutral" });
-    }
-
-    if (typeof branch.worktreeCount === "number") {
-        badges.push({
-            label: `${branch.worktreeCount} WT`,
-            tone: branch.worktreeCount > 0 ? "accent" : "neutral",
-        });
-    }
-
-    if (typeof branch.aheadCount === "number" && branch.aheadCount > 0) {
-        badges.push({ label: `+${branch.aheadCount}`, tone: "success" });
-    }
-
-    if (typeof branch.behindCount === "number" && branch.behindCount > 0) {
-        badges.push({ label: `-${branch.behindCount}`, tone: "warning" });
-    }
-
-    return [...badges, ...(branch.badges ?? [])];
+    return (
+        <span
+            className={[
+                "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                colors[status],
+            ].join(" ")}
+            title={formatStatusLabel(status)}
+        />
+    );
 }
 
 function formatStatusLabel(
@@ -291,27 +253,12 @@ function formatStatusLabel(
     }
 }
 
-function getStatusTone(
-    status: NonNullable<ProjectGitSidebarWorktree["status"]>,
-): SidebarBadge["tone"] {
-    switch (status) {
-        case "clean":
-            return "success";
-        case "conflicted":
-            return "danger";
-        case "dirty":
-            return "warning";
-        case "missing":
-            return "neutral";
-    }
-}
-
 function ChevronIcon({ isExpanded }: { readonly isExpanded: boolean }) {
     return (
         <svg
             aria-hidden="true"
             className={[
-                "h-3 w-3 transition-transform duration-150",
+                "h-3 w-3 shrink-0 transition-transform duration-150",
                 isExpanded ? "rotate-90" : "",
             ].join(" ")}
             fill="none"
@@ -328,34 +275,18 @@ function ChevronIcon({ isExpanded }: { readonly isExpanded: boolean }) {
     );
 }
 
-function WorktreeGlyph() {
+function FolderIcon() {
     return (
         <svg
             aria-hidden="true"
-            className="h-3.5 w-3.5"
+            className="h-3.5 w-3.5 shrink-0"
             fill="none"
             viewBox="0 0 16 16"
         >
             <path
-                d="M4 3.5H8.5C9.60457 3.5 10.5 4.39543 10.5 5.5V6.5C10.5 7.60457 9.60457 8.5 8.5 8.5H6.5C5.39543 8.5 4.5 9.39543 4.5 10.5V12.5"
+                d="M2 4.5C2 3.67 2.67 3 3.5 3H6.29a1 1 0 0 1 .7.29L8 4.5h4.5c.83 0 1.5.67 1.5 1.5v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5V4.5Z"
                 stroke="currentColor"
-                strokeLinecap="round"
                 strokeLinejoin="round"
-                strokeWidth="1.2"
-            />
-            <circle cx="4" cy="3.5" r="1" stroke="currentColor" strokeWidth="1.2" />
-            <circle
-                cx="4.5"
-                cy="12.5"
-                r="1"
-                stroke="currentColor"
-                strokeWidth="1.2"
-            />
-            <circle
-                cx="12"
-                cy="6.5"
-                r="1"
-                stroke="currentColor"
                 strokeWidth="1.2"
             />
         </svg>
@@ -377,7 +308,13 @@ function BranchGlyph() {
                 strokeLinejoin="round"
                 strokeWidth="1.2"
             />
-            <circle cx="5" cy="3.5" r="1" stroke="currentColor" strokeWidth="1.2" />
+            <circle
+                cx="5"
+                cy="3.5"
+                r="1"
+                stroke="currentColor"
+                strokeWidth="1.2"
+            />
             <circle
                 cx="5"
                 cy="12.5"

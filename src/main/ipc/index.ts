@@ -3,10 +3,8 @@ import path from "node:path";
 import {
     IPC_CHANNELS,
     IPC_EVENTS,
-    type AppAppearanceSettings,
     type AppBootstrapSnapshot,
     type AppWindowKind,
-    type AppEditorSettings,
     type AiPermissionResponseInput,
     type AiRuntimeAuthLaunchInput,
     type AiRuntimeId,
@@ -63,7 +61,6 @@ import {
     type SaveProjectFileInput,
     type SendAiPromptInput,
     type SettingsSnapshot,
-    type SettingsUpdatedEvent,
     type SystemTheme,
     type WindowContextSnapshot,
     type WriteTerminalInput,
@@ -85,6 +82,7 @@ import type { GitService } from "@main/git/service";
 import type { ProjectService } from "@main/projects/service";
 import type { PersistenceService } from "@main/persistence/service";
 import type { SettingsService } from "@main/settings/service";
+import { applyAppZoomToAllWindows, broadcastSettingsUpdated } from "@main/settings/window-zoom";
 import { openSettingsWindow } from "@main/settings/window";
 import type { TerminalService } from "@main/terminals/service";
 import type { WorkspaceService } from "@main/workspace/service";
@@ -221,6 +219,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 snapshot.aiChat !== undefined
             ) {
                 const persisted = options.settingsService.loadSnapshot();
+                applyAppZoomToAllWindows(
+                    persisted.appearance?.zoomFactor ?? 1,
+                );
                 broadcastSettingsUpdated(
                     persisted.appearance ?? null,
                     persisted.editor ?? null,
@@ -239,7 +240,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.openSettingsWindow,
-        (_event, input: OpenSettingsWindowInput) => openSettingsWindow(input),
+        (_event, input: OpenSettingsWindowInput) =>
+            openSettingsWindow(
+                input,
+                options.settingsService.loadAppAppearanceSettings().zoomFactor,
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.saveActiveProjectId,
@@ -838,16 +843,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
 }
 
-function broadcastSettingsUpdated(
-    appearance: AppAppearanceSettings | null,
-    editor: AppEditorSettings | null,
-): void {
-    const payload: SettingsUpdatedEvent = { appearance, editor };
-
-    for (const window of BrowserWindow.getAllWindows()) {
-        window.webContents.send(IPC_EVENTS.settingsUpdated, payload);
-    }
-}
 
 function broadcastProjectSettingsUpdated(
     payload: ProjectSettingsUpdatedEvent,

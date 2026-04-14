@@ -35,6 +35,7 @@ import {
     CHAT_FONT_FAMILY_OPTIONS,
     EDITOR_FONT_FAMILY_OPTIONS,
     getDefaultAiChatSettings,
+    getDefaultAppAppearance,
     getDefaultAppEditorSettings,
     getDefaultProjectAppearance,
     getDefaultProjectEditorSettings,
@@ -48,10 +49,9 @@ export function SettingsApp() {
         const params = new URLSearchParams(window.location.search);
         return params.get("projectId");
     }, []);
-    const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>({
-        themeMode: "system",
-        themePreset: "default",
-    });
+    const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>(
+        getDefaultAppAppearance(),
+    );
     const [projectAppearance, setProjectAppearance] =
         useState<ProjectAppearanceSettings>(getDefaultProjectAppearance());
     const [appEditor, setAppEditor] = useState<AppEditorSettings>(
@@ -246,10 +246,30 @@ export function SettingsApp() {
         void saveAppAppearanceSettings(nextAppearance);
     };
 
+    const handleAppFileTreeScaleChange = (fileTreeScale: number) => {
+        const nextAppearance = {
+            ...appAppearance,
+            fileTreeScale,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppThemePresetChange = (themePresetId: string) => {
         const nextAppearance = {
             ...appAppearance,
             themePreset: themePresetId as ThemePreset,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
+    const handleAppZoomFactorChange = (zoomFactor: number) => {
+        const nextAppearance = {
+            ...appAppearance,
+            zoomFactor,
         };
 
         setAppAppearance(nextAppearance);
@@ -428,9 +448,12 @@ export function SettingsApp() {
                     updateAiChat({ historyRetentionDays: days }),
             }}
             appAppearance={{
+                fileTreeScale: appAppearance.fileTreeScale,
                 mode: appAppearance.themeMode,
+                onFileTreeScaleChange: handleAppFileTreeScaleChange,
                 onModeChange: handleAppThemeModeChange,
                 onPresetChange: handleAppThemePresetChange,
+                onZoomFactorChange: handleAppZoomFactorChange,
                 presetId: appAppearance.themePreset,
                 presets: THEME_PRESET_OPTIONS.map((preset) => ({
                     description: preset.description,
@@ -438,6 +461,7 @@ export function SettingsApp() {
                     label: preset.label,
                     swatches: preset.swatches,
                 })),
+                zoomFactor: appAppearance.zoomFactor,
             }}
             appEditor={{
                 fontFamilies: EDITOR_FONT_FAMILY_OPTIONS.map((fontFamily) => ({

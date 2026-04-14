@@ -81,6 +81,7 @@ export const IPC_EVENTS = {
     themeUpdated: "app:theme-updated",
     settingsUpdated: "settings:updated",
     projectSettingsUpdated: "settings:project-updated",
+    workspaceCloseActiveTab: "workspace:close-active-tab",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -130,8 +131,10 @@ export interface AppAiChatSettings {
 }
 
 export interface AppAppearanceSettings {
+    readonly fileTreeScale: number;
     readonly themeMode: ThemeMode;
     readonly themePreset: ThemePreset;
+    readonly zoomFactor: number;
 }
 
 export interface ProjectAppearanceSettings {
@@ -1298,6 +1301,7 @@ export interface ComandoApi {
     onProjectSettingsUpdated: (
         listener: (payload: ProjectSettingsUpdatedEvent) => void,
     ) => () => void;
+    onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;

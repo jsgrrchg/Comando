@@ -1,5 +1,17 @@
 import { useState } from "react";
 import {
+    APP_ZOOM_FACTOR_MAX,
+    APP_ZOOM_FACTOR_MIN,
+    APP_ZOOM_FACTOR_STEP,
+    formatAppZoomPercent,
+} from "@shared/app-zoom";
+import {
+    FILE_TREE_SCALE_MAX,
+    FILE_TREE_SCALE_MIN,
+    FILE_TREE_SCALE_STEP,
+    formatFileTreeScalePercent,
+} from "@shared/file-tree-scale";
+import {
     AI_CHAT_FONT_SIZE_MAX,
     AI_CHAT_FONT_SIZE_MIN,
     AI_COMPOSER_FONT_SIZE_MAX,
@@ -354,8 +366,31 @@ export function SettingsWindow({
 }
 
 function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
+    const isMac =
+        typeof navigator !== "undefined" &&
+        navigator.platform.toLowerCase().startsWith("mac");
+    const appZoomShortcut = isMac
+        ? "⌘+Plus / ⌘+- / ⌘+0"
+        : "Ctrl+Plus / Ctrl+- / Ctrl+0";
+
     return (
         <div>
+            <SectionLabel>Workspace</SectionLabel>
+            <Row
+                label="File tree size"
+                description="Scale the rows, icons, and labels in the file tree."
+                control={
+                    <SliderField
+                        value={state.fileTreeScale ?? 1}
+                        min={FILE_TREE_SCALE_MIN}
+                        max={FILE_TREE_SCALE_MAX}
+                        step={FILE_TREE_SCALE_STEP}
+                        onChange={(v) => state.onFileTreeScaleChange?.(v)}
+                        formatValue={(v) => formatFileTreeScalePercent(v)}
+                    />
+                }
+            />
+
             <SectionLabel>Mode</SectionLabel>
             <Row
                 label="System theme"
@@ -379,17 +414,40 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                 presets={state.presets}
                 onChange={(id) => state.onPresetChange?.(id)}
             />
+
+            <SectionLabel>Zoom</SectionLabel>
+            <Row
+                label="App zoom"
+                description={`Scale the entire app UI. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`}
+                control={
+                    <SliderField
+                        value={state.zoomFactor ?? 1}
+                        min={APP_ZOOM_FACTOR_MIN}
+                        max={APP_ZOOM_FACTOR_MAX}
+                        step={APP_ZOOM_FACTOR_STEP}
+                        onChange={(v) => state.onZoomFactorChange?.(v)}
+                        formatValue={(v) => formatAppZoomPercent(v)}
+                    />
+                }
+            />
         </div>
     );
 }
 
 function EditorContent({ state }: { state: SettingsEditorControlState }) {
+    const isMac =
+        typeof navigator !== "undefined" &&
+        navigator.platform.toLowerCase().startsWith("mac");
+    const editorZoomShortcut = isMac
+        ? "⌘+⌥+Plus / ⌘+⌥+- / ⌘+⌥+0"
+        : "Ctrl+Alt+Plus / Ctrl+Alt+- / Ctrl+Alt+0";
+
     return (
         <div>
             <SectionLabel>Typography</SectionLabel>
             <Row
                 label="Font size"
-                description="Text size in the editor, in pixels."
+                description={`Text size in the editor, in pixels. This does not change the overall app zoom. Shortcut: ${editorZoomShortcut}.`}
                 control={
                     <NumberStepper
                         value={state.fontSize}
