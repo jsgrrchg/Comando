@@ -121,6 +121,7 @@ describe("project tree helpers", () => {
     it("creates, renames and deletes project entries safely", async () => {
         const rootPath = createProjectFixture();
         fs.mkdirSync(path.join(rootPath, "src"));
+        fs.mkdirSync(path.join(rootPath, "docs"));
 
         const createdFile = await createProjectEntry({
             kind: "file",
@@ -156,8 +157,19 @@ describe("project tree helpers", () => {
         expect(fs.existsSync(path.join(rootPath, "src/README.md"))).toBe(true);
         expect(fs.existsSync(path.join(rootPath, "public"))).toBe(true);
 
-        await deleteProjectEntry({
+        const movedFile = await renameProjectEntry({
+            nextName: "README.md",
+            nextParentRelativePath: "docs",
             relativePath: "src/README.md",
+            rootPath,
+        });
+
+        expect(movedFile.relativePath).toBe("docs/README.md");
+        expect(fs.existsSync(path.join(rootPath, "docs/README.md"))).toBe(true);
+        expect(fs.existsSync(path.join(rootPath, "src/README.md"))).toBe(false);
+
+        await deleteProjectEntry({
+            relativePath: "docs/README.md",
             rootPath,
         });
         await deleteProjectEntry({
@@ -165,8 +177,27 @@ describe("project tree helpers", () => {
             rootPath,
         });
 
-        expect(fs.existsSync(path.join(rootPath, "src/README.md"))).toBe(false);
+        expect(fs.existsSync(path.join(rootPath, "docs/README.md"))).toBe(
+            false,
+        );
         expect(fs.existsSync(path.join(rootPath, "public"))).toBe(false);
+    });
+
+    it("rejects moving a folder inside itself", async () => {
+        const rootPath = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "src"));
+        fs.mkdirSync(path.join(rootPath, "src/components"), {
+            recursive: true,
+        });
+
+        await expect(
+            renameProjectEntry({
+                nextName: "src",
+                nextParentRelativePath: "src/components",
+                relativePath: "src",
+                rootPath,
+            }),
+        ).rejects.toThrow(/inside itself/i);
     });
 
     it("rejects invalid entry names", async () => {

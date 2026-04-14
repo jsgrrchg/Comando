@@ -676,6 +676,7 @@ export interface CreateProjectEntryInput {
 export interface RenameProjectEntryInput {
     readonly projectId: string;
     readonly nextName: string;
+    readonly nextParentRelativePath?: string | null;
     readonly relativePath: string;
     readonly worktreeId?: string | null;
 }

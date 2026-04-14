@@ -38,11 +38,18 @@ export interface GitAction {
     readonly tone?: GitActionTone;
 }
 
+export interface GitTreeDragData {
+    readonly kind: GitNodeKind;
+    readonly name: string;
+    readonly relativePath: string;
+}
+
 export interface GitTreeNode {
     readonly id: string;
     readonly name: string;
     readonly path: string;
     readonly kind: GitNodeKind;
+    readonly isProjectRoot?: boolean;
     readonly status: GitNodeStatus | null;
     readonly secondaryText?: string | null;
     readonly meta?: ReactNode;
@@ -142,7 +149,23 @@ export interface GitTreeViewProps {
     readonly expandedPaths?: readonly string[];
     readonly layout?: GitViewLayout;
     readonly nodes: readonly GitTreeNode[];
+    readonly onBackgroundContextMenu?: (position: {
+        readonly x: number;
+        readonly y: number;
+    }) => void;
+    readonly onBackgroundDrop?: (dragData: GitTreeDragData) => void;
     readonly onNodeClick?: (node: GitTreeNode) => void;
+    readonly onNodeContextMenu?: (
+        node: GitTreeNode,
+        position: {
+            readonly x: number;
+            readonly y: number;
+        },
+    ) => void;
+    readonly onNodeDrop?: (
+        dragData: GitTreeDragData,
+        node: GitTreeNode,
+    ) => void;
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,

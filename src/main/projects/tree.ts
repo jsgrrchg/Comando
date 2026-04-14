@@ -205,6 +205,7 @@ export async function createProjectEntry(options: {
 
 export async function renameProjectEntry(options: {
     readonly nextName: string;
+    readonly nextParentRelativePath?: string | null;
     readonly relativePath: string;
     readonly rootPath: string;
 }): Promise<ProjectEntryMutationResult> {
@@ -215,7 +216,22 @@ export async function renameProjectEntry(options: {
     );
     const stats = await fs.promises.stat(currentAbsolutePath);
     const currentRelativePath = normalizeRelativePath(options.relativePath);
-    const parentRelativePath = getParentRelativePath(currentRelativePath);
+    const currentParentRelativePath =
+        getParentRelativePath(currentRelativePath);
+    const parentRelativePath =
+        options.nextParentRelativePath === undefined
+            ? currentParentRelativePath
+            : normalizeOptionalRelativePath(options.nextParentRelativePath);
+
+    if (
+        stats.isDirectory() &&
+        parentRelativePath &&
+        (parentRelativePath === currentRelativePath ||
+            parentRelativePath.startsWith(`${currentRelativePath}/`))
+    ) {
+        throw new Error("A folder cannot be moved inside itself.");
+    }
+
     const absoluteParentPath = resolveProjectPath(
         options.rootPath,
         parentRelativePath,
@@ -226,6 +242,17 @@ export async function renameProjectEntry(options: {
     );
 
     if (nextRelativePath !== currentRelativePath) {
+        if (
+            currentRelativePath.toLowerCase() !== nextRelativePath.toLowerCase()
+        ) {
+            const existingStats = await statIfExists(nextAbsolutePath);
+            if (existingStats) {
+                throw new Error(
+                    "An entry with the same name already exists in that location.",
+                );
+            }
+        }
+
         await fs.promises.rename(currentAbsolutePath, nextAbsolutePath);
     }
 
@@ -403,4 +430,31 @@ function validateEntryName(name: string): string {
 function getParentRelativePath(relativePath: string): string | null {
     const parentPath = path.posix.dirname(relativePath);
     return parentPath === "." ? null : parentPath;
+}
+
+function normalizeOptionalRelativePath(
+    relativePath: string | null,
+): string | null {
+    if (!relativePath) {
+        return null;
+    }
+
+    return normalizeRelativePath(relativePath);
+}
+
+async function statIfExists(targetPath: string): Promise<fs.Stats | null> {
+    try {
+        return await fs.promises.stat(targetPath);
+    } catch (error) {
+        if (
+            typeof error === "object" &&
+            error &&
+            "code" in error &&
+            error.code === "ENOENT"
+        ) {
+            return null;
+        }
+
+        throw error;
+    }
 }

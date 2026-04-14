@@ -531,6 +531,7 @@ export class ProjectService {
 
         const entry = await renameProjectEntry({
             nextName: input.nextName,
+            nextParentRelativePath: input.nextParentRelativePath,
             relativePath: input.relativePath,
             rootPath: project.rootPath,
         });

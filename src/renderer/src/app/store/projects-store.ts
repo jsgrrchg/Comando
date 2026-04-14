@@ -49,6 +49,7 @@ interface ProjectsState {
         projectId: string,
         relativePath: string,
         nextName: string,
+        nextParentRelativePath?: string | null,
         worktreeId?: string | null,
     ) => Promise<ProjectEntryMutationResult>;
     removeProject: (projectId: string) => Promise<void>;
@@ -351,12 +352,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         projectId,
         relativePath,
         nextName,
+        nextParentRelativePath = undefined,
         worktreeId = null,
     ) => {
         const contextKey = getTreeContextKey(projectId, worktreeId);
         try {
             const entry = await getComandoApi().renameProjectEntry({
                 nextName,
+                nextParentRelativePath,
                 projectId,
                 relativePath,
                 worktreeId,
