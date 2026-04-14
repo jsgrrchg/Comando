@@ -1241,6 +1241,61 @@ export function ChatTabView({
                     </div>
                 </div>
 
+                {/* Context cards (edits, queue, errors) */}
+                {hasComposerContext ? (
+                    <div
+                        className="flex shrink-0 flex-col gap-2 px-3 py-3"
+                        style={{
+                            backgroundColor: "transparent",
+                        }}
+                    >
+                        {pendingPermission
+                            ? renderPermissionRequest(
+                                  pendingPermission,
+                                  respondPermission,
+                                  tab.sessionId,
+                              )
+                            : null}
+                        {pendingUserInput ? (
+                            <UserInputRequestCard
+                                onRespond={respondUserInput}
+                                request={pendingUserInput}
+                            />
+                        ) : null}
+                        {queuedPrompts.length > 0 || editingQueuedPrompt ? (
+                            <QueuedMessagesPanel
+                                editingItem={editingQueuedPrompt}
+                                items={queuedPrompts}
+                                onCancelEdit={handleCancelQueuedPromptEdit}
+                                onClearAll={handleClearQueuedPrompts}
+                                onDelete={handleRemoveQueuedPrompt}
+                                onEdit={handleEditQueuedPrompt}
+                                onSendNow={handleSendQueuedPromptNow}
+                            />
+                        ) : null}
+                        {currentError ? renderError(currentError) : null}
+                        {composerError ? renderError(composerError) : null}
+
+                        {pendingReviewCount > 0 ? (
+                            <EditedFilesBufferPanel
+                                diffZoom={diffZoom}
+                                items={pendingReviewItems}
+                                onKeepAll={handleKeepAllPendingReview}
+                                onKeepHunk={handleKeepPendingReviewHunk}
+                                onKeepItem={handleKeepPendingReviewItem}
+                                onOpenItem={handleOpenPendingReviewItem}
+                                onOpenReview={() => {
+                                    void onOpenReview();
+                                }}
+                                onRejectAll={handleRejectAllPendingReview}
+                                onRejectHunk={handleRejectPendingReviewHunk}
+                                onRejectItem={handleRejectPendingReviewItem}
+                                summary={pendingReviewSummary}
+                            />
+                        ) : null}
+                    </div>
+                ) : null}
+
                 {/* Composer area */}
                 <div
                     className="flex shrink-0 flex-col border-t"
@@ -1251,55 +1306,6 @@ export function ChatTabView({
                             "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
                     }}
                 >
-                    {hasComposerContext ? (
-                        <div className="flex flex-col gap-2 px-3 pt-3">
-                            {pendingPermission
-                                ? renderPermissionRequest(
-                                      pendingPermission,
-                                      respondPermission,
-                                      tab.sessionId,
-                                  )
-                                : null}
-                            {pendingUserInput ? (
-                                <UserInputRequestCard
-                                    onRespond={respondUserInput}
-                                    request={pendingUserInput}
-                                />
-                            ) : null}
-                            {queuedPrompts.length > 0 || editingQueuedPrompt ? (
-                                <QueuedMessagesPanel
-                                    editingItem={editingQueuedPrompt}
-                                    items={queuedPrompts}
-                                    onCancelEdit={handleCancelQueuedPromptEdit}
-                                    onClearAll={handleClearQueuedPrompts}
-                                    onDelete={handleRemoveQueuedPrompt}
-                                    onEdit={handleEditQueuedPrompt}
-                                    onSendNow={handleSendQueuedPromptNow}
-                                />
-                            ) : null}
-                            {currentError ? renderError(currentError) : null}
-                            {composerError ? renderError(composerError) : null}
-
-                            {pendingReviewCount > 0 ? (
-                                <EditedFilesBufferPanel
-                                    diffZoom={diffZoom}
-                                    items={pendingReviewItems}
-                                    onKeepAll={handleKeepAllPendingReview}
-                                    onKeepHunk={handleKeepPendingReviewHunk}
-                                    onKeepItem={handleKeepPendingReviewItem}
-                                    onOpenItem={handleOpenPendingReviewItem}
-                                    onOpenReview={() => {
-                                        void onOpenReview();
-                                    }}
-                                    onRejectAll={handleRejectAllPendingReview}
-                                    onRejectHunk={handleRejectPendingReviewHunk}
-                                    onRejectItem={handleRejectPendingReviewItem}
-                                    summary={pendingReviewSummary}
-                                />
-                            ) : null}
-                        </div>
-                    ) : null}
-
                     <AIChatComposer
                         composerFontFamily={composerFontFamily}
                         composerFontSize={aiChatSettings.composerFontSize}

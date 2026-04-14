@@ -107,9 +107,9 @@ describe("ReviewFileRow", () => {
 
         expect(markup).toContain("src/app.ts");
         expect(markup).toContain("Modified");
-        expect(markup).toContain("Open");
-        expect(markup).toContain("Accept");
-        expect(markup).toContain("Reject");
+        expect(markup).toContain("open");
+        expect(markup).toContain("accept");
+        expect(markup).toContain("reject");
         expect(markup).toContain("review-file-diff:file-1");
     });
 

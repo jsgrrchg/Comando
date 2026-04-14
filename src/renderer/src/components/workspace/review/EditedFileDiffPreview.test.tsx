@@ -111,7 +111,7 @@ describe("EditedFileDiffPreview", () => {
 
         expect(markup).toContain('data-review-hunk-key="hunk-2"');
         expect(markup).not.toContain('data-review-hunk-key="hunk-1"');
-        expect(markup).toContain('Accept hunk 2');
-        expect(markup).not.toContain('Accept hunk 1');
+        expect(markup).toContain("Accept hunk 2");
+        expect(markup).not.toContain("Accept hunk 1");
     });
 });

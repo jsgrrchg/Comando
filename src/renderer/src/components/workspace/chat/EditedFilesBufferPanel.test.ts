@@ -158,9 +158,9 @@ describe("EditedFilesBufferPanel", () => {
             }),
         );
 
-        expect(markup).toContain("Edits");
+        expect(markup).toContain("staged");
         expect(markup).toContain("(2)");
-        expect(markup).toContain("Review");
+        expect(markup).toContain("review");
         expect(markup).toContain("Reject All");
         expect(markup).toContain("Keep All");
         expect(markup).toContain("app.ts");
@@ -184,7 +184,7 @@ describe("EditedFilesBufferPanel", () => {
             }),
         );
 
-        expect(markup).toContain("Edits");
+        expect(markup).toContain("staged");
         expect(markup).not.toContain("edited-files-buffer-list");
         expect(markup).not.toContain("src/app.ts");
     });

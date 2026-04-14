@@ -6,6 +6,7 @@ import {
     computeReviewHunkStats,
     formatReviewHunkFocusSummary,
     formatReviewHunkHeader,
+    getReviewHunkVisualEndLine,
     getReviewKindLabel,
     getSelectedReviewLine,
 } from "./fileReviewBarPresentation";
@@ -64,11 +65,26 @@ describe("fileReviewBarPresentation", () => {
     it("falls back to the old line when the new range is empty", () => {
         const hunk = createHunk({
             newCount: 0,
-            newStart: 0,
+            newStart: 12,
             oldCount: 3,
             oldStart: 24,
         });
 
-        expect(getSelectedReviewLine(hunk)).toBe(24);
+        expect(getSelectedReviewLine(hunk)).toBe(12);
+        expect(getReviewHunkVisualEndLine(hunk)).toBe(12);
+    });
+
+    it("prefers the explicit visual range when present", () => {
+        const hunk = createHunk({
+            newCount: 0,
+            newStart: 14,
+            oldCount: 2,
+            oldStart: 8,
+            visualEndLine: 9,
+            visualStartLine: 9,
+        });
+
+        expect(getSelectedReviewLine(hunk)).toBe(9);
+        expect(getReviewHunkVisualEndLine(hunk)).toBe(9);
     });
 });

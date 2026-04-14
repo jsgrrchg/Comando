@@ -113,8 +113,8 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain("Edited app.ts");
-        expect(markup).toContain("Accept");
-        expect(markup).toContain("Reject");
+        expect(markup).not.toContain("Accept");
+        expect(markup).not.toContain("Reject");
     });
 
     it("cae al card de file tool cuando no hay preview reviewable", () => {

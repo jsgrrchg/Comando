@@ -113,10 +113,18 @@ describe("ChangeReviewPanel", () => {
 
         expect(markup).toContain("Edited app.ts");
         expect(markup).toContain("Open");
-        expect(markup).toContain("Accept");
-        expect(markup).toContain("Reject");
+        expect(markup).not.toContain("Accept");
+        expect(markup).not.toContain("Reject");
         expect(markup).toContain("Resize diff preview");
         expect(markup).toContain("change-review-panel:file-1");
+        expect(markup).toContain(">+1<");
+        expect(markup).toContain(">-1<");
+        expect(markup).not.toContain(
+            "background-color:color-mix(in srgb, var(--diff-add) 8%, var(--color-bg-secondary))",
+        );
+        expect(markup).not.toContain(
+            "background-color:color-mix(in srgb, var(--diff-remove) 8%, var(--color-bg-secondary))",
+        );
     });
 
     it("renderiza el caso multi-file con rows independientes", () => {

@@ -49,6 +49,21 @@ export function formatReviewHunkFocusSummary(hunk: AiDiffHunk): string {
     return `${changedLabel} in focus · ${formatReviewHunkHeader(hunk)}`;
 }
 
+export function getReviewHunkVisualStartLine(hunk: AiDiffHunk): number {
+    return Math.max(
+        hunk.visualStartLine ?? hunk.newStart ?? hunk.oldStart ?? 1,
+        1,
+    );
+}
+
+export function getReviewHunkVisualEndLine(hunk: AiDiffHunk): number {
+    if (typeof hunk.visualEndLine === "number") {
+        return Math.max(hunk.visualEndLine, getReviewHunkVisualStartLine(hunk));
+    }
+
+    return getReviewHunkVisualStartLine(hunk) + Math.max(hunk.newCount, 1) - 1;
+}
+
 export function getSelectedReviewLine(hunk: AiDiffHunk): number {
-    return Math.max(hunk.newStart || hunk.oldStart || 1, 1);
+    return getReviewHunkVisualStartLine(hunk);
 }

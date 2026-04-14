@@ -52,7 +52,10 @@ import {
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
-import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import {
+    getBestMatchingChatTabId,
+    useWorkspaceStore,
+} from "@renderer/app/store/workspace-store";
 import {
     collectPaneNodes,
     type RuntimeWorkspaceFileTab,
@@ -74,13 +77,13 @@ import {
 import {
     getAccentButtonStyle,
     getDangerButtonStyle,
-    getNeutralButtonStyle,
     getStatChipStyle,
     getToneBorderStyle,
 } from "@renderer/components/workspace/review/reviewStyles";
 import {
     computeReviewHunkStats,
     formatReviewHunkFocusSummary,
+    getReviewHunkVisualEndLine,
     getReviewKindLabel,
     getSelectedReviewLine,
 } from "@renderer/components/workspace/review/fileReviewBarPresentation";
@@ -146,15 +149,61 @@ export function WorkspaceView({
     defaultProjectId,
     defaultWorktreeId,
 }: WorkspaceViewProps) {
+    const closeTab = useWorkspaceStore((state) => state.closeTab);
     const rootNode = useWorkspaceStore((state) => state.rootNode);
+    const tabsById = useWorkspaceStore((state) => state.tabsById);
+    const aiSessions = useAiStore((state) => state.sessions);
     const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
     const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
     const reorderTab = useWorkspaceStore((state) => state.reorderTab);
+    const autoClosingReviewTabIdsRef = useRef<Set<string>>(new Set());
     const tabDrag = useWorkspaceTabDrag({
         onDropToSplit: dropTabToSplit,
         onMoveToPane: moveTabToPane,
         onReorder: reorderTab,
     });
+
+    useEffect(() => {
+        const knownTabIds = new Set(Object.keys(tabsById));
+        for (const tabId of autoClosingReviewTabIdsRef.current) {
+            if (!knownTabIds.has(tabId)) {
+                autoClosingReviewTabIdsRef.current.delete(tabId);
+            }
+        }
+
+        const reviewTabsToClose = Object.values(tabsById).filter((tab) => {
+            if (tab.kind !== "review") {
+                return false;
+            }
+
+            const sessionState = aiSessions[tab.sessionId];
+            if (!sessionState?.hydrated || sessionState.isHydrating) {
+                return false;
+            }
+
+            if (sessionState.localError || sessionState.snapshot?.lastError) {
+                return false;
+            }
+
+            const hasPendingTrackedFiles =
+                sessionState.snapshot?.trackedFiles.some(
+                    (trackedFile) => trackedFile.reviewState === "pending",
+                ) ?? false;
+
+            return !hasPendingTrackedFiles;
+        });
+
+        for (const tab of reviewTabsToClose) {
+            if (autoClosingReviewTabIdsRef.current.has(tab.id)) {
+                continue;
+            }
+
+            autoClosingReviewTabIdsRef.current.add(tab.id);
+            void closeTab(tab.id).finally(() => {
+                autoClosingReviewTabIdsRef.current.delete(tab.id);
+            });
+        }
+    }, [aiSessions, closeTab, tabsById]);
 
     return (
         <div className="h-full min-h-0 bg-bg-primary">
@@ -608,33 +657,26 @@ function WorkspacePaneView({
     ]);
 
     const handleAttachLineFragment = useCallback(
-        async (context: AiFileContextAttachment) => {
+        async ({
+            context,
+            worktreeId,
+        }: {
+            readonly context: AiFileContextAttachment;
+            readonly worktreeId: string | null;
+        }) => {
             const findPaneIdByTabId = (tabId: string) =>
                 collectPaneNodes(rootNode).find((pane) =>
                     pane.tabIds.includes(tabId),
                 )?.id ?? null;
-            const isMatchingChatScope = (tabId: string) => {
-                const tab = tabsById[tabId];
-                return (
-                    tab?.kind === "chat" &&
-                    tab.projectId === context.projectId &&
-                    (tab.worktreeId ?? null) === (defaultWorktreeId ?? null)
-                );
-            };
-
-            const preferredPaneId =
-                lastFocusedChatTabId &&
-                tabsById[lastFocusedChatTabId]?.kind === "chat"
-                    ? findPaneIdByTabId(lastFocusedChatTabId)
-                    : null;
-            const currentPaneMatch = node.tabIds.find(isMatchingChatScope);
-            const candidateTabId =
-                (preferredPaneId ? lastFocusedChatTabId : null) ??
-                currentPaneMatch ??
-                collectPaneNodes(rootNode)
-                    .flatMap((pane) => pane.tabIds)
-                    .find(isMatchingChatScope) ??
-                null;
+            const candidateTabId = getBestMatchingChatTabId(
+                { rootNode, tabsById },
+                {
+                    currentPaneId: node.id,
+                    lastFocusedChatTabId,
+                    projectId: context.projectId,
+                    worktreeId,
+                },
+            );
 
             if (candidateTabId) {
                 const paneId = findPaneIdByTabId(candidateTabId) ?? node.id;
@@ -658,7 +700,7 @@ function WorkspacePaneView({
             const existingTabIds = new Set(Object.keys(tabsById));
             await createChatTab(
                 context.projectId,
-                defaultWorktreeId ?? null,
+                worktreeId,
                 lastFocusedRuntimeId,
             );
 
@@ -669,7 +711,7 @@ function WorkspacePaneView({
                     tab.kind === "chat" &&
                     !existingTabIds.has(tab.id) &&
                     tab.projectId === context.projectId &&
-                    (tab.worktreeId ?? null) === (defaultWorktreeId ?? null),
+                    (tab.worktreeId ?? null) === worktreeId,
             );
 
             if (createdChatTab?.kind === "chat") {
@@ -684,11 +726,9 @@ function WorkspacePaneView({
         [
             attachSelectionMention,
             createChatTab,
-            defaultWorktreeId,
             lastFocusedChatTabId,
             lastFocusedRuntimeId,
             node.id,
-            node.tabIds,
             rootNode,
             selectTab,
             setActivePane,
@@ -1481,10 +1521,12 @@ function tryAttachEditorSelectionToComposer(input: {
     readonly projectId: string;
     readonly relativePath: string;
     readonly tabTitle: string;
+    readonly worktreeId: string | null;
     readonly editor: MonacoEditor.IStandaloneCodeEditor;
-    readonly onAttachLineFragment: (
-        context: AiFileContextAttachment,
-    ) => Promise<void>;
+    readonly onAttachLineFragment: (input: {
+        readonly context: AiFileContextAttachment;
+        readonly worktreeId: string | null;
+    }) => Promise<void>;
 }): boolean {
     const model = input.editor.getModel();
     const selection = input.editor.getSelection();
@@ -1505,20 +1547,129 @@ function tryAttachEditorSelectionToComposer(input: {
     const endLine = model.getPositionAt(effectiveEndOffset).lineNumber;
 
     void input.onAttachLineFragment({
-        endLine,
-        extension: input.relativePath.includes(".")
-            ? (input.relativePath.split(".").pop() ?? null)
-            : null,
-        id: `file-ctx:${crypto.randomUUID()}`,
-        languageId: input.documentLanguageId,
-        name: input.tabTitle,
-        projectId: input.projectId,
-        relativePath: input.relativePath,
-        selectedText,
-        startLine,
+        context: {
+            endLine,
+            extension: input.relativePath.includes(".")
+                ? (input.relativePath.split(".").pop() ?? null)
+                : null,
+            id: `file-ctx:${crypto.randomUUID()}`,
+            languageId: input.documentLanguageId,
+            name: input.tabTitle,
+            projectId: input.projectId,
+            relativePath: input.relativePath,
+            selectedText,
+            startLine,
+        },
+        worktreeId: input.worktreeId,
     });
 
     return true;
+}
+
+function bindAttachSelectionShortcut(input: {
+    readonly documentLanguageId: string;
+    readonly editor: MonacoEditor.IStandaloneCodeEditor;
+    readonly onAttachLineFragment: (input: {
+        readonly context: AiFileContextAttachment;
+        readonly worktreeId: string | null;
+    }) => Promise<void>;
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly tabTitle: string;
+    readonly worktreeId: string | null;
+}): (() => void) | null {
+    const editorDomNode = input.editor.getDomNode();
+    if (!editorDomNode) {
+        return null;
+    }
+
+    const handleEditorKeyDown = (event: KeyboardEvent) => {
+        if (
+            event.key.toLowerCase() !== "l" ||
+            !(event.metaKey || event.ctrlKey) ||
+            event.altKey ||
+            event.shiftKey
+        ) {
+            return;
+        }
+
+        // Intercept in capture so Monaco doesn't expand line selection
+        // before we can attach the current selection.
+        const attached = tryAttachEditorSelectionToComposer({
+            documentLanguageId: input.documentLanguageId,
+            editor: input.editor,
+            onAttachLineFragment: input.onAttachLineFragment,
+            projectId: input.projectId,
+            relativePath: input.relativePath,
+            tabTitle: input.tabTitle,
+            worktreeId: input.worktreeId,
+        });
+
+        if (!attached) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+    };
+
+    editorDomNode.addEventListener("keydown", handleEditorKeyDown, true);
+
+    return () => {
+        editorDomNode.removeEventListener("keydown", handleEditorKeyDown, true);
+    };
+}
+
+function bindCloseFindWidgetOnEscape(
+    editor: MonacoEditor.IStandaloneCodeEditor,
+): (() => void) | null {
+    const editorDomNode = editor.getDomNode();
+    if (!editorDomNode) {
+        return null;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== "Escape") {
+            return;
+        }
+
+        const findController = editor.getContribution(
+            "editor.contrib.findController",
+        ) as {
+            closeFindWidget?: () => void;
+            getState?: () => { isRevealed?: boolean };
+        } | null;
+
+        if (
+            !findController?.closeFindWidget ||
+            !findController.getState?.().isRevealed
+        ) {
+            return;
+        }
+
+        findController.closeFindWidget();
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+    };
+
+    editorDomNode.addEventListener("keydown", handleKeyDown, true);
+
+    return () => {
+        editorDomNode.removeEventListener("keydown", handleKeyDown, true);
+    };
+}
+
+function getFindController(editor: MonacoEditor.IStandaloneCodeEditor) {
+    return editor.getContribution("editor.contrib.findController") as {
+        getState?: () => {
+            isRevealed?: boolean;
+            onFindReplaceStateChange?: (listener: () => void) => {
+                dispose: () => void;
+            };
+        };
+    } | null;
 }
 
 function FileTabView({
@@ -1530,9 +1681,10 @@ function FileTabView({
     tab,
 }: {
     readonly isActivePane: boolean;
-    readonly onAttachLineFragment: (
-        context: AiFileContextAttachment,
-    ) => Promise<void>;
+    readonly onAttachLineFragment: (input: {
+        readonly context: AiFileContextAttachment;
+        readonly worktreeId: string | null;
+    }) => Promise<void>;
     readonly onDraftChange: (tabId: string, draft: string) => void;
     readonly onReload: (tabId: string) => Promise<void>;
     readonly onSave: (
@@ -1558,14 +1710,21 @@ function FileTabView({
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
     );
+    const inlineReviewContainerRef = useRef<HTMLDivElement | null>(null);
+    const inlineReviewOverlayPinnedRef = useRef(false);
+    const inlineReviewHoverHideTimerRef = useRef<number | null>(null);
+    const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
-    const [reviewModeState, setReviewModeState] = useState<{
-        readonly key: string | null;
-        readonly value: "editor" | "inline" | null;
-    }>({
-        key: null,
-        value: null,
-    });
+    const [diffEditorMountVersion, setDiffEditorMountVersion] = useState(0);
+    const [
+        isInlineReviewFindWidgetVisible,
+        setIsInlineReviewFindWidgetVisible,
+    ] = useState(false);
+    const [hoveredInlineReviewHunkState, setHoveredInlineReviewHunkState] =
+        useState<{
+            readonly hunkId: string;
+            readonly top: number;
+        } | null>(null);
     const [selectedHunkState, setSelectedHunkState] = useState<{
         readonly hunkId: string | null;
         readonly key: string | null;
@@ -1589,20 +1748,40 @@ function FileTabView({
     const reviewSignature = trackedFile
         ? `${trackedFile.identityKey}:${trackedFile.hunks.map((hunk) => hunk.id).join(",")}`
         : null;
-    const reviewMode =
-        reviewModeState.key === reviewSignature ? reviewModeState.value : null;
     const selectedHunkId =
         selectedHunkState.key === reviewSignature
             ? selectedHunkState.hunkId
             : null;
-    const showInlineReview =
-        canShowInlineReview &&
-        (reviewMode === "inline" ||
-            (reviewMode !== "editor" && Boolean(tab.reviewContext)));
+    const showInlineReview = canShowInlineReview;
     const selectedHunk =
         trackedFile?.hunks.find((hunk) => hunk.id === selectedHunkId) ??
         trackedFile?.hunks[0] ??
         null;
+    const inlineReviewTrackedFile =
+        showInlineReview &&
+        canShowInlineReview &&
+        trackedFile?.oldText !== null &&
+        trackedFile?.newText !== null
+            ? trackedFile
+            : null;
+    const reviewDiff = useMemo(
+        () =>
+            inlineReviewTrackedFile
+                ? createDiffFromTrackedFile(inlineReviewTrackedFile)
+                : null,
+        [inlineReviewTrackedFile],
+    );
+    const inlineReviewHunkActionsEnabled = Boolean(
+        inlineReviewTrackedFile &&
+        reviewDiff &&
+        canResolveFileHunks(inlineReviewTrackedFile, reviewDiff),
+    );
+    const hoveredInlineReviewHunk =
+        inlineReviewTrackedFile && hoveredInlineReviewHunkState
+            ? (inlineReviewTrackedFile.hunks.find(
+                  (hunk) => hunk.id === hoveredInlineReviewHunkState.hunkId,
+              ) ?? null)
+            : null;
     const adjustEditorFontSize = useCallback(
         async (mode: "decrease" | "increase" | "reset") => {
             const clampFontSize = (value: number) =>
@@ -1713,11 +1892,212 @@ function FileTabView({
             return;
         }
 
-        const lineNumber = getSelectedReviewLine(selectedHunk);
-        diffEditorRef.current
-            ?.getModifiedEditor()
-            .revealLineInCenter(lineNumber);
+        const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
+        const maxLineNumber = modifiedEditor?.getModel()?.getLineCount() ?? 1;
+        const lineNumber = Math.min(
+            getSelectedReviewLine(selectedHunk),
+            maxLineNumber,
+        );
+        modifiedEditor?.revealLineInCenter(Math.max(lineNumber, 1));
     }, [selectedHunk, showInlineReview]);
+
+    const clearInlineReviewHoverHideTimer = useCallback(() => {
+        if (inlineReviewHoverHideTimerRef.current == null) {
+            return;
+        }
+
+        window.clearTimeout(inlineReviewHoverHideTimerRef.current);
+        inlineReviewHoverHideTimerRef.current = null;
+    }, []);
+
+    const scheduleInlineReviewOverlayHide = useCallback(() => {
+        clearInlineReviewHoverHideTimer();
+        inlineReviewHoverHideTimerRef.current = window.setTimeout(() => {
+            if (!inlineReviewOverlayPinnedRef.current) {
+                hoveredInlineReviewHunkIdRef.current = null;
+                setHoveredInlineReviewHunkState(null);
+            }
+        }, 80);
+    }, [clearInlineReviewHoverHideTimer]);
+
+    const setHoveredInlineReviewOverlayState = useCallback(
+        (
+            nextState: {
+                readonly hunkId: string;
+                readonly top: number;
+            } | null,
+        ) => {
+            hoveredInlineReviewHunkIdRef.current = nextState?.hunkId ?? null;
+            setHoveredInlineReviewHunkState((previous) => {
+                if (
+                    previous?.hunkId === nextState?.hunkId &&
+                    previous?.top === nextState?.top
+                ) {
+                    return previous;
+                }
+
+                return nextState;
+            });
+        },
+        [],
+    );
+
+    const updateInlineReviewOverlayForHunk = useCallback(
+        (hunkId: string | null) => {
+            if (isInlineReviewFindWidgetVisible) {
+                if (!inlineReviewOverlayPinnedRef.current) {
+                    setHoveredInlineReviewOverlayState(null);
+                }
+                return;
+            }
+
+            if (!inlineReviewTrackedFile || !hunkId) {
+                if (!inlineReviewOverlayPinnedRef.current) {
+                    setHoveredInlineReviewOverlayState(null);
+                }
+                return;
+            }
+
+            const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
+            const editorDomNode = modifiedEditor?.getDomNode();
+            const containerNode = inlineReviewContainerRef.current;
+            const hunk = inlineReviewTrackedFile.hunks.find(
+                (candidate) => candidate.id === hunkId,
+            );
+
+            if (!modifiedEditor || !editorDomNode || !containerNode || !hunk) {
+                return;
+            }
+
+            const maxLineNumber =
+                modifiedEditor.getModel()?.getLineCount() ?? 1;
+            const anchorLine = Math.min(
+                getSelectedReviewLine(hunk),
+                maxLineNumber,
+            );
+            const visiblePosition = modifiedEditor.getScrolledVisiblePosition({
+                column: 1,
+                lineNumber: Math.max(anchorLine, 1),
+            });
+            const top =
+                editorDomNode.offsetTop +
+                (visiblePosition?.top ??
+                    modifiedEditor.getTopForLineNumber(
+                        Math.max(anchorLine, 1),
+                        true,
+                    ) - modifiedEditor.getScrollTop());
+
+            setHoveredInlineReviewOverlayState({ hunkId, top });
+        },
+        [
+            inlineReviewTrackedFile,
+            isInlineReviewFindWidgetVisible,
+            setHoveredInlineReviewOverlayState,
+        ],
+    );
+
+    useEffect(() => {
+        if (
+            !inlineReviewTrackedFile ||
+            !inlineReviewHunkActionsEnabled ||
+            isInlineReviewFindWidgetVisible
+        ) {
+            return;
+        }
+
+        const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
+        if (!modifiedEditor) {
+            return;
+        }
+
+        const resolveHoveredLineNumber = (
+            event: MonacoEditor.IEditorMouseEvent,
+        ): number | null => {
+            const fallbackTarget = modifiedEditor.getTargetAtClientPoint(
+                event.event.posx,
+                event.event.posy,
+            );
+            const candidates = [event.target, fallbackTarget].filter(
+                (target): target is NonNullable<typeof target> =>
+                    target != null,
+            );
+
+            for (const target of candidates) {
+                const lineNumber =
+                    target.position?.lineNumber ??
+                    target.range?.startLineNumber ??
+                    target.range?.endLineNumber ??
+                    null;
+
+                if (lineNumber != null) {
+                    return lineNumber;
+                }
+            }
+
+            return null;
+        };
+
+        const resolveHoveredHunkId = (lineNumber: number | null) => {
+            if (lineNumber == null) {
+                return null;
+            }
+
+            const hoveredHunk =
+                inlineReviewTrackedFile.hunks.find((hunk) => {
+                    const startLine = getSelectedReviewLine(hunk);
+                    const endLine = getReviewHunkVisualEndLine(hunk);
+
+                    return lineNumber >= startLine && lineNumber <= endLine;
+                }) ?? null;
+
+            return hoveredHunk?.id ?? null;
+        };
+
+        const syncHoveredOverlay = () => {
+            updateInlineReviewOverlayForHunk(
+                hoveredInlineReviewHunkIdRef.current,
+            );
+        };
+
+        const mouseMoveDisposable = modifiedEditor.onMouseMove((event) => {
+            clearInlineReviewHoverHideTimer();
+            updateInlineReviewOverlayForHunk(
+                resolveHoveredHunkId(resolveHoveredLineNumber(event)),
+            );
+        });
+        const mouseLeaveDisposable = modifiedEditor.onMouseLeave(() => {
+            scheduleInlineReviewOverlayHide();
+        });
+        const scrollDisposable = modifiedEditor.onDidScrollChange(() => {
+            if (hoveredInlineReviewHunkIdRef.current) {
+                syncHoveredOverlay();
+            }
+        });
+        const layoutDisposable = modifiedEditor.onDidLayoutChange(() => {
+            if (hoveredInlineReviewHunkIdRef.current) {
+                syncHoveredOverlay();
+            }
+        });
+
+        return () => {
+            mouseMoveDisposable.dispose();
+            mouseLeaveDisposable.dispose();
+            scrollDisposable.dispose();
+            layoutDisposable.dispose();
+            clearInlineReviewHoverHideTimer();
+            inlineReviewOverlayPinnedRef.current = false;
+            setHoveredInlineReviewOverlayState(null);
+        };
+    }, [
+        clearInlineReviewHoverHideTimer,
+        diffEditorMountVersion,
+        inlineReviewHunkActionsEnabled,
+        isInlineReviewFindWidgetVisible,
+        inlineReviewTrackedFile,
+        scheduleInlineReviewOverlayHide,
+        updateInlineReviewOverlayForHunk,
+        setHoveredInlineReviewOverlayState,
+    ]);
 
     const handleEditorBeforeMount = useCallback(() => {
         applyMonacoThemeFromDom();
@@ -1799,85 +2179,65 @@ function FileTabView({
         );
     }
 
-    const inlineReviewTrackedFile =
-        showInlineReview &&
-        canShowInlineReview &&
-        trackedFile?.oldText !== null &&
-        trackedFile?.newText !== null
-            ? trackedFile
-            : null;
     const editorFontFamily = buildEditorFontFamily(editorSettings.fontFamily);
     const editorLineHeightPx = Math.round(
         editorSettings.fontSize * editorSettings.lineHeight,
     );
-    const reviewBar = trackedFile
-        ? (() => {
-              const activeTrackedFile = trackedFile;
-              const activeReviewKey =
-                  reviewSignature ?? activeTrackedFile.identityKey;
+    const reviewBar =
+        trackedFile && !inlineReviewTrackedFile
+            ? (() => {
+                  const activeTrackedFile = trackedFile;
+                  const activeReviewKey =
+                      reviewSignature ?? activeTrackedFile.identityKey;
 
-              return (
-                  <FileReviewBar
-                      canShowInlineReview={canShowInlineReview}
-                      isInlineReviewVisible={showInlineReview}
-                      onKeepFile={() =>
-                          void keepTrackedFile({
-                              path: activeTrackedFile.path,
-                              sessionId: activeTrackedFile.sessionId,
-                          })
-                      }
-                      onKeepHunk={() => {
-                          if (!selectedHunk) {
-                              return;
+                  return (
+                      <FileReviewBar
+                          onKeepFile={() =>
+                              void keepTrackedFile({
+                                  path: activeTrackedFile.path,
+                                  sessionId: activeTrackedFile.sessionId,
+                              })
                           }
+                          onKeepHunk={() => {
+                              if (!selectedHunk) {
+                                  return;
+                              }
 
-                          void keepTrackedFileHunks({
-                              hunkIds: [selectedHunk.id],
-                              path: activeTrackedFile.path,
-                              sessionId: activeTrackedFile.sessionId,
-                          });
-                      }}
-                      onRejectFile={() =>
-                          void rejectTrackedFile({
-                              path: activeTrackedFile.path,
-                              sessionId: activeTrackedFile.sessionId,
-                          })
-                      }
-                      onRejectHunk={() => {
-                          if (!selectedHunk) {
-                              return;
+                              void keepTrackedFileHunks({
+                                  hunkIds: [selectedHunk.id],
+                                  path: activeTrackedFile.path,
+                                  sessionId: activeTrackedFile.sessionId,
+                              });
+                          }}
+                          onRejectFile={() =>
+                              void rejectTrackedFile({
+                                  path: activeTrackedFile.path,
+                                  sessionId: activeTrackedFile.sessionId,
+                              })
                           }
+                          onRejectHunk={() => {
+                              if (!selectedHunk) {
+                                  return;
+                              }
 
-                          void rejectTrackedFileHunks({
-                              hunkIds: [selectedHunk.id],
-                              path: activeTrackedFile.path,
-                              sessionId: activeTrackedFile.sessionId,
-                          });
-                      }}
-                      onSelectHunk={(hunkId) =>
-                          setSelectedHunkState({
-                              hunkId,
-                              key: activeReviewKey,
-                          })
-                      }
-                      onShowEditor={() =>
-                          setReviewModeState({
-                              key: activeReviewKey,
-                              value: "editor",
-                          })
-                      }
-                      onShowInlineReview={() =>
-                          setReviewModeState({
-                              key: activeReviewKey,
-                              value: "inline",
-                          })
-                      }
-                      selectedHunkId={selectedHunk?.id ?? null}
-                      trackedFile={activeTrackedFile}
-                  />
-              );
-          })()
-        : null;
+                              void rejectTrackedFileHunks({
+                                  hunkIds: [selectedHunk.id],
+                                  path: activeTrackedFile.path,
+                                  sessionId: activeTrackedFile.sessionId,
+                              });
+                          }}
+                          onSelectHunk={(hunkId) =>
+                              setSelectedHunkState({
+                                  hunkId,
+                                  key: activeReviewKey,
+                              })
+                          }
+                          selectedHunkId={selectedHunk?.id ?? null}
+                          trackedFile={activeTrackedFile}
+                      />
+                  );
+              })()
+            : null;
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1943,38 +2303,139 @@ function FileTabView({
 
             <div className="min-h-0 flex-1">
                 {inlineReviewTrackedFile ? (
-                    <DiffEditor
-                        beforeMount={handleEditorBeforeMount}
-                        language={document.languageId}
-                        modified={inlineReviewTrackedFile.newText ?? ""}
-                        modifiedModelPath={`${document.absolutePath}::review::modified`}
-                        onMount={(editor) => {
-                            diffEditorRef.current = editor;
-                        }}
-                        options={{
-                            automaticLayout: true,
-                            fontFamily: editorFontFamily,
-                            fontLigatures: true,
-                            fontSize: editorSettings.fontSize,
-                            glyphMargin: false,
-                            lineHeight: editorLineHeightPx,
-                            lineDecorationsWidth: 0,
-                            lineNumbersMinChars: 3,
-                            minimap: { enabled: false },
-                            originalEditable: false,
-                            padding: { top: 16, bottom: 16 },
-                            readOnly: true,
-                            renderSideBySide: false,
-                            scrollBeyondLastLine: false,
-                            smoothScrolling: true,
-                            wordWrap: shouldEnableDocumentWrapping(document)
-                                ? "on"
-                                : "off",
-                        }}
-                        original={inlineReviewTrackedFile.oldText ?? ""}
-                        originalModelPath={`${document.absolutePath}::review::original`}
-                        theme={editorTheme}
-                    />
+                    <div
+                        className="inline-review-diff relative h-full"
+                        ref={inlineReviewContainerRef}
+                    >
+                        <DiffEditor
+                            beforeMount={handleEditorBeforeMount}
+                            language={document.languageId}
+                            modified={inlineReviewTrackedFile.newText ?? ""}
+                            modifiedModelPath={`${document.absolutePath}::review::modified`}
+                            onMount={(editor) => {
+                                diffEditorRef.current = editor;
+                                const modifiedEditor =
+                                    editor.getModifiedEditor();
+                                const cleanupAttachShortcut =
+                                    bindAttachSelectionShortcut({
+                                        documentLanguageId: document.languageId,
+                                        editor: modifiedEditor,
+                                        onAttachLineFragment,
+                                        projectId: tab.projectId,
+                                        relativePath: tab.relativePath,
+                                        tabTitle: tab.title,
+                                        worktreeId: tab.worktreeId ?? null,
+                                    });
+                                const cleanupFindWidgetEscape =
+                                    bindCloseFindWidgetOnEscape(modifiedEditor);
+                                const findController =
+                                    getFindController(modifiedEditor);
+                                const syncFindWidgetVisibility = () => {
+                                    setIsInlineReviewFindWidgetVisible(
+                                        Boolean(
+                                            findController?.getState?.()
+                                                .isRevealed,
+                                        ),
+                                    );
+                                };
+                                const findStateListener =
+                                    findController
+                                        ?.getState?.()
+                                        .onFindReplaceStateChange?.(
+                                            syncFindWidgetVisibility,
+                                        ) ?? null;
+
+                                syncFindWidgetVisibility();
+
+                                editor.onDidDispose(() => {
+                                    cleanupAttachShortcut?.();
+                                    cleanupFindWidgetEscape?.();
+                                    findStateListener?.dispose();
+                                    setIsInlineReviewFindWidgetVisible(false);
+                                });
+                                setDiffEditorMountVersion(
+                                    (previous) => previous + 1,
+                                );
+                            }}
+                            options={{
+                                automaticLayout: true,
+                                fontFamily: editorFontFamily,
+                                fontLigatures: true,
+                                fontSize: editorSettings.fontSize,
+                                glyphMargin: false,
+                                hideCursorInOverviewRuler: true,
+                                lineHeight: editorLineHeightPx,
+                                lineDecorationsWidth: 0,
+                                lineNumbersMinChars: 3,
+                                minimap: { enabled: false },
+                                originalEditable: false,
+                                overviewRulerBorder: false,
+                                overviewRulerLanes: 0,
+                                padding: { top: 16, bottom: 16 },
+                                readOnly: true,
+                                renderOverviewRuler: false,
+                                renderSideBySide: false,
+                                scrollbar: {
+                                    alwaysConsumeMouseWheel: false,
+                                    horizontalScrollbarSize: 6,
+                                    useShadows: false,
+                                    verticalScrollbarSize: 6,
+                                },
+                                scrollBeyondLastLine: false,
+                                smoothScrolling: true,
+                                wordWrap: shouldEnableDocumentWrapping(document)
+                                    ? "on"
+                                    : "off",
+                            }}
+                            original={inlineReviewTrackedFile.oldText ?? ""}
+                            originalModelPath={`${document.absolutePath}::review::original`}
+                            theme={editorTheme}
+                        />
+                        {inlineReviewHunkActionsEnabled &&
+                        !isInlineReviewFindWidgetVisible &&
+                        hoveredInlineReviewHunk &&
+                        hoveredInlineReviewHunkState ? (
+                            <InlineReviewHunkZone
+                                onAccept={() => {
+                                    setSelectedHunkState({
+                                        hunkId: hoveredInlineReviewHunk.id,
+                                        key:
+                                            reviewSignature ??
+                                            inlineReviewTrackedFile.identityKey,
+                                    });
+                                    void keepTrackedFileHunks({
+                                        hunkIds: [hoveredInlineReviewHunk.id],
+                                        path: inlineReviewTrackedFile.path,
+                                        sessionId:
+                                            inlineReviewTrackedFile.sessionId,
+                                    });
+                                }}
+                                onMouseEnter={() => {
+                                    clearInlineReviewHoverHideTimer();
+                                    inlineReviewOverlayPinnedRef.current = true;
+                                }}
+                                onMouseLeave={() => {
+                                    inlineReviewOverlayPinnedRef.current = false;
+                                    scheduleInlineReviewOverlayHide();
+                                }}
+                                onReject={() => {
+                                    setSelectedHunkState({
+                                        hunkId: hoveredInlineReviewHunk.id,
+                                        key:
+                                            reviewSignature ??
+                                            inlineReviewTrackedFile.identityKey,
+                                    });
+                                    void rejectTrackedFileHunks({
+                                        hunkIds: [hoveredInlineReviewHunk.id],
+                                        path: inlineReviewTrackedFile.path,
+                                        sessionId:
+                                            inlineReviewTrackedFile.sessionId,
+                                    });
+                                }}
+                                top={hoveredInlineReviewHunkState.top}
+                            />
+                        ) : null}
+                    </div>
                 ) : (
                     <Editor
                         beforeMount={handleEditorBeforeMount}
@@ -1984,56 +2445,19 @@ function FileTabView({
                         }
                         onMount={(editor) => {
                             editorRef.current = editor;
-                            const editorDomNode = editor.getDomNode();
-                            if (!editorDomNode) {
-                                return;
-                            }
-
-                            const handleEditorKeyDown = (
-                                event: KeyboardEvent,
-                            ) => {
-                                if (
-                                    event.key.toLowerCase() !== "l" ||
-                                    !(event.metaKey || event.ctrlKey) ||
-                                    event.altKey ||
-                                    event.shiftKey
-                                ) {
-                                    return;
-                                }
-
-                                // Intercept in capture so Monaco doesn't expand line
-                                // selection before we can attach the current selection.
-                                const attached =
-                                    tryAttachEditorSelectionToComposer({
-                                        documentLanguageId: document.languageId,
-                                        editor,
-                                        onAttachLineFragment,
-                                        projectId: tab.projectId,
-                                        relativePath: tab.relativePath,
-                                        tabTitle: tab.title,
-                                    });
-
-                                if (!attached) {
-                                    return;
-                                }
-
-                                event.preventDefault();
-                                event.stopPropagation();
-                                event.stopImmediatePropagation();
-                            };
-
-                            editorDomNode.addEventListener(
-                                "keydown",
-                                handleEditorKeyDown,
-                                true,
-                            );
+                            const cleanupAttachShortcut =
+                                bindAttachSelectionShortcut({
+                                    documentLanguageId: document.languageId,
+                                    editor,
+                                    onAttachLineFragment,
+                                    projectId: tab.projectId,
+                                    relativePath: tab.relativePath,
+                                    tabTitle: tab.title,
+                                    worktreeId: tab.worktreeId ?? null,
+                                });
 
                             editor.onDidDispose(() => {
-                                editorDomNode.removeEventListener(
-                                    "keydown",
-                                    handleEditorKeyDown,
-                                    true,
-                                );
+                                cleanupAttachShortcut?.();
                             });
                         }}
                         options={{
@@ -2142,27 +2566,19 @@ function ImageFileView({
 }
 
 function FileReviewBar({
-    canShowInlineReview,
-    isInlineReviewVisible,
     onKeepFile,
     onKeepHunk,
     onRejectFile,
     onRejectHunk,
     onSelectHunk,
-    onShowEditor,
-    onShowInlineReview,
     selectedHunkId,
     trackedFile,
 }: {
-    readonly canShowInlineReview: boolean;
-    readonly isInlineReviewVisible: boolean;
     readonly onKeepFile: () => void;
     readonly onKeepHunk: () => void;
     readonly onRejectFile: () => void;
     readonly onRejectHunk: () => void;
     readonly onSelectHunk: (hunkId: string) => void;
-    readonly onShowEditor: () => void;
-    readonly onShowInlineReview: () => void;
     readonly selectedHunkId: string | null;
     readonly trackedFile: AiTrackedFile;
 }) {
@@ -2194,17 +2610,6 @@ function FileReviewBar({
         padding: "6px 12px",
         transition:
             "background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease, transform 140ms ease",
-    };
-    const selectedToggleStyle = {
-        ...getAccentButtonStyle(),
-        ...pillButtonBaseStyle,
-        backgroundColor:
-            "color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-secondary))",
-        transform: "translateY(-1px)",
-    };
-    const unselectedToggleStyle = {
-        ...getNeutralButtonStyle(),
-        ...pillButtonBaseStyle,
     };
     const keepButtonStyle = {
         ...getAccentButtonStyle(),
@@ -2314,49 +2719,12 @@ function FileReviewBar({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                    {canShowInlineReview ? (
-                        <div
-                            className="flex items-center gap-1 rounded-full border p-1"
-                            style={{
-                                backgroundColor:
-                                    "color-mix(in srgb, var(--color-bg-secondary) 82%, transparent)",
-                                borderColor:
-                                    "color-mix(in srgb, var(--color-border) 88%, transparent)",
-                            }}
-                        >
-                            <button
-                                className="app-no-drag"
-                                onClick={onShowEditor}
-                                style={
-                                    isInlineReviewVisible
-                                        ? unselectedToggleStyle
-                                        : selectedToggleStyle
-                                }
-                                type="button"
-                            >
-                                Editor
-                            </button>
-                            <button
-                                className="app-no-drag"
-                                onClick={onShowInlineReview}
-                                style={
-                                    isInlineReviewVisible
-                                        ? selectedToggleStyle
-                                        : unselectedToggleStyle
-                                }
-                                type="button"
-                            >
-                                Inline Review
-                            </button>
-                        </div>
-                    ) : (
-                        <span
-                            className="text-[11px] text-text-secondary"
-                            style={{ maxWidth: 220 }}
-                        >
-                            Inline review is available for text updates only.
-                        </span>
-                    )}
+                    <span
+                        className="text-[11px] text-text-secondary"
+                        style={{ maxWidth: 220 }}
+                    >
+                        Inline review is available for text updates only.
+                    </span>
                     <button
                         className="app-no-drag"
                         onClick={onKeepFile}
@@ -2529,6 +2897,87 @@ function FileReviewBar({
                     ) : null}
                 </div>
             ) : null}
+        </div>
+    );
+}
+
+function InlineReviewHunkZone({
+    onAccept,
+    onMouseEnter,
+    onMouseLeave,
+    onReject,
+    top,
+}: {
+    readonly onAccept: () => void;
+    readonly onMouseEnter: () => void;
+    readonly onMouseLeave: () => void;
+    readonly onReject: () => void;
+    readonly top: number;
+}) {
+    return (
+        <div
+            className="pointer-events-none absolute right-4 z-[3] flex justify-end"
+            style={{
+                top: Math.max(top, 4),
+            }}
+        >
+            <div
+                className="inline-flex items-center gap-1 rounded"
+                onMouseEnter={onMouseEnter}
+                onMouseLeave={onMouseLeave}
+                style={{
+                    backdropFilter: "blur(8px)",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--color-bg-primary) 78%, var(--color-bg-secondary))",
+                    border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
+                    borderRadius: 6,
+                    boxShadow: "0 6px 16px rgb(0 0 0 / 0.12)",
+                    fontFamily: "var(--font-mono)",
+                    padding: 3,
+                    pointerEvents: "auto",
+                }}
+            >
+                <button
+                    className="review-action-btn"
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onReject();
+                    }}
+                    style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--diff-remove)",
+                        cursor: "pointer",
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        opacity: 0.7,
+                        padding: "2px 6px",
+                    }}
+                    type="button"
+                >
+                    ✕ reject
+                </button>
+                <button
+                    className="review-action-btn"
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onAccept();
+                    }}
+                    style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--diff-add)",
+                        cursor: "pointer",
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        opacity: 0.7,
+                        padding: "2px 6px",
+                    }}
+                    type="button"
+                >
+                    ✓ keep
+                </button>
+            </div>
         </div>
     );
 }

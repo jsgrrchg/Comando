@@ -20,8 +20,9 @@ const mockAiStoreState = vi.hoisted(() => ({
 }));
 
 vi.mock("@renderer/app/store/ai-store", () => ({
-    useAiStore: (selector: (state: typeof mockAiStoreState.current) => unknown) =>
-        selector(mockAiStoreState.current),
+    useAiStore: (
+        selector: (state: typeof mockAiStoreState.current) => unknown,
+    ) => selector(mockAiStoreState.current),
 }));
 
 import { ReviewTabView } from "./ReviewTabView";
@@ -173,9 +174,9 @@ describe("ReviewTabView", () => {
         );
 
         expect(markup).toContain("Pending Changes");
-        expect(markup).toContain("Collapse");
-        expect(markup).toContain("Reject All");
-        expect(markup).toContain("Keep All");
+        expect(markup).toContain("collapse");
+        expect(markup).toContain("reject all");
+        expect(markup).toContain("keep all");
         expect(markup).toContain("src/app.ts");
         expect(markup).toContain("src/secondary.ts");
         expect(markup).toContain(">2 files<");
@@ -194,8 +195,6 @@ describe("ReviewTabView", () => {
         );
 
         expect(markup).toContain("No pending AI edits");
-        expect(markup).toContain(
-            "New edits will appear here automatically.",
-        );
+        expect(markup).toContain("New edits will appear here automatically.");
     });
 });

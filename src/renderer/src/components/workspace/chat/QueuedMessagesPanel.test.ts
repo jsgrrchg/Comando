@@ -45,13 +45,13 @@ describe("QueuedMessagesPanel", () => {
             }),
         );
 
-        expect(markup).toContain("2 Queued Messages");
-        expect(markup).toContain("Editing queued message");
-        expect(markup).toContain("Cancel Edit");
-        expect(markup).toContain("Clear All");
+        expect(markup).toContain("queue (2)");
+        expect(markup).toContain("editing:");
+        expect(markup).toContain("cancel");
+        expect(markup).toContain("[clear]");
         expect(markup).toContain("Delete");
         expect(markup).toContain("Edit");
-        expect(markup).toContain("Send Now");
+        expect(markup).toContain("send");
         expect(markup).toContain("Retry failing message");
     });
 
@@ -68,7 +68,7 @@ describe("QueuedMessagesPanel", () => {
             }),
         );
 
-        expect(markup).toContain("1 Queued Message");
+        expect(markup).toContain("queue (1)");
         expect(markup).not.toContain("queued-messages-list");
         expect(markup).not.toContain("Review src/app.ts");
     });

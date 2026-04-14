@@ -23,6 +23,7 @@ import type {
     KiloRuntimeSettings,
     KiloRuntimeSettingsInput,
 } from "@shared/ipc";
+import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
 
 import {
     appendSelectionMentionDraftPart,
@@ -596,7 +597,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
     keepTrackedFileHunks: async (input) => {
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) => resolveTrackedFileHunksInSnapshot(snapshot, input),
+            (snapshot) =>
+                resolveTrackedFileHunksInSnapshot(snapshot, input, "keep"),
             () => getComandoApi().keepAiTrackedFileHunks(input),
             set,
             get,
@@ -657,7 +659,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
     rejectTrackedFileHunks: async (input) => {
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) => resolveTrackedFileHunksInSnapshot(snapshot, input),
+            (snapshot) =>
+                resolveTrackedFileHunksInSnapshot(snapshot, input, "reject"),
             () => getComandoApi().rejectAiTrackedFileHunks(input),
             set,
             get,
@@ -1848,32 +1851,23 @@ function removeTrackedFileFromSnapshot(
 function resolveTrackedFileHunksInSnapshot(
     snapshot: AiSessionSnapshot,
     input: AiTrackedFileHunkMutationInput,
+    decision: "keep" | "reject",
 ): AiSessionSnapshot {
-    const selectedHunkIds = new Set(input.hunkIds);
     const nextTrackedFiles = snapshot.trackedFiles.flatMap((trackedFile) => {
         if (trackedFile.path !== input.path) {
             return [trackedFile];
         }
 
-        if (trackedFile.hunks.length === 0) {
-            return [];
-        }
-
-        const remainingHunks = trackedFile.hunks.filter(
-            (hunk) => !selectedHunkIds.has(hunk.id),
+        const nextTrackedFile = resolveTrackedFileHunks(
+            trackedFile,
+            input.hunkIds,
+            decision,
         );
-
-        if (remainingHunks.length === 0) {
+        if (!nextTrackedFile) {
             return [];
         }
 
-        return [
-            {
-                ...trackedFile,
-                hunks: remainingHunks,
-                updatedAt: new Date().toISOString(),
-            },
-        ];
+        return [nextTrackedFile];
     });
 
     return {

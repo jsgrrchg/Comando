@@ -7,10 +7,7 @@ import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { EditedFileDiffPreview } from "../review/EditedFileDiffPreview";
 import {
-    getAccentButtonStyle,
-    getDangerButtonStyle,
     getNeutralButtonStyle,
-    getStatChipStyle,
     getToneBorderStyle,
 } from "../review/reviewStyles";
 import {
@@ -36,6 +33,14 @@ const TOOL_ACTION_BUTTON_STYLE: CSSProperties = {
     minHeight: 28,
     padding: "0 10px",
 };
+
+function getFlatDiffStatStyle(color: string): CSSProperties {
+    return {
+        color,
+        fontSize: "0.74em",
+        fontWeight: 700,
+    };
+}
 
 function ToolIcon({ kind }: { readonly kind: string }) {
     const normalizedKind = kind.toLowerCase();
@@ -241,21 +246,13 @@ function ChangeReviewFileRow({
     diffZoom,
     expanded,
     item,
-    onKeep,
-    onKeepHunk,
     onOpen,
-    onReject,
-    onRejectHunk,
     onToggle,
 }: {
     readonly diffZoom: number;
     readonly expanded: boolean;
     readonly item: ChangeReviewItem;
-    readonly onKeep: (() => void) | null;
-    readonly onKeepHunk: ((hunkId: string) => void) | null;
     readonly onOpen: (() => void) | null;
-    readonly onReject: (() => void) | null;
-    readonly onRejectHunk: ((hunkId: string) => void) | null;
     readonly onToggle: () => void;
 }) {
     return (
@@ -391,30 +388,6 @@ function ChangeReviewFileRow({
                             Open
                         </button>
                     ) : null}
-                    {onReject ? (
-                        <button
-                            onClick={onReject}
-                            style={{
-                                ...getDangerButtonStyle(false),
-                                ...TOOL_ACTION_BUTTON_STYLE,
-                            }}
-                            type="button"
-                        >
-                            Reject
-                        </button>
-                    ) : null}
-                    {onKeep ? (
-                        <button
-                            onClick={onKeep}
-                            style={{
-                                ...getAccentButtonStyle(item.tone.accent),
-                                ...TOOL_ACTION_BUTTON_STYLE,
-                            }}
-                            type="button"
-                        >
-                            Accept
-                        </button>
-                    ) : null}
                 </div>
             </div>
 
@@ -426,16 +399,6 @@ function ChangeReviewFileRow({
                         diffZoom={diffZoom}
                         expanded={expanded}
                         file={item.file ?? undefined}
-                        onKeepHunk={
-                            item.canResolveHunks
-                                ? (onKeepHunk ?? undefined)
-                                : undefined
-                        }
-                        onRejectHunk={
-                            item.canResolveHunks
-                                ? (onRejectHunk ?? undefined)
-                                : undefined
-                        }
                         testId={`chat-review-diff:${item.key}`}
                     />
                 </ResizableDiffContainer>
@@ -468,14 +431,6 @@ export function ChangeReviewPanel({
     trackedFiles = [],
     worktreeId = null,
 }: ChangeReviewPanelProps) {
-    const keepTrackedFile = useAiStore((state) => state.keepTrackedFile);
-    const keepTrackedFileHunks = useAiStore(
-        (state) => state.keepTrackedFileHunks,
-    );
-    const rejectTrackedFile = useAiStore((state) => state.rejectTrackedFile);
-    const rejectTrackedFileHunks = useAiStore(
-        (state) => state.rejectTrackedFileHunks,
-    );
     const setSessionDiffZoom = useAiStore((state) => state.setSessionDiffZoom);
     const diffZoom = useAiStore(
         (state) =>
@@ -521,64 +476,6 @@ export function ChangeReviewPanel({
             );
         },
         [onOpenFile, projectId, worktreeId],
-    );
-
-    const handleKeepFile = useCallback(
-        (item: ChangeReviewItem) => {
-            if (!item.file) {
-                return;
-            }
-
-            void keepTrackedFile({
-                path: item.file.path,
-                sessionId: item.file.sessionId,
-            });
-        },
-        [keepTrackedFile],
-    );
-
-    const handleRejectFile = useCallback(
-        (item: ChangeReviewItem) => {
-            if (!item.file) {
-                return;
-            }
-
-            void rejectTrackedFile({
-                path: item.file.path,
-                sessionId: item.file.sessionId,
-            });
-        },
-        [rejectTrackedFile],
-    );
-
-    const handleKeepHunk = useCallback(
-        (item: ChangeReviewItem, hunkId: string) => {
-            if (!item.file) {
-                return;
-            }
-
-            void keepTrackedFileHunks({
-                hunkIds: [hunkId],
-                path: item.file.path,
-                sessionId: item.file.sessionId,
-            });
-        },
-        [keepTrackedFileHunks],
-    );
-
-    const handleRejectHunk = useCallback(
-        (item: ChangeReviewItem, hunkId: string) => {
-            if (!item.file) {
-                return;
-            }
-
-            void rejectTrackedFileHunks({
-                hunkIds: [hunkId],
-                path: item.file.path,
-                sessionId: item.file.sessionId,
-            });
-        },
-        [rejectTrackedFileHunks],
     );
 
     const toggleExpandedFile = useCallback((key: string) => {
@@ -705,7 +602,7 @@ export function ChangeReviewPanel({
 
                 <div className="flex flex-wrap items-center justify-end gap-2">
                     {summary.additions > 0 ? (
-                        <span style={getStatChipStyle("var(--diff-add)")}>
+                        <span style={getFlatDiffStatStyle("var(--diff-add)")}>
                             +
                             {formatDiffStat(
                                 summary.additions,
@@ -714,7 +611,9 @@ export function ChangeReviewPanel({
                         </span>
                     ) : null}
                     {summary.deletions > 0 ? (
-                        <span style={getStatChipStyle("var(--diff-remove)")}>
+                        <span
+                            style={getFlatDiffStatStyle("var(--diff-remove)")}
+                        >
                             -
                             {formatDiffStat(
                                 summary.deletions,
@@ -815,30 +714,6 @@ export function ChangeReviewPanel({
                             Open
                         </button>
                     ) : null}
-                    {singleItem?.canReject ? (
-                        <button
-                            onClick={() => handleRejectFile(singleItem)}
-                            style={{
-                                ...getDangerButtonStyle(false),
-                                ...TOOL_ACTION_BUTTON_STYLE,
-                            }}
-                            type="button"
-                        >
-                            Reject
-                        </button>
-                    ) : null}
-                    {singleItem?.canKeep ? (
-                        <button
-                            onClick={() => handleKeepFile(singleItem)}
-                            style={{
-                                ...getAccentButtonStyle(singleItem.tone.accent),
-                                ...TOOL_ACTION_BUTTON_STYLE,
-                            }}
-                            type="button"
-                        >
-                            Accept
-                        </button>
-                    ) : null}
                     {renderStatus(activity)}
                 </div>
             </div>
@@ -852,18 +727,6 @@ export function ChangeReviewPanel({
                             diffZoom={diffZoom}
                             expanded={expanded}
                             file={singleItem.file ?? undefined}
-                            onKeepHunk={
-                                singleItem.canResolveHunks
-                                    ? (hunkId) =>
-                                          handleKeepHunk(singleItem, hunkId)
-                                    : undefined
-                            }
-                            onRejectHunk={
-                                singleItem.canResolveHunks
-                                    ? (hunkId) =>
-                                          handleRejectHunk(singleItem, hunkId)
-                                    : undefined
-                            }
                             testId={`change-review-panel:${singleItem.key}`}
                         />
                     </ResizableDiffContainer>
@@ -875,31 +738,9 @@ export function ChangeReviewPanel({
                                 expanded={expandedFileKeys.has(item.key)}
                                 item={item}
                                 key={item.key}
-                                onKeep={
-                                    item.canKeep
-                                        ? () => handleKeepFile(item)
-                                        : null
-                                }
-                                onKeepHunk={
-                                    item.canResolveHunks
-                                        ? (hunkId) =>
-                                              handleKeepHunk(item, hunkId)
-                                        : null
-                                }
                                 onOpen={
                                     canOpenItem(item, projectId)
                                         ? () => openItem(item)
-                                        : null
-                                }
-                                onReject={
-                                    item.canReject
-                                        ? () => handleRejectFile(item)
-                                        : null
-                                }
-                                onRejectHunk={
-                                    item.canResolveHunks
-                                        ? (hunkId) =>
-                                              handleRejectHunk(item, hunkId)
                                         : null
                                 }
                                 onToggle={() => toggleExpandedFile(item.key)}

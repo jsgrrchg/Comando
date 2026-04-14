@@ -55,6 +55,13 @@ import type {
     SecretValuePatch,
     SendAiPromptInput,
 } from "@shared/ipc";
+import {
+    computeDiffHunks,
+    replaceTrackedFile,
+    resolveTrackedFileHunks,
+    syncTrackedFile,
+    upsertTrackedFile,
+} from "@shared/ai-tracked-file";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsService } from "@main/settings/service";
@@ -1291,29 +1298,34 @@ export class AiService {
             resolvedPath.relativePath ?? resolvedPath.displayPath;
         liveSession.snapshot = {
             ...liveSession.snapshot,
-            trackedFiles: upsertTrackedFile(liveSession.snapshot.trackedFiles, {
-                identityKey: trackedPath,
-                hunks:
-                    previousContent === null
-                        ? []
-                        : computeDiffHunks(
-                              previousContent,
-                              params.content,
-                              trackedPath,
-                          ),
-                isText: true,
-                kind: previousContent === null ? "create" : "update",
-                newText: params.content,
-                oldText: previousContent,
-                path: trackedPath,
-                previousPath: null,
-                reviewState: "pending",
-                reversible:
-                    previousContent === null || previousContent !== null,
-                sessionId: liveSession.snapshot.sessionId,
-                toolCallId: null,
-                updatedAt: now,
-            }),
+            trackedFiles: upsertTrackedFile(
+                liveSession.snapshot.trackedFiles,
+                syncTrackedFile({
+                    identityKey: trackedPath,
+                    currentText: params.content,
+                    diffBase: previousContent ?? "",
+                    hunks:
+                        previousContent === null
+                            ? []
+                            : computeDiffHunks(
+                                  previousContent,
+                                  params.content,
+                                  trackedPath,
+                              ),
+                    isText: true,
+                    kind: previousContent === null ? "create" : "update",
+                    newText: params.content,
+                    oldText: previousContent,
+                    path: trackedPath,
+                    previousPath: null,
+                    reviewState: "pending",
+                    reversible: true,
+                    sessionId: liveSession.snapshot.sessionId,
+                    toolCallId: null,
+                    updatedAt: now,
+                    version: 1,
+                }),
+            ),
             updatedAt: now,
         };
         this.#persistAndBroadcast(liveSession);
@@ -2542,10 +2554,12 @@ function diffToTrackedFile(
                 )
               : [];
 
-    return {
+    return syncTrackedFile({
         identityKey: fileDiff.previousPath
             ? `${fileDiff.previousPath}->${fileDiff.path}`
             : fileDiff.path,
+        currentText: fileDiff.newText ?? "",
+        diffBase: fileDiff.oldText ?? "",
         hunks,
         isText: true,
         kind: fileDiff.kind,
@@ -2558,7 +2572,8 @@ function diffToTrackedFile(
         sessionId: snapshot.sessionId,
         toolCallId,
         updatedAt,
-    };
+        version: 1,
+    });
 }
 
 function inferDiffKind(
@@ -2614,32 +2629,6 @@ function isDiffReversible(
     }
 
     return oldText !== null;
-}
-
-function upsertTrackedFile(
-    trackedFiles: readonly AiTrackedFile[],
-    nextTrackedFile: AiTrackedFile,
-): readonly AiTrackedFile[] {
-    return replaceTrackedFile(
-        trackedFiles,
-        nextTrackedFile.path,
-        nextTrackedFile,
-    );
-}
-
-function replaceTrackedFile(
-    trackedFiles: readonly AiTrackedFile[],
-    path: string,
-    nextTrackedFile: AiTrackedFile | null,
-): readonly AiTrackedFile[] {
-    const nextTrackedFiles = trackedFiles.filter(
-        (trackedFile) => trackedFile.path !== path,
-    );
-    if (!nextTrackedFile) {
-        return nextTrackedFiles;
-    }
-
-    return [...nextTrackedFiles, nextTrackedFile];
 }
 
 function parseUserInputRequest(
@@ -2788,299 +2777,6 @@ function summarizeUserInputAnswers(
         .join("\n");
 }
 
-function resolveTrackedFileHunks(
-    trackedFile: AiTrackedFile,
-    hunkIds: readonly string[],
-    decision: "keep" | "reject",
-): AiTrackedFile | null {
-    if (
-        hunkIds.length === 0 ||
-        !trackedFile.isText ||
-        trackedFile.hunks.length === 0
-    ) {
-        return trackedFile;
-    }
-
-    const selectedIds = new Set(hunkIds);
-    const selectedHunks = trackedFile.hunks.filter((hunk) =>
-        selectedIds.has(hunk.id),
-    );
-    if (selectedHunks.length === 0) {
-        return trackedFile;
-    }
-
-    const baseOldText = trackedFile.oldText ?? "";
-    const baseNewText = trackedFile.newText ?? "";
-    const remainingHunks = trackedFile.hunks.filter(
-        (hunk) => !selectedIds.has(hunk.id),
-    );
-    const oldText =
-        decision === "keep"
-            ? applyHunksToBase(baseOldText, selectedHunks)
-            : baseOldText;
-    const newText =
-        decision === "keep"
-            ? baseNewText
-            : applyHunksToBase(baseOldText, remainingHunks);
-    const nextHunks = computeDiffHunks(oldText, newText, trackedFile.path);
-
-    if (oldText === newText) {
-        return null;
-    }
-
-    const nextOldText = finalizeTrackedTextSide(trackedFile.oldText, oldText);
-    const nextNewText = finalizeTrackedTextSide(trackedFile.newText, newText);
-
-    return {
-        ...trackedFile,
-        hunks: nextHunks,
-        kind: inferResolvedTrackedFileKind(
-            trackedFile,
-            nextOldText,
-            nextNewText,
-        ),
-        newText: nextNewText,
-        oldText: nextOldText,
-        updatedAt: new Date().toISOString(),
-    };
-}
-
-function inferResolvedTrackedFileKind(
-    trackedFile: AiTrackedFile,
-    oldText: string | null,
-    newText: string | null,
-): AiTrackedFile["kind"] {
-    if (trackedFile.previousPath) {
-        return "move";
-    }
-
-    if (oldText === null) {
-        return "create";
-    }
-
-    if (newText === null) {
-        return "delete";
-    }
-
-    return "update";
-}
-
-function finalizeTrackedTextSide(
-    originalValue: string | null,
-    nextValue: string,
-): string | null {
-    if (originalValue === null && nextValue.length === 0) {
-        return null;
-    }
-
-    return nextValue;
-}
-
-function applyHunksToBase(
-    baseText: string,
-    hunks: readonly AiDiffHunk[],
-): string {
-    const baseLines = splitTextLines(baseText);
-    const output: string[] = [];
-    let cursor = 0;
-
-    for (const hunk of [...hunks].sort(
-        (left, right) => left.oldStart - right.oldStart,
-    )) {
-        const startIndex = Math.max(hunk.oldStart - 1, cursor);
-        output.push(...baseLines.slice(cursor, startIndex));
-        let localCursor = startIndex;
-
-        for (const line of hunk.lines) {
-            if (line.type === "context") {
-                output.push(baseLines[localCursor] ?? line.text);
-                localCursor += 1;
-                continue;
-            }
-
-            if (line.type === "remove") {
-                localCursor += 1;
-                continue;
-            }
-
-            output.push(line.text);
-        }
-
-        cursor = localCursor;
-    }
-
-    output.push(...baseLines.slice(cursor));
-    return output.join("\n");
-}
-
-function computeDiffHunks(
-    oldText: string,
-    newText: string,
-    seed: string,
-): readonly AiDiffHunk[] {
-    const oldLines = splitTextLines(oldText);
-    const newLines = splitTextLines(newText);
-    const maxMatrixCells = 400_000;
-
-    if (oldLines.length * newLines.length > maxMatrixCells) {
-        return buildSingleHunk(seed, oldLines, newLines);
-    }
-
-    const matrix = Array.from(
-        { length: oldLines.length + 1 },
-        () => new Uint32Array(newLines.length + 1),
-    );
-
-    for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
-        for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
-            matrix[oldIndex][newIndex] =
-                oldLines[oldIndex] === newLines[newIndex]
-                    ? matrix[oldIndex + 1][newIndex + 1] + 1
-                    : Math.max(
-                          matrix[oldIndex + 1][newIndex],
-                          matrix[oldIndex][newIndex + 1],
-                      );
-        }
-    }
-
-    const operations: Array<{
-        readonly text: string;
-        readonly type: "add" | "context" | "remove";
-    }> = [];
-    let oldIndex = 0;
-    let newIndex = 0;
-
-    while (oldIndex < oldLines.length && newIndex < newLines.length) {
-        if (oldLines[oldIndex] === newLines[newIndex]) {
-            operations.push({ text: oldLines[oldIndex], type: "context" });
-            oldIndex += 1;
-            newIndex += 1;
-            continue;
-        }
-
-        if (matrix[oldIndex + 1][newIndex] >= matrix[oldIndex][newIndex + 1]) {
-            operations.push({ text: oldLines[oldIndex], type: "remove" });
-            oldIndex += 1;
-            continue;
-        }
-
-        operations.push({ text: newLines[newIndex], type: "add" });
-        newIndex += 1;
-    }
-
-    while (oldIndex < oldLines.length) {
-        operations.push({ text: oldLines[oldIndex], type: "remove" });
-        oldIndex += 1;
-    }
-    while (newIndex < newLines.length) {
-        operations.push({ text: newLines[newIndex], type: "add" });
-        newIndex += 1;
-    }
-
-    const hunks: AiDiffHunk[] = [];
-    let pendingLines: Array<{
-        readonly id: string;
-        readonly text: string;
-        readonly type: "add" | "context" | "remove";
-    }> = [];
-    let pendingOldStart = 1;
-    let pendingNewStart = 1;
-    let pendingOldCount = 0;
-    let pendingNewCount = 0;
-    oldIndex = 1;
-    newIndex = 1;
-
-    const flushPending = () => {
-        if (pendingLines.length === 0) {
-            return;
-        }
-
-        hunks.push({
-            id: `${seed}:${pendingOldStart}:${pendingNewStart}:${hunks.length}`,
-            lines: pendingLines,
-            newCount: pendingNewCount,
-            newStart: pendingNewStart,
-            oldCount: pendingOldCount,
-            oldStart: pendingOldStart,
-        });
-        pendingLines = [];
-        pendingOldCount = 0;
-        pendingNewCount = 0;
-    };
-
-    for (const operation of operations) {
-        if (operation.type === "context") {
-            flushPending();
-            oldIndex += 1;
-            newIndex += 1;
-            continue;
-        }
-
-        if (pendingLines.length === 0) {
-            pendingOldStart = oldIndex;
-            pendingNewStart = newIndex;
-        }
-
-        pendingLines.push({
-            id: `line:${seed}:${pendingOldStart}:${pendingNewStart}:${pendingLines.length}`,
-            text: operation.text,
-            type: operation.type,
-        });
-        if (operation.type !== "add") {
-            pendingOldCount += 1;
-            oldIndex += 1;
-        }
-        if (operation.type !== "remove") {
-            pendingNewCount += 1;
-            newIndex += 1;
-        }
-    }
-    flushPending();
-
-    return hunks;
-}
-
-function buildSingleHunk(
-    seed: string,
-    oldLines: readonly string[],
-    newLines: readonly string[],
-): readonly AiDiffHunk[] {
-    const lines = [
-        ...oldLines.map((text, index) => ({
-            id: `line:${seed}:remove:${index}`,
-            text,
-            type: "remove" as const,
-        })),
-        ...newLines.map((text, index) => ({
-            id: `line:${seed}:add:${index}`,
-            text,
-            type: "add" as const,
-        })),
-    ];
-    if (lines.length === 0) {
-        return [];
-    }
-
-    return [
-        {
-            id: `${seed}:1:1:0`,
-            lines,
-            newCount: newLines.length,
-            newStart: 1,
-            oldCount: oldLines.length,
-            oldStart: 1,
-        },
-    ];
-}
-
-function splitTextLines(text: string): string[] {
-    if (text.length === 0) {
-        return [];
-    }
-
-    return text.split("\n");
-}
-
 function readDiffMetaString(meta: unknown, key: string): string | null {
     if (!isRecord(meta)) {
         return null;
@@ -3161,6 +2857,18 @@ function parseDiffHunk(value: unknown, seed: string): AiDiffHunk | null {
                 : typeof value.old_start === "number"
                   ? value.old_start
                   : 1,
+        visualEndLine:
+            typeof value.visualEndLine === "number"
+                ? value.visualEndLine
+                : typeof value.visual_end_line === "number"
+                  ? value.visual_end_line
+                  : undefined,
+        visualStartLine:
+            typeof value.visualStartLine === "number"
+                ? value.visualStartLine
+                : typeof value.visual_start_line === "number"
+                  ? value.visual_start_line
+                  : undefined,
     };
 }
 
@@ -3291,3 +2999,9 @@ async function readTextIfExists(absolutePath: string): Promise<string | null> {
 function toPosixPath(candidatePath: string): string {
     return candidatePath.split(path.sep).join("/");
 }
+
+export const __testing = {
+    computeDiffHunks,
+    resolveTrackedFileHunks,
+    upsertTrackedFile,
+};

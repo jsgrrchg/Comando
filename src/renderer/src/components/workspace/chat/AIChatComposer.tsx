@@ -384,6 +384,13 @@ interface AIChatComposerProps {
     readonly renderImageChip: (att: AiImageAttachment) => ReactNode;
 }
 
+export function shouldResetComposerForNonceChange(
+    previousResetNonce: number | null,
+    nextResetNonce: number,
+): boolean {
+    return previousResetNonce !== null && previousResetNonce !== nextResetNonce;
+}
+
 /* ─── Component ─── */
 
 export function AIChatComposer({
@@ -432,6 +439,7 @@ export function AIChatComposer({
     }>({ open: false, query: "", items: [], selectedIndex: 0 });
 
     const lastSyncedParts = useRef<string>("");
+    const lastResetNonceRef = useRef<number | null>(null);
 
     const metrics = useMemo(
         () => getChatPillMetrics(composerFontSize),
@@ -466,6 +474,15 @@ export function AIChatComposer({
     useEffect(() => {
         const root = composerRef.current;
         if (!root) return;
+
+        const previousResetNonce = lastResetNonceRef.current;
+        lastResetNonceRef.current = resetNonce;
+
+        if (
+            !shouldResetComposerForNonceChange(previousResetNonce, resetNonce)
+        ) {
+            return;
+        }
 
         const emptyParts: AIComposerPart[] = [{ type: "text", text: "" }];
         lastSyncedParts.current = JSON.stringify(emptyParts);

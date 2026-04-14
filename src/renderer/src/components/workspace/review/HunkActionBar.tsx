@@ -1,20 +1,18 @@
 import type { CSSProperties } from "react";
 
-import { getNeutralButtonStyle } from "./reviewStyles";
-
 type HunkDecision = "accepted" | "rejected";
 
 const BASE_BUTTON_STYLE: CSSProperties = {
     alignItems: "center",
-    borderRadius: 6,
+    borderRadius: 3,
     cursor: "pointer",
     display: "inline-flex",
-    fontSize: "0.68em",
+    fontFamily: "var(--font-mono)",
+    fontSize: "10px",
     fontWeight: 600,
-    height: 24,
+    height: 22,
     justifyContent: "center",
-    letterSpacing: "0.01em",
-    padding: "0 9px",
+    padding: "0 8px",
 };
 
 const BAR_STYLE: CSSProperties = {
@@ -23,7 +21,7 @@ const BAR_STYLE: CSSProperties = {
     backgroundColor:
         "color-mix(in srgb, var(--color-bg-primary) 78%, var(--color-bg-secondary))",
     border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-    borderRadius: 8,
+    borderRadius: 6,
     boxShadow: "0 6px 16px rgb(0 0 0 / 0.12)",
     display: "flex",
     gap: 4,
@@ -65,14 +63,13 @@ export function HunkActionBar({
                 <span
                     style={{
                         ...BASE_BUTTON_STYLE,
-                        backgroundColor: `color-mix(in srgb, ${color} 10%, var(--color-bg-primary))`,
-                        border: `1px solid color-mix(in srgb, ${color} 30%, var(--color-border))`,
+                        background: "transparent",
+                        border: "none",
                         color,
                         cursor: "default",
-                        padding: "0 8px",
                     }}
                 >
-                    {accepted ? "Accepted" : "Rejected"}
+                    {accepted ? "accepted" : "rejected"}
                 </span>
                 {onUndo ? (
                     <button
@@ -81,11 +78,13 @@ export function HunkActionBar({
                         onClick={onUndo}
                         style={{
                             ...BASE_BUTTON_STYLE,
-                            ...getNeutralButtonStyle(),
+                            background: "transparent",
+                            border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                            color: "var(--color-text-secondary)",
                         }}
                         type="button"
                     >
-                        Undo
+                        undo
                     </button>
                 ) : null}
             </div>
@@ -103,14 +102,14 @@ export function HunkActionBar({
                 onClick={onAccept}
                 style={{
                     ...BASE_BUTTON_STYLE,
-                    backgroundColor:
-                        "color-mix(in srgb, var(--diff-add) 10%, var(--color-bg-primary))",
-                    border: "1px solid color-mix(in srgb, var(--diff-add) 32%, var(--color-border))",
+                    background: "transparent",
+                    border: "none",
                     color: "var(--diff-add)",
+                    opacity: 0.7,
                 }}
                 type="button"
             >
-                Accept
+                ✓ accept
             </button>
             <button
                 aria-label={`Reject hunk ${hunkIndex + 1}`}
@@ -118,14 +117,14 @@ export function HunkActionBar({
                 onClick={onReject}
                 style={{
                     ...BASE_BUTTON_STYLE,
-                    backgroundColor:
-                        "color-mix(in srgb, var(--diff-remove) 10%, var(--color-bg-primary))",
-                    border: "1px solid color-mix(in srgb, var(--diff-remove) 32%, var(--color-border))",
+                    background: "transparent",
+                    border: "none",
                     color: "var(--diff-remove)",
+                    opacity: 0.7,
                 }}
                 type="button"
             >
-                Reject
+                ✕ reject
             </button>
         </div>
     );

@@ -920,6 +920,8 @@ export interface AiDiffHunk {
     readonly newStart: number;
     readonly oldCount: number;
     readonly oldStart: number;
+    readonly visualEndLine?: number;
+    readonly visualStartLine?: number;
 }
 
 export type AiFileDiffHunk = AiDiffHunk;
@@ -1014,6 +1016,8 @@ export interface AiUserInputRequest {
 
 export interface AiTrackedFile {
     readonly identityKey: string;
+    readonly diffBase?: string;
+    readonly currentText?: string;
     readonly hunks: readonly AiDiffHunk[];
     readonly isText: boolean;
     readonly kind: "create" | "delete" | "move" | "update";
@@ -1026,6 +1030,7 @@ export interface AiTrackedFile {
     readonly sessionId: string;
     readonly toolCallId: string | null;
     readonly updatedAt: string;
+    readonly version?: number;
 }
 
 export type AiSessionConfigCategory = "mode" | "model" | "other" | "reasoning";

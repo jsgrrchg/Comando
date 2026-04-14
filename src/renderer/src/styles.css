@@ -708,6 +708,31 @@ button {
     background: transparent;
 }
 
+.inline-review-diff .monaco-editor .line-numbers.dimmed-line-number {
+    display: none !important;
+}
+
+.inline-review-diff .monaco-diff-editor .diffOverview {
+    width: 0 !important;
+}
+
+.inline-review-diff
+    .monaco-scrollable-element.modified-in-monaco-diff-editor
+    .scrollbar.vertical {
+    width: 6px !important;
+}
+
+.inline-review-diff
+    .monaco-scrollable-element.modified-in-monaco-diff-editor
+    .scrollbar.vertical
+    .slider {
+    width: 6px !important;
+}
+
+.inline-review-diff .monaco-editor .find-widget {
+    z-index: 8 !important;
+}
+
 @keyframes ai-bounce {
     0%,
     60%,
@@ -806,4 +831,11 @@ body.resizing-composer {
     border-radius: 999px;
     background: var(--color-bg-elevated);
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+}
+
+.review-action-btn:hover:not(:disabled) {
+    filter: brightness(1.1);
+}
+.review-action-btn:active:not(:disabled) {
+    filter: brightness(0.95);
 }

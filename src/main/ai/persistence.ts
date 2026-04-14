@@ -15,6 +15,7 @@ import type {
     AiTrackedFile,
     AiUserInputRequest,
 } from "@shared/ipc";
+import { syncTrackedFile } from "@shared/ai-tracked-file";
 
 interface PersistedAiSessionRow {
     readonly draft: string;
@@ -766,8 +767,16 @@ function normalizeTrackedFiles(value: unknown): readonly AiTrackedFile[] {
         }
 
         return [
-            {
+            syncTrackedFile({
                 identityKey: entry.identityKey,
+                currentText:
+                    typeof entry.currentText === "string"
+                        ? entry.currentText
+                        : undefined,
+                diffBase:
+                    typeof entry.diffBase === "string"
+                        ? entry.diffBase
+                        : undefined,
                 isText: typeof entry.isText === "boolean" ? entry.isText : true,
                 kind:
                     entry.kind === "create" ||
@@ -806,7 +815,11 @@ function normalizeTrackedFiles(value: unknown): readonly AiTrackedFile[] {
                     typeof entry.updatedAt === "string"
                         ? entry.updatedAt
                         : new Date().toISOString(),
-            } satisfies AiTrackedFile,
+                version:
+                    typeof entry.version === "number"
+                        ? entry.version
+                        : undefined,
+            } satisfies AiTrackedFile),
         ];
     });
 }
@@ -971,6 +984,14 @@ function normalizeDiffHunks(value: unknown): readonly AiDiffHunk[] {
                     typeof entry.oldCount === "number" ? entry.oldCount : 0,
                 oldStart:
                     typeof entry.oldStart === "number" ? entry.oldStart : 1,
+                visualEndLine:
+                    typeof entry.visualEndLine === "number"
+                        ? entry.visualEndLine
+                        : undefined,
+                visualStartLine:
+                    typeof entry.visualStartLine === "number"
+                        ? entry.visualStartLine
+                        : undefined,
             } satisfies AiDiffHunk,
         ];
     });

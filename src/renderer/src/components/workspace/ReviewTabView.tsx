@@ -16,7 +16,7 @@ import {
     deriveReviewSummary,
     type ReviewFileItem,
 } from "./review/editedFilesPresentationModel";
-import { ReviewFileRow } from "./review/ReviewFileRow";
+import { DiffStatBar, ReviewFileRow } from "./review/ReviewFileRow";
 import {
     DIFF_ZOOM_MAX,
     DIFF_ZOOM_MIN,
@@ -32,12 +32,7 @@ import {
     resolvePersistedReviewAnchor,
     type PersistedReviewAnchor,
 } from "./review/reviewTabPersistence";
-import {
-    getAccentButtonStyle,
-    getDangerButtonStyle,
-    getNeutralButtonStyle,
-    getStatChipStyle,
-} from "./review/reviewStyles";
+import { getNeutralButtonStyle } from "./review/reviewStyles";
 
 interface ReviewTabViewProps {
     readonly onOpenFile: (
@@ -223,24 +218,78 @@ function ReviewStatChips({
     readonly summary: ReturnType<typeof deriveReviewSummary>;
 }) {
     return (
-        <div className="flex flex-wrap items-center gap-1.5">
-            <span style={getStatChipStyle()}>
+        <div className="flex items-center gap-2" style={{ fontSize: "10px" }}>
+            <span
+                style={{
+                    color: "var(--color-text-secondary)",
+                    fontWeight: 500,
+                }}
+            >
                 {summary.fileCount} {summary.fileCount === 1 ? "file" : "files"}
             </span>
-            {summary.additions > 0 ? (
-                <span style={getStatChipStyle("var(--diff-add)")}>
-                    +{formatDiffStat(summary.additions, summary.approximate)}
-                </span>
-            ) : null}
-            {summary.deletions > 0 ? (
-                <span style={getStatChipStyle("var(--diff-remove)")}>
-                    -{formatDiffStat(summary.deletions, summary.approximate)}
-                </span>
-            ) : null}
+            {(summary.additions > 0 || summary.deletions > 0) && (
+                <>
+                    <span
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            opacity: 0.4,
+                        }}
+                    >
+                        ·
+                    </span>
+                    {summary.additions > 0 ? (
+                        <span
+                            style={{
+                                color: "var(--diff-add)",
+                                fontWeight: 600,
+                            }}
+                        >
+                            +
+                            {formatDiffStat(
+                                summary.additions,
+                                summary.approximate,
+                            )}
+                        </span>
+                    ) : null}
+                    {summary.deletions > 0 ? (
+                        <span
+                            style={{
+                                color: "var(--diff-remove)",
+                                fontWeight: 600,
+                            }}
+                        >
+                            −
+                            {formatDiffStat(
+                                summary.deletions,
+                                summary.approximate,
+                            )}
+                        </span>
+                    ) : null}
+                    <DiffStatBar
+                        additions={summary.additions}
+                        deletions={summary.deletions}
+                    />
+                </>
+            )}
             {summary.partialCount > 0 ? (
-                <span style={getStatChipStyle("var(--diff-warn)")}>
-                    {summary.partialCount} partial
-                </span>
+                <>
+                    <span
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            opacity: 0.4,
+                        }}
+                    >
+                        ·
+                    </span>
+                    <span
+                        style={{
+                            color: "var(--diff-warn)",
+                            fontWeight: 500,
+                        }}
+                    >
+                        {summary.partialCount} partial
+                    </span>
+                </>
             ) : null}
         </div>
     );
@@ -684,21 +733,34 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                     backgroundColor: "var(--color-bg-secondary)",
                     borderBottom:
                         "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    fontFamily: "var(--font-mono)",
                 }}
             >
                 <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4">
                     <div className="min-w-0">
-                        <div className="flex items-center gap-3">
-                            <h1
-                                className="text-sm font-semibold"
-                                style={{ color: "var(--color-text-primary)" }}
+                        <div className="flex items-center gap-2">
+                            <span
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontSize: "10px",
+                                    fontWeight: 600,
+                                    letterSpacing: "0.06em",
+                                    textTransform: "uppercase",
+                                }}
                             >
                                 Pending Changes
-                            </h1>
+                            </span>
                             <ReviewStatChips summary={summary} />
                         </div>
-                        <div className="mt-1 text-xs text-text-secondary">
-                            Review and accept or reject pending AI file edits.
+                        <div
+                            style={{
+                                color: "var(--color-text-secondary)",
+                                fontSize: "10px",
+                                marginTop: 4,
+                                opacity: 0.5,
+                            }}
+                        >
+                            review and accept or reject pending edits
                         </div>
                     </div>
 
@@ -708,7 +770,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 backgroundColor:
                                     "color-mix(in srgb, var(--color-bg-primary) 48%, transparent)",
                                 border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                                borderRadius: 8,
+                                borderRadius: 4,
                                 display: "flex",
                                 overflow: "hidden",
                             }}
@@ -779,15 +841,19 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                             <button
                                 className="review-action-btn"
                                 style={{
-                                    ...getNeutralButtonStyle(),
-                                    borderRadius: 8,
-                                    fontSize: "0.75em",
-                                    fontWeight: 600,
-                                    padding: "6px 10px",
+                                    background: "transparent",
+                                    border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                                    borderRadius: 3,
+                                    color: "var(--color-text-secondary)",
+                                    cursor: "pointer",
+                                    fontSize: "10px",
+                                    fontWeight: 500,
+                                    lineHeight: "20px",
+                                    padding: "0 8px",
                                 }}
                                 type="button"
                             >
-                                Undo Last Reject
+                                undo reject
                             </button>
                         ) : null}
                         <button
@@ -798,15 +864,19 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                     : expansion.expandAll
                             }
                             style={{
-                                ...getNeutralButtonStyle(),
-                                borderRadius: 8,
-                                fontSize: "0.75em",
-                                fontWeight: 600,
-                                padding: "6px 10px",
+                                background: "transparent",
+                                border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                                borderRadius: 3,
+                                color: "var(--color-text-secondary)",
+                                cursor: "pointer",
+                                fontSize: "10px",
+                                fontWeight: 500,
+                                lineHeight: "20px",
+                                padding: "0 8px",
                             }}
                             type="button"
                         >
-                            {expansion.allExpanded ? "Collapse" : "Expand"}
+                            {expansion.allExpanded ? "collapse" : "expand"}
                         </button>
                         <button
                             className="review-action-btn"
@@ -817,15 +887,21 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 void rejectAllTrackedFiles(tab.sessionId);
                             }}
                             style={{
-                                ...getDangerButtonStyle(rejectableCount === 0),
-                                borderRadius: 8,
-                                fontSize: "0.75em",
-                                fontWeight: 700,
-                                padding: "6px 12px",
+                                background: "transparent",
+                                border: "none",
+                                color: "var(--diff-remove)",
+                                cursor:
+                                    rejectableCount === 0
+                                        ? "not-allowed"
+                                        : "pointer",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                opacity: rejectableCount === 0 ? 0.3 : 0.7,
+                                padding: "4px 6px",
                             }}
                             type="button"
                         >
-                            Reject All
+                            ✕ reject all
                         </button>
                         <button
                             className="review-action-btn"
@@ -836,20 +912,21 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 void keepAllTrackedFiles(tab.sessionId);
                             }}
                             style={{
-                                ...getAccentButtonStyle(),
-                                borderRadius: 8,
+                                background: "transparent",
+                                border: "none",
+                                color: "var(--diff-add)",
                                 cursor:
                                     items.length === 0
                                         ? "not-allowed"
                                         : "pointer",
-                                fontSize: "0.75em",
-                                fontWeight: 700,
-                                opacity: items.length === 0 ? 0.45 : 1,
-                                padding: "6px 12px",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                opacity: items.length === 0 ? 0.3 : 0.7,
+                                padding: "4px 6px",
                             }}
                             type="button"
                         >
-                            Keep All
+                            ✓ keep all
                         </button>
                     </div>
                 </div>

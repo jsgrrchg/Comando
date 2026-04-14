@@ -20,6 +20,368 @@ const monacoGlobal = globalThis as typeof globalThis & MonacoEnvironmentShape;
 const LIGHT_THEME_NAME: ComandoMonacoTheme = "comando-light";
 const DARK_THEME_NAME: ComandoMonacoTheme = "comando-dark";
 
+type MonarchLanguageModule = {
+    readonly conf?: monaco.languages.LanguageConfiguration;
+    readonly language: monaco.languages.IMonarchLanguage;
+};
+
+type TokenizedLanguageModule = {
+    readonly conf?: monaco.languages.LanguageConfiguration;
+    readonly tokensProvider: monaco.languages.TokensProvider;
+};
+
+type DeferredMonacoLanguage =
+    | {
+          readonly kind: "monarch";
+          readonly load: () => Promise<MonarchLanguageModule>;
+      }
+    | {
+          readonly kind: "tokens";
+          readonly load: () => Promise<TokenizedLanguageModule>;
+      };
+
+const deferredMonacoLanguageCache = new Map<
+    DeferredMonacoLanguage,
+    Promise<MonarchLanguageModule | TokenizedLanguageModule>
+>();
+
+function loadDeferredMonacoLanguage(
+    definition: DeferredMonacoLanguage,
+): Promise<MonarchLanguageModule | TokenizedLanguageModule> {
+    const cached = deferredMonacoLanguageCache.get(definition);
+    if (cached) {
+        return cached;
+    }
+
+    const loaderPromise = definition.load();
+    deferredMonacoLanguageCache.set(definition, loaderPromise);
+    return loaderPromise;
+}
+
+function basicLanguage(
+    load: () => Promise<MonarchLanguageModule>,
+): DeferredMonacoLanguage {
+    return {
+        kind: "monarch",
+        load,
+    };
+}
+
+function jsonLanguage({
+    allowComments,
+}: {
+    readonly allowComments: boolean;
+}): DeferredMonacoLanguage {
+    return {
+        kind: "tokens",
+        load: async () => {
+            const { createTokenizationSupport } =
+                await import("monaco-editor/esm/vs/language/json/tokenization.js");
+
+            return {
+                tokensProvider: createTokenizationSupport(allowComments),
+            };
+        },
+    };
+}
+
+function registerLanguageIds(
+    languageIds: readonly string[],
+    definition: DeferredMonacoLanguage,
+) {
+    const knownLanguageIds = new Set(
+        monaco.languages.getLanguages().map((language) => language.id),
+    );
+
+    for (const languageId of languageIds) {
+        if (knownLanguageIds.has(languageId)) {
+            continue;
+        }
+
+        monaco.languages.register({
+            aliases: [languageId],
+            id: languageId,
+        });
+        knownLanguageIds.add(languageId);
+
+        let didAttachProvider = false;
+        monaco.languages.onLanguage(languageId, () => {
+            if (didAttachProvider) {
+                return;
+            }
+            didAttachProvider = true;
+
+            void loadDeferredMonacoLanguage(definition).then((loaded) => {
+                if (definition.kind === "monarch") {
+                    const monarchLanguage = loaded as MonarchLanguageModule;
+                    monaco.languages.setMonarchTokensProvider(
+                        languageId,
+                        monarchLanguage.language,
+                    );
+                    if (monarchLanguage.conf) {
+                        monaco.languages.setLanguageConfiguration(
+                            languageId,
+                            monarchLanguage.conf,
+                        );
+                    }
+                    return;
+                }
+
+                const tokenizedLanguage = loaded as TokenizedLanguageModule;
+                monaco.languages.setTokensProvider(
+                    languageId,
+                    tokenizedLanguage.tokensProvider,
+                );
+                if (tokenizedLanguage.conf) {
+                    monaco.languages.setLanguageConfiguration(
+                        languageId,
+                        tokenizedLanguage.conf,
+                    );
+                }
+            });
+        });
+    }
+}
+
+function configureMarkdownFenceLanguages() {
+    registerLanguageIds(
+        ["markdown"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/markdown/markdown.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["c", "cpp", "c++", "cc", "cxx", "h", "hpp"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/cpp/cpp.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["clojure", "clj", "cljs"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/clojure/clojure.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["csharp", "c#", "cs"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/csharp/csharp.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["css"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/css/css.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["scss"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/scss/scss.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["less"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/less/less.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["dockerfile", "docker"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["elixir", "erlang", "erl", "ex", "exs"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/elixir/elixir.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["go", "golang"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/go/go.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["html"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/html/html.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["java"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/java/java.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["julia", "jl"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/julia/julia.js"),
+        ),
+    );
+    registerLanguageIds(["json"], jsonLanguage({ allowComments: false }));
+    registerLanguageIds(["jsonc"], jsonLanguage({ allowComments: true }));
+    registerLanguageIds(
+        ["javascript", "js", "node", "nodejs", "mjs", "cjs", "jsx"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/javascript/javascript.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["kotlin", "kt", "kts"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/kotlin/kotlin.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["lua"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/lua/lua.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["pascal", "delphi"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/pascal/pascal.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["perl", "pl"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/perl/perl.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["php", "php3", "php4", "php5", "phtml"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/php/php.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["powershell", "ps1", "ps", "pwsh"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/powershell/powershell.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["protobuf", "proto"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/protobuf/protobuf.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["python", "py"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/python/python.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["r"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/r/r.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["ruby", "rb"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/ruby/ruby.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["rust", "rs"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/rust/rust.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["scala"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/scala/scala.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["shell", "sh", "bash", "zsh", "fish", "shellscript"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/shell/shell.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["sql"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/sql/sql.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["mysql", "mariadb"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/mysql/mysql.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["postgres", "postgresql", "psql"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/pgsql/pgsql.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["mssql", "tsql"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/sql/sql.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["swift"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/swift/swift.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["tcl"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/tcl/tcl.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["typescript", "ts", "tsx"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/typescript/typescript.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["vb", "vbnet"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/vb/vb.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["xml", "svg", "xhtml"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/xml/xml.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["yaml", "yml"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/yaml/yaml.js"),
+        ),
+    );
+}
+
 if (!monacoGlobal.__comandoMonacoConfigured) {
     monacoGlobal.MonacoEnvironment = {
         getWorker: (_moduleId, label) => {
@@ -48,6 +410,7 @@ if (!monacoGlobal.__comandoMonacoConfigured) {
     };
 
     loader.config({ monaco });
+    configureMarkdownFenceLanguages();
     monacoGlobal.__comandoMonacoConfigured = true;
 }
 

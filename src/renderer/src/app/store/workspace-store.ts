@@ -859,6 +859,47 @@ export function getPaneChatTabId(
     return getWorkspaceChatTabId(state.tabsById[pane.activeTabId]);
 }
 
+export function getBestMatchingChatTabId(
+    state: Pick<WorkspaceTreeState, "rootNode" | "tabsById">,
+    input: {
+        readonly currentPaneId: string;
+        readonly lastFocusedChatTabId: string | null;
+        readonly projectId: string | null;
+        readonly worktreeId: string | null;
+    },
+): string | null {
+    const matchesScope = (tabId: string) => {
+        const tab = state.tabsById[tabId];
+        return (
+            tab?.kind === "chat" &&
+            tab.projectId === input.projectId &&
+            normalizeWorktreeId(tab.worktreeId) ===
+                normalizeWorktreeId(input.worktreeId)
+        );
+    };
+
+    if (
+        input.lastFocusedChatTabId &&
+        matchesScope(input.lastFocusedChatTabId)
+    ) {
+        return input.lastFocusedChatTabId;
+    }
+
+    const currentPane = collectPaneNodes(state.rootNode).find(
+        (candidate) => candidate.id === input.currentPaneId,
+    );
+    const currentPaneMatch = currentPane?.tabIds.find(matchesScope) ?? null;
+    if (currentPaneMatch) {
+        return currentPaneMatch;
+    }
+
+    return (
+        collectPaneNodes(state.rootNode)
+            .flatMap((pane) => pane.tabIds)
+            .find(matchesScope) ?? null
+    );
+}
+
 function createHydratedRuntimeTabs(
     snapshot: WorkspaceSnapshot,
 ): Record<string, RuntimeWorkspaceTab> {
