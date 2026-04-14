@@ -871,6 +871,7 @@ export function AIChatComposer({
 
             {/* Pickers */}
             <AIChatMentionPicker
+                anchorRef={shellRef}
                 items={mentionState.items}
                 onClose={() => setMentionState((s) => ({ ...s, open: false }))}
                 onHoverIndex={(i) =>
@@ -883,9 +884,10 @@ export function AIChatComposer({
                 open={mentionState.open}
                 selectedIndex={mentionState.selectedIndex}
                 x={0}
-                y={0}
+                y={8}
             />
             <AIChatCommandPicker
+                anchorRef={shellRef}
                 items={slashState.items}
                 onClose={() => setSlashState((s) => ({ ...s, open: false }))}
                 onHoverIndex={(i) =>
@@ -898,7 +900,7 @@ export function AIChatComposer({
                 open={slashState.open}
                 selectedIndex={slashState.selectedIndex}
                 x={0}
-                y={0}
+                y={8}
             />
 
             {/* Attachments bar */}

@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
+import { createPortal } from "react-dom";
 
 import type {
     AiRuntimeId,
@@ -6,6 +14,8 @@ import type {
     AiSessionMode,
     AiSessionModel,
 } from "@shared/ipc";
+
+import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
 
 interface AIChatAgentControlsProps {
     readonly configOptions: readonly AiSessionConfigOption[];
@@ -39,6 +49,12 @@ interface DropdownFieldProps {
     readonly searchable?: boolean;
     readonly searchPlaceholder?: string;
     readonly value: string;
+}
+
+interface DropdownMenuPosition {
+    readonly minWidth: number;
+    readonly x: number;
+    readonly y: number;
 }
 
 function formatFallbackLabel(value: string): string {
@@ -95,7 +111,11 @@ function DropdownField({
     const [isOpen, setIsOpen] = useState(false);
     const [query, setQuery] = useState("");
     const containerRef = useRef<HTMLDivElement | null>(null);
+    const buttonRef = useRef<HTMLButtonElement | null>(null);
+    const menuRef = useRef<HTMLDivElement | null>(null);
     const searchRef = useRef<HTMLInputElement | null>(null);
+    const [menuPosition, setMenuPosition] =
+        useState<DropdownMenuPosition | null>(null);
     const selectedOption = options.find((option) => option.value === value);
     const isDisabled = disabled || options.length === 0;
     const filteredOptions = useMemo(() => {
@@ -114,10 +134,49 @@ function DropdownField({
         });
     }, [options, query, searchable]);
 
+    const updateMenuPosition = useCallback(() => {
+        const button = buttonRef.current;
+        if (!button) return;
+
+        const buttonRect = button.getBoundingClientRect();
+        const measuredMenuRect = menuRef.current?.getBoundingClientRect();
+        const minWidth = Math.max(180, Math.ceil(buttonRect.width));
+        const width = Math.min(
+            300,
+            Math.max(minWidth, Math.ceil(measuredMenuRect?.width ?? minWidth)),
+        );
+        const estimatedHeight = Math.min(
+            288,
+            filteredOptions.length * 32 + (searchable ? 52 : 0) + 8,
+        );
+        const height = Math.ceil(measuredMenuRect?.height ?? estimatedHeight);
+        const spaceAbove = buttonRect.top - 8;
+        const spaceBelow = window.innerHeight - buttonRect.bottom - 8;
+        const openAbove = spaceAbove >= height || spaceAbove > spaceBelow;
+        const offset = 4;
+        const preferredY = openAbove
+            ? buttonRect.top - height - offset
+            : buttonRect.bottom + offset;
+        const safePosition = getViewportSafeMenuPosition(
+            buttonRect.left,
+            preferredY,
+            width,
+            height,
+        );
+
+        setMenuPosition({
+            minWidth,
+            x: safePosition.x,
+            y: safePosition.y,
+        });
+    }, [filteredOptions.length, searchable]);
+
     useEffect(() => {
         if (!isOpen) return;
         const handlePointerDown = (event: MouseEvent) => {
-            if (containerRef.current?.contains(event.target as Node)) return;
+            const target = event.target as Node;
+            if (containerRef.current?.contains(target)) return;
+            if (menuRef.current?.contains(target)) return;
             setIsOpen(false);
             setQuery("");
         };
@@ -125,6 +184,27 @@ function DropdownField({
         return () =>
             document.removeEventListener("mousedown", handlePointerDown);
     }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const handleViewportChange = () => {
+            updateMenuPosition();
+        };
+
+        handleViewportChange();
+        window.addEventListener("resize", handleViewportChange);
+        window.addEventListener("scroll", handleViewportChange, true);
+        return () => {
+            window.removeEventListener("resize", handleViewportChange);
+            window.removeEventListener("scroll", handleViewportChange, true);
+        };
+    }, [isOpen, updateMenuPosition]);
+
+    useLayoutEffect(() => {
+        if (!isOpen) return;
+        updateMenuPosition();
+    }, [isOpen, updateMenuPosition]);
 
     useEffect(() => {
         if (!isOpen || !searchable) return;
@@ -137,6 +217,7 @@ function DropdownField({
             <button
                 className="app-no-drag flex items-center gap-1 rounded-md px-2 py-1 text-xs"
                 disabled={isDisabled}
+                ref={buttonRef}
                 onClick={() => {
                     if (isDisabled) return;
                     setIsOpen((current) => !current);
@@ -178,88 +259,100 @@ function DropdownField({
                 <ChevronIcon open={isOpen} />
             </button>
 
-            {isOpen ? (
-                <div
-                    className="absolute bottom-full left-0 z-50 mb-1 min-w-[180px] max-w-[300px] overflow-hidden rounded-lg border"
-                    style={{
-                        backgroundColor: "var(--color-bg-secondary)",
-                        borderColor: "var(--color-border)",
-                        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
-                    }}
-                >
-                    {searchable ? (
-                        <div
-                            className="border-b p-2"
-                            style={{ borderColor: "var(--color-border)" }}
-                        >
-                            <input
-                                className="ide-input app-no-drag w-full text-xs"
-                                onChange={(event) =>
-                                    setQuery(event.target.value)
-                                }
-                                onKeyDown={(event) => {
-                                    event.stopPropagation();
-                                }}
-                                placeholder={searchPlaceholder}
-                                ref={searchRef}
-                                value={query}
-                            />
-                        </div>
-                    ) : null}
+            {isOpen
+                ? createPortal(
+                      <div
+                          className="z-[10010] overflow-hidden rounded-lg border"
+                          ref={menuRef}
+                          style={{
+                              backgroundColor: "var(--color-bg-secondary)",
+                              borderColor: "var(--color-border)",
+                              boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+                              left: menuPosition?.x ?? 8,
+                              maxWidth: 300,
+                              minWidth: menuPosition?.minWidth ?? 180,
+                              position: "fixed",
+                              top: menuPosition?.y ?? 8,
+                          }}
+                      >
+                          {searchable ? (
+                              <div
+                                  className="border-b p-2"
+                                  style={{
+                                      borderColor: "var(--color-border)",
+                                  }}
+                              >
+                                  <input
+                                      className="ide-input app-no-drag w-full text-xs"
+                                      onChange={(event) =>
+                                          setQuery(event.target.value)
+                                      }
+                                      onKeyDown={(event) => {
+                                          event.stopPropagation();
+                                      }}
+                                      placeholder={searchPlaceholder}
+                                      ref={searchRef}
+                                      value={query}
+                                  />
+                              </div>
+                          ) : null}
 
-                    <div className="max-h-72 overflow-y-auto py-1">
-                        {filteredOptions.length === 0 ? (
-                            <div className="px-3 py-2 text-[11px] text-text-secondary">
-                                {emptySearchMessage}
-                            </div>
-                        ) : (
-                            filteredOptions.map((option) => (
-                                <button
-                                    className="app-no-drag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition"
-                                    key={`${option.groupLabel ?? "default"}:${option.value}`}
-                                    onClick={() => {
-                                        onChange(option.value);
-                                        setIsOpen(false);
-                                        setQuery("");
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        e.currentTarget.style.backgroundColor =
-                                            "var(--color-bg-tertiary)";
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        e.currentTarget.style.backgroundColor =
-                                            "transparent";
-                                    }}
-                                    style={{
-                                        backgroundColor: "transparent",
-                                        border: "none",
-                                        color:
-                                            option.value === value
-                                                ? "var(--color-accent)"
-                                                : "var(--color-text-primary)",
-                                    }}
-                                    type="button"
-                                >
-                                    <div className="min-w-0 flex-1">
-                                        <div className="truncate">
-                                            {option.groupLabel ? (
-                                                <span
-                                                    style={{
-                                                        color: "var(--color-text-secondary)",
-                                                    }}
-                                                >
-                                                    {option.groupLabel} /{" "}
-                                                </span>
-                                            ) : null}
-                                            <span>{option.label}</span>
-                                        </div>
-                                    </div>
-                                </button>
-                            ))
-                        )}
-                    </div>
-                </div>
-            ) : null}
+                          <div className="max-h-72 overflow-y-auto py-1">
+                              {filteredOptions.length === 0 ? (
+                                  <div className="px-3 py-2 text-[11px] text-text-secondary">
+                                      {emptySearchMessage}
+                                  </div>
+                              ) : (
+                                  filteredOptions.map((option) => (
+                                      <button
+                                          className="app-no-drag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition"
+                                          key={`${option.groupLabel ?? "default"}:${option.value}`}
+                                          onClick={() => {
+                                              onChange(option.value);
+                                              setIsOpen(false);
+                                              setQuery("");
+                                          }}
+                                          onMouseEnter={(e) => {
+                                              e.currentTarget.style.backgroundColor =
+                                                  "var(--color-bg-tertiary)";
+                                          }}
+                                          onMouseLeave={(e) => {
+                                              e.currentTarget.style.backgroundColor =
+                                                  "transparent";
+                                          }}
+                                          style={{
+                                              backgroundColor: "transparent",
+                                              border: "none",
+                                              color:
+                                                  option.value === value
+                                                      ? "var(--color-accent)"
+                                                      : "var(--color-text-primary)",
+                                          }}
+                                          type="button"
+                                      >
+                                          <div className="min-w-0 flex-1">
+                                              <div className="truncate">
+                                                  {option.groupLabel ? (
+                                                      <span
+                                                          style={{
+                                                              color: "var(--color-text-secondary)",
+                                                          }}
+                                                      >
+                                                          {option.groupLabel}{" "}
+                                                          /{" "}
+                                                      </span>
+                                                  ) : null}
+                                                  <span>{option.label}</span>
+                                              </div>
+                                          </div>
+                                      </button>
+                                  ))
+                              )}
+                          </div>
+                      </div>,
+                      document.body,
+                  )
+                : null}
         </div>
     );
 }
