@@ -1,8 +1,5 @@
 import Editor, { DiffEditor } from "@monaco-editor/react";
-import type {
-    editor as MonacoEditor,
-    Selection as MonacoSelection,
-} from "monaco-editor";
+import type { editor as MonacoEditor } from "monaco-editor";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -1465,33 +1462,6 @@ function getQuickCreateButtonTitle(
     }
 }
 
-function isMonacoWholeLineSelection(
-    model: MonacoEditor.ITextModel,
-    selection: MonacoSelection,
-): boolean {
-    if (selection.isEmpty()) {
-        return false;
-    }
-
-    const start = selection.getStartPosition();
-    const end = selection.getEndPosition();
-
-    if (start.column !== 1) {
-        return false;
-    }
-
-    const lineCount = model.getLineCount();
-    const endsAtNextLineStart =
-        end.column === 1 &&
-        end.lineNumber > start.lineNumber &&
-        end.lineNumber <= lineCount + 1;
-    const endsAtCurrentLineEnd =
-        end.lineNumber <= lineCount &&
-        end.column === model.getLineMaxColumn(end.lineNumber);
-
-    return endsAtNextLineStart || endsAtCurrentLineEnd;
-}
-
 function tryAttachEditorSelectionToComposer(input: {
     readonly documentLanguageId: string;
     readonly projectId: string;
@@ -1506,10 +1476,6 @@ function tryAttachEditorSelectionToComposer(input: {
     const selection = input.editor.getSelection();
 
     if (!model || !selection || selection.isEmpty()) {
-        return false;
-    }
-
-    if (isMonacoWholeLineSelection(model, selection)) {
         return false;
     }
 
@@ -2002,11 +1968,18 @@ function FileTabView({
                         onChange={(value: string | undefined) =>
                             onDraftChange(tab.id, value ?? "")
                         }
-                        onMount={(editor, monaco) => {
+                        onMount={(editor) => {
                             editorRef.current = editor;
-                            editor.onKeyDown((event) => {
+                            const editorDomNode = editor.getDomNode();
+                            if (!editorDomNode) {
+                                return;
+                            }
+
+                            const handleEditorKeyDown = (
+                                event: KeyboardEvent,
+                            ) => {
                                 if (
-                                    event.keyCode !== monaco.KeyCode.KeyL ||
+                                    event.key.toLowerCase() !== "l" ||
                                     !(event.metaKey || event.ctrlKey) ||
                                     event.altKey ||
                                     event.shiftKey
@@ -2014,6 +1987,8 @@ function FileTabView({
                                     return;
                                 }
 
+                                // Intercept in capture so Monaco doesn't expand line
+                                // selection before we can attach the current selection.
                                 const attached =
                                     tryAttachEditorSelectionToComposer({
                                         documentLanguageId: document.languageId,
@@ -2030,6 +2005,21 @@ function FileTabView({
 
                                 event.preventDefault();
                                 event.stopPropagation();
+                                event.stopImmediatePropagation();
+                            };
+
+                            editorDomNode.addEventListener(
+                                "keydown",
+                                handleEditorKeyDown,
+                                true,
+                            );
+
+                            editor.onDidDispose(() => {
+                                editorDomNode.removeEventListener(
+                                    "keydown",
+                                    handleEditorKeyDown,
+                                    true,
+                                );
                             });
                         }}
                         options={{
