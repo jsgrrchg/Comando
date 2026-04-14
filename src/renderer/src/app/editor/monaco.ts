@@ -67,6 +67,16 @@ function basicLanguage(
     };
 }
 
+function monarchLanguage(
+    language: monaco.languages.IMonarchLanguage,
+    conf?: monaco.languages.LanguageConfiguration,
+): DeferredMonacoLanguage {
+    return {
+        kind: "monarch",
+        load: async () => ({ conf, language }),
+    };
+}
+
 function jsonLanguage({
     allowComments,
 }: {
@@ -84,6 +94,137 @@ function jsonLanguage({
         },
     };
 }
+
+const diffMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    tokenizer: {
+        root: [
+            [/^(diff|index)\b.*$/, "meta"],
+            [/^(---|\+\+\+)\s.*$/, "keyword"],
+            [/^@@.*@@$/, "keyword"],
+            [/^\+.*$/, "string"],
+            [/^-.*$/, "regexp"],
+            [/^!.*$/, "type"],
+            [/^ .*$/, ""],
+        ],
+    },
+};
+
+const cmakeMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    brackets: [
+        { open: "(", close: ")", token: "delimiter.parenthesis" },
+        { open: "[", close: "]", token: "delimiter.square" },
+        { open: "{", close: "}", token: "delimiter.curly" },
+    ],
+    defaultToken: "",
+    ignoreCase: true,
+    tokenizer: {
+        root: [
+            [/#.*$/, "comment"],
+            [/\$\{[^}]+\}/, "variable"],
+            [/\$ENV\{[^}]+\}/, "variable.predefined"],
+            [
+                /\b(?:if|elseif|else|endif|foreach|endforeach|while|endwhile|function|endfunction|macro|endmacro|include|find_package|project|add_executable|add_library|target_link_libraries|target_include_directories|set|unset|option|message|cmake_minimum_required|install)\b(?=\s*\()/,
+                "keyword",
+            ],
+            [/"([^"\\]|\\.)*"/, "string"],
+            [/\b\d+(?:\.\d+)?\b/, "number"],
+            [/[(){}\[\]]/, "@brackets"],
+            [/[A-Za-z_][\w-]*/, "identifier"],
+        ],
+    },
+};
+
+const makefileMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    defaultToken: "",
+    tokenizer: {
+        root: [
+            [/^\s*#.*$/, "comment"],
+            [/^\s*\.[A-Za-z_-]+:/, "keyword"],
+            [/^\s*[^\s:=#][^:=#]*:/, "type.identifier"],
+            [/\$\(([^)]+)\)/, "variable"],
+            [/\$\{([^}]+)\}/, "variable"],
+            [/(?:\?|:)?\+=|::?=|=/, "keyword"],
+            [
+                /\b(?:ifneq|ifeq|ifdef|ifndef|else|endif|include|define|endef|override|export|unexport)\b/,
+                "keyword",
+            ],
+            [/"([^"\\]|\\.)*"/, "string"],
+            [/\b\d+(?:\.\d+)?\b/, "number"],
+        ],
+    },
+};
+
+const haskellMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    defaultToken: "",
+    tokenizer: {
+        root: [
+            [/--.*$/, "comment"],
+            [/\{-/, { token: "comment", next: "@comment" }],
+            [/"([^"\\]|\\.)*"/, "string"],
+            [/'([^'\\]|\\.)'/, "string"],
+            [
+                /\b(?:case|class|data|default|deriving|do|else|foreign|if|import|in|infix|infixl|infixr|instance|let|module|newtype|of|then|type|where)\b/,
+                "keyword",
+            ],
+            [/\b(?:True|False|Nothing|Just)\b/, "constant"],
+            [/\b\d+(?:\.\d+)?\b/, "number"],
+            [/[A-Z][\w']*/, "type.identifier"],
+            [/[a-z_][\w']*/, "identifier"],
+            [/[(){}\[\]]/, "@brackets"],
+            [/[-!#$%&*+./<=>?@\\^|:~]+/, "operators"],
+        ],
+        comment: [
+            [/[^\{-]+/, "comment"],
+            [/\{-/, "comment", "@push"],
+            [/-\}/, "comment", "@pop"],
+            [/[\{-]/, "comment"],
+        ],
+    },
+};
+
+const latexMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    brackets: [
+        { open: "{", close: "}", token: "delimiter.curly" },
+        { open: "[", close: "]", token: "delimiter.square" },
+        { open: "(", close: ")", token: "delimiter.parenthesis" },
+    ],
+    defaultToken: "",
+    tokenizer: {
+        root: [
+            [/%.*$/, "comment"],
+            [/\\[A-Za-z@]+/, "keyword"],
+            [/\\./, "keyword"],
+            [/\$[^$]+\$/, "string"],
+            [/\b\d+(?:\.\d+)?\b/, "number"],
+            [/[{}\[\]()]/, "@brackets"],
+        ],
+    },
+};
+
+const wastMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    brackets: [{ open: "(", close: ")", token: "delimiter.parenthesis" }],
+    defaultToken: "",
+    tokenizer: {
+        root: [
+            [/;;.*$/, "comment"],
+            [/\(\;/, { token: "comment", next: "@comment" }],
+            [/"([^"\\]|\\.)*"/, "string"],
+            [/\$[A-Za-z0-9!#$%&'*+\-./:<=>?@\\^_`|~]+/, "variable"],
+            [
+                /\b(?:module|func|param|result|local|global|table|memory|data|elem|type|import|export|start|offset|mut|call|loop|block|if|then|else|br|br_if|br_table|return|unreachable)\b/,
+                "keyword",
+            ],
+            [/[+-]?\b\d+(?:\.\d+)?\b/, "number"],
+            [/[()]/, "@brackets"],
+        ],
+        comment: [
+            [/[^\(;]+/, "comment"],
+            [/\(\;/, "comment", "@push"],
+            [/;\)/, "comment", "@pop"],
+            [/[\(;]/, "comment"],
+        ],
+    },
+};
 
 function registerLanguageIds(
     languageIds: readonly string[],
@@ -164,12 +305,23 @@ function configureMarkdownFenceLanguages() {
                 import("monaco-editor/esm/vs/basic-languages/clojure/clojure.js"),
         ),
     );
+    registerLanguageIds(["cmake"], monarchLanguage(cmakeMonarchDefinition));
     registerLanguageIds(
         ["csharp", "c#", "cs"],
         basicLanguage(
             () =>
                 import("monaco-editor/esm/vs/basic-languages/csharp/csharp.js"),
         ),
+    );
+    registerLanguageIds(
+        ["d"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/cpp/cpp.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["diff", "patch"],
+        monarchLanguage(diffMonarchDefinition),
     );
     registerLanguageIds(
         ["css"],
@@ -208,6 +360,16 @@ function configureMarkdownFenceLanguages() {
         basicLanguage(
             () => import("monaco-editor/esm/vs/basic-languages/go/go.js"),
         ),
+    );
+    registerLanguageIds(
+        ["groovy"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/java/java.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["haskell", "hs"],
+        monarchLanguage(haskellMonarchDefinition),
     );
     registerLanguageIds(
         ["html"],
@@ -250,6 +412,10 @@ function configureMarkdownFenceLanguages() {
         ),
     );
     registerLanguageIds(
+        ["make", "makefile", "mk"],
+        monarchLanguage(makefileMonarchDefinition),
+    );
+    registerLanguageIds(
         ["pascal", "delphi"],
         basicLanguage(
             () =>
@@ -276,6 +442,12 @@ function configureMarkdownFenceLanguages() {
         ),
     );
     registerLanguageIds(
+        ["properties", "ini", "cfg", "conf", "dotenv", "env"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/ini/ini.js"),
+        ),
+    );
+    registerLanguageIds(
         ["protobuf", "proto"],
         basicLanguage(
             () =>
@@ -299,6 +471,12 @@ function configureMarkdownFenceLanguages() {
         ["ruby", "rb"],
         basicLanguage(
             () => import("monaco-editor/esm/vs/basic-languages/ruby/ruby.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["sass"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/scss/scss.js"),
         ),
     );
     registerLanguageIds(
@@ -344,6 +522,22 @@ function configureMarkdownFenceLanguages() {
         ),
     );
     registerLanguageIds(
+        ["sqlite", "sqlite3"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/sql/sql.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["tex", "latex"],
+        monarchLanguage(latexMonarchDefinition),
+    );
+    registerLanguageIds(
+        ["stylus", "styl"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/less/less.js"),
+        ),
+    );
+    registerLanguageIds(
         ["swift"],
         basicLanguage(
             () => import("monaco-editor/esm/vs/basic-languages/swift/swift.js"),
@@ -353,6 +547,12 @@ function configureMarkdownFenceLanguages() {
         ["tcl"],
         basicLanguage(
             () => import("monaco-editor/esm/vs/basic-languages/tcl/tcl.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["toml"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/ini/ini.js"),
         ),
     );
     registerLanguageIds(
@@ -379,6 +579,10 @@ function configureMarkdownFenceLanguages() {
         basicLanguage(
             () => import("monaco-editor/esm/vs/basic-languages/yaml/yaml.js"),
         ),
+    );
+    registerLanguageIds(
+        ["wast", "wat", "wasm"],
+        monarchLanguage(wastMonarchDefinition),
     );
 }
 
