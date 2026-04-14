@@ -13,11 +13,11 @@ import type {
     AiImageAttachment,
     AiUserInputRequest,
     AiSessionSnapshot,
-    AiToolActivity,
     ClaudeAuthMethodId,
     GeminiAuthMethodId,
 } from "@shared/ipc";
 
+import type { QueuedPrompt } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -35,6 +35,10 @@ import {
 } from "./chat/composerParts";
 import { PlanMessage } from "./chat/PlanMessage";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
+import {
+    deriveToolActivityReviewEntries,
+    type ToolActivityReviewEntry,
+} from "./chat/toolActivityReviewModel";
 
 /* ─── Types ─── */
 
@@ -54,7 +58,10 @@ type TimelineRow =
           readonly kind: "message";
           readonly message: AiSessionSnapshot["messages"][number];
       }
-    | { readonly kind: "tool"; readonly activity: AiToolActivity };
+    | {
+          readonly kind: "tool";
+          readonly reviewEntry: ToolActivityReviewEntry;
+      };
 
 /* ─── Constants ─── */
 
@@ -95,6 +102,7 @@ export function ChatTabView({
     const claudeSettings = useAiStore((s) => s.claudeSettings);
     const codexBinaryPath = useAiStore((s) => s.codexBinaryPath);
     const ensureSession = useAiStore((s) => s.ensureSession);
+    const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
     const geminiSettings = useAiStore((s) => s.geminiSettings);
     const kiloSettings = useAiStore((s) => s.kiloSettings);
     const launchRuntimeAuth = useAiStore((s) => s.launchRuntimeAuth);
@@ -339,24 +347,28 @@ export function ChatTabView({
     }, [isStreaming, streamStartTime]);
 
     const timeline = useMemo((): TimelineRow[] => {
+        const toolReviewEntries = deriveToolActivityReviewEntries(
+            snapshot.toolActivity,
+            snapshot.trackedFiles,
+        );
         const rows: TimelineRow[] = [];
         for (const message of snapshot.messages)
             rows.push({ kind: "message", message });
-        for (const activity of snapshot.toolActivity)
-            rows.push({ activity, kind: "tool" });
+        for (const reviewEntry of toolReviewEntries)
+            rows.push({ kind: "tool", reviewEntry });
         rows.sort((a, b) => {
             const aT =
                 a.kind === "message"
                     ? a.message.createdAt
-                    : a.activity.updatedAt;
+                    : a.reviewEntry.activity.updatedAt;
             const bT =
                 b.kind === "message"
                     ? b.message.createdAt
-                    : b.activity.updatedAt;
+                    : b.reviewEntry.activity.updatedAt;
             return aT.localeCompare(bT);
         });
         return rows;
-    }, [snapshot.messages, snapshot.toolActivity]);
+    }, [snapshot.messages, snapshot.toolActivity, snapshot.trackedFiles]);
 
     const scrollToBottom = useCallback(() => {
         const el = scrollRef.current;
@@ -463,7 +475,11 @@ export function ChatTabView({
         setComposerError(null);
 
         try {
-            await sendPrompt(tab, prompt, submittedAttachments);
+            await sendPrompt(tab, prompt, {
+                attachments: submittedAttachments,
+                composerPartsSnapshot: submittedParts,
+                fileContextsSnapshot: submittedFileContexts,
+            });
         } catch {
             const latestSession = useAiStore.getState().sessions[tab.sessionId];
             const latestDraftAttachments =
@@ -495,6 +511,20 @@ export function ChatTabView({
             onDraftChange(composerPartsToPlainText(newParts));
         },
         [onDraftChange],
+    );
+
+    const handleEditQueuedPrompt = useCallback(
+        (promptId: string) => {
+            const restoredParts = editQueuedPrompt(tab.sessionId, promptId);
+            if (!restoredParts) {
+                return;
+            }
+
+            setComposerParts([...restoredParts]);
+            onDraftChange(composerPartsToPlainText(restoredParts));
+            setComposerError(null);
+        },
+        [editQueuedPrompt, onDraftChange, tab.sessionId],
     );
 
     useEffect(() => {
@@ -1013,9 +1043,12 @@ export function ChatTabView({
                                 />
                             ) : (
                                 <ToolActivityItem
-                                    key={row.activity.id}
-                                    activity={row.activity}
+                                    activity={row.reviewEntry.activity}
+                                    key={row.reviewEntry.activity.id}
                                     onOpenFile={onOpenFile}
+                                    pendingTrackedFiles={
+                                        row.reviewEntry.pendingTrackedFiles
+                                    }
                                     projectId={tab.projectId}
                                 />
                             ),
@@ -1054,6 +1087,7 @@ export function ChatTabView({
                             {queuedPrompts.length > 0
                                 ? renderQueuedPrompts(
                                       queuedPrompts,
+                                      handleEditQueuedPrompt,
                                       removeQueuedPrompt,
                                       tab.sessionId,
                                   )
@@ -1815,7 +1849,8 @@ function renderPermissionRequest(
 }
 
 function renderQueuedPrompts(
-    queue: readonly { id: string; prompt: string }[],
+    queue: readonly QueuedPrompt[],
+    edit: (promptId: string) => void,
     remove: (sessionId: string, id: string) => void,
     sessionId: string,
 ) {
@@ -1845,15 +1880,56 @@ function renderQueuedPrompts(
                     >
                         {q.prompt}
                     </span>
+                    <span
+                        className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]"
+                        style={{
+                            backgroundColor:
+                                q.status === "failed"
+                                    ? "color-mix(in srgb, #dc2626 10%, transparent)"
+                                    : q.status === "sending"
+                                      ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
+                                      : "color-mix(in srgb, var(--color-text-secondary) 10%, transparent)",
+                            color:
+                                q.status === "failed"
+                                    ? "#fca5a5"
+                                    : q.status === "sending"
+                                      ? "var(--color-accent)"
+                                      : "var(--color-text-secondary)",
+                        }}
+                    >
+                        {q.status === "failed"
+                            ? "failed"
+                            : q.status === "sending"
+                              ? "sending"
+                              : "queued"}
+                    </span>
                     <button
                         className="app-no-drag"
+                        disabled={q.status === "sending"}
+                        onClick={() => edit(q.id)}
+                        style={{
+                            background: "none",
+                            color: "var(--color-text-secondary)",
+                            cursor:
+                                q.status === "sending" ? "default" : "pointer",
+                            fontSize: "0.85em",
+                            opacity: q.status === "sending" ? 0.35 : 0.75,
+                        }}
+                        type="button"
+                    >
+                        Edit
+                    </button>
+                    <button
+                        className="app-no-drag"
+                        disabled={q.status === "sending"}
                         onClick={() => remove(sessionId, q.id)}
                         style={{
                             background: "none",
                             color: "var(--color-text-secondary)",
-                            cursor: "pointer",
+                            cursor:
+                                q.status === "sending" ? "default" : "pointer",
                             fontSize: "0.85em",
-                            opacity: 0.7,
+                            opacity: q.status === "sending" ? 0.35 : 0.7,
                         }}
                         type="button"
                     >

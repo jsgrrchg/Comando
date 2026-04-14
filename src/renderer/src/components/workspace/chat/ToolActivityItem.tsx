@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { AiToolActivity } from "@shared/ipc";
+import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
 /* ─── Tool icon SVGs ─── */
 
@@ -155,7 +155,11 @@ function getToolIcon(kind: string) {
     return <DefaultIcon />;
 }
 
-function isFileToolActivity(activity: AiToolActivity): boolean {
+function isFileToolActivity(
+    activity: AiToolActivity,
+    pendingTrackedFiles: readonly AiTrackedFile[],
+): boolean {
+    if (pendingTrackedFiles.length > 0) return true;
     if (FILE_TOOL_KINDS.has(activity.kind)) return true;
     if (activity.locations.length > 0) return true;
     if (activity.diffs.length > 0) return true;
@@ -186,6 +190,7 @@ function summarizeDiff(oldText: string | null, newText: string | null): string {
 function FileToolMessage({
     activity,
     onOpenFile,
+    pendingTrackedFiles,
     projectId,
 }: {
     readonly activity: AiToolActivity;
@@ -193,6 +198,7 @@ function FileToolMessage({
         projectId: string,
         relativePath: string,
     ) => Promise<void>;
+    readonly pendingTrackedFiles: readonly AiTrackedFile[];
     readonly projectId: string | null;
 }) {
     const [expanded, setExpanded] = useState(false);
@@ -203,7 +209,8 @@ function FileToolMessage({
     const hasDetail =
         !!activity.summary ||
         activity.locations.length > 0 ||
-        activity.diffs.length > 0;
+        activity.diffs.length > 0 ||
+        pendingTrackedFiles.length > 0;
 
     return (
         <div
@@ -255,6 +262,18 @@ function FileToolMessage({
                         }}
                     >
                         done
+                    </span>
+                ) : null}
+                {pendingTrackedFiles.length > 0 ? (
+                    <span
+                        className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]"
+                        style={{
+                            backgroundColor:
+                                "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+                            color: "var(--color-accent)",
+                        }}
+                    >
+                        {pendingTrackedFiles.length} review
                     </span>
                 ) : null}
                 {hasDetail ? (
@@ -354,6 +373,41 @@ function FileToolMessage({
                             </div>
                         </div>
                     ))}
+                    {activity.diffs.length === 0
+                        ? pendingTrackedFiles.map((trackedFile) => (
+                              <div
+                                  className="mb-1 rounded-md px-2 py-1.5"
+                                  key={`${activity.id}:${trackedFile.identityKey}`}
+                                  style={{
+                                      backgroundColor:
+                                          "var(--color-bg-tertiary)",
+                                      border: "1px solid var(--color-border)",
+                                  }}
+                              >
+                                  <div className="flex items-center justify-between gap-2">
+                                      <span
+                                          className="min-w-0 truncate"
+                                          style={{
+                                              color: "var(--color-text-primary)",
+                                              fontSize: "0.9em",
+                                          }}
+                                      >
+                                          {trackedFile.path}
+                                      </span>
+                                      <span
+                                          style={{
+                                              color: "var(--color-text-secondary)",
+                                              fontSize: "0.8em",
+                                              letterSpacing: "0.06em",
+                                              textTransform: "uppercase",
+                                          }}
+                                      >
+                                          pending review
+                                      </span>
+                                  </div>
+                              </div>
+                          ))
+                        : null}
                 </div>
             ) : null}
         </div>
@@ -439,6 +493,7 @@ function GenericToolMessage({
 export function ToolActivityItem({
     activity,
     onOpenFile,
+    pendingTrackedFiles = [],
     projectId,
 }: {
     readonly activity: AiToolActivity;
@@ -446,13 +501,15 @@ export function ToolActivityItem({
         projectId: string,
         relativePath: string,
     ) => Promise<void>;
+    readonly pendingTrackedFiles?: readonly AiTrackedFile[];
     readonly projectId: string | null;
 }) {
-    if (isFileToolActivity(activity)) {
+    if (isFileToolActivity(activity, pendingTrackedFiles)) {
         return (
             <FileToolMessage
                 activity={activity}
                 onOpenFile={onOpenFile}
+                pendingTrackedFiles={pendingTrackedFiles}
                 projectId={projectId}
             />
         );
