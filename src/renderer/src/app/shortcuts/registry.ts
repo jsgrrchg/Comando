@@ -6,6 +6,7 @@ export interface ShortcutDefinition {
         | "new_file"
         | "new_terminal"
         | "next_pane_tab"
+        | "open_file_picker"
         | "open_settings"
         | "previous_pane_tab"
         | "save_file"
@@ -60,6 +61,17 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Cmd+R",
             windows: "Ctrl+R",
+        },
+        section: "File",
+    },
+    {
+        id: "open_file_picker",
+        label: "Quick open file",
+        description:
+            "Search project files and open the selection in the active pane.",
+        keys: {
+            mac: "Cmd+T",
+            windows: "Ctrl+T",
         },
         section: "File",
     },

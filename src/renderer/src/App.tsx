@@ -5,6 +5,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type KeyboardEvent as ReactKeyboardEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
 
@@ -21,6 +22,11 @@ import {
     buildGitTreeNodesFromProjectTree,
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
+import {
+    collectProjectQuickOpenFiles,
+    searchProjectQuickOpenFiles,
+    type ProjectQuickOpenMatch,
+} from "./app/projects/quick-open";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import { buildFilteredProjectTree } from "./app/projects/tree-filter";
 import {
@@ -49,7 +55,11 @@ import {
 } from "./components/context-menu/ContextMenu";
 import { SidebarGitPanel, SidebarGitScopePicker } from "./components/sidebar";
 import { SplitHandle } from "./components/SplitHandle";
-import { createWorkspaceQuickFile } from "./components/workspace/quick-create";
+import {
+    createWorkspaceQuickDirectory,
+    createWorkspaceQuickFile,
+} from "./components/workspace/quick-create";
+import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 
 type DragState = {
@@ -68,6 +78,13 @@ type FileTreeContextMenuPayload =
           readonly kind: "node";
           readonly node: GitTreeNode;
       };
+
+type FileTreeInlineEditorState = {
+    readonly draftName: string;
+    readonly kind: "directory" | "file";
+    readonly originalName: string;
+    readonly path: string;
+};
 
 export function App() {
     useSystemTheme();
@@ -189,6 +206,12 @@ export function App() {
     const [projectRootExpandedByContext, setProjectRootExpandedByContext] =
         useState<Record<string, boolean>>({});
     const [fileTreeFilter, setFileTreeFilter] = useState("");
+    const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
+    const [isQuickOpenLoading, setIsQuickOpenLoading] = useState(false);
+    const [quickOpenQuery, setQuickOpenQuery] = useState("");
+    const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
+    const [fileTreeInlineEditor, setFileTreeInlineEditor] =
+        useState<FileTreeInlineEditorState | null>(null);
     void isFileTreeSearchLoading;
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
@@ -197,6 +220,7 @@ export function App() {
         number | null
     >(null);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
+    const fileTreeInlineSubmitPendingRef = useRef(false);
     const overlayDismissRef = useRef<number | null>(null);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -518,6 +542,10 @@ export function App() {
         setFileTreeContextMenu(null);
         setIsFileTreeSearchLoading(false);
         setIsFileTreeSearchOpen(false);
+        setIsQuickOpenLoading(false);
+        setIsQuickOpenOpen(false);
+        setQuickOpenQuery("");
+        setQuickOpenSelectedIndex(0);
     }, [activeProjectId, activeWorktreeId]);
 
     useEffect(() => {
@@ -569,6 +597,46 @@ export function App() {
         isActiveProjectTreeFullyLoaded,
         loadEntireProjectTree,
     ]);
+
+    useEffect(() => {
+        if (
+            !isQuickOpenOpen ||
+            !activeProjectId ||
+            isActiveProjectTreeFullyLoaded
+        ) {
+            setIsQuickOpenLoading(false);
+            return;
+        }
+
+        let isCancelled = false;
+        setIsQuickOpenLoading(true);
+
+        void loadEntireProjectTree(activeProjectId, activeWorktreeId).finally(
+            () => {
+                if (!isCancelled) {
+                    setIsQuickOpenLoading(false);
+                }
+            },
+        );
+
+        return () => {
+            isCancelled = true;
+        };
+    }, [
+        activeProjectId,
+        activeWorktreeId,
+        isActiveProjectTreeFullyLoaded,
+        isQuickOpenOpen,
+        loadEntireProjectTree,
+    ]);
+
+    useEffect(() => {
+        if (!isQuickOpenOpen) {
+            return;
+        }
+
+        setQuickOpenSelectedIndex(0);
+    }, [isQuickOpenOpen, quickOpenQuery]);
 
     const handlePointerMove = useEffectEvent((event: PointerEvent) => {
         if (!dragState) {
@@ -648,6 +716,24 @@ export function App() {
     const visibleExpandedDirectories = isFilteringFileTree
         ? filteredFileTree.expandedDirectories
         : activeExpandedDirectories;
+    const quickOpenFiles = useMemo(
+        () => collectProjectQuickOpenFiles(activeTreeNodesByParent),
+        [activeTreeNodesByParent],
+    );
+    const quickOpenResults = useMemo(
+        () => searchProjectQuickOpenFiles(quickOpenFiles, quickOpenQuery),
+        [quickOpenFiles, quickOpenQuery],
+    );
+    useEffect(() => {
+        if (quickOpenResults.length === 0) {
+            setQuickOpenSelectedIndex(0);
+            return;
+        }
+
+        setQuickOpenSelectedIndex((currentIndex) =>
+            Math.min(currentIndex, quickOpenResults.length - 1),
+        );
+    }, [quickOpenResults.length]);
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
     const activeWorkspacePane = findPaneById(
@@ -674,6 +760,76 @@ export function App() {
         .filter(Boolean)
         .join(" ");
 
+    useEffect(() => {
+        setFileTreeInlineEditor(null);
+        fileTreeInlineSubmitPendingRef.current = false;
+    }, [activeProjectContextKey]);
+
+    const cancelFileTreeInlineEditor = useCallback(() => {
+        fileTreeInlineSubmitPendingRef.current = false;
+        setFileTreeInlineEditor(null);
+    }, []);
+
+    const beginFileTreeInlineRename = useCallback((node: GitTreeNode) => {
+        setFileTreeInlineEditor({
+            draftName: node.name,
+            kind: node.kind,
+            originalName: node.name,
+            path: node.path,
+        });
+    }, []);
+
+    const submitFileTreeInlineEditor = useCallback(async () => {
+        if (
+            !activeProjectId ||
+            !fileTreeInlineEditor ||
+            fileTreeInlineSubmitPendingRef.current
+        ) {
+            return;
+        }
+
+        const nextName = fileTreeInlineEditor.draftName.trim();
+        if (!nextName || nextName === fileTreeInlineEditor.originalName) {
+            cancelFileTreeInlineEditor();
+            return;
+        }
+
+        fileTreeInlineSubmitPendingRef.current = true;
+
+        try {
+            const renamedEntry = await renameEntry(
+                activeProjectId,
+                fileTreeInlineEditor.path,
+                nextName,
+                undefined,
+                activeWorktreeId,
+            );
+            await renameTabsForProjectPath(
+                activeProjectId,
+                activeWorktreeId,
+                fileTreeInlineEditor.path,
+                renamedEntry.relativePath,
+                fileTreeInlineEditor.kind,
+            );
+            cancelFileTreeInlineEditor();
+        } catch (error) {
+            window.alert(
+                error instanceof Error
+                    ? error.message
+                    : "Could not rename the selected entry.",
+            );
+        } finally {
+            fileTreeInlineSubmitPendingRef.current = false;
+        }
+    }, [
+        activeProjectId,
+        activeWorktreeId,
+        cancelFileTreeInlineEditor,
+        fileTreeInlineEditor,
+        renameEntry,
+        renameTabsForProjectPath,
+    ]);
+
     const handleCreateTreeEntry = useCallback(
         async (
             kind: "directory" | "file",
@@ -699,26 +855,31 @@ export function App() {
                     return;
                 }
 
-                const requestedName = window.prompt(
-                    "New folder name",
-                    "new-folder",
-                );
-                if (requestedName === null) {
-                    return;
-                }
-
-                const nextName = requestedName.trim();
-                if (!nextName) {
-                    return;
-                }
-
-                await createEntry(
-                    activeProjectId,
+                const createdDirectory = await createWorkspaceQuickDirectory({
+                    createEntry,
                     parentRelativePath,
-                    nextName,
-                    kind,
+                    projectId: activeProjectId,
+                    reportError: (message) => {
+                        window.alert(message);
+                    },
+                    worktreeId: activeWorktreeId,
+                });
+
+                if (!createdDirectory) {
+                    return;
+                }
+
+                await revealPathInTree(
+                    activeProjectId,
+                    createdDirectory.relativePath,
                     activeWorktreeId,
                 );
+                setFileTreeInlineEditor({
+                    draftName: createdDirectory.name,
+                    kind: "directory",
+                    originalName: createdDirectory.name,
+                    path: createdDirectory.relativePath,
+                });
             } catch (error) {
                 window.alert(
                     error instanceof Error
@@ -732,59 +893,20 @@ export function App() {
             activeWorktreeId,
             createEntry,
             openFileTab,
+            revealPathInTree,
             setLastQuickCreateAction,
         ],
     );
 
     const handleRenameTreeNode = useCallback(
-        async (node: GitTreeNode) => {
+        (node: GitTreeNode) => {
             if (!activeProjectId) {
                 return;
             }
 
-            const requestedName = window.prompt(
-                node.kind === "file" ? "Rename file" : "Rename folder",
-                node.name,
-            );
-
-            if (requestedName === null) {
-                return;
-            }
-
-            const nextName = requestedName.trim();
-            if (!nextName || nextName === node.name) {
-                return;
-            }
-
-            try {
-                const renamedEntry = await renameEntry(
-                    activeProjectId,
-                    node.path,
-                    nextName,
-                    undefined,
-                    activeWorktreeId,
-                );
-                await renameTabsForProjectPath(
-                    activeProjectId,
-                    activeWorktreeId,
-                    node.path,
-                    renamedEntry.relativePath,
-                    node.kind,
-                );
-            } catch (error) {
-                window.alert(
-                    error instanceof Error
-                        ? error.message
-                        : "Could not rename the selected entry.",
-                );
-            }
+            beginFileTreeInlineRename(node);
         },
-        [
-            activeProjectId,
-            activeWorktreeId,
-            renameEntry,
-            renameTabsForProjectPath,
-        ],
+        [activeProjectId, beginFileTreeInlineRename],
     );
 
     const handleMoveTreeNode = useCallback(
@@ -1290,6 +1412,97 @@ export function App() {
         setSidebarView,
     ]);
 
+    const closeQuickOpen = useCallback(() => {
+        setIsQuickOpenLoading(false);
+        setIsQuickOpenOpen(false);
+        setQuickOpenQuery("");
+        setQuickOpenSelectedIndex(0);
+    }, []);
+
+    const handleQuickOpenSelect = useCallback(
+        async (item: ProjectQuickOpenMatch) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            closeQuickOpen();
+            await openFileTab(
+                activeProjectId,
+                item.relativePath,
+                activeWorktreeId,
+                undefined,
+                workspaceActivePaneId,
+            );
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            closeQuickOpen,
+            openFileTab,
+            workspaceActivePaneId,
+        ],
+    );
+
+    const handleQuickOpenInputKeyDown = useCallback(
+        (event: ReactKeyboardEvent<HTMLInputElement>) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeQuickOpen();
+                return;
+            }
+
+            if (quickOpenResults.length === 0) {
+                return;
+            }
+
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setQuickOpenSelectedIndex((currentIndex) =>
+                    currentIndex >= quickOpenResults.length - 1
+                        ? 0
+                        : currentIndex + 1,
+                );
+                return;
+            }
+
+            if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setQuickOpenSelectedIndex((currentIndex) =>
+                    currentIndex <= 0
+                        ? quickOpenResults.length - 1
+                        : currentIndex - 1,
+                );
+                return;
+            }
+
+            if (event.key === "Home") {
+                event.preventDefault();
+                setQuickOpenSelectedIndex(0);
+                return;
+            }
+
+            if (event.key === "End") {
+                event.preventDefault();
+                setQuickOpenSelectedIndex(quickOpenResults.length - 1);
+                return;
+            }
+
+            if (event.key === "Enter") {
+                event.preventDefault();
+                const selectedItem = quickOpenResults[quickOpenSelectedIndex];
+                if (selectedItem) {
+                    void handleQuickOpenSelect(selectedItem);
+                }
+            }
+        },
+        [
+            closeQuickOpen,
+            handleQuickOpenSelect,
+            quickOpenResults,
+            quickOpenSelectedIndex,
+        ],
+    );
+
     const openSettingsWindow = useCallback(() => {
         if (!window.comando) {
             return;
@@ -1319,6 +1532,32 @@ export function App() {
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, [openSettingsWindow]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented) {
+                return;
+            }
+
+            if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+                return;
+            }
+
+            if (event.shiftKey || event.key.toLowerCase() !== "t") {
+                return;
+            }
+
+            event.preventDefault();
+            setIsQuickOpenOpen(true);
+            setQuickOpenQuery("");
+            setQuickOpenSelectedIndex(0);
+        };
+
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown, true);
+        };
+    }, []);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -1657,9 +1896,29 @@ export function App() {
                                 />
                                 <GitTreeView
                                     activePath={activeFilePath}
+                                    editingDraftName={
+                                        fileTreeInlineEditor?.draftName ?? null
+                                    }
+                                    editingPath={
+                                        fileTreeInlineEditor?.path ?? null
+                                    }
                                     enableNodeDrag
                                     expandedPaths={visibleExpandedDirectories}
                                     nodes={sidebarTreeNodes}
+                                    onEditingCancel={cancelFileTreeInlineEditor}
+                                    onEditingDraftNameChange={(value) => {
+                                        setFileTreeInlineEditor((current) =>
+                                            current
+                                                ? {
+                                                      ...current,
+                                                      draftName: value,
+                                                  }
+                                                : null,
+                                        );
+                                    }}
+                                    onEditingSubmit={() => {
+                                        void submitFileTreeInlineEditor();
+                                    }}
                                     stickyFolderPaths={stickyFolderPaths}
                                     scrollToActivePathSignal={
                                         fileTreeRevealSignal ?? undefined
@@ -1925,6 +2184,22 @@ export function App() {
                     onClose={() => setFileTreeContextMenu(null)}
                 />
             ) : null}
+
+            <QuickOpenFilePalette
+                loading={isQuickOpenLoading}
+                onChangeQuery={setQuickOpenQuery}
+                onClose={closeQuickOpen}
+                onHoverIndex={setQuickOpenSelectedIndex}
+                onInputKeyDown={handleQuickOpenInputKeyDown}
+                onSelect={(item) => {
+                    void handleQuickOpenSelect(item);
+                }}
+                open={isQuickOpenOpen}
+                projectName={activeProject?.name ?? null}
+                query={quickOpenQuery}
+                results={quickOpenResults}
+                selectedIndex={quickOpenSelectedIndex}
+            />
         </div>
     );
 }

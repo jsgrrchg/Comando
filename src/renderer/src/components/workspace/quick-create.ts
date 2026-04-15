@@ -66,6 +66,47 @@ export async function createWorkspaceQuickFile(
     options.reportError("Could not create a unique untitled file.");
 }
 
+export async function createWorkspaceQuickDirectory(
+    options: Omit<
+        CreateWorkspaceFileOptions,
+        "openFileTab" | "setLastQuickCreateAction"
+    >,
+): Promise<ProjectEntryMutationResult | null> {
+    if (!options.projectId) {
+        return null;
+    }
+
+    for (let index = 1; index <= 100; index += 1) {
+        const directoryName =
+            index === 1 ? "new-folder" : `new-folder-${index}`;
+
+        try {
+            return await options.createEntry(
+                options.projectId,
+                options.parentRelativePath ?? null,
+                directoryName,
+                "directory",
+                options.worktreeId,
+            );
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Could not create the folder.";
+
+            if (isDuplicateEntryMessage(message)) {
+                continue;
+            }
+
+            options.reportError(message);
+            return null;
+        }
+    }
+
+    options.reportError("Could not create a unique untitled folder.");
+    return null;
+}
+
 function isDuplicateEntryMessage(message: string): boolean {
     return /same name already exists/i.test(message);
 }

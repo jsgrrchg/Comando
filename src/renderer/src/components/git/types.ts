@@ -145,6 +145,8 @@ export interface GitTreeViewProps {
     readonly activePath?: string | null;
     readonly className?: string;
     readonly constrainWidth?: boolean;
+    readonly editingDraftName?: string | null;
+    readonly editingPath?: string | null;
     readonly enableNodeDrag?: boolean;
     readonly emptyState?: ReactNode;
     readonly expandedPaths?: readonly string[];
@@ -171,6 +173,9 @@ export interface GitTreeViewProps {
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
     ) => void;
+    readonly onEditingCancel?: () => void;
+    readonly onEditingDraftNameChange?: (value: string) => void;
+    readonly onEditingSubmit?: () => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
     readonly scrollToActivePathSignal?: number;

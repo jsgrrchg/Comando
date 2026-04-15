@@ -52,11 +52,16 @@ export function GitTreeView({
     activePath = null,
     className,
     constrainWidth = false,
+    editingDraftName = null,
+    editingPath = null,
     enableNodeDrag = false,
     emptyState,
     expandedPaths,
     layout = "tree",
     nodes,
+    onEditingCancel,
+    onEditingDraftNameChange,
+    onEditingSubmit,
     onNodeContextMenu,
     onNodeClick,
     onNodeDrop,
@@ -159,11 +164,16 @@ export function GitTreeView({
                     depth={0}
                     dropTargetPath={dropTargetPath}
                     activeDragData={activeDragData}
+                    editingDraftName={editingDraftName}
+                    editingPath={editingPath}
                     enableNodeDrag={enableNodeDrag}
                     expandedPaths={expandedPaths}
                     key={node.id}
                     layout={layout}
                     node={node}
+                    onEditingCancel={onEditingCancel}
+                    onEditingDraftNameChange={onEditingDraftNameChange}
+                    onEditingSubmit={onEditingSubmit}
                     onNodeContextMenu={onNodeContextMenu}
                     onNodeClick={onNodeClick}
                     onNodeDrop={onNodeDrop}
@@ -188,10 +198,15 @@ function GitTreeNodeRow({
     constrainWidth = false,
     depth,
     dropTargetPath,
+    editingDraftName,
+    editingPath,
     enableNodeDrag,
     expandedPaths,
     layout,
     node,
+    onEditingCancel,
+    onEditingDraftNameChange,
+    onEditingSubmit,
     onNodeContextMenu,
     onNodeClick,
     onNodeDrop,
@@ -210,10 +225,15 @@ function GitTreeNodeRow({
     readonly constrainWidth?: boolean;
     readonly depth: number;
     readonly dropTargetPath: string | null;
+    readonly editingDraftName: string | null;
+    readonly editingPath: string | null;
     readonly enableNodeDrag: boolean;
     readonly expandedPaths: readonly string[] | undefined;
     readonly layout: GitViewLayout;
     readonly node: GitTreeNode;
+    readonly onEditingCancel?: () => void;
+    readonly onEditingDraftNameChange?: (value: string) => void;
+    readonly onEditingSubmit?: () => void;
     readonly onNodeContextMenu?: (
         node: GitTreeNode,
         position: {
@@ -252,10 +272,12 @@ function GitTreeNodeRow({
                   ? expandedPaths.includes(node.path)
                   : true
             : false;
+    const isEditing = editingPath === node.path;
     const isActive = activePath === node.path;
-    const canOpen = Boolean(onNodeClick && node.kind === "file");
-    const canToggle = Boolean(isDirectory && onToggleDirectory);
-    const isDraggable = enableNodeDrag === true && !node.isProjectRoot;
+    const canOpen = !isEditing && Boolean(onNodeClick && node.kind === "file");
+    const canToggle = !isEditing && Boolean(isDirectory && onToggleDirectory);
+    const isDraggable =
+        !isEditing && enableNodeDrag === true && !node.isProjectRoot;
     const dragStartHandler = onNodeDragStart as
         | ((node: GitTreeNode, dataTransfer: DataTransfer | null) => void)
         | undefined;
@@ -283,6 +305,7 @@ function GitTreeNodeRow({
                     className="git-tree-row"
                     data-active={isActive ? "true" : "false"}
                     data-drop-target={isDropTarget ? "true" : "false"}
+                    data-path={node.path}
                     draggable={isDraggable}
                     onDragEnd={() => {
                         clearHoverExpand();
@@ -362,7 +385,7 @@ function GitTreeNodeRow({
                         onNodeDrop(dragData, node);
                     }}
                     onContextMenu={(event) => {
-                        if (!onNodeContextMenu) {
+                        if (!onNodeContextMenu || isEditing) {
                             return;
                         }
 
@@ -433,19 +456,30 @@ function GitTreeNodeRow({
                         />
                     )}
 
-                    <span
-                        style={{
-                            flexShrink: constrainWidth ? 1 : 0,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            minWidth: constrainWidth ? scalePx(40) : 0,
-                            flex: 1,
-                            color: titleColor,
-                        }}
-                    >
-                        {node.name}
-                    </span>
+                    {isEditing ? (
+                        <TreeInlineNameInput
+                            constrainWidth={constrainWidth}
+                            titleColor={titleColor}
+                            value={editingDraftName ?? node.name}
+                            onCancel={onEditingCancel}
+                            onChange={onEditingDraftNameChange}
+                            onSubmit={onEditingSubmit}
+                        />
+                    ) : (
+                        <span
+                            style={{
+                                flexShrink: constrainWidth ? 1 : 0,
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                minWidth: constrainWidth ? scalePx(40) : 0,
+                                flex: 1,
+                                color: titleColor,
+                            }}
+                        >
+                            {node.name}
+                        </span>
+                    )}
 
                     {!constrainWidth && node.secondaryText ? (
                         <span
@@ -510,11 +544,16 @@ function GitTreeNodeRow({
                           constrainWidth={constrainWidth}
                           depth={depth + 1}
                           dropTargetPath={dropTargetPath}
+                          editingDraftName={editingDraftName}
+                          editingPath={editingPath}
                           enableNodeDrag={enableNodeDrag}
                           expandedPaths={expandedPaths}
                           key={child.id}
                           layout={layout}
                           node={child}
+                          onEditingCancel={onEditingCancel}
+                          onEditingDraftNameChange={onEditingDraftNameChange}
+                          onEditingSubmit={onEditingSubmit}
                           onNodeContextMenu={onNodeContextMenu}
                           onNodeClick={onNodeClick}
                           onNodeDrop={onNodeDrop}
@@ -531,6 +570,81 @@ function GitTreeNodeRow({
                   ))
                 : null}
         </>
+    );
+}
+
+function TreeInlineNameInput({
+    constrainWidth,
+    onCancel,
+    onChange,
+    onSubmit,
+    titleColor,
+    value,
+}: {
+    readonly constrainWidth: boolean;
+    readonly onCancel?: () => void;
+    readonly onChange?: (value: string) => void;
+    readonly onSubmit?: () => void;
+    readonly titleColor: string;
+    readonly value: string;
+}) {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+        const input = inputRef.current;
+        if (!input) {
+            return;
+        }
+
+        input.focus();
+        input.select();
+    }, []);
+
+    return (
+        <input
+            aria-label="Edit entry name"
+            autoCapitalize="off"
+            autoCorrect="off"
+            data-inline-tree-editor="true"
+            onBlur={() => onSubmit?.()}
+            onChange={(event) => onChange?.(event.target.value)}
+            onClick={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+                event.stopPropagation();
+
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    onSubmit?.();
+                    return;
+                }
+
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    onCancel?.();
+                }
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            ref={inputRef}
+            spellCheck={false}
+            style={{
+                flexShrink: constrainWidth ? 1 : 0,
+                minWidth: constrainWidth ? scalePx(40) : scalePx(84),
+                flex: 1,
+                height: scalePx(22),
+                paddingInline: scalePx(6),
+                borderRadius: scalePx(4),
+                border: "1px solid color-mix(in srgb, var(--color-accent) 45%, var(--color-border))",
+                background:
+                    "color-mix(in srgb, var(--color-bg-elevated) 92%, white 8%)",
+                color: titleColor,
+                font: "inherit",
+                outline: "none",
+            }}
+            type="text"
+            value={value}
+        />
     );
 }
 

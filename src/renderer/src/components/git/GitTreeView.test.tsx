@@ -51,4 +51,18 @@ describe("GitTreeView", () => {
         expect(markup).toContain("var(--diff-warn)");
         expect(markup).not.toContain(">±</span>");
     });
+
+    it("renders an inline editor for the node being renamed", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                editingDraftName="renamed-notes.md"
+                editingPath="notes.md"
+                nodes={[createFileNode()]}
+            />,
+        );
+
+        expect(markup).toContain('data-inline-tree-editor="true"');
+        expect(markup).toContain('value="renamed-notes.md"');
+        expect(markup).not.toContain(">notes.md</span>");
+    });
 });

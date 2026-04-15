@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createWorkspaceQuickFile } from "./quick-create";
+import {
+    createWorkspaceQuickDirectory,
+    createWorkspaceQuickFile,
+} from "./quick-create";
 
 describe("createWorkspaceQuickFile", () => {
     it("creates and opens an untitled file in the project root", async () => {
@@ -59,10 +62,10 @@ describe("createWorkspaceQuickFile", () => {
 
         await createWorkspaceQuickFile({
             createEntry,
-            openFileTab,
             projectId: "project-1",
             reportError,
             setLastQuickCreateAction,
+            openFileTab,
             worktreeId: null,
         });
 
@@ -110,5 +113,82 @@ describe("createWorkspaceQuickFile", () => {
         expect(reportError).toHaveBeenCalledWith("Permission denied.");
         expect(openFileTab).not.toHaveBeenCalled();
         expect(setLastQuickCreateAction).not.toHaveBeenCalled();
+    });
+});
+
+describe("createWorkspaceQuickDirectory", () => {
+    it("creates a default folder and returns the created entry", async () => {
+        const createEntry = vi.fn().mockResolvedValue({
+            kind: "directory",
+            name: "new-folder",
+            parentRelativePath: null,
+            relativePath: "new-folder",
+        });
+        const reportError = vi.fn();
+
+        const entry = await createWorkspaceQuickDirectory({
+            createEntry,
+            parentRelativePath: null,
+            projectId: "project-1",
+            reportError,
+            worktreeId: null,
+        });
+
+        expect(entry).toEqual({
+            kind: "directory",
+            name: "new-folder",
+            parentRelativePath: null,
+            relativePath: "new-folder",
+        });
+        expect(createEntry).toHaveBeenCalledWith(
+            "project-1",
+            null,
+            "new-folder",
+            "directory",
+            null,
+        );
+        expect(reportError).not.toHaveBeenCalled();
+    });
+
+    it("retries with an incremented folder name when the default already exists", async () => {
+        const createEntry = vi
+            .fn()
+            .mockRejectedValueOnce(
+                new Error(
+                    "An entry with the same name already exists in that location.",
+                ),
+            )
+            .mockResolvedValueOnce({
+                kind: "directory",
+                name: "new-folder-2",
+                parentRelativePath: "src",
+                relativePath: "src/new-folder-2",
+            });
+
+        const entry = await createWorkspaceQuickDirectory({
+            createEntry,
+            parentRelativePath: "src",
+            projectId: "project-1",
+            reportError: vi.fn(),
+            worktreeId: "worktree-1",
+        });
+
+        expect(createEntry).toHaveBeenNthCalledWith(
+            1,
+            "project-1",
+            "src",
+            "new-folder",
+            "directory",
+            "worktree-1",
+        );
+        expect(createEntry).toHaveBeenNthCalledWith(
+            2,
+            "project-1",
+            "src",
+            "new-folder-2",
+            "directory",
+            "worktree-1",
+        );
+        expect(entry?.relativePath).toBe("src/new-folder-2");
     });
 });
