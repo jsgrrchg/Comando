@@ -1686,7 +1686,7 @@ export function App() {
                 <div className="mt-1 flex items-center gap-1">
                     <button
                         className={[
-                            "sidebar-action-row app-no-drag min-w-0 flex-1",
+                            "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
                             sidebarView === "files"
                                 ? "sidebar-action-row--active"
                                 : "",
@@ -1719,7 +1719,7 @@ export function App() {
 
                     <button
                         className={[
-                            "sidebar-action-row app-no-drag min-w-0 flex-1",
+                            "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
                             sidebarView === "git"
                                 ? "sidebar-action-row--active"
                                 : "",

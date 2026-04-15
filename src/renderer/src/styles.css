@@ -662,6 +662,12 @@ button {
         color 120ms ease;
 }
 
+.sidebar-action-row--compact {
+    gap: 8px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+
 .sidebar-action-row:hover {
     background: var(--color-bg-tertiary);
     color: var(--color-text-primary);
@@ -681,12 +687,12 @@ button {
 .sidebar-git-scope-trigger {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     width: 100%;
     border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
-    border-radius: 10px;
+    border-radius: 8px;
     background: color-mix(in srgb, var(--color-bg-elevated) 72%, transparent);
-    padding: 8px 10px;
+    padding: 5px 10px;
     color: var(--color-text-secondary);
     transition:
         border-color 120ms ease,
@@ -735,10 +741,10 @@ button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     flex-shrink: 0;
-    border-radius: 8px;
+    border-radius: 7px;
     background: color-mix(in srgb, var(--color-bg-tertiary) 88%, transparent);
     color: var(--color-text-primary);
 }
