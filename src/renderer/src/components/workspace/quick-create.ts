@@ -14,11 +14,8 @@ interface CreateWorkspaceFileOptions {
         relativePath: string,
         worktreeId?: string | null,
     ) => Promise<void>;
+    readonly parentRelativePath?: string | null;
     readonly projectId: string | null;
-    readonly promptForName: (
-        message?: string,
-        defaultValue?: string,
-    ) => string | null;
     readonly reportError: (message: string) => void;
     readonly setLastQuickCreateAction: (
         action: WorkspaceQuickCreateAction,
@@ -33,35 +30,42 @@ export async function createWorkspaceQuickFile(
         return;
     }
 
-    const name = options.promptForName("New file name", "untitled.txt");
-    if (name === null) {
-        return;
+    for (let index = 1; index <= 100; index += 1) {
+        const fileName = index === 1 ? "untitled.txt" : `untitled-${index}.txt`;
+
+        try {
+            const entry = await options.createEntry(
+                options.projectId,
+                options.parentRelativePath ?? null,
+                fileName,
+                "file",
+                options.worktreeId,
+            );
+            options.setLastQuickCreateAction("file");
+            await options.openFileTab(
+                options.projectId,
+                entry.relativePath,
+                options.worktreeId,
+            );
+            return;
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Could not create the file.";
+
+            if (isDuplicateEntryMessage(message)) {
+                continue;
+            }
+
+            options.reportError(message);
+            return;
+        }
     }
 
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-        return;
-    }
+    options.reportError("Could not create a unique untitled file.");
+}
 
-    try {
-        const entry = await options.createEntry(
-            options.projectId,
-            null,
-            trimmedName,
-            "file",
-            options.worktreeId,
-        );
-        options.setLastQuickCreateAction("file");
-        await options.openFileTab(
-            options.projectId,
-            entry.relativePath,
-            options.worktreeId,
-        );
-    } catch (error) {
-        options.reportError(
-            error instanceof Error
-                ? error.message
-                : "Could not create the file.",
-        );
-    }
+function isDuplicateEntryMessage(message: string): boolean {
+    return /same name already exists/i.test(message);
 }

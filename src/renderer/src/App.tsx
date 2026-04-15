@@ -42,6 +42,7 @@ import {
 } from "./components/context-menu/ContextMenu";
 import { SidebarGitPanel } from "./components/sidebar";
 import { SplitHandle } from "./components/SplitHandle";
+import { createWorkspaceQuickFile } from "./components/workspace/quick-create";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 
 type DragState = {
@@ -126,6 +127,9 @@ export function App() {
     const closeWorkspaceTab = useWorkspaceStore((state) => state.closeTab);
     const lastFocusedRuntimeId = useWorkspaceStore(
         (state) => state.lastFocusedRuntimeId,
+    );
+    const setLastQuickCreateAction = useWorkspaceStore(
+        (state) => state.setLastQuickCreateAction,
     );
     const refreshProjectTabs = useWorkspaceStore(
         (state) => state.refreshProjectTabs,
@@ -666,37 +670,42 @@ export function App() {
                 return;
             }
 
-            const defaultName = kind === "file" ? "untitled.txt" : "new-folder";
-            const requestedName = window.prompt(
-                kind === "file" ? "New file name" : "New folder name",
-                defaultName,
-            );
-
-            if (requestedName === null) {
-                return;
-            }
-
-            const nextName = requestedName.trim();
-            if (!nextName) {
-                return;
-            }
-
             try {
-                const entry = await createEntry(
+                if (kind === "file") {
+                    await createWorkspaceQuickFile({
+                        createEntry,
+                        openFileTab,
+                        parentRelativePath,
+                        projectId: activeProjectId,
+                        reportError: (message) => {
+                            window.alert(message);
+                        },
+                        setLastQuickCreateAction,
+                        worktreeId: activeWorktreeId,
+                    });
+                    return;
+                }
+
+                const requestedName = window.prompt(
+                    "New folder name",
+                    "new-folder",
+                );
+                if (requestedName === null) {
+                    return;
+                }
+
+                const nextName = requestedName.trim();
+                if (!nextName) {
+                    return;
+                }
+
+                await createEntry(
                     activeProjectId,
                     parentRelativePath,
                     nextName,
                     kind,
                     activeWorktreeId,
                 );
-
-                if (kind === "file") {
-                    await openFileTab(
-                        activeProjectId,
-                        entry.relativePath,
-                        activeWorktreeId,
-                    );
-                }
             } catch (error) {
                 window.alert(
                     error instanceof Error
@@ -705,7 +714,13 @@ export function App() {
                 );
             }
         },
-        [activeProjectId, activeWorktreeId, createEntry, openFileTab],
+        [
+            activeProjectId,
+            activeWorktreeId,
+            createEntry,
+            openFileTab,
+            setLastQuickCreateAction,
+        ],
     );
 
     const handleRenameTreeNode = useCallback(
@@ -1182,6 +1197,32 @@ export function App() {
     }, [sidebarOverlayVisible, toggleLeftCollapsed]);
 
     useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented) {
+                return;
+            }
+
+            if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+                return;
+            }
+
+            if (event.shiftKey) {
+                return;
+            }
+
+            if (event.key.toLowerCase() !== "n") {
+                return;
+            }
+
+            event.preventDefault();
+            void handleCreateTreeEntry("file", null);
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [handleCreateTreeEntry]);
+
+    useEffect(() => {
         if (!isMac) return;
         const visible = !leftCollapsed || sidebarOverlayVisible;
         void window.comando?.setTrafficLightVisibility(visible);
@@ -1195,32 +1236,10 @@ export function App() {
             >
                 {isMac && (
                     <button
-                        className="app-no-drag"
+                        className="sidebar-collapse-toggle app-no-drag"
                         onClick={() => {
                             toggleLeftCollapsed();
                             setSidebarOverlayVisible(false);
-                        }}
-                        style={{
-                            position: "absolute",
-                            top: 14,
-                            right: 8,
-                            background: "none",
-                            border: "none",
-                            padding: 4,
-                            cursor: "pointer",
-                            color: "var(--color-text-secondary)",
-                            borderRadius: 4,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            opacity: 0.6,
-                            transition: "opacity 120ms ease",
-                        }}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.opacity = "1";
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.opacity = "0.6";
                         }}
                         title={
                             leftCollapsed
@@ -1232,9 +1251,9 @@ export function App() {
                         <svg
                             aria-hidden="true"
                             fill="none"
-                            height="13"
+                            height="16"
                             viewBox="0 0 16 16"
-                            width="13"
+                            width="16"
                         >
                             <rect
                                 x="1.5"
@@ -1590,6 +1609,9 @@ export function App() {
                             <WorkspaceView
                                 defaultProjectId={activeProjectId}
                                 defaultWorktreeId={activeWorktreeId}
+                                onRequestCreateFile={() => {
+                                    void handleCreateTreeEntry("file", null);
+                                }}
                             />
                         </main>
                     </div>

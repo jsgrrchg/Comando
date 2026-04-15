@@ -53,7 +53,6 @@ import {
 } from "@renderer/app/settings/client";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
-import { useProjectsStore } from "@renderer/app/store/projects-store";
 import {
     getBestMatchingChatTabId,
     useWorkspaceStore,
@@ -101,13 +100,13 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
-import { createWorkspaceQuickFile } from "@renderer/components/workspace/quick-create";
 import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
 import type { WorkspaceQuickCreateAction } from "@renderer/app/store/workspace-store";
 
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly onRequestCreateFile: () => void;
 }
 
 type SplitDragState = {
@@ -154,6 +153,7 @@ function isQuickCreateMenuSeparator(
 export function WorkspaceView({
     defaultProjectId,
     defaultWorktreeId,
+    onRequestCreateFile,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
     const rootNode = useWorkspaceStore((state) => state.rootNode);
@@ -221,6 +221,7 @@ export function WorkspaceView({
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
                 node={rootNode}
+                onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
             <WorkspaceTabDragOverlay
@@ -238,11 +239,13 @@ function WorkspaceNodeView({
     defaultProjectId,
     defaultWorktreeId,
     node,
+    onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
     readonly node: WorkspaceNode;
+    readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     if (node.type === "pane") {
@@ -251,6 +254,7 @@ function WorkspaceNodeView({
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
                 node={node}
+                onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
         );
@@ -261,6 +265,7 @@ function WorkspaceNodeView({
             defaultProjectId={defaultProjectId}
             defaultWorktreeId={defaultWorktreeId}
             node={node}
+            onRequestCreateFile={onRequestCreateFile}
             tabDrag={tabDrag}
         />
     );
@@ -270,11 +275,13 @@ function WorkspaceSplitView({
     defaultProjectId,
     defaultWorktreeId,
     node,
+    onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
     readonly node: WorkspaceSplitNode;
+    readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const resizeSplit = useWorkspaceStore((state) => state.resizeSplit);
@@ -352,6 +359,7 @@ function WorkspaceSplitView({
                     isLast={index === node.children.length - 1}
                     key={child.id}
                     node={child}
+                    onRequestCreateFile={onRequestCreateFile}
                     onPointerDown={(event) =>
                         setDragState({
                             handleIndex: index,
@@ -377,6 +385,7 @@ function FragmentPane({
     handleIndex,
     isLast,
     node,
+    onRequestCreateFile,
     onPointerDown,
     size,
     tabDrag,
@@ -387,6 +396,7 @@ function FragmentPane({
     readonly handleIndex: number;
     readonly isLast: boolean;
     readonly node: WorkspaceNode;
+    readonly onRequestCreateFile: () => void;
     readonly onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
     readonly size: number;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
@@ -405,6 +415,7 @@ function FragmentPane({
                     defaultProjectId={defaultProjectId}
                     defaultWorktreeId={defaultWorktreeId}
                     node={node}
+                    onRequestCreateFile={onRequestCreateFile}
                     tabDrag={tabDrag}
                 />
             </div>
@@ -447,11 +458,13 @@ function WorkspacePaneView({
     defaultProjectId,
     defaultWorktreeId,
     node,
+    onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
     readonly node: WorkspacePaneNode;
+    readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
@@ -478,16 +491,17 @@ function WorkspacePaneView({
         (state) => state.lastFocusedChatTabId,
     );
     const moveTab = useWorkspaceStore((state) => state.moveTab);
-    const openFileTab = useWorkspaceStore((state) => state.openFileTab);
+    const openFileTab: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
-    const setLastQuickCreateAction = useWorkspaceStore(
-        (state) => state.setLastQuickCreateAction,
-    );
     const paneCount = useWorkspaceStore(
         (state) => collectPaneNodes(state.rootNode).length,
     );
     const rootNode = useWorkspaceStore((state) => state.rootNode);
-    const createEntry = useProjectsStore((state) => state.createEntry);
     const selectTab = useWorkspaceStore((state) => state.selectTab);
     const setActivePane = useWorkspaceStore((state) => state.setActivePane);
     const tabsById = useWorkspaceStore((state) => state.tabsById);
@@ -512,6 +526,7 @@ function WorkspacePaneView({
 
     const activeTab = node.activeTabId ? tabsById[node.activeTabId] : null;
     const isActivePane = activePaneId === node.id;
+    const activeTabWorktreeId = activeTab?.worktreeId ?? null;
 
     const handleTabStripWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
         const container = tabStripRef.current;
@@ -618,25 +633,30 @@ function WorkspacePaneView({
         });
     }
 
-    const handleCreateFile = useCallback(async () => {
-        await createWorkspaceQuickFile({
-            createEntry,
-            openFileTab,
-            projectId: defaultProjectId,
-            promptForName: window.prompt,
-            reportError: (message) => {
-                window.alert(message);
-            },
-            setLastQuickCreateAction,
-            worktreeId: defaultWorktreeId ?? null,
-        });
-    }, [
-        createEntry,
-        defaultProjectId,
-        defaultWorktreeId,
-        openFileTab,
-        setLastQuickCreateAction,
-    ]);
+    const handleCreateFile = useCallback(() => {
+        if (!defaultProjectId) {
+            return;
+        }
+
+        onRequestCreateFile();
+    }, [defaultProjectId, onRequestCreateFile]);
+
+    const handleOpenWorkspaceFile = useCallback(
+        async (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => {
+            await openFileTab(
+                projectId,
+                relativePath,
+                worktreeId ?? activeTabWorktreeId,
+                reviewContext ?? null,
+            );
+        },
+        [activeTabWorktreeId, openFileTab],
+    );
 
     const handleCreateAgentFromFocusedProvider = useCallback(() => {
         void createChatTab(
@@ -1131,21 +1151,7 @@ function WorkspacePaneView({
                             <GitCommitTabView tab={activeTab} />
                         ) : activeTab.kind === "review" ? (
                             <ReviewTabView
-                                onOpenFile={(
-                                    projectId,
-                                    relativePath,
-                                    worktreeId,
-                                    reviewContext,
-                                ) =>
-                                    openFileTab(
-                                        projectId,
-                                        relativePath,
-                                        worktreeId ??
-                                            activeTab.worktreeId ??
-                                            null,
-                                        reviewContext ?? null,
-                                    )
-                                }
+                                onOpenFile={handleOpenWorkspaceFile}
                                 tab={activeTab}
                             />
                         ) : (
@@ -1153,21 +1159,7 @@ function WorkspacePaneView({
                                 onDraftChange={(draft) =>
                                     void updateChatDraft(activeTab.id, draft)
                                 }
-                                onOpenFile={(
-                                    projectId,
-                                    relativePath,
-                                    worktreeId,
-                                    reviewContext,
-                                ) =>
-                                    openFileTab(
-                                        projectId,
-                                        relativePath,
-                                        worktreeId ??
-                                            activeTab.worktreeId ??
-                                            null,
-                                        reviewContext ?? null,
-                                    )
-                                }
+                                onOpenFile={handleOpenWorkspaceFile}
                                 onOpenReview={() =>
                                     openReviewTab({
                                         projectId: activeTab.projectId,

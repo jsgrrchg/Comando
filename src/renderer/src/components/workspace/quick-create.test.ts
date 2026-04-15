@@ -3,15 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import { createWorkspaceQuickFile } from "./quick-create";
 
 describe("createWorkspaceQuickFile", () => {
-    it("abre el archivo creado en la raiz del proyecto", async () => {
-        const createEntry = vi.fn(async () => ({
-            kind: "file" as const,
-            name: "notes.md",
-            parentRelativePath: null,
-            relativePath: "notes.md",
-        }));
-        const openFileTab = vi.fn(async () => {});
-        const promptForName = vi.fn(() => "notes.md");
+    it("crea y abre un archivo untitled en la raiz del proyecto", async () => {
+        const createEntry = vi.fn(() =>
+            Promise.resolve({
+                kind: "file" as const,
+                name: "untitled.txt",
+                parentRelativePath: null,
+                relativePath: "untitled.txt",
+            }),
+        );
+        const openFileTab = vi.fn(() => Promise.resolve());
         const reportError = vi.fn();
         const setLastQuickCreateAction = vi.fn();
 
@@ -19,38 +20,40 @@ describe("createWorkspaceQuickFile", () => {
             createEntry,
             openFileTab,
             projectId: "project-1",
-            promptForName,
             reportError,
             setLastQuickCreateAction,
             worktreeId: null,
         });
 
-        expect(promptForName).toHaveBeenCalledWith(
-            "New file name",
-            "untitled.txt",
-        );
         expect(createEntry).toHaveBeenCalledWith(
             "project-1",
             null,
-            "notes.md",
+            "untitled.txt",
             "file",
             null,
         );
         expect(setLastQuickCreateAction).toHaveBeenCalledWith("file");
         expect(openFileTab).toHaveBeenCalledWith(
             "project-1",
-            "notes.md",
+            "untitled.txt",
             null,
         );
         expect(reportError).not.toHaveBeenCalled();
     });
 
-    it("reporta el error cuando la creacion falla", async () => {
-        const createEntry = vi.fn(async () => {
-            throw new Error("An entry with the same name already exists.");
-        });
-        const openFileTab = vi.fn(async () => {});
-        const promptForName = vi.fn(() => "notes.md");
+    it("usa el siguiente nombre disponible cuando untitled ya existe", async () => {
+        const createEntry = vi
+            .fn()
+            .mockRejectedValueOnce(
+                new Error("An entry with the same name already exists."),
+            )
+            .mockResolvedValueOnce({
+                kind: "file" as const,
+                name: "untitled-2.txt",
+                parentRelativePath: null,
+                relativePath: "untitled-2.txt",
+            });
+        const openFileTab = vi.fn(() => Promise.resolve());
         const reportError = vi.fn();
         const setLastQuickCreateAction = vi.fn();
 
@@ -58,15 +61,53 @@ describe("createWorkspaceQuickFile", () => {
             createEntry,
             openFileTab,
             projectId: "project-1",
-            promptForName,
             reportError,
             setLastQuickCreateAction,
             worktreeId: null,
         });
 
-        expect(reportError).toHaveBeenCalledWith(
-            "An entry with the same name already exists.",
+        expect(createEntry).toHaveBeenNthCalledWith(
+            1,
+            "project-1",
+            null,
+            "untitled.txt",
+            "file",
+            null,
         );
+        expect(createEntry).toHaveBeenNthCalledWith(
+            2,
+            "project-1",
+            null,
+            "untitled-2.txt",
+            "file",
+            null,
+        );
+        expect(openFileTab).toHaveBeenCalledWith(
+            "project-1",
+            "untitled-2.txt",
+            null,
+        );
+        expect(reportError).not.toHaveBeenCalled();
+    });
+
+    it("reporta el error cuando la creacion falla por otra razon", async () => {
+        const createEntry = vi.fn(() =>
+            Promise.reject(new Error("Permission denied.")),
+        );
+        const openFileTab = vi.fn(() => Promise.resolve());
+        const reportError = vi.fn();
+        const setLastQuickCreateAction = vi.fn();
+
+        await createWorkspaceQuickFile({
+            createEntry,
+            openFileTab,
+            projectId: "project-1",
+            reportError,
+            setLastQuickCreateAction,
+            worktreeId: null,
+        });
+
+        expect(reportError).toHaveBeenCalledWith("Permission denied.");
         expect(openFileTab).not.toHaveBeenCalled();
         expect(setLastQuickCreateAction).not.toHaveBeenCalled();
     });
