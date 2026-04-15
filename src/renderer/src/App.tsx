@@ -40,7 +40,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "./components/context-menu/ContextMenu";
-import { SidebarGitPanel } from "./components/sidebar";
+import { SidebarGitPanel, SidebarGitScopePicker } from "./components/sidebar";
 import { SplitHandle } from "./components/SplitHandle";
 import { createWorkspaceQuickFile } from "./components/workspace/quick-create";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
@@ -1275,6 +1275,13 @@ export function App() {
                         </svg>
                     </button>
                 )}
+                <div className="mt-1">
+                    <SidebarGitScopePicker
+                        projectId={activeProjectId}
+                        worktreeId={activeWorktreeId}
+                    />
+                </div>
+
                 <div className="mt-1 flex items-center gap-1">
                     <button
                         className={[

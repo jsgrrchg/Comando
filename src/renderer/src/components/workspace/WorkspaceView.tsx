@@ -1084,7 +1084,7 @@ function WorkspacePaneView({
                                         ) : null}
                                         <span
                                             className={[
-                                                "ml-0.5 rounded px-0.5 text-[10px] transition hover:bg-text-secondary/10 hover:text-text-primary",
+                                                "ml-0.5 rounded px-1 text-[13px] transition hover:bg-text-secondary/10 hover:text-text-primary",
                                                 isActive
                                                     ? "text-text-secondary opacity-70"
                                                     : "text-text-secondary opacity-0 group-hover:opacity-70",
