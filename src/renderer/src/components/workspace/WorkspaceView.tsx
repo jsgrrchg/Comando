@@ -1734,6 +1734,9 @@ function FileTabView({
     const rejectTrackedFileHunks = useAiStore(
         (state) => state.rejectTrackedFileHunks,
     );
+    const updateFileViewState = useWorkspaceStore(
+        (state) => state.updateFileViewState,
+    );
     const document = tab.document;
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
@@ -1743,8 +1746,13 @@ function FileTabView({
     const inlineReviewHoverHideTimerRef = useRef<number | null>(null);
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+    const fileTabIdRef = useRef(tab.id);
     const gitGutterDecorationsRef =
         useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
+    const pendingEditorViewStateRef =
+        useRef<MonacoEditor.ICodeEditorViewState | null>(tab.viewState ?? null);
+    const pendingEditorViewStateTabIdRef = useRef(tab.id);
+    const viewStatePersistTimerRef = useRef<number | null>(null);
     const [editorMountVersion, setEditorMountVersion] = useState(0);
     const [diffEditorMountVersion, setDiffEditorMountVersion] = useState(0);
     const [
@@ -1877,6 +1885,76 @@ function FileTabView({
         },
         [editorSettings.fontSize, tab.projectId],
     );
+
+    const persistEditorViewState = useCallback(
+        (
+            nextTabId = pendingEditorViewStateTabIdRef.current,
+            nextViewState?: MonacoEditor.ICodeEditorViewState | null,
+        ) => {
+            const resolvedViewState =
+                nextViewState ??
+                editorRef.current?.saveViewState() ??
+                pendingEditorViewStateRef.current ??
+                null;
+
+            pendingEditorViewStateRef.current = resolvedViewState;
+            pendingEditorViewStateTabIdRef.current = nextTabId;
+            updateFileViewState(nextTabId, resolvedViewState);
+        },
+        [updateFileViewState],
+    );
+
+    const flushScheduledEditorViewStatePersist = useCallback(() => {
+        if (viewStatePersistTimerRef.current != null) {
+            window.clearTimeout(viewStatePersistTimerRef.current);
+            viewStatePersistTimerRef.current = null;
+        }
+
+        persistEditorViewState(
+            pendingEditorViewStateTabIdRef.current,
+            pendingEditorViewStateRef.current,
+        );
+    }, [persistEditorViewState]);
+
+    const scheduleEditorViewStatePersist = useCallback(
+        (editor: MonacoEditor.IStandaloneCodeEditor) => {
+            const tabId = fileTabIdRef.current;
+            pendingEditorViewStateRef.current = editor.saveViewState();
+            pendingEditorViewStateTabIdRef.current = tabId;
+            if (viewStatePersistTimerRef.current != null) {
+                return;
+            }
+
+            viewStatePersistTimerRef.current = window.setTimeout(() => {
+                viewStatePersistTimerRef.current = null;
+                persistEditorViewState(
+                    tabId,
+                    pendingEditorViewStateRef.current,
+                );
+            }, 120);
+        },
+        [persistEditorViewState],
+    );
+
+    useEffect(() => {
+        fileTabIdRef.current = tab.id;
+    }, [tab.id]);
+
+    useEffect(() => {
+        pendingEditorViewStateRef.current = tab.viewState ?? null;
+        pendingEditorViewStateTabIdRef.current = tab.id;
+    }, [tab.id, tab.viewState]);
+
+    useEffect(() => {
+        return () => {
+            if (editorRef.current) {
+                pendingEditorViewStateRef.current =
+                    editorRef.current.saveViewState();
+            }
+
+            flushScheduledEditorViewStatePersist();
+        };
+    }, [flushScheduledEditorViewStatePersist]);
 
     useEffect(() => {
         if (
@@ -2602,6 +2680,15 @@ function FileTabView({
                         }
                         onMount={(editor) => {
                             editorRef.current = editor;
+                            const persistedViewState =
+                                tab.viewState ??
+                                pendingEditorViewStateRef.current;
+                            if (persistedViewState) {
+                                editor.restoreViewState(persistedViewState);
+                                pendingEditorViewStateRef.current =
+                                    persistedViewState;
+                                editor.layout();
+                            }
                             const cleanupAttachShortcut =
                                 bindAttachSelectionShortcut({
                                     documentLanguageId: document.languageId,
@@ -2612,11 +2699,30 @@ function FileTabView({
                                     tabTitle: tab.title,
                                     worktreeId: tab.worktreeId ?? null,
                                 });
+                            const scrollListener = editor.onDidScrollChange(
+                                () => {
+                                    scheduleEditorViewStatePersist(editor);
+                                },
+                            );
+                            const cursorListener =
+                                editor.onDidChangeCursorSelection(() => {
+                                    scheduleEditorViewStatePersist(editor);
+                                });
+                            const hiddenAreasListener =
+                                editor.onDidChangeHiddenAreas(() => {
+                                    scheduleEditorViewStatePersist(editor);
+                                });
                             setEditorMountVersion((previous) => previous + 1);
 
                             editor.onDidDispose(() => {
+                                pendingEditorViewStateRef.current =
+                                    editor.saveViewState();
+                                flushScheduledEditorViewStatePersist();
                                 editorRef.current = null;
                                 gitGutterDecorationsRef.current = null;
+                                scrollListener.dispose();
+                                cursorListener.dispose();
+                                hiddenAreasListener.dispose();
                                 cleanupAttachShortcut?.();
                                 setEditorMountVersion(
                                     (previous) => previous + 1,

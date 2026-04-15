@@ -1,3 +1,4 @@
+import type { editor as MonacoEditor } from "monaco-editor";
 import { create } from "zustand";
 
 import type {
@@ -34,6 +35,7 @@ import {
     resizeSplit,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabViewState,
     setFileTabReviewContext,
     selectPaneTab,
     setFileTabLoading,
@@ -179,6 +181,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     splitPane: (paneId: string, direction: SplitDirection) => Promise<void>;
     updateChatDraft: (tabId: string, draft: string) => Promise<void>;
     updateFileDraft: (tabId: string, draft: string) => void;
+    updateFileViewState: (
+        tabId: string,
+        viewState: MonacoEditor.ICodeEditorViewState | null,
+    ) => void;
     updateTerminalSize: (
         sessionId: string,
         cols: number,
@@ -550,6 +556,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 savedContent: "",
                 saveError: null,
                 title: getFileTitle(relativePath),
+                viewState: null,
                 worktreeId,
             };
 
@@ -898,6 +905,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
     },
 
+    updateFileViewState: (tabId, viewState) => {
+        set((state) => ({
+            ...setFileTabViewState(state, tabId, viewState),
+        }));
+    },
+
     updateTerminalSize: async (sessionId, cols, rows) => {
         try {
             await getComandoApi().resizeTerminalSession({
@@ -1064,6 +1077,7 @@ function createHydratedRuntimeTabs(
                     saveError: null,
                     savedContent: "",
                     title: getFileTitle(tab.relativePath),
+                    viewState: null,
                 },
             ] as const;
         }),

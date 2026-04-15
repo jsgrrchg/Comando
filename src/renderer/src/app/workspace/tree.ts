@@ -1,3 +1,5 @@
+import type { editor as MonacoEditor } from "monaco-editor";
+
 import type {
     ProjectFileDocument,
     TerminalSession,
@@ -33,6 +35,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly reviewContext: RuntimeWorkspaceFileReviewContext | null;
     readonly saveError: string | null;
     readonly savedContent: string;
+    readonly viewState?: MonacoEditor.ICodeEditorViewState | null;
 }
 
 export type RuntimeWorkspaceChatTab = WorkspaceChatTab;
@@ -784,6 +787,28 @@ export function setFileTabReviewContext(
             [tabId]: {
                 ...tab,
                 reviewContext,
+            },
+        },
+    };
+}
+
+export function setFileTabViewState(
+    state: WorkspaceTreeState,
+    tabId: string,
+    viewState: MonacoEditor.ICodeEditorViewState | null,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file") {
+        return state;
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                viewState,
             },
         },
     };

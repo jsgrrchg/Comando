@@ -17,9 +17,11 @@ import {
     replaceFileDocument,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabViewState,
     splitPaneInDirection,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
+    workspaceStateToSnapshot,
 } from "./tree";
 
 function makeChatTab(id: string): RuntimeWorkspaceTab {
@@ -698,5 +700,43 @@ describe("workspace tree helpers", () => {
         expect(tab.hasExternalChange).toBe(false);
         expect(tab.isDirty).toBe(false);
         expect(tab.saveError).toBeNull();
+    });
+
+    it("keeps file editor view state in runtime tabs without persisting it", () => {
+        const state = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeFileTab("file-1", "notes/today.md"),
+        );
+        const viewState: NonNullable<RuntimeWorkspaceFileTab["viewState"]> = {
+            contributionsState: {},
+            cursorState: [],
+            viewState: {
+                firstPosition: {
+                    column: 1,
+                    lineNumber: 18,
+                },
+                firstPositionDeltaTop: 0,
+                scrollLeft: 12,
+                scrollTop: 420,
+                scrollTopWithoutViewZones: 420,
+            },
+        };
+
+        const nextState = setFileTabViewState(state, "file-1", viewState);
+        const tab = nextState.tabsById["file-1"];
+
+        expect(tab?.kind).toBe("file");
+        if (!tab || tab.kind !== "file") {
+            return;
+        }
+
+        expect(tab.viewState).toEqual(viewState);
+
+        const snapshot = workspaceStateToSnapshot(nextState);
+        const snapshotTab = snapshot.tabs[0];
+
+        expect(snapshotTab?.kind).toBe("file");
+        expect("viewState" in (snapshotTab ?? {})).toBe(false);
     });
 });
