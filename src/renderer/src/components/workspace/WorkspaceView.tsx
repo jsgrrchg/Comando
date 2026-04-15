@@ -52,9 +52,7 @@ import {
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import {
     loadAppEditorSettings,
-    loadProjectEditorSettings,
     saveAppEditorSettings,
-    saveProjectEditorSettings,
 } from "@renderer/app/settings/client";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -1856,7 +1854,7 @@ function FileTabView({
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const editorTheme = useMonacoTheme();
-    const editorSettings = useResolvedEditorSettings(tab.projectId);
+    const editorSettings = useResolvedEditorSettings();
     const aiSessions = useAiStore((state) => state.sessions);
     const keepTrackedFileHunks = useAiStore(
         (state) => state.keepTrackedFileHunks,
@@ -1989,33 +1987,13 @@ function FileTabView({
                     currentFontSize + (mode === "increase" ? 1 : -1),
                 );
             };
-            const projectEditor = await loadProjectEditorSettings(
-                tab.projectId,
-            );
-            const hasProjectOverride =
-                projectEditor.fontFamily !== null ||
-                projectEditor.fontSize !== null ||
-                projectEditor.lineHeight !== null ||
-                projectEditor.minimapEnabled !== null ||
-                projectEditor.suggestionsEnabled !== null;
-
-            if (hasProjectOverride) {
-                await saveProjectEditorSettings(tab.projectId, {
-                    ...projectEditor,
-                    fontSize: nextFontSizeFrom(
-                        projectEditor.fontSize ?? editorSettings.fontSize,
-                    ),
-                });
-                return;
-            }
-
             const appEditor = await loadAppEditorSettings();
             await saveAppEditorSettings({
                 ...appEditor,
                 fontSize: nextFontSizeFrom(appEditor.fontSize),
             });
         },
-        [editorSettings.fontSize, tab.projectId],
+        [],
     );
 
     const persistEditorViewState = useCallback(

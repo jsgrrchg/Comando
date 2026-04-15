@@ -9,8 +9,6 @@ import type {
     AppEditorSettings,
     ChatFontFamily,
     EditorFontFamily,
-    ProjectAppearanceSettings,
-    ProjectEditorSettings,
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
@@ -1000,13 +998,6 @@ export function getDefaultAppAppearance(): AppAppearanceSettings {
     };
 }
 
-export function getDefaultProjectAppearance(): ProjectAppearanceSettings {
-    return {
-        themeMode: null,
-        themePreset: null,
-    };
-}
-
 export function getDefaultAppEditorSettings(): AppEditorSettings {
     return {
         fontFamily: "sf-mono",
@@ -1014,16 +1005,6 @@ export function getDefaultAppEditorSettings(): AppEditorSettings {
         lineHeight: 1.55,
         minimapEnabled: true,
         suggestionsEnabled: true,
-    };
-}
-
-export function getDefaultProjectEditorSettings(): ProjectEditorSettings {
-    return {
-        fontFamily: null,
-        fontSize: null,
-        lineHeight: null,
-        minimapEnabled: null,
-        suggestionsEnabled: null,
     };
 }
 
@@ -1060,7 +1041,6 @@ export const CHAT_FONT_FAMILY_OPTIONS: readonly ChatFontFamilyOption[] =
 
 export function resolveAppearance(
     appAppearance: AppAppearanceSettings | null | undefined,
-    projectAppearance: ProjectAppearanceSettings | null | undefined,
 ): AppAppearanceSettings {
     const defaults = getDefaultAppAppearance();
 
@@ -1068,14 +1048,8 @@ export function resolveAppearance(
         fileTreeScale: clampFileTreeScale(
             appAppearance?.fileTreeScale ?? defaults.fileTreeScale,
         ),
-        themeMode:
-            projectAppearance?.themeMode ??
-            appAppearance?.themeMode ??
-            defaults.themeMode,
-        themePreset:
-            projectAppearance?.themePreset ??
-            appAppearance?.themePreset ??
-            defaults.themePreset,
+        themeMode: appAppearance?.themeMode ?? defaults.themeMode,
+        themePreset: appAppearance?.themePreset ?? defaults.themePreset,
         zoomFactor: clampAppZoomFactor(
             appAppearance?.zoomFactor ?? defaults.zoomFactor,
         ),
@@ -1084,29 +1058,16 @@ export function resolveAppearance(
 
 export function resolveEditorSettings(
     appEditor: AppEditorSettings | null | undefined,
-    projectEditor: ProjectEditorSettings | null | undefined,
 ): AppEditorSettings {
     const defaults = getDefaultAppEditorSettings();
 
     return {
-        fontFamily:
-            projectEditor?.fontFamily ??
-            appEditor?.fontFamily ??
-            defaults.fontFamily,
-        fontSize:
-            projectEditor?.fontSize ?? appEditor?.fontSize ?? defaults.fontSize,
-        lineHeight:
-            projectEditor?.lineHeight ??
-            appEditor?.lineHeight ??
-            defaults.lineHeight,
-        minimapEnabled:
-            projectEditor?.minimapEnabled ??
-            appEditor?.minimapEnabled ??
-            defaults.minimapEnabled,
+        fontFamily: appEditor?.fontFamily ?? defaults.fontFamily,
+        fontSize: appEditor?.fontSize ?? defaults.fontSize,
+        lineHeight: appEditor?.lineHeight ?? defaults.lineHeight,
+        minimapEnabled: appEditor?.minimapEnabled ?? defaults.minimapEnabled,
         suggestionsEnabled:
-            projectEditor?.suggestionsEnabled ??
-            appEditor?.suggestionsEnabled ??
-            defaults.suggestionsEnabled,
+            appEditor?.suggestionsEnabled ?? defaults.suggestionsEnabled,
     };
 }
 

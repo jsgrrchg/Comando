@@ -2,9 +2,6 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppEditorSettings,
-    ProjectAppearanceSettings,
-    ProjectEditorSettings,
-    ProjectSettingsSnapshot,
     SettingsSnapshot,
 } from "@shared/ipc";
 
@@ -12,8 +9,6 @@ import {
     getDefaultAiChatSettings,
     getDefaultAppAppearance,
     getDefaultAppEditorSettings,
-    getDefaultProjectAppearance,
-    getDefaultProjectEditorSettings,
 } from "./theme";
 
 export async function loadAppAppearanceSettings(): Promise<AppAppearanceSettings> {
@@ -32,13 +27,6 @@ export async function saveAppAppearanceSettings(
     };
 
     await getComandoApi().saveSettingsSnapshot(nextSnapshot);
-}
-
-export async function loadProjectAppearanceSettings(
-    projectId: string,
-): Promise<ProjectAppearanceSettings> {
-    const snapshot = await getComandoApi().getProjectSettings(projectId);
-    return snapshot?.appearance ?? getDefaultProjectAppearance();
 }
 
 export async function loadAiChatSettings(): Promise<AppAiChatSettings> {
@@ -75,42 +63,6 @@ export async function saveAppEditorSettings(
     };
 
     await getComandoApi().saveSettingsSnapshot(nextSnapshot);
-}
-
-export async function loadProjectEditorSettings(
-    projectId: string,
-): Promise<ProjectEditorSettings> {
-    const snapshot = await getComandoApi().getProjectSettings(projectId);
-    return snapshot?.editor ?? getDefaultProjectEditorSettings();
-}
-
-export async function saveProjectAppearanceSettings(
-    projectId: string,
-    appearance: ProjectAppearanceSettings,
-): Promise<void> {
-    const currentSnapshot = await getComandoApi().getProjectSettings(projectId);
-    const snapshot: ProjectSettingsSnapshot = {
-        appearance,
-        editor: currentSnapshot?.editor ?? getDefaultProjectEditorSettings(),
-        projectId,
-    };
-
-    await getComandoApi().saveProjectSettings(snapshot);
-}
-
-export async function saveProjectEditorSettings(
-    projectId: string,
-    editor: ProjectEditorSettings,
-): Promise<void> {
-    const currentSnapshot = await getComandoApi().getProjectSettings(projectId);
-    const snapshot: ProjectSettingsSnapshot = {
-        appearance:
-            currentSnapshot?.appearance ?? getDefaultProjectAppearance(),
-        editor,
-        projectId,
-    };
-
-    await getComandoApi().saveProjectSettings(snapshot);
 }
 
 function getComandoApi() {

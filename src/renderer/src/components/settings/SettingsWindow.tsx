@@ -36,8 +36,6 @@ import {
 } from "./primitives";
 
 import type {
-    ProjectAppearanceState,
-    ProjectEditorState,
     RuntimeActionOption,
     RuntimeCardOption,
     SettingsAiChatState,
@@ -48,28 +46,20 @@ import type {
     ThemeMode,
 } from "./settings-types";
 
-type Category =
-    | "appearance"
-    | "editor"
-    | "ai"
-    | "project"
-    | "shortcuts"
-    | "runtimes";
+type Category = "appearance" | "editor" | "ai" | "shortcuts" | "runtimes";
 
 const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "editor", label: "Editor" },
     { id: "ai", label: "AI" },
-    { id: "project", label: "Project" },
     { id: "shortcuts", label: "Shortcuts" },
     { id: "runtimes", label: "AI Runtimes" },
 ];
 
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     appearance: "Theme mode and visual presets",
-    editor: "Typography and editor defaults",
+    editor: "Typography and editor behavior",
     ai: "Chat, composer, and AI behavior",
-    project: "Project-specific overrides",
     shortcuts: "Keyboard shortcuts reference",
     runtimes: "AI runtime authentication and wiring",
 };
@@ -79,15 +69,9 @@ export function SettingsWindow({
     appAppearance,
     appEditor,
     onClose,
-    onProjectSelect,
     onRuntimeAction,
-    projectAppearance,
-    projectEditor,
-    projectName,
-    projects = [],
     shortcuts = [],
     runtimes = [],
-    selectedProjectId = null,
 }: SettingsWindowProps) {
     const [active, setActive] = useState<Category>("appearance");
     const [search, setSearch] = useState("");
@@ -346,16 +330,6 @@ export function SettingsWindow({
                             <EditorContent state={appEditor} />
                         )}
                         {active === "ai" && <AiChatContent state={aiChat} />}
-                        {active === "project" && (
-                            <ProjectContent
-                                projects={projects}
-                                selectedProjectId={selectedProjectId}
-                                onProjectSelect={onProjectSelect}
-                                projectName={projectName}
-                                projectAppearance={projectAppearance}
-                                projectEditor={projectEditor}
-                            />
-                        )}
                         {active === "shortcuts" && (
                             <ShortcutsContent shortcuts={shortcuts} />
                         )}
@@ -514,218 +488,6 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     />
                 }
             />
-        </div>
-    );
-}
-
-function ProjectContent({
-    projects,
-    selectedProjectId,
-    onProjectSelect,
-    projectName,
-    projectAppearance,
-    projectEditor,
-}: {
-    projects: SettingsWindowProps["projects"];
-    selectedProjectId: string | null;
-    onProjectSelect?: (projectId: string | null) => void;
-    projectName?: string | null;
-    projectAppearance?: ProjectAppearanceState | null;
-    projectEditor?: ProjectEditorState | null;
-}) {
-    const projectOptions = [
-        { value: "" as string, label: "App defaults only" },
-        ...(projects ?? []).map((p) => ({ value: p.id, label: p.name })),
-    ];
-
-    return (
-        <div>
-            <SectionLabel>Scope</SectionLabel>
-            <Row
-                label="Active project"
-                description="Select a project to configure overrides."
-                control={
-                    <SelectField
-                        value={selectedProjectId ?? ""}
-                        options={projectOptions}
-                        onChange={(v) => onProjectSelect?.(v === "" ? null : v)}
-                    />
-                }
-            />
-
-            {!selectedProjectId && (
-                <p
-                    style={{
-                        fontSize: 12,
-                        color: "var(--color-text-secondary)",
-                        padding: "20px 0",
-                        lineHeight: 1.5,
-                    }}
-                >
-                    Select a project above to configure project-specific
-                    overrides. Project settings override app defaults without
-                    affecting other projects.
-                </p>
-            )}
-
-            {selectedProjectId && projectAppearance && (
-                <>
-                    <SectionLabel>Appearance override</SectionLabel>
-                    <Row
-                        label="Override appearance"
-                        description={`Use a custom theme for ${projectName ?? "this project"}.`}
-                        control={
-                            <Toggle
-                                value={projectAppearance.enabled}
-                                onChange={(v) =>
-                                    projectAppearance.onEnabledChange?.(v)
-                                }
-                            />
-                        }
-                    />
-                    {projectAppearance.enabled && (
-                        <>
-                            <Row
-                                label="Theme mode"
-                                description="Override the system theme for this project."
-                                control={
-                                    <SegmentedControl
-                                        value={projectAppearance.mode}
-                                        options={[
-                                            {
-                                                value: "system" as ThemeMode,
-                                                label: "System",
-                                            },
-                                            {
-                                                value: "light" as ThemeMode,
-                                                label: "Light",
-                                            },
-                                            {
-                                                value: "dark" as ThemeMode,
-                                                label: "Dark",
-                                            },
-                                        ]}
-                                        onChange={(v) =>
-                                            projectAppearance.onModeChange?.(v)
-                                        }
-                                    />
-                                }
-                            />
-                            <ThemePicker
-                                value={projectAppearance.presetId}
-                                presets={projectAppearance.presets}
-                                onChange={(id) =>
-                                    projectAppearance.onPresetChange?.(id)
-                                }
-                            />
-                        </>
-                    )}
-                </>
-            )}
-
-            {selectedProjectId && projectEditor && (
-                <>
-                    <SectionLabel>Editor override</SectionLabel>
-                    <Row
-                        label="Override editor"
-                        description={`Use custom editor settings for ${projectName ?? "this project"}.`}
-                        control={
-                            <Toggle
-                                value={projectEditor.enabled}
-                                onChange={(v) =>
-                                    projectEditor.onEnabledChange?.(v)
-                                }
-                            />
-                        }
-                    />
-                    {projectEditor.enabled && (
-                        <>
-                            <Row
-                                label="Font size"
-                                description="Text size in the editor, in pixels."
-                                control={
-                                    <NumberStepper
-                                        value={projectEditor.fontSize}
-                                        min={EDITOR_FONT_SIZE_MIN}
-                                        max={EDITOR_FONT_SIZE_MAX}
-                                        onChange={(v) =>
-                                            projectEditor.onFontSizeChange?.(v)
-                                        }
-                                    />
-                                }
-                            />
-                            <Row
-                                label="Font family"
-                                description="Font used in the editor."
-                                control={
-                                    <SelectField
-                                        value={projectEditor.fontFamilyId}
-                                        options={projectEditor.fontFamilies.map(
-                                            (f) => ({
-                                                disabled: f.disabled,
-                                                group: f.group,
-                                                value: f.id,
-                                                label: f.label,
-                                            }),
-                                        )}
-                                        onChange={(v) =>
-                                            projectEditor.onFontFamilyChange?.(
-                                                v,
-                                            )
-                                        }
-                                    />
-                                }
-                            />
-                            <Row
-                                label="Line spacing"
-                                description="Line height multiplier."
-                                control={
-                                    <SliderField
-                                        value={projectEditor.lineHeight}
-                                        min={1.2}
-                                        max={2}
-                                        step={0.05}
-                                        onChange={(v) =>
-                                            projectEditor.onLineHeightChange?.(
-                                                v,
-                                            )
-                                        }
-                                        formatValue={(v) => `${v.toFixed(2)}x`}
-                                    />
-                                }
-                            />
-                            <Row
-                                label="Minimap"
-                                description="Show Monaco's code minimap for this project."
-                                control={
-                                    <Toggle
-                                        value={projectEditor.minimapEnabled}
-                                        onChange={(v) =>
-                                            projectEditor.onMinimapEnabledChange?.(
-                                                v,
-                                            )
-                                        }
-                                    />
-                                }
-                            />
-                            <Row
-                                label="Autocomplete suggestions"
-                                description="Show Monaco suggestions automatically while typing in this project."
-                                control={
-                                    <Toggle
-                                        value={projectEditor.suggestionsEnabled}
-                                        onChange={(v) =>
-                                            projectEditor.onSuggestionsEnabledChange?.(
-                                                v,
-                                            )
-                                        }
-                                    />
-                                }
-                            />
-                        </>
-                    )}
-                </>
-            )}
         </div>
     );
 }

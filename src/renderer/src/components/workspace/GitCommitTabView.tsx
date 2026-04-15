@@ -38,7 +38,7 @@ export function GitCommitTabView({
     const selectCommit = useGitStore((state) => state.selectCommit);
 
     const projectId = tab.projectId;
-    const editorSettings = useResolvedEditorSettings(projectId);
+    const editorSettings = useResolvedEditorSettings();
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
     const detail =

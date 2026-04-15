@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+
 import { clipboard, contextBridge, ipcRenderer, webUtils } from "electron";
 
 import {
@@ -76,7 +78,7 @@ import {
     type WorkspaceSnapshot,
 } from "@shared/ipc";
 
-window.addEventListener("error", (event) => {
+window.addEventListener("error", (event: ErrorEvent) => {
     const filename =
         typeof event.filename === "string" && event.filename.length > 0
             ? event.filename
@@ -91,14 +93,17 @@ window.addEventListener("error", (event) => {
     console.error(`[renderer-error] ${reason} (${filename}:${line}:${column})`);
 });
 
-window.addEventListener("unhandledrejection", (event) => {
-    const reason =
-        event.reason instanceof Error
-            ? (event.reason.stack ?? event.reason.message)
-            : String(event.reason);
+window.addEventListener(
+    "unhandledrejection",
+    (event: PromiseRejectionEvent) => {
+        const reason =
+            event.reason instanceof Error
+                ? (event.reason.stack ?? event.reason.message)
+                : String(event.reason);
 
-    console.error(`[renderer-unhandledrejection] ${reason}`);
-});
+        console.error(`[renderer-unhandledrejection] ${reason}`);
+    },
+);
 
 window.addEventListener("DOMContentLoaded", () => {
     document.documentElement?.setAttribute("data-comando-preload", "ready");

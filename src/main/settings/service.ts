@@ -16,8 +16,6 @@ import type {
     GeminiRuntimeSettings,
     KiloRuntimeSettings,
     PersistedShellState,
-    ProjectAppearanceSettings,
-    ProjectEditorSettings,
     ProjectSettingsSnapshot,
     SettingsSnapshot,
     ThemeMode,
@@ -375,147 +373,12 @@ export class SettingsService {
     }
 
     loadProjectSettings(projectId: string): ProjectSettingsSnapshot | null {
-        const themeMode = this.#loadProjectStringSetting(
-            projectId,
-            PROJECT_THEME_MODE_KEY,
-        );
-        const themePreset = this.#loadProjectStringSetting(
-            projectId,
-            PROJECT_THEME_PRESET_KEY,
-        );
-
-        const appearance = {
-            themeMode: this.#normalizeOptionalThemeMode(themeMode),
-            themePreset: this.#normalizeOptionalThemePreset(themePreset),
-        };
-        const editor = {
-            fontFamily: this.#normalizeOptionalEditorFontFamily(
-                this.#loadProjectStringSetting(
-                    projectId,
-                    PROJECT_EDITOR_FONT_FAMILY_KEY,
-                ),
-            ),
-            fontSize: this.#normalizeOptionalEditorFontSize(
-                this.#loadProjectNumberSetting(
-                    projectId,
-                    PROJECT_EDITOR_FONT_SIZE_KEY,
-                ),
-            ),
-            lineHeight: this.#normalizeOptionalEditorLineHeight(
-                this.#loadProjectNumberSetting(
-                    projectId,
-                    PROJECT_EDITOR_LINE_HEIGHT_KEY,
-                ),
-            ),
-            minimapEnabled: this.#normalizeOptionalEditorMinimapEnabled(
-                this.#loadProjectBooleanSetting(
-                    projectId,
-                    PROJECT_EDITOR_MINIMAP_ENABLED_KEY,
-                ),
-            ),
-            suggestionsEnabled: this.#normalizeOptionalEditorSuggestionsEnabled(
-                this.#loadProjectBooleanSetting(
-                    projectId,
-                    PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
-                ),
-            ),
-        };
-
-        if (
-            appearance.themeMode === null &&
-            appearance.themePreset === null &&
-            editor.fontFamily === null &&
-            editor.fontSize === null &&
-            editor.lineHeight === null &&
-            editor.minimapEnabled === null &&
-            editor.suggestionsEnabled === null
-        ) {
-            return null;
-        }
-
-        return {
-            appearance,
-            editor,
-            projectId,
-        };
+        void projectId;
+        return null;
     }
 
     saveProjectSettings(snapshot: ProjectSettingsSnapshot): void {
-        if (snapshot.appearance === null && snapshot.editor === null) {
-            this.#deleteProjectSetting(
-                snapshot.projectId,
-                PROJECT_THEME_MODE_KEY,
-            );
-            this.#deleteProjectSetting(
-                snapshot.projectId,
-                PROJECT_THEME_PRESET_KEY,
-            );
-            this.#deleteProjectSetting(
-                snapshot.projectId,
-                PROJECT_EDITOR_FONT_FAMILY_KEY,
-            );
-            this.#deleteProjectSetting(
-                snapshot.projectId,
-                PROJECT_EDITOR_FONT_SIZE_KEY,
-            );
-            this.#deleteProjectSetting(
-                snapshot.projectId,
-                PROJECT_EDITOR_LINE_HEIGHT_KEY,
-            );
-            this.#deleteProjectSetting(
-                snapshot.projectId,
-                PROJECT_EDITOR_MINIMAP_ENABLED_KEY,
-            );
-            this.#deleteProjectSetting(
-                snapshot.projectId,
-                PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
-            );
-            return;
-        }
-
-        this.#saveOptionalProjectThemeMode(
-            snapshot.projectId,
-            PROJECT_THEME_MODE_KEY,
-            snapshot.appearance?.themeMode ?? null,
-        );
-        this.#saveOptionalProjectThemePreset(
-            snapshot.projectId,
-            PROJECT_THEME_PRESET_KEY,
-            snapshot.appearance?.themePreset ?? null,
-        );
-        this.#saveOptionalProjectEditorFontFamily(
-            snapshot.projectId,
-            PROJECT_EDITOR_FONT_FAMILY_KEY,
-            snapshot.editor?.fontFamily ?? null,
-        );
-        this.#saveOptionalProjectEditorNumber(
-            snapshot.projectId,
-            PROJECT_EDITOR_FONT_SIZE_KEY,
-            this.#normalizeOptionalEditorFontSize(
-                snapshot.editor?.fontSize ?? null,
-            ),
-        );
-        this.#saveOptionalProjectEditorNumber(
-            snapshot.projectId,
-            PROJECT_EDITOR_LINE_HEIGHT_KEY,
-            this.#normalizeOptionalEditorLineHeight(
-                snapshot.editor?.lineHeight ?? null,
-            ),
-        );
-        this.#saveOptionalProjectBooleanSetting(
-            snapshot.projectId,
-            PROJECT_EDITOR_MINIMAP_ENABLED_KEY,
-            this.#normalizeOptionalEditorMinimapEnabled(
-                snapshot.editor?.minimapEnabled ?? null,
-            ),
-        );
-        this.#saveOptionalProjectBooleanSetting(
-            snapshot.projectId,
-            PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
-            this.#normalizeOptionalEditorSuggestionsEnabled(
-                snapshot.editor?.suggestionsEnabled ?? null,
-            ),
-        );
+        this.#deleteLegacyProjectSettings(snapshot.projectId);
     }
 
     loadCodexRuntimeSettings(): CodexRuntimeSettings {
@@ -706,47 +569,6 @@ export class SettingsService {
         return row?.value ?? null;
     }
 
-    #loadProjectStringSetting(projectId: string, key: string): string | null {
-        const row = this.#connection
-            .prepare<[string, string], SettingRow | undefined>(
-                `
-                SELECT value
-                FROM project_settings
-                WHERE project_id = ? AND key = ?
-                `,
-            )
-            .get(projectId, key);
-
-        return row?.value ?? null;
-    }
-
-    #loadProjectNumberSetting(projectId: string, key: string): number | null {
-        const value = this.#loadProjectStringSetting(projectId, key);
-        if (value === null) {
-            return null;
-        }
-
-        const parsed = Number(value);
-        return Number.isFinite(parsed) ? parsed : null;
-    }
-
-    #loadProjectBooleanSetting(projectId: string, key: string): boolean | null {
-        const value = this.#loadProjectStringSetting(projectId, key);
-        if (value === null) {
-            return null;
-        }
-
-        if (value === "1" || value === "true") {
-            return true;
-        }
-
-        if (value === "0" || value === "false") {
-            return false;
-        }
-
-        return null;
-    }
-
     #loadBooleanSetting(key: string): boolean | null {
         const value = this.#loadStringSetting(key);
         if (value === null) {
@@ -810,88 +632,6 @@ export class SettingsService {
         this.#saveSetting(key, value ? "1" : "0");
     }
 
-    #saveProjectSetting(projectId: string, key: string, value: string): void {
-        this.#connection
-            .prepare<[string, string, string, string], void>(
-                `
-                INSERT INTO project_settings (project_id, key, value, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(project_id, key) DO UPDATE SET
-                    value = excluded.value,
-                    updated_at = excluded.updated_at
-                `,
-            )
-            .run(projectId, key, value, new Date().toISOString());
-    }
-
-    #saveOptionalProjectThemeMode(
-        projectId: string,
-        key: string,
-        value: ProjectAppearanceSettings["themeMode"],
-    ): void {
-        const normalized = this.#normalizeOptionalThemeMode(value);
-        if (normalized === null) {
-            this.#deleteProjectSetting(projectId, key);
-            return;
-        }
-
-        this.#saveProjectSetting(projectId, key, normalized);
-    }
-
-    #saveOptionalProjectThemePreset(
-        projectId: string,
-        key: string,
-        value: ProjectAppearanceSettings["themePreset"],
-    ): void {
-        const normalized = this.#normalizeOptionalThemePreset(value);
-        if (normalized === null) {
-            this.#deleteProjectSetting(projectId, key);
-            return;
-        }
-
-        this.#saveProjectSetting(projectId, key, normalized);
-    }
-
-    #saveOptionalProjectEditorFontFamily(
-        projectId: string,
-        key: string,
-        value: ProjectEditorSettings["fontFamily"],
-    ): void {
-        const normalized = this.#normalizeOptionalEditorFontFamily(value);
-        if (normalized === null) {
-            this.#deleteProjectSetting(projectId, key);
-            return;
-        }
-
-        this.#saveProjectSetting(projectId, key, normalized);
-    }
-
-    #saveOptionalProjectEditorNumber(
-        projectId: string,
-        key: string,
-        value: number | null,
-    ): void {
-        if (value === null) {
-            this.#deleteProjectSetting(projectId, key);
-            return;
-        }
-
-        this.#saveProjectSetting(projectId, key, String(value));
-    }
-
-    #saveOptionalProjectBooleanSetting(
-        projectId: string,
-        key: string,
-        value: boolean | null,
-    ): void {
-        if (value === null) {
-            this.#deleteProjectSetting(projectId, key);
-            return;
-        }
-
-        this.#saveProjectSetting(projectId, key, value ? "1" : "0");
-    }
-
     #deleteSetting(key: string): void {
         this.#connection
             .prepare<[string], void>("DELETE FROM app_settings WHERE key = ?")
@@ -907,6 +647,22 @@ export class SettingsService {
             .run(projectId, key);
     }
 
+    #deleteLegacyProjectSettings(projectId: string): void {
+        this.#deleteProjectSetting(projectId, PROJECT_THEME_MODE_KEY);
+        this.#deleteProjectSetting(projectId, PROJECT_THEME_PRESET_KEY);
+        this.#deleteProjectSetting(projectId, PROJECT_EDITOR_FONT_FAMILY_KEY);
+        this.#deleteProjectSetting(projectId, PROJECT_EDITOR_FONT_SIZE_KEY);
+        this.#deleteProjectSetting(projectId, PROJECT_EDITOR_LINE_HEIGHT_KEY);
+        this.#deleteProjectSetting(
+            projectId,
+            PROJECT_EDITOR_MINIMAP_ENABLED_KEY,
+        );
+        this.#deleteProjectSetting(
+            projectId,
+            PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
+        );
+    }
+
     #normalizeThemeMode(value: string | null | undefined): ThemeMode {
         return VALID_THEME_MODES.has(value as ThemeMode)
             ? (value as ThemeMode)
@@ -917,30 +673,6 @@ export class SettingsService {
         return VALID_THEME_PRESETS.has(value as ThemePreset)
             ? (value as ThemePreset)
             : DEFAULT_THEME_PRESET;
-    }
-
-    #normalizeOptionalThemeMode(
-        value: string | null | undefined,
-    ): ThemeMode | null {
-        if (!value) {
-            return null;
-        }
-
-        return VALID_THEME_MODES.has(value as ThemeMode)
-            ? (value as ThemeMode)
-            : null;
-    }
-
-    #normalizeOptionalThemePreset(
-        value: string | null | undefined,
-    ): ThemePreset | null {
-        if (!value) {
-            return null;
-        }
-
-        return VALID_THEME_PRESETS.has(value as ThemePreset)
-            ? (value as ThemePreset)
-            : null;
     }
 
     #normalizeAppZoomFactor(value: number | null | undefined): number {
@@ -966,38 +698,9 @@ export class SettingsService {
             : DEFAULT_EDITOR_FONT_FAMILY;
     }
 
-    #normalizeOptionalEditorFontFamily(
-        value: string | null | undefined,
-    ): EditorFontFamily | null {
-        const normalizedValue = normalizeFontFamilyAlias(value);
-        if (!value) {
-            return null;
-        }
-
-        return VALID_EDITOR_FONT_FAMILIES.has(
-            normalizedValue as EditorFontFamily,
-        )
-            ? (normalizedValue as EditorFontFamily)
-            : null;
-    }
-
     #normalizeEditorFontSize(value: number | null | undefined): number {
         if (typeof value !== "number" || !Number.isFinite(value)) {
             return DEFAULT_EDITOR_FONT_SIZE;
-        }
-
-        return clampRoundedInt(
-            value,
-            EDITOR_FONT_SIZE_MIN,
-            EDITOR_FONT_SIZE_MAX,
-        );
-    }
-
-    #normalizeOptionalEditorFontSize(
-        value: number | null | undefined,
-    ): number | null {
-        if (typeof value !== "number" || !Number.isFinite(value)) {
-            return null;
         }
 
         return clampRoundedInt(
@@ -1015,29 +718,9 @@ export class SettingsService {
         return Math.min(2, Math.max(1.2, Math.round(value * 100) / 100));
     }
 
-    #normalizeOptionalEditorLineHeight(
-        value: number | null | undefined,
-    ): number | null {
-        if (typeof value !== "number" || !Number.isFinite(value)) {
-            return null;
-        }
-
-        return Math.min(2, Math.max(1.2, Math.round(value * 100) / 100));
-    }
-
     #normalizeEditorMinimapEnabled(value: boolean | null | undefined): boolean {
         if (typeof value !== "boolean") {
             return DEFAULT_EDITOR_MINIMAP_ENABLED;
-        }
-
-        return value;
-    }
-
-    #normalizeOptionalEditorMinimapEnabled(
-        value: boolean | null | undefined,
-    ): boolean | null {
-        if (typeof value !== "boolean") {
-            return null;
         }
 
         return value;
@@ -1048,16 +731,6 @@ export class SettingsService {
     ): boolean {
         if (typeof value !== "boolean") {
             return DEFAULT_EDITOR_SUGGESTIONS_ENABLED;
-        }
-
-        return value;
-    }
-
-    #normalizeOptionalEditorSuggestionsEnabled(
-        value: boolean | null | undefined,
-    ): boolean | null {
-        if (typeof value !== "boolean") {
-            return null;
         }
 
         return value;

@@ -198,7 +198,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("stores and reloads project-specific settings", () => {
+    it("ignores project-specific settings and clears legacy overrides", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -219,20 +219,7 @@ describe("SettingsService", () => {
             },
         });
 
-        expect(service.loadProjectSettings("project-a")).toEqual({
-            projectId: "project-a",
-            appearance: {
-                themeMode: "light",
-                themePreset: "rose",
-            },
-            editor: {
-                fontFamily: "ibm-plex-mono",
-                fontSize: 16,
-                lineHeight: 1.8,
-                minimapEnabled: false,
-                suggestionsEnabled: false,
-            },
-        });
+        expect(service.loadProjectSettings("project-a")).toEqual(null);
     });
 
     it("accepts presets imported from reference app", () => {
@@ -265,20 +252,7 @@ describe("SettingsService", () => {
             themePreset: "tokyoNight",
             zoomFactor: 0.9,
         });
-        expect(service.loadProjectSettings("project-b")).toEqual({
-            projectId: "project-b",
-            appearance: {
-                themeMode: "light",
-                themePreset: "rosePine",
-            },
-            editor: {
-                fontFamily: null,
-                fontSize: null,
-                lineHeight: null,
-                minimapEnabled: null,
-                suggestionsEnabled: null,
-            },
-        });
+        expect(service.loadProjectSettings("project-b")).toEqual(null);
     });
 
     it("normalizes legacy font aliases when loading settings", () => {

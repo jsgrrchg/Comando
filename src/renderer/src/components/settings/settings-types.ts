@@ -30,11 +30,6 @@ export interface SettingsThemeControlState {
     readonly onZoomFactorChange?: (zoomFactor: number) => void;
 }
 
-export interface ProjectAppearanceState extends SettingsThemeControlState {
-    readonly enabled: boolean;
-    readonly onEnabledChange?: (enabled: boolean) => void;
-}
-
 export interface SettingsEditorControlState {
     readonly fontFamilyId: string;
     readonly fontFamilies: readonly EditorFontFamilyOption[];
@@ -48,17 +43,6 @@ export interface SettingsEditorControlState {
     readonly onLineHeightChange?: (lineHeight: number) => void;
     readonly onMinimapEnabledChange?: (enabled: boolean) => void;
     readonly onSuggestionsEnabledChange?: (enabled: boolean) => void;
-}
-
-export interface ProjectEditorState extends SettingsEditorControlState {
-    readonly enabled: boolean;
-    readonly onEnabledChange?: (enabled: boolean) => void;
-}
-
-export interface SettingsProjectOption {
-    readonly id: string;
-    readonly name: string;
-    readonly path: string;
 }
 
 export interface RuntimeActionOption {
@@ -120,16 +104,10 @@ export interface SettingsAiChatState {
 }
 
 export interface SettingsWindowProps {
-    readonly projectName?: string | null;
-    readonly projects?: readonly SettingsProjectOption[];
-    readonly selectedProjectId?: string | null;
-    readonly onProjectSelect?: (projectId: string | null) => void;
     readonly onClose?: () => void;
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly aiChat: SettingsAiChatState;
-    readonly projectAppearance?: ProjectAppearanceState | null;
-    readonly projectEditor?: ProjectEditorState | null;
     readonly shortcuts?: readonly ShortcutEntryOption[];
     readonly runtimes?: readonly RuntimeCardOption[];
     readonly onRuntimeAction?: (runtimeId: string, actionId: string) => void;

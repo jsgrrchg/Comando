@@ -7,9 +7,6 @@ import type {
     AppAppearanceSettings,
     AppEditorSettings,
     ChatFontFamily,
-    ProjectAppearanceSettings,
-    ProjectEditorSettings,
-    ProjectSummary,
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
@@ -18,7 +15,6 @@ import {
     SettingsWindow,
     type RuntimeActionOption,
     type RuntimeCardOption,
-    type SettingsProjectOption,
 } from "./components/settings";
 import {
     DEFAULT_AI_DIFF_ZOOM,
@@ -30,13 +26,9 @@ import {
     loadAiChatSettings,
     loadAppEditorSettings,
     loadAppAppearanceSettings,
-    loadProjectEditorSettings,
-    loadProjectAppearanceSettings,
     saveAiChatSettings,
     saveAppEditorSettings,
     saveAppAppearanceSettings,
-    saveProjectEditorSettings,
-    saveProjectAppearanceSettings,
 } from "./app/settings/client";
 import {
     buildSelectableFontFamilyOptions,
@@ -48,33 +40,25 @@ import {
     getDefaultAiChatSettings,
     getDefaultAppAppearance,
     getDefaultAppEditorSettings,
-    getDefaultProjectAppearance,
-    getDefaultProjectEditorSettings,
     THEME_PRESET_OPTIONS,
 } from "./app/settings/theme";
 import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
 
 export function SettingsApp() {
-    const initialProjectId = useMemo(() => {
+    const runtimeProjectId = useMemo(() => {
         const params = new URLSearchParams(window.location.search);
         return params.get("projectId");
     }, []);
     const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>(
         getDefaultAppAppearance(),
     );
-    const [projectAppearance, setProjectAppearance] =
-        useState<ProjectAppearanceSettings>(getDefaultProjectAppearance());
     const [appEditor, setAppEditor] = useState<AppEditorSettings>(
         getDefaultAppEditorSettings(),
-    );
-    const [projectEditor, setProjectEditor] = useState<ProjectEditorSettings>(
-        getDefaultProjectEditorSettings(),
     );
     const [aiChat, setAiChat] = useState<AppAiChatSettings>(
         getDefaultAiChatSettings(),
     );
-    const [projects, setProjects] = useState<readonly ProjectSummary[]>([]);
     const [runtimeStatuses, setRuntimeStatuses] = useState<
         Record<AiRuntimeId, AiRuntimeStatus | null>
     >({
@@ -83,33 +67,9 @@ export function SettingsApp() {
         gemini: null,
         kilo: null,
     });
-    const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
-        initialProjectId,
-    );
     const availableFontFamilyIds = useAvailableFontFamilyIds();
 
-    useResolvedAppearance(selectedProjectId);
-
-    const selectedProject =
-        projects.find((project) => project.id === selectedProjectId) ?? null;
-    const projectOverrideEnabled =
-        projectAppearance.themeMode !== null ||
-        projectAppearance.themePreset !== null;
-    const projectEditorOverrideEnabled =
-        projectEditor.fontFamily !== null ||
-        projectEditor.fontSize !== null ||
-        projectEditor.lineHeight !== null ||
-        projectEditor.minimapEnabled !== null ||
-        projectEditor.suggestionsEnabled !== null;
-
-    const loadProjects = useCallback(async () => {
-        if (!window.comando) {
-            return;
-        }
-
-        const nextProjects = await window.comando.listProjects();
-        setProjects(nextProjects);
-    }, []);
+    useResolvedAppearance();
 
     const loadAppAiChat = useCallback(async () => {
         const next = await loadAiChatSettings();
@@ -124,30 +84,6 @@ export function SettingsApp() {
     const loadAppEditor = useCallback(async () => {
         const nextEditor = await loadAppEditorSettings();
         setAppEditor(nextEditor);
-    }, []);
-
-    const loadProjectAppearance = useCallback(
-        async (projectId: string | null) => {
-            if (!projectId) {
-                setProjectAppearance(getDefaultProjectAppearance());
-                return;
-            }
-
-            const nextAppearance =
-                await loadProjectAppearanceSettings(projectId);
-            setProjectAppearance(nextAppearance);
-        },
-        [],
-    );
-
-    const loadProjectEditor = useCallback(async (projectId: string | null) => {
-        if (!projectId) {
-            setProjectEditor(getDefaultProjectEditorSettings());
-            return;
-        }
-
-        const nextEditor = await loadProjectEditorSettings(projectId);
-        setProjectEditor(nextEditor);
     }, []);
 
     const loadRuntimeStatuses = useCallback(async () => {
@@ -173,12 +109,9 @@ export function SettingsApp() {
     useEffect(() => {
         const timeout = window.setTimeout(() => {
             void Promise.all([
-                loadProjects(),
                 loadAppAiChat(),
                 loadAppAppearance(),
                 loadAppEditor(),
-                loadProjectAppearance(selectedProjectId),
-                loadProjectEditor(selectedProjectId),
                 loadRuntimeStatuses(),
             ]);
         }, 0);
@@ -186,16 +119,7 @@ export function SettingsApp() {
         return () => {
             window.clearTimeout(timeout);
         };
-    }, [
-        loadAppAiChat,
-        loadAppAppearance,
-        loadAppEditor,
-        loadProjectEditor,
-        loadProjectAppearance,
-        loadProjects,
-        loadRuntimeStatuses,
-        selectedProjectId,
-    ]);
+    }, [loadAppAiChat, loadAppAppearance, loadAppEditor, loadRuntimeStatuses]);
 
     useEffect(() => {
         if (!window.comando) {
@@ -208,47 +132,11 @@ export function SettingsApp() {
             void loadAppEditor();
             void loadRuntimeStatuses();
         });
-        const unsubscribeProjectSettings =
-            window.comando.onProjectSettingsUpdated((payload) => {
-                if (payload.projectId !== selectedProjectId) {
-                    return;
-                }
-
-                void loadProjectAppearance(selectedProjectId);
-                void loadProjectEditor(selectedProjectId);
-            });
 
         return () => {
             unsubscribeSettings();
-            unsubscribeProjectSettings();
         };
-    }, [
-        loadAppAiChat,
-        loadAppAppearance,
-        loadAppEditor,
-        loadProjectEditor,
-        loadProjectAppearance,
-        loadRuntimeStatuses,
-        selectedProjectId,
-    ]);
-
-    const handleProjectSelect = (projectId: string | null) => {
-        setSelectedProjectId(projectId);
-
-        const params = new URLSearchParams(window.location.search);
-        if (projectId) {
-            params.set("projectId", projectId);
-        } else {
-            params.delete("projectId");
-        }
-        window.history.replaceState(
-            {},
-            "",
-            params.size > 0
-                ? `${window.location.pathname}?${params.toString()}`
-                : window.location.pathname,
-        );
-    };
+    }, [loadAppAiChat, loadAppAppearance, loadAppEditor, loadRuntimeStatuses]);
 
     const handleAppThemeModeChange = (themeMode: ThemeMode) => {
         const nextAppearance = {
@@ -342,106 +230,6 @@ export function SettingsApp() {
         void saveAppEditorSettings(nextEditor);
     };
 
-    const handleProjectOverrideChange = (enabled: boolean) => {
-        if (!selectedProjectId) {
-            return;
-        }
-
-        const nextAppearance = enabled
-            ? {
-                  themeMode:
-                      projectAppearance.themeMode ?? appAppearance.themeMode,
-                  themePreset:
-                      projectAppearance.themePreset ??
-                      appAppearance.themePreset,
-              }
-            : getDefaultProjectAppearance();
-
-        setProjectAppearance(nextAppearance);
-        void saveProjectAppearanceSettings(selectedProjectId, nextAppearance);
-    };
-
-    const handleProjectEditorOverrideChange = (enabled: boolean) => {
-        if (!selectedProjectId) {
-            return;
-        }
-
-        const nextEditor = enabled
-            ? {
-                  fontFamily: projectEditor.fontFamily ?? appEditor.fontFamily,
-                  fontSize: projectEditor.fontSize ?? appEditor.fontSize,
-                  lineHeight: projectEditor.lineHeight ?? appEditor.lineHeight,
-                  minimapEnabled:
-                      projectEditor.minimapEnabled ?? appEditor.minimapEnabled,
-                  suggestionsEnabled:
-                      projectEditor.suggestionsEnabled ??
-                      appEditor.suggestionsEnabled,
-              }
-            : getDefaultProjectEditorSettings();
-
-        setProjectEditor(nextEditor);
-        void saveProjectEditorSettings(selectedProjectId, nextEditor);
-    };
-
-    const updateProjectAppearance = (patch: {
-        readonly themeMode?: ThemeMode;
-        readonly themePreset?: ThemePreset;
-    }) => {
-        if (!selectedProjectId) {
-            return;
-        }
-
-        const nextAppearance: ProjectAppearanceSettings = {
-            themeMode:
-                patch.themeMode ??
-                projectAppearance.themeMode ??
-                appAppearance.themeMode,
-            themePreset:
-                patch.themePreset ??
-                projectAppearance.themePreset ??
-                appAppearance.themePreset,
-        };
-
-        setProjectAppearance(nextAppearance);
-        void saveProjectAppearanceSettings(selectedProjectId, nextAppearance);
-    };
-
-    const updateProjectEditor = (patch: {
-        readonly fontFamily?: AppEditorSettings["fontFamily"];
-        readonly fontSize?: number;
-        readonly lineHeight?: number;
-        readonly minimapEnabled?: boolean;
-        readonly suggestionsEnabled?: boolean;
-    }) => {
-        if (!selectedProjectId) {
-            return;
-        }
-
-        const nextEditor: ProjectEditorSettings = {
-            fontFamily:
-                patch.fontFamily ??
-                projectEditor.fontFamily ??
-                appEditor.fontFamily,
-            fontSize:
-                patch.fontSize ?? projectEditor.fontSize ?? appEditor.fontSize,
-            lineHeight:
-                patch.lineHeight ??
-                projectEditor.lineHeight ??
-                appEditor.lineHeight,
-            minimapEnabled:
-                patch.minimapEnabled ??
-                projectEditor.minimapEnabled ??
-                appEditor.minimapEnabled,
-            suggestionsEnabled:
-                patch.suggestionsEnabled ??
-                projectEditor.suggestionsEnabled ??
-                appEditor.suggestionsEnabled,
-        };
-
-        setProjectEditor(nextEditor);
-        void saveProjectEditorSettings(selectedProjectId, nextEditor);
-    };
-
     const updateAiChat = (patch: Partial<AppAiChatSettings>) => {
         const next: AppAiChatSettings = { ...aiChat, ...patch };
         setAiChat(next);
@@ -463,19 +251,6 @@ export function SettingsApp() {
                 appEditor.fontFamily,
             ),
         [availableFontFamilyIds, appEditor.fontFamily],
-    );
-    const projectEditorFontFamilies = useMemo(
-        () =>
-            buildSelectableFontFamilyOptions(
-                EDITOR_FONT_FAMILY_OPTIONS,
-                availableFontFamilyIds,
-                projectEditor.fontFamily ?? appEditor.fontFamily,
-            ),
-        [
-            availableFontFamilyIds,
-            appEditor.fontFamily,
-            projectEditor.fontFamily,
-        ],
     );
     const chatFontFamilies = useMemo(
         () =>
@@ -600,94 +375,17 @@ export function SettingsApp() {
                     handleAppEditorSuggestionsEnabledChange,
             }}
             onClose={() => window.close()}
-            onProjectSelect={handleProjectSelect}
             onRuntimeAction={(runtimeId, actionId) =>
                 void handleRuntimeAction({
                     actionId,
                     loadRuntimeStatuses,
                     runtimeId: runtimeId as AiRuntimeId,
                     runtimeStatuses,
-                    selectedProjectId,
+                    projectId: runtimeProjectId,
                 })
             }
-            projectAppearance={
-                selectedProjectId
-                    ? {
-                          enabled: projectOverrideEnabled,
-                          mode:
-                              projectAppearance.themeMode ??
-                              appAppearance.themeMode,
-                          onEnabledChange: handleProjectOverrideChange,
-                          onModeChange: (themeMode) =>
-                              updateProjectAppearance({ themeMode }),
-                          onPresetChange: (themePreset) =>
-                              updateProjectAppearance({
-                                  themePreset: themePreset as ThemePreset,
-                              }),
-                          presetId:
-                              projectAppearance.themePreset ??
-                              appAppearance.themePreset,
-                          presets: THEME_PRESET_OPTIONS.map((preset) => ({
-                              description: preset.description,
-                              id: preset.id,
-                              label: preset.label,
-                              swatches: preset.swatches,
-                          })),
-                      }
-                    : null
-            }
-            projectEditor={
-                selectedProjectId
-                    ? {
-                          enabled: projectEditorOverrideEnabled,
-                          fontFamilies: projectEditorFontFamilies.map(
-                              (fontFamily) => ({
-                                  description: fontFamily.description,
-                                  disabled: fontFamily.disabled,
-                                  group: fontFamily.group,
-                                  id: fontFamily.id,
-                                  label: fontFamily.label,
-                                  preview: fontFamily.preview,
-                              }),
-                          ),
-                          fontFamilyId:
-                              projectEditor.fontFamily ?? appEditor.fontFamily,
-                          fontSize:
-                              projectEditor.fontSize ?? appEditor.fontSize,
-                          lineHeight:
-                              projectEditor.lineHeight ?? appEditor.lineHeight,
-                          minimapEnabled:
-                              projectEditor.minimapEnabled ??
-                              appEditor.minimapEnabled,
-                          suggestionsEnabled:
-                              projectEditor.suggestionsEnabled ??
-                              appEditor.suggestionsEnabled,
-                          onEnabledChange: handleProjectEditorOverrideChange,
-                          onFontFamilyChange: (fontFamilyId) =>
-                              updateProjectEditor({
-                                  fontFamily:
-                                      fontFamilyId as AppEditorSettings["fontFamily"],
-                              }),
-                          onFontSizeChange: (fontSize) =>
-                              updateProjectEditor({ fontSize }),
-                          onLineHeightChange: (lineHeight) =>
-                              updateProjectEditor({ lineHeight }),
-                          onMinimapEnabledChange: (minimapEnabled) =>
-                              updateProjectEditor({ minimapEnabled }),
-                          onSuggestionsEnabledChange: (suggestionsEnabled) =>
-                              updateProjectEditor({ suggestionsEnabled }),
-                      }
-                    : null
-            }
-            projectName={selectedProject?.name ?? null}
-            projects={projects.map<SettingsProjectOption>((project) => ({
-                id: project.id,
-                name: project.name,
-                path: project.rootPath,
-            }))}
             shortcuts={shortcuts}
             runtimes={runtimes}
-            selectedProjectId={selectedProjectId}
         />
     );
 }
@@ -695,9 +393,9 @@ export function SettingsApp() {
 async function handleRuntimeAction(options: {
     readonly actionId: string;
     readonly loadRuntimeStatuses: () => Promise<void>;
+    readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly runtimeStatuses: Record<AiRuntimeId, AiRuntimeStatus | null>;
-    readonly selectedProjectId: string | null;
 }): Promise<void> {
     if (!window.comando) {
         return;
@@ -734,7 +432,7 @@ async function handleRuntimeAction(options: {
 
     await window.comando.launchAiRuntimeAuth({
         methodId,
-        projectId: options.selectedProjectId,
+        projectId: options.projectId,
         runtimeId: options.runtimeId,
     });
     await options.loadRuntimeStatuses();

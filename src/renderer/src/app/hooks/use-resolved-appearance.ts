@@ -1,26 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 
-import type {
-    AppAppearanceSettings,
-    ProjectAppearanceSettings,
-} from "@shared/ipc";
+import type { AppAppearanceSettings } from "@shared/ipc";
 
-import {
-    loadAppAppearanceSettings,
-    loadProjectAppearanceSettings,
-} from "../settings/client";
+import { loadAppAppearanceSettings } from "../settings/client";
 import {
     applyAppearance,
     getDefaultAppAppearance,
     resolveAppearance,
 } from "../settings/theme";
 
-export function useResolvedAppearance(projectId: string | null): void {
+export function useResolvedAppearance(): void {
     const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>(
         getDefaultAppAppearance(),
     );
-    const [projectAppearance, setProjectAppearance] =
-        useState<ProjectAppearanceSettings | null>(null);
     const [systemIsDark, setSystemIsDark] = useState(false);
 
     const loadSystemTheme = useCallback(async () => {
@@ -41,30 +33,15 @@ export function useResolvedAppearance(projectId: string | null): void {
         setAppAppearance(nextAppearance);
     }, []);
 
-    const loadProjectAppearance = useCallback(
-        async (nextProjectId: string | null) => {
-            if (!window.comando || !nextProjectId) {
-                setProjectAppearance(null);
-                return;
-            }
-
-            const nextAppearance =
-                await loadProjectAppearanceSettings(nextProjectId);
-            setProjectAppearance(nextAppearance);
-        },
-        [],
-    );
-
     useEffect(() => {
         const timeout = window.setTimeout(() => {
             void loadAppAppearance();
-            void loadProjectAppearance(projectId);
         }, 0);
 
         return () => {
             window.clearTimeout(timeout);
         };
-    }, [loadAppAppearance, loadProjectAppearance, projectId]);
+    }, [loadAppAppearance]);
 
     useEffect(() => {
         const timeout = window.setTimeout(() => {
@@ -83,27 +60,15 @@ export function useResolvedAppearance(projectId: string | null): void {
         const unsubscribeSettings = window.comando.onSettingsUpdated(() => {
             void loadAppAppearance();
         });
-        const unsubscribeProjectSettings =
-            window.comando.onProjectSettingsUpdated((payload) => {
-                if (!projectId || payload.projectId !== projectId) {
-                    return;
-                }
-
-                void loadProjectAppearance(projectId);
-            });
 
         return () => {
             window.clearTimeout(timeout);
             unsubscribeTheme();
             unsubscribeSettings();
-            unsubscribeProjectSettings();
         };
-    }, [loadAppAppearance, loadProjectAppearance, loadSystemTheme, projectId]);
+    }, [loadAppAppearance, loadSystemTheme]);
 
     useEffect(() => {
-        applyAppearance(
-            resolveAppearance(appAppearance, projectAppearance),
-            systemIsDark,
-        );
-    }, [appAppearance, projectAppearance, systemIsDark]);
+        applyAppearance(resolveAppearance(appAppearance), systemIsDark);
+    }, [appAppearance, systemIsDark]);
 }

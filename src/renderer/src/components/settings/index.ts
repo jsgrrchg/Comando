@@ -12,12 +12,9 @@ export {
 export type {
     ChatFontFamilyOption,
     EditorFontFamilyOption,
-    ProjectEditorState,
-    ProjectAppearanceState,
     RuntimeActionOption,
     RuntimeCardOption,
     SettingsAiChatState,
-    SettingsProjectOption,
     SettingsEditorControlState,
     SettingsThemeControlState,
     SettingsWindowProps,
