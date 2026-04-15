@@ -49,6 +49,11 @@ import {
     getMonacoThemeFromDom,
     type ComandoMonacoTheme,
 } from "@renderer/app/editor/monaco";
+import {
+    continueMarkdownList,
+    indentMarkdownListItems,
+    outdentMarkdownListItems,
+} from "@renderer/app/editor/markdownLists";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import {
     loadAppEditorSettings,
@@ -1815,6 +1820,102 @@ function bindCloseFindWidgetOnEscape(
     };
 }
 
+function bindMarkdownListEditingShortcuts(input: {
+    readonly documentLanguageId: string;
+    readonly editor: MonacoEditor.IStandaloneCodeEditor;
+}): (() => void) | null {
+    if (input.documentLanguageId !== "markdown") {
+        return null;
+    }
+
+    const editorDomNode = input.editor.getDomNode();
+    if (!editorDomNode) {
+        return null;
+    }
+
+    const handleEditorKeyDown = (event: KeyboardEvent) => {
+        if (
+            event.altKey ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.isComposing
+        ) {
+            return;
+        }
+
+        const model = input.editor.getModel();
+        const selections = input.editor.getSelections();
+        const selection = input.editor.getSelection();
+        if (!model || !selection || (selections?.length ?? 0) > 1) {
+            return;
+        }
+
+        const text = model.getValue();
+        const tabSize = model.getOptions().tabSize;
+        const selectionStartOffset = model.getOffsetAt(
+            selection.getStartPosition(),
+        );
+        const selectionEndOffset = model.getOffsetAt(
+            selection.getEndPosition(),
+        );
+        const result =
+            event.key === "Enter" && !event.shiftKey && selection.isEmpty()
+                ? continueMarkdownList(text, selectionEndOffset)
+                : event.key === "Tab" && !event.shiftKey
+                  ? indentMarkdownListItems(
+                        text,
+                        selectionStartOffset,
+                        selectionEndOffset,
+                        tabSize,
+                    )
+                  : event.key === "Tab" && event.shiftKey
+                    ? outdentMarkdownListItems(
+                          text,
+                          selectionStartOffset,
+                          selectionEndOffset,
+                          tabSize,
+                      )
+                    : null;
+        if (!result) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        input.editor.pushUndoStop();
+        input.editor.executeEdits("markdown-list-continuation", [
+            {
+                forceMoveMarkers: true,
+                range: model.getFullModelRange(),
+                text: result.text,
+            },
+        ]);
+
+        const nextModel = input.editor.getModel();
+        if (!nextModel) {
+            return;
+        }
+
+        input.editor.setSelection({
+            endColumn: nextModel.getPositionAt(result.selectionEnd).column,
+            endLineNumber: nextModel.getPositionAt(result.selectionEnd)
+                .lineNumber,
+            startColumn: nextModel.getPositionAt(result.selectionStart).column,
+            startLineNumber: nextModel.getPositionAt(result.selectionStart)
+                .lineNumber,
+        });
+        input.editor.pushUndoStop();
+    };
+
+    editorDomNode.addEventListener("keydown", handleEditorKeyDown, true);
+
+    return () => {
+        editorDomNode.removeEventListener("keydown", handleEditorKeyDown, true);
+    };
+}
+
 function getFindController(editor: MonacoEditor.IStandaloneCodeEditor) {
     return editor.getContribution("editor.contrib.findController") as {
         getState?: () => {
@@ -2847,6 +2948,11 @@ function FileTabView({
                                     tabTitle: tab.title,
                                     worktreeId: tab.worktreeId ?? null,
                                 });
+                            const cleanupMarkdownListShortcut =
+                                bindMarkdownListEditingShortcuts({
+                                    documentLanguageId: document.languageId,
+                                    editor,
+                                });
                             const scrollListener = editor.onDidScrollChange(
                                 () => {
                                     scheduleEditorViewStatePersist(editor);
@@ -2872,6 +2978,7 @@ function FileTabView({
                                 cursorListener.dispose();
                                 hiddenAreasListener.dispose();
                                 cleanupAttachShortcut?.();
+                                cleanupMarkdownListShortcut?.();
                                 setEditorMountVersion(
                                     (previous) => previous + 1,
                                 );
