@@ -308,7 +308,19 @@ export function AIChatMentionPicker({
                             e.preventDefault();
                             onSelect(item);
                         }}
-                        onMouseEnter={() => onHoverIndex(i)}
+                        onMouseEnter={(e) => {
+                            onHoverIndex(i);
+                            if (!isActive) {
+                                e.currentTarget.style.background =
+                                    "var(--color-bg-secondary)";
+                            }
+                        }}
+                        onMouseLeave={(e) => {
+                            if (!isActive) {
+                                e.currentTarget.style.background =
+                                    "transparent";
+                            }
+                        }}
                         style={{
                             alignItems: "center",
                             background: isActive
@@ -323,6 +335,7 @@ export function AIChatMentionPicker({
                             gap: 8,
                             padding: "6px 10px",
                             textAlign: "left",
+                            transition: "background-color 100ms ease",
                             width: "100%",
                         }}
                         type="button"

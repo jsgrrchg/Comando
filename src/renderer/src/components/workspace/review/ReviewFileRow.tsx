@@ -212,6 +212,12 @@ export function ReviewFileRow({
                             aria-label="Open File"
                             className="review-action-btn shrink-0"
                             onClick={onOpen}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.opacity = "1";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.opacity = "0.65";
+                            }}
                             style={{
                                 background: "transparent",
                                 border: "none",
@@ -220,6 +226,8 @@ export function ReviewFileRow({
                                 fontSize: "11px",
                                 opacity: 0.65,
                                 padding: "2px 3px",
+                                transition:
+                                    "opacity 100ms ease, filter 100ms ease",
                             }}
                             title="Open File"
                             type="button"
@@ -233,6 +241,16 @@ export function ReviewFileRow({
                             className="review-action-btn shrink-0"
                             disabled={!item.canReject}
                             onClick={onReject}
+                            onMouseEnter={(e) => {
+                                if (item.canReject) {
+                                    e.currentTarget.style.opacity = "1";
+                                }
+                            }}
+                            onMouseLeave={(e) => {
+                                if (item.canReject) {
+                                    e.currentTarget.style.opacity = "0.6";
+                                }
+                            }}
                             style={{
                                 background: "transparent",
                                 border: "none",
@@ -243,6 +261,8 @@ export function ReviewFileRow({
                                 fontSize: "11px",
                                 opacity: item.canReject ? 0.6 : 0.2,
                                 padding: "2px 3px",
+                                transition:
+                                    "opacity 100ms ease, filter 100ms ease",
                             }}
                             title="Reject"
                             type="button"
@@ -253,6 +273,12 @@ export function ReviewFileRow({
                             aria-label="Keep"
                             className="review-action-btn shrink-0"
                             onClick={onKeep}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.opacity = "1";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.opacity = "0.6";
+                            }}
                             style={{
                                 background: "transparent",
                                 border: "none",
@@ -261,6 +287,8 @@ export function ReviewFileRow({
                                 fontSize: "11px",
                                 opacity: 0.6,
                                 padding: "2px 3px",
+                                transition:
+                                    "opacity 100ms ease, filter 100ms ease",
                             }}
                             title="Keep"
                             type="button"
@@ -332,10 +360,19 @@ export function ReviewFileRow({
                 <button
                     className="min-w-0 flex-1 text-left"
                     onClick={onToggle}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor =
+                            "color-mix(in srgb, var(--color-bg-tertiary) 50%, transparent)";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = "transparent";
+                    }}
                     style={{
                         background: "none",
                         border: "none",
+                        borderRadius: 4,
                         cursor: "pointer",
+                        transition: "background-color 100ms ease",
                     }}
                     type="button"
                 >
@@ -416,6 +453,14 @@ export function ReviewFileRow({
                         <button
                             className="review-action-btn shrink-0"
                             onClick={onOpen}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                    "color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent)";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                    "transparent";
+                            }}
                             style={{
                                 background: "transparent",
                                 border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
@@ -426,6 +471,8 @@ export function ReviewFileRow({
                                 fontWeight: 500,
                                 lineHeight: "20px",
                                 padding: "0 6px",
+                                transition:
+                                    "background-color 100ms ease, filter 100ms ease",
                             }}
                             type="button"
                         >
@@ -436,6 +483,12 @@ export function ReviewFileRow({
                         <button
                             className="review-action-btn shrink-0"
                             onClick={onReject}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.opacity = "1";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.opacity = "0.6";
+                            }}
                             style={{
                                 background: "transparent",
                                 border: "none",
@@ -445,6 +498,8 @@ export function ReviewFileRow({
                                 fontWeight: 600,
                                 opacity: 0.6,
                                 padding: "2px 4px",
+                                transition:
+                                    "opacity 100ms ease, filter 100ms ease",
                             }}
                             type="button"
                         >
@@ -454,6 +509,12 @@ export function ReviewFileRow({
                     <button
                         className="review-action-btn shrink-0"
                         onClick={onKeep}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.opacity = "1";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.opacity = "0.6";
+                        }}
                         style={{
                             background: "transparent",
                             border: "none",
@@ -463,6 +524,7 @@ export function ReviewFileRow({
                             fontWeight: 600,
                             opacity: 0.6,
                             padding: "2px 4px",
+                            transition: "opacity 100ms ease, filter 100ms ease",
                         }}
                         type="button"
                     >

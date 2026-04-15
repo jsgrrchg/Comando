@@ -135,7 +135,7 @@ export function ProjectGitSidebar({
                             {project.branches.length > 0 ? (
                                 <div className="mt-1">
                                     <button
-                                        className="app-no-drag flex w-full items-center gap-1.5 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-text-secondary hover:text-text-primary"
+                                        className="app-no-drag flex w-full items-center gap-1.5 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-text-secondary transition-colors duration-100 hover:bg-bg-secondary/50 hover:text-text-primary"
                                         onClick={() =>
                                             onToggleBranches(project.id)
                                         }

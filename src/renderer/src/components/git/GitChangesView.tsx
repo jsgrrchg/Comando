@@ -114,7 +114,6 @@ function GitChangeGroupSection({
                     letterSpacing: "0.04em",
                     color: "var(--color-text-secondary)",
                     border: "none",
-                    background: "none",
                     textAlign: "left",
                     cursor: "pointer",
                 }}

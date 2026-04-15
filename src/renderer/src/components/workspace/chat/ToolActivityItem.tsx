@@ -424,6 +424,17 @@ function FileToolMessage({
                                                 worktreeId,
                                             );
                                     }}
+                                    onMouseEnter={(e) => {
+                                        e.currentTarget.style.backgroundColor =
+                                            "var(--color-bg-secondary)";
+                                        e.currentTarget.style.filter =
+                                            "brightness(1.05)";
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        e.currentTarget.style.backgroundColor =
+                                            "var(--color-bg-tertiary)";
+                                        e.currentTarget.style.filter = "none";
+                                    }}
                                     style={{
                                         backgroundColor:
                                             "var(--color-bg-tertiary)",
@@ -431,6 +442,8 @@ function FileToolMessage({
                                         color: "var(--color-text-secondary)",
                                         cursor: "pointer",
                                         fontSize: "0.9em",
+                                        transition:
+                                            "background-color 100ms ease, filter 100ms ease",
                                     }}
                                     type="button"
                                 >

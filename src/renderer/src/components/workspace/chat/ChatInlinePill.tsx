@@ -41,8 +41,11 @@ export function ChatInlinePill({
         verticalAlign: "baseline",
         overflow: "hidden",
         transform: `translateY(${metrics.offsetY}px)`,
+        filter: "brightness(1)",
         opacity: clickable ? 0.85 : 1,
-        transition: clickable ? "opacity 80ms ease" : undefined,
+        transition: clickable
+            ? "opacity 80ms ease, filter 80ms ease"
+            : undefined,
     };
 
     const content = (
@@ -70,9 +73,11 @@ export function ChatInlinePill({
                 title={title ?? label}
                 onMouseEnter={(e) => {
                     e.currentTarget.style.opacity = "1";
+                    e.currentTarget.style.filter = "brightness(1.08)";
                 }}
                 onMouseLeave={(e) => {
                     e.currentTarget.style.opacity = "0.85";
+                    e.currentTarget.style.filter = "brightness(1)";
                 }}
             >
                 {content}

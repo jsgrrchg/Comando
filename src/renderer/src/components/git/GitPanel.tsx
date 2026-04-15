@@ -275,7 +275,8 @@ export function GitCommitFooter({
                                     cursor: "pointer",
                                     flexShrink: 0,
                                     padding: 0,
-                                    transition: "all 120ms ease",
+                                    transition:
+                                        "background 100ms ease, color 100ms ease",
                                 }}
                                 onMouseEnter={(e) => {
                                     e.currentTarget.style.background =
@@ -344,7 +345,8 @@ export function GitCommitFooter({
                                     cursor: "pointer",
                                     flexShrink: 0,
                                     padding: 0,
-                                    transition: "all 120ms ease",
+                                    transition:
+                                        "background 100ms ease, color 100ms ease",
                                 }}
                                 onMouseEnter={(e) => {
                                     e.currentTarget.style.background =

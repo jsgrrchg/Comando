@@ -71,11 +71,29 @@ export function ResizableDiffContainer({
             <div
                 aria-label="Resize diff preview"
                 onMouseEnter={(event) => {
-                    event.currentTarget.style.backgroundColor =
-                        "color-mix(in srgb, var(--color-text-secondary) 10%, transparent)";
+                    event.currentTarget.style.backgroundColor = `color-mix(in srgb, ${accent} 10%, transparent)`;
+                    const indicator =
+                        event.currentTarget.querySelector<HTMLElement>(
+                            "[data-resize-indicator]",
+                        );
+                    if (indicator) {
+                        indicator.style.opacity = "0.6";
+                        indicator.style.backgroundColor = accent;
+                        indicator.style.width = "48px";
+                    }
                 }}
                 onMouseLeave={(event) => {
                     event.currentTarget.style.backgroundColor = "transparent";
+                    const indicator =
+                        event.currentTarget.querySelector<HTMLElement>(
+                            "[data-resize-indicator]",
+                        );
+                    if (indicator) {
+                        indicator.style.opacity = "0.3";
+                        indicator.style.backgroundColor =
+                            "var(--color-text-secondary)";
+                        indicator.style.width = "32px";
+                    }
                 }}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
@@ -88,16 +106,19 @@ export function ResizableDiffContainer({
                     display: "flex",
                     height: 6,
                     justifyContent: "center",
-                    transition: "background-color 140ms ease",
+                    transition: "background-color 100ms ease",
                 }}
             >
                 <div
                     aria-hidden="true"
+                    data-resize-indicator=""
                     style={{
                         backgroundColor: "var(--color-text-secondary)",
                         borderRadius: 1,
                         height: 2,
                         opacity: 0.3,
+                        transition:
+                            "opacity 100ms ease, background-color 100ms ease, width 100ms ease",
                         width: 32,
                     }}
                 />

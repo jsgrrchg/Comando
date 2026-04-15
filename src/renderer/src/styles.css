@@ -494,10 +494,11 @@ button {
 }
 
 .git-tree-row {
+    background-color: transparent;
     transition:
-        background-color 120ms ease,
-        color 120ms ease,
-        box-shadow 120ms ease;
+        background-color 100ms ease,
+        color 100ms ease,
+        box-shadow 100ms ease;
 }
 
 .git-tree-row:hover {
@@ -506,6 +507,10 @@ button {
 
 .git-tree-row:hover[data-active="true"] {
     background-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+.git-tree-row:hover[data-drop-target="true"] {
+    background-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 
 .git-tree-row-actions {

@@ -330,6 +330,8 @@ function DropdownField({
                                                   option.value === value
                                                       ? "var(--color-accent)"
                                                       : "var(--color-text-primary)",
+                                              transition:
+                                                  "background-color 100ms ease",
                                           }}
                                           type="button"
                                       >

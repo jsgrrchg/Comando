@@ -173,7 +173,19 @@ export function AIChatCommandPicker({
                             e.preventDefault();
                             onSelect(cmd);
                         }}
-                        onMouseEnter={() => onHoverIndex(i)}
+                        onMouseEnter={(e) => {
+                            onHoverIndex(i);
+                            if (!isActive) {
+                                e.currentTarget.style.background =
+                                    "var(--color-bg-secondary)";
+                            }
+                        }}
+                        onMouseLeave={(e) => {
+                            if (!isActive) {
+                                e.currentTarget.style.background =
+                                    "transparent";
+                            }
+                        }}
                         style={{
                             background: isActive
                                 ? "var(--color-bg-tertiary)"
@@ -188,6 +200,7 @@ export function AIChatCommandPicker({
                             gap: 2,
                             padding: "6px 10px",
                             textAlign: "left",
+                            transition: "background-color 100ms ease",
                             width: "100%",
                         }}
                         type="button"

@@ -284,6 +284,16 @@ function CodeBlock({
         <button
             aria-label="Copy code block"
             onClick={handleCopy}
+            onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = "1";
+                e.currentTarget.style.backgroundColor =
+                    "var(--color-bg-secondary)";
+            }}
+            onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = "0.9";
+                e.currentTarget.style.backgroundColor =
+                    "color-mix(in srgb, var(--color-bg-elevated) 92%, transparent)";
+            }}
             title={copied ? "Copied" : "Copy"}
             style={{
                 alignItems: "center",
@@ -299,6 +309,7 @@ function CodeBlock({
                 height: 22,
                 justifyContent: "center",
                 opacity: 0.9,
+                transition: "opacity 100ms ease, background-color 100ms ease",
                 width: 22,
             }}
             type="button"

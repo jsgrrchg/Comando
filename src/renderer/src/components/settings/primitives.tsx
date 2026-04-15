@@ -15,6 +15,17 @@ export function Toggle({
             role="switch"
             aria-checked={value}
             onClick={() => !disabled && onChange(!value)}
+            onMouseEnter={(e) => {
+                if (!disabled) {
+                    e.currentTarget.style.filter = "brightness(1.15)";
+                    e.currentTarget.style.boxShadow =
+                        "0 0 0 2px rgba(255,255,255,0.06)";
+                }
+            }}
+            onMouseLeave={(e) => {
+                e.currentTarget.style.filter = "brightness(1)";
+                e.currentTarget.style.boxShadow = "none";
+            }}
             style={{
                 width: 36,
                 height: 20,
@@ -26,7 +37,8 @@ export function Toggle({
                     : "var(--color-bg-tertiary)",
                 position: "relative",
                 flexShrink: 0,
-                transition: "background-color 150ms",
+                transition:
+                    "background-color 150ms, filter 100ms ease, box-shadow 100ms ease",
                 opacity: disabled ? 0.4 : 1,
             }}
         >
@@ -72,6 +84,22 @@ export function SegmentedControl<T extends string | number>({
                     <button
                         key={String(opt.value)}
                         onClick={() => onChange(opt.value)}
+                        onMouseEnter={(e) => {
+                            if (!active) {
+                                e.currentTarget.style.backgroundColor =
+                                    "var(--color-bg-secondary)";
+                                e.currentTarget.style.color =
+                                    "var(--color-text-primary)";
+                            }
+                        }}
+                        onMouseLeave={(e) => {
+                            if (!active) {
+                                e.currentTarget.style.backgroundColor =
+                                    "transparent";
+                                e.currentTarget.style.color =
+                                    "var(--color-text-secondary)";
+                            }
+                        }}
                         style={{
                             padding: "3px 10px",
                             borderRadius: 5,
@@ -379,17 +407,32 @@ export function NumberStepper({
         >
             <button
                 onClick={() => onChange(Math.max(min, value - 1))}
+                disabled={value <= min}
+                onMouseEnter={(e) => {
+                    if (value > min) {
+                        e.currentTarget.style.backgroundColor =
+                            "var(--color-bg-secondary)";
+                        e.currentTarget.style.color =
+                            "var(--color-text-primary)";
+                    }
+                }}
+                onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.color = "var(--color-text-secondary)";
+                }}
                 style={{
                     width: 24,
                     height: 26,
                     border: "none",
                     background: "transparent",
-                    cursor: "pointer",
+                    cursor: value <= min ? "not-allowed" : "pointer",
                     color: "var(--color-text-secondary)",
                     fontSize: 14,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    opacity: value <= min ? 0.4 : 1,
+                    transition: "background-color 100ms ease, color 100ms ease",
                 }}
             >
                 −
@@ -431,17 +474,32 @@ export function NumberStepper({
             />
             <button
                 onClick={() => onChange(Math.min(max, value + 1))}
+                disabled={value >= max}
+                onMouseEnter={(e) => {
+                    if (value < max) {
+                        e.currentTarget.style.backgroundColor =
+                            "var(--color-bg-secondary)";
+                        e.currentTarget.style.color =
+                            "var(--color-text-primary)";
+                    }
+                }}
+                onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.color = "var(--color-text-secondary)";
+                }}
                 style={{
                     width: 24,
                     height: 26,
                     border: "none",
                     background: "transparent",
-                    cursor: "pointer",
+                    cursor: value >= max ? "not-allowed" : "pointer",
                     color: "var(--color-text-secondary)",
                     fontSize: 14,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    opacity: value >= max ? 0.4 : 1,
+                    transition: "background-color 100ms ease, color 100ms ease",
                 }}
             >
                 +

@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 
 type HunkDecision = "accepted" | "rejected";
 
@@ -47,6 +47,9 @@ export function HunkActionBar({
     onReject,
     onUndo,
 }: HunkActionBarProps) {
+    const [hoverAccept, setHoverAccept] = useState(false);
+    const [hoverReject, setHoverReject] = useState(false);
+
     const hiddenUntilHoverClass = decision
         ? "opacity-100 translate-y-0 pointer-events-auto"
         : "pointer-events-none opacity-0 -translate-y-1 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-focus-within:translate-y-0";
@@ -100,12 +103,16 @@ export function HunkActionBar({
                 aria-label={`Accept hunk ${hunkIndex + 1}`}
                 className="review-action-btn"
                 onClick={onAccept}
+                onMouseEnter={() => setHoverAccept(true)}
+                onMouseLeave={() => setHoverAccept(false)}
                 style={{
                     ...BASE_BUTTON_STYLE,
                     background: "transparent",
                     border: "none",
                     color: "var(--diff-add)",
-                    opacity: 0.7,
+                    filter: hoverAccept ? "brightness(1.1)" : "none",
+                    opacity: hoverAccept ? 1 : 0.7,
+                    transition: "opacity 100ms ease, filter 100ms ease",
                 }}
                 type="button"
             >
@@ -115,12 +122,16 @@ export function HunkActionBar({
                 aria-label={`Reject hunk ${hunkIndex + 1}`}
                 className="review-action-btn"
                 onClick={onReject}
+                onMouseEnter={() => setHoverReject(true)}
+                onMouseLeave={() => setHoverReject(false)}
                 style={{
                     ...BASE_BUTTON_STYLE,
                     background: "transparent",
                     border: "none",
                     color: "var(--diff-remove)",
-                    opacity: 0.7,
+                    filter: hoverReject ? "brightness(1.1)" : "none",
+                    opacity: hoverReject ? 1 : 0.7,
+                    transition: "opacity 100ms ease, filter 100ms ease",
                 }}
                 type="button"
             >

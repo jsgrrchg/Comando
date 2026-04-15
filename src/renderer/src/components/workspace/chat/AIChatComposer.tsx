@@ -1189,6 +1189,14 @@ export function AIChatComposer({
                             if (onAttachFile) onAttachFile();
                             else fileInputRef.current?.click();
                         }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.background = "var(--color-bg-tertiary)";
+                            e.currentTarget.style.color = "var(--color-text-primary)";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.background = "transparent";
+                            e.currentTarget.style.color = "var(--color-text-secondary)";
+                        }}
                         style={{
                             background: "transparent",
                             border: "none",
@@ -1196,7 +1204,7 @@ export function AIChatComposer({
                             color: "var(--color-text-secondary)",
                             cursor: "pointer",
                             height: 28,
-                            transition: "all 0.15s ease",
+                            transition: "background-color 100ms ease, color 100ms ease",
                             width: 28,
                         }}
                         type="button"
@@ -1220,6 +1228,14 @@ export function AIChatComposer({
                         onClick={() => {
                             if (canSubmit) onSubmit();
                         }}
+                        onMouseEnter={(e) => {
+                            if (canSubmit) {
+                                e.currentTarget.style.filter = "brightness(1.15)";
+                            }
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.filter = "brightness(1)";
+                        }}
                         style={{
                             backgroundColor: canSubmit
                                 ? "var(--color-accent)"
@@ -1230,9 +1246,10 @@ export function AIChatComposer({
                                 ? "#fff"
                                 : "var(--color-text-secondary)",
                             cursor: canSubmit ? "pointer" : "default",
+                            filter: "brightness(1)",
                             height: 28,
                             opacity: canSubmit ? 1 : 0.4,
-                            transition: "all 0.15s ease",
+                            transition: "background-color 100ms ease, filter 100ms ease, opacity 100ms ease",
                             width: 28,
                         }}
                         title={submitLabel}
@@ -1257,14 +1274,21 @@ export function AIChatComposer({
                             aria-label="Stop"
                             className="app-no-drag flex shrink-0 items-center justify-center rounded-full"
                             onClick={onStop}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.filter = "brightness(1.2)";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.filter = "brightness(1)";
+                            }}
                             style={{
                                 backgroundColor: "#b91c1c",
                                 border: "none",
                                 borderRadius: "50%",
                                 color: "#fff",
                                 cursor: "pointer",
+                                filter: "brightness(1)",
                                 height: 28,
-                                transition: "all 0.15s ease",
+                                transition: "filter 100ms ease",
                                 width: 28,
                             }}
                             title="Stop"
