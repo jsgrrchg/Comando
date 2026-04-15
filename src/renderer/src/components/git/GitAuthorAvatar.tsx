@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 
+import {
+    getGitHubAvatarUrl,
+    subscribeGitHubAvatars,
+} from "@renderer/app/git/github-avatar-cache";
 import { getGitAuthorInitials } from "@renderer/app/git/history-presentation";
 
 async function sha256Hex(input: string): Promise<string> {
@@ -46,6 +50,19 @@ function useGravatarUrl(email: string, size: number): string | null {
     return hash ? buildGravatarUrl(hash, size) : null;
 }
 
+function useGitHubAvatarUrl(email: string): string | null {
+    const [url, setUrl] = useState(() => getGitHubAvatarUrl(email));
+
+    useEffect(() => {
+        setUrl(getGitHubAvatarUrl(email));
+        return subscribeGitHubAvatars(() => {
+            setUrl(getGitHubAvatarUrl(email));
+        });
+    }, [email]);
+
+    return url;
+}
+
 export function GitAuthorAvatar({
     email,
     name,
@@ -55,20 +72,29 @@ export function GitAuthorAvatar({
     readonly name: string;
     readonly size?: number;
 }) {
-    const [imgFailed, setImgFailed] = useState(false);
+    const [failedUrls, setFailedUrls] = useState<ReadonlySet<string>>(
+        new Set(),
+    );
+    const gitHubUrl = useGitHubAvatarUrl(email);
     const gravatarUrl = useGravatarUrl(email, size * 2);
     const initials = getGitAuthorInitials(name);
     const px = `${size}px`;
     const fontSize = Math.max(10, Math.round(size * 0.35));
 
-    if (gravatarUrl && !imgFailed) {
+    const avatarUrl =
+        (gitHubUrl && !failedUrls.has(gitHubUrl) ? gitHubUrl : null) ??
+        (gravatarUrl && !failedUrls.has(gravatarUrl) ? gravatarUrl : null);
+
+    if (avatarUrl) {
         return (
             <img
                 alt={initials}
                 className="shrink-0 rounded-full border border-border"
                 height={size}
-                onError={() => setImgFailed(true)}
-                src={gravatarUrl}
+                onError={() =>
+                    setFailedUrls((prev) => new Set(prev).add(avatarUrl))
+                }
+                src={avatarUrl}
                 style={{ width: px, height: px }}
                 width={size}
             />

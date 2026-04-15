@@ -12,6 +12,8 @@ import type {
     ProjectSummary,
 } from "@shared/ipc";
 
+import { resolveGitHubAvatars } from "../git/github-avatar-cache";
+
 import type { GitChangeGroupId, GitPanelTabId } from "../../components/git";
 
 const DEFAULT_CHANGE_GROUPS: readonly GitChangeGroupId[] = [
@@ -385,6 +387,12 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 snapshots: nextSnapshots,
             };
         });
+
+        for (const [, snapshot] of snapshots) {
+            if (snapshot) {
+                void resolveGitHubAvatars(snapshot.remotes);
+            }
+        }
     },
 
     pullRepository: async (projectId, worktreeId = null) => {
@@ -778,6 +786,7 @@ function applySnapshotState(
     projectId: string,
     snapshot: GitRepositorySnapshot,
 ): void {
+    void resolveGitHubAvatars(snapshot.remotes);
     const contextKey = getContextKey(projectId, snapshot.currentWorktreeId);
 
     set((state) => ({
