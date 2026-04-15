@@ -54,6 +54,7 @@ describe("AiService Claude branch", () => {
             onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
             onSessionSnapshot: vi.fn(),
             persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
                 loadSessionSnapshot: vi.fn(() => null),
                 saveSessionSnapshot: vi.fn(),
             } as never,

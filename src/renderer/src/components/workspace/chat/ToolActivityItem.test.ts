@@ -12,6 +12,7 @@ function createActivity(
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
         diffs: [],
+        exitCode: null,
         id: "tool-1",
         kind: "edit",
         locations: ["src/app.ts"],
@@ -20,6 +21,7 @@ function createActivity(
         sessionId: "session-1",
         status: "completed",
         summary: "Updated src/app.ts",
+        terminalOutput: null,
         title: "Edit file",
         updatedAt: "2026-04-14T00:00:00.000Z",
         ...overrides,
@@ -153,5 +155,30 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain('data-testid="turn-start-divider"');
         expect(markup).toContain("New turn");
         expect(markup).not.toContain("Context window: 128000");
+    });
+
+    it("resalta payloads estructurados y salida terminal en los detalles", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "shell",
+                    rawInputJson: JSON.stringify({ command: "cat Cargo.toml" }),
+                    rawOutputJson: JSON.stringify({
+                        package: { name: "comando" },
+                    }),
+                    status: "failed",
+                    terminalOutput: '[package]\nname = "comando"\n',
+                    title: "Run shell command",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("cm-static-code");
+        expect(markup).toContain("Cargo.toml");
+        expect(markup).toContain("comando");
     });
 });

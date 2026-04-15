@@ -132,6 +132,67 @@ describe("WorkspaceService", () => {
             tabs: [],
         });
     });
+
+    it("persiste y recarga tabs de git del workspace", () => {
+        const connection = createTestConnection();
+        const service = new WorkspaceService(connection);
+        const workspaceId = "workspace-git";
+
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "git-tab-1",
+                id: "pane-root",
+                tabIds: ["git-tab-1"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "git-tab-1",
+                    kind: "git",
+                    projectId: "project-1",
+                    title: "Git",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        service.saveSnapshot(workspaceId, snapshot);
+
+        expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
+    });
+
+    it("persiste y recarga tabs de detalle de commit", () => {
+        const connection = createTestConnection();
+        const service = new WorkspaceService(connection);
+        const workspaceId = "workspace-git-commit";
+
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "git-commit-tab-1",
+                id: "pane-root",
+                tabIds: ["git-commit-tab-1"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    commitSha: "a614135c2b2a7d8093f9f4e16a3f698e8041a123",
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "git-commit-tab-1",
+                    kind: "git_commit",
+                    projectId: "project-1",
+                    title: "a614135 · Fix sidebar draft",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        service.saveSnapshot(workspaceId, snapshot);
+
+        expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
+    });
 });
 
 function createTestConnection() {

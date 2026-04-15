@@ -37,6 +37,8 @@ import {
     type GitChangesListInput,
     type GitChangeEntry,
     type GitCheckoutBranchInput,
+    type GitCommitDetail,
+    type GitCommitDetailInput,
     type GitCommitInput,
     type GitCommitResult,
     type GitCreateWorktreeInput,
@@ -44,6 +46,8 @@ import {
     type GitDiffInput,
     type GitFileDiff,
     type GitFetchInput,
+    type GitHistoryCommitSummary,
+    type GitHistoryListInput,
     type GitPullInput,
     type GitPushInput,
     type GitRemoveWorktreeInput,
@@ -321,11 +325,20 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.listGitChanges, input) as Promise<
             readonly GitChangeEntry[]
         >,
+    listGitHistory: (input: GitHistoryListInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.listGitHistory, input) as Promise<
+            readonly GitHistoryCommitSummary[]
+        >,
     getGitDiff: (input: GitDiffInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getGitDiff,
             input,
         ) as Promise<GitFileDiff | null>,
+    getGitCommitDetail: (input: GitCommitDetailInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.getGitCommitDetail,
+            input,
+        ) as Promise<GitCommitDetail | null>,
     stageGitPaths: (input: GitStagePathsInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.stageGitPaths,

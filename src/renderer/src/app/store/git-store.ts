@@ -2,9 +2,11 @@ import { create } from "zustand";
 
 import type {
     GitBranchSummary,
+    GitCommitDetail,
     GitCommitInput,
     GitCreateWorktreeInput,
     GitFileDiff,
+    GitHistoryCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeSummary,
     ProjectSummary,
@@ -23,6 +25,10 @@ interface GitStoreState {
     readonly activeWorktreeIds: Record<string, string | null>;
     readonly branchesByProject: Record<string, readonly GitBranchSummary[]>;
     readonly changeExpandedPaths: Record<string, readonly string[]>;
+    readonly commitDetailsByContext: Record<
+        string,
+        Record<string, GitCommitDetail | null>
+    >;
     readonly commitMessages: Record<string, string>;
     readonly diffsByContext: Record<string, Record<string, GitFileDiff | null>>;
     readonly errors: Record<string, string | null>;
@@ -30,11 +36,18 @@ interface GitStoreState {
     readonly expandedChangeGroups: Record<string, readonly GitChangeGroupId[]>;
     readonly expandedProjects: Record<string, boolean>;
     readonly expandedWorktreeSections: Record<string, boolean>;
+    readonly historyByContext: Record<
+        string,
+        readonly GitHistoryCommitSummary[]
+    >;
+    readonly loadingCommitShas: Record<string, readonly string[]>;
     readonly loadingContexts: Record<string, boolean>;
     readonly loadingDiffPaths: Record<string, readonly string[]>;
+    readonly loadingHistoryContexts: Record<string, boolean>;
     readonly panelTabs: Record<string, GitPanelTabId>;
     readonly selectedBranchNames: Record<string, string | null>;
     readonly selectedBranchNamesByContext: Record<string, string | null>;
+    readonly selectedCommitShas: Record<string, string | null>;
     readonly selectedDiffPaths: Record<string, string | null>;
     readonly snapshots: Record<string, GitRepositorySnapshot | null>;
     checkoutBranch: (
@@ -58,6 +71,11 @@ interface GitStoreState {
         projectId: string,
         worktreeId?: string | null,
     ) => Promise<GitRepositorySnapshot>;
+    ensureCommitDetail: (
+        projectId: string,
+        commitSha: string,
+        worktreeId?: string | null,
+    ) => Promise<GitCommitDetail | null>;
     ingestSnapshot: (snapshot: GitRepositorySnapshot) => void;
     hydrate: (options: {
         readonly activeProjectId: string | null;
@@ -72,6 +90,10 @@ interface GitStoreState {
         projectId: string,
         worktreeId?: string | null,
     ) => Promise<GitRepositorySnapshot>;
+    refreshHistory: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<readonly GitHistoryCommitSummary[]>;
     refreshProject: (
         projectId: string,
         preferredWorktreeId?: string | null,
@@ -86,6 +108,11 @@ interface GitStoreState {
         branchName: string | null,
         worktreeId?: string | null,
     ) => void;
+    selectCommit: (
+        projectId: string,
+        commitSha: string | null,
+        worktreeId?: string | null,
+    ) => Promise<GitCommitDetail | null>;
     selectDiffPath: (
         projectId: string,
         path: string | null,
@@ -134,6 +161,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     activeWorktreeIds: {},
     branchesByProject: {},
     changeExpandedPaths: {},
+    commitDetailsByContext: {},
     commitMessages: {},
     diffsByContext: {},
     errors: {},
@@ -141,11 +169,15 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     expandedChangeGroups: {},
     expandedProjects: {},
     expandedWorktreeSections: {},
+    historyByContext: {},
+    loadingCommitShas: {},
     loadingContexts: {},
     loadingDiffPaths: {},
+    loadingHistoryContexts: {},
     panelTabs: {},
     selectedBranchNames: {},
     selectedBranchNamesByContext: {},
+    selectedCommitShas: {},
     selectedDiffPaths: {},
     snapshots: {},
 
@@ -158,6 +190,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
 
         applySnapshotState(set, projectId, snapshot);
         void get().refreshProject(projectId, snapshot.currentWorktreeId);
+        void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
 
@@ -175,6 +208,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             },
         }));
         void get().refreshProject(input.projectId, input.worktreeId ?? null);
+        void get().refreshHistory(input.projectId, input.worktreeId ?? null);
         return {
             branchName: result.branchName,
             commitSha: result.commitSha,
@@ -204,7 +238,75 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         });
         applySnapshotState(set, projectId, snapshot);
         void get().refreshProject(projectId, snapshot.currentWorktreeId);
+        void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
+    },
+
+    ensureCommitDetail: async (projectId, commitSha, worktreeId = null) => {
+        const contextKey = getContextKey(projectId, worktreeId);
+        const cachedContext = get().commitDetailsByContext[contextKey];
+        if (cachedContext && commitSha in cachedContext) {
+            return cachedContext[commitSha] ?? null;
+        }
+
+        set((state) => ({
+            loadingCommitShas: {
+                ...state.loadingCommitShas,
+                [contextKey]: [
+                    ...(state.loadingCommitShas[contextKey] ?? []).filter(
+                        (entry) => entry !== commitSha,
+                    ),
+                    commitSha,
+                ],
+            },
+        }));
+
+        try {
+            const detail = await getComandoApi().getGitCommitDetail({
+                commitSha,
+                projectId,
+                worktreeId,
+            });
+
+            set((state) => ({
+                commitDetailsByContext: {
+                    ...state.commitDetailsByContext,
+                    [contextKey]: {
+                        ...(state.commitDetailsByContext[contextKey] ?? {}),
+                        [commitSha]: detail,
+                    },
+                },
+                errors: {
+                    ...state.errors,
+                    [contextKey]: null,
+                },
+                loadingCommitShas: {
+                    ...state.loadingCommitShas,
+                    [contextKey]: (
+                        state.loadingCommitShas[contextKey] ?? []
+                    ).filter((entry) => entry !== commitSha),
+                },
+            }));
+
+            return detail;
+        } catch (error) {
+            set((state) => ({
+                errors: {
+                    ...state.errors,
+                    [contextKey]:
+                        error instanceof Error
+                            ? error.message
+                            : "Could not load the selected commit.",
+                },
+                loadingCommitShas: {
+                    ...state.loadingCommitShas,
+                    [contextKey]: (
+                        state.loadingCommitShas[contextKey] ?? []
+                    ).filter((entry) => entry !== commitSha),
+                },
+            }));
+            return null;
+        }
     },
 
     ingestSnapshot: (snapshot) => {
@@ -292,6 +394,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         });
         applySnapshotState(set, projectId, snapshot);
         void get().refreshProject(projectId, snapshot.currentWorktreeId);
+        void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
 
@@ -302,7 +405,79 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         });
         applySnapshotState(set, projectId, snapshot);
         void get().refreshProject(projectId, snapshot.currentWorktreeId);
+        void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
+    },
+
+    refreshHistory: async (projectId, worktreeId = null) => {
+        const contextKey = getContextKey(projectId, worktreeId);
+        set((state) => ({
+            errors: { ...state.errors, [contextKey]: null },
+            loadingHistoryContexts: {
+                ...state.loadingHistoryContexts,
+                [contextKey]: true,
+            },
+        }));
+
+        try {
+            const history = await getComandoApi().listGitHistory({
+                limit: 200,
+                projectId,
+                worktreeId,
+            });
+
+            set((state) => ({
+                errors: {
+                    ...state.errors,
+                    [contextKey]: null,
+                },
+                historyByContext: {
+                    ...state.historyByContext,
+                    [contextKey]: history,
+                },
+                loadingHistoryContexts: {
+                    ...state.loadingHistoryContexts,
+                    [contextKey]: false,
+                },
+                selectedCommitShas: {
+                    ...state.selectedCommitShas,
+                    [contextKey]: history.some(
+                        (commit) =>
+                            commit.sha ===
+                            (state.selectedCommitShas[contextKey] ?? null),
+                    )
+                        ? (state.selectedCommitShas[contextKey] ?? null)
+                        : (history[0]?.sha ?? null),
+                },
+            }));
+
+            const nextSelectedSha =
+                get().selectedCommitShas[contextKey] ?? history[0]?.sha ?? null;
+            if (nextSelectedSha) {
+                void get().ensureCommitDetail(
+                    projectId,
+                    nextSelectedSha,
+                    worktreeId,
+                );
+            }
+
+            return history;
+        } catch (error) {
+            set((state) => ({
+                errors: {
+                    ...state.errors,
+                    [contextKey]:
+                        error instanceof Error
+                            ? error.message
+                            : "Could not load git history.",
+                },
+                loadingHistoryContexts: {
+                    ...state.loadingHistoryContexts,
+                    [contextKey]: false,
+                },
+            }));
+            return [];
+        }
     },
 
     refreshProject: async (projectId, preferredWorktreeId = null) => {
@@ -402,6 +577,23 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 },
             };
         }),
+
+    selectCommit: async (projectId, commitSha, worktreeId = null) => {
+        const contextKey = getContextKey(projectId, worktreeId);
+
+        set((state) => ({
+            selectedCommitShas: {
+                ...state.selectedCommitShas,
+                [contextKey]: commitSha,
+            },
+        }));
+
+        if (!commitSha) {
+            return null;
+        }
+
+        return get().ensureCommitDetail(projectId, commitSha, worktreeId);
+    },
 
     selectDiffPath: async (projectId, path, worktreeId = null) => {
         const contextKey = getContextKey(projectId, worktreeId);

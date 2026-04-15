@@ -144,6 +144,7 @@ export interface GitPanelToolbarProps {
 export interface GitTreeViewProps {
     readonly activePath?: string | null;
     readonly className?: string;
+    readonly constrainWidth?: boolean;
     readonly enableNodeDrag?: boolean;
     readonly emptyState?: ReactNode;
     readonly expandedPaths?: readonly string[];
@@ -172,6 +173,7 @@ export interface GitTreeViewProps {
     ) => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
+    readonly showStatusIndicator?: boolean;
 }
 
 export type GitFilesViewProps = GitTreeViewProps;
@@ -179,6 +181,7 @@ export type GitFilesViewProps = GitTreeViewProps;
 export interface GitChangesViewProps {
     readonly activePath?: string | null;
     readonly className?: string;
+    readonly constrainWidth?: boolean;
     readonly emptyState?: ReactNode;
     readonly expandedGroupIds?: readonly GitChangeGroupId[];
     readonly expandedPaths?: readonly string[];
@@ -193,9 +196,15 @@ export interface GitChangesViewProps {
 export interface GitDiffsViewProps {
     readonly activeFileId?: string | null;
     readonly className?: string;
+    readonly codeFontFamily?: string | null;
+    readonly codeFontSize?: number | null;
+    readonly codeLineHeight?: number | null;
+    readonly displayMode?: "single" | "stack";
     readonly emptyState?: ReactNode;
     readonly files: readonly GitDiffFile[];
     readonly onSelectFile?: (file: GitDiffFile) => void;
+    readonly showFileSelector?: boolean;
+    readonly surfaceVariant?: "flat" | "panel";
 }
 
 export interface GitPanelProps {

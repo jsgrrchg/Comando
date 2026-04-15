@@ -223,10 +223,13 @@ export function SettingsWindow({
                                 />
                             </svg>
                             <input
+                                autoCapitalize="off"
+                                autoCorrect="off"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                                 placeholder="Search settings…"
                                 className="app-no-drag"
+                                spellCheck={false}
                                 style={{
                                     flex: 1,
                                     border: "none",

@@ -15,6 +15,7 @@ function createActivity(
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
         diffs: [],
+        exitCode: null,
         id: "tool-1",
         kind: "edit",
         locations: [],
@@ -23,6 +24,7 @@ function createActivity(
         sessionId: "session-1",
         status: "completed",
         summary: null,
+        terminalOutput: null,
         title: "Edit file",
         updatedAt: "2026-04-14T00:00:00.000Z",
         ...overrides,

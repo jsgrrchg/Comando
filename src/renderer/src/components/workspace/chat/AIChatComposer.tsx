@@ -16,6 +16,7 @@ import type {
     AiSessionSnapshot,
     ProjectTreeNode,
 } from "@shared/ipc";
+import { resolveEditorLanguage } from "@shared/editor-language";
 
 import {
     COMPOSER_PROJECT_ENTRY_MIME,
@@ -284,12 +285,7 @@ function insertPlainTextAtSelection(root: HTMLElement, text: string) {
 }
 
 function getLanguageIdFromPath(path: string): string {
-    const extension = path.split(".").at(-1);
-    if (!extension || extension === path) {
-        return "";
-    }
-
-    return extension.toLowerCase();
+    return resolveEditorLanguage({ filePath: path }).id;
 }
 
 function removeAdjacentPill(root: HTMLElement): boolean {

@@ -14,10 +14,13 @@ import {
 
 const initialLayout = createDefaultShellLayout();
 
+type SidebarView = "files" | "git";
+
 interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
     readonly leftCollapsed: boolean;
     readonly rightCollapsed: boolean;
+    readonly sidebarView: SidebarView;
     readonly viewportWidth: number;
     focusSurface: (surface: ShellSurface) => void;
     hydrate: (snapshot: PersistedShellState | null) => void;
@@ -25,8 +28,10 @@ interface ShellStore extends ShellLayoutDimensions {
     nudgePanel: (side: ShellPanelSide, delta: number) => void;
     setLeftCollapsed: (collapsed: boolean) => void;
     setRightCollapsed: (collapsed: boolean) => void;
+    setSidebarView: (view: SidebarView) => void;
     toggleLeftCollapsed: () => void;
     toggleRightCollapsed: () => void;
+    toggleSidebarView: () => void;
     syncViewport: (viewportWidth: number) => void;
 }
 
@@ -36,6 +41,7 @@ export const useShellStore = create<ShellStore>((set) => ({
     leftWidth: initialLayout.leftWidth,
     rightCollapsed: false,
     rightWidth: initialLayout.rightWidth,
+    sidebarView: "files",
     viewportWidth: 1440,
     focusSurface: (surface) => set({ activeSurface: surface }),
     hydrate: (snapshot) => {
@@ -47,6 +53,7 @@ export const useShellStore = create<ShellStore>((set) => ({
             activeSurface: snapshot.activeSurface as ShellSurface,
             leftCollapsed: snapshot.leftCollapsed ?? false,
             rightCollapsed: snapshot.rightCollapsed ?? false,
+            sidebarView: snapshot.sidebarView ?? "files",
             viewportWidth: state.viewportWidth,
             ...normalizeShellLayout(snapshot, state.viewportWidth),
         }));
@@ -61,10 +68,15 @@ export const useShellStore = create<ShellStore>((set) => ({
         ),
     setLeftCollapsed: (collapsed) => set({ leftCollapsed: collapsed }),
     setRightCollapsed: (collapsed) => set({ rightCollapsed: collapsed }),
+    setSidebarView: (view) => set({ sidebarView: view }),
     toggleLeftCollapsed: () =>
         set((state) => ({ leftCollapsed: !state.leftCollapsed })),
     toggleRightCollapsed: () =>
         set((state) => ({ rightCollapsed: !state.rightCollapsed })),
+    toggleSidebarView: () =>
+        set((state) => ({
+            sidebarView: state.sidebarView === "files" ? "git" : "files",
+        })),
     syncViewport: (viewportWidth) =>
         set((state) => ({
             viewportWidth,

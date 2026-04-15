@@ -1414,11 +1414,14 @@ function renderCodexRuntimeConfig(props: {
             }}
         >
             <input
+                autoCapitalize="off"
+                autoCorrect="off"
                 className="ide-input app-no-drag flex-1"
                 onChange={(event) =>
                     props.onChangeBinaryPath(event.target.value)
                 }
                 placeholder="Custom ACP runtime path (for example codex-acp)"
+                spellCheck={false}
                 value={props.binaryPathDraft}
             />
             <div className="flex items-center gap-2">
@@ -1492,11 +1495,14 @@ function renderClaudeRuntimeConfig(props: {
             }}
         >
             <input
+                autoCapitalize="off"
+                autoCorrect="off"
                 className="ide-input app-no-drag"
                 onChange={(event) =>
                     props.onChangeBinaryPath(event.target.value)
                 }
                 placeholder="Custom Claude runtime path (for example claude-agent-acp)"
+                spellCheck={false}
                 value={props.binaryPathDraft}
             />
 
@@ -1536,11 +1542,14 @@ function renderClaudeRuntimeConfig(props: {
             {showGatewayFields ? (
                 <div className="grid gap-2">
                     <input
+                        autoCapitalize="off"
+                        autoCorrect="off"
                         className="ide-input app-no-drag"
                         onChange={(event) =>
                             props.onChangeGatewayBaseUrl(event.target.value)
                         }
                         placeholder="Gateway base URL"
+                        spellCheck={false}
                         value={props.gatewayBaseUrlDraft}
                     />
                     <div className="flex items-center justify-between text-[11px] text-text-secondary">
@@ -1560,11 +1569,14 @@ function renderClaudeRuntimeConfig(props: {
                         </button>
                     </div>
                     <textarea
+                        autoCapitalize="off"
+                        autoCorrect="off"
                         className="ide-input app-no-drag min-h-[74px] resize-y"
                         onChange={(event) =>
                             props.onChangeGatewayAuthToken(event.target.value)
                         }
                         placeholder="Optional gateway auth token"
+                        spellCheck={false}
                         value={props.gatewayAuthTokenDraft}
                     />
                     <div className="flex items-center justify-between text-[11px] text-text-secondary">
@@ -1584,6 +1596,8 @@ function renderClaudeRuntimeConfig(props: {
                         </button>
                     </div>
                     <textarea
+                        autoCapitalize="off"
+                        autoCorrect="off"
                         className="ide-input app-no-drag min-h-[88px] resize-y"
                         onChange={(event) =>
                             props.onChangeGatewayCustomHeaders(
@@ -1591,6 +1605,7 @@ function renderClaudeRuntimeConfig(props: {
                             )
                         }
                         placeholder='Optional custom headers JSON, for example {"x-api-key":"..."}'
+                        spellCheck={false}
                         value={props.gatewayCustomHeadersDraft}
                     />
                 </div>
@@ -1662,11 +1677,14 @@ function renderKiloRuntimeConfig(props: {
             }}
         >
             <input
+                autoCapitalize="off"
+                autoCorrect="off"
                 className="ide-input app-no-drag"
                 onChange={(event) =>
                     props.onChangeBinaryPath(event.target.value)
                 }
                 placeholder="Custom Kilo runtime path (for example kilo)"
+                spellCheck={false}
                 value={props.binaryPathDraft}
             />
 
@@ -1757,11 +1775,14 @@ function renderGeminiRuntimeConfig(props: {
             }}
         >
             <input
+                autoCapitalize="off"
+                autoCorrect="off"
                 className="ide-input app-no-drag"
                 onChange={(event) =>
                     props.onChangeBinaryPath(event.target.value)
                 }
                 placeholder="Custom Gemini runtime path (for example gemini)"
+                spellCheck={false}
                 value={props.binaryPathDraft}
             />
 
@@ -1817,11 +1838,14 @@ function renderGeminiRuntimeConfig(props: {
                         </button>
                     </div>
                     <input
+                        autoCapitalize="off"
+                        autoCorrect="off"
                         className="ide-input app-no-drag"
                         onChange={(event) =>
                             props.onChangeGeminiApiKey(event.target.value)
                         }
                         placeholder="Optional GEMINI_API_KEY"
+                        spellCheck={false}
                         type="password"
                         value={props.geminiApiKeyDraft}
                     />
@@ -1845,11 +1869,14 @@ function renderGeminiRuntimeConfig(props: {
                         </button>
                     </div>
                     <input
+                        autoCapitalize="off"
+                        autoCorrect="off"
                         className="ide-input app-no-drag"
                         onChange={(event) =>
                             props.onChangeGoogleApiKey(event.target.value)
                         }
                         placeholder="Optional GOOGLE_API_KEY"
+                        spellCheck={false}
                         type="password"
                         value={props.googleApiKeyDraft}
                     />
@@ -1858,19 +1885,25 @@ function renderGeminiRuntimeConfig(props: {
 
             <div className="grid gap-2 md:grid-cols-2">
                 <input
+                    autoCapitalize="off"
+                    autoCorrect="off"
                     className="ide-input app-no-drag"
                     onChange={(event) =>
                         props.onChangeGoogleCloudProject(event.target.value)
                     }
                     placeholder="Optional Google Cloud project"
+                    spellCheck={false}
                     value={props.googleCloudProjectDraft}
                 />
                 <input
+                    autoCapitalize="off"
+                    autoCorrect="off"
                     className="ide-input app-no-drag"
                     onChange={(event) =>
                         props.onChangeGoogleCloudLocation(event.target.value)
                     }
                     placeholder="Optional Google Cloud location"
+                    spellCheck={false}
                     value={props.googleCloudLocationDraft}
                 />
             </div>
@@ -2363,6 +2396,8 @@ function UserInputRequestCard({
                                 <div className="mt-2">
                                     {question.isSecret ? (
                                         <input
+                                            autoCapitalize="off"
+                                            autoCorrect="off"
                                             className="ide-input app-no-drag w-full rounded-md px-2.5 py-2"
                                             onChange={(event) =>
                                                 setFreeTextByQuestionId(
@@ -2381,11 +2416,14 @@ function UserInputRequestCard({
                                                 color: "var(--color-text-primary)",
                                                 fontSize: "0.8em",
                                             }}
+                                            spellCheck={false}
                                             type="password"
                                             value={freeText}
                                         />
                                     ) : (
                                         <textarea
+                                            autoCapitalize="off"
+                                            autoCorrect="off"
                                             className="ide-input app-no-drag w-full resize-y rounded-md px-2.5 py-2"
                                             onChange={(event) =>
                                                 setFreeTextByQuestionId(
@@ -2413,6 +2451,7 @@ function UserInputRequestCard({
                                                 color: "var(--color-text-primary)",
                                                 fontSize: "0.8em",
                                             }}
+                                            spellCheck={false}
                                             value={freeText}
                                         />
                                     )}
@@ -2495,6 +2534,7 @@ function ChatMessageRow({
         return (
             <UserMessage
                 attachments={message.attachments}
+                chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
             />
@@ -2502,6 +2542,7 @@ function ChatMessageRow({
     if (message.kind === "user_input_request") {
         return (
             <UserInputRequestMessage
+                chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
             />
@@ -2510,6 +2551,7 @@ function ChatMessageRow({
     if (message.kind === "thinking")
         return (
             <ThinkingMessage
+                chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
                 inProgress={message.status === "streaming"}
@@ -2527,6 +2569,7 @@ function ChatMessageRow({
 
 function UserMessage(props: {
     readonly attachments: readonly AiImageAttachment[];
+    readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
 }) {
@@ -2543,7 +2586,13 @@ function UserMessage(props: {
                 wordBreak: "break-word",
             }}
         >
-            {props.content ? <div>{props.content}</div> : null}
+            {props.content ? (
+                <MarkdownContent
+                    content={props.content}
+                    chatFontFamily={props.chatFontFamily}
+                    chatFontSize={props.chatFontSize}
+                />
+            ) : null}
             {props.attachments.length > 0 ? (
                 <MessageImageGrid attachments={props.attachments} />
             ) : null}
@@ -2604,9 +2653,11 @@ function MessageImageGrid(props: {
 }
 
 function UserInputRequestMessage({
+    chatFontFamily,
     chatFontSize,
     content,
 }: {
+    readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
 }) {
@@ -2632,26 +2683,32 @@ function UserInputRequestMessage({
                 Input Requested
             </div>
             <div
-                className="mt-1 whitespace-pre-wrap"
+                className="mt-1"
                 style={{
                     color: "var(--color-text-primary)",
                     fontSize: "0.84em",
                     lineHeight: 1.55,
-                    overflowWrap: "anywhere",
-                    wordBreak: "break-word",
                 }}
             >
-                {content}
+                <MarkdownContent
+                    content={content}
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={
+                        chatFontSize ? chatFontSize * 0.84 : chatFontSize
+                    }
+                />
             </div>
         </div>
     );
 }
 
 function ThinkingMessage({
+    chatFontFamily,
     chatFontSize,
     content,
     inProgress,
 }: {
+    readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
     readonly inProgress: boolean;
@@ -2690,17 +2747,21 @@ function ThinkingMessage({
             </button>
             {expanded && content ? (
                 <div
-                    className="mt-1 whitespace-pre-wrap pl-5 italic"
+                    className="mt-1 pl-5 italic"
                     style={{
                         color: "var(--color-text-secondary)",
                         fontSize: "0.82em",
                         lineHeight: 1.6,
                         opacity: 0.7,
-                        overflowWrap: "anywhere",
-                        wordBreak: "break-word",
                     }}
                 >
-                    {content}
+                    <MarkdownContent
+                        content={content}
+                        chatFontFamily={chatFontFamily}
+                        chatFontSize={
+                            chatFontSize ? chatFontSize * 0.82 : chatFontSize
+                        }
+                    />
                 </div>
             ) : null}
         </div>

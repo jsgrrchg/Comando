@@ -283,6 +283,8 @@ function DropdownField({
                                   }}
                               >
                                   <input
+                                      autoCapitalize="off"
+                                      autoCorrect="off"
                                       className="ide-input app-no-drag w-full text-xs"
                                       onChange={(event) =>
                                           setQuery(event.target.value)
@@ -292,6 +294,7 @@ function DropdownField({
                                       }}
                                       placeholder={searchPlaceholder}
                                       ref={searchRef}
+                                      spellCheck={false}
                                       value={query}
                                   />
                               </div>

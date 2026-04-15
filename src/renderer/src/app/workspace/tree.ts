@@ -3,6 +3,8 @@ import type {
     TerminalSession,
     WorkspaceChatTab,
     WorkspaceFileTab,
+    WorkspaceGitCommitTab,
+    WorkspaceGitTab,
     WorkspaceNode,
     WorkspacePaneNode,
     WorkspaceReviewTab,
@@ -35,6 +37,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
 
 export type RuntimeWorkspaceChatTab = WorkspaceChatTab;
 export type RuntimeWorkspaceReviewTab = WorkspaceReviewTab;
+export type RuntimeWorkspaceGitCommitTab = WorkspaceGitCommitTab;
 
 export interface RuntimeWorkspaceTerminalTab extends WorkspaceTerminalTab {
     readonly exitCode: number | null;
@@ -45,9 +48,13 @@ export interface RuntimeWorkspaceTerminalTab extends WorkspaceTerminalTab {
     readonly signalCode: number | null;
 }
 
+export type RuntimeWorkspaceGitTab = WorkspaceGitTab;
+
 export type RuntimeWorkspaceTab =
     | RuntimeWorkspaceFileTab
     | RuntimeWorkspaceChatTab
+    | RuntimeWorkspaceGitCommitTab
+    | RuntimeWorkspaceGitTab
     | RuntimeWorkspaceReviewTab
     | RuntimeWorkspaceTerminalTab;
 
@@ -471,6 +478,9 @@ export function moveTabToPaneAtIndex(
     sourcePaneId: string,
     targetPaneId: string,
     targetIndex: number,
+    options?: {
+        readonly preserveEmptySourcePane?: boolean;
+    },
 ): WorkspaceTreeState {
     if (sourcePaneId === targetPaneId) {
         return reorderTabInPane(state, targetPaneId, tabId, targetIndex);
@@ -532,6 +542,10 @@ export function moveTabToPaneAtIndex(
         tabsById: withoutSourceTab.tabsById,
     };
 
+    if (options?.preserveEmptySourcePane) {
+        return nextState;
+    }
+
     return closeEmptyPaneIfNeeded(nextState, sourcePaneId);
 }
 
@@ -565,6 +579,9 @@ export function moveTabToSplit(
         sourcePaneId,
         nextIds.paneId,
         0,
+        {
+            preserveEmptySourcePane: sourcePaneId === targetPaneId,
+        },
     );
 }
 
@@ -1214,6 +1231,14 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     }
 
     if (tab.kind === "review") {
+        return tab;
+    }
+
+    if (tab.kind === "git") {
+        return tab;
+    }
+
+    if (tab.kind === "git_commit") {
         return tab;
     }
 

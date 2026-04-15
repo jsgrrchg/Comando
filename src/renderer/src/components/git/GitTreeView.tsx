@@ -5,6 +5,8 @@ import {
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
 
+import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
+
 import { GitActionButton, GitEmptyState } from "./GitUi";
 import type {
     GitTreeDragData,
@@ -29,6 +31,11 @@ const ROW_BOX: CSSProperties = {
     boxSizing: "border-box",
 };
 
+const ROW_BOX_CONSTRAINED: CSSProperties = {
+    width: "100%",
+    boxSizing: "border-box",
+};
+
 function scalePx(value: number): string {
     return `calc(${value}px * var(--file-tree-scale, 1))`;
 }
@@ -36,6 +43,7 @@ function scalePx(value: number): string {
 export function GitTreeView({
     activePath = null,
     className,
+    constrainWidth = false,
     enableNodeDrag = false,
     emptyState,
     expandedPaths,
@@ -47,6 +55,7 @@ export function GitTreeView({
     onNodeDragStart,
     onToggleDirectory,
     renderNodeMeta,
+    showStatusIndicator = true,
 }: GitTreeViewProps) {
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
 
@@ -63,6 +72,7 @@ export function GitTreeView({
             {nodes.map((node) => (
                 <GitTreeNodeRow
                     activePath={activePath}
+                    constrainWidth={constrainWidth}
                     depth={0}
                     dropTargetPath={dropTargetPath}
                     enableNodeDrag={enableNodeDrag}
@@ -77,6 +87,7 @@ export function GitTreeView({
                     onToggleDirectory={onToggleDirectory}
                     renderNodeMeta={renderNodeMeta}
                     setDropTargetPath={setDropTargetPath}
+                    showStatusIndicator={showStatusIndicator}
                 />
             ))}
         </div>
@@ -85,6 +96,7 @@ export function GitTreeView({
 
 function GitTreeNodeRow({
     activePath,
+    constrainWidth = false,
     depth,
     dropTargetPath,
     enableNodeDrag,
@@ -98,8 +110,10 @@ function GitTreeNodeRow({
     onToggleDirectory,
     renderNodeMeta,
     setDropTargetPath,
+    showStatusIndicator,
 }: {
     readonly activePath: string | null;
+    readonly constrainWidth?: boolean;
     readonly depth: number;
     readonly dropTargetPath: string | null;
     readonly enableNodeDrag: boolean;
@@ -125,6 +139,7 @@ function GitTreeNodeRow({
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
     readonly setDropTargetPath: (path: string | null) => void;
+    readonly showStatusIndicator: boolean;
 }) {
     const isDirectory = node.kind === "directory";
     const isExpanded =
@@ -143,6 +158,12 @@ function GitTreeNodeRow({
         | ((node: GitTreeNode, dataTransfer: DataTransfer | null) => void)
         | undefined;
     const isDropTarget = dropTargetPath === node.path;
+    const statusTint = node.status ? statusColor(node.status) : null;
+    const titleColor = statusTint
+        ? statusTint
+        : isDirectory
+          ? "var(--color-text-secondary)"
+          : "var(--color-text-primary)";
 
     const paddingLeft = scalePx(BASE_PADDING + depth * INDENT_STEP);
 
@@ -235,9 +256,7 @@ function GitTreeNodeRow({
                     fontSize: scalePx(FONT_SIZE),
                     borderRadius: scalePx(4),
                     cursor: canOpen || canToggle ? "pointer" : "default",
-                    color: isDirectory
-                        ? "var(--color-text-secondary)"
-                        : "var(--color-text-primary)",
+                    color: "var(--color-text-primary)",
                     ...(isActive
                         ? {
                               backgroundColor:
@@ -253,7 +272,7 @@ function GitTreeNodeRow({
                                     "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
                             }
                           : {}),
-                    ...ROW_BOX,
+                    ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
                 }}
                 onClick={() =>
                     canOpen
@@ -272,25 +291,34 @@ function GitTreeNodeRow({
                 )}
 
                 {isDirectory ? (
-                    <FolderIcon open={isExpanded} />
+                    <FolderIcon
+                        color={statusTint ?? "var(--color-text-secondary)"}
+                        open={isExpanded}
+                    />
                 ) : (
-                    <FileIcon status={node.status} />
+                    <FileTypeIcon
+                        color={statusTint ?? undefined}
+                        fileName={node.name}
+                        scaled
+                        size={ICON_SM}
+                    />
                 )}
 
                 <span
                     style={{
-                        flexShrink: 0,
+                        flexShrink: constrainWidth ? 1 : 0,
                         whiteSpace: "nowrap",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
-                        minWidth: 0,
+                        minWidth: constrainWidth ? scalePx(40) : 0,
                         flex: 1,
+                        color: titleColor,
                     }}
                 >
                     {node.name}
                 </span>
 
-                {node.secondaryText ? (
+                {!constrainWidth && node.secondaryText ? (
                     <span
                         style={{
                             fontSize: scalePx(11),
@@ -314,11 +342,14 @@ function GitTreeNodeRow({
                 >
                     {renderNodeMeta ? renderNodeMeta(node) : node.meta}
 
-                    {node.status && !isDirectory ? (
+                    {showStatusIndicator &&
+                    !constrainWidth &&
+                    node.status &&
+                    !isDirectory ? (
                         <StatusIndicator status={node.status} />
                     ) : null}
 
-                    {node.actions?.length ? (
+                    {!constrainWidth && node.actions?.length ? (
                         <div
                             className="git-tree-row-actions"
                             style={{
@@ -345,6 +376,7 @@ function GitTreeNodeRow({
                 ? node.children.map((child) => (
                       <GitTreeNodeRow
                           activePath={activePath}
+                          constrainWidth={constrainWidth}
                           depth={depth + 1}
                           dropTargetPath={dropTargetPath}
                           enableNodeDrag={enableNodeDrag}
@@ -359,6 +391,7 @@ function GitTreeNodeRow({
                           onToggleDirectory={onToggleDirectory}
                           renderNodeMeta={renderNodeMeta}
                           setDropTargetPath={setDropTargetPath}
+                          showStatusIndicator={showStatusIndicator}
                       />
                   ))
                 : null}
@@ -454,13 +487,15 @@ function ChevronIcon({
 }
 
 function FolderIcon({
+    color = "var(--color-text-secondary)",
     open,
     size = ICON_MD,
 }: {
+    color?: string;
     open: boolean;
     size?: number | string;
 }) {
-    const fill = "var(--color-text-secondary)";
+    const fill = color;
     if (open) {
         return (
             <svg
@@ -495,38 +530,6 @@ function FolderIcon({
                 d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
                 fill={fill}
                 opacity="0.65"
-            />
-        </svg>
-    );
-}
-
-function FileIcon({
-    status,
-    size = ICON_SM,
-}: {
-    status: GitNodeStatus | null;
-    size?: number | string;
-}) {
-    const strokeColor = status ? statusStrokeColor(status) : "currentColor";
-    return (
-        <svg
-            width={typeof size === "number" ? scalePx(size) : size}
-            height={typeof size === "number" ? scalePx(size) : size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0, opacity: 0.58 }}
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke={strokeColor}
-                strokeWidth="1"
-            />
-            <path
-                d="M9.5 1.5V5H13"
-                stroke={strokeColor}
-                strokeWidth="0.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
             />
         </svg>
     );
@@ -622,7 +625,7 @@ function statusColor(status: GitNodeStatus): string {
         case "modified":
         case "renamed":
         case "mixed":
-            return "var(--color-status-modified, #eab308)";
+            return "var(--color-status-modified, #f59e0b)";
         case "deleted":
         case "conflict":
             return "var(--color-status-deleted, #ef4444)";
@@ -631,25 +634,5 @@ function statusColor(status: GitNodeStatus): string {
         case "clean":
         default:
             return "var(--color-text-secondary)";
-    }
-}
-
-function statusStrokeColor(status: GitNodeStatus): string {
-    switch (status) {
-        case "added":
-        case "staged":
-            return "#22c55e";
-        case "modified":
-        case "renamed":
-        case "mixed":
-            return "#eab308";
-        case "deleted":
-        case "conflict":
-            return "#ef4444";
-        case "untracked":
-            return "currentColor";
-        case "clean":
-        default:
-            return "currentColor";
     }
 }

@@ -5,6 +5,8 @@ import type {
     TerminalDataEvent,
     TerminalExitEvent,
     WorkspaceChatTab,
+    WorkspaceGitCommitTab,
+    WorkspaceGitTab,
     WorkspaceReviewTab,
     WorkspaceSnapshot,
 } from "@shared/ipc";
@@ -44,7 +46,9 @@ import {
     updateFileDraft as applyFileDraft,
     workspaceStateFromSnapshot,
     workspaceStateToSnapshot,
+    type RuntimeWorkspaceGitCommitTab,
     type MoveDirection,
+    type RuntimeWorkspaceGitTab,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceReviewTab,
@@ -53,11 +57,13 @@ import {
     type SplitDirection,
     type WorkspaceTreeState,
 } from "../workspace/tree";
+import { useProjectsStore } from "./projects-store";
 
 export type WorkspaceQuickCreateAction =
     | "claude"
     | "codex"
     | "gemini"
+    | "git"
     | "kilo"
     | "file"
     | "terminal";
@@ -82,6 +88,16 @@ interface WorkspaceStore extends WorkspaceTreeState {
         projectId: string | null,
         worktreeId?: string | null,
     ) => Promise<void>;
+    openGitTab: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    openGitCommitTab: (input: {
+        readonly commitSha: string;
+        readonly projectId: string | null;
+        readonly subject: string;
+        readonly worktreeId?: string | null;
+    }) => Promise<void>;
     handleTerminalExit: (event: TerminalExitEvent) => void;
     hydrate: () => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
@@ -308,6 +324,84 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         await persistWorkspaceState(get);
         await bootTerminalSession(get, set, tab.id);
+    },
+
+    openGitTab: async (projectId, worktreeId = null) => {
+        const existingTab = findExistingGitTab(get(), projectId, worktreeId);
+        if (existingTab) {
+            const paneId = findPaneIdByTabId(get(), existingTab.id);
+            if (!paneId) {
+                return;
+            }
+
+            set((state) => ({
+                ...selectPaneTab(state, paneId, existingTab.id),
+                error: null,
+                lastQuickCreateAction: "git",
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const projectTitle =
+            useProjectsStore
+                .getState()
+                .projects.find((project) => project.id === projectId)?.name ??
+            "Git";
+
+        const tab: WorkspaceGitTab = {
+            createdAt: new Date().toISOString(),
+            id: crypto.randomUUID(),
+            kind: "git",
+            projectId,
+            title: projectTitle,
+            worktreeId,
+        };
+
+        set((state) => ({
+            ...attachTabToPane(state, state.activePaneId, tab),
+            error: null,
+            lastQuickCreateAction: "git",
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    openGitCommitTab: async (input) => {
+        const existingTab = findExistingGitCommitTab(
+            get(),
+            input.projectId,
+            input.commitSha,
+            input.worktreeId ?? null,
+        );
+        if (existingTab) {
+            const paneId = findPaneIdByTabId(get(), existingTab.id);
+            if (!paneId) {
+                return;
+            }
+
+            set((state) => ({
+                ...selectPaneTab(state, paneId, existingTab.id),
+                error: null,
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const tab: WorkspaceGitCommitTab = {
+            commitSha: input.commitSha,
+            createdAt: new Date().toISOString(),
+            id: crypto.randomUUID(),
+            kind: "git_commit",
+            projectId: input.projectId,
+            title: input.commitSha.slice(0, 7),
+            worktreeId: input.worktreeId ?? null,
+        };
+
+        set((state) => ({
+            ...attachTabToPane(state, state.activePaneId, tab),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
     },
 
     handleTerminalExit: (event) => {
@@ -909,6 +1003,14 @@ function createHydratedRuntimeTabs(
                 return [tab.id, tab] as const;
             }
 
+            if (tab.kind === "git") {
+                return [tab.id, tab] as const;
+            }
+
+            if (tab.kind === "git_commit") {
+                return [tab.id, tab] as const;
+            }
+
             if (tab.kind === "review") {
                 return [tab.id, tab] as const;
             }
@@ -984,6 +1086,14 @@ async function hydrateRuntimeTabs(
                     return;
                 }
 
+                return;
+            }
+
+            if (tab.kind === "git") {
+                return;
+            }
+
+            if (tab.kind === "git_commit") {
                 return;
             }
 
@@ -1160,6 +1270,40 @@ function findExistingReviewTab(
         Object.values(state.tabsById).find(
             (tab): tab is RuntimeWorkspaceReviewTab =>
                 tab.kind === "review" && tab.sessionId === sessionId,
+        ) ?? null
+    );
+}
+
+function findExistingGitTab(
+    state: WorkspaceTreeState,
+    projectId: string,
+    worktreeId: string | null,
+): RuntimeWorkspaceGitTab | null {
+    return (
+        Object.values(state.tabsById).find(
+            (tab): tab is RuntimeWorkspaceGitTab =>
+                tab.kind === "git" &&
+                tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId),
+        ) ?? null
+    );
+}
+
+function findExistingGitCommitTab(
+    state: WorkspaceTreeState,
+    projectId: string | null,
+    commitSha: string,
+    worktreeId: string | null,
+): RuntimeWorkspaceGitCommitTab | null {
+    return (
+        Object.values(state.tabsById).find(
+            (tab): tab is RuntimeWorkspaceGitCommitTab =>
+                tab.kind === "git_commit" &&
+                tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId) &&
+                tab.commitSha === commitSha,
         ) ?? null
     );
 }

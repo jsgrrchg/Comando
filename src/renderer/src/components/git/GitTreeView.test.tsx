@@ -1,0 +1,54 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { GitTreeView } from "./GitTreeView";
+import type { GitTreeNode } from "./types";
+
+function createFileNode(overrides: Partial<GitTreeNode> = {}): GitTreeNode {
+    return {
+        id: "file-1",
+        kind: "file",
+        name: "notes.md",
+        path: "notes.md",
+        status: "modified",
+        ...overrides,
+    };
+}
+
+describe("GitTreeView", () => {
+    it("uses git status color on file title and icon without rendering the status letter when disabled", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                nodes={[createFileNode()]}
+                showStatusIndicator={false}
+            />,
+        );
+
+        expect(markup).toContain("var(--color-status-modified, #f59e0b)");
+        expect(markup).toContain("notes.md");
+        expect(markup).not.toContain(">M</span>");
+    });
+
+    it("colors changed folders with the same minimal status tint", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                nodes={[
+                    createFileNode({
+                        children: [],
+                        hasChildren: true,
+                        id: "dir-1",
+                        kind: "directory",
+                        name: "src",
+                        path: "src",
+                        status: "mixed",
+                    }),
+                ]}
+                showStatusIndicator={false}
+            />,
+        );
+
+        expect(markup).toContain("src");
+        expect(markup).toContain("var(--color-status-modified, #f59e0b)");
+        expect(markup).not.toContain(">±</span>");
+    });
+});

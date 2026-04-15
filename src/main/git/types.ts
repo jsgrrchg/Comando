@@ -48,11 +48,7 @@ export interface GitWorktreeSummary {
     readonly prunable: boolean;
 }
 
-export type GitChangeScope =
-    | "conflicted"
-    | "staged"
-    | "untracked"
-    | "unstaged";
+export type GitChangeScope = "conflicted" | "staged" | "untracked" | "unstaged";
 
 export interface GitChangeScopeCounts {
     readonly conflicted: number;
@@ -157,4 +153,65 @@ export interface GitFileDiffOptions {
 
 export interface GitListBranchesOptions {
     readonly scope?: "all" | "local";
+}
+
+export interface GitCommitReference {
+    readonly kind: "branch" | "head" | "other" | "remote" | "tag";
+    readonly label: string;
+}
+
+export interface GitHistoryCommitSummary {
+    readonly authorEmail: string;
+    readonly authorName: string;
+    readonly authoredAt: string;
+    readonly body: string;
+    readonly parentShas: readonly string[];
+    readonly refs: readonly GitCommitReference[];
+    readonly sha: string;
+    readonly shortSha: string;
+    readonly subject: string;
+}
+
+export interface GitCommitDiffLine {
+    readonly id: string;
+    readonly text: string;
+    readonly type: "add" | "context" | "remove";
+}
+
+export interface GitCommitDiffHunk {
+    readonly header: string;
+    readonly id: string;
+    readonly lines: readonly GitCommitDiffLine[];
+    readonly newCount: number;
+    readonly newStart: number;
+    readonly oldCount: number;
+    readonly oldStart: number;
+}
+
+export interface GitCommitDiffFile {
+    readonly additions: number | null;
+    readonly deletions: number | null;
+    readonly hunks: readonly GitCommitDiffHunk[];
+    readonly isText: boolean;
+    readonly kind: "create" | "delete" | "move" | "update";
+    readonly newText: string | null;
+    readonly oldText: string | null;
+    readonly path: string;
+    readonly previousPath: string | null;
+    readonly reversible: boolean;
+    readonly statusLabel: string | null;
+}
+
+export interface GitCommitDetail extends GitHistoryCommitSummary {
+    readonly changedFileCount: number;
+    readonly committedAt: string;
+    readonly committerEmail: string;
+    readonly committerName: string;
+    readonly deletions: number;
+    readonly files: readonly GitCommitDiffFile[];
+    readonly insertions: number;
+}
+
+export interface GitListHistoryOptions {
+    readonly limit?: number;
 }

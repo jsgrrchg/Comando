@@ -10,6 +10,7 @@ import { createPortal } from "react-dom";
 
 import type { ProjectTreeNode } from "@shared/ipc";
 
+import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
 
 /* ─── Types ─── */
@@ -121,24 +122,6 @@ function PlanIcon() {
             <line x1="3" x2="3.01" y1="6" y2="6" />
             <line x1="3" x2="3.01" y1="12" y2="12" />
             <line x1="3" x2="3.01" y1="18" y2="18" />
-        </svg>
-    );
-}
-
-function FileIcon() {
-    return (
-        <svg
-            fill="none"
-            height="12"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.5"
-            viewBox="0 0 24 24"
-            width="12"
-        >
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
         </svg>
     );
 }
@@ -300,7 +283,13 @@ export function AIChatMentionPicker({
                         color = "var(--color-accent)";
                         break;
                     case "file":
-                        icon = <FileIcon />;
+                        icon = (
+                            <FileTypeIcon
+                                fileName={item.entry.name}
+                                opacity={0.58}
+                                size={12}
+                            />
+                        );
                         label = item.label;
                         color = "var(--color-accent)";
                         break;

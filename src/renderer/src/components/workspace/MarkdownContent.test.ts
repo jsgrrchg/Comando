@@ -30,4 +30,22 @@ describe("MarkdownContent", () => {
         expect(markup).toContain("cm-static-code");
         expect(markup).not.toContain("markdown-diff-block");
     });
+
+    it("mantiene el highlighting para TOML y GraphQL", () => {
+        const tomlMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: '```toml\n[package]\nname = "comando"\n```',
+            }),
+        );
+        const graphqlMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: "```graphql\nquery Viewer { viewer { login } }\n```",
+            }),
+        );
+
+        expect(tomlMarkup).toContain(">toml<");
+        expect(tomlMarkup).toContain("cm-static-code");
+        expect(graphqlMarkup).toContain(">graphql<");
+        expect(graphqlMarkup).toContain("cm-static-code");
+    });
 });

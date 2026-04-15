@@ -24,6 +24,8 @@ import {
     type GitChangeEntry as SharedGitChangeEntry,
     type GitChangesListInput,
     type GitCheckoutBranchInput,
+    type GitCommitDetail as SharedGitCommitDetail,
+    type GitCommitDetailInput,
     type GitCommitInput,
     type GitCommitResult,
     type GitCreateWorktreeInput,
@@ -31,6 +33,8 @@ import {
     type GitDiscardPathsInput,
     type GitFetchInput,
     type GitFileDiff as SharedGitFileDiff,
+    type GitHistoryCommitSummary as SharedGitHistoryCommitSummary,
+    type GitHistoryListInput,
     type GitPullInput,
     type GitPushInput,
     type GitRemoteSummary,
@@ -123,7 +127,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.listGitBranches);
     ipcMain.removeHandler(IPC_CHANNELS.listGitWorktrees);
     ipcMain.removeHandler(IPC_CHANNELS.listGitChanges);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getGitDiff);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitCommitDetail);
     ipcMain.removeHandler(IPC_CHANNELS.stageGitPaths);
     ipcMain.removeHandler(IPC_CHANNELS.unstageGitPaths);
     ipcMain.removeHandler(IPC_CHANNELS.discardGitPaths);
@@ -403,6 +409,31 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 options.gitService,
                 input,
             ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHistory,
+        async (
+            _event,
+            input: GitHistoryListInput,
+        ): Promise<readonly SharedGitHistoryCommitSummary[]> => {
+            const scope = resolveGitScope(options.projectService, input);
+            return options.gitService.listHistory(scope.rootPath, {
+                limit: input.limit,
+            });
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getGitCommitDetail,
+        async (
+            _event,
+            input: GitCommitDetailInput,
+        ): Promise<SharedGitCommitDetail | null> => {
+            const scope = resolveGitScope(options.projectService, input);
+            return options.gitService.getCommitDetail(
+                scope.rootPath,
+                input.commitSha,
+            );
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.stageGitPaths,
@@ -921,6 +952,8 @@ type MainGitFileDiff = Awaited<ReturnType<GitService["getFileDiff"]>>;
 type MainGitBranch = MainGitRepositorySnapshot["branches"][number];
 type MainGitWorktree = MainGitRepositorySnapshot["worktrees"][number];
 type MainGitChange = MainGitRepositorySnapshot["status"]["entries"][number];
+type DiffStatEntry = { additions: number; deletions: number };
+type DiffStatMap = Map<string, DiffStatEntry>;
 
 function resolveGitScope(
     projectService: ProjectService,
@@ -1066,7 +1099,12 @@ async function adaptRepositorySnapshot(
         snapshot.status.sync?.behind ?? 0,
         snapshot.status.sync?.detached ?? false,
     );
-    const changes = adaptGitChanges(snapshot.status.entries, currentWorktreeId);
+    const diffStats = await getGitDiffStats(scope.rootPath);
+    const changes = adaptGitChanges(
+        snapshot.status.entries,
+        currentWorktreeId,
+        diffStats,
+    );
     const selectedRemoteName = extractRemoteName(
         snapshot.status.sync?.trackingBranchName ?? null,
     );
@@ -1257,24 +1295,66 @@ function resolveCurrentGitBranch(
     };
 }
 
+async function getGitDiffStats(rootPath: string): Promise<DiffStatMap> {
+    const stats: DiffStatMap = new Map();
+    const git = simpleGit(rootPath);
+
+    try {
+        const [unstaged, staged] = await Promise.all([
+            git.diff(["--numstat"]),
+            git.diff(["--cached", "--numstat"]),
+        ]);
+
+        parseNumstat(unstaged, "unstaged", stats);
+        parseNumstat(staged, "staged", stats);
+    } catch {
+        // ignore — stats are best-effort
+    }
+
+    return stats;
+}
+
+function parseNumstat(
+    raw: string,
+    scope: string,
+    stats: DiffStatMap,
+): void {
+    for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        const parts = line.split("\t");
+        if (parts.length < 3) continue;
+        const [addStr, delStr, filePath] = parts;
+        if (addStr === "-" || delStr === "-") continue;
+        const additions = parseInt(addStr, 10);
+        const deletions = parseInt(delStr, 10);
+        if (Number.isNaN(additions) || Number.isNaN(deletions)) continue;
+        stats.set(`${scope}:${filePath}`, { additions, deletions });
+    }
+}
+
 function adaptGitChanges(
     changes: readonly MainGitChange[],
     currentWorktreeId: string | null,
+    diffStats: DiffStatMap,
 ): readonly SharedGitChangeEntry[] {
     return changes.flatMap((change) =>
-        change.scopes.map((scope) => ({
-            additions: null,
-            deletions: null,
-            hasChildren: false,
-            isBinary: change.isBinary,
-            isConflicted: change.conflicted,
-            isRenamed: change.isRenamed,
-            kind: mapSharedGitChangeKind(change.kind),
-            path: change.relativePath,
-            previousPath: change.previousPath,
-            scope,
-            worktreeId: currentWorktreeId,
-        })),
+        change.scopes.map((scope) => {
+            const key = `${scope}:${change.relativePath}`;
+            const stat = diffStats.get(key) ?? null;
+            return {
+                additions: stat?.additions ?? null,
+                deletions: stat?.deletions ?? null,
+                hasChildren: false,
+                isBinary: change.isBinary,
+                isConflicted: change.conflicted,
+                isRenamed: change.isRenamed,
+                kind: mapSharedGitChangeKind(change.kind),
+                path: change.relativePath,
+                previousPath: change.previousPath,
+                scope,
+                worktreeId: currentWorktreeId,
+            };
+        }),
     );
 }
 
@@ -1445,6 +1525,42 @@ interface ResolvedGitScope {
     readonly worktreeId: string | null;
 }
 
+type DiffStatEntry = { additions: number; deletions: number };
+type DiffStatMap = Map<string, DiffStatEntry>;
+
+async function getGitDiffStats(rootPath: string): Promise<DiffStatMap> {
+    const stats: DiffStatMap = new Map();
+    const git = simpleGit(rootPath);
+
+    try {
+        const [unstaged, staged] = await Promise.all([
+            git.diff(["--numstat"]),
+            git.diff(["--cached", "--numstat"]),
+        ]);
+
+        parseNumstat(unstaged, "unstaged", stats);
+        parseNumstat(staged, "staged", stats);
+    } catch {
+        // stats are best-effort
+    }
+
+    return stats;
+}
+
+function parseNumstat(raw: string, scope: string, stats: DiffStatMap): void {
+    for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        const parts = line.split("\t");
+        if (parts.length < 3) continue;
+        const [addStr, delStr, filePath] = parts;
+        if (addStr === "-" || delStr === "-") continue;
+        const additions = parseInt(addStr, 10);
+        const deletions = parseInt(delStr, 10);
+        if (Number.isNaN(additions) || Number.isNaN(deletions)) continue;
+        stats.set(`${scope}:${filePath}`, { additions, deletions });
+    }
+}
+
 async function buildSharedGitRepositorySnapshot(
     projectService: ProjectService,
     gitService: GitService,
@@ -1588,6 +1704,10 @@ async function adaptRepositorySnapshot(
         )?.id ?? scope.worktreeId;
     const aheadBy = snapshot.status.sync?.ahead ?? 0;
     const behindBy = snapshot.status.sync?.behind ?? 0;
+    const diffStats =
+        snapshot.resolution.state === "ready"
+            ? await getGitDiffStats(scope.rootPath)
+            : new Map<string, DiffStatEntry>();
     const status: GitRepositoryStatusSummary = {
         changedCount: snapshot.status.entries.length,
         conflictedCount: snapshot.status.counts.conflicted,
@@ -1605,7 +1725,7 @@ async function adaptRepositorySnapshot(
             (entry) => entry.relativePath,
         ),
         changes: snapshot.status.entries.map((entry) =>
-            adaptGitChangeEntry(entry, currentWorktreeId),
+            adaptGitChangeEntry(entry, currentWorktreeId, diffStats),
         ),
         currentWorktreeId,
         defaultTreeViewMode: "tree",
@@ -1653,10 +1773,17 @@ function adaptGitChangeEntry(
         ReturnType<GitService["getRepositorySnapshot"]>
     >["status"]["entries"][number],
     worktreeId: string | null,
+    diffStats: DiffStatMap,
 ): SharedGitChangeEntry {
+    const scope = derivePrimaryScope(entry.scopes);
+    const stat = resolveEntryDiffStat(
+        entry.relativePath,
+        entry.scopes,
+        diffStats,
+    );
     return {
-        additions: null,
-        deletions: null,
+        additions: stat?.additions ?? null,
+        deletions: stat?.deletions ?? null,
         hasChildren: false,
         isBinary: entry.isBinary,
         isConflicted: entry.conflicted,
@@ -1664,7 +1791,7 @@ function adaptGitChangeEntry(
         kind: mapSharedChangeKind(entry.kind),
         path: entry.relativePath,
         previousPath: entry.previousPath,
-        scope: derivePrimaryScope(entry.scopes),
+        scope,
         worktreeId,
     };
 }
@@ -1869,6 +1996,29 @@ function derivePrimaryScope(
     }
 
     return "untracked";
+}
+
+function resolveEntryDiffStat(
+    relativePath: string,
+    scopes: readonly ("conflicted" | "staged" | "untracked" | "unstaged")[],
+    diffStats: DiffStatMap,
+): DiffStatEntry | null {
+    let additions = 0;
+    let deletions = 0;
+    let hasStat = false;
+
+    for (const scope of scopes) {
+        const stat = diffStats.get(`${scope}:${relativePath}`);
+        if (!stat) {
+            continue;
+        }
+
+        additions += stat.additions;
+        deletions += stat.deletions;
+        hasStat = true;
+    }
+
+    return hasStat ? { additions, deletions } : null;
 }
 
 function mapSharedChangeKind(kind: string): SharedGitChangeEntry["kind"] {

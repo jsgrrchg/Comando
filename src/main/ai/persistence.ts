@@ -716,6 +716,8 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
                         ? entry.createdAt
                         : updatedAt,
                 diffs: normalizeFileDiffs(entry.diffs),
+                exitCode:
+                    typeof entry.exitCode === "number" ? entry.exitCode : null,
                 id: entry.id,
                 kind: typeof entry.kind === "string" ? entry.kind : "unknown",
                 locations: Array.isArray(entry.locations)
@@ -743,6 +745,10 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
                         : "pending",
                 summary:
                     typeof entry.summary === "string" ? entry.summary : null,
+                terminalOutput:
+                    typeof entry.terminalOutput === "string"
+                        ? entry.terminalOutput
+                        : null,
                 title:
                     typeof entry.title === "string" ? entry.title : "Tool call",
                 updatedAt,

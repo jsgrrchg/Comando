@@ -1,3 +1,4 @@
+export * from "./GitAuthorAvatar";
 export * from "./GitChangesView";
 export * from "./GitDiffsView";
 export * from "./GitFilesView";

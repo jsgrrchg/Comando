@@ -17,10 +17,20 @@ const DEFAULT_EDITOR_LANGUAGE: ResolvedEditorLanguage = {
 
 const EDITOR_LANGUAGES: readonly EditorLanguageDefinition[] = [
     {
+        extensions: ["tsx"],
+        id: "tsx",
+        label: "TSX",
+    },
+    {
         extensions: ["ts", "mts", "cts"],
         id: "typescript",
         interpreters: ["ts-node", "tsx"],
         label: "TypeScript",
+    },
+    {
+        extensions: ["jsx"],
+        id: "jsx",
+        label: "JSX",
     },
     {
         extensions: ["js", "mjs", "cjs"],
@@ -139,6 +149,16 @@ const EDITOR_LANGUAGES: readonly EditorLanguageDefinition[] = [
         label: "GraphQL",
     },
     {
+        extensions: ["hcl", "tf", "tfvars"],
+        id: "hcl",
+        label: "HCL / Terraform",
+    },
+    {
+        extensions: ["toml"],
+        id: "toml",
+        label: "TOML",
+    },
+    {
         extensions: ["dockerfile"],
         filenames: ["dockerfile"],
         id: "dockerfile",
@@ -171,9 +191,137 @@ const EDITOR_LANGUAGES: readonly EditorLanguageDefinition[] = [
         label: "C#",
     },
     {
+        extensions: ["astro"],
+        id: "astro",
+        label: "Astro",
+    },
+    {
+        extensions: ["prisma"],
+        id: "prisma",
+        label: "Prisma",
+    },
+    {
         extensions: ["swift"],
         id: "swift",
         label: "Swift",
+    },
+    {
+        extensions: ["scala"],
+        id: "scala",
+        label: "Scala",
+    },
+    {
+        extensions: ["cmake"],
+        filenames: ["cmakelists.txt"],
+        id: "cmake",
+        label: "CMake",
+    },
+    {
+        extensions: ["diff", "patch"],
+        id: "diff",
+        label: "Diff",
+    },
+    {
+        extensions: ["clj", "cljs", "cljc"],
+        id: "clojure",
+        label: "Clojure",
+    },
+    {
+        extensions: ["erl", "hrl"],
+        id: "erlang",
+        label: "Erlang",
+    },
+    {
+        extensions: ["ex", "exs"],
+        id: "elixir",
+        label: "Elixir",
+    },
+    {
+        extensions: ["groovy", "gradle"],
+        id: "groovy",
+        label: "Groovy",
+    },
+    {
+        extensions: ["hs"],
+        id: "haskell",
+        label: "Haskell",
+    },
+    {
+        extensions: ["jl"],
+        id: "julia",
+        label: "Julia",
+    },
+    {
+        extensions: ["mk"],
+        filenames: ["gnumakefile", "makefile"],
+        id: "makefile",
+        label: "Makefile",
+    },
+    {
+        extensions: ["pas", "pp"],
+        id: "pascal",
+        label: "Pascal",
+    },
+    {
+        extensions: ["pl", "pm"],
+        id: "perl",
+        label: "Perl",
+    },
+    {
+        extensions: ["ps1", "psd1", "psm1", "ps"],
+        id: "powershell",
+        interpreters: ["powershell", "pwsh"],
+        label: "PowerShell",
+    },
+    {
+        extensions: ["proto"],
+        id: "protobuf",
+        label: "Protocol Buffers",
+    },
+    {
+        extensions: ["r"],
+        id: "r",
+        label: "R",
+    },
+    {
+        extensions: ["sass"],
+        id: "sass",
+        label: "Sass",
+    },
+    {
+        extensions: ["styl", "stylus"],
+        id: "stylus",
+        label: "Stylus",
+    },
+    {
+        extensions: ["svelte"],
+        id: "svelte",
+        label: "Svelte",
+    },
+    {
+        extensions: ["tcl"],
+        id: "tcl",
+        label: "Tcl",
+    },
+    {
+        extensions: ["vb", "vbs"],
+        id: "vb",
+        label: "Visual Basic",
+    },
+    {
+        extensions: ["wat", "wasm", "wast"],
+        id: "wast",
+        label: "WebAssembly",
+    },
+    {
+        extensions: ["d"],
+        id: "d",
+        label: "D",
+    },
+    {
+        extensions: ["vue"],
+        id: "vue",
+        label: "Vue",
     },
 ];
 

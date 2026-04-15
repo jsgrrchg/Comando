@@ -5,9 +5,12 @@ import { simpleGit } from "simple-git";
 
 import type {
     GitBranchSummary,
+    GitCommitDetail,
     GitFileDiff,
     GitFileDiffOptions,
+    GitHistoryCommitSummary,
     GitListBranchesOptions,
+    GitListHistoryOptions,
     GitRepositoryResolution,
     GitRepositorySnapshot,
     GitStatusSnapshot,
@@ -23,6 +26,7 @@ import {
     resolveGitRepository,
 } from "./worktrees";
 import { getGitFileDiff } from "./diff";
+import { getGitCommitDetail, listGitHistory } from "./history";
 
 export interface GitServiceOptions {
     readonly cacheSnapshots?: boolean;
@@ -129,7 +133,7 @@ export class GitService {
             };
         }
 
-        const git = simpleGit(resolution.canonicalRootPath);
+        const git = createBackgroundSafeGit(resolution.canonicalRootPath);
         const status = await git.status();
         const snapshot = buildGitStatusSnapshot(status);
         return {
@@ -194,6 +198,30 @@ export class GitService {
             relativePath,
             options,
         );
+    }
+
+    async listHistory(
+        inputPath: string,
+        options: GitListHistoryOptions = {},
+    ): Promise<readonly GitHistoryCommitSummary[]> {
+        const resolution = await this.resolveRepository(inputPath);
+        if (resolution.state !== "ready" || !resolution.canonicalRootPath) {
+            return [];
+        }
+
+        return listGitHistory(resolution.canonicalRootPath, options);
+    }
+
+    async getCommitDetail(
+        inputPath: string,
+        commitSha: string,
+    ): Promise<GitCommitDetail> {
+        const resolution = await this.resolveRepository(inputPath);
+        if (resolution.state !== "ready" || !resolution.canonicalRootPath) {
+            throw new Error("The selected path is not a ready git repository.");
+        }
+
+        return getGitCommitDetail(resolution.canonicalRootPath, commitSha);
     }
 
     async stagePaths(
@@ -268,7 +296,9 @@ export class GitService {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
         const git = simpleGit(rootPath);
         const trimmedMessage = message.trim();
-        const statusSnapshot = buildGitStatusSnapshot(await git.status());
+        const statusSnapshot = buildGitStatusSnapshot(
+            await createBackgroundSafeGit(rootPath).status(),
+        );
         const [gitUserName, gitUserEmail] = await Promise.all([
             readGitConfig(git, "user.name"),
             readGitConfig(git, "user.email"),
@@ -535,4 +565,8 @@ async function readGitConfig(
 
 function normalizeGitPaths(paths: readonly string[]): string[] {
     return paths.map((filePath) => filePath.split(path.sep).join("/"));
+}
+
+function createBackgroundSafeGit(rootPath: string) {
+    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
 }

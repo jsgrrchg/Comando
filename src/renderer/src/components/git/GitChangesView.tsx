@@ -12,6 +12,7 @@ import type {
 export function GitChangesView({
     activePath = null,
     className,
+    constrainWidth = false,
     emptyState,
     expandedGroupIds,
     expandedPaths,
@@ -51,6 +52,7 @@ export function GitChangesView({
             {visibleGroups.map((group) => (
                 <GitChangeGroupSection
                     activePath={activePath}
+                    constrainWidth={constrainWidth}
                     expandedGroupIds={expandedGroupIds}
                     expandedPaths={expandedPaths}
                     group={group}
@@ -68,6 +70,7 @@ export function GitChangesView({
 
 function GitChangeGroupSection({
     activePath,
+    constrainWidth,
     expandedGroupIds,
     expandedPaths,
     group,
@@ -78,6 +81,7 @@ function GitChangeGroupSection({
     renderNodeMeta,
 }: {
     readonly activePath: string | null;
+    readonly constrainWidth: boolean;
     readonly expandedGroupIds: readonly GitChangeGroupId[] | undefined;
     readonly expandedPaths: readonly string[] | undefined;
     readonly group: GitChangeGroup;
@@ -156,6 +160,10 @@ function GitChangeGroupSection({
                     {group.count}
                 </span>
 
+                {group.description ? (
+                    <GroupDiffStat description={group.description} />
+                ) : null}
+
                 {group.actions?.length ? (
                     <span
                         className="git-tree-row-actions"
@@ -176,6 +184,7 @@ function GitChangeGroupSection({
             {isExpanded && group.nodes.length > 0 ? (
                 <GitTreeView
                     activePath={activePath}
+                    constrainWidth={constrainWidth}
                     expandedPaths={expandedPaths}
                     layout={layout}
                     nodes={group.nodes}
@@ -185,6 +194,45 @@ function GitChangeGroupSection({
                 />
             ) : null}
         </section>
+    );
+}
+
+function GroupDiffStat({ description }: { readonly description: string }) {
+    const parts = description.split(" ");
+    return (
+        <span
+            style={{
+                display: "inline-flex",
+                gap: 4,
+                fontSize: 10,
+                fontWeight: 500,
+                fontFamily: "var(--font-mono, monospace)",
+            }}
+        >
+            {parts.map((part, i) =>
+                part.startsWith("+") ? (
+                    <span
+                        key={i}
+                        style={{
+                            color: "var(--color-status-added, #22c55e)",
+                        }}
+                    >
+                        {part}
+                    </span>
+                ) : part.startsWith("-") ? (
+                    <span
+                        key={i}
+                        style={{
+                            color: "var(--color-status-deleted, #ef4444)",
+                        }}
+                    >
+                        {part}
+                    </span>
+                ) : (
+                    <span key={i}>{part}</span>
+                ),
+            )}
+        </span>
     );
 }
 

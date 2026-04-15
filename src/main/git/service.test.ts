@@ -128,6 +128,48 @@ describe("GitService", () => {
         expect(untrackedDiff.raw).toContain("diff --git");
     });
 
+    it("lista historial y detalle de commits", async () => {
+        const rootPath = createGitRepositoryFixture();
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\nworld\n");
+        fs.writeFileSync(path.join(rootPath, "notes.txt"), "details\n");
+        git(rootPath, ["add", "."]);
+        git(rootPath, ["commit", "-m", "update docs"]);
+
+        const service = new GitService({ cacheSnapshots: false });
+        const history = await service.listHistory(rootPath, { limit: 10 });
+        const latestCommit = history[0];
+
+        expect(history).toHaveLength(2);
+        expect(latestCommit?.subject).toBe("update docs");
+        expect(latestCommit?.shortSha).toMatch(/[0-9a-f]{7}/i);
+        expect(
+            latestCommit?.refs.some((reference) =>
+                reference.label.includes("main"),
+            ),
+        ).toBe(true);
+
+        const detail = await service.getCommitDetail(
+            rootPath,
+            latestCommit?.sha ?? "",
+        );
+
+        expect(detail.subject).toBe("update docs");
+        expect(detail.changedFileCount).toBe(2);
+        expect(detail.insertions).toBeGreaterThan(0);
+        expect(detail.files.map((file) => file.path)).toEqual(
+            expect.arrayContaining(["README.md", "notes.txt"]),
+        );
+    });
+
     it("clasifica paths fuera de un repo como no repositorio", async () => {
         const rootPath = createGitRepositoryFixture();
         const service = new GitService({ cacheSnapshots: false });

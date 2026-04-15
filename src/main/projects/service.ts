@@ -896,7 +896,7 @@ export class ProjectService {
         }
 
         try {
-            const status = await simpleGit(rootPath).status();
+            const status = await createBackgroundSafeGit(rootPath).status();
             const exactBadges = new Map<string, GitStatusBadge>();
 
             for (const filePath of status.modified) {
@@ -947,7 +947,11 @@ export class ProjectService {
             const watcher = fs.watch(
                 rootPath,
                 { recursive: process.platform !== "linux" },
-                () => {
+                (_eventType, relativePath) => {
+                    if (shouldIgnoreProjectWatchPath(relativePath)) {
+                        return;
+                    }
+
                     this.#gitSnapshots.delete(rootPath);
                     this.#scheduleInvalidation(
                         projectId,
@@ -1134,6 +1138,28 @@ function runGitPathCommand(
     } catch {
         return null;
     }
+}
+
+export function shouldIgnoreProjectWatchPath(
+    relativePath: string | Buffer | null,
+): boolean {
+    if (relativePath == null) {
+        return false;
+    }
+
+    const normalizedPath = relativePath
+        .toString()
+        .replaceAll("\\", "/")
+        .replace(/^\.\/+/, "")
+        .toLowerCase();
+
+    return (
+        normalizedPath === ".git/index" || normalizedPath === ".git/index.lock"
+    );
+}
+
+function createBackgroundSafeGit(rootPath: string) {
+    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
 }
 
 function directoryHasVisibleChildren(directoryPath: string): boolean {

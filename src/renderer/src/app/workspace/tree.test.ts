@@ -414,6 +414,46 @@ describe("workspace tree helpers", () => {
         }
     });
 
+    it("preserves the original pane when splitting the only tab from the same pane", () => {
+        const withSourceTab = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeChatTab("tab-1"),
+        );
+
+        const moved = moveTabToSplit(
+            withSourceTab,
+            "tab-1",
+            "pane-root",
+            "pane-root",
+            "right",
+            {
+                paneId: "pane-2",
+                splitId: "split-1",
+            },
+        );
+
+        expect(moved.activePaneId).toBe("pane-2");
+        expect(moved.rootNode.type).toBe("split");
+        if (moved.rootNode.type !== "split") {
+            return;
+        }
+
+        const [leftPane, rightPane] = moved.rootNode.children;
+        expect(leftPane.type).toBe("pane");
+        expect(rightPane.type).toBe("pane");
+        if (leftPane.type === "pane") {
+            expect(leftPane.id).toBe("pane-root");
+            expect(leftPane.tabIds).toEqual([]);
+            expect(leftPane.activeTabId).toBeNull();
+        }
+        if (rightPane.type === "pane") {
+            expect(rightPane.id).toBe("pane-2");
+            expect(rightPane.tabIds).toEqual(["tab-1"]);
+            expect(rightPane.activeTabId).toBe("tab-1");
+        }
+    });
+
     it("closes other tabs in the same pane", () => {
         const withFirstTab = attachTabToPane(
             createDefaultWorkspaceState(),

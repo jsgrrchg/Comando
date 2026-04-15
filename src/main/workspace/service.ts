@@ -6,6 +6,8 @@ import type {
     PersistedChatSessionState,
     WorkspaceChatTab,
     WorkspaceFileTab,
+    WorkspaceGitCommitTab,
+    WorkspaceGitTab,
     WorkspaceNode,
     WorkspaceReviewTab,
     WorkspaceSnapshot,
@@ -55,6 +57,11 @@ type WorkspaceChatPayload = Omit<
     WorkspaceChatTab,
     "createdAt" | "id" | "title"
 >;
+type WorkspaceGitCommitPayload = Omit<
+    WorkspaceGitCommitTab,
+    "createdAt" | "id" | "title"
+>;
+type WorkspaceGitPayload = Omit<WorkspaceGitTab, "createdAt" | "id" | "title">;
 type WorkspaceReviewPayload = Omit<
     WorkspaceReviewTab,
     "createdAt" | "id" | "title"
@@ -301,6 +308,8 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
     const payload = parseJsonWithFallback<
         | WorkspaceFilePayload
         | WorkspaceChatPayload
+        | WorkspaceGitCommitPayload
+        | WorkspaceGitPayload
         | WorkspaceReviewPayload
         | WorkspaceTerminalPayload
         | null
@@ -376,6 +385,52 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
         };
     }
 
+    if (row.kind === "git") {
+        const gitPayload = payload as Partial<WorkspaceGitPayload>;
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "git",
+            projectId:
+                typeof gitPayload.projectId === "string" ||
+                gitPayload.projectId === null
+                    ? gitPayload.projectId
+                    : null,
+            title: row.title,
+            worktreeId:
+                typeof gitPayload.worktreeId === "string" ||
+                gitPayload.worktreeId === null
+                    ? gitPayload.worktreeId
+                    : row.worktree_id,
+        };
+    }
+
+    if (row.kind === "git_commit") {
+        const gitCommitPayload = payload as Partial<WorkspaceGitCommitPayload>;
+
+        return {
+            commitSha:
+                typeof gitCommitPayload.commitSha === "string"
+                    ? gitCommitPayload.commitSha
+                    : "",
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "git_commit",
+            projectId:
+                typeof gitCommitPayload.projectId === "string" ||
+                gitCommitPayload.projectId === null
+                    ? gitCommitPayload.projectId
+                    : null,
+            title: row.title,
+            worktreeId:
+                typeof gitCommitPayload.worktreeId === "string" ||
+                gitCommitPayload.worktreeId === null
+                    ? gitCommitPayload.worktreeId
+                    : row.worktree_id,
+        };
+    }
+
     return {
         ...payload,
         createdAt: row.created_at,
@@ -394,6 +449,8 @@ function serializeTab(
 ):
     | WorkspaceFilePayload
     | WorkspaceChatPayload
+    | WorkspaceGitCommitPayload
+    | WorkspaceGitPayload
     | WorkspaceReviewPayload
     | WorkspaceTerminalPayload {
     if (tab.kind === "file") {
@@ -422,6 +479,23 @@ function serializeTab(
             projectId: tab.projectId,
             runtimeId: tab.runtimeId,
             sessionId: tab.sessionId,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
+    if (tab.kind === "git") {
+        return {
+            kind: tab.kind,
+            projectId: tab.projectId,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
+    if (tab.kind === "git_commit") {
+        return {
+            commitSha: tab.commitSha,
+            kind: tab.kind,
+            projectId: tab.projectId,
             worktreeId: tab.worktreeId ?? null,
         };
     }

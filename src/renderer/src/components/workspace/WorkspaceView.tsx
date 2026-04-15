@@ -1,3 +1,4 @@
+import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import { FitAddon } from "@xterm/addon-fit";
@@ -50,10 +51,6 @@ import {
     saveProjectEditorSettings,
 } from "@renderer/app/settings/client";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
-import {
-    COMPOSER_PROJECT_ENTRY_MIME,
-    serializeComposerProjectEntryDragData,
-} from "@renderer/app/drag-and-drop";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import {
@@ -64,9 +61,12 @@ import {
     collectPaneNodes,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceFileReviewContext,
+    type RuntimeWorkspaceTab,
     type RuntimeWorkspaceTerminalTab,
 } from "@renderer/app/workspace/tree";
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
+import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabView";
+import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import {
     canResolveFileHunks,
@@ -461,6 +461,7 @@ function WorkspacePaneView({
     const createTerminalTab = useWorkspaceStore(
         (state) => state.createTerminalTab,
     );
+    const openGitTab = useWorkspaceStore((state) => state.openGitTab);
     const lastQuickCreateAction = useWorkspaceStore(
         (state) => state.lastQuickCreateAction,
     );
@@ -769,6 +770,20 @@ function WorkspacePaneView({
                     defaultWorktreeId ?? null,
                 );
                 return;
+            case "git":
+                if (defaultProjectId) {
+                    void openGitTab(
+                        defaultProjectId,
+                        defaultWorktreeId ?? null,
+                    );
+                    return;
+                }
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "codex",
+                );
+                return;
             case "file":
                 if (defaultProjectId) {
                     void handleCreateFile();
@@ -836,6 +851,17 @@ function WorkspacePaneView({
             { type: "separator" },
             {
                 action: () =>
+                    defaultProjectId
+                        ? void openGitTab(
+                              defaultProjectId,
+                              defaultWorktreeId ?? null,
+                          )
+                        : undefined,
+                disabled: !defaultProjectId,
+                label: "Git",
+            },
+            {
+                action: () =>
                     void createTerminalTab(
                         defaultProjectId,
                         defaultWorktreeId ?? null,
@@ -854,6 +880,7 @@ function WorkspacePaneView({
             defaultProjectId,
             defaultWorktreeId,
             handleCreateFile,
+            openGitTab,
         ],
     );
 
@@ -967,6 +994,8 @@ function WorkspacePaneView({
                                 }
 
                                 const isActive = tabId === node.activeTabId;
+                                const tabDisplayTitle =
+                                    getWorkspaceTabDisplayTitle(tab);
 
                                 return (
                                     <button
@@ -981,7 +1010,6 @@ function WorkspacePaneView({
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
                                         data-workspace-tab-id={tabId}
-                                        draggable={tab.kind === "file"}
                                         key={tabId}
                                         onClick={(event) => {
                                             if (tabDrag.handleTabClick(event)) {
@@ -993,28 +1021,6 @@ function WorkspacePaneView({
                                         onContextMenu={(event) =>
                                             handleTabContextMenu(event, tabId)
                                         }
-                                        onDragStart={(event) => {
-                                            if (tab.kind !== "file") return;
-                                            const fileTab =
-                                                tab as RuntimeWorkspaceFileTab;
-                                            event.dataTransfer.effectAllowed =
-                                                "copyMove";
-                                            event.dataTransfer.setData(
-                                                COMPOSER_PROJECT_ENTRY_MIME,
-                                                serializeComposerProjectEntryDragData(
-                                                    {
-                                                        kind: "file",
-                                                        name: fileTab.title,
-                                                        relativePath:
-                                                            fileTab.relativePath,
-                                                    },
-                                                ),
-                                            );
-                                            event.dataTransfer.setData(
-                                                "text/plain",
-                                                fileTab.relativePath,
-                                            );
-                                        }}
                                         onPointerDown={(event) =>
                                             tabDrag.beginTabPointerDown(
                                                 {
@@ -1029,16 +1035,19 @@ function WorkspacePaneView({
                                                             tabId,
                                                         ),
                                                     tabId,
-                                                    title: tab.title,
+                                                    title: tabDisplayTitle,
                                                 },
                                                 event,
                                             )
                                         }
                                         type="button"
                                     >
-                                        <TabIcon kind={tab.kind} />
+                                        <TabIcon
+                                            kind={tab.kind}
+                                            title={tabDisplayTitle}
+                                        />
                                         <span className="truncate">
-                                            {tab.title}
+                                            {tabDisplayTitle}
                                         </span>
                                         {"isDirty" in tab && tab.isDirty ? (
                                             <span className="text-[9px] text-amber-500">
@@ -1117,6 +1126,10 @@ function WorkspacePaneView({
                                 onSendInput={sendTerminalInput}
                                 tab={activeTab}
                             />
+                        ) : activeTab.kind === "git" ? (
+                            <GitTabView tab={activeTab} />
+                        ) : activeTab.kind === "git_commit" ? (
+                            <GitCommitTabView tab={activeTab} />
                         ) : activeTab.kind === "review" ? (
                             <ReviewTabView
                                 onOpenFile={(
@@ -1279,7 +1292,7 @@ function WorkspaceTabDragOverlay({
                 }}
             >
                 <div className="flex h-7.75 max-w-72 items-center gap-1.5 rounded-md border border-border-strong bg-bg-panel/96 px-3 text-[12px] text-text-primary shadow-[0_10px_30px_rgba(15,23,42,0.22)] backdrop-blur-sm">
-                    <TabIcon kind={draggedTab.kind} />
+                    <TabIcon kind={draggedTab.kind} title={draggedTab.title} />
                     <span className="truncate">{draggedTab.title}</span>
                     {draggedTab.isDirty ? (
                         <span className="text-[9px] text-amber-500">●</span>
@@ -1533,6 +1546,10 @@ function getQuickCreateButtonTitle(
             return "Open last item: Kilo chat";
         case "terminal":
             return "Open last item: terminal";
+        case "git":
+            return hasProject
+                ? "Open last item: Git"
+                : "Open last item: Codex chat";
         case "file":
             return hasProject
                 ? "Open last item: new file"
@@ -3100,8 +3117,16 @@ function TerminalTabView({
 
 function TabIcon({
     kind,
+    title,
 }: {
-    readonly kind: "chat" | "file" | "review" | "terminal";
+    readonly kind:
+        | "chat"
+        | "file"
+        | "git"
+        | "git_commit"
+        | "review"
+        | "terminal";
+    readonly title?: string;
 }) {
     if (kind === "terminal") {
         return (
@@ -3117,6 +3142,57 @@ function TabIcon({
             >
                 <path d="M4.5 5.5 7 8l-2.5 2.5" strokeWidth="1.2" />
                 <path d="M8.5 10.5h3" strokeWidth="1.2" />
+            </svg>
+        );
+    }
+
+    if (kind === "git") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <path
+                    d="M5.1 2.9 2.9 5.1a1 1 0 0 0 0 1.4l5.6 5.6a1 1 0 0 0 1.4 0l2.2-2.2a1 1 0 0 0 0-1.4L6.5 2.9a1 1 0 0 0-1.4 0Z"
+                    strokeWidth="1.1"
+                />
+                <circle
+                    cx="5"
+                    cy="5"
+                    r="0.85"
+                    fill="currentColor"
+                    stroke="none"
+                />
+                <path d="M7.2 7.2 10.6 10.6" strokeWidth="1" />
+                <path d="M8.8 5.6 10.4 7.2" strokeWidth="1" />
+            </svg>
+        );
+    }
+
+    if (kind === "git_commit") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <circle cx="4" cy="4" r="1.2" strokeWidth="1.1" />
+                <circle cx="12" cy="4" r="1.2" strokeWidth="1.1" />
+                <circle cx="8" cy="12" r="1.2" strokeWidth="1.1" />
+                <path d="M5.2 4h5.6" strokeWidth="1.1" />
+                <path d="M4.9 5.1 7.1 10.9" strokeWidth="1.1" />
+                <path d="M11.1 5.1 8.9 10.9" strokeWidth="1.1" />
             </svg>
         );
     }
@@ -3162,6 +3238,17 @@ function TabIcon({
         );
     }
 
+    if (title) {
+        return (
+            <FileTypeIcon
+                className="shrink-0"
+                fileName={title}
+                opacity={0.55}
+                size={12}
+            />
+        );
+    }
+
     return (
         <svg
             className="shrink-0 opacity-55"
@@ -3181,6 +3268,14 @@ function TabIcon({
             <path d="M6 8.5h4M6 10.5h2.5" strokeWidth="0.8" />
         </svg>
     );
+}
+
+function getWorkspaceTabDisplayTitle(tab: RuntimeWorkspaceTab): string {
+    if (tab.kind === "git_commit") {
+        return tab.commitSha.slice(0, 7);
+    }
+
+    return tab.title;
 }
 
 function findTrackedFileForDocument(

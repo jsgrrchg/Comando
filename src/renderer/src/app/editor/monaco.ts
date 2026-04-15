@@ -73,7 +73,7 @@ function monarchLanguage(
 ): DeferredMonacoLanguage {
     return {
         kind: "monarch",
-        load: async () => ({ conf, language }),
+        load: () => Promise.resolve({ conf, language }),
     };
 }
 
@@ -128,7 +128,7 @@ const cmakeMonarchDefinition: monaco.languages.IMonarchLanguage = {
             ],
             [/"([^"\\]|\\.)*"/, "string"],
             [/\b\d+(?:\.\d+)?\b/, "number"],
-            [/[(){}\[\]]/, "@brackets"],
+            [/[()[\]{}]/, "@brackets"],
             [/[A-Za-z_][\w-]*/, "identifier"],
         ],
     },
@@ -170,14 +170,14 @@ const haskellMonarchDefinition: monaco.languages.IMonarchLanguage = {
             [/\b\d+(?:\.\d+)?\b/, "number"],
             [/[A-Z][\w']*/, "type.identifier"],
             [/[a-z_][\w']*/, "identifier"],
-            [/[(){}\[\]]/, "@brackets"],
+            [/[()[\]{}]/, "@brackets"],
             [/[-!#$%&*+./<=>?@\\^|:~]+/, "operators"],
         ],
         comment: [
-            [/[^\{-]+/, "comment"],
-            [/\{-/, "comment", "@push"],
-            [/-\}/, "comment", "@pop"],
-            [/[\{-]/, "comment"],
+            [/[^-{]+/, "comment"],
+            [/{-/, "comment", "@push"],
+            [/-}/, "comment", "@pop"],
+            [/[{-]/, "comment"],
         ],
     },
 };
@@ -196,7 +196,7 @@ const latexMonarchDefinition: monaco.languages.IMonarchLanguage = {
             [/\\./, "keyword"],
             [/\$[^$]+\$/, "string"],
             [/\b\d+(?:\.\d+)?\b/, "number"],
-            [/[{}\[\]()]/, "@brackets"],
+            [/[()[\]{}]/, "@brackets"],
         ],
     },
 };
@@ -207,7 +207,7 @@ const wastMonarchDefinition: monaco.languages.IMonarchLanguage = {
     tokenizer: {
         root: [
             [/;;.*$/, "comment"],
-            [/\(\;/, { token: "comment", next: "@comment" }],
+            [/\(;/, { token: "comment", next: "@comment" }],
             [/"([^"\\]|\\.)*"/, "string"],
             [/\$[A-Za-z0-9!#$%&'*+\-./:<=>?@\\^_`|~]+/, "variable"],
             [
@@ -218,10 +218,10 @@ const wastMonarchDefinition: monaco.languages.IMonarchLanguage = {
             [/[()]/, "@brackets"],
         ],
         comment: [
-            [/[^\(;]+/, "comment"],
-            [/\(\;/, "comment", "@push"],
+            [/[^;(]+/, "comment"],
+            [/\(;/, "comment", "@push"],
             [/;\)/, "comment", "@pop"],
-            [/[\(;]/, "comment"],
+            [/[;(]/, "comment"],
         ],
     },
 };
@@ -290,6 +290,19 @@ function configureMarkdownFenceLanguages() {
         basicLanguage(
             () =>
                 import("monaco-editor/esm/vs/basic-languages/markdown/markdown.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["mdx"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/mdx/mdx.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["graphql", "gql"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/graphql/graphql.js"),
         ),
     );
     registerLanguageIds(

@@ -78,7 +78,10 @@ export interface DiffLineViewProps {
     readonly line: DiffLine;
     readonly compactLineNumbers?: boolean;
     readonly filePath?: string | null;
+    readonly fontFamily?: string | null;
+    readonly fontSize?: number | null;
     readonly language?: LanguageSupport | null;
+    readonly lineHeight?: number | null;
     readonly lineWrapping?: boolean;
 }
 
@@ -86,7 +89,10 @@ export function DiffLineView({
     line,
     compactLineNumbers = false,
     filePath = null,
+    fontFamily = null,
+    fontSize = null,
     language = null,
+    lineHeight = null,
     lineWrapping = true,
 }: DiffLineViewProps) {
     const pathLanguage = useCodePathLanguageSupport(filePath);
@@ -114,11 +120,14 @@ export function DiffLineView({
                 style={{
                     color: "var(--color-text-secondary)",
                     display: "grid",
+                    fontFamily: fontFamily ?? undefined,
+                    fontSize: fontSize ?? undefined,
                     gridTemplateColumns: getGridTemplateColumns({
                         compactLineNumbers,
                         exact: isExact,
                         lineWrapping,
                     }),
+                    lineHeight: lineHeight ?? undefined,
                     opacity: 0.5,
                     padding: "2px 8px",
                 }}
@@ -144,11 +153,14 @@ export function DiffLineView({
                     borderLeft: getLineBorder(line.type),
                     color: getTextColor(line.type),
                     display: "grid",
+                    fontFamily: fontFamily ?? undefined,
+                    fontSize: fontSize ?? undefined,
                     gridTemplateColumns: getGridTemplateColumns({
                         compactLineNumbers,
                         exact: true,
                         lineWrapping,
                     }),
+                    lineHeight: lineHeight ?? undefined,
                 }}
             >
                 <div
@@ -195,11 +207,14 @@ export function DiffLineView({
                 borderLeft: getLineBorder(line.type),
                 color: getTextColor(line.type),
                 display: "grid",
+                fontFamily: fontFamily ?? undefined,
+                fontSize: fontSize ?? undefined,
                 gridTemplateColumns: getGridTemplateColumns({
                     compactLineNumbers,
                     exact: isExact,
                     lineWrapping,
                 }),
+                lineHeight: lineHeight ?? undefined,
             }}
         >
             <div

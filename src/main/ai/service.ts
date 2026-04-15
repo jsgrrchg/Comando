@@ -1806,6 +1806,7 @@ export class AiService {
         liveSession.closing = true;
         this.#resolvePendingPermission(liveSession, null);
         liveSession.child.kill();
+        terminalOutputBuffers.clear();
     }
 
     #resolveRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
@@ -2428,6 +2429,9 @@ function finalizeStreamingMessages(
     };
 }
 
+const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
+const terminalOutputBuffers = new Map<string, string>();
+
 function mapToolCallUpdate(
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
@@ -2440,11 +2444,51 @@ function mapToolCallUpdate(
     const toolKind = update.kind ?? existing?.kind ?? "unknown";
     const content = update.content ?? null;
     const pendingUserInput = parseUserInputRequest(snapshot, update, updatedAt);
+
+    let exitCode: number | null = existing?.exitCode ?? null;
+    let terminalOutput: string | null = existing?.terminalOutput ?? null;
+
+    if (isRecord(update._meta)) {
+        if (isRecord(update._meta.terminal_output)) {
+            const data = (update._meta.terminal_output as { data: string })
+                .data;
+            if (typeof data === "string") {
+                const terminalId = (
+                    update._meta.terminal_output as { terminal_id: string }
+                ).terminal_id;
+                const prev = terminalOutputBuffers.get(terminalId) ?? "";
+                let next = prev + data;
+                if (next.length > TERMINAL_OUTPUT_MAX_LENGTH) {
+                    next = next.slice(-TERMINAL_OUTPUT_MAX_LENGTH);
+                }
+                terminalOutputBuffers.set(terminalId, next);
+                terminalOutput = next;
+            }
+        }
+
+        if (isRecord(update._meta.terminal_exit)) {
+            const termExit = update._meta.terminal_exit as {
+                terminal_id: string;
+                exit_code: number;
+                signal: string | null;
+            };
+            if (typeof termExit.exit_code === "number") {
+                exitCode = termExit.exit_code;
+            }
+            const finalOutput = terminalOutputBuffers.get(termExit.terminal_id);
+            if (finalOutput !== undefined) {
+                terminalOutput = finalOutput;
+                terminalOutputBuffers.delete(termExit.terminal_id);
+            }
+        }
+    }
+
     const nextActivity = {
         createdAt: existing?.createdAt ?? updatedAt,
         diffs: content
             ? collectDiffs(content, toolKind)
             : (existing?.diffs ?? []),
+        exitCode,
         id: update.toolCallId,
         kind: toolKind,
         locations:
@@ -2465,9 +2509,13 @@ function mapToolCallUpdate(
             buildToolSummary(
                 update.title ?? existing?.title ?? "Tool call",
                 content,
+                toolKind,
+                update.rawInput,
+                update.rawOutput,
             ) ??
             existing?.summary ??
             null,
+        terminalOutput,
         title: update.title ?? existing?.title ?? "Tool call",
         updatedAt,
     };
@@ -2891,6 +2939,9 @@ function stringifyJson(value: unknown): string | null {
 function buildToolSummary(
     title: string,
     content: readonly ToolCallContent[] | null | undefined,
+    kind: string,
+    rawInput: unknown,
+    rawOutput: unknown,
 ): string | null {
     const diffCount = (content ?? []).filter(
         (entry) => entry.type === "diff",
@@ -2898,6 +2949,74 @@ function buildToolSummary(
 
     if (diffCount > 0) {
         return `${title} · ${diffCount} diff${diffCount === 1 ? "" : "s"}`;
+    }
+
+    const terminalCount = (content ?? []).filter(
+        (entry) => entry.type === "terminal",
+    ).length;
+    if (terminalCount > 0) {
+        return `${title} · terminal session`;
+    }
+
+    const lk = kind.toLowerCase();
+    const input =
+        rawInput && typeof rawInput === "object"
+            ? (rawInput as Record<string, unknown>)
+            : null;
+
+    if (lk === "bash" || lk === "shell" || lk === "execute") {
+        const cmd = input?.command;
+        if (typeof cmd === "string") {
+            const firstLine = cmd.split("\n")[0];
+            const preview =
+                firstLine.length > 80
+                    ? firstLine.slice(0, 77) + "…"
+                    : firstLine;
+            return preview;
+        }
+    }
+
+    if (lk === "read") {
+        const filePath = input?.file_path ?? input?.path;
+        if (typeof filePath === "string") {
+            const segments = filePath.split("/");
+            return segments.length > 2
+                ? `…/${segments.slice(-2).join("/")}`
+                : filePath;
+        }
+    }
+
+    if (lk === "search" || lk === "grep") {
+        const pattern = input?.pattern ?? input?.query ?? input?.regex;
+        if (typeof pattern === "string") {
+            return `"${pattern}"`;
+        }
+    }
+
+    if (lk === "web_fetch" || lk === "fetch") {
+        const url = input?.url;
+        if (typeof url === "string") {
+            try {
+                const parsed = new URL(url);
+                return parsed.hostname + parsed.pathname;
+            } catch {
+                return url.length > 60 ? url.slice(0, 57) + "…" : url;
+            }
+        }
+    }
+
+    if (rawOutput !== undefined && rawOutput !== null) {
+        const outputStr =
+            typeof rawOutput === "string"
+                ? rawOutput
+                : JSON.stringify(rawOutput);
+        if (outputStr.length > 0 && outputStr.length <= 100) {
+            return outputStr;
+        }
+        if (outputStr.length > 100) {
+            const lines = outputStr.split("\n").length;
+            return `${lines} line${lines === 1 ? "" : "s"} of output`;
+        }
     }
 
     return null;

@@ -1,8 +1,11 @@
 import { useState } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
+import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
+import { MarkdownContent } from "../MarkdownContent";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
 
 /* ─── Tool icon SVGs ─── */
@@ -192,6 +195,76 @@ function summarizeDiff(oldText: string | null, newText: string | null): string {
         : `Updates ${nl} line(s).`;
 }
 
+function ToolDetailCodeBlock({
+    accentBorder,
+    backgroundColor,
+    color,
+    content,
+    languageInfo,
+}: {
+    readonly accentBorder?: string;
+    readonly backgroundColor: string;
+    readonly color: string;
+    readonly content: string;
+    readonly languageInfo?: string | null;
+}) {
+    const languageSupport = useMarkdownCodeLanguageSupport(languageInfo);
+
+    return (
+        <pre
+            className="max-h-48 overflow-y-auto rounded px-2 py-1.5"
+            style={{
+                backgroundColor,
+                border: accentBorder ?? "1px solid var(--color-border)",
+                color,
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: "0.92em",
+                lineHeight: 1.4,
+                margin: 0,
+                overflowWrap: "anywhere",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+            }}
+        >
+            <code
+                style={{
+                    color: "inherit",
+                    whiteSpace: "inherit",
+                }}
+            >
+                <HighlightedCodeText
+                    language={languageSupport}
+                    segmentKeyPrefix={`tool-activity:${languageInfo ?? "plain"}:${content.length}`}
+                    text={content}
+                />
+            </code>
+        </pre>
+    );
+}
+
+function ToolDetailSummary({
+    accentBorder,
+    backgroundColor,
+    content,
+}: {
+    readonly accentBorder?: string;
+    readonly backgroundColor: string;
+    readonly content: string;
+}) {
+    return (
+        <div
+            className="rounded px-2 py-1.5"
+            style={{
+                backgroundColor,
+                border: accentBorder ?? "1px solid var(--color-border)",
+                color: "var(--color-text-secondary)",
+            }}
+        >
+            <MarkdownContent content={content} />
+        </div>
+    );
+}
+
 function TurnStartedDivider({
     activity,
 }: {
@@ -326,23 +399,13 @@ function FileToolMessage({
             {expanded ? (
                 <div className="px-3 py-1.5" style={{ fontSize: "0.78em" }}>
                     {activity.summary ? (
-                        <pre
-                            className="mb-1 max-h-32 overflow-y-auto rounded px-2 py-1.5"
-                            style={{
-                                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`,
-                                border: `1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`,
-                                color: "var(--color-text-secondary)",
-                                fontFamily: "inherit",
-                                fontSize: "0.82em",
-                                lineHeight: 1.4,
-                                margin: 0,
-                                overflowWrap: "anywhere",
-                                whiteSpace: "pre-wrap",
-                                wordBreak: "break-word",
-                            }}
-                        >
-                            {activity.summary}
-                        </pre>
+                        <div className="mb-1">
+                            <ToolDetailSummary
+                                accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
+                                backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
+                                content={activity.summary}
+                            />
+                        </div>
                     ) : null}
                     {activity.locations.length > 0 ? (
                         <div className="mb-1 flex flex-wrap gap-1">
@@ -458,23 +521,192 @@ function FileToolMessage({
     );
 }
 
+/* ─── Terminal tool message (card style for bash/shell/execute) ─── */
+
+const TERMINAL_TOOL_KINDS = new Set(["bash", "shell", "execute"]);
+
+function isTerminalToolActivity(activity: AiToolActivity): boolean {
+    return TERMINAL_TOOL_KINDS.has(activity.kind.toLowerCase());
+}
+
+function parseJsonValue(raw: string): unknown {
+    return JSON.parse(raw) as unknown;
+}
+
+function extractCommand(rawInputJson: string | null): string | null {
+    if (!rawInputJson) return null;
+    try {
+        const parsed = parseJsonValue(rawInputJson);
+        if (
+            typeof parsed === "object" &&
+            parsed !== null &&
+            "command" in parsed &&
+            typeof parsed.command === "string"
+        ) {
+            return parsed.command;
+        }
+    } catch {
+        /* ignore */
+    }
+    return null;
+}
+
+function TerminalToolMessage({
+    activity,
+}: {
+    readonly activity: AiToolActivity;
+}) {
+    const isFailed = activity.status === "failed";
+    const hasNonZeroExit =
+        activity.exitCode !== null && activity.exitCode !== 0;
+    const [expanded, setExpanded] = useState(isFailed || hasNonZeroExit);
+    const isInProgress = activity.status === "in_progress";
+    const isCompleted = activity.status === "completed";
+
+    const accent = isFailed || hasNonZeroExit ? "#ef4444" : "#6b7280";
+    const command = extractCommand(activity.rawInputJson);
+    const hasDetail = !!command || !!activity.terminalOutput;
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
+                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--color-border))`,
+                opacity: isCompleted ? 0.65 : 1,
+                transition: "opacity 0.2s ease",
+            }}
+        >
+            <button
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
+                onClick={() => hasDetail && setExpanded(!expanded)}
+                style={{
+                    background: "none",
+                    border: "none",
+                    borderBottom: expanded
+                        ? `1px solid color-mix(in srgb, ${accent} 15%, var(--color-border))`
+                        : "1px solid transparent",
+                    color: accent,
+                    cursor: hasDetail ? "pointer" : "default",
+                    fontSize: "0.83em",
+                }}
+                type="button"
+            >
+                <span className="shrink-0">
+                    <ExecuteIcon />
+                </span>
+                <span
+                    className="min-w-0 flex-1 truncate"
+                    style={{
+                        color: "var(--color-text-primary)",
+                        fontWeight: 500,
+                    }}
+                >
+                    {activity.title}
+                </span>
+                {isInProgress ? (
+                    <span
+                        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                        style={{ backgroundColor: "var(--color-accent)" }}
+                    />
+                ) : null}
+                {activity.exitCode !== null ? (
+                    <span
+                        className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]"
+                        style={{
+                            backgroundColor:
+                                activity.exitCode === 0
+                                    ? "color-mix(in srgb, var(--diff-add) 10%, transparent)"
+                                    : "color-mix(in srgb, var(--diff-remove) 10%, transparent)",
+                            color:
+                                activity.exitCode === 0
+                                    ? "var(--diff-add)"
+                                    : "var(--diff-remove)",
+                        }}
+                    >
+                        exit {activity.exitCode}
+                    </span>
+                ) : null}
+                {hasDetail ? (
+                    <span className="shrink-0">
+                        <Chevron expanded={expanded} />
+                    </span>
+                ) : null}
+            </button>
+
+            {expanded ? (
+                <div
+                    className="space-y-1 px-3 py-1.5"
+                    style={{ fontSize: "0.78em" }}
+                >
+                    {command ? (
+                        <ToolDetailCodeBlock
+                            accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
+                            backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
+                            color="var(--color-text-primary)"
+                            content={command}
+                            languageInfo="shell"
+                        />
+                    ) : null}
+                    {activity.terminalOutput ? (
+                        <ToolDetailCodeBlock
+                            accentBorder={
+                                isFailed
+                                    ? "1px solid color-mix(in srgb, #ef4444 20%, var(--color-border))"
+                                    : "1px solid var(--color-border)"
+                            }
+                            backgroundColor={
+                                isFailed
+                                    ? "color-mix(in srgb, #ef4444 6%, var(--color-bg-tertiary))"
+                                    : "var(--color-bg-tertiary)"
+                            }
+                            color={
+                                isFailed
+                                    ? "#ef4444"
+                                    : "var(--color-text-secondary)"
+                            }
+                            content={activity.terminalOutput}
+                            languageInfo={command ? "shell" : null}
+                        />
+                    ) : null}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 /* ─── Generic tool message (compact single-liner) ─── */
+
+function formatRawJson(raw: string): string {
+    try {
+        const parsed = parseJsonValue(raw);
+        if (typeof parsed === "string") return parsed;
+        return JSON.stringify(parsed, null, 2);
+    } catch {
+        return raw;
+    }
+}
 
 function GenericToolMessage({
     activity,
 }: {
     readonly activity: AiToolActivity;
 }) {
-    const [expanded, setExpanded] = useState(false);
+    const isFailed = activity.status === "failed";
+    const [expanded, setExpanded] = useState(isFailed);
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
-    const hasDetail = !!activity.summary;
+    const rawInputJson = activity.rawInputJson;
+    const rawOutputJson = activity.rawOutputJson;
+    const hasRawInput = rawInputJson !== null;
+    const hasRawOutput = rawOutputJson !== null;
+    const hasDetail = !!activity.summary || hasRawInput || hasRawOutput;
 
     return (
         <div
             className="min-w-0 max-w-full"
             style={{
-                color: "var(--color-text-secondary)",
+                color: isFailed ? "#ef4444" : "var(--color-text-secondary)",
                 fontSize: "0.85em",
                 opacity: isCompleted ? 0.45 : 0.7,
                 transition: "opacity 0.2s ease",
@@ -508,25 +740,44 @@ function GenericToolMessage({
                 ) : null}
             </button>
 
-            {expanded && activity.summary ? (
-                <pre
-                    className="mt-1 max-h-32 overflow-y-auto rounded px-2 py-1.5"
-                    style={{
-                        backgroundColor: "var(--color-bg-tertiary)",
-                        border: "1px solid var(--color-border)",
-                        color: "var(--color-text-secondary)",
-                        fontFamily: "inherit",
-                        fontSize: "0.82em",
-                        lineHeight: 1.4,
-                        margin: 0,
-                        marginTop: 4,
-                        overflowWrap: "anywhere",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                    }}
-                >
-                    {activity.summary}
-                </pre>
+            {expanded ? (
+                <div className="mt-1 space-y-1" style={{ fontSize: "0.82em" }}>
+                    {activity.summary ? (
+                        <ToolDetailSummary
+                            backgroundColor="var(--color-bg-tertiary)"
+                            content={activity.summary}
+                        />
+                    ) : null}
+                    {hasRawInput ? (
+                        <ToolDetailCodeBlock
+                            backgroundColor="var(--color-bg-tertiary)"
+                            color="var(--color-text-secondary)"
+                            content={formatRawJson(rawInputJson)}
+                            languageInfo="json"
+                        />
+                    ) : null}
+                    {hasRawOutput ? (
+                        <ToolDetailCodeBlock
+                            accentBorder={
+                                isFailed
+                                    ? "1px solid color-mix(in srgb, #ef4444 20%, var(--color-border))"
+                                    : "1px solid var(--color-border)"
+                            }
+                            backgroundColor={
+                                isFailed
+                                    ? "color-mix(in srgb, #ef4444 6%, var(--color-bg-tertiary))"
+                                    : "var(--color-bg-tertiary)"
+                            }
+                            color={
+                                isFailed
+                                    ? "#ef4444"
+                                    : "var(--color-text-secondary)"
+                            }
+                            content={formatRawJson(rawOutputJson)}
+                            languageInfo="json"
+                        />
+                    ) : null}
+                </div>
             ) : null}
         </div>
     );
@@ -560,6 +811,10 @@ export function ToolActivityItem({
 
     if (isTurnStartedActivity(activity)) {
         return <TurnStartedDivider activity={activity} />;
+    }
+
+    if (isTerminalToolActivity(activity)) {
+        return <TerminalToolMessage activity={activity} />;
     }
 
     if (isFileToolActivity(activity, trackedFiles)) {

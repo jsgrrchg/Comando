@@ -27,7 +27,9 @@ export const IPC_CHANNELS = {
     listGitBranches: "git:list-branches",
     listGitWorktrees: "git:list-worktrees",
     listGitChanges: "git:list-changes",
+    listGitHistory: "git:list-history",
     getGitDiff: "git:get-diff",
+    getGitCommitDetail: "git:get-commit-detail",
     stageGitPaths: "git:stage-paths",
     unstageGitPaths: "git:unstage-paths",
     discardGitPaths: "git:discard-paths",
@@ -186,6 +188,7 @@ export interface PersistedShellState {
     readonly leftWidth: number;
     readonly rightCollapsed?: boolean;
     readonly rightWidth: number;
+    readonly sidebarView?: "files" | "git";
 }
 
 export type AiRuntimeId = "claude" | "codex" | "gemini" | "kilo";
@@ -429,6 +432,23 @@ export interface GitBranchSummary {
     readonly upstreamName: string | null;
 }
 
+export interface GitCommitReference {
+    readonly kind: "branch" | "head" | "other" | "remote" | "tag";
+    readonly label: string;
+}
+
+export interface GitHistoryCommitSummary {
+    readonly authorEmail: string;
+    readonly authorName: string;
+    readonly authoredAt: string;
+    readonly body: string;
+    readonly parentShas: readonly string[];
+    readonly refs: readonly GitCommitReference[];
+    readonly sha: string;
+    readonly shortSha: string;
+    readonly subject: string;
+}
+
 export interface GitWorktreeSummary {
     readonly branchName: string | null;
     readonly commitSha: string | null;
@@ -483,6 +503,12 @@ export interface GitFileDiff {
     readonly reversible: boolean;
 }
 
+export interface GitCommitFileDiff extends GitFileDiff {
+    readonly additions: number | null;
+    readonly deletions: number | null;
+    readonly statusLabel: string | null;
+}
+
 export interface GitRepositoryStatusSummary {
     readonly conflictedCount: number;
     readonly changedCount: number;
@@ -530,6 +556,10 @@ export interface GitBranchListInput extends GitRepositoryScopeInput {
     readonly includeRemote?: boolean;
 }
 
+export interface GitHistoryListInput extends GitRepositoryScopeInput {
+    readonly limit?: number;
+}
+
 export interface GitWorktreeListInput extends GitRepositoryScopeInput {
     readonly includeDetached?: boolean;
 }
@@ -541,6 +571,10 @@ export interface GitChangesListInput extends GitRepositoryScopeInput {
 
 export interface GitDiffInput extends GitRepositoryScopeInput {
     readonly path: string;
+}
+
+export interface GitCommitDetailInput extends GitRepositoryScopeInput {
+    readonly commitSha: string;
 }
 
 export interface GitStagePathsInput extends GitRepositoryScopeInput {
@@ -567,6 +601,16 @@ export interface GitCommitResult {
     readonly commitSha: string;
     readonly updatedAt: string;
     readonly worktreeId: string | null;
+}
+
+export interface GitCommitDetail extends GitHistoryCommitSummary {
+    readonly changedFileCount: number;
+    readonly committedAt: string;
+    readonly committerEmail: string;
+    readonly committerName: string;
+    readonly deletions: number;
+    readonly files: readonly GitCommitFileDiff[];
+    readonly insertions: number;
 }
 
 export interface GitCheckoutBranchInput extends GitRepositoryScopeInput {
@@ -809,6 +853,25 @@ export interface WorkspaceReviewTab {
     readonly worktreeId?: string | null;
 }
 
+export interface WorkspaceGitTab {
+    readonly id: string;
+    readonly kind: "git";
+    readonly title: string;
+    readonly projectId: string | null;
+    readonly createdAt: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface WorkspaceGitCommitTab {
+    readonly commitSha: string;
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: "git_commit";
+    readonly projectId: string | null;
+    readonly title: string;
+    readonly worktreeId?: string | null;
+}
+
 export interface WorkspaceTerminalTab {
     readonly id: string;
     readonly kind: "terminal";
@@ -822,6 +885,8 @@ export interface WorkspaceTerminalTab {
 export type WorkspaceTab =
     | WorkspaceFileTab
     | WorkspaceChatTab
+    | WorkspaceGitTab
+    | WorkspaceGitCommitTab
     | WorkspaceReviewTab
     | WorkspaceTerminalTab;
 
@@ -941,6 +1006,7 @@ export interface AiFileDiff {
 export interface AiToolActivity {
     readonly createdAt: string;
     readonly diffs: readonly AiFileDiff[];
+    readonly exitCode: number | null;
     readonly id: string;
     readonly kind: string;
     readonly locations: readonly string[];
@@ -949,6 +1015,7 @@ export interface AiToolActivity {
     readonly sessionId: string;
     readonly status: "completed" | "failed" | "in_progress" | "pending";
     readonly summary: string | null;
+    readonly terminalOutput: string | null;
     readonly title: string;
     readonly updatedAt: string;
 }
@@ -1200,7 +1267,13 @@ export interface ComandoApi {
     listGitChanges: (
         input: GitChangesListInput,
     ) => Promise<readonly GitChangeEntry[]>;
+    listGitHistory: (
+        input: GitHistoryListInput,
+    ) => Promise<readonly GitHistoryCommitSummary[]>;
     getGitDiff: (input: GitDiffInput) => Promise<GitFileDiff | null>;
+    getGitCommitDetail: (
+        input: GitCommitDetailInput,
+    ) => Promise<GitCommitDetail | null>;
     stageGitPaths: (
         input: GitStagePathsInput,
     ) => Promise<GitRepositorySnapshot>;
