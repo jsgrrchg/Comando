@@ -2,6 +2,7 @@ import {
     Fragment,
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -12,6 +13,15 @@ import {
 
 import type { GitCommitDetail, GitHistoryCommitSummary } from "@shared/ipc";
 
+import {
+    buildCheckoutPath,
+    buildMergePath,
+    COMMIT_RADIUS,
+    COMMIT_STROKE,
+    computeGraphWidth,
+    laneX,
+    LINE_WIDTH,
+} from "@renderer/app/git/graph-lines";
 import { buildGitRemoteCommitLink } from "@renderer/app/git/remote-link";
 import {
     buildGitHistoryGraphRows,
@@ -149,7 +159,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                 Math.max(largest, row.topLanes.length, row.bottomLanes.length),
             1,
         );
-        return Math.max(80, 22 + maxLaneCount * 14);
+        return computeGraphWidth(maxLaneCount);
     }, [graphRows]);
     const [columnWidths, setColumnWidths] = useState<GitHistoryColumnWidths>(
         () => createGitHistoryColumnWidths(graphColumnMinWidth),
@@ -182,6 +192,21 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         typeof rawSelectedCommitSha === "string"
             ? matchedCommitShas.findIndex((sha) => sha === rawSelectedCommitSha)
             : -1;
+
+    const graphWrapperRef = useRef<HTMLDivElement>(null);
+    const rowRefsMap = useRef<Map<string, HTMLButtonElement>>(new Map());
+    const [rowPositions, setRowPositions] = useState<
+        Map<string, { top: number; height: number }>
+    >(new Map());
+
+    useLayoutEffect(() => {
+        if (!graphWrapperRef.current || graphRows.length === 0) return;
+        const next = new Map<string, { top: number; height: number }>();
+        for (const [sha, el] of rowRefsMap.current) {
+            next.set(sha, { top: el.offsetTop, height: el.offsetHeight });
+        }
+        setRowPositions(next);
+    }, [graphRows]);
 
     useEffect(() => {
         return () => {
@@ -682,121 +707,150 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                                 </GitEmptyState>
                             </div>
                         ) : (
-                            graphRows.map((row, rowIndex) => {
-                                const groupLabel = getTemporalGroupLabel(
-                                    row.commit.authoredAt,
-                                );
-                                const prevLabel =
-                                    rowIndex > 0
-                                        ? getTemporalGroupLabel(
-                                              graphRows[rowIndex - 1].commit
-                                                  .authoredAt,
-                                          )
-                                        : null;
-                                const showSeparator = groupLabel !== prevLabel;
+                            <div
+                                ref={graphWrapperRef}
+                                style={{ position: "relative" }}
+                            >
+                                <GitHistoryGraphSVG
+                                    graphRows={graphRows}
+                                    graphWidth={graphColumnWidth}
+                                    rowPositions={rowPositions}
+                                />
+                                {graphRows.map((row, rowIndex) => {
+                                    const groupLabel = getTemporalGroupLabel(
+                                        row.commit.authoredAt,
+                                    );
+                                    const prevLabel =
+                                        rowIndex > 0
+                                            ? getTemporalGroupLabel(
+                                                  graphRows[rowIndex - 1].commit
+                                                      .authoredAt,
+                                              )
+                                            : null;
+                                    const showSeparator =
+                                        groupLabel !== prevLabel;
 
-                                return (
-                                    <Fragment key={row.commit.sha}>
-                                        {showSeparator && (
-                                            <div className="flex items-center gap-2 px-4 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-tertiary">
-                                                <span>{groupLabel}</span>
-                                                <div className="h-px flex-1 bg-border-subtle" />
-                                            </div>
-                                        )}
-                                        <button
-                                            className={[
-                                                "group/row grid w-full items-stretch border-l-[3px] border-l-transparent pl-[9px] pr-3 text-left text-[12px] transition-[color,background-color,border-color] duration-120",
-                                                activeCommit?.sha ===
-                                                row.commit.sha
-                                                    ? "!border-l-[--row-branch-color] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
-                                                    : "text-text-secondary hover:border-l-[--row-branch-color] hover:bg-bg-secondary hover:text-text-primary",
-                                            ].join(" ")}
-                                            onClick={() => {
-                                                selectCommitSha(row.commit.sha);
-                                            }}
-                                            style={
-                                                {
-                                                    gridTemplateColumns:
-                                                        gitHistoryGridTemplate,
-                                                    minWidth:
-                                                        gitHistoryTableMinWidth,
-                                                    "--row-branch-color":
-                                                        GRAPH_COLORS[
-                                                            row.colorId %
-                                                                GRAPH_COLORS.length
-                                                        ],
-                                                } as React.CSSProperties
-                                            }
-                                            type="button"
-                                        >
-                                            <GitHistoryGraphCell
-                                                bottomLanes={row.bottomLanes}
-                                                colorId={row.colorId}
-                                                graphWidth={graphColumnWidth}
-                                                laneIndex={row.laneIndex}
-                                                parentColumns={
-                                                    row.parentColumns
-                                                }
-                                                topLanes={row.topLanes}
-                                            />
-
-                                            <div className="min-w-0 border-b border-border-subtle py-2.5 pr-4">
-                                                <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                                                    {row.commit.refs.map(
-                                                        (reference) => (
-                                                            <GitReferencePill
-                                                                key={`${row.commit.sha}:${reference.label}`}
-                                                                kind={
-                                                                    reference.kind
-                                                                }
-                                                                label={
-                                                                    reference.label
-                                                                }
-                                                            />
-                                                        ),
-                                                    )}
+                                    return (
+                                        <Fragment key={row.commit.sha}>
+                                            {showSeparator && (
+                                                <div className="flex items-center gap-2 px-4 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-tertiary">
+                                                    <span>{groupLabel}</span>
+                                                    <div className="h-px flex-1 bg-border-subtle" />
                                                 </div>
-                                                <div className="truncate text-[12px] text-text-primary">
-                                                    {renderHighlightedText(
-                                                        row.commit.subject,
-                                                        searchQuery,
-                                                        isCaseSensitive,
-                                                        matchedCommitSet.has(
+                                            )}
+                                            <button
+                                                ref={(el) => {
+                                                    if (el)
+                                                        rowRefsMap.current.set(
                                                             row.commit.sha,
-                                                        ),
+                                                            el,
+                                                        );
+                                                    else
+                                                        rowRefsMap.current.delete(
+                                                            row.commit.sha,
+                                                        );
+                                                }}
+                                                className={[
+                                                    "group/row grid w-full items-stretch border-l-[3px] border-l-transparent pl-[9px] pr-3 text-left text-[12px] transition-[color,background-color,border-color] duration-120",
+                                                    activeCommit?.sha ===
+                                                    row.commit.sha
+                                                        ? "!border-l-[--row-branch-color] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
+                                                        : "text-text-secondary hover:border-l-[--row-branch-color] hover:bg-bg-secondary hover:text-text-primary",
+                                                ].join(" ")}
+                                                onClick={() => {
+                                                    selectCommitSha(
+                                                        row.commit.sha,
+                                                    );
+                                                }}
+                                                style={
+                                                    {
+                                                        gridTemplateColumns:
+                                                            gitHistoryGridTemplate,
+                                                        minWidth:
+                                                            gitHistoryTableMinWidth,
+                                                        "--row-branch-color":
+                                                            GRAPH_COLORS[
+                                                                row.colorId %
+                                                                    GRAPH_COLORS.length
+                                                            ],
+                                                    } as React.CSSProperties
+                                                }
+                                                type="button"
+                                            >
+                                                <div
+                                                    className="border-b border-border-subtle"
+                                                    style={{
+                                                        width: graphColumnWidth,
+                                                    }}
+                                                />
+
+                                                <div className="min-w-0 border-b border-border-subtle py-2.5 pr-4">
+                                                    <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                                                        {row.commit.refs.map(
+                                                            (reference) => (
+                                                                <GitReferencePill
+                                                                    key={`${row.commit.sha}:${reference.label}`}
+                                                                    kind={
+                                                                        reference.kind
+                                                                    }
+                                                                    label={
+                                                                        reference.label
+                                                                    }
+                                                                />
+                                                            ),
+                                                        )}
+                                                    </div>
+                                                    <div className="truncate text-[12px] text-text-primary">
+                                                        {renderHighlightedText(
+                                                            row.commit.subject,
+                                                            searchQuery,
+                                                            isCaseSensitive,
+                                                            matchedCommitSet.has(
+                                                                row.commit.sha,
+                                                            ),
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
+                                                    {formatGitHistoryDate(
+                                                        row.commit.authoredAt,
                                                     )}
                                                 </div>
-                                            </div>
 
-                                            <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
-                                                {formatGitHistoryDate(
-                                                    row.commit.authoredAt,
-                                                )}
-                                            </div>
+                                                <div className="flex min-w-0 items-center gap-1.5 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
+                                                    <GitAuthorAvatar
+                                                        email={
+                                                            row.commit
+                                                                .authorEmail
+                                                        }
+                                                        name={
+                                                            row.commit
+                                                                .authorName
+                                                        }
+                                                        size={20}
+                                                    />
+                                                    <span className="truncate">
+                                                        {row.commit.authorName}
+                                                    </span>
+                                                </div>
 
-                                            <div className="flex min-w-0 items-center gap-1.5 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
-                                                <GitAuthorAvatar
-                                                    email={
-                                                        row.commit.authorEmail
-                                                    }
-                                                    name={row.commit.authorName}
-                                                    size={20}
-                                                />
-                                                <span className="truncate">
-                                                    {row.commit.authorName}
-                                                </span>
-                                            </div>
-
-                                            <div
-                                                className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-[11px]"
-                                                title={row.commit.sha}
-                                            >
-                                                {row.commit.shortSha}
-                                            </div>
-                                        </button>
-                                    </Fragment>
-                                );
-                            })
+                                                <div className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-[11px]">
+                                                    <CopyableHash
+                                                        as="span"
+                                                        className="cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                                                        display={
+                                                            row.commit.shortSha
+                                                        }
+                                                        sha={row.commit.sha}
+                                                        stopPropagation
+                                                    />
+                                                </div>
+                                            </button>
+                                        </Fragment>
+                                    );
+                                })}
+                            </div>
                         )}
                     </div>
                 </section>
@@ -913,14 +967,13 @@ function GitCommitDetailSidebar({
                         <span className="shrink-0">@</span>
                         <span className="truncate">{commit.authorEmail}</span>
                     </button>
-                    <button
+                    <CopyableHash
                         className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-text-secondary transition-colors hover:bg-bg-secondary hover:text-text-primary"
-                        onClick={() => void copyToClipboard(commit.sha)}
-                        type="button"
-                    >
-                        <span className="shrink-0">#</span>
-                        <span className="truncate font-mono">{commit.sha}</span>
-                    </button>
+                        display={commit.sha}
+                        mono
+                        prefix="#"
+                        sha={commit.sha}
+                    />
                     {remoteLink ? (
                         <button
                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-text-secondary transition-colors hover:bg-bg-secondary hover:text-text-primary"
@@ -978,9 +1031,11 @@ function GitCommitDetailSidebar({
                             ) : null}
                         </span>
                     ) : null}
-                    <span className="shrink-0 font-mono" title={commit.sha}>
-                        {commit.shortSha}
-                    </span>
+                    <CopyableHash
+                        className="shrink-0 cursor-pointer rounded px-1 py-0.5 font-mono transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                        display={commit.shortSha}
+                        sha={commit.sha}
+                    />
                 </div>
             </div>
 
@@ -1132,103 +1187,149 @@ function GitHistoryHeaderCell({
     );
 }
 
-function GitHistoryGraphCell({
-    bottomLanes,
-    colorId,
+function GitHistoryGraphSVG({
+    graphRows,
     graphWidth,
-    laneIndex,
-    parentColumns,
-    topLanes,
+    rowPositions,
 }: {
-    readonly bottomLanes: readonly number[];
-    readonly colorId: number;
+    readonly graphRows: readonly import("@renderer/app/git/history-presentation").GitHistoryGraphRow[];
     readonly graphWidth: number;
-    readonly laneIndex: number;
-    readonly parentColumns: readonly number[];
-    readonly topLanes: readonly number[];
+    readonly rowPositions: Map<string, { top: number; height: number }>;
 }) {
-    const laneCount = Math.max(topLanes.length, bottomLanes.length, 1);
-    const laneXs = Array.from(
-        { length: laneCount },
-        (_, index) => 16 + index * 14,
+    if (rowPositions.size === 0) return null;
+
+    const getYCenter = (sha: string): number | null => {
+        const pos = rowPositions.get(sha);
+        if (!pos) return null;
+        return pos.top + pos.height / 2;
+    };
+
+    let totalHeight = 0;
+    for (const pos of rowPositions.values()) {
+        totalHeight = Math.max(totalHeight, pos.top + pos.height);
+    }
+
+    const colorPaths = new Map<number, string[]>();
+    const addPath = (colorId: number, d: string) => {
+        let paths = colorPaths.get(colorId);
+        if (!paths) {
+            paths = [];
+            colorPaths.set(colorId, paths);
+        }
+        paths.push(d);
+    };
+
+    for (let i = 0; i < graphRows.length; i++) {
+        const row = graphRows[i];
+        const pos = rowPositions.get(row.commit.sha);
+        if (!pos) continue;
+        const yCenter = pos.top + pos.height / 2;
+        const yBottom = pos.top + pos.height;
+
+        const nextRow = graphRows[i + 1];
+        const nextPos = nextRow ? rowPositions.get(nextRow.commit.sha) : null;
+        const nextYCenter = nextPos ? nextPos.top + nextPos.height / 2 : null;
+
+        if (nextYCenter !== null) {
+            const maxLanes = Math.max(
+                row.bottomLanes.length,
+                nextRow!.topLanes.length,
+            );
+            for (let lane = 0; lane < maxLanes; lane++) {
+                const bottomColorId = row.bottomLanes[lane];
+                const topColorId = nextRow!.topLanes[lane];
+                if (bottomColorId !== undefined && topColorId !== undefined) {
+                    const x = laneX(lane);
+                    addPath(
+                        bottomColorId,
+                        `M ${x} ${yCenter} L ${x} ${nextYCenter}`,
+                    );
+                }
+            }
+        }
+
+        if (i === graphRows.length - 1) {
+            for (let lane = 0; lane < row.bottomLanes.length; lane++) {
+                const laneColorId = row.bottomLanes[lane];
+                if (laneColorId !== undefined) {
+                    const x = laneX(lane);
+                    addPath(laneColorId, `M ${x} ${yCenter} L ${x} ${yBottom}`);
+                }
+            }
+        }
+
+        const { parentColumns, laneIndex, colorId } = row;
+        const fromX = laneX(laneIndex);
+
+        for (let p = 0; p < parentColumns.length; p++) {
+            const parentCol = parentColumns[p];
+            if (parentCol === laneIndex) continue;
+
+            const toX = laneX(parentCol);
+            const curveTargetY = Math.min(yBottom, yCenter + 40);
+            const edgeColorId = row.bottomLanes[parentCol] ?? colorId;
+
+            if (p === 0) {
+                addPath(
+                    edgeColorId,
+                    buildCheckoutPath(fromX, yCenter, toX, curveTargetY),
+                );
+            } else {
+                addPath(
+                    edgeColorId,
+                    buildMergePath(fromX, yCenter, toX, curveTargetY),
+                );
+            }
+        }
+    }
+
+    const sortedColorGroups = [...colorPaths.entries()].sort(
+        (a, b) => a[0] - b[0],
     );
-    const currentX = laneXs[laneIndex] ?? laneXs.at(-1) ?? 16;
-    const rowHeight = 32;
-    const middleY = rowHeight / 2;
 
     return (
-        <div
-            className="border-b border-border-subtle py-1 pr-2"
-            style={{ width: graphWidth }}
+        <svg
+            aria-hidden="true"
+            height={totalHeight}
+            style={{
+                left: 12,
+                pointerEvents: "none",
+                position: "absolute",
+                top: 0,
+            }}
+            width={graphWidth}
         >
-            <svg
-                aria-hidden="true"
-                height={rowHeight}
-                viewBox={`0 0 ${graphWidth} ${rowHeight}`}
-                width={graphWidth}
-            >
-                {topLanes.map((laneColorId, index) => {
-                    const x = laneXs[index] ?? 16;
+            {sortedColorGroups.map(([colorId, paths]) => (
+                <g
+                    fill="none"
+                    key={colorId}
+                    stroke={getGraphColor(colorId)}
+                    strokeLinecap="round"
+                    strokeWidth={LINE_WIDTH}
+                >
+                    {paths.map((d, i) => (
+                        <path d={d} key={i} />
+                    ))}
+                </g>
+            ))}
+            <g>
+                {graphRows.map((row) => {
+                    const yCenter = getYCenter(row.commit.sha);
+                    if (yCenter === null) return null;
                     return (
-                        <line
-                            key={`top:${laneColorId}:${index}`}
-                            stroke={getGraphColor(laneColorId)}
-                            strokeLinecap="round"
-                            strokeWidth="1.6"
-                            x1={x}
-                            x2={x}
-                            y1={0}
-                            y2={middleY}
+                        <circle
+                            cx={laneX(row.laneIndex)}
+                            cy={yCenter}
+                            fill={getGraphColor(row.colorId)}
+                            key={row.commit.sha}
+                            r={COMMIT_RADIUS}
+                            stroke="var(--color-bg-primary)"
+                            strokeWidth={COMMIT_STROKE}
                         />
                     );
                 })}
-
-                {bottomLanes.map((laneColorId, index) => {
-                    const x = laneXs[index] ?? 16;
-                    return (
-                        <line
-                            key={`bottom:${laneColorId}:${index}`}
-                            stroke={getGraphColor(laneColorId)}
-                            strokeLinecap="round"
-                            strokeWidth="1.6"
-                            x1={x}
-                            x2={x}
-                            y1={middleY}
-                            y2={rowHeight}
-                        />
-                    );
-                })}
-
-                {parentColumns.map((column, index) => {
-                    const targetX = laneXs[column] ?? currentX;
-                    if (targetX === currentX) {
-                        return null;
-                    }
-
-                    return (
-                        <path
-                            d={`M ${currentX} ${middleY} C ${currentX} ${middleY + 5} ${targetX} ${middleY + 5} ${targetX} ${rowHeight}`}
-                            fill="none"
-                            key={`edge:${column}:${index}`}
-                            stroke={getGraphColor(
-                                bottomLanes[column] ?? colorId,
-                            )}
-                            strokeLinecap="round"
-                            strokeWidth="1.6"
-                        />
-                    );
-                })}
-
-                <circle
-                    cx={currentX}
-                    cy={middleY}
-                    fill={getGraphColor(colorId)}
-                    r="3.6"
-                    stroke="var(--color-bg-primary)"
-                    strokeWidth="1.4"
-                />
-            </svg>
-        </div>
+            </g>
+        </svg>
     );
 }
 
@@ -1400,4 +1501,59 @@ async function copyToClipboard(value: string): Promise<void> {
     } catch (error) {
         console.error(error);
     }
+}
+
+function CopyableHash({
+    sha,
+    display,
+    className,
+    prefix,
+    mono,
+    as: Tag = "button",
+    stopPropagation,
+}: {
+    sha: string;
+    display: string;
+    className?: string;
+    prefix?: string;
+    mono?: boolean;
+    as?: "button" | "span";
+    stopPropagation?: boolean;
+}) {
+    const [copied, setCopied] = useState(false);
+
+    const handleClick = (e: React.MouseEvent) => {
+        if (stopPropagation) e.stopPropagation();
+        void copyToClipboard(sha).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        });
+    };
+
+    if (copied) {
+        return (
+            <Tag
+                className={className}
+                onClick={handleClick}
+                title={sha}
+                type={Tag === "button" ? "button" : undefined}
+            >
+                Copied
+            </Tag>
+        );
+    }
+
+    return (
+        <Tag
+            className={className}
+            onClick={handleClick}
+            title={sha}
+            type={Tag === "button" ? "button" : undefined}
+        >
+            {prefix ? <span className="shrink-0">{prefix}</span> : null}
+            <span className={mono ? "truncate font-mono" : "truncate"}>
+                {display}
+            </span>
+        </Tag>
+    );
 }
