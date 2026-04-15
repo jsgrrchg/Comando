@@ -113,7 +113,7 @@ export function ContextMenu<T>({
                                 ? "cursor-not-allowed text-text-secondary/50"
                                 : entry.danger
                                   ? "text-red-600 hover:bg-red-500/10"
-                                  : "text-text-primary hover:bg-bg-secondary",
+                                  : "text-text-primary hover:bg-bg-tertiary",
                         ].join(" ")}
                         disabled={entry.disabled}
                         key={`${entry.label}-${index}`}

@@ -305,7 +305,7 @@ function DropdownField({
                               ) : (
                                   filteredOptions.map((option) => (
                                       <button
-                                          className="app-no-drag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition"
+                                          className="app-no-drag flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs transition"
                                           key={`${option.groupLabel ?? "default"}:${option.value}`}
                                           onClick={() => {
                                               onChange(option.value);

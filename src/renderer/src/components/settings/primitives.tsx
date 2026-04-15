@@ -303,7 +303,7 @@ export function SelectField<T extends string | number | null>({
                                             padding: "5px 10px",
                                             fontSize: 12,
                                             fontFamily: "inherit",
-                                            borderRadius: 4,
+                                            borderRadius: 6,
                                             border: "none",
                                             color: opt.disabled
                                                 ? "var(--color-text-secondary)"
@@ -315,6 +315,8 @@ export function SelectField<T extends string | number | null>({
                                                 ? "not-allowed"
                                                 : "pointer",
                                             opacity: opt.disabled ? 0.6 : 1,
+                                            transition:
+                                                "background-color 100ms ease",
                                             whiteSpace: "nowrap",
                                         }}
                                         onMouseEnter={(e) => {
