@@ -733,13 +733,9 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                                     return (
                                         <Fragment key={row.commit.sha}>
                                             {showSeparator && (
-                                                <div className="flex items-center gap-2 py-1.5 pl-3 pr-4 text-[10px] font-medium uppercase tracking-wider text-text-tertiary">
-                                                    <span
-                                                        className="shrink-0 text-center"
-                                                        style={{
-                                                            width: graphColumnWidth,
-                                                        }}
-                                                    >
+                                                <div className="flex items-center justify-center py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-tertiary">
+                                                    <div className="h-px flex-1 bg-border-subtle" />
+                                                    <span className="shrink-0 px-3">
                                                         {groupLabel}
                                                     </span>
                                                     <div className="h-px flex-1 bg-border-subtle" />
