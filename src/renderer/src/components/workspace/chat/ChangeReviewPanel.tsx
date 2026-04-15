@@ -30,7 +30,7 @@ const TOOL_ACTION_BUTTON_STYLE: CSSProperties = {
     borderRadius: 8,
     fontSize: "0.74em",
     fontWeight: 600,
-    minHeight: 28,
+    minHeight: 24,
     padding: "0 10px",
 };
 
@@ -513,11 +513,11 @@ export function ChangeReviewPanel({
                     alignItems: "center",
                     borderBottom: expanded
                         ? `1px solid color-mix(in srgb, ${accent} 14%, var(--color-border))`
-                        : "1px solid transparent",
+                        : "none",
                     display: "grid",
                     gap: 12,
                     gridTemplateColumns: "minmax(0, 1fr) auto",
-                    padding: "10px 12px",
+                    padding: expanded ? "10px 12px" : "7px 12px",
                 }}
             >
                 <button
@@ -629,7 +629,7 @@ export function ChangeReviewPanel({
                             border: `1px solid color-mix(in srgb, ${accent} 22%, var(--color-border))`,
                             borderRadius: 8,
                             display: "flex",
-                            height: 28,
+                            height: 24,
                             overflow: "hidden",
                         }}
                     >
