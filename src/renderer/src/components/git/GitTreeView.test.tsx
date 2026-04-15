@@ -24,7 +24,7 @@ describe("GitTreeView", () => {
             />,
         );
 
-        expect(markup).toContain("var(--color-status-modified, #f59e0b)");
+        expect(markup).toContain("var(--diff-warn)");
         expect(markup).toContain("notes.md");
         expect(markup).not.toContain(">M</span>");
     });
@@ -48,7 +48,7 @@ describe("GitTreeView", () => {
         );
 
         expect(markup).toContain("src");
-        expect(markup).toContain("var(--color-status-modified, #f59e0b)");
+        expect(markup).toContain("var(--diff-warn)");
         expect(markup).not.toContain(">±</span>");
     });
 });

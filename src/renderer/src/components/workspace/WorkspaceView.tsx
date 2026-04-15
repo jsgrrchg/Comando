@@ -101,6 +101,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
+import { createWorkspaceQuickFile } from "@renderer/components/workspace/quick-create";
 import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
 import type { WorkspaceQuickCreateAction } from "@renderer/app/store/workspace-store";
 
@@ -618,33 +619,17 @@ function WorkspacePaneView({
     }
 
     const handleCreateFile = useCallback(async () => {
-        if (!defaultProjectId) {
-            return;
-        }
-
-        const name = window.prompt("New file name", "untitled.txt");
-        if (name === null) {
-            return;
-        }
-
-        const trimmedName = name.trim();
-        if (!trimmedName) {
-            return;
-        }
-
-        const entry = await createEntry(
-            defaultProjectId,
-            null,
-            trimmedName,
-            "file",
-            defaultWorktreeId ?? null,
-        );
-        setLastQuickCreateAction("file");
-        await openFileTab(
-            defaultProjectId,
-            entry.relativePath,
-            defaultWorktreeId ?? null,
-        );
+        await createWorkspaceQuickFile({
+            createEntry,
+            openFileTab,
+            projectId: defaultProjectId,
+            promptForName: window.prompt,
+            reportError: (message) => {
+                window.alert(message);
+            },
+            setLastQuickCreateAction,
+            worktreeId: defaultWorktreeId ?? null,
+        });
     }, [
         createEntry,
         defaultProjectId,
