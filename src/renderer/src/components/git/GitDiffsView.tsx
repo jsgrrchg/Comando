@@ -19,6 +19,7 @@ export function GitDiffsView({
     displayMode = "single",
     emptyState,
     files,
+    onScroll,
     onSelectFile,
     showFileSelector = true,
     surfaceVariant = "panel",
@@ -63,6 +64,7 @@ export function GitDiffsView({
             ]
                 .filter(Boolean)
                 .join(" ")}
+            onScroll={onScroll}
         >
             {showFileSelector ? (
                 <div className="mb-3 flex flex-wrap items-center gap-2">

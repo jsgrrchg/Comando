@@ -202,6 +202,7 @@ export interface GitDiffsViewProps {
     readonly displayMode?: "single" | "stack";
     readonly emptyState?: ReactNode;
     readonly files: readonly GitDiffFile[];
+    readonly onScroll?: (event: React.UIEvent<HTMLDivElement>) => void;
     readonly onSelectFile?: (file: GitDiffFile) => void;
     readonly showFileSelector?: boolean;
     readonly surfaceVariant?: "flat" | "panel";

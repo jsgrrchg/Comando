@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { buildGitRemoteCommitLink } from "@renderer/app/git/remote-link";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
@@ -66,6 +66,17 @@ export function GitCommitTabView({
     const metadataFontSize = Math.max(11, Math.round(codeFontSize * 0.82));
     const refFontSize = Math.max(10, Math.round(codeFontSize * 0.76));
     const subjectFontSize = Math.max(16, Math.round(codeFontSize * 1.14));
+
+    const [isBodyCollapsed, setIsBodyCollapsed] = useState(false);
+    const collapsedRef = useRef(false);
+
+    const handleDiffScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+        const shouldCollapse = e.currentTarget.scrollTop > 0;
+        if (shouldCollapse !== collapsedRef.current) {
+            collapsedRef.current = shouldCollapse;
+            setIsBodyCollapsed(shouldCollapse);
+        }
+    }, []);
 
     useEffect(() => {
         if (!projectId) {
@@ -176,13 +187,26 @@ export function GitCommitTabView({
                 </div>
                 {detail.body ? (
                     <div
-                        className="mt-2 text-text-secondary"
-                        style={{ fontSize: codeFontSize, lineHeight: 1.6 }}
+                        className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${
+                            isBodyCollapsed
+                                ? "grid-rows-[0fr] opacity-0"
+                                : "grid-rows-[1fr] opacity-100"
+                        }`}
                     >
-                        <MarkdownContent
-                            chatFontSize={codeFontSize}
-                            content={detail.body}
-                        />
+                        <div className="min-h-0 overflow-hidden">
+                            <div
+                                className="mt-2 text-text-secondary"
+                                style={{
+                                    fontSize: codeFontSize,
+                                    lineHeight: 1.6,
+                                }}
+                            >
+                                <MarkdownContent
+                                    chatFontSize={codeFontSize}
+                                    content={detail.body}
+                                />
+                            </div>
+                        </div>
                     </div>
                 ) : null}
 
@@ -239,6 +263,7 @@ export function GitCommitTabView({
                     codeLineHeight={codeLineHeight}
                     displayMode="stack"
                     files={diffFiles}
+                    onScroll={detail.body ? handleDiffScroll : undefined}
                     showFileSelector={false}
                     surfaceVariant="flat"
                 />
