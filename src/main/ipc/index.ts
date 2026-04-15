@@ -163,6 +163,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getAiRuntimeStatus);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.sendAiPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.refreshAiProjectScopes);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionMode);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionModel);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionConfigOption);
@@ -790,6 +791,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const context = requireWindowContext(event.sender, "main");
             return options.aiService.prepareSession(input, context.windowId);
         },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.refreshAiProjectScopes,
+        (_event, projectId: string) =>
+            options.aiService.refreshProjectScopes(projectId),
     );
     ipcMain.handle(
         IPC_CHANNELS.getAiSessionSnapshot,

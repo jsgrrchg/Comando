@@ -405,6 +405,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.getAiRuntimeStatus, runtimeId),
     prepareAiSession: (input: PrepareAiSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.prepareAiSession, input),
+    refreshAiProjectScopes: (projectId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.refreshAiProjectScopes, projectId),
     getAiSessionSnapshot: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.getAiSessionSnapshot, sessionId),
     sendAiPrompt: (input: SendAiPromptInput) =>

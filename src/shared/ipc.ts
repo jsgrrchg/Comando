@@ -62,6 +62,7 @@ export const IPC_CHANNELS = {
     closeTerminalSession: "terminals:close-session",
     getAiRuntimeStatus: "ai:get-runtime-status",
     prepareAiSession: "ai:prepare-session",
+    refreshAiProjectScopes: "ai:refresh-project-scopes",
     getAiSessionSnapshot: "ai:get-session-snapshot",
     sendAiPrompt: "ai:send-prompt",
     setAiSessionMode: "ai:set-session-mode",
@@ -1336,6 +1337,7 @@ export interface ComandoApi {
     prepareAiSession: (
         input: PrepareAiSessionInput,
     ) => Promise<AiSessionSnapshot>;
+    refreshAiProjectScopes: (projectId: string) => Promise<void>;
     getAiSessionSnapshot: (
         sessionId: string,
     ) => Promise<AiSessionSnapshot | null>;

@@ -125,6 +125,7 @@ interface LiveAcpSession {
         readonly requestId: string;
         readonly resolve: (response: RequestPermissionResponse) => void;
     } | null;
+    pendingAdditionalRoots: readonly string[] | null;
     projectRoot: string | null;
     runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
@@ -324,6 +325,19 @@ export class AiService {
         return liveSession.snapshot;
     }
 
+    async refreshProjectScopes(projectId: string): Promise<void> {
+        const refreshTasks = [...this.#sessions.entries()]
+            .filter(
+                ([, liveSession]) =>
+                    liveSession.snapshot.projectId === projectId,
+            )
+            .map(([sessionId, liveSession]) =>
+                this.#refreshLiveSessionScopes(sessionId, liveSession),
+            );
+
+        await Promise.all(refreshTasks);
+    }
+
     async sendPrompt(
         input: SendAiPromptInput,
         ownerWindowId: string,
@@ -386,6 +400,7 @@ export class AiService {
                 updatedAt: new Date().toISOString(),
             });
             this.#persistAndBroadcast(liveSession);
+            this.#schedulePendingScopeRefresh(input.sessionId);
 
             return {
                 sessionId: input.sessionId,
@@ -406,6 +421,7 @@ export class AiService {
                 updatedAt: new Date().toISOString(),
             });
             this.#persistAndBroadcast(liveSession);
+            this.#schedulePendingScopeRefresh(input.sessionId);
             throw error;
         }
     }
@@ -731,6 +747,7 @@ export class AiService {
                 updatedAt: new Date().toISOString(),
             });
             this.#persistAndBroadcast(liveSession);
+            this.#schedulePendingScopeRefresh(input.sessionId);
         } catch (error) {
             const message =
                 error instanceof Error
@@ -745,6 +762,7 @@ export class AiService {
                 updatedAt: new Date().toISOString(),
             });
             this.#persistAndBroadcast(liveSession);
+            this.#schedulePendingScopeRefresh(input.sessionId);
             throw error;
         }
     }
@@ -877,7 +895,16 @@ export class AiService {
         ownerWindowId: string,
     ): Promise<LiveAcpSession> {
         const existing = this.#sessions.get(input.sessionId);
-        const additionalRoots = normalizeAdditionalRoots(input.additionalRoots);
+        const projectRoot = input.projectId
+            ? this.#projectService.getProjectRootPath(
+                  input.projectId,
+                  input.worktreeId ?? null,
+              )
+            : null;
+        const additionalRoots = this.#resolveEffectiveAdditionalRoots(
+            input,
+            projectRoot,
+        );
         if (
             existing?.snapshot.runtimeSessionId &&
             existing.runtimeId === input.runtimeId &&
@@ -912,12 +939,6 @@ export class AiService {
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             });
-        const projectRoot = input.projectId
-            ? this.#projectService.getProjectRootPath(
-                  input.projectId,
-                  input.worktreeId ?? null,
-              )
-            : null;
         const cwd = projectRoot ?? process.cwd();
         const child = spawn(
             resolvedRuntime.executable,
@@ -955,6 +976,7 @@ export class AiService {
             isRestoring: false,
             ownerWindowId,
             pendingPermission: null,
+            pendingAdditionalRoots: null,
             projectRoot,
             runtimeId: input.runtimeId,
             snapshot: {
@@ -1249,6 +1271,7 @@ export class AiService {
 
         liveSession.snapshot = nextSnapshot;
         this.#persistAndBroadcast(liveSession);
+        this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
         return Promise.resolve();
     }
 
@@ -1372,6 +1395,7 @@ export class AiService {
             isRestoring: false,
             ownerWindowId: "",
             pendingPermission: null,
+            pendingAdditionalRoots: null,
             projectRoot:
                 snapshot.projectId !== null
                     ? this.#projectService.getProjectRootPath(
@@ -1516,6 +1540,143 @@ export class AiService {
             trackedFile.newText,
             "utf8",
         );
+    }
+
+    async #refreshLiveSessionScopes(
+        sessionId: string,
+        liveSession: LiveAcpSession,
+    ): Promise<void> {
+        const projectId = liveSession.snapshot.projectId;
+        if (!projectId) {
+            liveSession.pendingAdditionalRoots = null;
+            return;
+        }
+
+        const projectRoot = this.#resolveProjectRootPathSafe(
+            projectId,
+            liveSession.snapshot.worktreeId ?? null,
+        );
+        if (!projectRoot) {
+            return;
+        }
+
+        const additionalRoots = this.#resolveEffectiveAdditionalRoots(
+            {
+                additionalRoots: [],
+                projectId,
+                worktreeId: liveSession.snapshot.worktreeId ?? null,
+            },
+            projectRoot,
+        );
+
+        if (sameAdditionalRoots(liveSession.additionalRoots, additionalRoots)) {
+            liveSession.pendingAdditionalRoots = null;
+            return;
+        }
+
+        if (isBusyAiSessionStatus(liveSession.snapshot.status)) {
+            liveSession.pendingAdditionalRoots = additionalRoots;
+            return;
+        }
+
+        liveSession.pendingAdditionalRoots = null;
+        await this.#ensureRuntimeSession(
+            {
+                additionalRoots,
+                projectId,
+                runtimeId: liveSession.runtimeId,
+                sessionId,
+                title: liveSession.snapshot.title,
+                worktreeId: liveSession.snapshot.worktreeId ?? null,
+            },
+            liveSession.ownerWindowId,
+        );
+    }
+
+    #schedulePendingScopeRefresh(sessionId: string): void {
+        const liveSession = this.#sessions.get(sessionId);
+        if (
+            !liveSession?.pendingAdditionalRoots ||
+            isBusyAiSessionStatus(liveSession.snapshot.status)
+        ) {
+            return;
+        }
+
+        const nextRoots = liveSession.pendingAdditionalRoots;
+        if (sameAdditionalRoots(liveSession.additionalRoots, nextRoots)) {
+            liveSession.pendingAdditionalRoots = null;
+            return;
+        }
+
+        liveSession.pendingAdditionalRoots = null;
+        void this.#ensureRuntimeSession(
+            {
+                additionalRoots: nextRoots,
+                projectId: liveSession.snapshot.projectId,
+                runtimeId: liveSession.runtimeId,
+                sessionId,
+                title: liveSession.snapshot.title,
+                worktreeId: liveSession.snapshot.worktreeId ?? null,
+            },
+            liveSession.ownerWindowId,
+        ).catch(() => {
+            const currentSession = this.#sessions.get(sessionId);
+            if (!currentSession) {
+                return;
+            }
+
+            currentSession.pendingAdditionalRoots = nextRoots;
+        });
+    }
+
+    #resolveEffectiveAdditionalRoots(
+        input: Pick<
+            SessionDescriptor,
+            "additionalRoots" | "projectId" | "worktreeId"
+        >,
+        projectRoot: string | null,
+    ): readonly string[] {
+        const mergedRoots = [
+            ...(input.additionalRoots ?? []),
+            ...this.#listProjectScopeRoots(input.projectId),
+        ];
+
+        if (!projectRoot) {
+            return normalizeAdditionalRoots(mergedRoots);
+        }
+
+        const normalizedProjectRoot = path.resolve(projectRoot);
+        return normalizeAdditionalRoots(
+            mergedRoots.filter(
+                (rootPath) =>
+                    rootPath.trim().length > 0 &&
+                    path.resolve(rootPath) !== normalizedProjectRoot,
+            ),
+        );
+    }
+
+    #listProjectScopeRoots(projectId: string | null): readonly string[] {
+        if (!projectId) {
+            return [];
+        }
+
+        return this.#projectService
+            .listProjectWorktrees(projectId)
+            .map((worktree) => worktree.rootPath);
+    }
+
+    #resolveProjectRootPathSafe(
+        projectId: string,
+        worktreeId: string | null,
+    ): string | null {
+        try {
+            return this.#projectService.getProjectRootPath(
+                projectId,
+                worktreeId,
+            );
+        } catch {
+            return null;
+        }
     }
 
     #persistAndBroadcast(liveSession: LiveAcpSession): void {
@@ -3126,6 +3287,15 @@ function getPreparedSessionStatus(
         return "error";
     }
     return "idle";
+}
+
+function isBusyAiSessionStatus(status: AiSessionSnapshot["status"]): boolean {
+    return (
+        status === "starting" ||
+        status === "streaming" ||
+        status === "waiting_permission" ||
+        status === "waiting_user_input"
+    );
 }
 
 async function readTextIfExists(absolutePath: string): Promise<string | null> {

@@ -360,6 +360,7 @@ export function App() {
                     null;
                 void refreshGitProject(payload.projectId, preferredWorktreeId);
                 void refreshGitHistory(payload.projectId, preferredWorktreeId);
+                void comandoApi.refreshAiProjectScopes(payload.projectId);
             },
         );
 
