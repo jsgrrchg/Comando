@@ -63,6 +63,7 @@ export function GitTreeView({
     onNodeDragStart,
     onToggleDirectory,
     renderNodeMeta,
+    scrollToActivePathSignal,
     showStatusIndicator = true,
 }: GitTreeViewProps) {
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
@@ -70,6 +71,7 @@ export function GitTreeView({
         useState<GitTreeDragData | null>(null);
     const hoverExpandPathRef = useRef<string | null>(null);
     const hoverExpandTimeoutRef = useRef<number | null>(null);
+    const containerRef = useRef<HTMLDivElement | null>(null);
 
     const clearHoverExpand = () => {
         hoverExpandPathRef.current = null;
@@ -118,6 +120,27 @@ export function GitTreeView({
         };
     }, []);
 
+    useEffect(() => {
+        if (scrollToActivePathSignal === undefined || !activePath) {
+            return;
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            const activeRow =
+                containerRef.current?.querySelector<HTMLElement>(
+                    '[data-active="true"]',
+                ) ?? null;
+            activeRow?.scrollIntoView({
+                block: "nearest",
+                inline: "nearest",
+            });
+        });
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+        };
+    }, [activePath, nodes, scrollToActivePathSignal]);
+
     if (nodes.length === 0) {
         return (
             <GitEmptyState className={className}>
@@ -127,7 +150,7 @@ export function GitTreeView({
     }
 
     return (
-        <div className={className}>
+        <div className={className} ref={containerRef}>
             {nodes.map((node) => (
                 <GitTreeNodeRow
                     activePath={activePath}

@@ -89,6 +89,9 @@ export function App() {
     const refreshProjectTree = useProjectsStore(
         (state) => state.refreshProjectTree,
     );
+    const revealPathInTree = useProjectsStore(
+        (state) => state.revealPathInTree,
+    );
     const removeProject = useProjectsStore((state) => state.removeProject);
     const createEntry = useProjectsStore((state) => state.createEntry);
     const deleteEntry = useProjectsStore((state) => state.deleteEntry);
@@ -158,6 +161,8 @@ export function App() {
     const resizePanel = useShellStore((state) => state.resizePanel);
     const rightCollapsed = useShellStore((state) => state.rightCollapsed);
     const rightWidth = useShellStore((state) => state.rightWidth);
+    const setLeftCollapsed = useShellStore((state) => state.setLeftCollapsed);
+    const setSidebarView = useShellStore((state) => state.setSidebarView);
     const sidebarView = useShellStore((state) => state.sidebarView);
     const syncViewport = useShellStore((state) => state.syncViewport);
     const toggleLeftCollapsed = useShellStore(
@@ -188,6 +193,9 @@ export function App() {
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarSearchVisible, setSidebarSearchVisible] = useState(false);
+    const [fileTreeRevealSignal, setFileTreeRevealSignal] = useState<
+        number | null
+    >(null);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const overlayDismissRef = useRef<number | null>(null);
 
@@ -1227,6 +1235,57 @@ export function App() {
         visibleFileTreeRoots.length,
     ]);
 
+    const handleRevealActiveFileInTree = useCallback(async () => {
+        if (
+            activeWorkspaceTab?.kind !== "file" ||
+            !activeWorkspaceTab.projectId
+        ) {
+            return;
+        }
+
+        const targetProjectId = activeWorkspaceTab.projectId;
+        const targetWorktreeId = activeWorkspaceTab.worktreeId ?? null;
+        const targetPath = activeWorkspaceTab.relativePath;
+        const targetProjectContextKey = getProjectContextKey(
+            targetProjectId,
+            targetWorktreeId,
+        );
+
+        setLeftCollapsed(false);
+        setSidebarView("files");
+        setSidebarOverlayVisible(false);
+        setSidebarSearchVisible(false);
+        setFileTreeFilter("");
+        setProjectRootExpandedByContext((currentState) => ({
+            ...currentState,
+            [targetProjectContextKey]: true,
+        }));
+
+        if (activeProjectId !== targetProjectId) {
+            await setActiveProject(targetProjectId);
+        }
+
+        const currentTargetWorktreeId =
+            useGitStore.getState().activeWorktreeIds[targetProjectId] ?? null;
+
+        if (currentTargetWorktreeId !== targetWorktreeId) {
+            await setActiveWorktree(targetProjectId, targetWorktreeId);
+        }
+
+        await revealPathInTree(targetProjectId, targetPath, targetWorktreeId);
+        setFileTreeRevealSignal((currentSignal) =>
+            currentSignal === null ? 0 : currentSignal + 1,
+        );
+    }, [
+        activeProjectId,
+        activeWorkspaceTab,
+        revealPathInTree,
+        setActiveProject,
+        setActiveWorktree,
+        setLeftCollapsed,
+        setSidebarView,
+    ]);
+
     const openSettingsWindow = useCallback(() => {
         if (!window.comando) {
             return;
@@ -1298,6 +1357,28 @@ export function App() {
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
     }, [handleCreateTreeEntry]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented) {
+                return;
+            }
+
+            if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+                return;
+            }
+
+            if (!event.shiftKey || event.key.toLowerCase() !== "e") {
+                return;
+            }
+
+            event.preventDefault();
+            void handleRevealActiveFileInTree();
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [handleRevealActiveFileInTree]);
 
     useEffect(() => {
         if (!isMac) return;
@@ -1519,6 +1600,9 @@ export function App() {
                                 enableNodeDrag
                                 expandedPaths={visibleExpandedDirectories}
                                 nodes={sidebarTreeNodes}
+                                scrollToActivePathSignal={
+                                    fileTreeRevealSignal ?? undefined
+                                }
                                 onNodeClick={(node) =>
                                     activeProjectId
                                         ? void openFileTab(

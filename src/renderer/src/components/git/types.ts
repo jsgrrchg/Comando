@@ -173,6 +173,7 @@ export interface GitTreeViewProps {
     ) => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
+    readonly scrollToActivePathSignal?: number;
     readonly showStatusIndicator?: boolean;
 }
 

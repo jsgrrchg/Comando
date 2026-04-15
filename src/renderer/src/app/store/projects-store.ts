@@ -45,6 +45,11 @@ interface ProjectsState {
         projectId: string,
         worktreeId?: string | null,
     ) => Promise<void>;
+    revealPathInTree: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
     renameEntry: (
         projectId: string,
         relativePath: string,
@@ -356,6 +361,28 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
+    revealPathInTree: async (projectId, relativePath, worktreeId = null) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        const ancestorDirectories = getAncestorDirectoryPaths(relativePath);
+
+        await loadDirectory(projectId, null, set, get, worktreeId);
+
+        for (const directoryPath of ancestorDirectories) {
+            await loadDirectory(projectId, directoryPath, set, get, worktreeId);
+        }
+
+        set((state) => ({
+            error: null,
+            expandedDirectories: {
+                ...state.expandedDirectories,
+                [contextKey]: mergeUniquePaths(
+                    state.expandedDirectories[contextKey] ?? [],
+                    ancestorDirectories,
+                ),
+            },
+        }));
+    },
+
     renameEntry: async (
         projectId,
         relativePath,
@@ -623,4 +650,33 @@ function renameMatchingPaths(
     });
 
     return [...new Set(renamedPaths)];
+}
+
+export function getAncestorDirectoryPaths(
+    relativePath: string,
+): readonly string[] {
+    const segments = relativePath.split("/").filter(Boolean);
+
+    if (segments.length <= 1) {
+        return [];
+    }
+
+    return segments
+        .slice(0, -1)
+        .map((_, index) => segments.slice(0, index + 1).join("/"));
+}
+
+function mergeUniquePaths(
+    existingPaths: readonly string[],
+    nextPaths: readonly string[],
+): readonly string[] {
+    const mergedPaths = [...existingPaths];
+
+    for (const nextPath of nextPaths) {
+        if (!mergedPaths.includes(nextPath)) {
+            mergedPaths.push(nextPath);
+        }
+    }
+
+    return mergedPaths;
 }
