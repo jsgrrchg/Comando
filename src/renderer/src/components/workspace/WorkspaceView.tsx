@@ -480,9 +480,6 @@ function WorkspacePaneView({
     const lastFocusedRuntimeId = useWorkspaceStore(
         (state) => state.lastFocusedRuntimeId,
     );
-    const lastFocusedChatTabId = useWorkspaceStore(
-        (state) => state.lastFocusedChatTabId,
-    );
     const moveTab = useWorkspaceStore((state) => state.moveTab);
     const openFileTab: (
         projectId: string,
@@ -495,7 +492,6 @@ function WorkspacePaneView({
     const paneCount = useWorkspaceStore(
         (state) => collectPaneNodes(state.rootNode).length,
     );
-    const rootNode = useWorkspaceStore((state) => state.rootNode);
     const selectTab = useWorkspaceStore((state) => state.selectTab);
     const setActivePane = useWorkspaceStore((state) => state.setActivePane);
     const tabsById = useWorkspaceStore((state) => state.tabsById);
@@ -674,16 +670,24 @@ function WorkspacePaneView({
             readonly context: AiFileContextAttachment;
             readonly worktreeId: string | null;
         }) => {
+            // Read fresh state to avoid stale closure from Monaco onMount
+            const currentState = useWorkspaceStore.getState();
+
             const findPaneIdByTabId = (tabId: string) =>
-                collectPaneNodes(rootNode).find((pane) =>
+                collectPaneNodes(currentState.rootNode).find((pane) =>
                     pane.tabIds.includes(tabId),
                 )?.id ?? null;
             const candidateTabId = getBestMatchingChatTabId(
-                { rootNode, tabsById },
+                {
+                    rootNode: currentState.rootNode,
+                    tabsById: currentState.tabsById,
+                },
                 {
                     currentPaneId: node.id,
-                    lastFocusedChatTabId,
+                    lastFocusedChatTabId: currentState.lastFocusedChatTabId,
                     projectId: context.projectId,
+                    recentFocusedChatTabIds:
+                        currentState.recentFocusedChatTabIds,
                     worktreeId,
                 },
             );
@@ -707,11 +711,11 @@ function WorkspacePaneView({
                 return;
             }
 
-            const existingTabIds = new Set(Object.keys(tabsById));
+            const existingTabIds = new Set(Object.keys(currentState.tabsById));
             await createChatTab(
                 context.projectId,
                 worktreeId,
-                lastFocusedRuntimeId,
+                currentState.lastFocusedRuntimeId,
             );
 
             const createdChatTab = Object.values(
@@ -736,13 +740,9 @@ function WorkspacePaneView({
         [
             attachSelectionMention,
             createChatTab,
-            lastFocusedChatTabId,
-            lastFocusedRuntimeId,
             node.id,
-            rootNode,
             selectTab,
             setActivePane,
-            tabsById,
         ],
     );
 
