@@ -40,10 +40,12 @@ export interface SettingsEditorControlState {
     readonly fontFamilies: readonly EditorFontFamilyOption[];
     readonly fontSize: number;
     readonly lineHeight: number;
+    readonly suggestionsEnabled: boolean;
     readonly disabled?: boolean;
     readonly onFontFamilyChange?: (fontFamilyId: string) => void;
     readonly onFontSizeChange?: (fontSize: number) => void;
     readonly onLineHeightChange?: (lineHeight: number) => void;
+    readonly onSuggestionsEnabledChange?: (enabled: boolean) => void;
 }
 
 export interface ProjectEditorState extends SettingsEditorControlState {

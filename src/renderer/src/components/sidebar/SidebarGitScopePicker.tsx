@@ -89,9 +89,6 @@ export function SidebarGitScopePicker({
         activeWorktree?.branchName ?? snapshot?.branch?.name ?? "Detached HEAD";
     const activeRootPath =
         activeWorktree?.rootPath ?? snapshot?.rootPath ?? null;
-    const activeWorktreeLabel = activeWorktree
-        ? getWorktreeBadgeLabel(activeWorktree)
-        : "No worktree";
     const availableBranches = branches.length;
     const availableWorktrees = snapshot?.worktrees.length ?? 0;
 
