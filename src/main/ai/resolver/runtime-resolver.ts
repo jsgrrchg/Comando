@@ -277,6 +277,13 @@ function getBundledCandidates(
     ];
 
     if (packagedResourcesPath) {
+        const packagedArchDirectory = getPackagedDarwinArchDirectory(
+            packagedResourcesPath,
+        );
+        if (packagedArchDirectory) {
+            candidates.push(path.join(packagedArchDirectory, executableName));
+        }
+
         const packagedCandidate = path.join(
             packagedResourcesPath,
             "ai",
@@ -290,6 +297,21 @@ function getBundledCandidates(
     }
 
     return candidates;
+}
+
+function getPackagedDarwinArchDirectory(
+    packagedResourcesPath: string,
+): string | null {
+    if (process.platform !== "darwin") {
+        return null;
+    }
+
+    return path.join(
+        packagedResourcesPath,
+        "ai",
+        "binaries",
+        `darwin-${process.arch}`,
+    );
 }
 
 function getVendorCandidates(appRoot: string): readonly string[] {

@@ -747,6 +747,14 @@ function getBundledClaudeCandidate(
         return repoCandidate;
     }
 
+    const packagedArchCandidate = getPackagedDarwinBinaryCandidate(
+        packagedResourcesPath,
+        executableName,
+    );
+    if (packagedArchCandidate) {
+        return packagedArchCandidate;
+    }
+
     return path.join(packagedResourcesPath, "ai", "binaries", executableName);
 }
 
@@ -803,11 +811,55 @@ function getBundledNodePath(
         return repoCandidate;
     }
 
+    const packagedArchCandidate = getPackagedDarwinNodeCandidate(
+        packagedResourcesPath,
+        executableName,
+    );
+    if (packagedArchCandidate) {
+        return packagedArchCandidate;
+    }
+
     return path.join(
         packagedResourcesPath,
         "ai",
         "embedded",
         "node",
+        "bin",
+        executableName,
+    );
+}
+
+function getPackagedDarwinBinaryCandidate(
+    packagedResourcesPath: string,
+    executableName: string,
+): string | null {
+    if (process.platform !== "darwin") {
+        return null;
+    }
+
+    return path.join(
+        packagedResourcesPath,
+        "ai",
+        "binaries",
+        `darwin-${process.arch}`,
+        executableName,
+    );
+}
+
+function getPackagedDarwinNodeCandidate(
+    packagedResourcesPath: string,
+    executableName: string,
+): string | null {
+    if (process.platform !== "darwin") {
+        return null;
+    }
+
+    return path.join(
+        packagedResourcesPath,
+        "ai",
+        "embedded",
+        "node",
+        `darwin-${process.arch}`,
         "bin",
         executableName,
     );

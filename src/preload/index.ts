@@ -76,6 +76,34 @@ import {
     type WorkspaceSnapshot,
 } from "@shared/ipc";
 
+window.addEventListener("error", (event) => {
+    const filename =
+        typeof event.filename === "string" && event.filename.length > 0
+            ? event.filename
+            : "unknown";
+    const line = typeof event.lineno === "number" ? event.lineno : 0;
+    const column = typeof event.colno === "number" ? event.colno : 0;
+    const reason =
+        event.error instanceof Error
+            ? (event.error.stack ?? event.error.message)
+            : String(event.message);
+
+    console.error(`[renderer-error] ${reason} (${filename}:${line}:${column})`);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+    const reason =
+        event.reason instanceof Error
+            ? (event.reason.stack ?? event.reason.message)
+            : String(event.reason);
+
+    console.error(`[renderer-unhandledrejection] ${reason}`);
+});
+
+window.addEventListener("DOMContentLoaded", () => {
+    document.documentElement?.setAttribute("data-comando-preload", "ready");
+});
+
 const comandoApi: ComandoApi = {
     getBootstrapSnapshot: () =>
         ipcRenderer.invoke(

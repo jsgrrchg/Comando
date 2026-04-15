@@ -9,8 +9,12 @@ import "./styles.css";
 const windowMode = new URLSearchParams(window.location.search).get("window");
 const RootComponent = windowMode === "settings" ? SettingsApp : App;
 
+document.documentElement.dataset.comandoRenderer = "booted";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
         <RootComponent />
     </React.StrictMode>,
 );
+
+document.documentElement.dataset.comandoRendered = "mounted";

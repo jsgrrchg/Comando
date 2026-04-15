@@ -1,0 +1,922 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { builtinModules, createRequire } from "node:module";
+
+import {
+    claudeVendorDir,
+    copyExecutable,
+    copyTree,
+    ensureDir,
+    isExecutableFile,
+    isFile,
+    relativeToRepo,
+    repoRoot,
+    resolveFromPath,
+    resetDir,
+} from "./ai/_shared.mjs";
+
+const buildRoot = path.join(repoRoot, "build");
+const packageAppRoot = path.join(buildRoot, "package-app");
+const packageAppNodeModulesRoot = path.join(packageAppRoot, "node_modules");
+const packageResourcesRoot = path.join(buildRoot, "package-resources");
+const packageToolsRoot = path.join(buildRoot, "package-tools");
+const packagedAiRoot = path.join(packageResourcesRoot, "ai");
+const packagedCodexRoot = path.join(packagedAiRoot, "binaries");
+const packagedClaudeRoot = path.join(
+    packagedAiRoot,
+    "embedded",
+    "claude-agent-acp",
+);
+const packagedNodeRoot = path.join(packagedAiRoot, "embedded", "node");
+const outDir = path.join(repoRoot, "out");
+const desktopAppPath = path.join(os.homedir(), "Desktop", "Comando.app");
+const standaloneProjectRoot = path.join(os.tmpdir(), "comando-package-project");
+const standaloneDistDir = path.join(standaloneProjectRoot, "dist");
+const standaloneResourcesRoot = path.join(standaloneProjectRoot, "resources");
+const standalonePackageResourcesRoot = path.join(
+    standaloneProjectRoot,
+    "package-resources",
+);
+const electronBuilderCli = path.join(
+    repoRoot,
+    "node_modules",
+    "electron-builder",
+    "cli.js",
+);
+const rootPackageJsonPath = path.join(repoRoot, "package.json");
+const rootPackageJson = readJson(rootPackageJsonPath);
+const appResourcesRoot = path.join(repoRoot, "resources", "ai");
+const prebuiltRoot = path.join(appResourcesRoot, "prebuilt");
+const prebuiltCodexRoot = path.join(prebuiltRoot, "codex-acp");
+const prebuiltNodeRoot = path.join(prebuiltRoot, "node");
+const bundledClaudeRoot = path.join(
+    appResourcesRoot,
+    "embedded",
+    "claude-agent-acp",
+);
+const bundledArm64CodexBinary = path.join(
+    appResourcesRoot,
+    "binaries",
+    "codex-acp",
+);
+const desktopAiRoot = path.join(desktopAppPath, "Contents", "Resources", "ai");
+const desktopClaudeRoot = path.join(
+    desktopAiRoot,
+    "embedded",
+    "claude-agent-acp",
+);
+const nodeBinDir = path.dirname(process.execPath);
+const pnpmCommand = resolveRequiredCommand(
+    process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+    ["/opt/homebrew/bin/pnpm", "/usr/local/bin/pnpm"],
+);
+const codesignCommand = resolveRequiredCommand("codesign", [
+    "/usr/bin/codesign",
+]);
+const macTargets = [{ arch: "arm64" }, { arch: "x64" }];
+const builtinModuleNames = new Set(
+    builtinModules.flatMap((moduleName) => [
+        moduleName,
+        moduleName.replace(/^node:/u, ""),
+    ]),
+);
+
+if (process.platform !== "darwin") {
+    throw new Error("The macOS packaging workflow can only run on macOS.");
+}
+
+main();
+
+function main() {
+    console.log("[package:mac] Packaging with prebuilt ACP artifacts.");
+    prepareWorkspace();
+    stageClaudeRuntime();
+    stageCodexForMacArchitectures();
+    stageEmbeddedNodeForMacArchitectures();
+
+    console.log("[package:mac] Building Electron production bundles.");
+    run(pnpmCommand, ["exec", "electron-vite", "build"], {
+        cwd: repoRoot,
+    });
+
+    console.log("[package:mac] Materializing staging app directory.");
+    const copiedPackages = stagePackagedApplication();
+    stageStandaloneProject(copiedPackages);
+
+    console.log("[package:mac] Packaging universal macOS app.");
+    run(
+        process.execPath,
+        [
+            electronBuilderCli,
+            "--projectDir",
+            standaloneProjectRoot,
+            "--mac",
+            "--universal",
+            "--dir",
+        ],
+        {
+            env: createPackagerEnvironment(),
+        },
+    );
+
+    const packagedAppPath = path.join(
+        standaloneDistDir,
+        "mac-universal",
+        "Comando.app",
+    );
+    if (!fs.existsSync(packagedAppPath)) {
+        throw new Error(
+            `Expected packaged app at ${relativeToRepo(packagedAppPath)}, but it was not generated.`,
+        );
+    }
+
+    verifyPackagedApplication(packagedAppPath);
+
+    fs.rmSync(desktopAppPath, { force: true, recursive: true });
+    fs.cpSync(packagedAppPath, desktopAppPath, { recursive: true });
+    repairMovedMacAppBundle(desktopAppPath);
+
+    console.log(`[package:mac] App copied to ${desktopAppPath}`);
+}
+
+function prepareWorkspace() {
+    ensureDir(buildRoot);
+    resetDir(packageAppRoot);
+    resetDir(packageResourcesRoot);
+    resetDir(packageToolsRoot);
+    fs.rmSync(path.join(buildRoot, "test-deploy"), {
+        force: true,
+        recursive: true,
+    });
+    fs.rmSync(standaloneProjectRoot, { force: true, recursive: true });
+    ensurePackagerCommandWrappers();
+    patchNodePtyBindingGyp(repoRoot);
+}
+
+function stagePackagedApplication() {
+    copyTree(outDir, path.join(packageAppRoot, "out"));
+
+    const runtimePackages = collectRuntimePackageNames();
+    const copiedPackages = new Map();
+
+    ensureDir(packageAppNodeModulesRoot);
+    for (const packageName of runtimePackages) {
+        materializeRuntimePackage(
+            packageName,
+            rootPackageJsonPath,
+            copiedPackages,
+        );
+    }
+
+    patchNodePtyBindingGyp(packageAppRoot);
+    writePackagedAppPackageJson(copiedPackages);
+    return copiedPackages;
+}
+
+function collectRuntimePackageNames() {
+    const entryFiles = [
+        path.join(outDir, "main", "index.js"),
+        path.join(outDir, "preload", "index.cjs"),
+    ];
+    const packageNames = new Set();
+
+    for (const filePath of entryFiles) {
+        if (!isFile(filePath)) {
+            continue;
+        }
+
+        const contents = fs.readFileSync(filePath, "utf8");
+        for (const specifier of extractPackageSpecifiers(contents)) {
+            packageNames.add(specifier);
+        }
+    }
+
+    packageNames.delete("electron");
+    packageNames.add("zod");
+
+    const sortedPackageNames = [...packageNames].sort();
+    console.log(
+        `[package:mac] Runtime packages: ${sortedPackageNames.join(", ")}.`,
+    );
+
+    return sortedPackageNames;
+}
+
+function extractPackageSpecifiers(contents) {
+    const matches = new Set();
+    const patterns = [
+        /from\s+["']([^"']+)["']/g,
+        /import\(["']([^"']+)["']\)/g,
+        /require\(["']([^"']+)["']\)/g,
+    ];
+
+    for (const pattern of patterns) {
+        for (const match of contents.matchAll(pattern)) {
+            const specifier = toPackageName(match[1]);
+            if (specifier) {
+                matches.add(specifier);
+            }
+        }
+    }
+
+    return matches;
+}
+
+function toPackageName(rawSpecifier) {
+    if (
+        !rawSpecifier ||
+        rawSpecifier.startsWith(".") ||
+        rawSpecifier.startsWith("/") ||
+        rawSpecifier.startsWith("node:") ||
+        rawSpecifier.includes("${")
+    ) {
+        return null;
+    }
+
+    if (!/^(?:@[\w.-]+\/)?[\w.-]+(?:\/[\w.-]+)*$/.test(rawSpecifier)) {
+        return null;
+    }
+
+    if (rawSpecifier.startsWith("@")) {
+        const [scope, name] = rawSpecifier.split("/");
+        return scope && name ? `${scope}/${name}` : null;
+    }
+
+    const [name] = rawSpecifier.split("/");
+    return name || null;
+}
+
+function materializeRuntimePackage(
+    packageName,
+    sourceManifestPath,
+    copiedPackages,
+) {
+    if (builtinModuleNames.has(packageName)) {
+        return;
+    }
+
+    const {
+        manifest: sourceManifest,
+        manifestPath: resolvedManifestPath,
+        packageRoot,
+    } = resolvePackage(packageName, sourceManifestPath);
+    const existingPackage = copiedPackages.get(packageName);
+    if (existingPackage) {
+        if (existingPackage.version !== sourceManifest.version) {
+            throw new Error(
+                `Conflicting versions detected for ${packageName}: ${existingPackage.version} and ${sourceManifest.version}.`,
+            );
+        }
+
+        return;
+    }
+
+    const destinationPackageRoot = path.join(
+        packageAppNodeModulesRoot,
+        ...packageName.split("/"),
+    );
+
+    copiedPackages.set(packageName, {
+        manifestPath: resolvedManifestPath,
+        version: sourceManifest.version,
+    });
+    copyPackageTree(packageRoot, destinationPackageRoot);
+
+    for (const dependencyName of getRuntimeDependencies(sourceManifest)) {
+        try {
+            materializeRuntimePackage(
+                dependencyName,
+                resolvedManifestPath,
+                copiedPackages,
+            );
+        } catch (error) {
+            const isOptionalDependency =
+                sourceManifest.optionalDependencies &&
+                dependencyName in sourceManifest.optionalDependencies;
+            const isOptionalPeerDependency =
+                sourceManifest.peerDependenciesMeta?.[dependencyName]
+                    ?.optional === true;
+
+            if (isOptionalDependency || isOptionalPeerDependency) {
+                continue;
+            }
+
+            throw error;
+        }
+    }
+}
+
+function resolvePackage(packageName, sourceManifestPath) {
+    const resolver = createRequire(sourceManifestPath);
+    const resolvedEntryPath = resolver.resolve(packageName);
+    const manifestPath = findPackageManifestPath(resolvedEntryPath);
+
+    return {
+        manifest: readJson(manifestPath),
+        manifestPath,
+        packageRoot: path.dirname(manifestPath),
+    };
+}
+
+function findPackageManifestPath(resolvedEntryPath) {
+    let currentDirectory = path.dirname(resolvedEntryPath);
+
+    while (currentDirectory !== path.dirname(currentDirectory)) {
+        const manifestPath = path.join(currentDirectory, "package.json");
+        if (isFile(manifestPath)) {
+            return manifestPath;
+        }
+
+        currentDirectory = path.dirname(currentDirectory);
+    }
+
+    throw new Error(
+        `Could not locate a package.json for ${resolvedEntryPath}.`,
+    );
+}
+
+function getRuntimeDependencies(manifest) {
+    const dependencyNames = new Set([
+        ...Object.keys(manifest.dependencies ?? {}),
+        ...Object.keys(manifest.optionalDependencies ?? {}),
+    ]);
+
+    for (const peerDependencyName of Object.keys(
+        manifest.peerDependencies ?? {},
+    )) {
+        if (
+            manifest.peerDependenciesMeta?.[peerDependencyName]?.optional ===
+            true
+        ) {
+            continue;
+        }
+
+        dependencyNames.add(peerDependencyName);
+    }
+
+    dependencyNames.delete("electron");
+
+    for (const dependencyName of [...dependencyNames]) {
+        if (builtinModuleNames.has(dependencyName)) {
+            dependencyNames.delete(dependencyName);
+        }
+    }
+
+    return [...dependencyNames].sort();
+}
+
+function copyPackageTree(fromPath, toPath) {
+    ensureDir(path.dirname(toPath));
+    fs.cpSync(fromPath, toPath, {
+        dereference: true,
+        errorOnExist: false,
+        filter: (sourcePath) => path.basename(sourcePath) !== "node_modules",
+        force: true,
+        preserveTimestamps: true,
+        recursive: true,
+    });
+}
+
+function writePackagedAppPackageJson(copiedPackages) {
+    const stagedDependencies = Object.fromEntries(
+        [...copiedPackages.entries()]
+            .sort(([leftName], [rightName]) =>
+                leftName.localeCompare(rightName),
+            )
+            .map(([packageName, metadata]) => [
+                packageName,
+                rootPackageJson.dependencies?.[packageName] ?? metadata.version,
+            ]),
+    );
+
+    const packagedManifest = {
+        name: rootPackageJson.name,
+        version: rootPackageJson.version,
+        private: true,
+        description: rootPackageJson.description,
+        type: rootPackageJson.type,
+        main: rootPackageJson.main,
+        dependencies: stagedDependencies,
+    };
+
+    fs.writeFileSync(
+        path.join(packageAppRoot, "package.json"),
+        `${JSON.stringify(packagedManifest, null, 4)}\n`,
+        "utf8",
+    );
+}
+
+function stageStandaloneProject(copiedPackages) {
+    resetDir(standaloneProjectRoot);
+    copyTree(packageAppRoot, standaloneProjectRoot, { dereference: true });
+    copyTree(
+        path.join(repoRoot, "resources", "icons"),
+        path.join(standaloneResourcesRoot, "icons"),
+    );
+    copyTree(packageResourcesRoot, standalonePackageResourcesRoot, {
+        dereference: true,
+    });
+    writeStandaloneProjectPackageJson(copiedPackages);
+    patchNodePtyBindingGyp(standaloneProjectRoot);
+}
+
+function writeStandaloneProjectPackageJson(copiedPackages) {
+    const electronVersion = rootPackageJson.devDependencies.electron.replace(
+        /^[^\d]*/u,
+        "",
+    );
+    const stagedDependencies = Object.fromEntries(
+        [...copiedPackages.entries()]
+            .sort(([leftName], [rightName]) =>
+                leftName.localeCompare(rightName),
+            )
+            .map(([packageName, metadata]) => [packageName, metadata.version]),
+    );
+
+    const standaloneManifest = {
+        name: rootPackageJson.name,
+        version: rootPackageJson.version,
+        private: true,
+        description: rootPackageJson.description,
+        type: rootPackageJson.type,
+        main: rootPackageJson.main,
+        devDependencies: {
+            electron: electronVersion,
+        },
+        dependencies: stagedDependencies,
+        build: {
+            ...rootPackageJson.build,
+            electronVersion,
+            directories: {
+                buildResources: "resources",
+                output: "dist",
+            },
+            extraResources: [
+                {
+                    from: "package-resources/ai",
+                    to: "ai",
+                    filter: ["**/*"],
+                },
+            ],
+        },
+    };
+
+    fs.writeFileSync(
+        path.join(standaloneProjectRoot, "package.json"),
+        `${JSON.stringify(standaloneManifest, null, 4)}\n`,
+        "utf8",
+    );
+}
+
+function createPackagerEnvironment() {
+    const wrappedCommand = (commandName) =>
+        path.join(packageToolsRoot, commandName);
+
+    return {
+        AR: wrappedCommand("ar"),
+        CC: wrappedCommand("clang"),
+        CSC_IDENTITY_AUTO_DISCOVERY: "false",
+        CXX: wrappedCommand("clang++"),
+        MAKE: wrappedCommand("make"),
+        NODE: wrappedCommand("node"),
+        PATH: [packageToolsRoot, nodeBinDir, process.env.PATH ?? ""]
+            .filter(Boolean)
+            .join(path.delimiter),
+        PYTHON: wrappedCommand("python3"),
+        RANLIB: wrappedCommand("ranlib"),
+        npm_config_make: wrappedCommand("make"),
+        npm_config_node_execpath: wrappedCommand("node"),
+        npm_config_python: wrappedCommand("python3"),
+        npm_config_scripts_prepend_node_path: "true",
+        npm_node_execpath: wrappedCommand("node"),
+    };
+}
+
+function verifyPackagedApplication(packagedAppPath) {
+    const packagedAsarPath = path.join(
+        packagedAppPath,
+        "Contents",
+        "Resources",
+        "app.asar",
+    );
+
+    if (!isFile(packagedAsarPath)) {
+        throw new Error(
+            `Expected app.asar at ${packagedAsarPath}, but it was not found.`,
+        );
+    }
+
+    const result = spawnSync(
+        process.execPath,
+        [
+            "-e",
+            `
+                const path = require("node:path");
+                const { createRequire } = require("node:module");
+                const appPath = process.argv[1];
+                const appRequire = createRequire(path.join(appPath, "package.json"));
+                for (const packageName of ["ms", "debug", "simple-git", "zod"]) {
+                    appRequire.resolve(packageName);
+                }
+            `,
+            packagedAsarPath,
+        ],
+        {
+            cwd: repoRoot,
+            stdio: "inherit",
+        },
+    );
+
+    if (result.error) {
+        throw result.error;
+    }
+
+    if (result.status !== 0) {
+        throw new Error(
+            "The packaged app is still missing runtime dependencies inside app.asar.",
+        );
+    }
+}
+
+function repairMovedMacAppBundle(appPath) {
+    repairFrameworkSymlinks(path.join(appPath, "Contents", "Frameworks"));
+    run(codesignCommand, ["--force", "--deep", "--sign", "-", appPath], {
+        cwd: repoRoot,
+    });
+}
+
+function repairFrameworkSymlinks(rootPath) {
+    if (!fs.existsSync(rootPath)) {
+        return;
+    }
+
+    for (const entry of fs.readdirSync(rootPath, { withFileTypes: true })) {
+        const entryPath = path.join(rootPath, entry.name);
+        if (entry.isDirectory() && entry.name.endsWith(".framework")) {
+            repairFrameworkBundle(entryPath);
+        }
+    }
+}
+
+function repairFrameworkBundle(frameworkPath) {
+    const versionsPath = path.join(frameworkPath, "Versions");
+    if (!fs.existsSync(versionsPath)) {
+        return;
+    }
+
+    const versionNames = fs
+        .readdirSync(versionsPath, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name !== "Current")
+        .map((entry) => entry.name)
+        .sort();
+
+    if (versionNames.length === 0) {
+        return;
+    }
+
+    const currentVersionName = versionNames.includes("A")
+        ? "A"
+        : versionNames[0];
+
+    replaceSymlink(path.join(versionsPath, "Current"), currentVersionName);
+
+    for (const entry of fs.readdirSync(frameworkPath, {
+        withFileTypes: true,
+    })) {
+        if (entry.name === "Versions") {
+            continue;
+        }
+
+        const entryPath = path.join(frameworkPath, entry.name);
+        if (!isSymbolicLink(entryPath)) {
+            continue;
+        }
+
+        replaceSymlink(entryPath, path.join("Versions", "Current", entry.name));
+    }
+}
+
+function replaceSymlink(linkPath, targetPath) {
+    if (fs.existsSync(linkPath) || isSymbolicLink(linkPath)) {
+        fs.rmSync(linkPath, { force: true, recursive: true });
+    }
+
+    fs.symlinkSync(targetPath, linkPath);
+}
+
+function isSymbolicLink(candidatePath) {
+    try {
+        return fs.lstatSync(candidatePath).isSymbolicLink();
+    } catch {
+        return false;
+    }
+}
+
+function stageClaudeRuntime() {
+    const sourceRoot = resolveClaudeProjectRoot();
+    const filesToCopy = ["package.json", "LICENSE", "README.md"];
+
+    console.log(
+        `[package:mac] Staging Claude ACP from ${relativeToRepo(sourceRoot)}.`,
+    );
+
+    resetDir(packagedClaudeRoot);
+    copyTree(
+        path.join(sourceRoot, "dist"),
+        path.join(packagedClaudeRoot, "dist"),
+    );
+    copyTree(
+        path.join(sourceRoot, "node_modules"),
+        path.join(packagedClaudeRoot, "node_modules"),
+        { dereference: true },
+    );
+
+    for (const fileName of filesToCopy) {
+        const sourcePath = path.join(sourceRoot, fileName);
+        if (!isFile(sourcePath)) {
+            continue;
+        }
+
+        fs.copyFileSync(sourcePath, path.join(packagedClaudeRoot, fileName));
+    }
+
+    pruneClaudeCliArtifacts(path.join(packagedClaudeRoot, "node_modules"));
+    normalizeTreePermissions(packagedClaudeRoot);
+}
+
+function resolveClaudeProjectRoot() {
+    const candidates = [bundledClaudeRoot, desktopClaudeRoot, claudeVendorDir];
+
+    for (const candidate of candidates) {
+        if (
+            isFile(path.join(candidate, "dist", "index.js")) &&
+            fs.existsSync(path.join(candidate, "node_modules")) &&
+            isFile(path.join(candidate, "package.json"))
+        ) {
+            return candidate;
+        }
+    }
+
+    throw new Error(
+        "No prebuilt Claude ACP bundle was found. Expected resources/ai/embedded/claude-agent-acp or a previous packaged app on the Desktop.",
+    );
+}
+
+function stageCodexForMacArchitectures() {
+    for (const target of macTargets) {
+        const sourceBinary = resolvePrebuiltCodexBinary(target.arch);
+        const stagedBinaryPath = path.join(
+            packagedCodexRoot,
+            `darwin-${target.arch}`,
+            "codex-acp",
+        );
+        copyExecutable(sourceBinary, stagedBinaryPath);
+        console.log(
+            `[package:mac] Staged Codex ACP (${target.arch}) from ${relativeToRepo(sourceBinary)}.`,
+        );
+    }
+}
+
+function resolvePrebuiltCodexBinary(arch) {
+    const candidates = [
+        path.join(prebuiltCodexRoot, `darwin-${arch}`, "codex-acp"),
+        path.join(desktopAiRoot, "binaries", `darwin-${arch}`, "codex-acp"),
+    ];
+
+    if (arch === "arm64") {
+        candidates.unshift(bundledArm64CodexBinary);
+    }
+
+    return resolveExecutableCandidate(
+        candidates,
+        `No prebuilt Codex ACP binary was found for ${arch}. Seed resources/ai/prebuilt/codex-acp/darwin-${arch}/codex-acp first.`,
+    );
+}
+
+function stageEmbeddedNodeForMacArchitectures() {
+    for (const target of macTargets) {
+        const sourceBinary = resolvePrebuiltNodeBinary(target.arch);
+        const stagedNodePath = path.join(
+            packagedNodeRoot,
+            `darwin-${target.arch}`,
+            "bin",
+            "node",
+        );
+        copyExecutable(sourceBinary, stagedNodePath);
+        console.log(
+            `[package:mac] Staged embedded Node (${target.arch}) from ${relativeToRepo(sourceBinary)}.`,
+        );
+    }
+}
+
+function resolvePrebuiltNodeBinary(arch) {
+    const candidates = [
+        path.join(prebuiltNodeRoot, `darwin-${arch}`, "bin", "node"),
+        path.join(
+            desktopAiRoot,
+            "embedded",
+            "node",
+            `darwin-${arch}`,
+            "bin",
+            "node",
+        ),
+    ];
+
+    return resolveExecutableCandidate(
+        candidates,
+        `No prebuilt embedded Node binary was found for ${arch}. Seed resources/ai/prebuilt/node/darwin-${arch}/bin/node first.`,
+    );
+}
+
+function ensurePackagerCommandWrappers() {
+    writeCommandWrapper("node", process.execPath);
+    writeCommandWrapper("sh", "/bin/sh");
+    writeCommandWrapper(
+        "make",
+        resolveRequiredCommand("make", ["/usr/bin/make"]),
+    );
+    writeCommandWrapper(
+        "python3",
+        resolveRequiredCommand("python3", ["/usr/bin/python3"]),
+    );
+    writeCommandWrapper("clang", resolveRequiredCommand("clang"));
+    writeCommandWrapper("clang++", resolveRequiredCommand("clang++"));
+    writeCommandWrapper("ar", resolveRequiredCommand("ar"));
+    writeCommandWrapper("ranlib", resolveRequiredCommand("ranlib"));
+}
+
+function writeCommandWrapper(commandName, targetPath) {
+    const wrapperPath = path.join(packageToolsRoot, commandName);
+    const wrapperPathEnv = [
+        packageToolsRoot,
+        nodeBinDir,
+        process.env.PATH ?? "",
+    ]
+        .filter(Boolean)
+        .join(path.delimiter);
+    const script = [
+        "#!/bin/sh",
+        `export PATH="${wrapperPathEnv}"`,
+        `exec "${targetPath}" "$@"`,
+        "",
+    ].join("\n");
+
+    fs.writeFileSync(wrapperPath, script, "utf8");
+    fs.chmodSync(wrapperPath, 0o755);
+}
+
+function patchNodePtyBindingGyp(searchRoot) {
+    const wrapperPath = path.join(packageToolsRoot, "node");
+    const candidatePaths = [
+        path.join(searchRoot, "node_modules", "node-pty", "binding.gyp"),
+        path.join(
+            searchRoot,
+            "node_modules",
+            ".pnpm",
+            "node-pty@1.1.0",
+            "node_modules",
+            "node-pty",
+            "binding.gyp",
+        ),
+    ];
+
+    for (const bindingGypPath of candidatePaths) {
+        if (!isFile(bindingGypPath)) {
+            continue;
+        }
+
+        const original = fs.readFileSync(bindingGypPath, "utf8");
+        const patched = original
+            .replaceAll("<!@(node ", `<!@(${wrapperPath} `)
+            .replaceAll("<!(node ", `<!(${wrapperPath} `)
+            .replaceAll(`<!@( "${wrapperPath}" `, `<!@(${wrapperPath} `)
+            .replaceAll(`<!( "${wrapperPath}" `, `<!(${wrapperPath} `);
+
+        if (patched !== original) {
+            fs.writeFileSync(bindingGypPath, patched, "utf8");
+        }
+    }
+}
+
+function resolveExecutableCandidate(candidates, missingMessage) {
+    for (const candidate of candidates) {
+        if (isExecutableFile(candidate)) {
+            return candidate;
+        }
+    }
+
+    throw new Error(missingMessage);
+}
+
+function normalizeTreePermissions(rootPath) {
+    const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+        const entryPath = path.join(rootPath, entry.name);
+        if (entry.isDirectory()) {
+            fs.chmodSync(entryPath, 0o755);
+            normalizeTreePermissions(entryPath);
+            continue;
+        }
+
+        if (entry.isFile()) {
+            fs.chmodSync(entryPath, 0o644);
+        }
+    }
+}
+
+function pruneClaudeCliArtifacts(nodeModulesRoot) {
+    if (!fs.existsSync(nodeModulesRoot)) {
+        return;
+    }
+
+    for (const entry of fs.readdirSync(nodeModulesRoot, {
+        withFileTypes: true,
+    })) {
+        const entryPath = path.join(nodeModulesRoot, entry.name);
+
+        if (!entry.isDirectory()) {
+            continue;
+        }
+
+        if (entry.name === ".bin" || entry.name === "bin") {
+            fs.rmSync(entryPath, { force: true, recursive: true });
+            continue;
+        }
+
+        pruneClaudeCliArtifacts(entryPath);
+    }
+}
+
+function resolveRequiredCommand(command, fallbacks = []) {
+    const resolved = resolveFromPath(command);
+    if (resolved) {
+        return resolved;
+    }
+
+    for (const candidate of fallbacks) {
+        if (isExecutableFile(candidate)) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`Required command was not found: ${command}`);
+}
+
+function readJson(filePath) {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function run(command, args, options = {}) {
+    const { usePackagerNodeWrapper = false, ...spawnOptions } = options;
+    const envPath = [
+        ...(usePackagerNodeWrapper ? [packageToolsRoot] : []),
+        nodeBinDir,
+        process.env.PATH ?? "",
+    ]
+        .filter(Boolean)
+        .join(path.delimiter);
+    const result = spawnSync(command, args, {
+        cwd: repoRoot,
+        env: {
+            ...process.env,
+            PATH: envPath,
+            ...spawnOptions.env,
+        },
+        stdio: "inherit",
+        ...spawnOptions,
+    });
+
+    if (result.error) {
+        throw result.error;
+    }
+
+    if (result.status !== 0) {
+        process.exit(result.status ?? 1);
+    }
+}
+
+function runInShell(command, env = {}) {
+    const result = spawnSync("/bin/zsh", ["-lc", command], {
+        cwd: repoRoot,
+        env: {
+            ...process.env,
+            ...env,
+        },
+        stdio: "inherit",
+    });
+
+    if (result.error) {
+        throw result.error;
+    }
+
+    if (result.status !== 0) {
+        process.exit(result.status ?? 1);
+    }
+}
+
+function shellQuote(value) {
+    return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
+}

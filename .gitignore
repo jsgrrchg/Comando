@@ -4,6 +4,7 @@ claude.md
 .DS_Store
 node_modules/
 dist/
+build/
 dist-electron/
 out/
 coverage/

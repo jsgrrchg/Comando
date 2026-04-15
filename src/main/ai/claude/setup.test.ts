@@ -182,6 +182,56 @@ describe("Claude setup", () => {
         }
     });
 
+    it("prefers packaged macOS architecture-specific Node when available", () => {
+        const tempRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-claude-packaged-"),
+        );
+        const packagedResourcesPath = path.join(tempRoot, "packaged");
+
+        try {
+            const packagedNode = path.join(
+                packagedResourcesPath,
+                "ai",
+                "embedded",
+                "node",
+                `darwin-${process.arch}`,
+                "bin",
+                "node",
+            );
+            const packagedEntry = path.join(
+                packagedResourcesPath,
+                "ai",
+                "embedded",
+                "claude-agent-acp",
+                "dist",
+                "index.js",
+            );
+
+            fs.mkdirSync(path.dirname(packagedNode), { recursive: true });
+            fs.mkdirSync(path.dirname(packagedEntry), { recursive: true });
+            fs.writeFileSync(packagedNode, "#!/bin/sh\nexit 0\n", "utf8");
+            fs.writeFileSync(packagedEntry, "console.log('ok')\n", "utf8");
+            fs.chmodSync(packagedNode, 0o755);
+
+            const resolved = resolveClaudeRuntime(
+                createEmptyClaudeSettings(),
+                createFakeSecretStore() as unknown as SecretStoreService,
+                {
+                    allowPathFallback: false,
+                    appRoot: tempRoot,
+                    debugMode: false,
+                    packagedResourcesPath,
+                },
+            );
+
+            expect(resolved.program).toBe(packagedNode);
+            expect(resolved.args).toEqual([packagedEntry]);
+            expect(resolved.status.source).toBe("bundled");
+        } finally {
+            fs.rmSync(tempRoot, { force: true, recursive: true });
+        }
+    });
+
     it("injects Claude gateway and secrets without overwriting external values", () => {
         const secretStore = createFakeSecretStore({
             "ai.claude:anthropic_auth_token": "stored-token",
