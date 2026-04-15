@@ -6,18 +6,20 @@ import {
     type AppBootstrapSnapshot,
     type AiPermissionResponseInput,
     type AiRuntimeAuthLaunchInput,
+    type AiRuntimeAuthLogoutInput,
     type AiRuntimeId,
     type AiRuntimeStatus,
     type AiSessionConfigOptionMutationInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
+    type AiSessionRenameMutationInput,
     type AiSessionSnapshot,
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
     type ClaudeRuntimeSettingsInput,
     type ComandoApi,
-    type CodexRuntimeSettings,
+    type CodexRuntimeSettingsInput,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -417,12 +419,16 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.setAiSessionModel, input),
     setAiSessionConfigOption: (input: AiSessionConfigOptionMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.setAiSessionConfigOption, input),
+    renameAiSession: (input: AiSessionRenameMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.renameAiSession, input),
     cancelAiSession: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.cancelAiSession, sessionId),
     closeAiSession: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.closeAiSession, sessionId),
     launchAiRuntimeAuth: (input: AiRuntimeAuthLaunchInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.launchAiRuntimeAuth, input),
+    logoutAiRuntimeAuth: (input: AiRuntimeAuthLogoutInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.logoutAiRuntimeAuth, input),
     respondAiPermission: (input: AiPermissionResponseInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.respondAiPermission, input),
     respondAiUserInput: (input: AiUserInputResponseInput) =>
@@ -439,9 +445,9 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.keepAllAiTrackedFiles, sessionId),
     rejectAllAiTrackedFiles: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.rejectAllAiTrackedFiles, sessionId),
-    saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) =>
+    saveCodexRuntimeSettings: (settings: CodexRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveCodexRuntimeSettings, settings),
-    verifyCodexRuntimeSettings: (settings: CodexRuntimeSettings) =>
+    verifyCodexRuntimeSettings: (settings: CodexRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.verifyCodexRuntimeSettings, settings),
     saveClaudeRuntimeSettings: (settings: ClaudeRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveClaudeRuntimeSettings, settings),

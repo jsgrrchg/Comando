@@ -34,6 +34,7 @@ import type {
     AiPromptResult,
     PrepareAiSessionInput,
     AiRuntimeAuthLaunchInput,
+    AiRuntimeAuthLogoutInput,
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionConfigOption,
@@ -42,6 +43,7 @@ import type {
     AiSessionModeMutationInput,
     AiSessionModel,
     AiSessionModelMutationInput,
+    AiSessionRenameMutationInput,
     AiSessionSnapshot,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
@@ -49,6 +51,7 @@ import type {
     AiUserInputRequest,
     AiUserInputResponseInput,
     ClaudeRuntimeSettingsInput,
+    CodexRuntimeSettingsInput,
     CodexRuntimeSettings,
     GeminiRuntimeSettingsInput,
     KiloRuntimeSettingsInput,
@@ -69,6 +72,15 @@ import type { SecretStoreService } from "@main/ai/secret-store";
 
 import { createEmptyAiSessionSnapshot, AiPersistence } from "./persistence";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
+import {
+    applyCodexAuthEnv,
+    getCodexAuthMethods,
+    getCodexRuntimeStatus,
+    isCodexAuthenticationError,
+    type CodexSecretBundle,
+    loadCodexSecretBundle,
+    saveCodexSecrets,
+} from "./codex/setup";
 import {
     applyClaudeAuthEnv,
     getClaudeRuntimeStatus,
@@ -195,10 +207,30 @@ export class AiService {
         return status;
     }
 
-    saveCodexRuntimeSettings(settings: CodexRuntimeSettings): AiRuntimeStatus {
-        this.#settingsService.saveCodexRuntimeSettings(settings);
+    saveCodexRuntimeSettings(
+        settings: CodexRuntimeSettingsInput,
+    ): AiRuntimeStatus {
+        const currentSettings =
+            this.#settingsService.loadCodexRuntimeSettings();
+        const nextSecrets = resolveCodexSecretBundle(
+            loadCodexSecretBundle(this.#secretStore),
+            settings,
+        );
+        const secretFlags = saveCodexSecrets(this.#secretStore, {
+            codexApiKey: nextSecrets.codexApiKey,
+            openaiApiKey: nextSecrets.openaiApiKey,
+        });
+        const nextSettings = {
+            ...currentSettings,
+            authMethod: settings.authMethod,
+            binaryPath: normalizeOptionalText(settings.binaryPath),
+            hasCodexApiKey: secretFlags.hasCodexApiKey,
+            hasOpenAiApiKey: secretFlags.hasOpenAiApiKey,
+        } satisfies CodexRuntimeSettings;
+
+        this.#settingsService.saveCodexRuntimeSettings(nextSettings);
         const status = this.#withPersistedRuntimeCatalog(
-            resolveCodexRuntime(settings).status,
+            getCodexRuntimeStatus(nextSettings, nextSecrets),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -296,10 +328,23 @@ export class AiService {
     }
 
     verifyCodexRuntimeSettings(
-        settings: CodexRuntimeSettings,
+        settings: CodexRuntimeSettingsInput,
     ): AiRuntimeStatus {
+        const currentSettings =
+            this.#settingsService.loadCodexRuntimeSettings();
+        const nextSecrets = resolveCodexSecretBundle(
+            loadCodexSecretBundle(this.#secretStore),
+            settings,
+        );
+        const nextSettings = {
+            ...currentSettings,
+            authMethod: settings.authMethod,
+            binaryPath: normalizeOptionalText(settings.binaryPath),
+            hasCodexApiKey: Boolean(nextSecrets.codexApiKey),
+            hasOpenAiApiKey: Boolean(nextSecrets.openaiApiKey),
+        } satisfies CodexRuntimeSettings;
         const status = this.#withPersistedRuntimeCatalog(
-            resolveCodexRuntime(settings).status,
+            getCodexRuntimeStatus(nextSettings, nextSecrets),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -472,6 +517,12 @@ export class AiService {
         );
     }
 
+    async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
+        this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+            setTitleOnSnapshot(snapshot, input.title),
+        );
+    }
+
     async cancelSession(sessionId: string): Promise<void> {
         const liveSession = this.#sessions.get(sessionId);
         if (!liveSession || !liveSession.snapshot.runtimeSessionId) {
@@ -623,9 +674,140 @@ export class AiService {
             return;
         }
 
+        if (input.runtimeId === "codex") {
+            const currentSettings =
+                this.#settingsService.loadCodexRuntimeSettings();
+            const authMethod = getCodexAuthMethods().some(
+                (method) => method.id === input.methodId,
+            )
+                ? (input.methodId as CodexRuntimeSettings["authMethod"])
+                : null;
+
+            if (authMethod === null) {
+                throw new Error(
+                    "Choose a valid Codex login method before opening authentication.",
+                );
+            }
+
+            const nextSettings = {
+                ...currentSettings,
+                authMethod,
+            } satisfies CodexRuntimeSettings;
+            await this.#runRuntimeAuthConnection(
+                "codex",
+                cwd,
+                async (connection) => {
+                    const initializeResponse = await connection.initialize({
+                        clientCapabilities: {
+                            fs: {
+                                readTextFile: true,
+                                writeTextFile: true,
+                            },
+                        },
+                        clientInfo: {
+                            name: "comando",
+                            title: "Comando",
+                            version: process.versions.electron,
+                        },
+                        protocolVersion: PROTOCOL_VERSION,
+                    });
+
+                    const advertisedMethods =
+                        initializeResponse.authMethods?.map(
+                            (method) => method.id,
+                        ) ?? [];
+                    if (!advertisedMethods.includes(authMethod)) {
+                        throw new Error(
+                            `Codex does not support the authentication method \`${authMethod}\` on this machine.`,
+                        );
+                    }
+
+                    await connection.authenticate({
+                        methodId: authMethod,
+                    });
+                },
+                nextSettings,
+            );
+
+            this.#settingsService.saveCodexRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                this.#withPersistedRuntimeCatalog(
+                    getCodexRuntimeStatus(
+                        nextSettings,
+                        loadCodexSecretBundle(this.#secretStore),
+                    ),
+                ),
+            );
+            return;
+        }
+
         throw new Error(
             `${getRuntimeDisplayName(input.runtimeId)} no soporta este flujo de autenticación todavía.`,
         );
+    }
+
+    async logoutRuntimeAuth(
+        input: AiRuntimeAuthLogoutInput,
+    ): Promise<AiRuntimeStatus> {
+        if (input.runtimeId !== "codex") {
+            throw new Error(
+                `${getRuntimeDisplayName(input.runtimeId)} does not support logout yet.`,
+            );
+        }
+
+        const currentSettings =
+            this.#settingsService.loadCodexRuntimeSettings();
+        if (currentSettings.authMethod === "chatgpt") {
+            await this.#runRuntimeAuthConnection(
+                "codex",
+                process.cwd(),
+                async (connection) => {
+                    const initializeResponse = await connection.initialize({
+                        clientCapabilities: {
+                            fs: {
+                                readTextFile: true,
+                                writeTextFile: true,
+                            },
+                        },
+                        clientInfo: {
+                            name: "comando",
+                            title: "Comando",
+                            version: process.versions.electron,
+                        },
+                        protocolVersion: PROTOCOL_VERSION,
+                    });
+
+                    if (!initializeResponse.agentCapabilities?.auth?.logout) {
+                        throw new Error(
+                            "Codex does not advertise logout support on this machine.",
+                        );
+                    }
+
+                    await connection.unstable_logout({});
+                },
+            );
+        }
+
+        const secretFlags = saveCodexSecrets(this.#secretStore, {
+            codexApiKey: null,
+            openaiApiKey: null,
+        });
+        const nextSettings = {
+            ...currentSettings,
+            authMethod: null,
+            hasCodexApiKey: secretFlags.hasCodexApiKey,
+            hasOpenAiApiKey: secretFlags.hasOpenAiApiKey,
+        } satisfies CodexRuntimeSettings;
+        this.#settingsService.saveCodexRuntimeSettings(nextSettings);
+
+        const status = this.#withPersistedRuntimeCatalog(
+            getCodexRuntimeStatus(
+                nextSettings,
+                loadCodexSecretBundle(this.#secretStore),
+            ),
+        );
+        this.#onRuntimeStatus(status);
+        return status;
     }
 
     respondPermission(input: AiPermissionResponseInput): Promise<void> {
@@ -2016,9 +2198,10 @@ export class AiService {
             );
         }
 
-        return resolveCodexRuntime(
+        return getCodexRuntimeStatus(
             this.#settingsService.loadCodexRuntimeSettings(),
-        ).status;
+            loadCodexSecretBundle(this.#secretStore),
+        );
     }
 
     #withPersistedRuntimeCatalog(status: AiRuntimeStatus): AiRuntimeStatus {
@@ -2041,7 +2224,10 @@ export class AiService {
         };
     }
 
-    #resolveRuntimeCommand(runtimeId: AiRuntimeId): ResolvedAcpRuntime {
+    #resolveRuntimeCommand(
+        runtimeId: AiRuntimeId,
+        codexSettingsOverride?: CodexRuntimeSettings,
+    ): ResolvedAcpRuntime {
         if (runtimeId === "claude") {
             const settings = this.#settingsService.loadClaudeRuntimeSettings();
             const resolved = resolveClaudeRuntime(settings, this.#secretStore);
@@ -2089,23 +2275,121 @@ export class AiService {
             };
         }
 
-        const resolved = resolveCodexRuntime(
-            this.#settingsService.loadCodexRuntimeSettings(),
-        );
+        const settings =
+            codexSettingsOverride ??
+            this.#settingsService.loadCodexRuntimeSettings();
+        const secrets = loadCodexSecretBundle(this.#secretStore);
+        const resolved = resolveCodexRuntime(settings);
 
         return {
             args: resolved.args,
             command: resolved.command,
-            env: process.env,
+            env: applyCodexAuthEnv(process.env, settings, secrets),
             executable: resolved.executable,
-            status: resolved.status,
+            status: getCodexRuntimeStatus(settings, secrets),
         };
+    }
+
+    async #runRuntimeAuthConnection(
+        runtimeId: AiRuntimeId,
+        cwd: string,
+        action: (connection: ClientSideConnection) => Promise<void>,
+        codexSettingsOverride?: CodexRuntimeSettings,
+    ): Promise<void> {
+        const resolvedRuntime = this.#resolveRuntimeCommand(
+            runtimeId,
+            codexSettingsOverride,
+        );
+        if (resolvedRuntime.status.state !== "ready") {
+            throw new Error(
+                resolvedRuntime.status.message ??
+                    `${getRuntimeDisplayName(runtimeId)} is not available on this machine.`,
+            );
+        }
+
+        const child = spawn(
+            resolvedRuntime.executable,
+            [...resolvedRuntime.args],
+            {
+                cwd,
+                env: resolvedRuntime.env,
+                stdio: ["pipe", "pipe", "pipe"],
+            },
+        );
+        const stderrChunks: string[] = [];
+        child.stderr.on("data", (chunk: Buffer | string) => {
+            const text =
+                typeof chunk === "string" ? chunk : chunk.toString("utf8");
+            stderrChunks.push(text);
+            if (stderrChunks.length > 20) {
+                stderrChunks.shift();
+            }
+        });
+
+        const client: Client = {
+            readTextFile: async () => {
+                throw new Error("Runtime auth does not support file reads.");
+            },
+            requestPermission: async () => {
+                throw new Error(
+                    "Runtime auth does not support permission requests.",
+                );
+            },
+            sessionUpdate: async () => undefined,
+            writeTextFile: async () => {
+                throw new Error("Runtime auth does not support file writes.");
+            },
+        };
+        const stream = ndJsonStream(
+            Writable.toWeb(child.stdin),
+            Readable.toWeb(child.stdout),
+        );
+        const connection = new ClientSideConnection(() => client, stream);
+
+        try {
+            await action(connection);
+        } catch (error) {
+            const stderrText = stderrChunks
+                .join("")
+                .trim()
+                .split("\n")
+                .slice(-4)
+                .join("\n");
+
+            if (error instanceof Error && error.message.trim()) {
+                throw error;
+            }
+
+            throw new Error(
+                stderrText ||
+                    `No se pudo completar la autenticación de ${getRuntimeDisplayName(runtimeId)}.`,
+            );
+        } finally {
+            child.kill();
+        }
     }
 
     #invalidateRuntimeAuthIfNeeded(
         runtimeId: AiRuntimeId,
         message: string,
     ): void {
+        if (runtimeId === "codex" && isCodexAuthenticationError(message)) {
+            const currentSettings =
+                this.#settingsService.loadCodexRuntimeSettings();
+            const nextSettings = {
+                ...currentSettings,
+                authMethod: null,
+            } satisfies CodexRuntimeSettings;
+            this.#settingsService.saveCodexRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                getCodexRuntimeStatus(
+                    nextSettings,
+                    loadCodexSecretBundle(this.#secretStore),
+                ),
+            );
+            return;
+        }
+
         if (runtimeId !== "kilo" || !isKiloAuthenticationError(message)) {
             return;
         }
@@ -2136,6 +2420,34 @@ function applySecretValuePatch(
     }
 
     return currentValue;
+}
+
+function resolveCodexSecretBundle(
+    currentSecrets: CodexSecretBundle,
+    settings: CodexRuntimeSettingsInput,
+): CodexSecretBundle {
+    let codexApiKey = applySecretValuePatch(
+        currentSecrets.codexApiKey,
+        settings.codexApiKey,
+    );
+    let openaiApiKey = applySecretValuePatch(
+        currentSecrets.openaiApiKey,
+        settings.openaiApiKey,
+    );
+
+    if (settings.authMethod === "codex-api-key") {
+        openaiApiKey = null;
+    } else if (settings.authMethod === "openai-api-key") {
+        codexApiKey = null;
+    } else {
+        codexApiKey = null;
+        openaiApiKey = null;
+    }
+
+    return {
+        codexApiKey,
+        openaiApiKey,
+    };
 }
 
 function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
@@ -2443,6 +2755,18 @@ function setModelOnSnapshot(
                 : option,
         ),
         modelId,
+        updatedAt,
+    };
+}
+
+function setTitleOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    title: string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        title,
         updatedAt,
     };
 }

@@ -38,7 +38,10 @@ describe("resolveCodexRuntime", () => {
 
             const resolved = resolveCodexRuntime(
                 {
+                    authMethod: null,
                     binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
                 },
                 {
                     appRoot: tempDir,
@@ -97,7 +100,10 @@ describe("resolveCodexRuntime", () => {
 
             const resolved = resolveCodexRuntime(
                 {
+                    authMethod: null,
                     binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
                 },
                 {
                     appRoot: tempRoot,
@@ -135,7 +141,10 @@ describe("resolveCodexRuntime", () => {
 
             const resolved = resolveCodexRuntime(
                 {
+                    authMethod: null,
                     binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
                 },
                 {
                     allowPathFallback: false,
@@ -165,7 +174,10 @@ describe("resolveCodexRuntime", () => {
 
             const resolved = resolveCodexRuntime(
                 {
+                    authMethod: null,
                     binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
                 },
                 {
                     appRoot: tempDir,

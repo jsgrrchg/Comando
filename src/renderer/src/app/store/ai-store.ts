@@ -4,6 +4,7 @@ import type {
     AiFileContextAttachment,
     AiImageAttachment,
     AiRuntimeAuthLaunchInput,
+    AiRuntimeAuthLogoutInput,
     AiPermissionResponseInput,
     AiRuntimeId,
     AiRuntimeStatus,
@@ -11,17 +12,20 @@ import type {
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionRenameMutationInput,
     AiSessionSnapshot,
     AiSettingsSnapshot,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
     ClaudeRuntimeSettings,
+    CodexRuntimeSettings,
     ClaudeRuntimeSettingsInput,
     GeminiRuntimeSettings,
     GeminiRuntimeSettingsInput,
     KiloRuntimeSettings,
     KiloRuntimeSettingsInput,
+    SecretValuePatch,
 } from "@shared/ipc";
 import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
 
@@ -86,9 +90,19 @@ type AiRuntimeCatalog = Pick<
     | "models"
 >;
 
+type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
+
+interface CodexRuntimeSettingsInput {
+    readonly authMethod: CodexAuthMethodId | null;
+    readonly binaryPath: string | null;
+    readonly codexApiKey: SecretValuePatch;
+    readonly openaiApiKey: SecretValuePatch;
+}
+
 interface AiStore {
     readonly claudeSettings: ClaudeRuntimeSettings;
     readonly codexBinaryPath: string;
+    readonly codexSettings: CodexRuntimeSettings;
     readonly geminiSettings: GeminiRuntimeSettings;
     readonly kiloSettings: KiloRuntimeSettings;
     readonly runtimeCatalogById: Partial<Record<AiRuntimeId, AiRuntimeCatalog>>;
@@ -140,6 +154,7 @@ interface AiStore {
     respondPermission: (input: AiPermissionResponseInput) => Promise<void>;
     respondUserInput: (input: AiUserInputResponseInput) => Promise<void>;
     launchRuntimeAuth: (input: AiRuntimeAuthLaunchInput) => Promise<void>;
+    logoutRuntimeAuth: (input: AiRuntimeAuthLogoutInput) => Promise<AiRuntimeStatus>;
     saveClaudeRuntimeSettings: (
         settings: ClaudeRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
@@ -148,6 +163,12 @@ interface AiStore {
     ) => Promise<AiRuntimeStatus>;
     saveKiloRuntimeSettings: (
         settings: KiloRuntimeSettingsInput,
+    ) => Promise<AiRuntimeStatus>;
+    saveCodexRuntimeSettings: (
+        settings: CodexRuntimeSettingsInput,
+    ) => Promise<AiRuntimeStatus>;
+    verifyCodexRuntimeSettings: (
+        settings: CodexRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     saveCodexBinaryPath: (binaryPath: string) => Promise<AiRuntimeStatus>;
     setDraftComposerParts: (
@@ -169,6 +190,7 @@ interface AiStore {
     setSessionConfigOption: (
         input: AiSessionConfigOptionMutationInput,
     ) => Promise<void>;
+    renameSession: (input: AiSessionRenameMutationInput) => Promise<void>;
     sendQueuedPromptNow: (sessionId: string, promptId: string) => Promise<void>;
     verifyCodexBinaryPath: (binaryPath: string) => Promise<AiRuntimeStatus>;
     sendPrompt: (
@@ -189,6 +211,7 @@ type GetAiState = () => AiStore;
 export const useAiStore = create<AiStore>((set, get) => ({
     claudeSettings: createEmptyClaudeSettings(),
     codexBinaryPath: "",
+    codexSettings: createEmptyCodexSettings(),
     geminiSettings: createEmptyGeminiSettings(),
     kiloSettings: createEmptyKiloSettings(),
     runtimeCatalogById: {},
@@ -567,6 +590,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         set({
             claudeSettings: settings?.claude ?? createEmptyClaudeSettings(),
             codexBinaryPath: settings?.codex.binaryPath ?? "",
+            codexSettings: settings?.codex ?? createEmptyCodexSettings(),
             geminiSettings: settings?.gemini ?? createEmptyGeminiSettings(),
             kiloSettings: settings?.kilo ?? createEmptyKiloSettings(),
         });
@@ -823,6 +847,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
         get().applyRuntimeStatus(runtimeStatus);
     },
 
+    logoutRuntimeAuth: async (input) => {
+        const status = await getComandoApi().logoutAiRuntimeAuth(input);
+        const snapshot = await getComandoApi().getSettingsSnapshot();
+
+        set((state) => ({
+            codexSettings: snapshot.ai?.codex ?? state.codexSettings,
+            runtimeStatusById: {
+                ...state.runtimeStatusById,
+                [input.runtimeId]: status,
+            },
+        }));
+
+        return status;
+    },
+
     saveClaudeRuntimeSettings: async (settings) => {
         const status =
             await getComandoApi().saveClaudeRuntimeSettings(settings);
@@ -855,6 +894,52 @@ export const useAiStore = create<AiStore>((set, get) => ({
         return status;
     },
 
+    saveCodexRuntimeSettings: async (settings) => {
+        const normalizedPath = settings.binaryPath?.trim() ?? "";
+        const comandoApi = getComandoApi() as ReturnType<typeof getComandoApi> & {
+            saveCodexRuntimeSettings: (
+                input: CodexRuntimeSettingsInput,
+            ) => Promise<AiRuntimeStatus>;
+        };
+        const status = await comandoApi.saveCodexRuntimeSettings({
+            authMethod: settings.authMethod,
+            binaryPath: normalizedPath || null,
+            codexApiKey: settings.codexApiKey,
+            openaiApiKey: settings.openaiApiKey,
+        });
+        const snapshot = await getComandoApi().getSettingsSnapshot();
+
+        set((state) => ({
+            codexBinaryPath: normalizedPath,
+            codexSettings: snapshot.ai?.codex ?? state.codexSettings,
+            runtimeStatusById: {
+                ...state.runtimeStatusById,
+                codex: status,
+            },
+        }));
+
+        return status;
+    },
+
+    verifyCodexRuntimeSettings: async (settings) => {
+        const normalizedPath = settings.binaryPath?.trim() ?? "";
+        const comandoApi = getComandoApi() as ReturnType<typeof getComandoApi> & {
+            verifyCodexRuntimeSettings: (
+                input: CodexRuntimeSettingsInput,
+            ) => Promise<AiRuntimeStatus>;
+        };
+        const status = await comandoApi.verifyCodexRuntimeSettings({
+            authMethod: settings.authMethod,
+            binaryPath: normalizedPath || null,
+            codexApiKey: settings.codexApiKey,
+            openaiApiKey: settings.openaiApiKey,
+        });
+
+        get().applyRuntimeStatus(status);
+
+        return status;
+    },
+
     saveKiloRuntimeSettings: async (settings) => {
         const status = await getComandoApi().saveKiloRuntimeSettings(settings);
         const snapshot = await getComandoApi().getSettingsSnapshot();
@@ -872,8 +957,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     saveCodexBinaryPath: async (binaryPath) => {
         const normalizedPath = binaryPath.trim();
-        const status = await getComandoApi().saveCodexRuntimeSettings({
+        const currentAuthMethod = get().runtimeStatusById.codex?.authMethod;
+        const status = await get().saveCodexRuntimeSettings({
+            authMethod: isCodexAuthMethodId(currentAuthMethod)
+                ? currentAuthMethod
+                : null,
             binaryPath: normalizedPath || null,
+            codexApiKey: unchangedSecretPatch,
+            openaiApiKey: unchangedSecretPatch,
         });
 
         set((state) => ({
@@ -946,6 +1037,20 @@ export const useAiStore = create<AiStore>((set, get) => ({
         );
     },
 
+    renameSession: async (input) => {
+        await runOptimisticSnapshotMutation(
+            input.sessionId,
+            (snapshot) => ({
+                ...snapshot,
+                title: input.title,
+                updatedAt: new Date().toISOString(),
+            }),
+            () => getComandoApi().renameAiSession(input),
+            set,
+            get,
+        );
+    },
+
     sendQueuedPromptNow: async (sessionId, promptId) => {
         const session = get().sessions[sessionId];
         const queuedPrompt = session?.queue.find(
@@ -1012,13 +1117,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     verifyCodexBinaryPath: async (binaryPath) => {
         const normalizedPath = binaryPath.trim();
-        const status = await getComandoApi().verifyCodexRuntimeSettings({
+        const currentAuthMethod = get().runtimeStatusById.codex?.authMethod;
+        return get().verifyCodexRuntimeSettings({
+            authMethod: isCodexAuthMethodId(currentAuthMethod)
+                ? currentAuthMethod
+                : null,
             binaryPath: normalizedPath || null,
+            codexApiKey: unchangedSecretPatch,
+            openaiApiKey: unchangedSecretPatch,
         });
-
-        get().applyRuntimeStatus(status);
-
-        return status;
     },
 
     sendPrompt: async (tab, prompt, options = {}) => {
@@ -1132,6 +1239,15 @@ function createEmptyClaudeSettings(): ClaudeRuntimeSettings {
     };
 }
 
+function createEmptyCodexSettings(): CodexRuntimeSettings {
+    return {
+        authMethod: null,
+        binaryPath: null,
+        hasCodexApiKey: false,
+        hasOpenAiApiKey: false,
+    };
+}
+
 function createEmptyGeminiSettings(): GeminiRuntimeSettings {
     return {
         authInvalidatedAtMs: null,
@@ -1149,6 +1265,18 @@ function createEmptyKiloSettings(): KiloRuntimeSettings {
         authInvalidatedAtMs: null,
         binaryPath: null,
     };
+}
+
+const unchangedSecretPatch: SecretValuePatch = { kind: "unchanged" };
+
+function isCodexAuthMethodId(
+    value: string | null | undefined,
+): value is CodexAuthMethodId {
+    return (
+        value === "chatgpt" ||
+        value === "codex-api-key" ||
+        value === "openai-api-key"
+    );
 }
 
 function createEmptySessionSnapshot(

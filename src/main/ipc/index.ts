@@ -7,15 +7,17 @@ import {
     type AppWindowKind,
     type AiPermissionResponseInput,
     type AiRuntimeAuthLaunchInput,
+    type AiRuntimeAuthLogoutInput,
     type AiRuntimeId,
     type AiSessionConfigOptionMutationInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
+    type AiSessionRenameMutationInput,
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
     type ClaudeRuntimeSettingsInput,
-    type CodexRuntimeSettings,
+    type CodexRuntimeSettingsInput,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -167,10 +169,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionMode);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionModel);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionConfigOption);
+    ipcMain.removeHandler(IPC_CHANNELS.renameAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.cancelAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.closeAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.respondAiPermission);
     ipcMain.removeHandler(IPC_CHANNELS.respondAiUserInput);
+    ipcMain.removeHandler(IPC_CHANNELS.logoutAiRuntimeAuth);
     ipcMain.removeHandler(IPC_CHANNELS.keepAiTrackedFile);
     ipcMain.removeHandler(IPC_CHANNELS.rejectAiTrackedFile);
     ipcMain.removeHandler(IPC_CHANNELS.keepAiTrackedFileHunks);
@@ -824,6 +828,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: AiSessionConfigOptionMutationInput) =>
             options.aiService.setSessionConfigOption(input),
     );
+    ipcMain.handle(
+        IPC_CHANNELS.renameAiSession,
+        (_event, input: AiSessionRenameMutationInput) =>
+            options.aiService.renameSession(input),
+    );
     ipcMain.handle(IPC_CHANNELS.cancelAiSession, (_event, sessionId: string) =>
         options.aiService.cancelSession(sessionId),
     );
@@ -834,6 +843,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.launchAiRuntimeAuth,
         (_event, input: AiRuntimeAuthLaunchInput) =>
             options.aiService.launchRuntimeAuth(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.logoutAiRuntimeAuth,
+        (_event, input: AiRuntimeAuthLogoutInput) =>
+            options.aiService.logoutRuntimeAuth(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.respondAiPermission,
@@ -877,7 +891,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.saveCodexRuntimeSettings,
-        (_event, settings: CodexRuntimeSettings) =>
+        (_event, settings: CodexRuntimeSettingsInput) =>
             options.aiService.saveCodexRuntimeSettings(settings),
     );
     ipcMain.handle(
@@ -897,7 +911,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.verifyCodexRuntimeSettings,
-        (_event, settings: CodexRuntimeSettings) =>
+        (_event, settings: CodexRuntimeSettingsInput) =>
             options.aiService.verifyCodexRuntimeSettings(settings),
     );
 }

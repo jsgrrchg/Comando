@@ -12,9 +12,11 @@ import type {
     AiFileContextAttachment,
     AiImageAttachment,
     AiUserInputRequest,
+    AiRuntimeStatus,
     AiSessionSnapshot,
     ClaudeAuthMethodId,
     GeminiAuthMethodId,
+    SecretValuePatch,
 } from "@shared/ipc";
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
@@ -105,6 +107,31 @@ const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
+
+type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
+
+const CODEX_AUTH_METHODS: readonly {
+    readonly description: string;
+    readonly id: CodexAuthMethodId;
+    readonly name: string;
+}[] = [
+    {
+        description: "Open a Codex login flow in a terminal.",
+        id: "chatgpt",
+        name: "Log in with ChatGPT",
+    },
+    {
+        description: "Use a Codex API key stored locally in Comando.",
+        id: "codex-api-key",
+        name: "Codex API key",
+    },
+    {
+        description: "Use an OpenAI API key stored locally in Comando.",
+        id: "openai-api-key",
+        name: "OpenAI API key",
+    },
+] as const;
+
 type AiRuntimeCatalog = Pick<
     AiSessionSnapshot,
     | "availableCommands"
@@ -128,11 +155,13 @@ export function ChatTabView({
     const claudeSettings = useAiStore((s) => s.claudeSettings);
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
     const codexBinaryPath = useAiStore((s) => s.codexBinaryPath);
+    const codexSettings = useAiStore((s) => s.codexSettings);
     const ensureSession = useAiStore((s) => s.ensureSession);
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
     const geminiSettings = useAiStore((s) => s.geminiSettings);
     const kiloSettings = useAiStore((s) => s.kiloSettings);
     const launchRuntimeAuth = useAiStore((s) => s.launchRuntimeAuth);
+    const logoutRuntimeAuth = useAiStore((s) => s.logoutRuntimeAuth);
     const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
     const removeQueuedPrompt = useAiStore((s) => s.removeQueuedPrompt);
     const respondPermission = useAiStore((s) => s.respondPermission);
@@ -146,7 +175,12 @@ export function ChatTabView({
     const saveKiloRuntimeSettings = useAiStore(
         (s) => s.saveKiloRuntimeSettings,
     );
-    const saveCodexBinaryPath = useAiStore((s) => s.saveCodexBinaryPath);
+    const saveCodexRuntimeSettings = useAiStore(
+        (s) => s.saveCodexRuntimeSettings,
+    );
+    const verifyCodexRuntimeSettings = useAiStore(
+        (s) => s.verifyCodexRuntimeSettings,
+    );
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const clearDraftAttachments = useAiStore((s) => s.clearDraftAttachments);
 
@@ -158,13 +192,13 @@ export function ChatTabView({
     const rejectAllTrackedFiles = useAiStore((s) => s.rejectAllTrackedFiles);
     const rejectTrackedFile = useAiStore((s) => s.rejectTrackedFile);
     const rejectTrackedFileHunks = useAiStore((s) => s.rejectTrackedFileHunks);
+    const renameSession = useAiStore((s) => s.renameSession);
     const setSessionConfigOption = useAiStore((s) => s.setSessionConfigOption);
     const setSessionMode = useAiStore((s) => s.setSessionMode);
     const setSessionModel = useAiStore((s) => s.setSessionModel);
     const setDraftComposerParts = useAiStore((s) => s.setDraftComposerParts);
     const setDraftAttachments = useAiStore((s) => s.setDraftAttachments);
     const sendQueuedPromptNow = useAiStore((s) => s.sendQueuedPromptNow);
-    const verifyCodexBinaryPath = useAiStore((s) => s.verifyCodexBinaryPath);
     const sendPrompt = useAiStore((s) => s.sendPrompt);
     const runtimeCatalog = useAiStore(
         (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
@@ -190,7 +224,6 @@ export function ChatTabView({
     const runtimeStatus = useAiStore(
         (s) => s.runtimeStatusById[tab.runtimeId] ?? null,
     );
-
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const wasNearBottom = useRef(true);
@@ -198,7 +231,41 @@ export function ChatTabView({
         createEmptyComposerParts(),
     );
 
+    const [isEditingTitle, setIsEditingTitle] = useState(false);
+    const [titleDraft, setTitleDraft] = useState("");
+    const titleInputRef = useRef<HTMLInputElement | null>(null);
+    const skipTitleCommitRef = useRef(false);
+
+    useEffect(() => {
+        if (isEditingTitle) {
+            titleInputRef.current?.focus();
+            titleInputRef.current?.select();
+        }
+    }, [isEditingTitle]);
+
+    const commitTitleEdit = useCallback(() => {
+        if (skipTitleCommitRef.current) {
+            skipTitleCommitRef.current = false;
+            return;
+        }
+        const trimmed = titleDraft.trim();
+        setIsEditingTitle(false);
+        if (trimmed && trimmed !== tab.title) {
+            void renameSession({
+                sessionId: tab.sessionId,
+                title: trimmed,
+            });
+        }
+    }, [titleDraft, renameSession, tab.sessionId, tab.title]);
+
     const [binaryPathDraft, setBinaryPathDraft] = useState(codexBinaryPath);
+    const [codexAuthMethodDraft, setCodexAuthMethodDraft] =
+        useState<CodexAuthMethodId>(getDefaultCodexAuthMethod(runtimeStatus));
+    const [codexApiKeyDraft, setCodexApiKeyDraft] = useState("");
+    const [openAiApiKeyDraft, setOpenAiApiKeyDraft] = useState("");
+    const [shouldClearCodexApiKey, setShouldClearCodexApiKey] = useState(false);
+    const [shouldClearOpenAiApiKey, setShouldClearOpenAiApiKey] =
+        useState(false);
     const [claudeAuthMethodDraft, setClaudeAuthMethodDraft] =
         useState<ClaudeAuthMethodId | null>(claudeSettings.authMethod);
     const [claudeBinaryPathDraft, setClaudeBinaryPathDraft] = useState(
@@ -233,12 +300,12 @@ export function ChatTabView({
         createEmptyComposerParts,
     );
     const [composerResetNonce, setComposerResetNonce] = useState(0);
+    const showRuntimeConfig = false;
     const [isSavingRuntime, setIsSavingRuntime] = useState(false);
     const [isLaunchingRuntimeAuth, setIsLaunchingRuntimeAuth] = useState(false);
     const [runtimeConfigError, setRuntimeConfigError] = useState<string | null>(
         null,
     );
-    const [showRuntimeConfig] = useState(false);
     const [
         shouldClearClaudeGatewayAuthToken,
         setShouldClearClaudeGatewayAuthToken,
@@ -281,8 +348,13 @@ export function ChatTabView({
     useEffect(() => {
         if (tab.runtimeId === "codex") {
             setBinaryPathDraft(codexBinaryPath);
+            setCodexAuthMethodDraft(getDefaultCodexAuthMethod(runtimeStatus));
+            setCodexApiKeyDraft("");
+            setOpenAiApiKeyDraft("");
+            setShouldClearCodexApiKey(false);
+            setShouldClearOpenAiApiKey(false);
         }
-    }, [codexBinaryPath, tab.runtimeId]);
+    }, [codexBinaryPath, runtimeStatus, tab.runtimeId]);
     useEffect(() => {
         if (tab.runtimeId !== "claude") {
             return;
@@ -829,20 +901,194 @@ export function ChatTabView({
             style={{ backgroundColor: "var(--color-bg-secondary)" }}
         >
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                {renderRuntimeBar()}
+                <div
+                    className="flex items-center gap-2 px-3 py-0.5 text-xs shrink-0"
+                    style={{
+                        height: 28,
+                        boxSizing: "border-box",
+                        borderBottom: "1px solid var(--color-border)",
+                        color: "var(--color-text-secondary)",
+                    }}
+                >
+                    {isEditingTitle ? (
+                        <input
+                            ref={titleInputRef}
+                            className="min-w-0 flex-1 rounded bg-transparent font-medium text-xs outline-none"
+                            style={{
+                                color: "var(--color-text-primary)",
+                                border: "none",
+                                padding: 0,
+                                borderBottom:
+                                    "1px solid var(--color-accent, var(--color-text-secondary))",
+                            }}
+                            value={titleDraft}
+                            onChange={(e) => setTitleDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                    commitTitleEdit();
+                                } else if (e.key === "Escape") {
+                                    skipTitleCommitRef.current = true;
+                                    setIsEditingTitle(false);
+                                }
+                            }}
+                            onBlur={() => commitTitleEdit()}
+                        />
+                    ) : (
+                        <span
+                            className="flex-1 cursor-default truncate font-medium"
+                            style={{
+                                color: "var(--color-text-primary)",
+                            }}
+                            onDoubleClick={() => {
+                                skipTitleCommitRef.current = false;
+                                setTitleDraft(snapshot.title || "");
+                                setIsEditingTitle(true);
+                            }}
+                            title="Double-click to rename"
+                        >
+                            {snapshot.title || "Chat"}
+                        </span>
+                    )}
+                </div>
                 {showRuntimeConfig
                     ? tab.runtimeId === "codex"
                         ? renderCodexRuntimeConfig({
+                              authMethodDraft: codexAuthMethodDraft,
+                              authMethods: getCodexAuthMethods(runtimeStatus),
                               binaryPathDraft,
+                              codexApiKeyDraft,
+                              openAiApiKeyDraft,
+                              hasStoredCodexApiKey:
+                                  codexSettings.hasCodexApiKey,
+                              hasStoredOpenAiApiKey:
+                                  codexSettings.hasOpenAiApiKey,
+                              isAuthenticated:
+                                  runtimeStatus?.authReady ?? false,
+                              isLaunchingAuth: isLaunchingRuntimeAuth,
+                              shouldClearCodexApiKey,
+                              shouldClearOpenAiApiKey,
                               isSaving: isSavingRuntime,
+                              onAuthMethodChange: setCodexAuthMethodDraft,
                               onChangeBinaryPath: setBinaryPathDraft,
+                              onChangeCodexApiKey: (value) => {
+                                  setShouldClearCodexApiKey(false);
+                                  setCodexApiKeyDraft(value);
+                              },
+                              onChangeOpenAiApiKey: (value) => {
+                                  setShouldClearOpenAiApiKey(false);
+                                  setOpenAiApiKeyDraft(value);
+                              },
+                              onClearCodexApiKey: () => {
+                                  setCodexApiKeyDraft("");
+                                  setShouldClearCodexApiKey(true);
+                              },
+                              onClearOpenAiApiKey: () => {
+                                  setOpenAiApiKeyDraft("");
+                                  setShouldClearOpenAiApiKey(true);
+                              },
+                              onLaunchAuth: async () => {
+                                  if (codexAuthMethodDraft !== "chatgpt") {
+                                      setRuntimeConfigError(
+                                          "Choose ChatGPT login before launching Codex auth.",
+                                      );
+                                      return;
+                                  }
+
+                                  setRuntimeConfigError(null);
+                                  setIsSavingRuntime(true);
+                                  try {
+                                      await saveCodexRuntimeSettings({
+                                          authMethod: codexAuthMethodDraft,
+                                          binaryPath:
+                                              binaryPathDraft.trim() || null,
+                                          codexApiKey: toSecretValuePatch(
+                                              codexApiKeyDraft,
+                                              shouldClearCodexApiKey,
+                                          ),
+                                          openaiApiKey: toSecretValuePatch(
+                                              openAiApiKeyDraft,
+                                              shouldClearOpenAiApiKey,
+                                          ),
+                                      });
+                                      setCodexApiKeyDraft("");
+                                      setOpenAiApiKeyDraft("");
+                                      setShouldClearCodexApiKey(false);
+                                      setShouldClearOpenAiApiKey(false);
+                                  } catch (error) {
+                                      setRuntimeConfigError(
+                                          error instanceof Error
+                                              ? error.message
+                                              : "Could not save the Codex runtime settings.",
+                                      );
+                                      return;
+                                  } finally {
+                                      setIsSavingRuntime(false);
+                                  }
+
+                                  setIsLaunchingRuntimeAuth(true);
+                                  try {
+                                      await launchRuntimeAuth({
+                                          methodId: codexAuthMethodDraft,
+                                          projectId: tab.projectId,
+                                          runtimeId: "codex",
+                                          worktreeId: tab.worktreeId ?? null,
+                                      });
+                                      setRuntimeConfigError(null);
+                                  } catch (error) {
+                                      setRuntimeConfigError(
+                                          error instanceof Error
+                                              ? error.message
+                                              : "Could not launch the Codex auth flow.",
+                                      );
+                                  } finally {
+                                      setIsLaunchingRuntimeAuth(false);
+                                  }
+                              },
+                              onLogout: async () => {
+                                  setRuntimeConfigError(null);
+                                  setIsSavingRuntime(true);
+                                  try {
+                                      const status = await logoutRuntimeAuth({
+                                          runtimeId: "codex",
+                                      });
+                                      setCodexAuthMethodDraft(
+                                          getDefaultCodexAuthMethod(status),
+                                      );
+                                      setCodexApiKeyDraft("");
+                                      setOpenAiApiKeyDraft("");
+                                      setShouldClearCodexApiKey(false);
+                                      setShouldClearOpenAiApiKey(false);
+                                  } catch (error) {
+                                      setRuntimeConfigError(
+                                          error instanceof Error
+                                              ? error.message
+                                              : "Could not log out of Codex.",
+                                      );
+                                  } finally {
+                                      setIsSavingRuntime(false);
+                                  }
+                              },
                               onSave: async () => {
                                   setRuntimeConfigError(null);
                                   setIsSavingRuntime(true);
                                   try {
-                                      await saveCodexBinaryPath(
-                                          binaryPathDraft,
-                                      );
+                                      await saveCodexRuntimeSettings({
+                                          authMethod: codexAuthMethodDraft,
+                                          binaryPath:
+                                              binaryPathDraft.trim() || null,
+                                          codexApiKey: toSecretValuePatch(
+                                              codexApiKeyDraft,
+                                              shouldClearCodexApiKey,
+                                          ),
+                                          openaiApiKey: toSecretValuePatch(
+                                              openAiApiKeyDraft,
+                                              shouldClearOpenAiApiKey,
+                                          ),
+                                      });
+                                      setCodexApiKeyDraft("");
+                                      setOpenAiApiKeyDraft("");
+                                      setShouldClearCodexApiKey(false);
+                                      setShouldClearOpenAiApiKey(false);
                                   } catch (error) {
                                       setRuntimeConfigError(
                                           error instanceof Error
@@ -857,9 +1103,19 @@ export function ChatTabView({
                                   setRuntimeConfigError(null);
                                   setIsSavingRuntime(true);
                                   try {
-                                      await verifyCodexBinaryPath(
-                                          binaryPathDraft,
-                                      );
+                                      await verifyCodexRuntimeSettings({
+                                          authMethod: codexAuthMethodDraft,
+                                          binaryPath:
+                                              binaryPathDraft.trim() || null,
+                                          codexApiKey: toSecretValuePatch(
+                                              codexApiKeyDraft,
+                                              shouldClearCodexApiKey,
+                                          ),
+                                          openaiApiKey: toSecretValuePatch(
+                                              openAiApiKeyDraft,
+                                              shouldClearOpenAiApiKey,
+                                          ),
+                                      });
                                   } catch (error) {
                                       setRuntimeConfigError(
                                           error instanceof Error
@@ -1489,21 +1745,48 @@ export function ChatTabView({
 
 /* ─── Render helpers (static fragments) ─── */
 
-function renderRuntimeBar() {
-    return null;
-}
-
 function renderCodexRuntimeConfig(props: {
+    readonly authMethodDraft: CodexAuthMethodId;
+    readonly authMethods: readonly {
+        readonly description: string;
+        readonly id: CodexAuthMethodId;
+        readonly name: string;
+    }[];
     readonly binaryPathDraft: string;
+    readonly codexApiKeyDraft: string;
+    readonly openAiApiKeyDraft: string;
+    readonly hasStoredCodexApiKey: boolean;
+    readonly hasStoredOpenAiApiKey: boolean;
+    readonly isAuthenticated: boolean;
+    readonly isLaunchingAuth: boolean;
     readonly isSaving: boolean;
+    readonly onAuthMethodChange: (value: CodexAuthMethodId) => void;
     readonly onChangeBinaryPath: (value: string) => void;
+    readonly onChangeCodexApiKey: (value: string) => void;
+    readonly onChangeOpenAiApiKey: (value: string) => void;
+    readonly onClearCodexApiKey: () => void;
+    readonly onClearOpenAiApiKey: () => void;
+    readonly onLaunchAuth: () => Promise<void>;
+    readonly onLogout: () => Promise<void>;
     readonly onSave: () => Promise<void>;
     readonly onVerify: () => Promise<void>;
     readonly runtimeConfigError: string | null;
+    readonly shouldClearCodexApiKey: boolean;
+    readonly shouldClearOpenAiApiKey: boolean;
 }) {
+    const showKeyFields = props.authMethodDraft !== "chatgpt";
+    const codexKeyStored =
+        props.hasStoredCodexApiKey &&
+        !props.shouldClearCodexApiKey &&
+        props.codexApiKeyDraft.trim().length === 0;
+    const openAiKeyStored =
+        props.hasStoredOpenAiApiKey &&
+        !props.shouldClearOpenAiApiKey &&
+        props.openAiApiKeyDraft.trim().length === 0;
+
     return (
         <div
-            className="flex flex-col gap-2 border-b px-3 py-2"
+            className="flex flex-col gap-3 border-b px-3 py-3"
             style={{
                 borderColor: "var(--color-border)",
                 backgroundColor: "var(--color-bg-elevated)",
@@ -1512,7 +1795,7 @@ function renderCodexRuntimeConfig(props: {
             <input
                 autoCapitalize="off"
                 autoCorrect="off"
-                className="ide-input app-no-drag flex-1"
+                className="ide-input app-no-drag"
                 onChange={(event) =>
                     props.onChangeBinaryPath(event.target.value)
                 }
@@ -1520,7 +1803,96 @@ function renderCodexRuntimeConfig(props: {
                 spellCheck={false}
                 value={props.binaryPathDraft}
             />
-            <div className="flex items-center gap-2">
+
+            <div className="flex flex-wrap gap-2">
+                {props.authMethods.map((method) => {
+                    const isSelected = props.authMethodDraft === method.id;
+
+                    return (
+                        <button
+                            className="app-no-drag rounded-full border px-3 py-1.5 text-[11px] transition"
+                            key={method.id}
+                            onClick={() => props.onAuthMethodChange(method.id)}
+                            style={{
+                                backgroundColor: isSelected
+                                    ? "var(--color-accent)"
+                                    : "transparent",
+                                borderColor: isSelected
+                                    ? "var(--color-accent)"
+                                    : "var(--color-border)",
+                                color: isSelected
+                                    ? "#fff"
+                                    : "var(--color-text-secondary)",
+                            }}
+                            title={method.description}
+                            type="button"
+                        >
+                            {method.name}
+                        </button>
+                    );
+                })}
+            </div>
+
+            {showKeyFields ? (
+                <div className="grid gap-2 md:grid-cols-2">
+                    <div className="grid gap-2">
+                        <div className="flex items-center justify-between text-[11px] text-text-secondary">
+                            <span>
+                                Codex API key {codexKeyStored ? "(stored)" : ""}
+                            </span>
+                            <button
+                                className="app-no-drag text-text-secondary transition hover:text-text-primary"
+                                onClick={props.onClearCodexApiKey}
+                                type="button"
+                            >
+                                Clear stored key
+                            </button>
+                        </div>
+                        <input
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            className="ide-input app-no-drag"
+                            onChange={(event) =>
+                                props.onChangeCodexApiKey(event.target.value)
+                            }
+                            placeholder="Optional CODEX_API_KEY"
+                            spellCheck={false}
+                            type="password"
+                            value={props.codexApiKeyDraft}
+                        />
+                    </div>
+
+                    <div className="grid gap-2">
+                        <div className="flex items-center justify-between text-[11px] text-text-secondary">
+                            <span>
+                                OpenAI API key{" "}
+                                {openAiKeyStored ? "(stored)" : ""}
+                            </span>
+                            <button
+                                className="app-no-drag text-text-secondary transition hover:text-text-primary"
+                                onClick={props.onClearOpenAiApiKey}
+                                type="button"
+                            >
+                                Clear stored key
+                            </button>
+                        </div>
+                        <input
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            className="ide-input app-no-drag"
+                            onChange={(event) =>
+                                props.onChangeOpenAiApiKey(event.target.value)
+                            }
+                            placeholder="Optional OPENAI_API_KEY"
+                            spellCheck={false}
+                            type="password"
+                            value={props.openAiApiKeyDraft}
+                        />
+                    </div>
+                </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-2">
                 <button
                     className="ide-button app-no-drag"
                     disabled={props.isSaving}
@@ -1541,7 +1913,35 @@ function renderCodexRuntimeConfig(props: {
                 >
                     Save
                 </button>
+                {props.authMethodDraft === "chatgpt" &&
+                !props.isAuthenticated ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isLaunchingAuth || props.isSaving}
+                        onClick={() => {
+                            void props.onLaunchAuth();
+                        }}
+                        type="button"
+                    >
+                        {props.isLaunchingAuth
+                            ? "Opening login…"
+                            : "Open login"}
+                    </button>
+                ) : null}
+                {props.isAuthenticated ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isSaving}
+                        onClick={() => {
+                            void props.onLogout();
+                        }}
+                        type="button"
+                    >
+                        Log out
+                    </button>
+                ) : null}
             </div>
+
             {props.runtimeConfigError ? (
                 <div className="text-[12px] text-rose-500">
                     {props.runtimeConfigError}
@@ -2947,7 +3347,40 @@ function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
 
 /* ─── Utility functions ─── */
 
-function toSecretValuePatch(value: string, shouldClear: boolean) {
+function getCodexAuthMethods(status: AiRuntimeStatus | null): readonly {
+    readonly description: string;
+    readonly id: CodexAuthMethodId;
+    readonly name: string;
+}[] {
+    const authMethods = status?.authMethods ?? [];
+    const filtered = authMethods.filter(
+        (
+            method,
+        ): method is {
+            readonly description: string;
+            readonly id: CodexAuthMethodId;
+            readonly name: string;
+        } => isCodexAuthMethodId(method.id),
+    );
+
+    return filtered.length > 0 ? filtered : CODEX_AUTH_METHODS;
+}
+
+function getDefaultCodexAuthMethod(
+    status: AiRuntimeStatus | null,
+): CodexAuthMethodId {
+    const runtimeMethod = status?.authMethod;
+    if (isCodexAuthMethodId(runtimeMethod)) {
+        return runtimeMethod;
+    }
+
+    return getCodexAuthMethods(status)[0]?.id ?? "chatgpt";
+}
+
+function toSecretValuePatch(
+    value: string,
+    shouldClear: boolean,
+): SecretValuePatch {
     if (shouldClear) {
         return { kind: "clear" } as const;
     }
@@ -2961,6 +3394,16 @@ function toSecretValuePatch(value: string, shouldClear: boolean) {
     }
 
     return { kind: "unchanged" } as const;
+}
+
+function isCodexAuthMethodId(
+    value: string | null | undefined,
+): value is CodexAuthMethodId {
+    return (
+        value === "chatgpt" ||
+        value === "codex-api-key" ||
+        value === "openai-api-key"
+    );
 }
 
 function getRuntimeDisplayName(

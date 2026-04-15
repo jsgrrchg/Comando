@@ -20,7 +20,10 @@ describe("AiService Claude branch", () => {
                 hasGatewayCustomHeaders: false,
             }),
             loadCodexRuntimeSettings: () => ({
+                authMethod: null,
                 binaryPath: null,
+                hasCodexApiKey: false,
+                hasOpenAiApiKey: false,
             }),
             loadKiloRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,

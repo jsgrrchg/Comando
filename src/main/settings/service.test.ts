@@ -21,6 +21,7 @@ describe("SettingsService", () => {
                 fontFamily: "jetbrains-mono",
                 fontSize: 15,
                 lineHeight: 1.7,
+                suggestionsEnabled: false,
             },
             shellState: {
                 activeSurface: "workspace",
@@ -42,6 +43,7 @@ describe("SettingsService", () => {
                 fontFamily: "jetbrains",
                 fontSize: 15,
                 lineHeight: 1.7,
+                suggestionsEnabled: false,
             },
             shellState: {
                 activeSurface: "workspace",
@@ -62,6 +64,7 @@ describe("SettingsService", () => {
                 "editor.font_family": "??",
                 "editor.font_size": "??",
                 "editor.line_height": "??",
+                "editor.suggestions_enabled": "??",
             },
             project: {
                 "project-a": {
@@ -70,6 +73,7 @@ describe("SettingsService", () => {
                     "editor.font_family": "bad",
                     "editor.font_size": "bad",
                     "editor.line_height": "bad",
+                    "editor.suggestions_enabled": "??",
                 },
             },
         });
@@ -90,6 +94,7 @@ describe("SettingsService", () => {
                 fontFamily: "sf-mono",
                 fontSize: 14,
                 lineHeight: 1.55,
+                suggestionsEnabled: true,
             },
             shellState: null,
         });
@@ -104,16 +109,25 @@ describe("SettingsService", () => {
         );
 
         service.saveCodexRuntimeSettings({
+            authMethod: "openai-api-key",
             binaryPath: "/usr/local/bin/codex-acp",
+            hasCodexApiKey: false,
+            hasOpenAiApiKey: true,
         });
 
         expect(service.loadCodexRuntimeSettings()).toEqual({
+            authMethod: "openai-api-key",
             binaryPath: "/usr/local/bin/codex-acp",
+            hasCodexApiKey: false,
+            hasOpenAiApiKey: true,
         });
         expect(service.loadSnapshot().ai).toEqual({
             ...createEmptyAiSettings(),
             codex: {
+                authMethod: "openai-api-key",
                 binaryPath: "/usr/local/bin/codex-acp",
+                hasCodexApiKey: false,
+                hasOpenAiApiKey: true,
             },
         });
     });
@@ -197,6 +211,7 @@ describe("SettingsService", () => {
                 fontFamily: "ibm-plex-mono",
                 fontSize: 16,
                 lineHeight: 1.8,
+                suggestionsEnabled: false,
             },
         });
 
@@ -210,6 +225,7 @@ describe("SettingsService", () => {
                 fontFamily: "ibm-plex-mono",
                 fontSize: 16,
                 lineHeight: 1.8,
+                suggestionsEnabled: false,
             },
         });
     });
@@ -254,6 +270,7 @@ describe("SettingsService", () => {
                 fontFamily: null,
                 fontSize: null,
                 lineHeight: null,
+                suggestionsEnabled: null,
             },
         });
     });
@@ -337,7 +354,10 @@ function createEmptyAiSettings() {
     return {
         claude: createEmptyClaudeSettings(),
         codex: {
+            authMethod: null,
             binaryPath: null,
+            hasCodexApiKey: false,
+            hasOpenAiApiKey: false,
         },
         gemini: createEmptyGeminiSettings(),
         kilo: {

@@ -46,15 +46,20 @@ export class SecretStoreService {
         }
     }
 
-    saveSecret(namespace: string, secretId: string, value: string | null): void {
+    saveSecret(
+        namespace: string,
+        secretId: string,
+        value: string | null,
+    ): void {
         const normalizedValue = value?.trim() ?? "";
         const key = this.#secretKey(namespace, secretId);
 
         if (!normalizedValue) {
             this.#connection
-                .prepare<[string], void>(
-                    "DELETE FROM app_settings WHERE key = ?",
-                )
+                .prepare<
+                    [string],
+                    void
+                >("DELETE FROM app_settings WHERE key = ?")
                 .run(key);
             return;
         }
@@ -79,18 +84,16 @@ export class SecretStoreService {
     }
 
     #serializeSecret(value: string): string {
-        const payload: StoredSecretRecord =
-            safeStorage.isEncryptionAvailable()
-                ? {
-                      scheme: "electron-safe-storage-v1",
-                      value: safeStorage
-                          .encryptString(value)
-                          .toString("base64"),
-                  }
-                : {
-                      scheme: "plain-text-v1",
-                      value,
-                  };
+        if (!safeStorage.isEncryptionAvailable()) {
+            throw new Error(
+                "Secure secret storage is unavailable on this machine.",
+            );
+        }
+
+        const payload: StoredSecretRecord = {
+            scheme: "electron-safe-storage-v1",
+            value: safeStorage.encryptString(value).toString("base64"),
+        };
 
         return JSON.stringify(payload);
     }

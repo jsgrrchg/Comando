@@ -490,6 +490,16 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     />
                 }
             />
+            <Row
+                label="Autocomplete suggestions"
+                description="Show Monaco suggestions automatically while typing. You can still trigger them manually."
+                control={
+                    <Toggle
+                        value={state.suggestionsEnabled}
+                        onChange={(v) => state.onSuggestionsEnabledChange?.(v)}
+                    />
+                }
+            />
         </div>
     );
 }
@@ -667,6 +677,20 @@ function ProjectContent({
                                             )
                                         }
                                         formatValue={(v) => `${v.toFixed(2)}x`}
+                                    />
+                                }
+                            />
+                            <Row
+                                label="Autocomplete suggestions"
+                                description="Show Monaco suggestions automatically while typing in this project."
+                                control={
+                                    <Toggle
+                                        value={projectEditor.suggestionsEnabled}
+                                        onChange={(v) =>
+                                            projectEditor.onSuggestionsEnabledChange?.(
+                                                v,
+                                            )
+                                        }
                                     />
                                 }
                             />
@@ -1010,6 +1034,7 @@ function RuntimeActionBtn({
     onClick: () => void;
 }) {
     const isPrimary = action.tone === "primary";
+    const isDanger = action.tone === "danger";
 
     return (
         <button
@@ -1019,17 +1044,27 @@ function RuntimeActionBtn({
             title={action.hint}
             style={{
                 borderRadius: 6,
-                border: isPrimary ? "none" : "1px solid var(--color-border)",
+                border: isPrimary
+                    ? "none"
+                    : isDanger
+                      ? "1px solid color-mix(in srgb, var(--color-danger, #e5484d) 35%, var(--color-border))"
+                      : "1px solid var(--color-border)",
                 backgroundColor: isPrimary
                     ? "var(--color-accent)"
-                    : "var(--color-bg-tertiary)",
-                color: isPrimary ? "#fff" : "var(--color-text-primary)",
+                    : isDanger
+                      ? "color-mix(in srgb, var(--color-danger, #e5484d) 12%, transparent)"
+                      : "var(--color-bg-tertiary)",
+                color: isPrimary
+                    ? "#fff"
+                    : isDanger
+                      ? "var(--color-danger, #e5484d)"
+                      : "var(--color-text-primary)",
                 padding: "4px 10px",
                 fontSize: 12,
                 fontFamily: "inherit",
                 cursor: action.disabled ? "not-allowed" : "pointer",
                 opacity: action.disabled ? 0.5 : 1,
-                fontWeight: isPrimary ? 500 : 400,
+                fontWeight: isPrimary ? 500 : isDanger ? 500 : 400,
             }}
         >
             {action.label}

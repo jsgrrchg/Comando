@@ -16,6 +16,7 @@ import type {
 
 import {
     SettingsWindow,
+    type RuntimeActionOption,
     type RuntimeCardOption,
     type SettingsProjectOption,
 } from "./components/settings";
@@ -91,7 +92,8 @@ export function SettingsApp() {
     const projectEditorOverrideEnabled =
         projectEditor.fontFamily !== null ||
         projectEditor.fontSize !== null ||
-        projectEditor.lineHeight !== null;
+        projectEditor.lineHeight !== null ||
+        projectEditor.suggestionsEnabled !== null;
 
     const loadProjects = useCallback(async () => {
         if (!window.comando) {
@@ -311,6 +313,18 @@ export function SettingsApp() {
         void saveAppEditorSettings(nextEditor);
     };
 
+    const handleAppEditorSuggestionsEnabledChange = (
+        suggestionsEnabled: boolean,
+    ) => {
+        const nextEditor: AppEditorSettings = {
+            ...appEditor,
+            suggestionsEnabled,
+        };
+
+        setAppEditor(nextEditor);
+        void saveAppEditorSettings(nextEditor);
+    };
+
     const handleProjectOverrideChange = (enabled: boolean) => {
         if (!selectedProjectId) {
             return;
@@ -340,6 +354,9 @@ export function SettingsApp() {
                   fontFamily: projectEditor.fontFamily ?? appEditor.fontFamily,
                   fontSize: projectEditor.fontSize ?? appEditor.fontSize,
                   lineHeight: projectEditor.lineHeight ?? appEditor.lineHeight,
+                  suggestionsEnabled:
+                      projectEditor.suggestionsEnabled ??
+                      appEditor.suggestionsEnabled,
               }
             : getDefaultProjectEditorSettings();
 
@@ -374,6 +391,7 @@ export function SettingsApp() {
         readonly fontFamily?: AppEditorSettings["fontFamily"];
         readonly fontSize?: number;
         readonly lineHeight?: number;
+        readonly suggestionsEnabled?: boolean;
     }) => {
         if (!selectedProjectId) {
             return;
@@ -390,6 +408,10 @@ export function SettingsApp() {
                 patch.lineHeight ??
                 projectEditor.lineHeight ??
                 appEditor.lineHeight,
+            suggestionsEnabled:
+                patch.suggestionsEnabled ??
+                projectEditor.suggestionsEnabled ??
+                appEditor.suggestionsEnabled,
         };
 
         setProjectEditor(nextEditor);
@@ -520,9 +542,12 @@ export function SettingsApp() {
                 fontFamilyId: appEditor.fontFamily,
                 fontSize: appEditor.fontSize,
                 lineHeight: appEditor.lineHeight,
+                suggestionsEnabled: appEditor.suggestionsEnabled,
                 onFontFamilyChange: handleAppEditorFontFamilyChange,
                 onFontSizeChange: handleAppEditorFontSizeChange,
                 onLineHeightChange: handleAppEditorLineHeightChange,
+                onSuggestionsEnabledChange:
+                    handleAppEditorSuggestionsEnabledChange,
             }}
             onClose={() => window.close()}
             onProjectSelect={handleProjectSelect}
@@ -581,6 +606,9 @@ export function SettingsApp() {
                               projectEditor.fontSize ?? appEditor.fontSize,
                           lineHeight:
                               projectEditor.lineHeight ?? appEditor.lineHeight,
+                          suggestionsEnabled:
+                              projectEditor.suggestionsEnabled ??
+                              appEditor.suggestionsEnabled,
                           onEnabledChange: handleProjectEditorOverrideChange,
                           onFontFamilyChange: (fontFamilyId) =>
                               updateProjectEditor({
@@ -591,6 +619,8 @@ export function SettingsApp() {
                               updateProjectEditor({ fontSize }),
                           onLineHeightChange: (lineHeight) =>
                               updateProjectEditor({ lineHeight }),
+                          onSuggestionsEnabledChange: (suggestionsEnabled) =>
+                              updateProjectEditor({ suggestionsEnabled }),
                       }
                     : null
             }
@@ -623,13 +653,23 @@ async function handleRuntimeAction(options: {
         return;
     }
 
+    if (options.actionId === "logout") {
+        await window.comando.logoutAiRuntimeAuth({
+            runtimeId: options.runtimeId,
+        });
+        await options.loadRuntimeStatuses();
+        return;
+    }
+
     if (options.actionId !== "connect") {
         return;
     }
 
     const runtimeStatus = options.runtimeStatuses[options.runtimeId];
     const methodId =
-        runtimeStatus?.authMethods[0]?.id ?? runtimeStatus?.authMethod ?? null;
+        options.runtimeId === "codex"
+            ? getCodexLaunchAuthMethodId(runtimeStatus)
+            : runtimeStatus?.authMethods[0]?.id ?? runtimeStatus?.authMethod ?? null;
 
     if (!methodId) {
         return;
@@ -662,27 +702,40 @@ function mapRuntimeCard(
         };
     }
 
+    const actions: RuntimeActionOption[] = [];
+    if (status.runtimeId === "codex") {
+        if (status.authReady) {
+            actions.push({
+                id: "logout",
+                label: "Log out",
+                tone: "danger",
+            });
+        } else {
+            actions.push({
+                id: "connect",
+                label: "Connect",
+                tone: "primary",
+            });
+        }
+    } else if (!status.authReady) {
+        actions.push({
+            id: "connect",
+            label: "Connect",
+            tone: "primary",
+        });
+    }
+    actions.push({
+        id: "refresh",
+        label: "Refresh",
+    });
+
     return {
-        actions: [
-            ...(status.runtimeId !== "codex" && !status.authReady
-                ? [
-                      {
-                          id: "connect",
-                          label: "Connect",
-                          tone: "primary" as const,
-                      },
-                  ]
-                : []),
-            {
-                id: "refresh",
-                label: "Refresh",
-            },
-        ],
+        actions,
         description: getRuntimeDescription(status.runtimeId),
         details:
             status.message ??
             status.command ??
-            (status.source ? `Source: ${status.source}` : "No details yet."),
+            (status.source ? "Source: " + status.source : "No details yet."),
         id: status.runtimeId,
         name: getRuntimeName(status.runtimeId),
         source: status.source ?? "unknown",
@@ -728,4 +781,29 @@ function formatRuntimeStatus(status: AiRuntimeStatus): string {
     }
 
     return "Needs attention";
+}
+
+function getCodexLaunchAuthMethodId(
+    status: AiRuntimeStatus | null,
+): string | null {
+    if (!status) {
+        return null;
+    }
+
+    if (
+        status.authMethod === "chatgpt" ||
+        status.authMethod === "codex-api-key" ||
+        status.authMethod === "openai-api-key"
+    ) {
+        return status.authMethod;
+    }
+
+    const nextMethod = status.authMethods.find(
+        (method) =>
+            method.id === "chatgpt" ||
+            method.id === "codex-api-key" ||
+            method.id === "openai-api-key",
+    );
+
+    return nextMethod?.id ?? "chatgpt";
 }

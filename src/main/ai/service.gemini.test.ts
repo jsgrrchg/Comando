@@ -20,7 +20,10 @@ describe("AiService Gemini branch", () => {
                 hasGatewayCustomHeaders: false,
             })),
             loadCodexRuntimeSettings: vi.fn(() => ({
+                authMethod: null,
                 binaryPath: null,
+                hasCodexApiKey: false,
+                hasOpenAiApiKey: false,
             })),
             loadGeminiRuntimeSettings: () => ({
                 authInvalidatedAtMs: null,

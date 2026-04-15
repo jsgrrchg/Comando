@@ -68,9 +68,11 @@ export const IPC_CHANNELS = {
     setAiSessionMode: "ai:set-session-mode",
     setAiSessionModel: "ai:set-session-model",
     setAiSessionConfigOption: "ai:set-session-config-option",
+    renameAiSession: "ai:rename-session",
     cancelAiSession: "ai:cancel-session",
     closeAiSession: "ai:close-session",
     launchAiRuntimeAuth: "ai:launch-runtime-auth",
+    logoutAiRuntimeAuth: "ai:logout-runtime-auth",
     respondAiPermission: "ai:respond-permission",
     respondAiUserInput: "ai:respond-user-input",
     keepAiTrackedFile: "ai:keep-tracked-file",
@@ -152,12 +154,14 @@ export interface AppEditorSettings {
     readonly fontFamily: EditorFontFamily;
     readonly fontSize: number;
     readonly lineHeight: number;
+    readonly suggestionsEnabled: boolean;
 }
 
 export interface ProjectEditorSettings {
     readonly fontFamily: EditorFontFamily | null;
     readonly fontSize: number | null;
     readonly lineHeight: number | null;
+    readonly suggestionsEnabled: boolean | null;
 }
 
 export type PersistedShellSurface =
@@ -210,8 +214,20 @@ export type GeminiAuthMethodId = "login_with_google" | "use_gemini";
 
 export type KiloAuthMethodId = "kilo-login";
 
+export type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
+
 export interface CodexRuntimeSettings {
+    readonly authMethod: CodexAuthMethodId | null;
     readonly binaryPath: string | null;
+    readonly hasCodexApiKey: boolean;
+    readonly hasOpenAiApiKey: boolean;
+}
+
+export interface CodexRuntimeSettingsInput {
+    readonly authMethod: CodexAuthMethodId | null;
+    readonly binaryPath: string | null;
+    readonly codexApiKey: SecretValuePatch;
+    readonly openaiApiKey: SecretValuePatch;
 }
 
 export type SecretValuePatch =
@@ -1205,6 +1221,11 @@ export interface AiSessionConfigOptionMutationInput {
     readonly value: boolean | string;
 }
 
+export interface AiSessionRenameMutationInput {
+    readonly sessionId: string;
+    readonly title: string;
+}
+
 export interface AiPermissionResponseInput {
     readonly optionId: string | null;
     readonly requestId: string;
@@ -1227,6 +1248,10 @@ export interface AiRuntimeAuthLaunchInput {
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly worktreeId?: string | null;
+}
+
+export interface AiRuntimeAuthLogoutInput {
+    readonly runtimeId: AiRuntimeId;
 }
 
 export interface AiTrackedFileMutationInput {
@@ -1347,11 +1372,15 @@ export interface ComandoApi {
     setAiSessionConfigOption: (
         input: AiSessionConfigOptionMutationInput,
     ) => Promise<void>;
+    renameAiSession: (input: AiSessionRenameMutationInput) => Promise<void>;
     cancelAiSession: (sessionId: string) => Promise<void>;
     closeAiSession: (sessionId: string) => Promise<void>;
     respondAiPermission: (input: AiPermissionResponseInput) => Promise<void>;
     respondAiUserInput: (input: AiUserInputResponseInput) => Promise<void>;
     launchAiRuntimeAuth: (input: AiRuntimeAuthLaunchInput) => Promise<void>;
+    logoutAiRuntimeAuth: (
+        input: AiRuntimeAuthLogoutInput,
+    ) => Promise<AiRuntimeStatus>;
     keepAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
     rejectAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
     keepAiTrackedFileHunks: (
@@ -1363,10 +1392,10 @@ export interface ComandoApi {
     keepAllAiTrackedFiles: (sessionId: string) => Promise<void>;
     rejectAllAiTrackedFiles: (sessionId: string) => Promise<void>;
     saveCodexRuntimeSettings: (
-        settings: CodexRuntimeSettings,
+        settings: CodexRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     verifyCodexRuntimeSettings: (
-        settings: CodexRuntimeSettings,
+        settings: CodexRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     saveClaudeRuntimeSettings: (
         settings: ClaudeRuntimeSettingsInput,

@@ -41,7 +41,10 @@ import {
 
 const CLAUDE_AUTH_INVALIDATED_AT_KEY = "ai.claude.auth_invalidated_at_ms";
 const CLAUDE_AUTH_METHOD_KEY = "ai.claude.auth_method";
+const CODEX_AUTH_METHOD_KEY = "ai.codex.auth_method";
 const CODEX_BINARY_PATH_KEY = "ai.codex.binary_path";
+const CODEX_HAS_CODEX_API_KEY_KEY = "ai.codex.has_codex_api_key";
+const CODEX_HAS_OPENAI_API_KEY_KEY = "ai.codex.has_openai_api_key";
 const CLAUDE_BINARY_PATH_KEY = "ai.claude.binary_path";
 const CLAUDE_GATEWAY_BASE_URL_KEY = "ai.claude.gateway_base_url";
 const CLAUDE_HAS_GATEWAY_AUTH_TOKEN_KEY = "ai.claude.has_gateway_auth_token";
@@ -63,11 +66,13 @@ const APP_ZOOM_FACTOR_KEY = "appearance.zoom_factor";
 const APP_EDITOR_FONT_FAMILY_KEY = "editor.font_family";
 const APP_EDITOR_FONT_SIZE_KEY = "editor.font_size";
 const APP_EDITOR_LINE_HEIGHT_KEY = "editor.line_height";
+const APP_EDITOR_SUGGESTIONS_ENABLED_KEY = "editor.suggestions_enabled";
 const PROJECT_THEME_MODE_KEY = "appearance.theme_mode";
 const PROJECT_THEME_PRESET_KEY = "appearance.theme_preset";
 const PROJECT_EDITOR_FONT_FAMILY_KEY = "editor.font_family";
 const PROJECT_EDITOR_FONT_SIZE_KEY = "editor.font_size";
 const PROJECT_EDITOR_LINE_HEIGHT_KEY = "editor.line_height";
+const PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY = "editor.suggestions_enabled";
 
 const AI_CHAT_FONT_FAMILY_KEY = "ai.chat.font_family";
 const AI_CHAT_FONT_SIZE_KEY = "ai.chat.font_size";
@@ -91,6 +96,7 @@ const VALID_CHAT_FONT_FAMILIES = new Set<ChatFontFamily>(
 const DEFAULT_THEME_MODE: ThemeMode = "system";
 const DEFAULT_THEME_PRESET: ThemePreset = "default";
 const DEFAULT_EDITOR_LINE_HEIGHT = 1.55;
+const DEFAULT_EDITOR_SUGGESTIONS_ENABLED = true;
 
 const VALID_THEME_MODES = new Set<ThemeMode>(["system", "light", "dark"]);
 const VALID_THEME_PRESETS = new Set<ThemePreset>([
@@ -145,10 +151,7 @@ export class SettingsService {
         return {
             ai: {
                 claude: this.loadClaudeRuntimeSettings(),
-                codex: {
-                    binaryPath:
-                        this.#loadStringSetting(CODEX_BINARY_PATH_KEY) ?? null,
-                },
+                codex: this.loadCodexRuntimeSettings(),
                 gemini: this.loadGeminiRuntimeSettings(),
                 kilo: this.loadKiloRuntimeSettings(),
             },
@@ -246,6 +249,9 @@ export class SettingsService {
             lineHeight: this.#normalizeEditorLineHeight(
                 this.#loadNumberSetting(APP_EDITOR_LINE_HEIGHT_KEY),
             ),
+            suggestionsEnabled: this.#normalizeEditorSuggestionsEnabled(
+                this.#loadBooleanSetting(APP_EDITOR_SUGGESTIONS_ENABLED_KEY),
+            ),
         };
     }
 
@@ -261,6 +267,12 @@ export class SettingsService {
         this.#saveSetting(
             APP_EDITOR_LINE_HEIGHT_KEY,
             String(this.#normalizeEditorLineHeight(settings.lineHeight)),
+        );
+        this.#saveBooleanSetting(
+            APP_EDITOR_SUGGESTIONS_ENABLED_KEY,
+            this.#normalizeEditorSuggestionsEnabled(
+                settings.suggestionsEnabled,
+            ),
         );
     }
 
@@ -358,6 +370,12 @@ export class SettingsService {
                     PROJECT_EDITOR_LINE_HEIGHT_KEY,
                 ),
             ),
+            suggestionsEnabled: this.#normalizeOptionalEditorSuggestionsEnabled(
+                this.#loadProjectBooleanSetting(
+                    projectId,
+                    PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
+                ),
+            ),
         };
 
         if (
@@ -365,7 +383,8 @@ export class SettingsService {
             appearance.themePreset === null &&
             editor.fontFamily === null &&
             editor.fontSize === null &&
-            editor.lineHeight === null
+            editor.lineHeight === null &&
+            editor.suggestionsEnabled === null
         ) {
             return null;
         }
@@ -399,6 +418,10 @@ export class SettingsService {
                 snapshot.projectId,
                 PROJECT_EDITOR_LINE_HEIGHT_KEY,
             );
+            this.#deleteProjectSetting(
+                snapshot.projectId,
+                PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
+            );
             return;
         }
 
@@ -431,24 +454,47 @@ export class SettingsService {
                 snapshot.editor?.lineHeight ?? null,
             ),
         );
+        this.#saveOptionalProjectBooleanSetting(
+            snapshot.projectId,
+            PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
+            this.#normalizeOptionalEditorSuggestionsEnabled(
+                snapshot.editor?.suggestionsEnabled ?? null,
+            ),
+        );
     }
 
     loadCodexRuntimeSettings(): CodexRuntimeSettings {
         return {
+            authMethod:
+                (this.#loadStringSetting(
+                    CODEX_AUTH_METHOD_KEY,
+                ) as CodexRuntimeSettings["authMethod"]) ?? null,
             binaryPath: this.#loadStringSetting(CODEX_BINARY_PATH_KEY) ?? null,
+            hasCodexApiKey:
+                this.#loadBooleanSetting(CODEX_HAS_CODEX_API_KEY_KEY) ?? false,
+            hasOpenAiApiKey:
+                this.#loadBooleanSetting(CODEX_HAS_OPENAI_API_KEY_KEY) ??
+                false,
         };
     }
 
     saveCodexRuntimeSettings(settings: CodexRuntimeSettings): void {
-        if (settings.binaryPath?.trim()) {
-            this.#saveSetting(
-                CODEX_BINARY_PATH_KEY,
-                settings.binaryPath.trim(),
-            );
-            return;
-        }
-
-        this.#deleteSetting(CODEX_BINARY_PATH_KEY);
+        this.#saveOptionalTrimmedStringSetting(
+            CODEX_AUTH_METHOD_KEY,
+            settings.authMethod,
+        );
+        this.#saveOptionalTrimmedStringSetting(
+            CODEX_BINARY_PATH_KEY,
+            settings.binaryPath,
+        );
+        this.#saveBooleanSetting(
+            CODEX_HAS_CODEX_API_KEY_KEY,
+            settings.hasCodexApiKey,
+        );
+        this.#saveBooleanSetting(
+            CODEX_HAS_OPENAI_API_KEY_KEY,
+            settings.hasOpenAiApiKey,
+        );
     }
 
     loadClaudeRuntimeSettings(): ClaudeRuntimeSettings {
@@ -630,13 +676,38 @@ export class SettingsService {
         return Number.isFinite(parsed) ? parsed : null;
     }
 
+    #loadProjectBooleanSetting(projectId: string, key: string): boolean | null {
+        const value = this.#loadProjectStringSetting(projectId, key);
+        if (value === null) {
+            return null;
+        }
+
+        if (value === "1" || value === "true") {
+            return true;
+        }
+
+        if (value === "0" || value === "false") {
+            return false;
+        }
+
+        return null;
+    }
+
     #loadBooleanSetting(key: string): boolean | null {
         const value = this.#loadStringSetting(key);
         if (value === null) {
             return null;
         }
 
-        return value === "1";
+        if (value === "1" || value === "true") {
+            return true;
+        }
+
+        if (value === "0" || value === "false") {
+            return false;
+        }
+
+        return null;
     }
 
     #loadNumberSetting(key: string): number | null {
@@ -752,6 +823,19 @@ export class SettingsService {
         }
 
         this.#saveProjectSetting(projectId, key, String(value));
+    }
+
+    #saveOptionalProjectBooleanSetting(
+        projectId: string,
+        key: string,
+        value: boolean | null,
+    ): void {
+        if (value === null) {
+            this.#deleteProjectSetting(projectId, key);
+            return;
+        }
+
+        this.#saveProjectSetting(projectId, key, value ? "1" : "0");
     }
 
     #deleteSetting(key: string): void {
@@ -885,6 +969,26 @@ export class SettingsService {
         }
 
         return Math.min(2, Math.max(1.2, Math.round(value * 100) / 100));
+    }
+
+    #normalizeEditorSuggestionsEnabled(
+        value: boolean | null | undefined,
+    ): boolean {
+        if (typeof value !== "boolean") {
+            return DEFAULT_EDITOR_SUGGESTIONS_ENABLED;
+        }
+
+        return value;
+    }
+
+    #normalizeOptionalEditorSuggestionsEnabled(
+        value: boolean | null | undefined,
+    ): boolean | null {
+        if (typeof value !== "boolean") {
+            return null;
+        }
+
+        return value;
     }
 
     #normalizeChatFontFamily(value: string | null | undefined): ChatFontFamily {
