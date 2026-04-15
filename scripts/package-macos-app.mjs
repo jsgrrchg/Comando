@@ -32,12 +32,18 @@ const packagedClaudeRoot = path.join(
 const packagedNodeRoot = path.join(packagedAiRoot, "embedded", "node");
 const outDir = path.join(repoRoot, "out");
 const desktopAppPath = path.join(os.homedir(), "Desktop", "Comando.app");
-const standaloneProjectRoot = path.join(os.tmpdir(), "comando-package-project");
+const macPackageRoot = path.join(buildRoot, "macos-package");
+const standaloneProjectRoot = path.join(macPackageRoot, "project");
 const standaloneDistDir = path.join(standaloneProjectRoot, "dist");
 const standaloneResourcesRoot = path.join(standaloneProjectRoot, "resources");
 const standalonePackageResourcesRoot = path.join(
     standaloneProjectRoot,
     "package-resources",
+);
+const standalonePackagedAppPath = path.join(
+    standaloneDistDir,
+    "mac-universal",
+    "Comando.app",
 );
 const electronBuilderCli = path.join(
     repoRoot,
@@ -121,24 +127,24 @@ function main() {
         },
     );
 
-    const packagedAppPath = path.join(
-        standaloneDistDir,
-        "mac-universal",
-        "Comando.app",
-    );
-    if (!fs.existsSync(packagedAppPath)) {
+    if (!fs.existsSync(standalonePackagedAppPath)) {
         throw new Error(
-            `Expected packaged app at ${relativeToRepo(packagedAppPath)}, but it was not generated.`,
+            `Expected packaged app at ${relativeToRepo(standalonePackagedAppPath)}, but it was not generated.`,
         );
     }
 
-    verifyPackagedApplication(packagedAppPath);
+    verifyPackagedApplication(standalonePackagedAppPath);
 
     fs.rmSync(desktopAppPath, { force: true, recursive: true });
-    fs.cpSync(packagedAppPath, desktopAppPath, { recursive: true });
+    fs.cpSync(standalonePackagedAppPath, desktopAppPath, {
+        recursive: true,
+    });
     repairMovedMacAppBundle(desktopAppPath);
 
     console.log(`[package:mac] App copied to ${desktopAppPath}`);
+    console.log(
+        `[package:mac] Universal staging bundle available at ${standalonePackagedAppPath}`,
+    );
 }
 
 function prepareWorkspace() {
@@ -150,7 +156,7 @@ function prepareWorkspace() {
         force: true,
         recursive: true,
     });
-    fs.rmSync(standaloneProjectRoot, { force: true, recursive: true });
+    fs.rmSync(macPackageRoot, { force: true, recursive: true });
     ensurePackagerCommandWrappers();
     patchNodePtyBindingGyp(repoRoot);
 }
