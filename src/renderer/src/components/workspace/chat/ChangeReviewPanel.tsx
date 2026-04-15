@@ -26,6 +26,7 @@ import {
     type ChangeReviewItem,
 } from "./toolActivityReviewModel";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
+import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 
 const TOOL_ACTION_BUTTON_STYLE: CSSProperties = {
     borderRadius: 8,
@@ -570,6 +571,12 @@ export function ChangeReviewPanel({
                     <span className="shrink-0" style={{ color: accent }}>
                         {activity.status === "failed" ? (
                             <WarningIcon />
+                        ) : singleItem ? (
+                            <FileTypeIcon
+                                fileName={singleItem.path}
+                                opacity={0.85}
+                                size={14}
+                            />
                         ) : (
                             <ToolIcon kind={activity.kind} />
                         )}

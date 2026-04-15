@@ -1,5 +1,6 @@
 import type { ReviewFileItem } from "./editedFilesPresentationModel";
 import { EditedFileDiffPreview } from "./EditedFileDiffPreview";
+import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import {
     formatDiffStat,
     getCompactPath,
@@ -24,19 +25,6 @@ function getReviewBadgeLabel(item: ReviewFileItem): string {
     }
 
     return "Modified";
-}
-
-function getFileKindPrefix(kind: string): string {
-    switch (kind) {
-        case "create":
-            return "A";
-        case "delete":
-            return "D";
-        case "move":
-            return "R";
-        default:
-            return "M";
-    }
 }
 
 export function DiffStatBar({
@@ -134,19 +122,11 @@ export function ReviewFileRow({
                 }}
             >
                 <div className="flex items-center gap-2 px-2.5 py-1">
-                    <span
-                        aria-hidden="true"
-                        style={{
-                            color: item.tone.accent,
-                            flexShrink: 0,
-                            fontSize: "0.78em",
-                            fontWeight: 700,
-                            textAlign: "center",
-                            width: 12,
-                        }}
-                    >
-                        {getFileKindPrefix(item.file.kind)}
-                    </span>
+                    <FileTypeIcon
+                        fileName={item.file.path}
+                        opacity={0.7}
+                        size={12}
+                    />
                     <span
                         className="min-w-0 flex-1 truncate"
                         style={{
@@ -348,19 +328,11 @@ export function ReviewFileRow({
                 >
                     ▸
                 </button>
-                <span
-                    aria-hidden="true"
-                    style={{
-                        color: item.tone.accent,
-                        flexShrink: 0,
-                        fontSize: "0.78em",
-                        fontWeight: 700,
-                        textAlign: "center",
-                        width: 14,
-                    }}
-                >
-                    {getFileKindPrefix(item.file.kind)}
-                </span>
+                <FileTypeIcon
+                    fileName={item.file.path}
+                    opacity={0.75}
+                    size={14}
+                />
                 <button
                     className="min-w-0 flex-1 text-left"
                     onClick={onToggle}
