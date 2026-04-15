@@ -34,7 +34,12 @@ import { useProjectsStore } from "./app/store/projects-store";
 import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
 import { findPaneById } from "./app/workspace/tree";
-import { GitTreeView, type GitTreeNode } from "./components/git";
+import {
+    getProjectEntryParentRelativePath,
+    GitTreeView,
+    type GitTreeDragData,
+    type GitTreeNode,
+} from "./components/git";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -615,8 +620,10 @@ export function App() {
         [activeProjectContextKey, treeNodes],
     );
     const activeProjectTree = activeTreeNodesByParent[ROOT_NODE_KEY] ?? [];
-    const activeExpandedDirectories =
-        expandedDirectories[activeProjectContextKey] ?? [];
+    const activeExpandedDirectories = useMemo(
+        () => expandedDirectories[activeProjectContextKey] ?? [],
+        [activeProjectContextKey, expandedDirectories],
+    );
     const normalizedFileTreeFilter = fileTreeFilter.trim();
     const filteredFileTree = useMemo(
         () =>
@@ -749,6 +756,7 @@ export function App() {
                     activeProjectId,
                     node.path,
                     nextName,
+                    undefined,
                     activeWorktreeId,
                 );
                 await renameTabsForProjectPath(
@@ -771,6 +779,74 @@ export function App() {
             activeWorktreeId,
             renameEntry,
             renameTabsForProjectPath,
+        ],
+    );
+
+    const handleMoveTreeNode = useCallback(
+        async (draggedEntry: GitTreeDragData, destinationNode: GitTreeNode) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const nextParentRelativePath = destinationNode.isProjectRoot
+                ? null
+                : destinationNode.path;
+            const currentParentRelativePath = getProjectEntryParentRelativePath(
+                draggedEntry.relativePath,
+            );
+            const destinationProjectTreeNode =
+                destinationNode.isProjectRoot || !destinationNode.path
+                    ? null
+                    : findProjectTreeNodeByPath(
+                          activeTreeNodesByParent,
+                          destinationNode.path,
+                      );
+            const shouldExpandDestination =
+                Boolean(destinationProjectTreeNode) &&
+                !activeExpandedDirectories.includes(destinationNode.path);
+
+            if (currentParentRelativePath === nextParentRelativePath) {
+                return;
+            }
+
+            try {
+                const movedEntry = await renameEntry(
+                    activeProjectId,
+                    draggedEntry.relativePath,
+                    draggedEntry.name,
+                    nextParentRelativePath,
+                    activeWorktreeId,
+                );
+                await renameTabsForProjectPath(
+                    activeProjectId,
+                    activeWorktreeId,
+                    draggedEntry.relativePath,
+                    movedEntry.relativePath,
+                    draggedEntry.kind,
+                );
+                if (destinationProjectTreeNode && shouldExpandDestination) {
+                    await toggleDirectory(
+                        activeProjectId,
+                        destinationProjectTreeNode,
+                        activeWorktreeId,
+                    );
+                }
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not move the selected entry.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeExpandedDirectories,
+            activeWorktreeId,
+            activeTreeNodesByParent,
+            renameEntry,
+            renameTabsForProjectPath,
+            toggleDirectory,
         ],
     );
 
@@ -1476,6 +1552,12 @@ export function App() {
                                     dataTransfer.setData(
                                         "text/plain",
                                         node.path,
+                                    );
+                                }}
+                                onNodeDrop={(dragData, destinationNode) => {
+                                    void handleMoveTreeNode(
+                                        dragData,
+                                        destinationNode,
                                     );
                                 }}
                                 onToggleDirectory={(node) => {

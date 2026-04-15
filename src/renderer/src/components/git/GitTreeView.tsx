@@ -1,4 +1,10 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import {
+    useEffect,
+    useRef,
+    useState,
+    type CSSProperties,
+    type ReactNode,
+} from "react";
 
 import {
     COMPOSER_PROJECT_ENTRY_MIME,
@@ -8,6 +14,7 @@ import {
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 
 import { GitActionButton, GitEmptyState } from "./GitUi";
+import { canDropProjectEntryIntoDirectory } from "./tree-dnd";
 import type {
     GitTreeDragData,
     GitNodeStatus,
@@ -22,6 +29,7 @@ const INDENT_STEP = 16;
 const BASE_PADDING = 8;
 const ICON_SM = 13;
 const ICON_MD = 15;
+const AUTO_EXPAND_DELAY_MS = 2000;
 
 const GUIDE_COLOR = "color-mix(in srgb, var(--color-border) 82%, transparent)";
 
@@ -58,6 +66,57 @@ export function GitTreeView({
     showStatusIndicator = true,
 }: GitTreeViewProps) {
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+    const [activeDragData, setActiveDragData] =
+        useState<GitTreeDragData | null>(null);
+    const hoverExpandPathRef = useRef<string | null>(null);
+    const hoverExpandTimeoutRef = useRef<number | null>(null);
+
+    const clearHoverExpand = () => {
+        hoverExpandPathRef.current = null;
+        if (hoverExpandTimeoutRef.current !== null) {
+            window.clearTimeout(hoverExpandTimeoutRef.current);
+            hoverExpandTimeoutRef.current = null;
+        }
+    };
+
+    const scheduleHoverExpand = (
+        node: GitTreeNode,
+        isExpanded: boolean,
+        canAcceptDrop: boolean,
+    ) => {
+        if (
+            !canAcceptDrop ||
+            !onToggleDirectory ||
+            !node.hasChildren ||
+            isExpanded
+        ) {
+            clearHoverExpand();
+            return;
+        }
+
+        const hoverPath = node.path;
+        if (hoverExpandPathRef.current === hoverPath) {
+            return;
+        }
+
+        clearHoverExpand();
+        hoverExpandPathRef.current = hoverPath;
+        hoverExpandTimeoutRef.current = window.setTimeout(() => {
+            hoverExpandTimeoutRef.current = null;
+            hoverExpandPathRef.current = null;
+            onToggleDirectory(node);
+        }, AUTO_EXPAND_DELAY_MS);
+    };
+
+    useEffect(() => {
+        return () => {
+            hoverExpandPathRef.current = null;
+            if (hoverExpandTimeoutRef.current !== null) {
+                window.clearTimeout(hoverExpandTimeoutRef.current);
+                hoverExpandTimeoutRef.current = null;
+            }
+        };
+    }, []);
 
     if (nodes.length === 0) {
         return (
@@ -75,6 +134,7 @@ export function GitTreeView({
                     constrainWidth={constrainWidth}
                     depth={0}
                     dropTargetPath={dropTargetPath}
+                    activeDragData={activeDragData}
                     enableNodeDrag={enableNodeDrag}
                     expandedPaths={expandedPaths}
                     key={node.id}
@@ -84,8 +144,11 @@ export function GitTreeView({
                     onNodeClick={onNodeClick}
                     onNodeDrop={onNodeDrop}
                     onNodeDragStart={onNodeDragStart}
+                    scheduleHoverExpand={scheduleHoverExpand}
                     onToggleDirectory={onToggleDirectory}
                     renderNodeMeta={renderNodeMeta}
+                    setActiveDragData={setActiveDragData}
+                    clearHoverExpand={clearHoverExpand}
                     setDropTargetPath={setDropTargetPath}
                     showStatusIndicator={showStatusIndicator}
                 />
@@ -96,6 +159,7 @@ export function GitTreeView({
 
 function GitTreeNodeRow({
     activePath,
+    activeDragData,
     constrainWidth = false,
     depth,
     dropTargetPath,
@@ -107,12 +171,16 @@ function GitTreeNodeRow({
     onNodeClick,
     onNodeDrop,
     onNodeDragStart,
+    scheduleHoverExpand,
     onToggleDirectory,
     renderNodeMeta,
+    setActiveDragData,
+    clearHoverExpand,
     setDropTargetPath,
     showStatusIndicator,
 }: {
     readonly activePath: string | null;
+    readonly activeDragData: GitTreeDragData | null;
     readonly constrainWidth?: boolean;
     readonly depth: number;
     readonly dropTargetPath: string | null;
@@ -136,8 +204,15 @@ function GitTreeNodeRow({
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
     ) => void;
+    readonly scheduleHoverExpand: (
+        node: GitTreeNode,
+        isExpanded: boolean,
+        canAcceptDrop: boolean,
+    ) => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
+    readonly setActiveDragData: (dragData: GitTreeDragData | null) => void;
+    readonly clearHoverExpand: () => void;
     readonly setDropTargetPath: (path: string | null) => void;
     readonly showStatusIndicator: boolean;
 }) {
@@ -175,6 +250,8 @@ function GitTreeNodeRow({
                 data-drop-target={isDropTarget ? "true" : "false"}
                 draggable={isDraggable}
                 onDragEnd={() => {
+                    clearHoverExpand();
+                    setActiveDragData(null);
                     setDropTargetPath(null);
                 }}
                 onDragLeave={(event) => {
@@ -187,19 +264,24 @@ function GitTreeNodeRow({
                     }
 
                     if (dropTargetPath === node.path) {
+                        clearHoverExpand();
                         setDropTargetPath(null);
                     }
                 }}
                 onDragOver={(event) => {
-                    const dragData = getTreeDragData(event.dataTransfer);
-                    if (
-                        !isDirectory ||
-                        !onNodeDrop ||
-                        !canDropIntoDirectory(
+                    const dragData =
+                        activeDragData ?? getTreeDragData(event.dataTransfer);
+                    const canAcceptDrop =
+                        isDirectory &&
+                        Boolean(onNodeDrop) &&
+                        canDropProjectEntryIntoDirectory(
                             dragData,
                             node.isProjectRoot ? null : node.path,
-                        )
-                    ) {
+                        );
+
+                    scheduleHoverExpand(node, isExpanded, canAcceptDrop);
+
+                    if (!isDirectory || !onNodeDrop || !canAcceptDrop) {
                         return;
                     }
 
@@ -214,16 +296,24 @@ function GitTreeNodeRow({
                         return;
                     }
 
+                    setActiveDragData({
+                        kind: node.kind,
+                        name: node.name,
+                        relativePath: node.path,
+                    });
                     dragStartHandler?.(node, event.dataTransfer ?? null);
                 }}
                 onDrop={(event) => {
-                    const dragData = getTreeDragData(event.dataTransfer);
+                    const dragData =
+                        activeDragData ?? getTreeDragData(event.dataTransfer);
+                    clearHoverExpand();
+                    setActiveDragData(null);
                     setDropTargetPath(null);
 
                     if (
                         !isDirectory ||
                         !onNodeDrop ||
-                        !canDropIntoDirectory(
+                        !canDropProjectEntryIntoDirectory(
                             dragData,
                             node.isProjectRoot ? null : node.path,
                         )
@@ -376,6 +466,7 @@ function GitTreeNodeRow({
                 ? node.children.map((child) => (
                       <GitTreeNodeRow
                           activePath={activePath}
+                          activeDragData={activeDragData}
                           constrainWidth={constrainWidth}
                           depth={depth + 1}
                           dropTargetPath={dropTargetPath}
@@ -388,8 +479,11 @@ function GitTreeNodeRow({
                           onNodeClick={onNodeClick}
                           onNodeDrop={onNodeDrop}
                           onNodeDragStart={dragStartHandler}
+                          scheduleHoverExpand={scheduleHoverExpand}
                           onToggleDirectory={onToggleDirectory}
                           renderNodeMeta={renderNodeMeta}
+                          setActiveDragData={setActiveDragData}
+                          clearHoverExpand={clearHoverExpand}
                           setDropTargetPath={setDropTargetPath}
                           showStatusIndicator={showStatusIndicator}
                       />
@@ -418,38 +512,6 @@ function getTreeDragData(
         name: parsed.name,
         relativePath: parsed.relativePath,
     };
-}
-
-function canDropIntoDirectory(
-    dragData: GitTreeDragData | null,
-    directoryPath: string | null,
-): dragData is GitTreeDragData {
-    if (!dragData) {
-        return false;
-    }
-
-    const currentParentPath = getParentRelativePath(dragData.relativePath);
-    if (currentParentPath === directoryPath) {
-        return false;
-    }
-
-    if (dragData.kind === "directory") {
-        return (
-            dragData.relativePath !== directoryPath &&
-            !(directoryPath ?? "").startsWith(`${dragData.relativePath}/`)
-        );
-    }
-
-    return true;
-}
-
-function getParentRelativePath(relativePath: string): string | null {
-    const segments = relativePath.split("/").filter(Boolean);
-    if (segments.length <= 1) {
-        return null;
-    }
-
-    return segments.slice(0, -1).join("/");
 }
 
 // --- Icons ---
