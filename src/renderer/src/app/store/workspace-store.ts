@@ -82,6 +82,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     readonly lastFocusedChatTabId: string | null;
     readonly lastFocusedRuntimeId: AiRuntimeId;
     readonly lastQuickCreateAction: WorkspaceQuickCreateAction;
+    readonly recentFocusedChatTabIds: readonly string[];
     appendTerminalOutput: (event: TerminalDataEvent) => void;
     closePane: (paneId: string) => Promise<void>;
     closeTab: (tabId: string) => Promise<void>;
@@ -115,6 +116,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         targetPaneId: string,
         targetIndex: number,
     ) => Promise<void>;
+    markChatTabFocused: (tabId: string) => void;
     openFileTab: (
         projectId: string,
         relativePath: string,
@@ -202,6 +204,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     lastFocusedChatTabId: null,
     lastFocusedRuntimeId: "codex",
     lastQuickCreateAction: "codex",
+    recentFocusedChatTabIds: [],
 
     appendTerminalOutput: (event) => {
         set((state) => ({
@@ -263,13 +266,35 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
         set((state) => {
             const nextState = closeWorkspaceTab(state, tabId);
+            const recentFocusedChatTabIds = removeRecentChatFocus(
+                state.recentFocusedChatTabIds,
+                tabId,
+            );
+            const fallbackFocusedChatTabId =
+                findMostRecentExistingChatTabId(
+                    nextState.tabsById,
+                    recentFocusedChatTabIds,
+                ) ?? getPaneChatTabId(nextState, nextState.activePaneId);
+            const fallbackFocusedRuntimeId =
+                getWorkspaceTabRuntimeId(
+                    fallbackFocusedChatTabId
+                        ? nextState.tabsById[fallbackFocusedChatTabId]
+                        : null,
+                ) ??
+                getPaneRuntimeId(nextState, nextState.activePaneId) ??
+                state.lastFocusedRuntimeId;
             return {
                 ...nextState,
                 error: null,
                 lastFocusedChatTabId:
                     state.lastFocusedChatTabId === tabId
-                        ? getPaneChatTabId(nextState, nextState.activePaneId)
+                        ? fallbackFocusedChatTabId
                         : state.lastFocusedChatTabId,
+                lastFocusedRuntimeId:
+                    state.lastFocusedChatTabId === tabId
+                        ? fallbackFocusedRuntimeId
+                        : state.lastFocusedRuntimeId,
+                recentFocusedChatTabIds,
             };
         });
         await persistWorkspaceState(get);
@@ -307,6 +332,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             lastFocusedChatTabId: tab.id,
             lastFocusedRuntimeId: runtimeId,
             lastQuickCreateAction: runtimeId,
+            recentFocusedChatTabIds: recordRecentChatFocus(
+                state.recentFocusedChatTabIds,
+                tab.id,
+            ),
         }));
         await persistWorkspaceState(get);
     },
@@ -446,6 +475,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 lastFocusedRuntimeId:
                     getPaneRuntimeId(hydratedState, snapshot.activePaneId) ??
                     "codex",
+                recentFocusedChatTabIds: recordRecentChatFocus(
+                    [],
+                    getPaneChatTabId(hydratedState, snapshot.activePaneId),
+                ),
             });
             void hydrateRuntimeTabs(snapshot, get, set);
         } catch (error) {
@@ -466,6 +499,24 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             error: null,
         }));
         await persistWorkspaceState(get);
+    },
+
+    markChatTabFocused: (tabId) => {
+        set((state) => {
+            const tab = state.tabsById[tabId];
+            if (tab?.kind !== "chat") {
+                return state;
+            }
+
+            return {
+                lastFocusedChatTabId: tab.id,
+                lastFocusedRuntimeId: tab.runtimeId,
+                recentFocusedChatTabIds: recordRecentChatFocus(
+                    state.recentFocusedChatTabIds,
+                    tab.id,
+                ),
+            };
+        });
     },
 
     moveTab: async (tabId, direction) => {
@@ -802,6 +853,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                    recentFocusedChatTabIds: recordRecentChatFocus(
+                        state.recentFocusedChatTabIds,
+                        chatTabId,
+                    ),
                 };
             })(),
         }));
@@ -823,6 +878,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                    recentFocusedChatTabIds: recordRecentChatFocus(
+                        state.recentFocusedChatTabIds,
+                        chatTabId,
+                    ),
                 };
             })(),
         }));
@@ -864,6 +923,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                    recentFocusedChatTabIds: recordRecentChatFocus(
+                        state.recentFocusedChatTabIds,
+                        chatTabId,
+                    ),
                 };
             })(),
         }));
@@ -1000,6 +1063,7 @@ export function getBestMatchingChatTabId(
         readonly currentPaneId: string;
         readonly lastFocusedChatTabId: string | null;
         readonly projectId: string | null;
+        readonly recentFocusedChatTabIds: readonly string[];
         readonly worktreeId: string | null;
     },
 ): string | null {
@@ -1020,6 +1084,12 @@ export function getBestMatchingChatTabId(
         return input.lastFocusedChatTabId;
     }
 
+    const recentMatch =
+        input.recentFocusedChatTabIds.find(matchesScope) ?? null;
+    if (recentMatch) {
+        return recentMatch;
+    }
+
     const currentPane = collectPaneNodes(state.rootNode).find(
         (candidate) => candidate.id === input.currentPaneId,
     );
@@ -1032,6 +1102,42 @@ export function getBestMatchingChatTabId(
         collectPaneNodes(state.rootNode)
             .flatMap((pane) => pane.tabIds)
             .find(matchesScope) ?? null
+    );
+}
+
+function recordRecentChatFocus(
+    recentFocusedChatTabIds: readonly string[],
+    chatTabId: string | null,
+): readonly string[] {
+    if (!chatTabId) {
+        return recentFocusedChatTabIds;
+    }
+
+    return [
+        chatTabId,
+        ...recentFocusedChatTabIds.filter(
+            (recentChatTabId) => recentChatTabId !== chatTabId,
+        ),
+    ];
+}
+
+function removeRecentChatFocus(
+    recentFocusedChatTabIds: readonly string[],
+    chatTabId: string,
+): readonly string[] {
+    return recentFocusedChatTabIds.filter(
+        (recentChatTabId) => recentChatTabId !== chatTabId,
+    );
+}
+
+function findMostRecentExistingChatTabId(
+    tabsById: Record<string, RuntimeWorkspaceTab>,
+    recentFocusedChatTabIds: readonly string[],
+): string | null {
+    return (
+        recentFocusedChatTabIds.find(
+            (recentChatTabId) => tabsById[recentChatTabId]?.kind === "chat",
+        ) ?? null
     );
 }
 

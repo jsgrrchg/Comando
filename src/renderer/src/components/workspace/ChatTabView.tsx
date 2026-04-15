@@ -25,6 +25,7 @@ import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
+import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceFileReviewContext,
@@ -193,6 +194,9 @@ export function ChatTabView({
     const rejectTrackedFile = useAiStore((s) => s.rejectTrackedFile);
     const rejectTrackedFileHunks = useAiStore((s) => s.rejectTrackedFileHunks);
     const renameSession = useAiStore((s) => s.renameSession);
+    const markChatTabFocused = useWorkspaceStore(
+        (state) => state.markChatTabFocused,
+    );
     const setSessionConfigOption = useAiStore((s) => s.setSessionConfigOption);
     const setSessionMode = useAiStore((s) => s.setSessionMode);
     const setSessionModel = useAiStore((s) => s.setSessionModel);
@@ -895,9 +899,15 @@ export function ChatTabView({
         [tab.projectId],
     );
 
+    const handleChatFocus = useCallback(() => {
+        markChatTabFocused(tab.id);
+    }, [markChatTabFocused, tab.id]);
+
     return (
         <div
             className="flex h-full min-h-0 min-w-0"
+            onFocusCapture={handleChatFocus}
+            onMouseDownCapture={handleChatFocus}
             style={{ backgroundColor: "var(--color-bg-secondary)" }}
         >
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">

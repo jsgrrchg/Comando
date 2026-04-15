@@ -16,6 +16,7 @@ import {
 } from "./workspace-store";
 
 const saveWorkspaceSnapshotMock = vi.fn(async () => {});
+const closeAiSessionMock = vi.fn(async () => {});
 const openProjectFileMock =
     vi.fn<
         (input: {
@@ -28,6 +29,7 @@ const openProjectFileMock =
 describe("workspace file opening", () => {
     beforeEach(() => {
         saveWorkspaceSnapshotMock.mockClear();
+        closeAiSessionMock.mockClear();
         openProjectFileMock.mockReset();
         openProjectFileMock.mockImplementation(async (input) => ({
             absolutePath: `/tmp/${input.relativePath}`,
@@ -48,6 +50,7 @@ describe("workspace file opening", () => {
 
         vi.stubGlobal("window", {
             comando: {
+                closeAiSession: closeAiSessionMock,
                 openProjectFile: openProjectFileMock,
                 saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
             },
@@ -61,6 +64,7 @@ describe("workspace file opening", () => {
             lastFocusedChatTabId: null,
             lastFocusedRuntimeId: "codex",
             lastQuickCreateAction: "codex",
+            recentFocusedChatTabIds: [],
         }));
     });
 
@@ -347,7 +351,7 @@ describe("workspace runtime focus helpers", () => {
         expect(getPaneChatTabId(state, "missing-pane")).toBeNull();
     });
 
-    it("ignores the last focused chat when it belongs to another worktree", () => {
+    it("prefers the most recent scoped chat when the last focused chat is out of scope", () => {
         const state: WorkspaceTreeState = {
             activePaneId: "pane-file",
             rootNode: {
@@ -420,8 +424,150 @@ describe("workspace runtime focus helpers", () => {
                 currentPaneId: "pane-file",
                 lastFocusedChatTabId: "chat-root",
                 projectId: "project-1",
+                recentFocusedChatTabIds: ["chat-worktree", "chat-root"],
                 worktreeId: "worktree-1",
             }),
         ).toBe("chat-worktree");
+    });
+
+    it("tracks chat focus recency without overwriting it when a file tab is selected", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "chat-1",
+                        id: "pane-a",
+                        tabIds: ["chat-1", "file-1"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: "chat-2",
+                        id: "pane-b",
+                        tabIds: ["chat-2"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-1",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "chat-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "chat-1",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Codex 1",
+                    worktreeId: null,
+                },
+                "chat-2": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "chat-2",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "claude",
+                    sessionId: "session-2",
+                    title: "Claude 1",
+                    worktreeId: null,
+                },
+                "file-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-1",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "README.md",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "README.md",
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().selectTab("pane-a", "chat-1");
+        await useWorkspaceStore.getState().selectTab("pane-b", "chat-2");
+        await useWorkspaceStore.getState().selectTab("pane-a", "file-1");
+
+        const state = useWorkspaceStore.getState();
+
+        expect(state.lastFocusedChatTabId).toBe("chat-2");
+        expect(state.recentFocusedChatTabIds).toEqual(["chat-2", "chat-1"]);
+    });
+
+    it("falls back to the previous focused chat after closing the current favorite", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "chat-1",
+                        id: "pane-a",
+                        tabIds: ["chat-1"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: "chat-2",
+                        id: "pane-b",
+                        tabIds: ["chat-2"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-1",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "chat-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "chat-1",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Codex 1",
+                    worktreeId: null,
+                },
+                "chat-2": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "chat-2",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "claude",
+                    sessionId: "session-2",
+                    title: "Claude 1",
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        useWorkspaceStore.getState().markChatTabFocused("chat-1");
+        useWorkspaceStore.getState().markChatTabFocused("chat-2");
+
+        await useWorkspaceStore.getState().closeTab("chat-2");
+
+        const state = useWorkspaceStore.getState();
+
+        expect(state.lastFocusedChatTabId).toBe("chat-1");
+        expect(state.lastFocusedRuntimeId).toBe("codex");
+        expect(state.recentFocusedChatTabIds).toEqual(["chat-1"]);
     });
 });

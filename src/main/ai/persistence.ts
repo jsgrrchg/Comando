@@ -36,6 +36,16 @@ interface PersistedRuntimeCatalogRow {
     readonly transcript_json: string | null;
 }
 
+interface PersistedRuntimePreferencesRow {
+    readonly value: string;
+}
+
+interface PersistedRuntimeSelectionPreferences {
+    readonly configOptions: Record<string, boolean | string>;
+    readonly modeId: string | null;
+    readonly modelId: string | null;
+}
+
 export class AiPersistence {
     readonly #connection: Database.Database;
 
@@ -177,16 +187,110 @@ export class AiPersistence {
             return null;
         }
 
+        return applyRuntimeSelectionPreferencesToCatalog(
+            {
+                availableCommands: normalizeAvailableCommands(
+                    raw.availableCommands,
+                ),
+                configOptions: normalizeConfigOptions(raw.configOptions),
+                modeId: typeof raw.modeId === "string" ? raw.modeId : null,
+                modes: normalizeSessionModes(raw.modes),
+                modelId: typeof raw.modelId === "string" ? raw.modelId : null,
+                models: normalizeSessionModels(raw.models),
+            },
+            this.loadRuntimeSelectionPreferences(runtimeId),
+        );
+    }
+
+    loadRuntimeSelectionPreferences(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+    ): PersistedRuntimeSelectionPreferences {
+        const raw = this.#connection
+            .prepare<[string], PersistedRuntimePreferencesRow | undefined>(
+                `
+                SELECT value
+                FROM app_settings
+                WHERE key = ?
+                LIMIT 1
+                `,
+            )
+            .get(getRuntimeSelectionPreferencesKey(runtimeId))?.value;
+        const parsed =
+            parseJsonWithFallback<PersistedRuntimeSelectionPreferences | null>(
+                raw ?? null,
+                null,
+            );
+
+        if (!parsed || typeof parsed !== "object") {
+            return createEmptyRuntimeSelectionPreferences();
+        }
+
         return {
-            availableCommands: normalizeAvailableCommands(
-                raw.availableCommands,
+            configOptions: normalizeSelectionPreferenceOptions(
+                parsed.configOptions,
             ),
-            configOptions: normalizeConfigOptions(raw.configOptions),
-            modeId: typeof raw.modeId === "string" ? raw.modeId : null,
-            modes: normalizeSessionModes(raw.modes),
-            modelId: typeof raw.modelId === "string" ? raw.modelId : null,
-            models: normalizeSessionModels(raw.models),
+            modeId: typeof parsed.modeId === "string" ? parsed.modeId : null,
+            modelId: typeof parsed.modelId === "string" ? parsed.modelId : null,
         };
+    }
+
+    saveRuntimeSelectionPreferences(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        patch: Partial<PersistedRuntimeSelectionPreferences>,
+    ): void {
+        const now = new Date().toISOString();
+        const current = this.loadRuntimeSelectionPreferences(runtimeId);
+        const next = {
+            configOptions: {
+                ...current.configOptions,
+                ...(patch.configOptions ?? {}),
+            },
+            modeId: patch.modeId === undefined ? current.modeId : patch.modeId,
+            modelId:
+                patch.modelId === undefined ? current.modelId : patch.modelId,
+        } satisfies PersistedRuntimeSelectionPreferences;
+
+        this.#connection
+            .prepare<[string, string, string], void>(
+                `
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                `,
+            )
+            .run(
+                getRuntimeSelectionPreferencesKey(runtimeId),
+                JSON.stringify(next),
+                now,
+            );
+    }
+
+    saveRuntimeSelectionPreferenceOption(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        optionId: string,
+        value: boolean | string,
+    ): void {
+        this.saveRuntimeSelectionPreferences(runtimeId, {
+            configOptions: {
+                [optionId]: value,
+            },
+        });
+    }
+
+    saveRuntimeModePreference(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        modeId: string,
+    ): void {
+        this.saveRuntimeSelectionPreferences(runtimeId, { modeId });
+    }
+
+    saveRuntimeModelPreference(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        modelId: string,
+    ): void {
+        this.saveRuntimeSelectionPreferences(runtimeId, { modelId });
     }
 
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void {
@@ -289,6 +393,125 @@ export class AiPersistence {
 
         return row?.draft ?? "";
     }
+}
+
+function getRuntimeSelectionPreferencesKey(
+    runtimeId: AiSessionSnapshot["runtimeId"],
+): string {
+    return `ai.runtime_preferences.${runtimeId}`;
+}
+
+function createEmptyRuntimeSelectionPreferences(): PersistedRuntimeSelectionPreferences {
+    return {
+        configOptions: {},
+        modeId: null,
+        modelId: null,
+    };
+}
+
+function normalizeSelectionPreferenceOptions(
+    value: unknown,
+): Record<string, boolean | string> {
+    if (!isRecord(value)) {
+        return {};
+    }
+
+    const normalized: Record<string, boolean | string> = {};
+
+    for (const [key, entry] of Object.entries(value)) {
+        if (typeof entry === "boolean" || typeof entry === "string") {
+            normalized[key] = entry;
+        }
+    }
+
+    return normalized;
+}
+
+function applyRuntimeSelectionPreferencesToCatalog(
+    catalog: Pick<
+        AiSessionSnapshot,
+        | "availableCommands"
+        | "configOptions"
+        | "modeId"
+        | "modes"
+        | "modelId"
+        | "models"
+    >,
+    preferences: PersistedRuntimeSelectionPreferences,
+): Pick<
+    AiSessionSnapshot,
+    | "availableCommands"
+    | "configOptions"
+    | "modeId"
+    | "modes"
+    | "modelId"
+    | "models"
+> {
+    const configOptions = catalog.configOptions.map((option) => {
+        const preferredValue =
+            option.type === "select" &&
+            (option.category === "mode" || option.id.toLowerCase() === "mode")
+                ? (preferences.modeId ?? preferences.configOptions[option.id])
+                : option.type === "select" &&
+                    (option.category === "model" ||
+                        option.id.toLowerCase() === "model")
+                  ? (preferences.modelId ??
+                    preferences.configOptions[option.id])
+                  : preferences.configOptions[option.id];
+        if (preferredValue === undefined) {
+            return option;
+        }
+
+        if (option.type === "boolean" && typeof preferredValue === "boolean") {
+            return {
+                ...option,
+                value: preferredValue,
+            };
+        }
+
+        if (
+            option.type === "select" &&
+            typeof preferredValue === "string" &&
+            option.options.some(
+                (candidate) => candidate.value === preferredValue,
+            )
+        ) {
+            return {
+                ...option,
+                value: preferredValue,
+            };
+        }
+
+        return option;
+    });
+
+    const modeOption =
+        configOptions.find(
+            (option) =>
+                option.type === "select" &&
+                (option.category === "mode" ||
+                    option.id.toLowerCase() === "mode"),
+        ) ?? null;
+    const modelOption =
+        configOptions.find(
+            (option) =>
+                option.type === "select" &&
+                (option.category === "model" ||
+                    option.id.toLowerCase() === "model"),
+        ) ?? null;
+
+    return {
+        ...catalog,
+        configOptions,
+        modeId:
+            modeOption?.type === "select"
+                ? modeOption.value
+                : (preferences.modeId ?? catalog.modeId),
+        modelId:
+            modelOption?.type === "select"
+                ? modelOption.value
+                : (preferences.modelId ?? catalog.modelId),
+    };
 }
 
 export function createEmptyAiSessionSnapshot(options: {

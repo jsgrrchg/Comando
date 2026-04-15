@@ -474,25 +474,45 @@ export class AiService {
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
-            this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
-                setModeOnSnapshot(snapshot, input.modeId),
+            const snapshot = this.#updateSessionSnapshot(
+                input.sessionId,
+                (currentSnapshot) =>
+                    setModeOnSnapshot(currentSnapshot, input.modeId),
+            );
+            this.#persistence.saveRuntimeModePreference(
+                snapshot.runtimeId,
+                input.modeId,
             );
             return;
         }
 
         await this.#setSessionModeOnLiveSession(liveSession, input.modeId);
+        this.#persistence.saveRuntimeModePreference(
+            liveSession.runtimeId,
+            input.modeId,
+        );
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
-            this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
-                setModelOnSnapshot(snapshot, input.modelId),
+            const snapshot = this.#updateSessionSnapshot(
+                input.sessionId,
+                (currentSnapshot) =>
+                    setModelOnSnapshot(currentSnapshot, input.modelId),
+            );
+            this.#persistence.saveRuntimeModelPreference(
+                snapshot.runtimeId,
+                input.modelId,
             );
             return;
         }
 
         await this.#setSessionModelOnLiveSession(liveSession, input.modelId);
+        this.#persistence.saveRuntimeModelPreference(
+            liveSession.runtimeId,
+            input.modelId,
+        );
     }
 
     async setSessionConfigOption(
@@ -500,18 +520,30 @@ export class AiService {
     ): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
-            this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
-                setConfigOptionOnSnapshot(
-                    snapshot,
-                    input.optionId,
-                    input.value,
-                ),
+            const snapshot = this.#updateSessionSnapshot(
+                input.sessionId,
+                (currentSnapshot) =>
+                    setConfigOptionOnSnapshot(
+                        currentSnapshot,
+                        input.optionId,
+                        input.value,
+                    ),
+            );
+            this.#persistRuntimeSelectionPreference(
+                snapshot.runtimeId,
+                input.optionId,
+                input.value,
             );
             return;
         }
 
         await this.#setSessionConfigOptionOnLiveSession(
             liveSession,
+            input.optionId,
+            input.value,
+        );
+        this.#persistRuntimeSelectionPreference(
+            liveSession.runtimeId,
             input.optionId,
             input.value,
         );
@@ -1203,11 +1235,10 @@ export class AiService {
                 protocolVersion: PROTOCOL_VERSION,
             });
 
-            const desiredSelections = {
-                configOptions: persistedSnapshot.configOptions,
-                modeId: persistedSnapshot.modeId,
-                modelId: persistedSnapshot.modelId,
-            };
+            const desiredSelections = this.#resolveDesiredSelections(
+                input.runtimeId,
+                persistedSnapshot,
+            );
             const openedSession = await this.#openRuntimeSession(liveSession);
             liveSession.snapshot = {
                 ...applySessionCatalogToSnapshot(
@@ -1869,12 +1900,46 @@ export class AiService {
         );
     }
 
+    #resolveDesiredSelections(
+        runtimeId: AiRuntimeId,
+        persistedSnapshot: Pick<
+            AiSessionSnapshot,
+            "configOptions" | "modeId" | "modelId"
+        >,
+    ): Pick<AiSessionSnapshot, "configOptions" | "modeId" | "modelId"> & {
+        readonly preferredConfigOptions: Record<string, boolean | string>;
+    } {
+        const preferences =
+            this.#persistence.loadRuntimeSelectionPreferences(runtimeId);
+
+        return {
+            configOptions: persistedSnapshot.configOptions,
+            modeId: persistedSnapshot.modeId ?? preferences.modeId,
+            modelId: persistedSnapshot.modelId ?? preferences.modelId,
+            preferredConfigOptions: preferences.configOptions,
+        };
+    }
+
+    #persistRuntimeSelectionPreference(
+        runtimeId: AiRuntimeId,
+        optionId: string,
+        value: boolean | string,
+    ): void {
+        this.#persistence.saveRuntimeSelectionPreferenceOption(
+            runtimeId,
+            optionId,
+            value,
+        );
+    }
+
     async #applyStoredSessionSelections(
         liveSession: LiveAcpSession,
         desiredSelections: Pick<
             AiSessionSnapshot,
             "configOptions" | "modeId" | "modelId"
-        >,
+        > & {
+            readonly preferredConfigOptions?: Record<string, boolean | string>;
+        },
     ): Promise<void> {
         const desiredModeId = desiredSelections.modeId?.trim() ?? "";
         const desiredModelId = desiredSelections.modelId?.trim() ?? "";
@@ -1928,42 +1993,64 @@ export class AiService {
             );
         }
 
+        const desiredConfigValues = new Map<string, boolean | string>();
         for (const desiredOption of desiredSelections.configOptions) {
+            desiredConfigValues.set(desiredOption.id, desiredOption.value);
+        }
+
+        for (const [optionId, value] of Object.entries(
+            desiredSelections.preferredConfigOptions ?? {},
+        )) {
+            if (!desiredConfigValues.has(optionId)) {
+                desiredConfigValues.set(optionId, value);
+            }
+        }
+
+        for (const [optionId, desiredValue] of desiredConfigValues.entries()) {
+            const desiredOption = desiredSelections.configOptions.find(
+                (option) => option.id === optionId,
+            );
             if (
-                desiredOption.category === "mode" ||
-                desiredOption.category === "model"
+                desiredOption &&
+                (desiredOption.category === "mode" ||
+                    desiredOption.category === "model")
             ) {
                 continue;
             }
 
             const currentOption = liveSession.snapshot.configOptions.find(
-                (option) => option.id === desiredOption.id,
+                (option) => option.id === optionId,
             );
-            if (!currentOption || currentOption.type !== desiredOption.type) {
+            if (!currentOption) {
+                continue;
+            }
+
+            if (desiredOption && currentOption.type !== desiredOption.type) {
                 continue;
             }
 
             if (
                 currentOption.type === "boolean" &&
-                currentOption.value !== desiredOption.value
+                typeof desiredValue === "boolean" &&
+                currentOption.value !== desiredValue
             ) {
                 await this.#setSessionConfigOptionOnLiveSession(
                     liveSession,
-                    desiredOption.id,
-                    desiredOption.value,
+                    optionId,
+                    desiredValue,
                 );
             }
 
             if (
                 currentOption.type === "select" &&
-                desiredOption.type === "select" &&
-                currentOption.value !== desiredOption.value &&
-                hasSelectConfigValue(currentOption, desiredOption.value)
+                typeof desiredValue === "string" &&
+                currentOption.value !== desiredValue &&
+                hasSelectConfigValue(currentOption, desiredValue)
             ) {
                 await this.#setSessionConfigOptionOnLiveSession(
                     liveSession,
-                    desiredOption.id,
-                    desiredOption.value,
+                    optionId,
+                    desiredValue,
                 );
             }
         }
@@ -2032,12 +2119,12 @@ export class AiService {
     #updateSessionSnapshot(
         sessionId: string,
         mutate: (snapshot: AiSessionSnapshot) => AiSessionSnapshot,
-    ): void {
+    ): AiSessionSnapshot {
         const liveSession = this.#sessions.get(sessionId);
         if (liveSession) {
             liveSession.snapshot = mutate(liveSession.snapshot);
             this.#persistAndBroadcast(liveSession);
-            return;
+            return liveSession.snapshot;
         }
 
         const snapshot = this.#persistence.loadSessionSnapshot(sessionId);
@@ -2048,6 +2135,7 @@ export class AiService {
         const nextSnapshot = mutate(snapshot);
         this.#persistence.saveSessionSnapshot(nextSnapshot);
         this.#onSessionSnapshot("", nextSnapshot);
+        return nextSnapshot;
     }
 
     #resolvePendingPermission(
