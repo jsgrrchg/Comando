@@ -14,6 +14,7 @@ import {
 } from "./chat/chatCodeSizing";
 import { ChatInlinePill } from "./chat/ChatInlinePill";
 import { getChatPillMetrics } from "./chat/chatPillMetrics";
+import { type ChatPillVariant } from "./chat/chatPillPalette";
 import {
     isLikelyProjectFileReference,
     type ResolvedProjectFileReference,
@@ -130,12 +131,23 @@ interface InlineOptions {
     ) => ResolvedProjectFileReference | null;
 }
 
+function getPillVariant(label: string): ChatPillVariant {
+    if (label === "@fetch") return "success";
+    if (label === "/plan") return "neutral";
+    if (label.startsWith("@")) {
+        return /\.\w+$/.test(label.slice(1)) ? "file" : "folder";
+    }
+    if (label.startsWith("\u{1F4CE}")) return "file";
+    return "accent";
+}
+
 function renderInline(
     text: string,
     options?: InlineOptions,
 ): Array<ReactElement | string> {
     const parts: Array<ReactElement | string> = [];
-    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))/g;
+    const re =
+        /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\u200B\u00AB[^\u00BB]*\u00BB\u200B)/g;
     let lastIndex = 0;
     let key = 0;
 
@@ -143,7 +155,19 @@ function renderInline(
         const before = text.slice(lastIndex, match.index);
         if (before) parts.push(before);
 
-        if (match[1]) {
+        if (match[5]) {
+            const pillLabel = match[5].slice(2, -2);
+            const variant = getPillVariant(pillLabel);
+            const pillMetrics = options?.metrics ?? getChatPillMetrics(14);
+            parts.push(
+                <ChatInlinePill
+                    key={key++}
+                    label={pillLabel}
+                    metrics={pillMetrics}
+                    variant={variant}
+                />,
+            );
+        } else if (match[1]) {
             const codeText = match[1].slice(1, -1);
             const resolvedCodeReference =
                 options?.resolveFileReference?.(codeText) ?? null;
