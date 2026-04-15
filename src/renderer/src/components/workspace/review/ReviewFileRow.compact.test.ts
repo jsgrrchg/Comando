@@ -108,6 +108,7 @@ describe("ReviewFileRow compact", () => {
         );
 
         expect(markup).toContain("app.ts");
+        expect(markup).toContain("font-weight:400");
         expect(markup).toContain("Open File");
         expect(markup).toContain("Reject");
         expect(markup).toContain("Keep");

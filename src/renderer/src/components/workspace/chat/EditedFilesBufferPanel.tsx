@@ -8,6 +8,11 @@ import type {
 import { formatDiffStat } from "../review/reviewDiff";
 
 const COMPACT_MAX_LIST_HEIGHT = "208px";
+const BASE_TEXT_SIZE_PX = 16;
+
+function toEm(value: number): string {
+    return `${value / BASE_TEXT_SIZE_PX}em`;
+}
 
 function toggleKey(
     current: ReadonlySet<string>,
@@ -24,34 +29,44 @@ function toggleKey(
 }
 
 export interface EditedFilesBufferPanelProps {
+    readonly canDecreaseTextZoom?: boolean;
+    readonly canIncreaseTextZoom?: boolean;
     readonly defaultCollapsed?: boolean;
     readonly diffZoom: number;
     readonly items: readonly ReviewFileItem[];
     readonly lineWrapping?: boolean;
+    readonly onDecreaseTextZoom?: () => void;
     readonly onKeepAll: () => void;
     readonly onKeepHunk?: (item: ReviewFileItem, hunkId: string) => void;
     readonly onKeepItem: (item: ReviewFileItem) => void;
     readonly onOpenItem?: (item: ReviewFileItem) => void;
     readonly onOpenReview: () => void;
+    readonly onIncreaseTextZoom?: () => void;
     readonly onRejectAll: () => void;
     readonly onRejectHunk?: (item: ReviewFileItem, hunkId: string) => void;
     readonly onRejectItem: (item: ReviewFileItem) => void;
+    readonly pendingReviewCardTextZoom?: number;
     readonly summary: ReviewSummary;
 }
 
 export function EditedFilesBufferPanel({
+    canDecreaseTextZoom = false,
+    canIncreaseTextZoom = false,
     defaultCollapsed = false,
     diffZoom,
     items,
-    lineWrapping = true,
+    lineWrapping,
+    onDecreaseTextZoom,
     onKeepAll,
     onKeepHunk,
     onKeepItem,
     onOpenItem,
     onOpenReview,
+    onIncreaseTextZoom,
     onRejectAll,
     onRejectHunk,
     onRejectItem,
+    pendingReviewCardTextZoom = 1,
     summary,
 }: EditedFilesBufferPanelProps) {
     const [collapsed, setCollapsed] = useState(defaultCollapsed);
@@ -75,6 +90,7 @@ export function EditedFilesBufferPanel({
             style={{
                 border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                 fontFamily: "var(--font-mono)",
+                fontSize: `${pendingReviewCardTextZoom}em`,
             }}
         >
             <div
@@ -97,7 +113,7 @@ export function EditedFilesBufferPanel({
                         color: "var(--color-text-secondary)",
                         cursor: "pointer",
                         display: "inline-flex",
-                        fontSize: "10px",
+                        fontSize: toEm(10),
                         height: 16,
                         justifyContent: "center",
                         lineHeight: 1,
@@ -114,7 +130,8 @@ export function EditedFilesBufferPanel({
                 <span
                     style={{
                         color: "var(--color-text-secondary)",
-                        fontSize: "10px",
+                        fontFamily: "var(--font-sans)",
+                        fontSize: toEm(10),
                         fontWeight: 800,
                         letterSpacing: "0.06em",
                         textTransform: "uppercase",
@@ -125,7 +142,7 @@ export function EditedFilesBufferPanel({
                 <span
                     style={{
                         color: "var(--color-text-secondary)",
-                        fontSize: "10px",
+                        fontSize: toEm(10),
                     }}
                 >
                     ({summary.fileCount})
@@ -135,7 +152,7 @@ export function EditedFilesBufferPanel({
                         <span
                             style={{
                                 color: "var(--color-text-secondary)",
-                                fontSize: "10px",
+                                fontSize: toEm(10),
                                 opacity: 0.4,
                             }}
                         >
@@ -145,7 +162,7 @@ export function EditedFilesBufferPanel({
                             <span
                                 style={{
                                     color: "var(--diff-add)",
-                                    fontSize: "10px",
+                                    fontSize: toEm(10),
                                     fontWeight: 600,
                                 }}
                             >
@@ -160,7 +177,7 @@ export function EditedFilesBufferPanel({
                             <span
                                 style={{
                                     color: "var(--diff-remove)",
-                                    fontSize: "10px",
+                                    fontSize: toEm(10),
                                     fontWeight: 600,
                                 }}
                             >
@@ -179,6 +196,57 @@ export function EditedFilesBufferPanel({
                 )}
 
                 <div className="ml-auto flex items-center gap-1.5">
+                    <div
+                        style={{
+                            background:
+                                "color-mix(in srgb, var(--color-bg-primary) 48%, transparent)",
+                            border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
+                            borderRadius: 4,
+                            display: "flex",
+                            overflow: "hidden",
+                        }}
+                    >
+                        <button
+                            aria-label="Decrease pending review text size"
+                            disabled={!canDecreaseTextZoom}
+                            onClick={onDecreaseTextZoom}
+                            style={{
+                                borderRight:
+                                    "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
+                                color: canDecreaseTextZoom
+                                    ? "var(--color-text-primary)"
+                                    : "var(--color-text-secondary)",
+                                cursor: canDecreaseTextZoom
+                                    ? "pointer"
+                                    : "not-allowed",
+                                fontSize: toEm(10),
+                                opacity: canDecreaseTextZoom ? 1 : 0.45,
+                                padding: "4px 8px",
+                            }}
+                            type="button"
+                        >
+                            A-
+                        </button>
+                        <button
+                            aria-label="Increase pending review text size"
+                            disabled={!canIncreaseTextZoom}
+                            onClick={onIncreaseTextZoom}
+                            style={{
+                                color: canIncreaseTextZoom
+                                    ? "var(--color-text-primary)"
+                                    : "var(--color-text-secondary)",
+                                cursor: canIncreaseTextZoom
+                                    ? "pointer"
+                                    : "not-allowed",
+                                fontSize: toEm(10),
+                                opacity: canIncreaseTextZoom ? 1 : 0.45,
+                                padding: "4px 8px",
+                            }}
+                            type="button"
+                        >
+                            A+
+                        </button>
+                    </div>
                     <button
                         className="review-action-btn"
                         onClick={onOpenReview}
@@ -188,7 +256,7 @@ export function EditedFilesBufferPanel({
                             borderRadius: 3,
                             color: "var(--color-text-secondary)",
                             cursor: "pointer",
-                            fontSize: "10px",
+                            fontSize: toEm(10),
                             fontWeight: 500,
                             lineHeight: "18px",
                             padding: "0 6px",
@@ -211,7 +279,7 @@ export function EditedFilesBufferPanel({
                                 rejectableCount === 0
                                     ? "not-allowed"
                                     : "pointer",
-                            fontSize: "13px",
+                            fontSize: toEm(13),
                             fontWeight: 600,
                             opacity: rejectableCount === 0 ? 0.25 : 0.6,
                             padding: "2px 3px",
@@ -230,7 +298,7 @@ export function EditedFilesBufferPanel({
                             border: "none",
                             color: "var(--diff-add)",
                             cursor: "pointer",
-                            fontSize: "13px",
+                            fontSize: toEm(13),
                             fontWeight: 600,
                             opacity: 0.6,
                             padding: "2px 3px",

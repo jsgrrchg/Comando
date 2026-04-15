@@ -17,8 +17,10 @@ import {
     replaceFileDocument,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabSaving,
     setFileTabViewState,
     splitPaneInDirection,
+    updateFileDraft,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
     workspaceStateToSnapshot,
@@ -277,6 +279,122 @@ describe("workspace tree helpers", () => {
 
         expect(selected.rootNode.activeTabId).toBe("tab-2");
         expect(selected.activePaneId).toBe("pane-root");
+    });
+
+    it("syncs shared file draft and save state across duplicate tabs", () => {
+        const sourceTab = makeFileTab("file-1", "src/app.ts");
+        const duplicateTab: RuntimeWorkspaceFileTab = {
+            ...makeFileTab("file-2", "src/app.ts"),
+            reviewContext: {
+                path: "src/app.ts",
+                sessionId: "session-2",
+            },
+            viewState: {
+                contributionsState: [],
+                cursorState: [],
+                viewState: {},
+            } as never,
+        };
+        const baseState = {
+            ...createDefaultWorkspaceState(),
+            tabsById: {
+                "file-1": sourceTab,
+                "file-2": duplicateTab,
+            },
+        };
+
+        const withDraft = updateFileDraft(baseState, "file-1", "next draft");
+
+        expect(withDraft.tabsById["file-1"]).toMatchObject({
+            draftContent: "next draft",
+            isDirty: true,
+        });
+        expect(withDraft.tabsById["file-2"]).toMatchObject({
+            draftContent: "next draft",
+            isDirty: true,
+            reviewContext: {
+                path: "src/app.ts",
+                sessionId: "session-2",
+            },
+        });
+
+        const withSaving = setFileTabSaving(withDraft, "file-2", true, null);
+        expect(withSaving.tabsById["file-1"]).toMatchObject({
+            isSaving: true,
+        });
+        expect(withSaving.tabsById["file-2"]).toMatchObject({
+            isSaving: true,
+            reviewContext: {
+                path: "src/app.ts",
+                sessionId: "session-2",
+            },
+        });
+
+        const withSavedDocument = replaceFileDocument(withSaving, "file-2", {
+            ...sourceTab.document,
+            content: "saved content",
+            modifiedAtMs: 2,
+        });
+
+        expect(withSavedDocument.tabsById["file-1"]).toMatchObject({
+            draftContent: "saved content",
+            isDirty: false,
+            isSaving: false,
+            savedContent: "saved content",
+        });
+        expect(withSavedDocument.tabsById["file-2"]).toMatchObject({
+            draftContent: "saved content",
+            isDirty: false,
+            isSaving: false,
+            reviewContext: {
+                path: "src/app.ts",
+                sessionId: "session-2",
+            },
+        });
+    });
+
+    it("syncs external change flags across duplicate tabs while preserving per-tab view state", () => {
+        const firstViewState = {
+            contributionsState: [],
+            cursorState: [],
+            viewState: { first: true },
+        } as never;
+        const secondViewState = {
+            contributionsState: [],
+            cursorState: [],
+            viewState: { second: true },
+        } as never;
+        const baseState = {
+            ...createDefaultWorkspaceState(),
+            tabsById: {
+                "file-1": {
+                    ...makeFileTab("file-1", "src/app.ts"),
+                    viewState: firstViewState,
+                },
+                "file-2": {
+                    ...makeFileTab("file-2", "src/app.ts"),
+                    viewState: secondViewState,
+                },
+            },
+        };
+
+        const nextState = setFileTabExternalChange(
+            baseState,
+            "file-1",
+            true,
+            "Conflict on disk",
+        );
+
+        expect(nextState.tabsById["file-1"]).toMatchObject({
+            hasExternalChange: true,
+            saveError: "Conflict on disk",
+            viewState: firstViewState,
+        });
+        expect(nextState.tabsById["file-2"]).toMatchObject({
+            hasExternalChange: true,
+            saveError: "Conflict on disk",
+            viewState: secondViewState,
+        });
     });
 
     it("reorders tabs within the same pane by insertion index", () => {

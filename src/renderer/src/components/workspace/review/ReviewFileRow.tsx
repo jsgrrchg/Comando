@@ -5,7 +5,14 @@ import {
     formatDiffStat,
     getCompactPath,
     getFileNameFromPath,
+    shouldWrapDiffPreview,
 } from "./reviewDiff";
+
+const BASE_TEXT_SIZE_PX = 16;
+
+function toEm(value: number): string {
+    return `${value / BASE_TEXT_SIZE_PX}em`;
+}
 
 function getReviewBadgeLabel(item: ReviewFileItem): string {
     if (item.tone.badge) {
@@ -96,7 +103,7 @@ export function ReviewFileRow({
     diffZoom,
     expanded,
     item,
-    lineWrapping = true,
+    lineWrapping,
     onKeep,
     onKeepHunk,
     onOpen,
@@ -108,6 +115,8 @@ export function ReviewFileRow({
     const badgeLabel = getReviewBadgeLabel(item);
     const canShowOpen = item.canOpen && onOpen;
     const compactPath = getCompactPath(item.file.path);
+    const resolvedLineWrapping =
+        lineWrapping ?? shouldWrapDiffPreview(item.file.path);
 
     if (variant === "compact") {
         return (
@@ -132,7 +141,7 @@ export function ReviewFileRow({
                         style={{
                             color: "var(--color-text-primary)",
                             fontSize: "0.8em",
-                            fontWeight: 500,
+                            fontWeight: 400,
                         }}
                     >
                         {getFileNameFromPath(item.file.path)}
@@ -208,7 +217,7 @@ export function ReviewFileRow({
                                 border: "none",
                                 color: "var(--color-text-secondary)",
                                 cursor: canShowOpen ? "pointer" : "not-allowed",
-                                fontSize: "11px",
+                                fontSize: toEm(11),
                                 fontWeight: 500,
                                 opacity: canShowOpen ? 0.65 : 0.25,
                                 padding: "2px 3px",
@@ -242,7 +251,7 @@ export function ReviewFileRow({
                                 cursor: item.canReject
                                     ? "pointer"
                                     : "not-allowed",
-                                fontSize: "13px",
+                                fontSize: toEm(13),
                                 opacity: item.canReject ? 0.6 : 0.2,
                                 padding: "2px 3px",
                                 transition:
@@ -268,7 +277,7 @@ export function ReviewFileRow({
                                 border: "none",
                                 color: "var(--diff-add)",
                                 cursor: "pointer",
-                                fontSize: "13px",
+                                fontSize: toEm(13),
                                 opacity: 0.6,
                                 padding: "2px 3px",
                                 transition:
@@ -519,7 +528,7 @@ export function ReviewFileRow({
                 diffZoom={diffZoom}
                 expanded={expanded}
                 file={item.file}
-                lineWrapping={lineWrapping}
+                lineWrapping={resolvedLineWrapping}
                 onKeepHunk={item.canResolveHunks ? onKeepHunk : undefined}
                 onRejectHunk={item.canResolveHunks ? onRejectHunk : undefined}
                 testId={`review-file-diff:${item.file.identityKey}`}

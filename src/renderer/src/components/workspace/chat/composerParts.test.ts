@@ -26,7 +26,7 @@ describe("composerParts", () => {
             {
                 type: "selection_mention",
                 endLine: 18,
-                label: "(12:18) const value = 1;",
+                label: "(12:18) - const value = 1;",
                 path: "src/app.ts",
                 selectedText: "const value = 1;",
                 startLine: 12,
@@ -41,7 +41,7 @@ describe("composerParts", () => {
             {
                 type: "selection_mention",
                 endLine: 18,
-                label: "(12:18) const value = 1;",
+                label: "(12:18) - const value = 1;",
                 path: "src/app.ts",
                 selectedText: "const value = 1;",
                 startLine: 12,
@@ -52,7 +52,7 @@ describe("composerParts", () => {
             "Inspect src/app.ts:12-18",
         );
         expect(composerPartsToPlainText(parts)).toBe(
-            "Inspect [(12:18) const value = 1;]",
+            "Inspect [(12:18) - const value = 1;]",
         );
     });
 

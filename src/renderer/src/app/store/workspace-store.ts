@@ -559,20 +559,30 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 )
                     ? targetPaneId
                     : get().activePaneId;
-            const existingTab = findExistingFileTab(
+            const existingTabs = findExistingFileTabs(
                 get(),
                 projectId,
                 relativePath,
                 worktreeId,
             );
-            if (existingTab) {
-                const paneId = findPaneIdByTabId(get(), existingTab.id);
+            const existingTabInResolvedPane =
+                existingTabs.find((tab) => {
+                    const paneId = findPaneIdByTabId(get(), tab.id);
+                    return paneId === resolvedPaneId;
+                }) ?? null;
+
+            if (existingTabInResolvedPane) {
+                const paneId = findPaneIdByTabId(
+                    get(),
+                    existingTabInResolvedPane.id,
+                );
                 if (!paneId) {
                     return;
                 }
 
                 const nextReviewContext = resolveFileTabReviewContext({
-                    existingReviewContext: existingTab.reviewContext,
+                    existingReviewContext:
+                        existingTabInResolvedPane.reviewContext,
                     relativePath,
                     requestedReviewContext: reviewContext,
                     trackedFiles,
@@ -581,22 +591,62 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 set((state) => ({
                     ...setFileTabReviewContext(
                         paneId === resolvedPaneId
-                            ? selectPaneTab(state, paneId, existingTab.id)
+                            ? selectPaneTab(
+                                  state,
+                                  paneId,
+                                  existingTabInResolvedPane.id,
+                              )
                             : moveTabToPaneAtIndex(
                                   state,
-                                  existingTab.id,
+                                  existingTabInResolvedPane.id,
                                   paneId,
                                   resolvedPaneId,
                                   Number.POSITIVE_INFINITY,
                               ),
-                        existingTab.id,
+                        existingTabInResolvedPane.id,
                         nextReviewContext,
                     ),
                     error: null,
                 }));
 
-                if (!existingTab.document && !existingTab.isDirty) {
-                    await loadFileTabDocument(get, set, existingTab.id);
+                if (
+                    !existingTabInResolvedPane.document &&
+                    !existingTabInResolvedPane.isDirty
+                ) {
+                    await loadFileTabDocument(
+                        get,
+                        set,
+                        existingTabInResolvedPane.id,
+                    );
+                }
+
+                await persistWorkspaceState(get);
+                return;
+            }
+
+            const sourceTab = existingTabs[0] ?? null;
+            if (sourceTab) {
+                const nextReviewContext = resolveFileTabReviewContext({
+                    existingReviewContext: sourceTab.reviewContext,
+                    relativePath,
+                    requestedReviewContext: reviewContext,
+                    trackedFiles,
+                });
+                const duplicatedTab: RuntimeWorkspaceFileTab = {
+                    ...sourceTab,
+                    createdAt: new Date().toISOString(),
+                    id: crypto.randomUUID(),
+                    reviewContext: nextReviewContext,
+                    viewState: sourceTab.viewState ?? null,
+                };
+
+                set((state) => ({
+                    ...attachTabToPane(state, resolvedPaneId, duplicatedTab),
+                    error: null,
+                }));
+
+                if (!sourceTab.document && !sourceTab.isDirty) {
+                    await loadFileTabDocument(get, set, duplicatedTab.id);
                 }
 
                 await persistWorkspaceState(get);
@@ -802,7 +852,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
     saveFileTab: async (tabId, options) => {
         const tab = get().tabsById[tabId];
-        if (!tab || tab.kind !== "file" || !tab.document || !tab.isDirty) {
+        if (
+            !tab ||
+            tab.kind !== "file" ||
+            !tab.document ||
+            !tab.isDirty ||
+            tab.isSaving
+        ) {
             return;
         }
 
@@ -1288,6 +1344,20 @@ async function loadFileTabDocument(
         return;
     }
 
+    const hasSiblingLoadInFlight = Object.values(get().tabsById).some(
+        (candidate): candidate is RuntimeWorkspaceFileTab =>
+            candidate.kind === "file" &&
+            candidate.id !== tab.id &&
+            candidate.projectId === tab.projectId &&
+            normalizeWorktreeId(candidate.worktreeId) ===
+                normalizeWorktreeId(tab.worktreeId) &&
+            candidate.relativePath === tab.relativePath &&
+            candidate.isLoading,
+    );
+    if (hasSiblingLoadInFlight) {
+        return;
+    }
+
     try {
         set((state) => ({
             ...setFileTabLoading(state, tabId, true),
@@ -1400,21 +1470,19 @@ function isProjectFileConflictMessage(message: string): boolean {
     return /changed on disk/i.test(message);
 }
 
-function findExistingFileTab(
+function findExistingFileTabs(
     state: WorkspaceTreeState,
     projectId: string,
     relativePath: string,
     worktreeId: string | null,
-): RuntimeWorkspaceFileTab | null {
-    return (
-        Object.values(state.tabsById).find(
-            (tab): tab is RuntimeWorkspaceFileTab =>
-                tab.kind === "file" &&
-                tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId) &&
-                tab.relativePath === relativePath,
-        ) ?? null
+): RuntimeWorkspaceFileTab[] {
+    return Object.values(state.tabsById).filter(
+        (tab): tab is RuntimeWorkspaceFileTab =>
+            tab.kind === "file" &&
+            tab.projectId === projectId &&
+            normalizeWorktreeId(tab.worktreeId) ===
+                normalizeWorktreeId(worktreeId) &&
+            tab.relativePath === relativePath,
     );
 }
 

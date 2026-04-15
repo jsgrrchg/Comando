@@ -751,23 +751,12 @@ export function updateFileDraft(
     tabId: string,
     draftContent: string,
 ): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "file") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                draftContent,
-                isDirty: draftContent !== tab.savedContent,
-                saveError: null,
-            },
-        },
-    };
+    return updateMatchingFileTabs(state, tabId, (tab) => ({
+        ...tab,
+        draftContent,
+        isDirty: draftContent !== tab.savedContent,
+        saveError: null,
+    }));
 }
 
 export function setFileTabReviewContext(
@@ -819,30 +808,19 @@ export function replaceFileDocument(
     tabId: string,
     document: ProjectFileDocument,
 ): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "file") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                document,
-                draftContent: document.content,
-                hasExternalChange: false,
-                isDirty: false,
-                isLoading: false,
-                isSaving: false,
-                loadError: null,
-                saveError: null,
-                savedContent: document.content,
-                title: document.name,
-            },
-        },
-    };
+    return updateMatchingFileTabs(state, tabId, (tab) => ({
+        ...tab,
+        document,
+        draftContent: document.content,
+        hasExternalChange: false,
+        isDirty: false,
+        isLoading: false,
+        isSaving: false,
+        loadError: null,
+        saveError: null,
+        savedContent: document.content,
+        title: document.name,
+    }));
 }
 
 export function setFileTabSaving(
@@ -851,22 +829,11 @@ export function setFileTabSaving(
     isSaving: boolean,
     saveError: string | null = null,
 ): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "file") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                isSaving,
-                saveError,
-            },
-        },
-    };
+    return updateMatchingFileTabs(state, tabId, (tab) => ({
+        ...tab,
+        isSaving,
+        saveError,
+    }));
 }
 
 export function setFileTabExternalChange(
@@ -875,22 +842,11 @@ export function setFileTabExternalChange(
     hasExternalChange: boolean,
     saveError?: string | null,
 ): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "file") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                hasExternalChange,
-                saveError: saveError === undefined ? tab.saveError : saveError,
-            },
-        },
-    };
+    return updateMatchingFileTabs(state, tabId, (tab) => ({
+        ...tab,
+        hasExternalChange,
+        saveError: saveError === undefined ? tab.saveError : saveError,
+    }));
 }
 
 export function setFileTabLoadError(
@@ -898,24 +854,13 @@ export function setFileTabLoadError(
     tabId: string,
     loadError: string,
 ): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "file") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                document: null,
-                isSaving: false,
-                isLoading: false,
-                loadError,
-            },
-        },
-    };
+    return updateMatchingFileTabs(state, tabId, (tab) => ({
+        ...tab,
+        document: null,
+        isSaving: false,
+        isLoading: false,
+        loadError,
+    }));
 }
 
 export function setFileTabLoading(
@@ -923,22 +868,11 @@ export function setFileTabLoading(
     tabId: string,
     isLoading: boolean,
 ): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "file") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                isLoading,
-                loadError: isLoading ? null : tab.loadError,
-            },
-        },
-    };
+    return updateMatchingFileTabs(state, tabId, (tab) => ({
+        ...tab,
+        isLoading,
+        loadError: isLoading ? null : tab.loadError,
+    }));
 }
 
 export function setTerminalSessionReady(
@@ -1230,6 +1164,33 @@ function normalizeTabInsertionIndex(index: number, length: number): number {
     return Math.min(Math.max(Math.trunc(index), 0), length);
 }
 
+function updateMatchingFileTabs(
+    state: WorkspaceTreeState,
+    tabId: string,
+    updateTab: (tab: RuntimeWorkspaceFileTab) => RuntimeWorkspaceFileTab,
+): WorkspaceTreeState {
+    const sourceTab = state.tabsById[tabId];
+    if (!sourceTab || sourceTab.kind !== "file") {
+        return state;
+    }
+
+    return {
+        ...state,
+        tabsById: Object.fromEntries(
+            Object.entries(state.tabsById).map(([currentTabId, tab]) => {
+                if (
+                    tab.kind !== "file" ||
+                    !matchesSameWorkspaceFile(tab, sourceTab)
+                ) {
+                    return [currentTabId, tab];
+                }
+
+                return [currentTabId, updateTab(tab)];
+            }),
+        ) as Record<string, RuntimeWorkspaceTab>,
+    };
+}
+
 function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     if (tab.kind === "file") {
         return {
@@ -1308,6 +1269,18 @@ function matchesProjectPath(
     return (
         candidatePath === targetPath ||
         candidatePath.startsWith(`${targetPath}/`)
+    );
+}
+
+function matchesSameWorkspaceFile(
+    left: RuntimeWorkspaceFileTab,
+    right: RuntimeWorkspaceFileTab,
+): boolean {
+    return (
+        left.projectId === right.projectId &&
+        normalizeWorktreeId(left.worktreeId) ===
+            normalizeWorktreeId(right.worktreeId) &&
+        left.relativePath === right.relativePath
     );
 }
 

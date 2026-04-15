@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { clipboard, contextBridge, ipcRenderer, webUtils } from "electron";
 
 import {
     IPC_CHANNELS,
@@ -89,6 +89,7 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(
             IPC_CHANNELS.getWindowContext,
         ) as Promise<WindowContextSnapshot | null>,
+    readClipboardText: () => Promise.resolve(clipboard.readText()),
     resolveDroppedFilePath: (file) => {
         if (!file) {
             return null;
@@ -100,6 +101,10 @@ const comandoApi: ComandoApi = {
         } catch {
             return null;
         }
+    },
+    writeClipboardText: (text: string) => {
+        clipboard.writeText(text);
+        return Promise.resolve();
     },
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),

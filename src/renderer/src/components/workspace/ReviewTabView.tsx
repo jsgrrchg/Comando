@@ -2,10 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
 
-import {
-    AI_REVIEW_UNDO_ENABLED,
-    DEFAULT_AI_DIFF_ZOOM,
-} from "@renderer/app/ai/sessionReviewContracts";
+import { AI_REVIEW_UNDO_ENABLED } from "@renderer/app/ai/sessionReviewContracts";
+import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
@@ -306,6 +304,7 @@ export function ReviewTabView(props: ReviewTabViewProps) {
 }
 
 function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
+    const aiChatSettings = useAiChatSettings();
     const ensureSession = useAiStore((state) => state.ensureSession);
     const keepAllTrackedFiles = useAiStore(
         (state) => state.keepAllTrackedFiles,
@@ -423,7 +422,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         () => items.filter((item) => item.canReject).length,
         [items],
     );
-    const diffZoom = sessionState?.diffZoom ?? DEFAULT_AI_DIFF_ZOOM;
+    const diffZoom = sessionState?.diffZoom ?? aiChatSettings.reviewDiffZoom;
     const canDecreaseZoom = diffZoom > DIFF_ZOOM_MIN;
     const canIncreaseZoom = diffZoom < DIFF_ZOOM_MAX;
 

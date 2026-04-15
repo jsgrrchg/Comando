@@ -83,7 +83,9 @@ import {
     computeGitGutterMarkers,
     type GitGutterMarker,
 } from "@renderer/components/workspace/gitGutter";
+import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
+import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/editorModelPath";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import {
@@ -1248,6 +1250,7 @@ function WorkspacePaneView({
                     {activeTab ? (
                         activeTab.kind === "file" ? (
                             <FileTabView
+                                key={activeTab.id}
                                 isActivePane={isActivePane}
                                 onAttachLineFragment={handleAttachLineFragment}
                                 onDraftChange={updateFileDraft}
@@ -1875,6 +1878,8 @@ function FileTabView({
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
     const fileTabIdRef = useRef(tab.id);
     const gitGutterDecorationsRef =
+        useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
+    const inlineReviewDecorationsRef =
         useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
     const pendingEditorViewStateRef =
         useRef<MonacoEditor.ICodeEditorViewState | null>(tab.viewState ?? null);
@@ -2515,6 +2520,39 @@ function FileTabView({
     );
 
     useEffect(() => {
+        const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
+        if (!modifiedEditor) {
+            inlineReviewDecorationsRef.current?.clear();
+            inlineReviewDecorationsRef.current = null;
+            return;
+        }
+
+        const model = modifiedEditor.getModel();
+        if (!model || !inlineReviewTrackedFile) {
+            inlineReviewDecorationsRef.current?.clear();
+            return;
+        }
+
+        const collection =
+            inlineReviewDecorationsRef.current ??
+            modifiedEditor.createDecorationsCollection();
+        collection.set(
+            buildInlineReviewDecorations(
+                inlineReviewTrackedFile.hunks,
+                model.getLineCount(),
+            ),
+        );
+        inlineReviewDecorationsRef.current = collection;
+
+        return () => {
+            collection.clear();
+            if (inlineReviewDecorationsRef.current === collection) {
+                inlineReviewDecorationsRef.current = null;
+            }
+        };
+    }, [diffEditorMountVersion, inlineReviewTrackedFile, reviewSignature]);
+
+    useEffect(() => {
         if (!document || document.kind === "image" || !canEdit) {
             return;
         }
@@ -2698,7 +2736,11 @@ function FileTabView({
                             beforeMount={handleEditorBeforeMount}
                             language={document.languageId}
                             modified={inlineReviewTrackedFile.newText ?? ""}
-                            modifiedModelPath={`${document.absolutePath}::review::modified`}
+                            modifiedModelPath={buildWorkspaceEditorModelPath(
+                                document.absolutePath,
+                                tab.id,
+                                "review-modified",
+                            )}
                             onMount={(editor) => {
                                 diffEditorRef.current = editor;
                                 const modifiedEditor =
@@ -2738,6 +2780,7 @@ function FileTabView({
                                     cleanupAttachShortcut?.();
                                     cleanupFindWidgetEscape?.();
                                     findStateListener?.dispose();
+                                    inlineReviewDecorationsRef.current = null;
                                     setIsInlineReviewFindWidgetVisible(false);
                                 });
                                 setDiffEditorMountVersion(
@@ -2746,7 +2789,11 @@ function FileTabView({
                             }}
                             options={inlineReviewDiffEditorOptions}
                             original={inlineReviewTrackedFile.oldText ?? ""}
-                            originalModelPath={`${document.absolutePath}::review::original`}
+                            originalModelPath={buildWorkspaceEditorModelPath(
+                                document.absolutePath,
+                                tab.id,
+                                "review-original",
+                            )}
                             theme={editorTheme}
                         />
                         {inlineReviewHunkActionsEnabled &&
@@ -2889,7 +2936,11 @@ function FileTabView({
                                 ? "on"
                                 : "off",
                         }}
-                        path={document.absolutePath}
+                        path={buildWorkspaceEditorModelPath(
+                            document.absolutePath,
+                            tab.id,
+                            "editor",
+                        )}
                         theme={editorTheme}
                         value={tab.draftContent}
                     />

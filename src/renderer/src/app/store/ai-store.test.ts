@@ -7,7 +7,7 @@ import type {
     WorkspaceChatTab,
 } from "@shared/ipc";
 
-import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
 import { useAiStore } from "./ai-store";
 
 const TAB: WorkspaceChatTab = {
@@ -89,6 +89,22 @@ function createDeferred<T>() {
 
 describe("ai-store queue", () => {
     beforeEach(() => {
+        const storage = new Map<string, string>();
+
+        vi.stubGlobal("localStorage", {
+            clear: () => storage.clear(),
+            getItem: (key: string) => storage.get(key) ?? null,
+            key: (index: number) => Array.from(storage.keys())[index] ?? null,
+            get length() {
+                return storage.size;
+            },
+            removeItem: (key: string) => {
+                storage.delete(key);
+            },
+            setItem: (key: string, value: string) => {
+                storage.set(key, value);
+            },
+        });
         useAiStore.setState((state) => ({
             ...state,
             runtimeStatusById: {},
@@ -141,6 +157,48 @@ describe("ai-store queue", () => {
             expect(drainedSession?.queue).toHaveLength(0);
             expect(drainedSession?.localError).toBeNull();
         });
+    });
+
+    it("sends composer parts to main when dispatching immediately", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValueOnce(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        const composerPartsSnapshot = [
+            { text: "", type: "text" as const },
+            {
+                endLine: 88,
+                label: "(85:88) - elimina",
+                path: ".personal/pruebas/untitled.cpp",
+                selectedText: "elimina",
+                startLine: 85,
+                type: "selection_mention" as const,
+            },
+            { text: " ", type: "text" as const },
+        ];
+
+        await useAiStore
+            .getState()
+            .sendPrompt(TAB, ".personal/pruebas/untitled.cpp:85-88", {
+                composerPartsSnapshot,
+            });
+
+        expect(sendAiPrompt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                composerParts: composerPartsSnapshot,
+            }),
+        );
     });
 
     it("removes queued prompts from the queue while they are dispatching", async () => {
@@ -542,18 +600,74 @@ describe("ai-store queue", () => {
         });
     });
 
-    it("stores session-shared diff zoom in the store", () => {
+    it("stores and persists session review presentation preferences", () => {
         useAiStore.getState().registerSessionTab(TAB);
 
         expect(useAiStore.getState().sessions[TAB.sessionId]?.diffZoom).toBe(
-            DEFAULT_AI_DIFF_ZOOM,
+            null,
         );
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.pendingReviewCardTextZoom,
+        ).toBe(null);
 
         useAiStore.getState().setSessionDiffZoom(TAB.sessionId, 0.823);
+        useAiStore
+            .getState()
+            .setSessionPendingReviewCardTextZoom(TAB.sessionId, 1.073);
 
         expect(useAiStore.getState().sessions[TAB.sessionId]?.diffZoom).toBe(
             0.82,
         );
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.pendingReviewCardTextZoom,
+        ).toBe(1.07);
+
+        expect(
+            globalThis.localStorage.getItem(
+                getSessionReviewPreferencesStorageKey(
+                    TAB.projectId,
+                    TAB.worktreeId,
+                    TAB.sessionId,
+                ),
+            ),
+        ).toContain('"diffZoom":0.82');
+        expect(
+            globalThis.localStorage.getItem(
+                getSessionReviewPreferencesStorageKey(
+                    TAB.projectId,
+                    TAB.worktreeId,
+                    TAB.sessionId,
+                ),
+            ),
+        ).toContain('"pendingReviewCardTextZoom":1.07');
+    });
+
+    it("hydrates persisted session review presentation preferences on register", () => {
+        globalThis.localStorage.setItem(
+            getSessionReviewPreferencesStorageKey(
+                TAB.projectId,
+                TAB.worktreeId,
+                TAB.sessionId,
+            ),
+            JSON.stringify({
+                diffZoom: 0.84,
+                pendingReviewCardTextZoom: 1.12,
+                updatedAt: Date.now(),
+                version: 1,
+            }),
+        );
+
+        useAiStore.getState().registerSessionTab(TAB);
+
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.diffZoom).toBe(
+            0.84,
+        );
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.pendingReviewCardTextZoom,
+        ).toBe(1.12);
     });
 
     it("allows full context and line fragments from same file without duplicating the same range", () => {
@@ -611,7 +725,7 @@ describe("ai-store queue", () => {
             {
                 type: "selection_mention",
                 endLine: 18,
-                label: "(12:18) const value = 1;",
+                label: "(12:18) - const value = 1;",
                 path: "src/app.ts",
                 selectedText: "const value = 1;",
                 startLine: 12,

@@ -8,6 +8,7 @@ import {
     computeDecisionHunks,
     computeDiffLines,
     computeVisualDiffBlocks,
+    shouldWrapDiffPreview,
     type DiffLine,
 } from "./reviewDiff";
 
@@ -297,12 +298,14 @@ export function EditedFileDiffPreview({
     emptyLabel = "Path-only change",
     expanded,
     file = null,
-    lineWrapping = true,
+    lineWrapping,
     onKeepHunk,
     onRejectHunk,
     showWhenEmpty = true,
     testId,
 }: EditedFileDiffPreviewProps) {
+    const resolvedLineWrapping =
+        lineWrapping ?? shouldWrapDiffPreview(file?.path ?? diff.path);
     const lines = useMemo(
         () => (expanded ? computeDiffLines(diff) : []),
         [diff, expanded],
@@ -346,7 +349,7 @@ export function EditedFileDiffPreview({
             }}
         >
             <div
-                data-line-wrapping={String(lineWrapping)}
+                data-line-wrapping={String(resolvedLineWrapping)}
                 data-testid={testId}
                 style={{
                     backgroundColor:
@@ -354,14 +357,14 @@ export function EditedFileDiffPreview({
                     fontFamily: "var(--font-mono), ui-monospace, monospace",
                     fontSize: `${diffZoom}em`,
                     lineHeight: 1.55,
-                    overflowX: lineWrapping ? "hidden" : "auto",
+                    overflowX: resolvedLineWrapping ? "hidden" : "auto",
                     overflowY: "hidden",
                 }}
             >
                 <div
                     style={{
                         minWidth: "100%",
-                        width: lineWrapping ? "100%" : "max-content",
+                        width: resolvedLineWrapping ? "100%" : "max-content",
                     }}
                 >
                     {lines.length > 0 ? (
@@ -376,7 +379,7 @@ export function EditedFileDiffPreview({
                                             filePath={file?.path ?? diff.path}
                                             key={block.key}
                                             line={block.line}
-                                            lineWrapping={lineWrapping}
+                                            lineWrapping={resolvedLineWrapping}
                                         />
                                     );
                                 }
@@ -391,7 +394,8 @@ export function EditedFileDiffPreview({
                                                 compactLineNumbers,
                                                 filePath:
                                                     file?.path ?? diff.path,
-                                                lineWrapping,
+                                                lineWrapping:
+                                                    resolvedLineWrapping,
                                             })}
                                         </div>
                                     );
@@ -444,7 +448,8 @@ export function EditedFileDiffPreview({
                                                                     filePath:
                                                                         file?.path ??
                                                                         diff.path,
-                                                                    lineWrapping,
+                                                                    lineWrapping:
+                                                                        resolvedLineWrapping,
                                                                 },
                                                             )}
                                                         </div>
@@ -513,7 +518,8 @@ export function EditedFileDiffPreview({
                                                                     compactLineNumbers,
                                                                     filePath:
                                                                         file.path,
-                                                                    lineWrapping,
+                                                                    lineWrapping:
+                                                                        resolvedLineWrapping,
                                                                 },
                                                             )}
                                                         </div>

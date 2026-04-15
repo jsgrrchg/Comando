@@ -402,6 +402,10 @@ export class AiService {
 
         const now = new Date().toISOString();
         const promptText = input.prompt.trim();
+        const displayContent = serializeComposerPartsForDisplay(
+            input.composerParts,
+            promptText,
+        );
         if (!promptText && input.attachments.length === 0) {
             throw new Error("Type a prompt before sending it.");
         }
@@ -413,7 +417,7 @@ export class AiService {
                 ...liveSession.snapshot.messages,
                 {
                     attachments: input.attachments,
-                    content: promptText,
+                    content: displayContent,
                     createdAt: now,
                     id: randomUUID(),
                     kind: "user",
@@ -3663,6 +3667,42 @@ function formatContentBlock(content: ContentBlock): string {
     }
 
     return `[${content.type}]`;
+}
+
+const PILL_OPEN = "\u200B\u00AB";
+const PILL_CLOSE = "\u00BB\u200B";
+
+function serializeComposerPartsForDisplay(
+    parts: SendAiPromptInput["composerParts"] | undefined,
+    fallback: string,
+): string {
+    if (!parts || parts.length === 0) {
+        return fallback;
+    }
+
+    return parts
+        .map((part) => {
+            switch (part.type) {
+                case "text":
+                    return part.text;
+                case "file_mention":
+                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
+                case "folder_mention":
+                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
+                case "fetch_mention":
+                    return `${PILL_OPEN}@fetch${PILL_CLOSE}`;
+                case "plan_mention":
+                    return `${PILL_OPEN}/plan${PILL_CLOSE}`;
+                case "selection_mention":
+                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
+                case "file_attachment":
+                    return `${PILL_OPEN}📎${part.label}${PILL_CLOSE}`;
+                default:
+                    return "";
+            }
+        })
+        .join("")
+        .trim();
 }
 
 function imageContentToAttachment(

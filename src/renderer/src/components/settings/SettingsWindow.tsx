@@ -1,5 +1,9 @@
 import { useState } from "react";
 import {
+    PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
+    PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
+} from "@renderer/app/ai/sessionReviewContracts";
+import {
     APP_ZOOM_FACTOR_MAX,
     APP_ZOOM_FACTOR_MIN,
     APP_ZOOM_FACTOR_STEP,
@@ -760,6 +764,39 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                         min={AI_CHAT_FONT_SIZE_MIN}
                         max={AI_CHAT_FONT_SIZE_MAX}
                         onChange={(v) => state.onChatFontSizeChange?.(v)}
+                    />
+                }
+            />
+            <SectionLabel>Review</SectionLabel>
+            <Row
+                label="Review diff zoom"
+                description="Default zoom for pending-review diffs. Workspace adjustments override this per session."
+                control={
+                    <NumberStepper
+                        value={state.reviewDiffZoomPercent}
+                        min={64}
+                        max={96}
+                        onChange={(v) =>
+                            state.onReviewDiffZoomPercentChange?.(v)
+                        }
+                    />
+                }
+            />
+            <Row
+                label="Pending review card text"
+                description="Default text size for pending-review cards in the workspace. Session overrides keep their own value."
+                control={
+                    <NumberStepper
+                        value={state.pendingReviewCardTextZoomPercent}
+                        min={Math.round(
+                            PENDING_REVIEW_CARD_TEXT_ZOOM_MIN * 100,
+                        )}
+                        max={Math.round(
+                            PENDING_REVIEW_CARD_TEXT_ZOOM_MAX * 100,
+                        )}
+                        onChange={(v) =>
+                            state.onPendingReviewCardTextZoomPercentChange?.(v)
+                        }
                     />
                 }
             />

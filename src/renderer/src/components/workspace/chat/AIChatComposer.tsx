@@ -32,6 +32,7 @@ import {
     appendFileAttachmentPart,
     appendFileMentionPart,
     appendFolderMentionPart,
+    composerPartsToPlainText,
     normalizeComposerParts,
 } from "./composerParts";
 import {
@@ -43,6 +44,7 @@ import {
     AIChatCommandPicker,
     getCommandSuggestions,
 } from "./AIChatCommandPicker";
+import { useTextContextMenu } from "../../context-menu/useTextContextMenu";
 
 /* ─── Constants ─── */
 
@@ -843,6 +845,33 @@ export function AIChatComposer({
         [onPasteImage, syncFromDom],
     );
 
+    const handleContextMenuPaste = useCallback(
+        (text: string) => {
+            const root = composerRef.current;
+            if (!root) {
+                return;
+            }
+
+            insertPlainTextAtSelection(root, text);
+            syncFromDom();
+            void updatePickers();
+        },
+        [syncFromDom, updatePickers],
+    );
+
+    const { contextMenu, handleContextMenu } =
+        useTextContextMenu<HTMLDivElement>({
+            containerRef: composerRef,
+            editable: !disabled,
+            getFallbackCopyText: () =>
+                composerPartsToPlainText(partsRef.current),
+            onContentChanged: () => {
+                syncFromDom();
+                void updatePickers();
+            },
+            onPasteText: handleContextMenuPaste,
+        });
+
     /* ─ Drag & drop ─ */
     const handleDrop = useCallback(
         (e: React.DragEvent<HTMLDivElement>) => {
@@ -1158,6 +1187,7 @@ export function AIChatComposer({
                     className="app-no-drag h-full w-full outline-none"
                     contentEditable={!disabled}
                     onInput={handleInput}
+                    onContextMenu={handleContextMenu}
                     onKeyDown={handleKeyDown}
                     onPaste={handlePaste}
                     role="textbox"
@@ -1174,6 +1204,7 @@ export function AIChatComposer({
                     }}
                     suppressContentEditableWarning
                 />
+                {contextMenu}
             </div>
 
             {/* Bottom toolbar */}
@@ -1190,12 +1221,15 @@ export function AIChatComposer({
                             else fileInputRef.current?.click();
                         }}
                         onMouseEnter={(e) => {
-                            e.currentTarget.style.background = "var(--color-bg-tertiary)";
-                            e.currentTarget.style.color = "var(--color-text-primary)";
+                            e.currentTarget.style.background =
+                                "var(--color-bg-tertiary)";
+                            e.currentTarget.style.color =
+                                "var(--color-text-primary)";
                         }}
                         onMouseLeave={(e) => {
                             e.currentTarget.style.background = "transparent";
-                            e.currentTarget.style.color = "var(--color-text-secondary)";
+                            e.currentTarget.style.color =
+                                "var(--color-text-secondary)";
                         }}
                         style={{
                             background: "transparent",
@@ -1204,7 +1238,8 @@ export function AIChatComposer({
                             color: "var(--color-text-secondary)",
                             cursor: "pointer",
                             height: 28,
-                            transition: "background-color 100ms ease, color 100ms ease",
+                            transition:
+                                "background-color 100ms ease, color 100ms ease",
                             width: 28,
                         }}
                         type="button"
@@ -1230,7 +1265,8 @@ export function AIChatComposer({
                         }}
                         onMouseEnter={(e) => {
                             if (canSubmit) {
-                                e.currentTarget.style.filter = "brightness(1.15)";
+                                e.currentTarget.style.filter =
+                                    "brightness(1.15)";
                             }
                         }}
                         onMouseLeave={(e) => {
@@ -1249,7 +1285,8 @@ export function AIChatComposer({
                             filter: "brightness(1)",
                             height: 28,
                             opacity: canSubmit ? 1 : 0.4,
-                            transition: "background-color 100ms ease, filter 100ms ease, opacity 100ms ease",
+                            transition:
+                                "background-color 100ms ease, filter 100ms ease, opacity 100ms ease",
                             width: 28,
                         }}
                         title={submitLabel}
@@ -1275,7 +1312,8 @@ export function AIChatComposer({
                             className="app-no-drag flex shrink-0 items-center justify-center rounded-full"
                             onClick={onStop}
                             onMouseEnter={(e) => {
-                                e.currentTarget.style.filter = "brightness(1.2)";
+                                e.currentTarget.style.filter =
+                                    "brightness(1.2)";
                             }}
                             onMouseLeave={(e) => {
                                 e.currentTarget.style.filter = "brightness(1)";

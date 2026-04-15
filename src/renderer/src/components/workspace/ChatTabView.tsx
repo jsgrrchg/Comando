@@ -19,7 +19,12 @@ import type {
     SecretValuePatch,
 } from "@shared/ipc";
 
-import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import {
+    PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
+    PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
+    PENDING_REVIEW_CARD_TEXT_ZOOM_STEP,
+    stepPendingReviewCardTextZoom,
+} from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -168,6 +173,9 @@ export function ChatTabView({
     const removeQueuedPrompt = useAiStore((s) => s.removeQueuedPrompt);
     const respondPermission = useAiStore((s) => s.respondPermission);
     const respondUserInput = useAiStore((s) => s.respondUserInput);
+    const setSessionPendingReviewCardTextZoom = useAiStore(
+        (s) => s.setSessionPendingReviewCardTextZoom,
+    );
     const saveClaudeRuntimeSettings = useAiStore(
         (s) => s.saveClaudeRuntimeSettings,
     );
@@ -523,7 +531,14 @@ export function ChatTabView({
         },
         [onOpenFile, tab.projectId, tab.worktreeId],
     );
-    const diffZoom = sessionState?.diffZoom ?? DEFAULT_AI_DIFF_ZOOM;
+    const diffZoom = sessionState?.diffZoom ?? aiChatSettings.reviewDiffZoom;
+    const pendingReviewCardTextZoom =
+        sessionState?.pendingReviewCardTextZoom ??
+        aiChatSettings.pendingReviewCardTextZoom;
+    const canDecreasePendingReviewCardTextZoom =
+        pendingReviewCardTextZoom > PENDING_REVIEW_CARD_TEXT_ZOOM_MIN;
+    const canIncreasePendingReviewCardTextZoom =
+        pendingReviewCardTextZoom < PENDING_REVIEW_CARD_TEXT_ZOOM_MAX;
     const hasComposerContext =
         pendingPermission !== null ||
         pendingUserInput !== null ||
@@ -1628,8 +1643,23 @@ export function ChatTabView({
 
                         {pendingReviewCount > 0 ? (
                             <EditedFilesBufferPanel
+                                canDecreaseTextZoom={
+                                    canDecreasePendingReviewCardTextZoom
+                                }
+                                canIncreaseTextZoom={
+                                    canIncreasePendingReviewCardTextZoom
+                                }
                                 diffZoom={diffZoom}
                                 items={pendingReviewItems}
+                                onDecreaseTextZoom={() =>
+                                    setSessionPendingReviewCardTextZoom(
+                                        tab.sessionId,
+                                        stepPendingReviewCardTextZoom(
+                                            pendingReviewCardTextZoom,
+                                            -PENDING_REVIEW_CARD_TEXT_ZOOM_STEP,
+                                        ),
+                                    )
+                                }
                                 onKeepAll={handleKeepAllPendingReview}
                                 onKeepHunk={handleKeepPendingReviewHunk}
                                 onKeepItem={handleKeepPendingReviewItem}
@@ -1637,9 +1667,21 @@ export function ChatTabView({
                                 onOpenReview={() => {
                                     void onOpenReview();
                                 }}
+                                onIncreaseTextZoom={() =>
+                                    setSessionPendingReviewCardTextZoom(
+                                        tab.sessionId,
+                                        stepPendingReviewCardTextZoom(
+                                            pendingReviewCardTextZoom,
+                                            PENDING_REVIEW_CARD_TEXT_ZOOM_STEP,
+                                        ),
+                                    )
+                                }
                                 onRejectAll={handleRejectAllPendingReview}
                                 onRejectHunk={handleRejectPendingReviewHunk}
                                 onRejectItem={handleRejectPendingReviewItem}
+                                pendingReviewCardTextZoom={
+                                    pendingReviewCardTextZoom
+                                }
                                 summary={pendingReviewSummary}
                             />
                         ) : null}

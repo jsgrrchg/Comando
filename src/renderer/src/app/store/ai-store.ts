@@ -35,11 +35,16 @@ import {
     cloneDraftAttachments,
     cloneDraftFileContexts,
     createEmptyComposerDraftParts,
-    DEFAULT_AI_DIFF_ZOOM,
     normalizeAiDiffZoom,
+    normalizePendingReviewCardTextZoom,
     type AiComposerDraftPart,
     type QueuedPrompt,
 } from "@renderer/app/ai/sessionReviewContracts";
+import {
+    persistSessionReviewPreferences,
+    readSessionReviewPreferencesForTab,
+    type SessionReviewPreferences,
+} from "@renderer/app/ai/sessionReviewPreferences";
 import { collectExternalComposerRoots } from "@renderer/components/workspace/chat/composerParts";
 import type {
     RuntimeWorkspaceChatTab,
@@ -68,7 +73,7 @@ interface AiSessionClientState {
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly draftComposerParts: readonly AiComposerDraftPart[];
     readonly draftFileContexts: readonly AiFileContextAttachment[];
-    readonly diffZoom: number;
+    readonly diffZoom: number | null;
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
     readonly hydrated: boolean;
@@ -76,6 +81,7 @@ interface AiSessionClientState {
     readonly isHydrating: boolean;
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
+    readonly pendingReviewCardTextZoom: number | null;
     readonly queue: readonly QueuedPrompt[];
     readonly snapshot: AiSessionSnapshot | null;
 }
@@ -187,6 +193,10 @@ interface AiStore {
         status: QueuedPrompt["status"],
     ) => void;
     setSessionDiffZoom: (sessionId: string, diffZoom: number) => void;
+    setSessionPendingReviewCardTextZoom: (
+        sessionId: string,
+        pendingReviewCardTextZoom: number,
+    ) => void;
     setSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
     setSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
     setSessionConfigOption: (
@@ -638,11 +648,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     registerSessionTab: (tab) => {
+        const persistedPreferences = readSessionReviewPreferencesForTab(tab);
+
         set((state) => ({
             sessions: {
                 ...state.sessions,
                 [tab.sessionId]: {
-                    ...(state.sessions[tab.sessionId] ?? createSessionState()),
+                    ...(state.sessions[tab.sessionId] ??
+                        createSessionState(persistedPreferences)),
                     draftComposerParts:
                         state.sessions[tab.sessionId]?.draftComposerParts ??
                         (tab.kind === "chat" && tab.draft.trim().length > 0
@@ -810,15 +823,47 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     setSessionDiffZoom: (sessionId, diffZoom) => {
-        set((state) => ({
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...(state.sessions[sessionId] ?? createSessionState()),
-                    diffZoom: normalizeAiDiffZoom(diffZoom),
+        const normalizedDiffZoom = normalizeAiDiffZoom(diffZoom);
+
+        set((state) => {
+            const nextSession = {
+                ...(state.sessions[sessionId] ?? createSessionState()),
+                diffZoom: normalizedDiffZoom,
+            };
+
+            persistSessionReviewPreferencesForSession(nextSession, sessionId);
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: nextSession,
                 },
-            },
-        }));
+            };
+        });
+    },
+
+    setSessionPendingReviewCardTextZoom: (
+        sessionId,
+        pendingReviewCardTextZoom,
+    ) => {
+        const normalizedPendingReviewCardTextZoom =
+            normalizePendingReviewCardTextZoom(pendingReviewCardTextZoom);
+
+        set((state) => {
+            const nextSession = {
+                ...(state.sessions[sessionId] ?? createSessionState()),
+                pendingReviewCardTextZoom: normalizedPendingReviewCardTextZoom,
+            };
+
+            persistSessionReviewPreferencesForSession(nextSession, sessionId);
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: nextSession,
+                },
+            };
+        });
     },
 
     respondPermission: async (input) => {
@@ -1211,6 +1256,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     collectExternalComposerRoots(
                         queuedPrompt.composerPartsSnapshot,
                     ),
+                composerParts: queuedPrompt.composerPartsSnapshot,
                 projectId: tab.projectId,
                 runtimeId: tab.runtimeId,
                 sessionId: tab.sessionId,
@@ -1241,12 +1287,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 }));
 
-function createSessionState(): AiSessionClientState {
+function createSessionState(
+    preferences?: SessionReviewPreferences | null,
+): AiSessionClientState {
     return {
         draftAttachments: [],
         draftComposerParts: createEmptyComposerDraftParts(),
         draftFileContexts: [],
-        diffZoom: DEFAULT_AI_DIFF_ZOOM,
+        diffZoom: preferences?.diffZoom ?? null,
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
         hydrated: false,
@@ -1254,9 +1302,33 @@ function createSessionState(): AiSessionClientState {
         isHydrating: false,
         localError: null,
         meta: null,
+        pendingReviewCardTextZoom:
+            preferences?.pendingReviewCardTextZoom ?? null,
         queue: [],
         snapshot: null,
     };
+}
+
+function persistSessionReviewPreferencesForSession(
+    session: Pick<
+        AiSessionClientState,
+        "diffZoom" | "meta" | "pendingReviewCardTextZoom"
+    >,
+    sessionId: string,
+) {
+    if (!session.meta) {
+        return;
+    }
+
+    persistSessionReviewPreferences(
+        session.meta.projectId,
+        session.meta.worktreeId,
+        sessionId,
+        {
+            diffZoom: session.diffZoom,
+            pendingReviewCardTextZoom: session.pendingReviewCardTextZoom,
+        },
+    );
 }
 
 function createEmptyClaudeSettings(): ClaudeRuntimeSettings {
@@ -1416,6 +1488,7 @@ function buildSessionMeta(tab: RuntimeAiSessionTab): RegisteredSessionMeta {
 async function dispatchPrompt(
     meta: {
         readonly additionalRoots?: readonly string[];
+        readonly composerParts?: readonly AiComposerDraftPart[];
         readonly projectId: string | null;
         readonly runtimeId: AiRuntimeId;
         readonly sessionId: string;
@@ -1447,6 +1520,7 @@ async function dispatchPrompt(
         await getComandoApi().sendAiPrompt({
             additionalRoots: meta.additionalRoots,
             attachments,
+            composerParts: meta.composerParts,
             projectId: meta.projectId,
             prompt,
             runtimeId: meta.runtimeId,
@@ -1555,6 +1629,7 @@ async function drainQueueIfNeeded(
                 additionalRoots: collectExternalComposerRoots(
                     nextQueuedPrompt.composerPartsSnapshot,
                 ),
+                composerParts: nextQueuedPrompt.composerPartsSnapshot,
                 projectId: session.meta.projectId,
                 runtimeId: session.meta.runtimeId,
                 sessionId,

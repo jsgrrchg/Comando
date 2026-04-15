@@ -99,6 +99,16 @@ function isLargeUpdateDiff(
     return Math.max(oldLines.length, newLines.length) > FULL_DIFF_MAX_LINES;
 }
 
+export function shouldWrapDiffPreview(
+    filePath: string | null | undefined,
+): boolean {
+    if (!filePath) {
+        return false;
+    }
+
+    return filePath.toLowerCase().endsWith(".md");
+}
+
 export function buildLcsTable(
     oldLines: readonly string[],
     newLines: readonly string[],

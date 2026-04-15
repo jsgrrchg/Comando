@@ -114,4 +114,34 @@ describe("EditedFileDiffPreview", () => {
         expect(markup).toContain("Accept hunk 2");
         expect(markup).not.toContain("Accept hunk 1");
     });
+
+    it("disables wrapping for code files by default", () => {
+        const markup = renderToStaticMarkup(
+            <EditedFileDiffPreview
+                diff={createDiff()}
+                diffZoom={0.72}
+                expanded
+            />,
+        );
+
+        expect(markup).toContain('data-line-wrapping="false"');
+        expect(markup).toContain("overflow-x:auto");
+    });
+
+    it("keeps wrapping enabled for markdown files", () => {
+        const markdownDiff = {
+            ...createDiff(),
+            path: "docs/readme.md",
+        };
+        const markup = renderToStaticMarkup(
+            <EditedFileDiffPreview
+                diff={markdownDiff}
+                diffZoom={0.72}
+                expanded
+            />,
+        );
+
+        expect(markup).toContain('data-line-wrapping="true"');
+        expect(markup).toContain("overflow-x:hidden");
+    });
 });

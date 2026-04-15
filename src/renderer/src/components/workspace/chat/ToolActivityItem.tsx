@@ -3,6 +3,8 @@ import { useState } from "react";
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
+import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
+import { useAiStore } from "@renderer/app/store/ai-store";
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { MarkdownContent } from "../MarkdownContent";
@@ -346,6 +348,12 @@ function FileToolMessage({
     ) => ResolvedProjectFileReference | null;
     readonly worktreeId: string | null;
 }) {
+    const aiChatSettings = useAiChatSettings();
+    const pendingReviewCardTextZoom = useAiStore(
+        (state) =>
+            state.sessions[activity.sessionId]?.pendingReviewCardTextZoom ??
+            aiChatSettings.pendingReviewCardTextZoom,
+    );
     const [expanded, setExpanded] = useState(false);
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
@@ -387,7 +395,7 @@ function FileToolMessage({
                     className="min-w-0 flex-1 truncate"
                     style={{
                         color: "var(--color-text-primary)",
-                        fontWeight: 500,
+                        fontWeight: 400,
                     }}
                 >
                     {activity.title}
@@ -525,6 +533,7 @@ function FileToolMessage({
                                       backgroundColor:
                                           "var(--color-bg-tertiary)",
                                       border: "1px solid var(--color-border)",
+                                      fontSize: `${pendingReviewCardTextZoom}em`,
                                   }}
                               >
                                   <div className="flex items-center justify-between gap-2">
@@ -635,7 +644,7 @@ function TerminalToolMessage({
                     className="min-w-0 flex-1 truncate"
                     style={{
                         color: "var(--color-text-primary)",
-                        fontWeight: 500,
+                        fontWeight: 400,
                     }}
                 >
                     {activity.title}

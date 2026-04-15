@@ -80,6 +80,9 @@ const AI_CHAT_FONT_FAMILY_KEY = "ai.chat.font_family";
 const AI_CHAT_FONT_SIZE_KEY = "ai.chat.font_size";
 const AI_COMPOSER_FONT_FAMILY_KEY = "ai.composer.font_family";
 const AI_COMPOSER_FONT_SIZE_KEY = "ai.composer.font_size";
+const AI_PENDING_REVIEW_CARD_TEXT_ZOOM_KEY =
+    "ai.review.pending_review_card_text_zoom";
+const AI_REVIEW_DIFF_ZOOM_KEY = "ai.review.diff_zoom";
 const AI_REQUIRE_CMD_ENTER_KEY = "ai.composer.require_cmd_enter";
 const AI_SCREENSHOT_RETENTION_KEY = "ai.composer.screenshot_retention_seconds";
 const AI_HISTORY_RETENTION_KEY = "ai.chat.history_retention_days";
@@ -87,9 +90,15 @@ const AI_HISTORY_RETENTION_KEY = "ai.chat.history_retention_days";
 const DEFAULT_CHAT_FONT_FAMILY: ChatFontFamily = DEFAULT_AI_FONT_FAMILY;
 const DEFAULT_CHAT_FONT_SIZE = DEFAULT_AI_CHAT_FONT_SIZE;
 const DEFAULT_COMPOSER_FONT_SIZE = DEFAULT_AI_COMPOSER_FONT_SIZE;
+const DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM = 1;
+const DEFAULT_REVIEW_DIFF_ZOOM = 0.72;
 const DEFAULT_REQUIRE_CMD_ENTER = false;
 const DEFAULT_SCREENSHOT_RETENTION = 0;
 const DEFAULT_HISTORY_RETENTION = 0;
+const PENDING_REVIEW_CARD_TEXT_ZOOM_MIN = 0.85;
+const PENDING_REVIEW_CARD_TEXT_ZOOM_MAX = 1.25;
+const REVIEW_DIFF_ZOOM_MIN = 0.64;
+const REVIEW_DIFF_ZOOM_MAX = 0.96;
 
 const VALID_CHAT_FONT_FAMILIES = new Set<ChatFontFamily>(
     EDITOR_FONT_FAMILY_IDS,
@@ -300,6 +309,12 @@ export class SettingsService {
             composerFontSize: this.#normalizeComposerFontSize(
                 this.#loadNumberSetting(AI_COMPOSER_FONT_SIZE_KEY),
             ),
+            pendingReviewCardTextZoom: this.#normalizePendingReviewCardTextZoom(
+                this.#loadNumberSetting(AI_PENDING_REVIEW_CARD_TEXT_ZOOM_KEY),
+            ),
+            reviewDiffZoom: this.#normalizeReviewDiffZoom(
+                this.#loadNumberSetting(AI_REVIEW_DIFF_ZOOM_KEY),
+            ),
             requireCmdEnterToSend:
                 this.#loadStringSetting(AI_REQUIRE_CMD_ENTER_KEY) === "true" ||
                 DEFAULT_REQUIRE_CMD_ENTER,
@@ -332,6 +347,18 @@ export class SettingsService {
         this.#saveSetting(
             AI_COMPOSER_FONT_SIZE_KEY,
             String(this.#normalizeComposerFontSize(settings.composerFontSize)),
+        );
+        this.#saveSetting(
+            AI_PENDING_REVIEW_CARD_TEXT_ZOOM_KEY,
+            String(
+                this.#normalizePendingReviewCardTextZoom(
+                    settings.pendingReviewCardTextZoom,
+                ),
+            ),
+        );
+        this.#saveSetting(
+            AI_REVIEW_DIFF_ZOOM_KEY,
+            String(this.#normalizeReviewDiffZoom(settings.reviewDiffZoom)),
         );
         this.#saveSetting(
             AI_REQUIRE_CMD_ENTER_KEY,
@@ -1064,6 +1091,38 @@ export class SettingsService {
             value,
             AI_COMPOSER_FONT_SIZE_MIN,
             AI_COMPOSER_FONT_SIZE_MAX,
+        );
+    }
+
+    #normalizePendingReviewCardTextZoom(
+        value: number | null | undefined,
+    ): number {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            return DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM;
+        }
+
+        return (
+            Math.round(
+                Math.min(
+                    PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
+                    Math.max(PENDING_REVIEW_CARD_TEXT_ZOOM_MIN, value),
+                ) * 100,
+            ) / 100
+        );
+    }
+
+    #normalizeReviewDiffZoom(value: number | null | undefined): number {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            return DEFAULT_REVIEW_DIFF_ZOOM;
+        }
+
+        return (
+            Math.round(
+                Math.min(
+                    REVIEW_DIFF_ZOOM_MAX,
+                    Math.max(REVIEW_DIFF_ZOOM_MIN, value),
+                ) * 100,
+            ) / 100
         );
     }
 }

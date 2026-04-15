@@ -133,6 +133,8 @@ export interface AppAiChatSettings {
     readonly chatFontSize: number;
     readonly composerFontFamily: ChatFontFamily;
     readonly composerFontSize: number;
+    readonly pendingReviewCardTextZoom: number;
+    readonly reviewDiffZoom: number;
     readonly requireCmdEnterToSend: boolean;
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
@@ -976,6 +978,37 @@ export interface AiFileContextAttachment {
     readonly endLine?: number | null;
 }
 
+export type AiComposerMessagePart =
+    | { readonly type: "text"; readonly text: string }
+    | {
+          readonly type: "file_mention";
+          readonly label: string;
+          readonly path: string;
+          readonly relativePath: string;
+          readonly languageId: string;
+      }
+    | {
+          readonly type: "folder_mention";
+          readonly folderPath: string;
+          readonly label: string;
+      }
+    | { readonly type: "fetch_mention" }
+    | { readonly type: "plan_mention" }
+    | {
+          readonly type: "selection_mention";
+          readonly label: string;
+          readonly path: string;
+          readonly selectedText: string;
+          readonly startLine: number;
+          readonly endLine: number;
+      }
+    | {
+          readonly type: "file_attachment";
+          readonly filePath: string;
+          readonly mimeType: string;
+          readonly label: string;
+      };
+
 export interface AiMessage {
     readonly attachments: readonly AiImageAttachment[];
     readonly content: string;
@@ -1180,6 +1213,7 @@ export interface AiSessionSnapshot {
 export interface SendAiPromptInput {
     readonly additionalRoots?: readonly string[];
     readonly attachments: readonly AiImageAttachment[];
+    readonly composerParts?: readonly AiComposerMessagePart[];
     readonly projectId: string | null;
     readonly prompt: string;
     readonly runtimeId: AiRuntimeId;
@@ -1265,7 +1299,9 @@ export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot>;
     getWindowContext: () => Promise<WindowContextSnapshot | null>;
+    readClipboardText: () => Promise<string>;
     resolveDroppedFilePath: (file: File | null) => string | null;
+    writeClipboardText: (text: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getProjectSettings: (

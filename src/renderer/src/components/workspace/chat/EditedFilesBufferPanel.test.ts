@@ -160,6 +160,7 @@ describe("EditedFilesBufferPanel", () => {
         );
 
         expect(markup).toContain("staged");
+        expect(markup).toContain("font-family:var(--font-sans)");
         expect(markup).toContain("(2)");
         expect(markup).toContain("review");
         expect(markup).toContain("Reject All");

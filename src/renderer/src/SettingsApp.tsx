@@ -21,6 +21,12 @@ import {
     type SettingsProjectOption,
 } from "./components/settings";
 import {
+    DEFAULT_AI_DIFF_ZOOM,
+    DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM,
+    PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
+    PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
+} from "./app/ai/sessionReviewContracts";
+import {
     loadAiChatSettings,
     loadAppEditorSettings,
     loadAppAppearanceSettings,
@@ -510,7 +516,14 @@ export function SettingsApp() {
                 composerFontFamily: aiChat.composerFontFamily,
                 composerFontFamilies: composerFontFamilies,
                 composerFontSize: aiChat.composerFontSize,
+                pendingReviewCardTextZoomPercent: Math.round(
+                    (aiChat.pendingReviewCardTextZoom ??
+                        DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM) * 100,
+                ),
                 requireCmdEnterToSend: aiChat.requireCmdEnterToSend,
+                reviewDiffZoomPercent: Math.round(
+                    (aiChat.reviewDiffZoom ?? DEFAULT_AI_DIFF_ZOOM) * 100,
+                ),
                 screenshotRetentionSeconds: aiChat.screenshotRetentionSeconds,
                 historyRetentionDays: aiChat.historyRetentionDays,
                 onChatFontFamilyChange: (id) =>
@@ -525,8 +538,25 @@ export function SettingsApp() {
                     }),
                 onComposerFontSizeChange: (size) =>
                     updateAiChat({ composerFontSize: size }),
+                onPendingReviewCardTextZoomPercentChange: (percent) =>
+                    updateAiChat({
+                        pendingReviewCardTextZoom: Math.min(
+                            PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
+                            Math.max(
+                                PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
+                                percent / 100,
+                            ),
+                        ),
+                    }),
                 onRequireCmdEnterChange: (value) =>
                     updateAiChat({ requireCmdEnterToSend: value }),
+                onReviewDiffZoomPercentChange: (percent) =>
+                    updateAiChat({
+                        reviewDiffZoom: Math.min(
+                            0.96,
+                            Math.max(0.64, percent / 100),
+                        ),
+                    }),
                 onScreenshotRetentionChange: (seconds) =>
                     updateAiChat({ screenshotRetentionSeconds: seconds }),
                 onHistoryRetentionChange: (days) =>

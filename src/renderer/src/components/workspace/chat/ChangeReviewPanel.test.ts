@@ -114,6 +114,7 @@ describe("ChangeReviewPanel", () => {
         );
 
         expect(markup).toContain("Edited app.ts");
+        expect(markup).toContain("font-weight:400");
         expect(markup).toContain("Open");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
@@ -121,6 +122,7 @@ describe("ChangeReviewPanel", () => {
         expect(markup).toContain("change-review-panel:file-1");
         expect(markup).toContain(">+1<");
         expect(markup).toContain(">-1<");
+        expect(markup).toContain('data-line-wrapping="false"');
         expect(markup).not.toContain(
             "background-color:color-mix(in srgb, var(--diff-add) 8%, var(--color-bg-secondary))",
         );
@@ -212,5 +214,30 @@ describe("ChangeReviewPanel", () => {
         );
 
         expect(markup).toContain("Open");
+    });
+
+    it("keeps wrapping enabled for markdown review cards", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ChangeReviewPanel, {
+                activity: createActivity({
+                    diffs: [
+                        {
+                            ...createActivity().diffs[0],
+                            path: "docs/readme.md",
+                        },
+                    ],
+                }),
+                defaultExpanded: true,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [
+                    createTrackedFile({
+                        path: "docs/readme.md",
+                    }),
+                ],
+            }),
+        );
+
+        expect(markup).toContain('data-line-wrapping="true"');
     });
 });

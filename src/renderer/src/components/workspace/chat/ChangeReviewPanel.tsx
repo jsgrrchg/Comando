@@ -4,6 +4,7 @@ import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import type { ResolvedProjectFileReference } from "../projectFileReferences";
 import { EditedFileDiffPreview } from "../review/EditedFileDiffPreview";
@@ -327,7 +328,7 @@ function ChangeReviewFileRow({
                                 style={{
                                     color: "var(--color-text-primary)",
                                     fontSize: "0.82em",
-                                    fontWeight: 600,
+                                    fontWeight: 400,
                                 }}
                             >
                                 {getFileNameFromPath(item.path)}
@@ -453,10 +454,12 @@ export function ChangeReviewPanel({
     trackedFiles = [],
     worktreeId = null,
 }: ChangeReviewPanelProps) {
+    const aiChatSettings = useAiChatSettings();
     const setSessionDiffZoom = useAiStore((state) => state.setSessionDiffZoom);
     const diffZoom = useAiStore(
         (state) =>
             state.sessions[activity.sessionId]?.diffZoom ??
+            aiChatSettings.reviewDiffZoom ??
             DEFAULT_AI_DIFF_ZOOM,
     );
 
@@ -588,7 +591,7 @@ export function ChangeReviewPanel({
                                 style={{
                                     color: "var(--color-text-primary)",
                                     fontSize: "0.84em",
-                                    fontWeight: 600,
+                                    fontWeight: 400,
                                 }}
                             >
                                 {summaryLabel}

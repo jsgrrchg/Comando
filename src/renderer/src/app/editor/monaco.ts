@@ -808,7 +808,9 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
     const scrollbar = withAlpha(editorForeground, isDark ? 0.14 : 0.1);
     const scrollbarHover = withAlpha(editorForeground, isDark ? 0.22 : 0.16);
     const insertedBackground = withAlpha("#10b981", isDark ? 0.18 : 0.12);
+    const insertedGutterBackground = withAlpha("#10b981", isDark ? 0.22 : 0.14);
     const removedBackground = withAlpha("#ef4444", isDark ? 0.18 : 0.12);
+    const removedGutterBackground = withAlpha("#ef4444", isDark ? 0.22 : 0.14);
 
     monaco.editor.defineTheme(themeName, {
         base: isDark ? "vs-dark" : "vs",
@@ -859,8 +861,14 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
             },
         ],
         colors: {
+            "diffEditor.insertedLineBackground": insertedBackground,
+            "diffEditor.insertedTextBorder": "#00000000",
             "diffEditor.insertedTextBackground": insertedBackground,
+            "diffEditor.removedLineBackground": removedBackground,
+            "diffEditor.removedTextBorder": "#00000000",
             "diffEditor.removedTextBackground": removedBackground,
+            "diffEditorGutter.insertedLineBackground": insertedGutterBackground,
+            "diffEditorGutter.removedLineBackground": removedGutterBackground,
             "dropdown.background": elevatedBackground,
             "dropdown.border": border,
             "dropdown.foreground": editorForeground,

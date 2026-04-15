@@ -148,7 +148,7 @@ describe("workspace file opening", () => {
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });
 
-    it("moves an existing file tab into the requested pane when a target pane is provided", async () => {
+    it("duplicates an existing file tab into the requested pane when the file is already open elsewhere", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,
             activePaneId: "pane-left",
@@ -243,12 +243,32 @@ describe("workspace file opening", () => {
         }
 
         expect(state.activePaneId).toBe("pane-right");
-        expect(leftPane.tabIds).toEqual(["helper-tab"]);
-        expect(leftPane.activeTabId).toBe("helper-tab");
-        expect(rightPane.tabIds).toEqual(["file-tab-1"]);
-        expect(rightPane.activeTabId).toBe("file-tab-1");
+        expect(leftPane.tabIds).toEqual(["file-tab-1", "helper-tab"]);
+        expect(leftPane.activeTabId).toBe("file-tab-1");
+        expect(rightPane.tabIds).toHaveLength(1);
+        expect(rightPane.activeTabId).toBe(rightPane.tabIds[0]);
         expect(openProjectFileMock).not.toHaveBeenCalled();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+
+        const duplicatedTabId = rightPane.tabIds[0];
+        expect(duplicatedTabId).toBeTruthy();
+        expect(duplicatedTabId).not.toBe("file-tab-1");
+        expect(
+            duplicatedTabId ? state.tabsById[duplicatedTabId] : null,
+        ).toMatchObject({
+            document: {
+                absolutePath: "/tmp/src/app.ts",
+                relativePath: "src/app.ts",
+            },
+            draftContent: "export const value = 1;\n",
+            isDirty: false,
+            kind: "file",
+            projectId: "project-1",
+            relativePath: "src/app.ts",
+            reviewContext: null,
+            savedContent: "export const value = 1;\n",
+            worktreeId: "worktree-1",
+        });
     });
 });
 

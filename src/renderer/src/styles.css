@@ -1148,6 +1148,33 @@ button {
     display: none !important;
 }
 
+.inline-review-diff .monaco-editor .line-numbers.inline-review-line-number {
+    box-sizing: border-box;
+    border-left: 2px solid transparent;
+}
+
+.inline-review-diff
+    .inline-review-diff
+    .monaco-editor
+    .line-numbers.inline-review-line-number--add {
+    background: color-mix(in srgb, var(--diff-add) 7%, transparent);
+    border-left-color: color-mix(in srgb, var(--diff-add) 72%, transparent);
+}
+
+.inline-review-diff
+    .monaco-editor
+    .line-numbers.inline-review-line-number--delete {
+    background: color-mix(in srgb, var(--diff-remove) 7%, transparent);
+    border-left-color: color-mix(in srgb, var(--diff-remove) 72%, transparent);
+}
+
+.inline-review-diff
+    .monaco-editor
+    .line-numbers.inline-review-line-number--modify {
+    background: color-mix(in srgb, var(--diff-warn) 6%, transparent);
+    border-left-color: color-mix(in srgb, var(--diff-warn) 68%, transparent);
+}
+
 .inline-review-diff .monaco-diff-editor .diffOverview {
     width: 0 !important;
 }

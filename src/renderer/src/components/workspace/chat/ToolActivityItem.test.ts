@@ -1,10 +1,36 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
 import { ToolActivityItem } from "./ToolActivityItem";
+
+const mockAiStoreState = vi.hoisted(() => ({
+    current: {
+        sessions: {} as Record<string, unknown>,
+    },
+}));
+
+vi.mock("@renderer/app/store/ai-store", () => ({
+    useAiStore: (
+        selector: (state: typeof mockAiStoreState.current) => unknown,
+    ) => selector(mockAiStoreState.current),
+}));
+
+vi.mock("@renderer/app/hooks/use-ai-chat-settings", () => ({
+    useAiChatSettings: () => ({
+        chatFontFamily: "system",
+        chatFontSize: 14,
+        composerFontFamily: "system",
+        composerFontSize: 14,
+        pendingReviewCardTextZoom: 1,
+        requireCmdEnterToSend: false,
+        reviewDiffZoom: 0.72,
+        screenshotRetentionSeconds: 0,
+        historyRetentionDays: 0,
+    }),
+}));
 
 function createActivity(
     overrides: Partial<AiToolActivity> = {},
@@ -115,6 +141,7 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain("Edited app.ts");
+        expect(markup).toContain("font-weight:400");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
     });

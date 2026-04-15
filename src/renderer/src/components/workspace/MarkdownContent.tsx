@@ -1,8 +1,16 @@
-import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
+import {
+    memo,
+    useCallback,
+    useMemo,
+    useRef,
+    useState,
+    type ReactElement,
+} from "react";
 
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
 import { HighlightedCodeText } from "../../app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "../../app/editor/useCodeLanguageSupport";
+import { useTextContextMenu } from "../context-menu/useTextContextMenu";
 import { DiffLineView } from "./review/DiffLineView";
 import {
     DIFF_PANEL_MAX_HEIGHT,
@@ -720,6 +728,12 @@ export const MarkdownContent = memo(function MarkdownContent({
     resolveFileReference,
 }: MarkdownContentProps) {
     const blocks = useMemo(() => parseBlocks(content), [content]);
+    const contentRef = useRef<HTMLDivElement | null>(null);
+    const { contextMenu, handleContextMenu } =
+        useTextContextMenu<HTMLDivElement>({
+            containerRef: contentRef,
+            getFallbackCopyText: () => content,
+        });
 
     const inlineOptions: InlineOptions | undefined = useMemo(() => {
         if (!onOpenFile || !resolveFileReference) return undefined;
@@ -733,6 +747,8 @@ export const MarkdownContent = memo(function MarkdownContent({
     return (
         <div
             className="chat-assistant-content min-w-0 max-w-full"
+            onContextMenu={handleContextMenu}
+            ref={contentRef}
             style={{
                 fontFamily: chatFontFamily,
                 fontSize: chatFontSize,
@@ -755,6 +771,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                     />
                 ),
             )}
+            {contextMenu}
         </div>
     );
 });

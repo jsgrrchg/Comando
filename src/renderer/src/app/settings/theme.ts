@@ -15,6 +15,10 @@ import type {
     ThemePreset,
 } from "@shared/ipc";
 import {
+    DEFAULT_AI_DIFF_ZOOM,
+    DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM,
+} from "@renderer/app/ai/sessionReviewContracts";
+import {
     DEFAULT_AI_CHAT_FONT_SIZE,
     DEFAULT_AI_COMPOSER_FONT_SIZE,
     DEFAULT_EDITOR_FONT_SIZE,
@@ -1029,6 +1033,8 @@ export function getDefaultAiChatSettings(): AppAiChatSettings {
         chatFontSize: DEFAULT_AI_CHAT_FONT_SIZE,
         composerFontFamily: "system",
         composerFontSize: DEFAULT_AI_COMPOSER_FONT_SIZE,
+        pendingReviewCardTextZoom: DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM,
+        reviewDiffZoom: DEFAULT_AI_DIFF_ZOOM,
         requireCmdEnterToSend: false,
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,

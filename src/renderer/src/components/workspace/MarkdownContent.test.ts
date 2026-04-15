@@ -48,4 +48,16 @@ describe("MarkdownContent", () => {
         expect(graphqlMarkup).toContain(">graphql<");
         expect(graphqlMarkup).toContain("cm-static-code");
     });
+
+    it("renders inline selection pills from serialized composer markers", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content:
+                    "\u200B\u00AB(8:14) - Si ves que un\u00BB\u200B expande",
+            }),
+        );
+
+        expect(markup).toContain("(8:14) - Si ves que un");
+        expect(markup).toContain("expande");
+    });
 });

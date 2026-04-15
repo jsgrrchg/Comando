@@ -112,6 +112,7 @@ describe("ReviewFileRow", () => {
         expect(markup).toContain("accept");
         expect(markup).toContain("reject");
         expect(markup).toContain("review-file-diff:file-1");
+        expect(markup).toContain('data-line-wrapping="false"');
     });
 
     it("renders the compact variant with the smaller summary layout", () => {

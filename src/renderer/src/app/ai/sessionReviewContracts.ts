@@ -1,42 +1,21 @@
-import type { AiFileContextAttachment, AiImageAttachment } from "@shared/ipc";
+import type {
+    AiComposerMessagePart,
+    AiFileContextAttachment,
+    AiImageAttachment,
+} from "@shared/ipc";
 
 export const DEFAULT_AI_DIFF_ZOOM = 0.72;
+export const DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM = 1;
+export const PENDING_REVIEW_CARD_TEXT_ZOOM_MIN = 0.85;
+export const PENDING_REVIEW_CARD_TEXT_ZOOM_MAX = 1.25;
+export const PENDING_REVIEW_CARD_TEXT_ZOOM_STEP = 0.05;
 
 // Fase 0 / Ruta B: el undo de reject queda fuera del alcance inicial.
 export const AI_REVIEW_UNDO_ENABLED = false;
 
 export type AiQueuedPromptStatus = "failed" | "queued" | "sending";
 
-export type AiComposerDraftPart =
-    | { readonly type: "text"; readonly text: string }
-    | {
-          readonly type: "file_mention";
-          readonly label: string;
-          readonly path: string;
-          readonly relativePath: string;
-          readonly languageId: string;
-      }
-    | {
-          readonly type: "folder_mention";
-          readonly folderPath: string;
-          readonly label: string;
-      }
-    | { readonly type: "fetch_mention" }
-    | { readonly type: "plan_mention" }
-    | {
-          readonly type: "selection_mention";
-          readonly label: string;
-          readonly path: string;
-          readonly selectedText: string;
-          readonly startLine: number;
-          readonly endLine: number;
-      }
-    | {
-          readonly type: "file_attachment";
-          readonly filePath: string;
-          readonly mimeType: string;
-          readonly label: string;
-      };
+export type AiComposerDraftPart = AiComposerMessagePart;
 
 export interface QueuedPrompt {
     readonly attachments: readonly AiImageAttachment[];
@@ -68,7 +47,7 @@ export function buildSelectionMentionLabel(
         preview.length > 20 ? `${preview.slice(0, 20).trimEnd()}...` : preview;
     const range =
         startLine === endLine ? `(${startLine})` : `(${startLine}:${endLine})`;
-    return `${range} ${truncated}`.trim();
+    return truncated ? `${range} - ${truncated}` : range;
 }
 
 function ensureTrailingSpace(
@@ -137,4 +116,26 @@ export function normalizeAiDiffZoom(value: number): number {
     }
 
     return Math.round(value * 100) / 100;
+}
+
+export function normalizePendingReviewCardTextZoom(value: number): number {
+    if (!Number.isFinite(value)) {
+        return DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM;
+    }
+
+    return (
+        Math.round(
+            Math.min(
+                PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
+                Math.max(PENDING_REVIEW_CARD_TEXT_ZOOM_MIN, value),
+            ) * 100,
+        ) / 100
+    );
+}
+
+export function stepPendingReviewCardTextZoom(
+    value: number,
+    delta: number,
+): number {
+    return normalizePendingReviewCardTextZoom(value + delta);
 }
