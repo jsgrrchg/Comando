@@ -78,13 +78,11 @@ export function QueuedMessagesPanel({
     onSendNow,
 }: QueuedMessagesPanelProps) {
     const [collapsed, setCollapsed] = useState(defaultCollapsed);
-    const visibleItems = items.filter((item) => item.status !== "sending");
     const effectiveCollapsed = editingItem ? false : collapsed;
     const canClearAll =
-        visibleItems.length > 0 &&
-        items.every((item) => item.status !== "sending");
+        items.length > 0 && items.every((item) => item.status !== "sending");
 
-    if (visibleItems.length === 0 && !editingItem) {
+    if (items.length === 0 && !editingItem) {
         return null;
     }
 
@@ -94,7 +92,7 @@ export function QueuedMessagesPanel({
             data-testid="queued-messages-panel"
             style={{ fontFamily: "var(--font-mono)" }}
         >
-            {visibleItems.length > 0 ? (
+            {items.length > 0 ? (
                 <div className="flex items-center justify-between px-1">
                     <button
                         className="flex items-center gap-1.5"
@@ -124,7 +122,7 @@ export function QueuedMessagesPanel({
                         >
                             ▸
                         </span>
-                        queue ({visibleItems.length})
+                        queue ({items.length})
                     </button>
                     <button
                         disabled={!canClearAll}
@@ -203,7 +201,7 @@ export function QueuedMessagesPanel({
                     className="flex flex-col"
                     data-testid="queued-messages-list"
                 >
-                    {visibleItems.map((item, index) => {
+                    {items.map((item, index) => {
                         const sending = item.status === "sending";
                         const summary = summarizeQueuedPrompt(item);
 

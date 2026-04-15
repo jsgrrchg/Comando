@@ -154,7 +154,9 @@ interface AiStore {
     respondPermission: (input: AiPermissionResponseInput) => Promise<void>;
     respondUserInput: (input: AiUserInputResponseInput) => Promise<void>;
     launchRuntimeAuth: (input: AiRuntimeAuthLaunchInput) => Promise<void>;
-    logoutRuntimeAuth: (input: AiRuntimeAuthLogoutInput) => Promise<AiRuntimeStatus>;
+    logoutRuntimeAuth: (
+        input: AiRuntimeAuthLogoutInput,
+    ) => Promise<AiRuntimeStatus>;
     saveClaudeRuntimeSettings: (
         settings: ClaudeRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
@@ -896,7 +898,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     saveCodexRuntimeSettings: async (settings) => {
         const normalizedPath = settings.binaryPath?.trim() ?? "";
-        const comandoApi = getComandoApi() as ReturnType<typeof getComandoApi> & {
+        const comandoApi = getComandoApi() as ReturnType<
+            typeof getComandoApi
+        > & {
             saveCodexRuntimeSettings: (
                 input: CodexRuntimeSettingsInput,
             ) => Promise<AiRuntimeStatus>;
@@ -923,7 +927,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     verifyCodexRuntimeSettings: async (settings) => {
         const normalizedPath = settings.binaryPath?.trim() ?? "";
-        const comandoApi = getComandoApi() as ReturnType<typeof getComandoApi> & {
+        const comandoApi = getComandoApi() as ReturnType<
+            typeof getComandoApi
+        > & {
             verifyCodexRuntimeSettings: (
                 input: CodexRuntimeSettingsInput,
             ) => Promise<AiRuntimeStatus>;
@@ -1053,6 +1059,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     sendQueuedPromptNow: async (sessionId, promptId) => {
         const session = get().sessions[sessionId];
+        const queueIndex =
+            session?.queue.findIndex(
+                (candidate) => candidate.id === promptId,
+            ) ?? -1;
         const queuedPrompt = session?.queue.find(
             (candidate) => candidate.id === promptId,
         );
@@ -1080,7 +1090,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
-        setQueuedPromptStatusInState(sessionId, promptId, "sending", set);
+        removeQueuedPromptById(sessionId, promptId, set);
 
         try {
             const result = await dispatchPrompt(
@@ -1096,22 +1106,33 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
                 queuedPrompt.prompt,
                 queuedPrompt.attachments,
-                {
-                    ...queuedPrompt,
-                    status: "queued",
-                },
                 set,
             );
 
             if (result === "sent") {
-                removeQueuedPromptById(sessionId, promptId, set);
                 await drainQueueIfNeeded(sessionId, get, set);
                 return;
             }
 
-            setQueuedPromptStatusInState(sessionId, promptId, "queued", set);
+            insertQueuedPromptAtIndex(
+                sessionId,
+                {
+                    ...queuedPrompt,
+                    status: "queued",
+                },
+                queueIndex,
+                set,
+            );
         } catch {
-            setQueuedPromptStatusInState(sessionId, promptId, "failed", set);
+            insertQueuedPromptAtIndex(
+                sessionId,
+                {
+                    ...queuedPrompt,
+                    status: "failed",
+                },
+                queueIndex,
+                set,
+            );
         }
     },
 
@@ -1198,7 +1219,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
             },
             trimmedPrompt,
             attachments,
-            queuedPrompt,
             set,
         );
 
@@ -1206,6 +1226,17 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
         if (dispatchResult === "sent") {
             await drainQueueIfNeeded(tab.sessionId, get, set);
+        } else {
+            enqueuePrompt(
+                tab.sessionId,
+                {
+                    ...queuedPrompt,
+                    status: "queued",
+                },
+                "head",
+                set,
+                buildSessionMeta(tab),
+            );
         }
     },
 }));
@@ -1393,7 +1424,6 @@ async function dispatchPrompt(
     },
     prompt: string,
     attachments: readonly AiImageAttachment[],
-    queuedPrompt: QueuedPrompt,
     set: SetAiState,
 ): Promise<"deferred" | "sent"> {
     set((state) => {
@@ -1426,15 +1456,6 @@ async function dispatchPrompt(
         });
     } catch (error) {
         if (isSessionBusyError(error)) {
-            enqueuePrompt(
-                meta.sessionId,
-                {
-                    ...queuedPrompt,
-                    status: "queued",
-                },
-                "head",
-                set,
-            );
             set((state) => {
                 const session =
                     state.sessions[meta.sessionId] ?? createSessionState();
@@ -1519,16 +1540,14 @@ async function drainQueueIfNeeded(
     const nextQueuedPrompt = session.queue.find(
         (queuedPrompt) => queuedPrompt.status === "queued",
     );
-    if (!nextQueuedPrompt) {
+    const nextQueuedPromptIndex = session.queue.findIndex(
+        (queuedPrompt) => queuedPrompt.status === "queued",
+    );
+    if (!nextQueuedPrompt || nextQueuedPromptIndex < 0) {
         return;
     }
 
-    setQueuedPromptStatusInState(
-        sessionId,
-        nextQueuedPrompt.id,
-        "sending",
-        set,
-    );
+    removeQueuedPromptById(sessionId, nextQueuedPrompt.id, set);
 
     try {
         const result = await dispatchPrompt(
@@ -1544,27 +1563,31 @@ async function drainQueueIfNeeded(
             },
             nextQueuedPrompt.prompt,
             nextQueuedPrompt.attachments,
-            nextQueuedPrompt,
             set,
         );
 
         if (result === "sent") {
-            removeQueuedPromptById(sessionId, nextQueuedPrompt.id, set);
             await drainQueueIfNeeded(sessionId, get, set);
             return;
         }
 
-        setQueuedPromptStatusInState(
+        insertQueuedPromptAtIndex(
             sessionId,
-            nextQueuedPrompt.id,
-            "queued",
+            {
+                ...nextQueuedPrompt,
+                status: "queued",
+            },
+            nextQueuedPromptIndex,
             set,
         );
     } catch {
-        setQueuedPromptStatusInState(
+        insertQueuedPromptAtIndex(
             sessionId,
-            nextQueuedPrompt.id,
-            "failed",
+            {
+                ...nextQueuedPrompt,
+                status: "failed",
+            },
+            nextQueuedPromptIndex,
             set,
         );
     }
@@ -1765,6 +1788,38 @@ function setQueuedPromptStatusInState(
                 [sessionId]: {
                     ...session,
                     queue,
+                },
+            },
+        };
+    });
+}
+
+function insertQueuedPromptAtIndex(
+    sessionId: string,
+    queuedPrompt: QueuedPrompt,
+    index: number,
+    set: SetAiState,
+): void {
+    set((state) => {
+        const session = state.sessions[sessionId] ?? createSessionState();
+        const remainingQueue = session.queue.filter(
+            (candidate) => candidate.id !== queuedPrompt.id,
+        );
+        const insertionIndex = Math.min(
+            Math.max(index, 0),
+            remainingQueue.length,
+        );
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    queue: [
+                        ...remainingQueue.slice(0, insertionIndex),
+                        queuedPrompt,
+                        ...remainingQueue.slice(insertionIndex),
+                    ],
                 },
             },
         };
@@ -2031,8 +2086,7 @@ function isBusySession(snapshot: AiSessionSnapshot): boolean {
 
 function isSessionBusyError(error: unknown): boolean {
     return (
-        error instanceof Error &&
-        error.message === "The session is still busy."
+        error instanceof Error && error.message === "The session is still busy."
     );
 }
 
