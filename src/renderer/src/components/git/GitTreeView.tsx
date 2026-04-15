@@ -31,8 +31,7 @@ export const ICON_SM = 13;
 export const ICON_MD = 15;
 const AUTO_EXPAND_DELAY_MS = 2000;
 
-export const GUIDE_COLOR =
-    "color-mix(in srgb, var(--color-border) 82%, transparent)";
+export const GUIDE_COLOR = "var(--color-tree-guide)";
 
 const ROW_BOX: CSSProperties = {
     width: "max-content",

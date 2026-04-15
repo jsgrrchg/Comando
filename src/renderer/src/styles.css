@@ -256,6 +256,7 @@
     --color-border: #e5e5e5;
     --color-border-strong: #e5e5e5;
     --color-border-subtle: rgba(229, 229, 229, 0.35);
+    --color-tree-guide: rgba(0, 0, 0, 0.2);
 
     --color-accent: #6366f1;
     --color-accent-soft: rgba(99, 102, 241, 0.12);
@@ -299,6 +300,7 @@
     --color-border: #383838;
     --color-border-strong: #383838;
     --color-border-subtle: rgba(56, 56, 56, 0.45);
+    --color-tree-guide: rgba(255, 255, 255, 0.2);
     --color-accent: #818cf8;
     --color-accent-soft: rgba(129, 140, 248, 0.16);
     --color-accent-strong: #818cf8;
