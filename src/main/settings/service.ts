@@ -66,12 +66,14 @@ const APP_ZOOM_FACTOR_KEY = "appearance.zoom_factor";
 const APP_EDITOR_FONT_FAMILY_KEY = "editor.font_family";
 const APP_EDITOR_FONT_SIZE_KEY = "editor.font_size";
 const APP_EDITOR_LINE_HEIGHT_KEY = "editor.line_height";
+const APP_EDITOR_MINIMAP_ENABLED_KEY = "editor.minimap_enabled";
 const APP_EDITOR_SUGGESTIONS_ENABLED_KEY = "editor.suggestions_enabled";
 const PROJECT_THEME_MODE_KEY = "appearance.theme_mode";
 const PROJECT_THEME_PRESET_KEY = "appearance.theme_preset";
 const PROJECT_EDITOR_FONT_FAMILY_KEY = "editor.font_family";
 const PROJECT_EDITOR_FONT_SIZE_KEY = "editor.font_size";
 const PROJECT_EDITOR_LINE_HEIGHT_KEY = "editor.line_height";
+const PROJECT_EDITOR_MINIMAP_ENABLED_KEY = "editor.minimap_enabled";
 const PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY = "editor.suggestions_enabled";
 
 const AI_CHAT_FONT_FAMILY_KEY = "ai.chat.font_family";
@@ -96,6 +98,7 @@ const VALID_CHAT_FONT_FAMILIES = new Set<ChatFontFamily>(
 const DEFAULT_THEME_MODE: ThemeMode = "system";
 const DEFAULT_THEME_PRESET: ThemePreset = "default";
 const DEFAULT_EDITOR_LINE_HEIGHT = 1.55;
+const DEFAULT_EDITOR_MINIMAP_ENABLED = true;
 const DEFAULT_EDITOR_SUGGESTIONS_ENABLED = true;
 
 const VALID_THEME_MODES = new Set<ThemeMode>(["system", "light", "dark"]);
@@ -249,6 +252,9 @@ export class SettingsService {
             lineHeight: this.#normalizeEditorLineHeight(
                 this.#loadNumberSetting(APP_EDITOR_LINE_HEIGHT_KEY),
             ),
+            minimapEnabled: this.#normalizeEditorMinimapEnabled(
+                this.#loadBooleanSetting(APP_EDITOR_MINIMAP_ENABLED_KEY),
+            ),
             suggestionsEnabled: this.#normalizeEditorSuggestionsEnabled(
                 this.#loadBooleanSetting(APP_EDITOR_SUGGESTIONS_ENABLED_KEY),
             ),
@@ -267,6 +273,10 @@ export class SettingsService {
         this.#saveSetting(
             APP_EDITOR_LINE_HEIGHT_KEY,
             String(this.#normalizeEditorLineHeight(settings.lineHeight)),
+        );
+        this.#saveBooleanSetting(
+            APP_EDITOR_MINIMAP_ENABLED_KEY,
+            this.#normalizeEditorMinimapEnabled(settings.minimapEnabled),
         );
         this.#saveBooleanSetting(
             APP_EDITOR_SUGGESTIONS_ENABLED_KEY,
@@ -370,6 +380,12 @@ export class SettingsService {
                     PROJECT_EDITOR_LINE_HEIGHT_KEY,
                 ),
             ),
+            minimapEnabled: this.#normalizeOptionalEditorMinimapEnabled(
+                this.#loadProjectBooleanSetting(
+                    projectId,
+                    PROJECT_EDITOR_MINIMAP_ENABLED_KEY,
+                ),
+            ),
             suggestionsEnabled: this.#normalizeOptionalEditorSuggestionsEnabled(
                 this.#loadProjectBooleanSetting(
                     projectId,
@@ -384,6 +400,7 @@ export class SettingsService {
             editor.fontFamily === null &&
             editor.fontSize === null &&
             editor.lineHeight === null &&
+            editor.minimapEnabled === null &&
             editor.suggestionsEnabled === null
         ) {
             return null;
@@ -417,6 +434,10 @@ export class SettingsService {
             this.#deleteProjectSetting(
                 snapshot.projectId,
                 PROJECT_EDITOR_LINE_HEIGHT_KEY,
+            );
+            this.#deleteProjectSetting(
+                snapshot.projectId,
+                PROJECT_EDITOR_MINIMAP_ENABLED_KEY,
             );
             this.#deleteProjectSetting(
                 snapshot.projectId,
@@ -456,6 +477,13 @@ export class SettingsService {
         );
         this.#saveOptionalProjectBooleanSetting(
             snapshot.projectId,
+            PROJECT_EDITOR_MINIMAP_ENABLED_KEY,
+            this.#normalizeOptionalEditorMinimapEnabled(
+                snapshot.editor?.minimapEnabled ?? null,
+            ),
+        );
+        this.#saveOptionalProjectBooleanSetting(
+            snapshot.projectId,
             PROJECT_EDITOR_SUGGESTIONS_ENABLED_KEY,
             this.#normalizeOptionalEditorSuggestionsEnabled(
                 snapshot.editor?.suggestionsEnabled ?? null,
@@ -473,8 +501,7 @@ export class SettingsService {
             hasCodexApiKey:
                 this.#loadBooleanSetting(CODEX_HAS_CODEX_API_KEY_KEY) ?? false,
             hasOpenAiApiKey:
-                this.#loadBooleanSetting(CODEX_HAS_OPENAI_API_KEY_KEY) ??
-                false,
+                this.#loadBooleanSetting(CODEX_HAS_OPENAI_API_KEY_KEY) ?? false,
         };
     }
 
@@ -969,6 +996,24 @@ export class SettingsService {
         }
 
         return Math.min(2, Math.max(1.2, Math.round(value * 100) / 100));
+    }
+
+    #normalizeEditorMinimapEnabled(value: boolean | null | undefined): boolean {
+        if (typeof value !== "boolean") {
+            return DEFAULT_EDITOR_MINIMAP_ENABLED;
+        }
+
+        return value;
+    }
+
+    #normalizeOptionalEditorMinimapEnabled(
+        value: boolean | null | undefined,
+    ): boolean | null {
+        if (typeof value !== "boolean") {
+            return null;
+        }
+
+        return value;
     }
 
     #normalizeEditorSuggestionsEnabled(

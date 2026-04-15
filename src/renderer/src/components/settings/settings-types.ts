@@ -40,11 +40,13 @@ export interface SettingsEditorControlState {
     readonly fontFamilies: readonly EditorFontFamilyOption[];
     readonly fontSize: number;
     readonly lineHeight: number;
+    readonly minimapEnabled: boolean;
     readonly suggestionsEnabled: boolean;
     readonly disabled?: boolean;
     readonly onFontFamilyChange?: (fontFamilyId: string) => void;
     readonly onFontSizeChange?: (fontSize: number) => void;
     readonly onLineHeightChange?: (lineHeight: number) => void;
+    readonly onMinimapEnabledChange?: (enabled: boolean) => void;
     readonly onSuggestionsEnabledChange?: (enabled: boolean) => void;
 }
 

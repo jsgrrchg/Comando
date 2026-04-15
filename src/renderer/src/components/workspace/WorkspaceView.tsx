@@ -1871,6 +1871,7 @@ function FileTabView({
                 projectEditor.fontFamily !== null ||
                 projectEditor.fontSize !== null ||
                 projectEditor.lineHeight !== null ||
+                projectEditor.minimapEnabled !== null ||
                 projectEditor.suggestionsEnabled !== null;
 
             if (hasProjectOverride) {
@@ -2291,6 +2292,86 @@ function FileTabView({
         tab.saveError,
     ]);
 
+    const editorFontFamily = buildEditorFontFamily(editorSettings.fontFamily);
+    const editorLineHeightPx = Math.round(
+        editorSettings.fontSize * editorSettings.lineHeight,
+    );
+
+    useEffect(() => {
+        if (!document || document.kind === "image" || !canEdit) {
+            return;
+        }
+
+        const editor = editorRef.current;
+        if (!editor) {
+            return;
+        }
+
+        editor.updateOptions({
+            fontFamily: editorFontFamily,
+            fontSize: editorSettings.fontSize,
+            lineHeight: editorLineHeightPx,
+            minimap: {
+                enabled: editorSettings.minimapEnabled,
+            },
+            quickSuggestions: areSuggestionsEnabled,
+            snippetSuggestions: areSuggestionsEnabled ? "inline" : "none",
+            suggest: {
+                showColors: areSuggestionsEnabled,
+                showFiles: areSuggestionsEnabled,
+                showFolders: areSuggestionsEnabled,
+                showKeywords: areSuggestionsEnabled,
+                showSnippets: areSuggestionsEnabled,
+                showWords: areSuggestionsEnabled,
+            },
+            suggestOnTriggerCharacters: areSuggestionsEnabled,
+            wordBasedSuggestions: areSuggestionsEnabled
+                ? "matchingDocuments"
+                : "off",
+        });
+        editor.layout();
+    }, [
+        areSuggestionsEnabled,
+        canEdit,
+        document,
+        editorFontFamily,
+        editorLineHeightPx,
+        editorSettings.fontSize,
+        editorSettings.minimapEnabled,
+    ]);
+
+    useEffect(() => {
+        if (!document || document.kind === "image" || !canEdit) {
+            return;
+        }
+
+        const diffEditor = diffEditorRef.current;
+        if (!diffEditor) {
+            return;
+        }
+
+        const diffOptions = {
+            fontFamily: editorFontFamily,
+            fontSize: editorSettings.fontSize,
+            lineHeight: editorLineHeightPx,
+            minimap: {
+                enabled: editorSettings.minimapEnabled,
+            },
+        } as const;
+
+        diffEditor.updateOptions(diffOptions);
+        diffEditor.getOriginalEditor().updateOptions(diffOptions);
+        diffEditor.getModifiedEditor().updateOptions(diffOptions);
+        diffEditor.layout();
+    }, [
+        canEdit,
+        document,
+        editorFontFamily,
+        editorLineHeightPx,
+        editorSettings.fontSize,
+        editorSettings.minimapEnabled,
+    ]);
+
     if (!document) {
         return (
             <div className="flex h-full items-center justify-center px-6 text-center">
@@ -2331,10 +2412,6 @@ function FileTabView({
         );
     }
 
-    const editorFontFamily = buildEditorFontFamily(editorSettings.fontFamily);
-    const editorLineHeightPx = Math.round(
-        editorSettings.fontSize * editorSettings.lineHeight,
-    );
     const reviewBar =
         trackedFile && !inlineReviewTrackedFile
             ? (() => {
@@ -2519,7 +2596,9 @@ function FileTabView({
                                 lineHeight: editorLineHeightPx,
                                 lineDecorationsWidth: 0,
                                 lineNumbersMinChars: 3,
-                                minimap: { enabled: false },
+                                minimap: {
+                                    enabled: editorSettings.minimapEnabled,
+                                },
                                 originalEditable: false,
                                 overviewRulerBorder: false,
                                 overviewRulerLanes: 0,
@@ -2627,7 +2706,9 @@ function FileTabView({
                             lineHeight: editorLineHeightPx,
                             lineDecorationsWidth: 0,
                             lineNumbersMinChars: 3,
-                            minimap: { enabled: false },
+                            minimap: {
+                                enabled: editorSettings.minimapEnabled,
+                            },
                             overviewRulerBorder: false,
                             overviewRulerLanes: 0,
                             padding: { top: 16, bottom: 16 },

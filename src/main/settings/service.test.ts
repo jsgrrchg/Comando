@@ -21,6 +21,7 @@ describe("SettingsService", () => {
                 fontFamily: "jetbrains-mono",
                 fontSize: 15,
                 lineHeight: 1.7,
+                minimapEnabled: false,
                 suggestionsEnabled: false,
             },
             shellState: {
@@ -42,6 +43,7 @@ describe("SettingsService", () => {
                 fontFamily: "jetbrains",
                 fontSize: 15,
                 lineHeight: 1.7,
+                minimapEnabled: false,
                 suggestionsEnabled: false,
             },
             shellState: {
@@ -62,6 +64,7 @@ describe("SettingsService", () => {
                 "editor.font_family": "??",
                 "editor.font_size": "??",
                 "editor.line_height": "??",
+                "editor.minimap_enabled": "??",
                 "editor.suggestions_enabled": "??",
             },
             project: {
@@ -71,6 +74,7 @@ describe("SettingsService", () => {
                     "editor.font_family": "bad",
                     "editor.font_size": "bad",
                     "editor.line_height": "bad",
+                    "editor.minimap_enabled": "??",
                     "editor.suggestions_enabled": "??",
                 },
             },
@@ -92,6 +96,7 @@ describe("SettingsService", () => {
                 fontFamily: "sf-mono",
                 fontSize: 14,
                 lineHeight: 1.55,
+                minimapEnabled: true,
                 suggestionsEnabled: true,
             },
             shellState: null,
@@ -209,6 +214,7 @@ describe("SettingsService", () => {
                 fontFamily: "ibm-plex-mono",
                 fontSize: 16,
                 lineHeight: 1.8,
+                minimapEnabled: false,
                 suggestionsEnabled: false,
             },
         });
@@ -223,6 +229,7 @@ describe("SettingsService", () => {
                 fontFamily: "ibm-plex-mono",
                 fontSize: 16,
                 lineHeight: 1.8,
+                minimapEnabled: false,
                 suggestionsEnabled: false,
             },
         });
@@ -268,6 +275,7 @@ describe("SettingsService", () => {
                 fontFamily: null,
                 fontSize: null,
                 lineHeight: null,
+                minimapEnabled: null,
                 suggestionsEnabled: null,
             },
         });

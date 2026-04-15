@@ -1008,6 +1008,7 @@ export function getDefaultAppEditorSettings(): AppEditorSettings {
         fontFamily: "sf-mono",
         fontSize: DEFAULT_EDITOR_FONT_SIZE,
         lineHeight: 1.55,
+        minimapEnabled: true,
         suggestionsEnabled: true,
     };
 }
@@ -1017,6 +1018,7 @@ export function getDefaultProjectEditorSettings(): ProjectEditorSettings {
         fontFamily: null,
         fontSize: null,
         lineHeight: null,
+        minimapEnabled: null,
         suggestionsEnabled: null,
     };
 }
@@ -1091,6 +1093,10 @@ export function resolveEditorSettings(
             projectEditor?.lineHeight ??
             appEditor?.lineHeight ??
             defaults.lineHeight,
+        minimapEnabled:
+            projectEditor?.minimapEnabled ??
+            appEditor?.minimapEnabled ??
+            defaults.minimapEnabled,
         suggestionsEnabled:
             projectEditor?.suggestionsEnabled ??
             appEditor?.suggestionsEnabled ??

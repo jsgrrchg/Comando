@@ -93,6 +93,7 @@ export function SettingsApp() {
         projectEditor.fontFamily !== null ||
         projectEditor.fontSize !== null ||
         projectEditor.lineHeight !== null ||
+        projectEditor.minimapEnabled !== null ||
         projectEditor.suggestionsEnabled !== null;
 
     const loadProjects = useCallback(async () => {
@@ -313,6 +314,16 @@ export function SettingsApp() {
         void saveAppEditorSettings(nextEditor);
     };
 
+    const handleAppEditorMinimapEnabledChange = (minimapEnabled: boolean) => {
+        const nextEditor: AppEditorSettings = {
+            ...appEditor,
+            minimapEnabled,
+        };
+
+        setAppEditor(nextEditor);
+        void saveAppEditorSettings(nextEditor);
+    };
+
     const handleAppEditorSuggestionsEnabledChange = (
         suggestionsEnabled: boolean,
     ) => {
@@ -354,6 +365,8 @@ export function SettingsApp() {
                   fontFamily: projectEditor.fontFamily ?? appEditor.fontFamily,
                   fontSize: projectEditor.fontSize ?? appEditor.fontSize,
                   lineHeight: projectEditor.lineHeight ?? appEditor.lineHeight,
+                  minimapEnabled:
+                      projectEditor.minimapEnabled ?? appEditor.minimapEnabled,
                   suggestionsEnabled:
                       projectEditor.suggestionsEnabled ??
                       appEditor.suggestionsEnabled,
@@ -391,6 +404,7 @@ export function SettingsApp() {
         readonly fontFamily?: AppEditorSettings["fontFamily"];
         readonly fontSize?: number;
         readonly lineHeight?: number;
+        readonly minimapEnabled?: boolean;
         readonly suggestionsEnabled?: boolean;
     }) => {
         if (!selectedProjectId) {
@@ -408,6 +422,10 @@ export function SettingsApp() {
                 patch.lineHeight ??
                 projectEditor.lineHeight ??
                 appEditor.lineHeight,
+            minimapEnabled:
+                patch.minimapEnabled ??
+                projectEditor.minimapEnabled ??
+                appEditor.minimapEnabled,
             suggestionsEnabled:
                 patch.suggestionsEnabled ??
                 projectEditor.suggestionsEnabled ??
@@ -542,10 +560,12 @@ export function SettingsApp() {
                 fontFamilyId: appEditor.fontFamily,
                 fontSize: appEditor.fontSize,
                 lineHeight: appEditor.lineHeight,
+                minimapEnabled: appEditor.minimapEnabled,
                 suggestionsEnabled: appEditor.suggestionsEnabled,
                 onFontFamilyChange: handleAppEditorFontFamilyChange,
                 onFontSizeChange: handleAppEditorFontSizeChange,
                 onLineHeightChange: handleAppEditorLineHeightChange,
+                onMinimapEnabledChange: handleAppEditorMinimapEnabledChange,
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
             }}
@@ -606,6 +626,9 @@ export function SettingsApp() {
                               projectEditor.fontSize ?? appEditor.fontSize,
                           lineHeight:
                               projectEditor.lineHeight ?? appEditor.lineHeight,
+                          minimapEnabled:
+                              projectEditor.minimapEnabled ??
+                              appEditor.minimapEnabled,
                           suggestionsEnabled:
                               projectEditor.suggestionsEnabled ??
                               appEditor.suggestionsEnabled,
@@ -619,6 +642,8 @@ export function SettingsApp() {
                               updateProjectEditor({ fontSize }),
                           onLineHeightChange: (lineHeight) =>
                               updateProjectEditor({ lineHeight }),
+                          onMinimapEnabledChange: (minimapEnabled) =>
+                              updateProjectEditor({ minimapEnabled }),
                           onSuggestionsEnabledChange: (suggestionsEnabled) =>
                               updateProjectEditor({ suggestionsEnabled }),
                       }
@@ -669,7 +694,9 @@ async function handleRuntimeAction(options: {
     const methodId =
         options.runtimeId === "codex"
             ? getCodexLaunchAuthMethodId(runtimeStatus)
-            : runtimeStatus?.authMethods[0]?.id ?? runtimeStatus?.authMethod ?? null;
+            : (runtimeStatus?.authMethods[0]?.id ??
+              runtimeStatus?.authMethod ??
+              null);
 
     if (!methodId) {
         return;

@@ -491,6 +491,16 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                 }
             />
             <Row
+                label="Minimap"
+                description="Show Monaco's code minimap on the side of the editor."
+                control={
+                    <Toggle
+                        value={state.minimapEnabled}
+                        onChange={(v) => state.onMinimapEnabledChange?.(v)}
+                    />
+                }
+            />
+            <Row
                 label="Autocomplete suggestions"
                 description="Show Monaco suggestions automatically while typing. You can still trigger them manually."
                 control={
@@ -677,6 +687,20 @@ function ProjectContent({
                                             )
                                         }
                                         formatValue={(v) => `${v.toFixed(2)}x`}
+                                    />
+                                }
+                            />
+                            <Row
+                                label="Minimap"
+                                description="Show Monaco's code minimap for this project."
+                                control={
+                                    <Toggle
+                                        value={projectEditor.minimapEnabled}
+                                        onChange={(v) =>
+                                            projectEditor.onMinimapEnabledChange?.(
+                                                v,
+                                            )
+                                        }
                                     />
                                 }
                             />

@@ -154,6 +154,7 @@ export interface AppEditorSettings {
     readonly fontFamily: EditorFontFamily;
     readonly fontSize: number;
     readonly lineHeight: number;
+    readonly minimapEnabled: boolean;
     readonly suggestionsEnabled: boolean;
 }
 
@@ -161,6 +162,7 @@ export interface ProjectEditorSettings {
     readonly fontFamily: EditorFontFamily | null;
     readonly fontSize: number | null;
     readonly lineHeight: number | null;
+    readonly minimapEnabled: boolean | null;
     readonly suggestionsEnabled: boolean | null;
 }
 
