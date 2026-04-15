@@ -6,6 +6,7 @@ import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLang
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { MarkdownContent } from "../MarkdownContent";
+import type { ResolvedProjectFileReference } from "../projectFileReferences";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
 
 /* ─── Tool icon SVGs ─── */
@@ -246,10 +247,18 @@ function ToolDetailSummary({
     accentBorder,
     backgroundColor,
     content,
+    onOpenFileReference,
+    resolveFileReference,
 }: {
     readonly accentBorder?: string;
     readonly backgroundColor: string;
     readonly content: string;
+    readonly onOpenFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }) {
     return (
         <div
@@ -260,7 +269,11 @@ function ToolDetailSummary({
                 color: "var(--color-text-secondary)",
             }}
         >
-            <MarkdownContent content={content} />
+            <MarkdownContent
+                content={content}
+                onOpenFile={onOpenFileReference}
+                resolveFileReference={resolveFileReference}
+            />
         </div>
     );
 }
@@ -310,8 +323,10 @@ function TurnStartedDivider({
 function FileToolMessage({
     activity,
     onOpenFile,
+    onOpenFileReference,
     pendingTrackedFiles,
     projectId,
+    resolveFileReference,
     worktreeId,
 }: {
     readonly activity: AiToolActivity;
@@ -321,8 +336,14 @@ function FileToolMessage({
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
+    readonly onOpenFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly pendingTrackedFiles: readonly AiTrackedFile[];
     readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
     readonly worktreeId: string | null;
 }) {
     const [expanded, setExpanded] = useState(false);
@@ -404,6 +425,8 @@ function FileToolMessage({
                                 accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
                                 backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
                                 content={activity.summary}
+                                onOpenFileReference={onOpenFileReference}
+                                resolveFileReference={resolveFileReference}
                             />
                         </div>
                     ) : null}
@@ -702,8 +725,16 @@ function formatRawJson(raw: string): string {
 
 function GenericToolMessage({
     activity,
+    onOpenFileReference,
+    resolveFileReference,
 }: {
     readonly activity: AiToolActivity;
+    readonly onOpenFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }) {
     const isFailed = activity.status === "failed";
     const [expanded, setExpanded] = useState(isFailed);
@@ -759,6 +790,8 @@ function GenericToolMessage({
                         <ToolDetailSummary
                             backgroundColor="var(--color-bg-tertiary)"
                             content={activity.summary}
+                            onOpenFileReference={onOpenFileReference}
+                            resolveFileReference={resolveFileReference}
                         />
                     ) : null}
                     {hasRawInput ? (
@@ -801,8 +834,10 @@ function GenericToolMessage({
 export function ToolActivityItem({
     activity,
     onOpenFile,
+    onOpenFileReference,
     trackedFiles = [],
     projectId,
+    resolveFileReference,
     worktreeId = null,
 }: {
     readonly activity: AiToolActivity;
@@ -812,8 +847,14 @@ export function ToolActivityItem({
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
+    readonly onOpenFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly trackedFiles?: readonly AiTrackedFile[];
     readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
     readonly worktreeId?: string | null;
 }) {
     const pendingTrackedFiles = trackedFiles.filter(
@@ -847,12 +888,20 @@ export function ToolActivityItem({
             <FileToolMessage
                 activity={activity}
                 onOpenFile={onOpenFile}
+                onOpenFileReference={onOpenFileReference}
                 pendingTrackedFiles={pendingTrackedFiles}
                 projectId={projectId}
+                resolveFileReference={resolveFileReference}
                 worktreeId={worktreeId}
             />
         );
     }
 
-    return <GenericToolMessage activity={activity} />;
+    return (
+        <GenericToolMessage
+            activity={activity}
+            onOpenFileReference={onOpenFileReference}
+            resolveFileReference={resolveFileReference}
+        />
+    );
 }

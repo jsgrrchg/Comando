@@ -21,6 +21,8 @@ import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { useGitStore } from "@renderer/app/store/git-store";
+import { useProjectsStore } from "@renderer/app/store/projects-store";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceFileReviewContext,
@@ -50,6 +52,10 @@ import {
     deriveToolActivityReviewEntries,
     type ToolActivityReviewEntry,
 } from "./chat/toolActivityReviewModel";
+import {
+    resolveProjectFileReference,
+    type ResolvedProjectFileReference,
+} from "./projectFileReferences";
 import {
     deriveReviewItems,
     deriveReviewSummary,
@@ -164,6 +170,23 @@ export function ChatTabView({
         (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
     );
     const sessionState = useAiStore((s) => s.sessions[tab.sessionId]);
+    const projectSummary = useProjectsStore((state) =>
+        tab.projectId
+            ? (state.projects.find((project) => project.id === tab.projectId) ??
+              null)
+            : null,
+    );
+    const gitSnapshot = useGitStore((state) => {
+        if (!tab.projectId) {
+            return null;
+        }
+
+        return (
+            state.snapshots[
+                `${tab.projectId}::${tab.worktreeId ?? "primary"}`
+            ] ?? null
+        );
+    });
     const runtimeStatus = useAiStore(
         (s) => s.runtimeStatusById[tab.runtimeId] ?? null,
     );
@@ -374,6 +397,69 @@ export function ChatTabView({
         [pendingReviewItems],
     );
     const pendingReviewCount = pendingReviewItems.length;
+    const projectFileRoots = useMemo(() => {
+        const roots = new Set<string>();
+        if (projectSummary?.rootPath) {
+            roots.add(projectSummary.rootPath);
+        }
+        if (projectSummary?.canonicalRootPath) {
+            roots.add(projectSummary.canonicalRootPath);
+        }
+        if (gitSnapshot?.rootPath) {
+            roots.add(gitSnapshot.rootPath);
+        }
+        if (gitSnapshot?.canonicalRootPath) {
+            roots.add(gitSnapshot.canonicalRootPath);
+        }
+
+        const activeWorktreeRootPath = tab.worktreeId
+            ? (gitSnapshot?.worktrees.find(
+                  (worktree) => worktree.id === tab.worktreeId,
+              )?.rootPath ?? null)
+            : (gitSnapshot?.worktrees.find((worktree) => worktree.isCurrent)
+                  ?.rootPath ??
+              gitSnapshot?.worktrees.find((worktree) => worktree.isPrimary)
+                  ?.rootPath ??
+              null);
+        if (activeWorktreeRootPath) {
+            roots.add(activeWorktreeRootPath);
+        }
+
+        return [...roots];
+    }, [
+        gitSnapshot?.canonicalRootPath,
+        gitSnapshot?.rootPath,
+        gitSnapshot?.worktrees,
+        projectSummary?.canonicalRootPath,
+        projectSummary?.rootPath,
+        tab.worktreeId,
+    ]);
+    const resolveChatFileReference = useCallback(
+        (reference: string): ResolvedProjectFileReference | null => {
+            if (!tab.projectId || projectFileRoots.length === 0) {
+                return null;
+            }
+
+            return resolveProjectFileReference(reference, {
+                projectRoots: projectFileRoots,
+            });
+        },
+        [projectFileRoots, tab.projectId],
+    );
+    const handleOpenResolvedFileReference = useCallback(
+        (reference: ResolvedProjectFileReference) => {
+            if (!tab.projectId) {
+                return;
+            }
+
+            void onOpenFile(
+                tab.projectId,
+                reference.relativePath,
+                tab.worktreeId ?? null,
+            );
+        },
+        [onOpenFile, tab.projectId, tab.worktreeId],
+    );
     const diffZoom = sessionState?.diffZoom ?? DEFAULT_AI_DIFF_ZOOM;
     const hasComposerContext =
         pendingPermission !== null ||
@@ -1223,14 +1309,24 @@ export function ChatTabView({
                                     chatFontSize={aiChatSettings.chatFontSize}
                                     key={row.message.id}
                                     message={row.message}
+                                    onOpenFile={handleOpenResolvedFileReference}
+                                    resolveFileReference={
+                                        resolveChatFileReference
+                                    }
                                 />
                             ) : (
                                 <ToolActivityItem
                                     activity={row.reviewEntry.activity}
                                     key={row.reviewEntry.activity.id}
                                     onOpenFile={onOpenFile}
-                                    trackedFiles={row.reviewEntry.trackedFiles}
+                                    onOpenFileReference={
+                                        handleOpenResolvedFileReference
+                                    }
                                     projectId={tab.projectId}
+                                    resolveFileReference={
+                                        resolveChatFileReference
+                                    }
+                                    trackedFiles={row.reviewEntry.trackedFiles}
                                     worktreeId={tab.worktreeId ?? null}
                                 />
                             ),
@@ -2525,10 +2621,16 @@ function ChatMessageRow({
     chatFontFamily,
     chatFontSize,
     message,
+    onOpenFile,
+    resolveFileReference,
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly message: AiSessionSnapshot["messages"][number];
+    readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }) {
     if (message.kind === "user")
         return (
@@ -2537,6 +2639,8 @@ function ChatMessageRow({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
+                onOpenFile={onOpenFile}
+                resolveFileReference={resolveFileReference}
             />
         );
     if (message.kind === "user_input_request") {
@@ -2545,6 +2649,8 @@ function ChatMessageRow({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
+                onOpenFile={onOpenFile}
+                resolveFileReference={resolveFileReference}
             />
         );
     }
@@ -2555,6 +2661,8 @@ function ChatMessageRow({
                 chatFontSize={chatFontSize}
                 content={message.content}
                 inProgress={message.status === "streaming"}
+                onOpenFile={onOpenFile}
+                resolveFileReference={resolveFileReference}
             />
         );
     return (
@@ -2563,6 +2671,8 @@ function ChatMessageRow({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             content={message.content}
+            onOpenFile={onOpenFile}
+            resolveFileReference={resolveFileReference}
         />
     );
 }
@@ -2572,6 +2682,10 @@ function UserMessage(props: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }) {
     return (
         <div
@@ -2591,6 +2705,8 @@ function UserMessage(props: {
                     content={props.content}
                     chatFontFamily={props.chatFontFamily}
                     chatFontSize={props.chatFontSize}
+                    onOpenFile={props.onOpenFile}
+                    resolveFileReference={props.resolveFileReference}
                 />
             ) : null}
             {props.attachments.length > 0 ? (
@@ -2605,6 +2721,10 @@ function AssistantMessage(props: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }) {
     return (
         <div
@@ -2619,6 +2739,8 @@ function AssistantMessage(props: {
                     content={props.content}
                     chatFontFamily={props.chatFontFamily}
                     chatFontSize={props.chatFontSize}
+                    onOpenFile={props.onOpenFile}
+                    resolveFileReference={props.resolveFileReference}
                 />
             ) : null}
             {props.attachments.length > 0 ? (
@@ -2656,10 +2778,16 @@ function UserInputRequestMessage({
     chatFontFamily,
     chatFontSize,
     content,
+    onOpenFile,
+    resolveFileReference,
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }) {
     return (
         <div
@@ -2696,6 +2824,8 @@ function UserInputRequestMessage({
                     chatFontSize={
                         chatFontSize ? chatFontSize * 0.84 : chatFontSize
                     }
+                    onOpenFile={onOpenFile}
+                    resolveFileReference={resolveFileReference}
                 />
             </div>
         </div>
@@ -2707,11 +2837,17 @@ function ThinkingMessage({
     chatFontSize,
     content,
     inProgress,
+    onOpenFile,
+    resolveFileReference,
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
     readonly inProgress: boolean;
+    readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }) {
     const [expanded, setExpanded] = useState(false);
     return (
@@ -2761,6 +2897,8 @@ function ThinkingMessage({
                         chatFontSize={
                             chatFontSize ? chatFontSize * 0.82 : chatFontSize
                         }
+                        onOpenFile={onOpenFile}
+                        resolveFileReference={resolveFileReference}
                     />
                 </div>
             ) : null}

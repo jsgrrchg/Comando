@@ -14,12 +14,19 @@ import {
 } from "./chat/chatCodeSizing";
 import { ChatInlinePill } from "./chat/ChatInlinePill";
 import { getChatPillMetrics } from "./chat/chatPillMetrics";
+import {
+    isLikelyProjectFileReference,
+    type ResolvedProjectFileReference,
+} from "./projectFileReferences";
 
 interface MarkdownContentProps {
     readonly content: string;
     readonly chatFontSize?: number;
     readonly chatFontFamily?: string;
-    readonly onOpenFile?: (path: string) => void;
+    readonly onOpenFile?: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }
 
 interface Block {
@@ -113,20 +120,14 @@ function parseBlocks(text: string): Block[] {
     return rememberParsedBlocks(text, blocks);
 }
 
-/* ─── File path detection ─── */
-
-const FILE_PATH_RE =
-    /^(?:\/[\w./-]+|[\w.-]+\.(?:ts|tsx|js|jsx|py|rs|go|rb|java|c|cpp|h|css|scss|html|json|yaml|yml|toml|md|txt|sql|sh|zsh|bash|swift|kt|vue|svelte))$/;
-
-function looksLikeFilePath(text: string): boolean {
-    return FILE_PATH_RE.test(text);
-}
-
 /* ─── Inline rendering ─── */
 
 interface InlineOptions {
     readonly metrics?: ReturnType<typeof getChatPillMetrics>;
-    readonly onOpenFile?: (path: string) => void;
+    readonly onOpenFile?: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
 }
 
 function renderInline(
@@ -144,18 +145,23 @@ function renderInline(
 
         if (match[1]) {
             const codeText = match[1].slice(1, -1);
+            const resolvedCodeReference =
+                options?.resolveFileReference?.(codeText) ?? null;
+            const inlineMetrics = options?.metrics;
+            const handleOpenFile = options?.onOpenFile;
             if (
-                options?.onOpenFile &&
-                options.metrics &&
-                looksLikeFilePath(codeText)
+                resolvedCodeReference &&
+                inlineMetrics &&
+                handleOpenFile &&
+                isLikelyProjectFileReference(codeText)
             ) {
                 parts.push(
                     <ChatInlinePill
                         key={key++}
                         interactive
                         label={codeText}
-                        metrics={options.metrics}
-                        onClick={() => options.onOpenFile!(codeText)}
+                        metrics={inlineMetrics}
+                        onClick={() => handleOpenFile(resolvedCodeReference)}
                         variant="file"
                     />,
                 );
@@ -189,10 +195,25 @@ function renderInline(
         } else if (match[4]) {
             const linkMatch = match[4].match(/\[([^\]]+)\]\(([^)]+)\)/);
             if (linkMatch) {
+                const linkTarget = linkMatch[2];
+                const resolvedLinkReference =
+                    options?.resolveFileReference?.(linkTarget) ?? null;
                 parts.push(
                     <a
                         key={key++}
-                        href={linkMatch[2]}
+                        href={linkTarget}
+                        onClick={(event) => {
+                            if (
+                                !resolvedLinkReference ||
+                                !options?.onOpenFile ||
+                                !isLikelyProjectFileReference(linkTarget)
+                            ) {
+                                return;
+                            }
+
+                            event.preventDefault();
+                            options.onOpenFile(resolvedLinkReference);
+                        }}
                         rel="noopener noreferrer"
                         style={{ color: "var(--color-accent)" }}
                         target="_blank"
@@ -672,16 +693,18 @@ export const MarkdownContent = memo(function MarkdownContent({
     chatFontFamily,
     chatFontSize = 14,
     onOpenFile,
+    resolveFileReference,
 }: MarkdownContentProps) {
     const blocks = useMemo(() => parseBlocks(content), [content]);
 
     const inlineOptions: InlineOptions | undefined = useMemo(() => {
-        if (!onOpenFile) return undefined;
+        if (!onOpenFile || !resolveFileReference) return undefined;
         return {
             metrics: getChatPillMetrics(chatFontSize),
             onOpenFile,
+            resolveFileReference,
         };
-    }, [chatFontSize, onOpenFile]);
+    }, [chatFontSize, onOpenFile, resolveFileReference]);
 
     return (
         <div
