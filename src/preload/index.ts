@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import {
     IPC_CHANNELS,
@@ -89,6 +89,18 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(
             IPC_CHANNELS.getWindowContext,
         ) as Promise<WindowContextSnapshot | null>,
+    resolveDroppedFilePath: (file) => {
+        if (!file) {
+            return null;
+        }
+
+        try {
+            const resolvedPath = webUtils.getPathForFile(file);
+            return resolvedPath.trim().length > 0 ? resolvedPath : null;
+        } catch {
+            return null;
+        }
+    },
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
     getSettingsSnapshot: () =>

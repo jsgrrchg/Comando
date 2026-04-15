@@ -222,13 +222,27 @@ export function inferMimeTypeFromPath(filePath: string): string {
 }
 
 function getDroppedFilePath(file: File | null): string | null {
-    const candidate = (file as FileWithSystemPath | null)?.path;
+    const candidate =
+        (file as FileWithSystemPath | null)?.path ??
+        resolveDroppedFilePathFromBridge(file);
     if (typeof candidate !== "string") {
         return null;
     }
 
     const trimmed = candidate.trim();
     return trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveDroppedFilePathFromBridge(file: File | null): string | null {
+    if (!file || typeof window === "undefined" || !("comando" in window)) {
+        return null;
+    }
+
+    try {
+        return window.comando.resolveDroppedFilePath(file);
+    } catch {
+        return null;
+    }
 }
 
 function getPathBaseName(candidatePath: string): string {

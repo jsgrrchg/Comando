@@ -580,7 +580,15 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
                 set((state) => ({
                     ...setFileTabReviewContext(
-                        selectPaneTab(state, paneId, existingTab.id),
+                        paneId === resolvedPaneId
+                            ? selectPaneTab(state, paneId, existingTab.id)
+                            : moveTabToPaneAtIndex(
+                                  state,
+                                  existingTab.id,
+                                  paneId,
+                                  resolvedPaneId,
+                                  Number.POSITIVE_INFINITY,
+                              ),
                         existingTab.id,
                         nextReviewContext,
                     ),

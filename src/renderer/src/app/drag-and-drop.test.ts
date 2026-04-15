@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     getExternalComposerDropItems,
@@ -6,6 +6,10 @@ import {
 } from "./drag-and-drop";
 
 describe("drag-and-drop", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
     it("infers mime types from dropped file paths", () => {
         expect(inferMimeTypeFromPath("/tmp/mockup.png")).toBe("image/png");
         expect(inferMimeTypeFromPath("/tmp/spec.pdf")).toBe("application/pdf");
@@ -67,6 +71,38 @@ describe("drag-and-drop", () => {
                 folderPath: "/tmp/research",
                 kind: "folder_mention",
                 label: "research",
+            },
+        ]);
+    });
+
+    it("falls back to the preload bridge when dropped files do not expose path", () => {
+        const file = {
+            size: 42,
+            type: "application/pdf",
+        } as unknown as File;
+
+        vi.stubGlobal("window", {
+            comando: {
+                resolveDroppedFilePath: vi.fn(() => "/tmp/spec.pdf"),
+            },
+        });
+
+        const dataTransfer = {
+            files: [file],
+            items: [
+                {
+                    getAsFile: () => file,
+                    kind: "file",
+                },
+            ],
+        } as unknown as DataTransfer;
+
+        expect(getExternalComposerDropItems(dataTransfer)).toEqual([
+            {
+                filePath: "/tmp/spec.pdf",
+                kind: "file_attachment",
+                label: "spec.pdf",
+                mimeType: "application/pdf",
             },
         ]);
     });

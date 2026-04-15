@@ -31,22 +31,25 @@ describe("workspace file opening", () => {
         saveWorkspaceSnapshotMock.mockClear();
         closeAiSessionMock.mockClear();
         openProjectFileMock.mockReset();
-        openProjectFileMock.mockImplementation(async (input) => ({
-            absolutePath: `/tmp/${input.relativePath}`,
-            content: "export const value = 1;\n",
-            imageDataBase64: null,
-            isBinary: false,
-            isTooLarge: false,
-            kind: "text",
-            languageId: "typescript",
-            languageLabel: "TypeScript",
-            mimeType: "text/typescript",
-            modifiedAtMs: 1,
-            name: input.relativePath.split("/").at(-1) ?? input.relativePath,
-            projectId: input.projectId,
-            relativePath: input.relativePath,
-            sizeBytes: 24,
-        }));
+        openProjectFileMock.mockImplementation((input) =>
+            Promise.resolve({
+                absolutePath: `/tmp/${input.relativePath}`,
+                content: "export const value = 1;\n",
+                imageDataBase64: null,
+                isBinary: false,
+                isTooLarge: false,
+                kind: "text",
+                languageId: "typescript",
+                languageLabel: "TypeScript",
+                mimeType: "text/typescript",
+                modifiedAtMs: 1,
+                name:
+                    input.relativePath.split("/").at(-1) ?? input.relativePath,
+                projectId: input.projectId,
+                relativePath: input.relativePath,
+                sizeBytes: 24,
+            }),
+        );
 
         vi.stubGlobal("window", {
             comando: {
@@ -142,6 +145,109 @@ describe("workspace file opening", () => {
             relativePath: "src/app.ts",
             worktreeId: "worktree-1",
         });
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+    });
+
+    it("moves an existing file tab into the requested pane when a target pane is provided", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "file-tab-1",
+                        id: "pane-left",
+                        tabIds: ["file-tab-1", "helper-tab"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: {
+                        absolutePath: "/tmp/src/app.ts",
+                        content: "export const value = 1;\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "typescript",
+                        languageLabel: "TypeScript",
+                        mimeType: "text/typescript",
+                        modifiedAtMs: 1,
+                        name: "app.ts",
+                        projectId: "project-1",
+                        relativePath: "src/app.ts",
+                        sizeBytes: 24,
+                    },
+                    draftContent: "export const value = 1;\n",
+                    hasExternalChange: false,
+                    id: "file-tab-1",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "src/app.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "export const value = 1;\n",
+                    title: "app.ts",
+                    viewState: null,
+                    worktreeId: "worktree-1",
+                },
+                "helper-tab": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "helper-tab",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "codex",
+                    sessionId: "session-helper",
+                    title: "Helper",
+                    worktreeId: "worktree-1",
+                },
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .openFileTab(
+                "project-1",
+                "src/app.ts",
+                "worktree-1",
+                undefined,
+                "pane-right",
+            );
+
+        const state = useWorkspaceStore.getState();
+        const rightPane =
+            state.rootNode.type === "split" ? state.rootNode.children[1] : null;
+        const leftPane =
+            state.rootNode.type === "split" ? state.rootNode.children[0] : null;
+
+        if (leftPane?.type !== "pane" || rightPane?.type !== "pane") {
+            throw new Error("Expected a split workspace with pane children.");
+        }
+
+        expect(state.activePaneId).toBe("pane-right");
+        expect(leftPane.tabIds).toEqual(["helper-tab"]);
+        expect(leftPane.activeTabId).toBe("helper-tab");
+        expect(rightPane.tabIds).toEqual(["file-tab-1"]);
+        expect(rightPane.activeTabId).toBe("file-tab-1");
+        expect(openProjectFileMock).not.toHaveBeenCalled();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });
 });

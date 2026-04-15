@@ -1265,6 +1265,7 @@ export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot>;
     getWindowContext: () => Promise<WindowContextSnapshot | null>;
+    resolveDroppedFilePath: (file: File | null) => string | null;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getProjectSettings: (

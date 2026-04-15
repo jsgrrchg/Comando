@@ -12,6 +12,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type DragEvent as ReactDragEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
     type PointerEvent as ReactPointerEvent,
@@ -31,7 +32,11 @@ import {
     resolveEditorLanguage,
     shouldWrapEditorLanguage,
 } from "@shared/editor-language";
-import { isPointOverComposerDropZone } from "@renderer/app/drag-and-drop";
+import {
+    COMPOSER_PROJECT_ENTRY_MIME,
+    isPointOverComposerDropZone,
+    parseComposerProjectEntryDragData,
+} from "@renderer/app/drag-and-drop";
 import {
     clampRoundedInt,
     DEFAULT_EDITOR_FONT_SIZE,
@@ -510,10 +515,13 @@ function WorkspacePaneView({
         (state) => state.updateTerminalSize,
     );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
+    const paneDragCounterRef = useRef(0);
     const [tabContextMenu, setTabContextMenu] =
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
     const [quickCreateMenu, setQuickCreateMenu] =
         useState<QuickCreateMenuState>(null);
+    const [isProjectFileDragOverPane, setIsProjectFileDragOverPane] =
+        useState(false);
 
     const activeTab = node.activeTabId ? tabsById[node.activeTabId] : null;
     const isActivePane = activePaneId === node.id;
@@ -648,6 +656,111 @@ function WorkspacePaneView({
             );
         },
         [activeTabWorktreeId, node.id, openFileTab],
+    );
+
+    const canAcceptPaneProjectFileDrag = useCallback(
+        (event: ReactDragEvent<HTMLElement>) => {
+            if (!defaultProjectId) {
+                return false;
+            }
+
+            if (isPointOverComposerDropZone(event.clientX, event.clientY)) {
+                return false;
+            }
+
+            return Array.from(event.dataTransfer.types).includes(
+                COMPOSER_PROJECT_ENTRY_MIME,
+            );
+        },
+        [defaultProjectId],
+    );
+
+    const resetPaneProjectFileDrag = useCallback(() => {
+        paneDragCounterRef.current = 0;
+        setIsProjectFileDragOverPane(false);
+    }, []);
+
+    const handlePaneDragEnter = useCallback(
+        (event: ReactDragEvent<HTMLElement>) => {
+            if (!canAcceptPaneProjectFileDrag(event)) {
+                return;
+            }
+
+            event.preventDefault();
+            paneDragCounterRef.current += 1;
+            if (paneDragCounterRef.current === 1) {
+                setIsProjectFileDragOverPane(true);
+            }
+        },
+        [canAcceptPaneProjectFileDrag],
+    );
+
+    const handlePaneDragOver = useCallback(
+        (event: ReactDragEvent<HTMLElement>) => {
+            if (!canAcceptPaneProjectFileDrag(event)) {
+                if (isProjectFileDragOverPane) {
+                    setIsProjectFileDragOverPane(false);
+                }
+                return;
+            }
+
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            if (!isProjectFileDragOverPane) {
+                setIsProjectFileDragOverPane(true);
+            }
+        },
+        [canAcceptPaneProjectFileDrag, isProjectFileDragOverPane],
+    );
+
+    const handlePaneDragLeave = useCallback(
+        (event: ReactDragEvent<HTMLElement>) => {
+            if (
+                event.currentTarget.contains(event.relatedTarget as Node | null)
+            ) {
+                return;
+            }
+
+            resetPaneProjectFileDrag();
+        },
+        [resetPaneProjectFileDrag],
+    );
+
+    const handlePaneDrop = useCallback(
+        (event: ReactDragEvent<HTMLElement>) => {
+            const isComposerTarget = isPointOverComposerDropZone(
+                event.clientX,
+                event.clientY,
+            );
+            resetPaneProjectFileDrag();
+
+            if (isComposerTarget || !defaultProjectId) {
+                return;
+            }
+
+            const dragData = parseComposerProjectEntryDragData(
+                event.dataTransfer.getData(COMPOSER_PROJECT_ENTRY_MIME),
+            );
+            if (!dragData || dragData.kind !== "file") {
+                return;
+            }
+
+            event.preventDefault();
+            void openFileTab(
+                defaultProjectId,
+                dragData.relativePath,
+                defaultWorktreeId ?? null,
+                undefined,
+                node.id,
+            );
+        },
+        [
+            defaultProjectId,
+            defaultWorktreeId,
+            node.id,
+            openFileTab,
+            resetPaneProjectFileDrag,
+        ],
     );
 
     const handleCreateAgentFromFocusedProvider = useCallback(() => {
@@ -968,16 +1081,23 @@ function WorkspacePaneView({
         <>
             <section
                 className={[
-                    "flex h-full min-h-0 flex-col border bg-bg-primary",
+                    "relative flex h-full min-h-0 flex-col border bg-bg-primary",
                     isActivePane
                         ? "border-border-strong"
                         : "border-transparent",
                 ].join(" ")}
+                onDragEnter={handlePaneDragEnter}
+                onDragLeave={handlePaneDragLeave}
+                onDragOver={handlePaneDragOver}
+                onDrop={handlePaneDrop}
                 onMouseDown={() => void setActivePane(node.id)}
                 ref={(element) => {
                     tabDrag.setPaneElement(node.id, element);
                 }}
             >
+                {isProjectFileDragOverPane ? (
+                    <div className="pointer-events-none absolute inset-0 z-20 bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]" />
+                ) : null}
                 <div className="app-drag flex items-center justify-between border-b border-border bg-bg-chrome px-0">
                     <div
                         className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
