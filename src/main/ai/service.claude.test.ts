@@ -5,7 +5,7 @@ import type { AiRuntimeStatus, ClaudeRuntimeSettings } from "@shared/ipc";
 import { AiService } from "./service";
 
 describe("AiService Claude branch", () => {
-    it("guarda settings Claude, persiste secretos y emite runtime status", () => {
+    it("stores Claude settings, persists secrets, and emits runtime status", () => {
         let savedSettings: ClaudeRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const secretValues = new Map<string, string>();

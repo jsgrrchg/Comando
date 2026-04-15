@@ -106,7 +106,7 @@ describe("resolveCodeLanguageKeyFromPath", () => {
 });
 
 describe("resolveCodeLanguageKey", () => {
-    it("permite resolver por mime type antes del fallback por path", () => {
+    it("resolves by MIME type before path fallback", () => {
         expect(
             resolveCodeLanguageKey("/workspace/notes.txt", "text/x-diff"),
         ).toBe("diff");

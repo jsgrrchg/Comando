@@ -20,7 +20,7 @@ describe("SecretStoreService", () => {
         safeStorageMock.isEncryptionAvailable.mockReset();
     });
 
-    it("guarda secretos cifrados cuando safeStorage está disponible", () => {
+    it("stores encrypted secrets when safeStorage is available", () => {
         const connection = createFakeConnection();
         const service = new SecretStoreService(
             connection as unknown as Database.Database,
@@ -41,7 +41,7 @@ describe("SecretStoreService", () => {
         );
     });
 
-    it("rechaza persistir secretos en claro cuando no hay cifrado disponible", () => {
+    it("rejects saving clear-text secrets when encryption is unavailable", () => {
         const connection = createFakeConnection();
         const service = new SecretStoreService(
             connection as unknown as Database.Database,
@@ -55,7 +55,7 @@ describe("SecretStoreService", () => {
         expect(connection.appSettings.size).toBe(0);
     });
 
-    it("todavía puede leer secretos legacy en texto plano", () => {
+    it("still reads legacy secrets in plain text", () => {
         const connection = createFakeConnection({
             "secret.ai.codex.openai_api_key": JSON.stringify({
                 scheme: "plain-text-v1",

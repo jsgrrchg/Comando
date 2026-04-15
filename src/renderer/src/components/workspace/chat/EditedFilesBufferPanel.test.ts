@@ -105,7 +105,7 @@ function createSummary(overrides: Partial<ReviewSummary> = {}): ReviewSummary {
 }
 
 describe("EditedFilesBufferPanel", () => {
-    it("renderiza el header, el resumen y las acciones principales", () => {
+    it("renders header, summary, and primary actions", () => {
         const items = [
             createItem(),
             createItem({
@@ -168,7 +168,7 @@ describe("EditedFilesBufferPanel", () => {
         expect(markup).toContain("Open File");
     });
 
-    it("permite arrancar colapsado para mantener la sidebar compacta", () => {
+    it("starts collapsed to keep the sidebar compact", () => {
         const markup = renderToStaticMarkup(
             createElement(EditedFilesBufferPanel, {
                 defaultCollapsed: true,
@@ -189,7 +189,7 @@ describe("EditedFilesBufferPanel", () => {
         expect(markup).not.toContain("src/app.ts");
     });
 
-    it("no renderiza nada cuando no hay archivos pendientes", () => {
+    it("renders nothing when no files are queued", () => {
         const markup = renderToStaticMarkup(
             createElement(EditedFilesBufferPanel, {
                 diffZoom: 0.72,

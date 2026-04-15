@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("resolveCodexRuntime", () => {
-    it("resuelve codex-acp desde PATH sin argumentos extra", () => {
+    it("resolves codex-acp from PATH without extra arguments", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-codex-acp-"),
         );
@@ -61,7 +61,7 @@ describe("resolveCodexRuntime", () => {
         }
     });
 
-    it("prefiere el binario bundleado antes que vendor o PATH", () => {
+    it("prefers the bundled binary over vendor or PATH", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-codex-bundled-"),
         );
@@ -119,7 +119,7 @@ describe("resolveCodexRuntime", () => {
         }
     });
 
-    it("usa el vendor release cuando todavía no existe el bundle stageado", () => {
+    it("uses the vendor release when no bundled build exists", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-codex-vendor-"),
         );
@@ -160,7 +160,7 @@ describe("resolveCodexRuntime", () => {
         }
     });
 
-    it("marca codex como incompatible cuando solo existe el CLI moderno", () => {
+    it("marks codex as incompatible when only modern CLI exists", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-codex-cli-"),
         );
@@ -189,7 +189,9 @@ describe("resolveCodexRuntime", () => {
             expect(resolved.args).toEqual([]);
             expect(resolved.command).toBe(executablePath);
             expect(resolved.status.state).toBe("error");
-            expect(resolved.status.message).toContain("no un runtime ACP");
+            expect(resolved.status.message).toContain(
+                "instead of an ACP runtime",
+            );
         } finally {
             fs.rmSync(tempDir, {
                 force: true,

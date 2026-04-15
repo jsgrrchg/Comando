@@ -53,7 +53,7 @@ function createTrackedFile(
 }
 
 describe("toolActivityReviewModel", () => {
-    it("prefiere el match explicito por toolCallId", () => {
+    it("prefers explicit match by toolCallId", () => {
         const activity = createActivity();
         const trackedFiles = [
             createTrackedFile(),
@@ -72,7 +72,7 @@ describe("toolActivityReviewModel", () => {
         ).toEqual(["tracked-2", "tracked-1"]);
     });
 
-    it("usa fallback por path solo cuando el match es univoco", () => {
+    it("uses path fallback only when match is unique", () => {
         const activity = createActivity({
             diffs: [
                 {
@@ -99,7 +99,7 @@ describe("toolActivityReviewModel", () => {
         ).toEqual(["tracked-1"]);
     });
 
-    it("omite fallback ambiguo por path", () => {
+    it("omits ambiguous path fallback", () => {
         const activity = createActivity({
             id: "tool-without-link",
             locations: ["src/app.ts"],
@@ -122,7 +122,7 @@ describe("toolActivityReviewModel", () => {
         ).toEqual([]);
     });
 
-    it("deriva pending tracked files por activity", () => {
+    it("derives pending tracked files by activity", () => {
         const entries = deriveToolActivityReviewEntries(
             [
                 createActivity(),
@@ -148,7 +148,7 @@ describe("toolActivityReviewModel", () => {
         expect(entries[1]?.trackedFiles).toHaveLength(1);
     });
 
-    it("empareja diffs con tracked files y agrega fallback para edits no listados", () => {
+    it("matches diffs to tracked files and adds fallback for unlisted edits", () => {
         const activity = createActivity({
             diffs: [
                 {
@@ -181,7 +181,7 @@ describe("toolActivityReviewModel", () => {
         expect(items[1]?.diff.path).toBe("src/secondary.ts");
     });
 
-    it("marca preview-only cuando solo existe el diff del activity", () => {
+    it("marks preview-only when only activity diff exists", () => {
         const activity = createActivity({
             diffs: [
                 {

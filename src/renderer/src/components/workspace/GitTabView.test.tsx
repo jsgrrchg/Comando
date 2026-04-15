@@ -143,7 +143,7 @@ function createCommitDetail(
 }
 
 describe("GitTabView", () => {
-    it("oculta el panel de detalle cuando no hay commit seleccionado", () => {
+    it("hides the detail panel when no commit is selected", () => {
         resetStoreState();
         mockGitStoreState.current.selectedCommitShas = {
             [CONTEXT_KEY]: null,
@@ -158,7 +158,7 @@ describe("GitTabView", () => {
         expect(markup).not.toContain("View Commit");
     });
 
-    it("muestra el panel de detalle cuando hay un commit activo", () => {
+    it("shows the detail panel when an active commit exists", () => {
         const commit = createCommit();
         resetStoreState();
         mockGitStoreState.current.selectedCommitShas = {
@@ -174,7 +174,7 @@ describe("GitTabView", () => {
         expect(markup).toContain("View Commit");
     });
 
-    it("marca como clickeables los archivos abribles del commit", () => {
+    it("marks commit files that can be opened as clickable", () => {
         const commit = createCommit();
         resetStoreState();
         mockGitStoreState.current.selectedCommitShas = {

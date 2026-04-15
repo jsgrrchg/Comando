@@ -5,7 +5,7 @@ import type { CodexRuntimeSettings } from "@shared/ipc";
 import { applyCodexAuthEnv, detectCodexAuthMethod } from "./setup";
 
 describe("Codex auth helpers", () => {
-    it("no reactiva keys almacenadas cuando no hay un método seleccionado", () => {
+    it("does not reactivate stored keys when no method is selected", () => {
         expect(
             detectCodexAuthMethod(
                 createSettings({ authMethod: null }),
@@ -18,7 +18,7 @@ describe("Codex auth helpers", () => {
         ).toBe(null);
     });
 
-    it("sólo expone al runtime la credencial del método elegido", () => {
+    it("only exposes the runtime credential for the selected method", () => {
         const env = applyCodexAuthEnv(
             {
                 CODEX_API_KEY: "external-codex",
@@ -37,7 +37,7 @@ describe("Codex auth helpers", () => {
         expect(env.OPENAI_API_KEY).toBe("external-openai");
     });
 
-    it("limpia variables heredadas cuando el método activo es ChatGPT", () => {
+    it("clears inherited variables when ChatGPT is the active method", () => {
         const env = applyCodexAuthEnv(
             {
                 CODEX_API_KEY: "external-codex",

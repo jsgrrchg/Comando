@@ -150,7 +150,7 @@ describe("ReviewTabView", () => {
         vi.unstubAllGlobals();
     });
 
-    it("renderiza el header con stats y acciones cuando hay cambios pendientes", () => {
+    it("renders the header with stats and actions when pending changes exist", () => {
         setMockSessionSnapshot(
             createSnapshot([
                 createTrackedFile(),
@@ -184,7 +184,7 @@ describe("ReviewTabView", () => {
         expect(markup).toContain("-1");
     });
 
-    it("muestra el empty state cuando no hay cambios pendientes", () => {
+    it("displays empty state when there are no pending changes", () => {
         setMockSessionSnapshot(createSnapshot([]));
 
         const markup = renderToStaticMarkup(

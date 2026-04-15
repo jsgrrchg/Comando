@@ -20,7 +20,7 @@ function createWorkspaceState(
 }
 
 describe("resolveAppearanceProjectId", () => {
-    it("usa el proyecto del tab activo cuando existe", () => {
+    it("uses the active tab project when available", () => {
         const workspaceState = createWorkspaceState({
             rootNode: {
                 activeTabId: "file-1",
@@ -55,7 +55,7 @@ describe("resolveAppearanceProjectId", () => {
         );
     });
 
-    it("vuelve al proyecto activo si el tab no tiene proyecto", () => {
+    it("falls back to the active project when the tab has no project", () => {
         const workspaceState = createWorkspaceState({
             rootNode: {
                 activeTabId: "chat-1",
@@ -82,7 +82,7 @@ describe("resolveAppearanceProjectId", () => {
         );
     });
 
-    it("mantiene el fallback cuando no hay tab activo", () => {
+    it("keeps fallback when no active tab exists", () => {
         const workspaceState = createWorkspaceState();
 
         expect(resolveAppearanceProjectId("project-a", workspaceState)).toBe(

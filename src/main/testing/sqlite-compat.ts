@@ -69,7 +69,7 @@ export function createSqliteCompatConnection(
                     try {
                         database.exec("ROLLBACK");
                     } catch {
-                        // Ignoramos errores secundarios de rollback en tests.
+                        // Ignore secondary rollback errors during tests.
                     }
 
                     throw error;

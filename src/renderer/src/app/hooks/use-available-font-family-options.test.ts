@@ -4,7 +4,7 @@ import { CHAT_FONT_FAMILY_OPTIONS } from "../settings/theme";
 import { buildSelectableFontFamilyOptions } from "./use-available-font-family-options";
 
 describe("buildSelectableFontFamilyOptions", () => {
-    it("oculta las fuentes no disponibles y conserva la seleccion actual", () => {
+    it("hides unavailable fonts and preserves current selection", () => {
         const options = buildSelectableFontFamilyOptions(
             CHAT_FONT_FAMILY_OPTIONS,
             new Set(["system", "geist"]),
@@ -23,7 +23,7 @@ describe("buildSelectableFontFamilyOptions", () => {
         });
     });
 
-    it("deja intacta la lista mientras no termina la deteccion", () => {
+    it("keeps the list unchanged while detection is pending", () => {
         const options = buildSelectableFontFamilyOptions(
             CHAT_FONT_FAMILY_OPTIONS,
             null,

@@ -37,7 +37,7 @@ function resolveNodeBinary() {
 
         if (!isExecutableFile(resolved)) {
             throw new Error(
-                `COMANDO_EMBEDDED_NODE_BIN apunta a un binario no ejecutable: ${resolved}`,
+                `COMANDO_EMBEDDED_NODE_BIN points to a non-executable binary: ${resolved}`,
             );
         }
 
@@ -54,32 +54,32 @@ function resolveNodeBinary() {
     }
 
     throw new Error(
-        "No se encontró un binario de Node para embutir Claude. Instala Node o define COMANDO_EMBEDDED_NODE_BIN.",
+        "No Node binary found for embedding Claude. Install Node or define COMANDO_EMBEDDED_NODE_BIN.",
     );
 }
 
 function ensureClaudeVendorExists() {
     if (!fs.existsSync(claudeVendorDir)) {
         throw new Error(
-            "No existe vendor/Claude-agent-acp-upstream. Importa el vendor desde reference app antes de stagear Claude.",
+            "vendor/Claude-agent-acp-upstream is missing. Import the vendor from reference app before staging Claude.",
         );
     }
 
     if (!isFile(CLAUDE_VENDOR_PACKAGE_JSON)) {
         throw new Error(
-            "Falta vendor/Claude-agent-acp-upstream/package.json. El vendor de Claude está incompleto.",
+            "Missing vendor/Claude-agent-acp-upstream/package.json. The Claude vendor is incomplete.",
         );
     }
 
     if (!isFile(CLAUDE_VENDOR_ENTRY)) {
         throw new Error(
-            "Falta vendor/Claude-agent-acp-upstream/dist/index.js. El runtime Claude no está compilado.",
+            "Missing vendor/Claude-agent-acp-upstream/dist/index.js. The Claude runtime is not built.",
         );
     }
 
     if (!fs.existsSync(CLAUDE_VENDOR_NODE_MODULES)) {
         throw new Error(
-            "Falta vendor/Claude-agent-acp-upstream/node_modules. El runtime Claude necesita sus dependencias vendorizadas.",
+            "Missing vendor/Claude-agent-acp-upstream/node_modules. The Claude runtime requires vendored dependencies.",
         );
     }
 }
@@ -135,25 +135,25 @@ function removeLegacyStandaloneBundle() {
 function validateStagedRuntime() {
     if (!isExecutableFile(embeddedNodeBin)) {
         throw new Error(
-            `El Node embebido no quedó listo en ${relativeToRepo(embeddedNodeBin)}.`,
+            `The embedded Node is not ready at ${relativeToRepo(embeddedNodeBin)}.`,
         );
     }
 
     if (!isFile(path.join(claudeEmbeddedRoot, "package.json"))) {
         throw new Error(
-            `Falta package.json en ${relativeToRepo(claudeEmbeddedRoot)}.`,
+            `Missing package.json in ${relativeToRepo(claudeEmbeddedRoot)}.`,
         );
     }
 
     if (!isFile(path.join(claudeEmbeddedDist, "index.js"))) {
         throw new Error(
-            `Falta dist/index.js en ${relativeToRepo(claudeEmbeddedRoot)}.`,
+            `Missing dist/index.js in ${relativeToRepo(claudeEmbeddedRoot)}.`,
         );
     }
 
     if (!fs.existsSync(claudeEmbeddedNodeModules)) {
         throw new Error(
-            `Falta node_modules en ${relativeToRepo(claudeEmbeddedRoot)}.`,
+            `Missing node_modules in ${relativeToRepo(claudeEmbeddedRoot)}.`,
         );
     }
 }

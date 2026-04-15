@@ -5,7 +5,7 @@ import type { AiRuntimeStatus, CodexRuntimeSettings } from "@shared/ipc";
 import { AiService } from "./service";
 
 describe("AiService Codex branch", () => {
-    it("guarda settings Codex, persiste solo una API key y emite runtime status", () => {
+    it("stores Codex settings, persists only one API key, and emits runtime status", () => {
         let savedSettings: CodexRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const secretValues = new Map<string, string>();
@@ -105,7 +105,7 @@ describe("AiService Codex branch", () => {
         expect(runtimeStatusEvents.at(-1)?.runtimeId).toBe("codex");
     });
 
-    it("propaga el error cuando el almacenamiento seguro no está disponible", () => {
+    it("propagates an error when secure storage is unavailable", () => {
         const service = new AiService({
             onRuntimeStatus: vi.fn(),
             onSessionSnapshot: vi.fn(),
@@ -175,7 +175,7 @@ describe("AiService Codex branch", () => {
         ).toThrowError("Secure secret storage is unavailable on this machine.");
     });
 
-    it("limpia la key opuesta al cambiar el método preferido de Codex", () => {
+    it("clears the opposing key when changing Codex preferred method", () => {
         let savedSettings: CodexRuntimeSettings | null = null;
         const secretValues = new Map<string, string>([
             ["ai.codex:codex_api_key", "codex-secret"],
@@ -262,7 +262,7 @@ describe("AiService Codex branch", () => {
         expect(secretValues.size).toBe(0);
     });
 
-    it("borra las API keys guardadas al cambiar a ChatGPT", () => {
+    it("clears saved API keys when switching to ChatGPT", () => {
         let savedSettings: CodexRuntimeSettings | null = null;
         const secretValues = new Map<string, string>([
             ["ai.codex:codex_api_key", "codex-secret"],
@@ -349,7 +349,7 @@ describe("AiService Codex branch", () => {
         expect(secretValues.size).toBe(0);
     });
 
-    it("verifica una key no persistida sin guardarla todavía", () => {
+    it("verifies an unsaved key without persisting it yet", () => {
         const secretValues = new Map<string, string>();
         const service = new AiService({
             onRuntimeStatus: vi.fn(),

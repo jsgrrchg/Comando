@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 describe("Gemini setup", () => {
-    it("resuelve Gemini desde COMANDO_GEMINI_ACP_BIN con --acp", () => {
+    it("resolves Gemini from COMANDO_GEMINI_ACP_BIN with --acp", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-gemini-env-"),
         );
@@ -80,7 +80,7 @@ describe("Gemini setup", () => {
         }
     });
 
-    it("resuelve Gemini desde el path configurado y hace fallback a PATH", () => {
+    it("resolves Gemini from configured path and falls back to PATH", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-gemini-path-"),
         );
@@ -112,7 +112,7 @@ describe("Gemini setup", () => {
         }
     });
 
-    it("detecta auth use_gemini mediante secretos guardados", () => {
+    it("detects use_gemini auth from stored secrets", () => {
         const secretStore = createFakeSecretStore({
             "ai.gemini:gemini_api_key": "gem-key-123",
         });
@@ -132,7 +132,7 @@ describe("Gemini setup", () => {
         expect(status.authReady).toBe(true);
     });
 
-    it("detecta login Google desde ~/.gemini/settings.json respetando invalidación", () => {
+    it("detects Google login from ~/.gemini/settings.json while respecting invalidation", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-gemini-google-"),
         );
@@ -188,7 +188,7 @@ describe("Gemini setup", () => {
         }
     });
 
-    it("inyecta env Gemini sin pisar secretos externos", () => {
+    it("injects Gemini env without overwriting external secrets", () => {
         const secretStore = createFakeSecretStore({
             "ai.gemini:gemini_api_key": "stored-gemini-key",
             "ai.gemini:google_api_key": "stored-google-key",
@@ -214,7 +214,7 @@ describe("Gemini setup", () => {
         expect(env.GEMINI_DEFAULT_AUTH_TYPE).toBe("use_gemini");
     });
 
-    it("respeta variables externas de proyecto, location y auth type", () => {
+    it("respects external project variables, location, and auth type", () => {
         const env = applyGeminiAuthEnv(
             {
                 GEMINI_DEFAULT_AUTH_TYPE: "external-auth-type",

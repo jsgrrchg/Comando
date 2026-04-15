@@ -40,6 +40,8 @@ import {
     type GitTreeDragData,
     type GitTreeNode,
 } from "./components/git";
+import { StickyFolderOverlay } from "./components/git/StickyFolderOverlay";
+import { useStickyFolders } from "./components/git/useStickyFolders";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -196,6 +198,7 @@ export function App() {
     >(null);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const overlayDismissRef = useRef<number | null>(null);
+    const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
         let isDisposed = false;
@@ -1229,6 +1232,13 @@ export function App() {
         visibleFileTreeRoots.length,
     ]);
 
+    const { stickyFolders, stickyFolderPaths } = useStickyFolders({
+        scrollContainerRef: sidebarScrollRef,
+        nodes: sidebarTreeNodes,
+        expandedPaths: visibleExpandedDirectories,
+        layout: "tree",
+    });
+
     const handleRevealActiveFileInTree = useCallback(async () => {
         if (
             activeWorkspaceTab?.kind !== "file" ||
@@ -1587,89 +1597,150 @@ export function App() {
                 />
             ) : (
                 <>
-                    <div className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2">
+                    <div
+                        ref={sidebarScrollRef}
+                        className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2"
+                    >
                         {activeProject ? (
-                            <GitTreeView
-                                activePath={activeFilePath}
-                                enableNodeDrag
-                                expandedPaths={visibleExpandedDirectories}
-                                nodes={sidebarTreeNodes}
-                                scrollToActivePathSignal={
-                                    fileTreeRevealSignal ?? undefined
-                                }
-                                onNodeClick={(node) =>
-                                    activeProjectId
-                                        ? void openFileTab(
-                                              activeProjectId,
-                                              node.path,
-                                              activeWorktreeId,
-                                          )
-                                        : undefined
-                                }
-                                onNodeContextMenu={(node, { x, y }) =>
-                                    setFileTreeContextMenu({
-                                        x,
-                                        y,
-                                        payload: {
-                                            kind: "node",
-                                            node,
-                                        },
-                                    })
-                                }
-                                onNodeDragStart={(node, dataTransfer) => {
-                                    if (!dataTransfer) return;
-                                    dataTransfer.effectAllowed = "copyMove";
-                                    dataTransfer.setData(
-                                        COMPOSER_PROJECT_ENTRY_MIME,
-                                        serializeComposerProjectEntryDragData({
-                                            kind: node.kind,
-                                            name: node.name,
-                                            relativePath: node.path,
-                                        }),
-                                    );
-                                    dataTransfer.setData(
-                                        "text/plain",
-                                        node.path,
-                                    );
-                                }}
-                                onNodeDrop={(dragData, destinationNode) => {
-                                    void handleMoveTreeNode(
-                                        dragData,
-                                        destinationNode,
-                                    );
-                                }}
-                                onToggleDirectory={(node) => {
-                                    if (node.isProjectRoot) {
-                                        setProjectRootExpandedByContext(
-                                            (currentState) => ({
-                                                ...currentState,
-                                                [activeProjectContextKey]:
-                                                    !isProjectRootExpanded,
-                                            }),
+                            <>
+                                <StickyFolderOverlay
+                                    stickyFolders={stickyFolders}
+                                    enableNodeDrag
+                                    onToggleDirectory={(node) => {
+                                        if (node.isProjectRoot) {
+                                            setProjectRootExpandedByContext(
+                                                (currentState) => ({
+                                                    ...currentState,
+                                                    [activeProjectContextKey]:
+                                                        !isProjectRootExpanded,
+                                                }),
+                                            );
+                                            return;
+                                        }
+                                        if (!activeProjectId) return;
+                                        const treeNode =
+                                            findProjectTreeNodeByPath(
+                                                visibleFileTreeNodesByParent,
+                                                node.path,
+                                            );
+                                        if (!treeNode) return;
+                                        void toggleDirectory(
+                                            activeProjectId,
+                                            treeNode,
+                                            activeWorktreeId,
                                         );
-                                        return;
+                                    }}
+                                    onNodeDragStart={(node, dataTransfer) => {
+                                        if (!dataTransfer) return;
+                                        dataTransfer.effectAllowed = "copyMove";
+                                        dataTransfer.setData(
+                                            COMPOSER_PROJECT_ENTRY_MIME,
+                                            serializeComposerProjectEntryDragData(
+                                                {
+                                                    kind: node.kind,
+                                                    name: node.name,
+                                                    relativePath: node.path,
+                                                },
+                                            ),
+                                        );
+                                        dataTransfer.setData(
+                                            "text/plain",
+                                            node.path,
+                                        );
+                                    }}
+                                    onNodeDrop={(dragData, destinationNode) => {
+                                        void handleMoveTreeNode(
+                                            dragData,
+                                            destinationNode,
+                                        );
+                                    }}
+                                />
+                                <GitTreeView
+                                    activePath={activeFilePath}
+                                    enableNodeDrag
+                                    expandedPaths={visibleExpandedDirectories}
+                                    nodes={sidebarTreeNodes}
+                                    stickyFolderPaths={stickyFolderPaths}
+                                    scrollToActivePathSignal={
+                                        fileTreeRevealSignal ?? undefined
                                     }
-
-                                    if (!activeProjectId) {
-                                        return;
+                                    onNodeClick={(node) =>
+                                        activeProjectId
+                                            ? void openFileTab(
+                                                  activeProjectId,
+                                                  node.path,
+                                                  activeWorktreeId,
+                                              )
+                                            : undefined
                                     }
-
-                                    const treeNode = findProjectTreeNodeByPath(
-                                        visibleFileTreeNodesByParent,
-                                        node.path,
-                                    );
-                                    if (!treeNode) {
-                                        return;
+                                    onNodeContextMenu={(node, { x, y }) =>
+                                        setFileTreeContextMenu({
+                                            x,
+                                            y,
+                                            payload: {
+                                                kind: "node",
+                                                node,
+                                            },
+                                        })
                                     }
+                                    onNodeDragStart={(node, dataTransfer) => {
+                                        if (!dataTransfer) return;
+                                        dataTransfer.effectAllowed = "copyMove";
+                                        dataTransfer.setData(
+                                            COMPOSER_PROJECT_ENTRY_MIME,
+                                            serializeComposerProjectEntryDragData(
+                                                {
+                                                    kind: node.kind,
+                                                    name: node.name,
+                                                    relativePath: node.path,
+                                                },
+                                            ),
+                                        );
+                                        dataTransfer.setData(
+                                            "text/plain",
+                                            node.path,
+                                        );
+                                    }}
+                                    onNodeDrop={(dragData, destinationNode) => {
+                                        void handleMoveTreeNode(
+                                            dragData,
+                                            destinationNode,
+                                        );
+                                    }}
+                                    onToggleDirectory={(node) => {
+                                        if (node.isProjectRoot) {
+                                            setProjectRootExpandedByContext(
+                                                (currentState) => ({
+                                                    ...currentState,
+                                                    [activeProjectContextKey]:
+                                                        !isProjectRootExpanded,
+                                                }),
+                                            );
+                                            return;
+                                        }
 
-                                    void toggleDirectory(
-                                        activeProjectId,
-                                        treeNode,
-                                        activeWorktreeId,
-                                    );
-                                }}
-                                showStatusIndicator={false}
-                            />
+                                        if (!activeProjectId) {
+                                            return;
+                                        }
+
+                                        const treeNode =
+                                            findProjectTreeNodeByPath(
+                                                visibleFileTreeNodesByParent,
+                                                node.path,
+                                            );
+                                        if (!treeNode) {
+                                            return;
+                                        }
+
+                                        void toggleDirectory(
+                                            activeProjectId,
+                                            treeNode,
+                                            activeWorktreeId,
+                                        );
+                                    }}
+                                    showStatusIndicator={false}
+                                />
+                            </>
                         ) : (
                             <div className="px-3 py-4 text-xs text-text-secondary">
                                 Open a folder to get started.

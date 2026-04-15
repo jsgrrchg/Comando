@@ -6,7 +6,7 @@ import {
 } from "./projectFileReferences";
 
 describe("projectFileReferences", () => {
-    it("parsea referencias relativas con rango de líneas", () => {
+    it("parses relative references with line ranges", () => {
         expect(parseProjectFileReference("src/app.ts:12-18")).toEqual({
             endLine: 18,
             isAbsolute: false,
@@ -15,7 +15,7 @@ describe("projectFileReferences", () => {
         });
     });
 
-    it("resuelve rutas absolutas dentro del root del proyecto", () => {
+    it("resolves absolute paths within project root", () => {
         expect(
             resolveProjectFileReference(
                 "/Users/test/workspace/comando/src/app.ts:42",
@@ -32,7 +32,7 @@ describe("projectFileReferences", () => {
         });
     });
 
-    it("resuelve file URLs usando roots de worktree", () => {
+    it("resolves file URLs using worktree roots", () => {
         expect(
             resolveProjectFileReference(
                 "file:///Users/test/worktrees/comando-feature/src/chat.tsx#L9-L14",
@@ -52,7 +52,7 @@ describe("projectFileReferences", () => {
         });
     });
 
-    it("mantiene rutas relativas listas para abrir en tabs", () => {
+    it("keeps relative paths ready to open in tabs", () => {
         expect(resolveProjectFileReference("./src/app.ts", { projectRoots: [] }))
             .toEqual({
                 endLine: null,
@@ -63,7 +63,7 @@ describe("projectFileReferences", () => {
             });
     });
 
-    it("rechaza URLs externas y referencias fuera del proyecto", () => {
+    it("rejects external URLs and references outside project", () => {
         expect(
             resolveProjectFileReference("https://example.com/docs", {
                 projectRoots: ["/Users/test/workspace/comando"],

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { MarkdownContent } from "./MarkdownContent";
 
 describe("MarkdownContent", () => {
-    it("renderiza bloques diff con DiffLineView", () => {
+    it("renders diff blocks with DiffLineView", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
                 content: "```diff\n@@ -1,2 +1,2 @@\n alpha\n-bravo\n+beta\n```",
@@ -19,7 +19,7 @@ describe("MarkdownContent", () => {
         expect(markup).toContain(">diff<");
     });
 
-    it("mantiene el rendering normal para code blocks no diff", () => {
+    it("keeps normal rendering for non-diff code blocks", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
                 content: "```ts\nconst value = 1;\n```",
@@ -31,7 +31,7 @@ describe("MarkdownContent", () => {
         expect(markup).not.toContain("markdown-diff-block");
     });
 
-    it("mantiene el highlighting para TOML y GraphQL", () => {
+    it("keeps highlighting for TOML and GraphQL", () => {
         const tomlMarkup = renderToStaticMarkup(
             createElement(MarkdownContent, {
                 content: '```toml\n[package]\nname = "comando"\n```',

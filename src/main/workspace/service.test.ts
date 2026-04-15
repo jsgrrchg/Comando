@@ -11,7 +11,7 @@ import {
 import { WorkspaceService } from "./service";
 
 describe("WorkspaceService", () => {
-    it("persiste y recarga transcript, eventos y artefactos minimos de una chat session", () => {
+    it("persists and reloads transcript, events, and minimal artifacts for a chat session", () => {
         const connection = createTestConnection();
         const service = new WorkspaceService(connection);
         const workspaceId = "workspace-a";
@@ -27,7 +27,7 @@ describe("WorkspaceService", () => {
             tabs: [
                 {
                     createdAt: "2026-04-12T00:00:00.000Z",
-                    draft: "Necesito revisar este cambio",
+                    draft: "I need to review this change",
                     id: "chat-tab-1",
                     kind: "chat",
                     projectId: null,
@@ -44,7 +44,7 @@ describe("WorkspaceService", () => {
 
         expect(chatSessionState).not.toBeNull();
         expect(chatSessionState).toMatchObject({
-            draft: "Necesito revisar este cambio",
+            draft: "I need to review this change",
             events: [
                 {
                     eventType: "session.created",
@@ -72,7 +72,7 @@ describe("WorkspaceService", () => {
         expect(chatSessionState?.updatedAt).toEqual(expect.any(String));
     });
 
-    it("tolera layout y tabs corruptos al restaurar un workspace especifico", () => {
+    it("tolerates corrupt layout and tabs when restoring a specific workspace", () => {
         const connection = createTestConnection();
         connection
             .prepare(
@@ -88,9 +88,9 @@ describe("WorkspaceService", () => {
                 `,
             )
             .run(
-                "workspace-corrupto",
+                "workspace-corrupt",
                 "{broken json",
-                "pane-corrupto",
+                "pane-corrupt",
                 "2026-04-12T00:00:00.000Z",
                 "2026-04-12T00:00:00.000Z",
             );
@@ -110,10 +110,10 @@ describe("WorkspaceService", () => {
                 `,
             )
             .run(
-                "tab-corrupta",
-                "workspace-corrupto",
+                "tab-corrupt",
+                "workspace-corrupt",
                 "chat",
-                "Tab rota",
+                "Broken tab",
                 "{broken json",
                 "2026-04-12T00:00:00.000Z",
                 0,
@@ -121,8 +121,8 @@ describe("WorkspaceService", () => {
 
         const service = new WorkspaceService(connection);
 
-        expect(service.loadSnapshot("workspace-corrupto")).toEqual({
-            activePaneId: "pane-corrupto",
+        expect(service.loadSnapshot("workspace-corrupt")).toEqual({
+            activePaneId: "pane-corrupt",
             rootNode: {
                 activeTabId: null,
                 id: "pane-root",
@@ -133,7 +133,7 @@ describe("WorkspaceService", () => {
         });
     });
 
-    it("persiste y recarga tabs de git del workspace", () => {
+    it("persists and reloads workspace git tabs", () => {
         const connection = createTestConnection();
         const service = new WorkspaceService(connection);
         const workspaceId = "workspace-git";
@@ -163,7 +163,7 @@ describe("WorkspaceService", () => {
         expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
     });
 
-    it("persiste y recarga tabs de detalle de commit", () => {
+    it("persists and reloads commit detail tabs in the workspace", () => {
         const connection = createTestConnection();
         const service = new WorkspaceService(connection);
         const workspaceId = "workspace-git-commit";

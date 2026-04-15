@@ -23,15 +23,16 @@ import type {
     GitViewLayout,
 } from "./types";
 
-const ROW_HEIGHT = 28;
-const FONT_SIZE = 12;
-const INDENT_STEP = 16;
-const BASE_PADDING = 8;
-const ICON_SM = 13;
-const ICON_MD = 15;
+export const ROW_HEIGHT = 28;
+export const FONT_SIZE = 12;
+export const INDENT_STEP = 16;
+export const BASE_PADDING = 8;
+export const ICON_SM = 13;
+export const ICON_MD = 15;
 const AUTO_EXPAND_DELAY_MS = 2000;
 
-const GUIDE_COLOR = "color-mix(in srgb, var(--color-border) 82%, transparent)";
+export const GUIDE_COLOR =
+    "color-mix(in srgb, var(--color-border) 82%, transparent)";
 
 const ROW_BOX: CSSProperties = {
     width: "max-content",
@@ -44,7 +45,7 @@ const ROW_BOX_CONSTRAINED: CSSProperties = {
     boxSizing: "border-box",
 };
 
-function scalePx(value: number): string {
+export function scalePx(value: number): string {
     return `calc(${value}px * var(--file-tree-scale, 1))`;
 }
 
@@ -65,6 +66,7 @@ export function GitTreeView({
     renderNodeMeta,
     scrollToActivePathSignal,
     showStatusIndicator = true,
+    stickyFolderPaths,
 }: GitTreeViewProps) {
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
     const [activeDragData, setActiveDragData] =
@@ -174,6 +176,7 @@ export function GitTreeView({
                     clearHoverExpand={clearHoverExpand}
                     setDropTargetPath={setDropTargetPath}
                     showStatusIndicator={showStatusIndicator}
+                    stickyFolderPaths={stickyFolderPaths}
                 />
             ))}
         </div>
@@ -201,6 +204,7 @@ function GitTreeNodeRow({
     clearHoverExpand,
     setDropTargetPath,
     showStatusIndicator,
+    stickyFolderPaths,
 }: {
     readonly activePath: string | null;
     readonly activeDragData: GitTreeDragData | null;
@@ -238,6 +242,7 @@ function GitTreeNodeRow({
     readonly clearHoverExpand: () => void;
     readonly setDropTargetPath: (path: string | null) => void;
     readonly showStatusIndicator: boolean;
+    readonly stickyFolderPaths?: ReadonlySet<string>;
 }) {
     const isDirectory = node.kind === "directory";
     const isExpanded =
@@ -264,223 +269,236 @@ function GitTreeNodeRow({
           : "var(--color-text-primary)";
 
     const paddingLeft = scalePx(BASE_PADDING + depth * INDENT_STEP);
+    const isStickyHidden =
+        isDirectory && stickyFolderPaths?.has(node.path) === true;
 
     return (
         <>
-            <div
-                className="git-tree-row"
-                data-active={isActive ? "true" : "false"}
-                data-drop-target={isDropTarget ? "true" : "false"}
-                draggable={isDraggable}
-                onDragEnd={() => {
-                    clearHoverExpand();
-                    setActiveDragData(null);
-                    setDropTargetPath(null);
-                }}
-                onDragLeave={(event) => {
-                    if (
-                        event.currentTarget.contains(
-                            event.relatedTarget as Node | null,
-                        )
-                    ) {
-                        return;
-                    }
-
-                    if (dropTargetPath === node.path) {
-                        clearHoverExpand();
-                        setDropTargetPath(null);
-                    }
-                }}
-                onDragOver={(event) => {
-                    const dragData =
-                        activeDragData ?? getTreeDragData(event.dataTransfer);
-                    const canAcceptDrop =
-                        isDirectory &&
-                        Boolean(onNodeDrop) &&
-                        canDropProjectEntryIntoDirectory(
-                            dragData,
-                            node.isProjectRoot ? null : node.path,
-                        );
-
-                    scheduleHoverExpand(node, isExpanded, canAcceptDrop);
-
-                    if (!isDirectory || !onNodeDrop || !canAcceptDrop) {
-                        return;
-                    }
-
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    if (dropTargetPath !== node.path) {
-                        setDropTargetPath(node.path);
-                    }
-                }}
-                onDragStart={(event) => {
-                    if (!isDraggable) {
-                        return;
-                    }
-
-                    setActiveDragData({
-                        kind: node.kind,
-                        name: node.name,
-                        relativePath: node.path,
-                    });
-                    dragStartHandler?.(node, event.dataTransfer ?? null);
-                }}
-                onDrop={(event) => {
-                    const dragData =
-                        activeDragData ?? getTreeDragData(event.dataTransfer);
-                    clearHoverExpand();
-                    setActiveDragData(null);
-                    setDropTargetPath(null);
-
-                    if (
-                        !isDirectory ||
-                        !onNodeDrop ||
-                        !canDropProjectEntryIntoDirectory(
-                            dragData,
-                            node.isProjectRoot ? null : node.path,
-                        )
-                    ) {
-                        return;
-                    }
-
-                    event.preventDefault();
-                    onNodeDrop(dragData, node);
-                }}
-                onContextMenu={(event) => {
-                    if (!onNodeContextMenu) {
-                        return;
-                    }
-
-                    event.preventDefault();
-                    onNodeContextMenu(node, {
-                        x: event.clientX,
-                        y: event.clientY,
-                    });
-                }}
-                style={{
-                    position: "relative",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: scalePx(6),
-                    height: scalePx(ROW_HEIGHT),
-                    paddingLeft,
-                    paddingRight: scalePx(8),
-                    fontSize: scalePx(FONT_SIZE),
-                    borderRadius: scalePx(4),
-                    cursor: canOpen || canToggle ? "pointer" : "default",
-                    color: "var(--color-text-primary)",
-                    ...(isActive
-                        ? {
-                              backgroundColor:
-                                  "color-mix(in srgb, var(--color-accent) 22%, transparent)",
-                              boxShadow:
-                                  "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent)",
-                          }
-                        : isDropTarget
-                          ? {
-                                backgroundColor:
-                                    "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                                boxShadow:
-                                    "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
-                            }
-                          : {}),
-                    ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
-                }}
-                onClick={() =>
-                    canOpen
-                        ? onNodeClick?.(node)
-                        : canToggle
-                          ? onToggleDirectory?.(node)
-                          : undefined
-                }
-            >
-                <TreeIndentGuides depth={depth} />
-
-                {isDirectory && layout === "tree" ? (
-                    <ChevronIcon open={isExpanded} />
-                ) : (
-                    <span style={{ width: scalePx(ICON_SM), flexShrink: 0 }} />
-                )}
-
-                {isDirectory ? (
-                    <FolderIcon
-                        color={statusTint ?? "var(--color-text-secondary)"}
-                        open={isExpanded}
-                    />
-                ) : (
-                    <FileTypeIcon
-                        color={statusTint ?? undefined}
-                        fileName={node.name}
-                        scaled
-                        size={ICON_SM}
-                    />
-                )}
-
-                <span
-                    style={{
-                        flexShrink: constrainWidth ? 1 : 0,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        minWidth: constrainWidth ? scalePx(40) : 0,
-                        flex: 1,
-                        color: titleColor,
-                    }}
-                >
-                    {node.name}
-                </span>
-
-                {!constrainWidth && node.secondaryText ? (
-                    <span
-                        style={{
-                            fontSize: scalePx(11),
-                            color: "var(--color-text-secondary)",
-                            whiteSpace: "nowrap",
-                            flexShrink: 0,
-                        }}
-                    >
-                        {node.secondaryText}
-                    </span>
-                ) : null}
-
+            {isStickyHidden ? (
                 <div
+                    aria-hidden="true"
+                    style={{ height: scalePx(ROW_HEIGHT) }}
+                />
+            ) : (
+                <div
+                    className="git-tree-row"
+                    data-active={isActive ? "true" : "false"}
+                    data-drop-target={isDropTarget ? "true" : "false"}
+                    draggable={isDraggable}
+                    onDragEnd={() => {
+                        clearHoverExpand();
+                        setActiveDragData(null);
+                        setDropTargetPath(null);
+                    }}
+                    onDragLeave={(event) => {
+                        if (
+                            event.currentTarget.contains(
+                                event.relatedTarget as Node | null,
+                            )
+                        ) {
+                            return;
+                        }
+
+                        if (dropTargetPath === node.path) {
+                            clearHoverExpand();
+                            setDropTargetPath(null);
+                        }
+                    }}
+                    onDragOver={(event) => {
+                        const dragData =
+                            activeDragData ??
+                            getTreeDragData(event.dataTransfer);
+                        const canAcceptDrop =
+                            isDirectory &&
+                            Boolean(onNodeDrop) &&
+                            canDropProjectEntryIntoDirectory(
+                                dragData,
+                                node.isProjectRoot ? null : node.path,
+                            );
+
+                        scheduleHoverExpand(node, isExpanded, canAcceptDrop);
+
+                        if (!isDirectory || !onNodeDrop || !canAcceptDrop) {
+                            return;
+                        }
+
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        if (dropTargetPath !== node.path) {
+                            setDropTargetPath(node.path);
+                        }
+                    }}
+                    onDragStart={(event) => {
+                        if (!isDraggable) {
+                            return;
+                        }
+
+                        setActiveDragData({
+                            kind: node.kind,
+                            name: node.name,
+                            relativePath: node.path,
+                        });
+                        dragStartHandler?.(node, event.dataTransfer ?? null);
+                    }}
+                    onDrop={(event) => {
+                        const dragData =
+                            activeDragData ??
+                            getTreeDragData(event.dataTransfer);
+                        clearHoverExpand();
+                        setActiveDragData(null);
+                        setDropTargetPath(null);
+
+                        if (
+                            !isDirectory ||
+                            !onNodeDrop ||
+                            !canDropProjectEntryIntoDirectory(
+                                dragData,
+                                node.isProjectRoot ? null : node.path,
+                            )
+                        ) {
+                            return;
+                        }
+
+                        event.preventDefault();
+                        onNodeDrop(dragData, node);
+                    }}
+                    onContextMenu={(event) => {
+                        if (!onNodeContextMenu) {
+                            return;
+                        }
+
+                        event.preventDefault();
+                        onNodeContextMenu(node, {
+                            x: event.clientX,
+                            y: event.clientY,
+                        });
+                    }}
                     style={{
+                        position: "relative",
                         display: "flex",
                         alignItems: "center",
-                        gap: scalePx(4),
-                        flexShrink: 0,
-                        marginLeft: "auto",
+                        gap: scalePx(6),
+                        height: scalePx(ROW_HEIGHT),
+                        paddingLeft,
+                        paddingRight: scalePx(8),
+                        fontSize: scalePx(FONT_SIZE),
+                        borderRadius: scalePx(4),
+                        cursor: canOpen || canToggle ? "pointer" : "default",
+                        color: "var(--color-text-primary)",
+                        ...(isActive
+                            ? {
+                                  backgroundColor:
+                                      "color-mix(in srgb, var(--color-accent) 22%, transparent)",
+                                  boxShadow:
+                                      "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent)",
+                              }
+                            : isDropTarget
+                              ? {
+                                    backgroundColor:
+                                        "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+                                    boxShadow:
+                                        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
+                                }
+                              : {}),
+                        ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
                     }}
+                    onClick={() =>
+                        canOpen
+                            ? onNodeClick?.(node)
+                            : canToggle
+                              ? onToggleDirectory?.(node)
+                              : undefined
+                    }
                 >
-                    {renderNodeMeta ? renderNodeMeta(node) : node.meta}
+                    <TreeIndentGuides depth={depth} />
 
-                    {showStatusIndicator &&
-                    !constrainWidth &&
-                    node.status &&
-                    !isDirectory ? (
-                        <StatusIndicator status={node.status} />
-                    ) : null}
+                    {isDirectory && layout === "tree" ? (
+                        <ChevronIcon open={isExpanded} />
+                    ) : (
+                        <span
+                            style={{ width: scalePx(ICON_SM), flexShrink: 0 }}
+                        />
+                    )}
 
-                    {!constrainWidth && node.actions?.length ? (
-                        <div
-                            className="git-tree-row-actions"
+                    {isDirectory ? (
+                        <FolderIcon
+                            color={statusTint ?? "var(--color-text-secondary)"}
+                            open={isExpanded}
+                        />
+                    ) : (
+                        <FileTypeIcon
+                            color={statusTint ?? undefined}
+                            fileName={node.name}
+                            scaled
+                            size={ICON_SM}
+                        />
+                    )}
+
+                    <span
+                        style={{
+                            flexShrink: constrainWidth ? 1 : 0,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            minWidth: constrainWidth ? scalePx(40) : 0,
+                            flex: 1,
+                            color: titleColor,
+                        }}
+                    >
+                        {node.name}
+                    </span>
+
+                    {!constrainWidth && node.secondaryText ? (
+                        <span
                             style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: scalePx(4),
+                                fontSize: scalePx(11),
+                                color: "var(--color-text-secondary)",
+                                whiteSpace: "nowrap",
+                                flexShrink: 0,
                             }}
                         >
-                            {node.actions.map((action) => (
-                                <GitActionButton
-                                    action={action}
-                                    key={action.id}
-                                />
-                            ))}
-                        </div>
+                            {node.secondaryText}
+                        </span>
                     ) : null}
+
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: scalePx(4),
+                            flexShrink: 0,
+                            marginLeft: "auto",
+                        }}
+                    >
+                        {renderNodeMeta ? renderNodeMeta(node) : node.meta}
+
+                        {showStatusIndicator &&
+                        !constrainWidth &&
+                        node.status &&
+                        !isDirectory ? (
+                            <StatusIndicator status={node.status} />
+                        ) : null}
+
+                        {!constrainWidth && node.actions?.length ? (
+                            <div
+                                className="git-tree-row-actions"
+                                style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: scalePx(4),
+                                }}
+                            >
+                                {node.actions.map((action) => (
+                                    <GitActionButton
+                                        action={action}
+                                        key={action.id}
+                                    />
+                                ))}
+                            </div>
+                        ) : null}
+                    </div>
                 </div>
-            </div>
+            )}
 
             {layout === "tree" &&
             isDirectory &&
@@ -509,6 +527,7 @@ function GitTreeNodeRow({
                           clearHoverExpand={clearHoverExpand}
                           setDropTargetPath={setDropTargetPath}
                           showStatusIndicator={showStatusIndicator}
+                          stickyFolderPaths={stickyFolderPaths}
                       />
                   ))
                 : null}
@@ -539,7 +558,7 @@ function getTreeDragData(
 
 // --- Icons ---
 
-function ChevronIcon({
+export function ChevronIcon({
     open,
     size = ICON_SM,
 }: {
@@ -571,7 +590,7 @@ function ChevronIcon({
     );
 }
 
-function FolderIcon({
+export function FolderIcon({
     color = "var(--color-text-secondary)",
     open,
     size = ICON_MD,
@@ -622,7 +641,7 @@ function FolderIcon({
 
 // --- Tree guides ---
 
-function TreeIndentGuides({ depth }: { depth: number }) {
+export function TreeIndentGuides({ depth }: { depth: number }) {
     if (depth <= 0) return null;
 
     return (

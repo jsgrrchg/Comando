@@ -5,7 +5,7 @@ import type { AiRuntimeStatus, KiloRuntimeSettings } from "@shared/ipc";
 import { AiService } from "./service";
 
 describe("AiService Kilo branch", () => {
-    it("guarda settings Kilo y emite runtime status", () => {
+    it("stores Kilo settings and emits runtime status", () => {
         let savedSettings: KiloRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
 

@@ -8,7 +8,7 @@ import {
 } from "./theme";
 
 describe("theme font families", () => {
-    it("expone las familias de reference app en editor, chat y composer", () => {
+    it("exposes reference app font families in editor, chat, and composer", () => {
         expect(
             EDITOR_FONT_FAMILY_OPTIONS.map((option) => option.id),
         ).toEqual(
@@ -39,7 +39,7 @@ describe("theme font families", () => {
         );
     });
 
-    it("resuelve stacks tipograficos ricos para editor y AI", () => {
+    it("resolves rich typography stacks for editor and AI", () => {
         expect(buildEditorFontFamily("geist")).toContain('"Geist"');
         expect(buildEditorFontFamily("sf-mono")).toContain('"SF Mono"');
         expect(buildChatFontFamily("typewriter")).toContain(

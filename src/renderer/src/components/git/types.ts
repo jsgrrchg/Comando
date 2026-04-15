@@ -175,6 +175,7 @@ export interface GitTreeViewProps {
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
     readonly scrollToActivePathSignal?: number;
     readonly showStatusIndicator?: boolean;
+    readonly stickyFolderPaths?: ReadonlySet<string>;
 }
 
 export type GitFilesViewProps = GitTreeViewProps;

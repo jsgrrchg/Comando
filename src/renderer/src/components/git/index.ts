@@ -5,5 +5,8 @@ export * from "./GitFilesView";
 export * from "./GitPanel";
 export * from "./GitTreeView";
 export * from "./GitUi";
+export * from "./StickyFolderOverlay";
+export * from "./flattenTree";
 export * from "./tree-dnd";
 export * from "./types";
+export * from "./useStickyFolders";

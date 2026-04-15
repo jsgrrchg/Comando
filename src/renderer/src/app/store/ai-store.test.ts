@@ -88,10 +88,10 @@ describe("ai-store queue", () => {
         vi.restoreAllMocks();
     });
 
-    it("reencola el prompt cuando el main todavía reporta la sesión como ocupada", async () => {
+    it("requeues the prompt when main still reports the session as busy", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("La sesión todavía está ocupada."))
+            .mockRejectedValueOnce(new Error("The session is still busy."))
             .mockResolvedValueOnce(undefined);
 
         Object.defineProperty(globalThis, "window", {
@@ -107,13 +107,13 @@ describe("ai-store queue", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(createSnapshot());
 
-        await useAiStore.getState().sendPrompt(TAB, "hola");
+        await useAiStore.getState().sendPrompt(TAB, "hello");
 
         const deferredSession = useAiStore.getState().sessions[TAB.sessionId];
         expect(sendAiPrompt).toHaveBeenCalledTimes(1);
         expect(deferredSession?.localError).toBeNull();
         expect(deferredSession?.queue).toHaveLength(1);
-        expect(deferredSession?.queue[0]?.prompt).toBe("hola");
+        expect(deferredSession?.queue[0]?.prompt).toBe("hello");
         expect(deferredSession?.queue[0]?.status).toBe("queued");
         expect(deferredSession?.snapshot?.status).toBe("starting");
 
@@ -134,11 +134,11 @@ describe("ai-store queue", () => {
         });
     });
 
-    it("guarda snapshots completos del composer en la cola y permite restaurarlos", async () => {
+    it("stores complete composer snapshots in queue and allows restoring them", async () => {
         const sendAiPrompt = vi
             .fn()
             .mockRejectedValueOnce(
-                new Error("La sesión todavía está ocupada."),
+                new Error("The session is still busy."),
             );
 
         Object.defineProperty(globalThis, "window", {
@@ -157,10 +157,10 @@ describe("ai-store queue", () => {
         const attachment = createImageAttachment();
         const fileContext = createFileContext();
 
-        await useAiStore.getState().sendPrompt(TAB, "hola", {
+        await useAiStore.getState().sendPrompt(TAB, "hello", {
             attachments: [attachment],
             composerPartsSnapshot: [
-                { text: "hola ", type: "text" },
+                { text: "hello ", type: "text" },
                 {
                     label: "app.ts",
                     languageId: "typescript",
@@ -190,11 +190,11 @@ describe("ai-store queue", () => {
         expect(restoredSession?.editingQueuedPrompt?.id).toBe(queuedPrompt?.id);
     });
 
-    it("restaura el draft previo al cancelar la edicion de un queued prompt", async () => {
+    it("restores previous draft when canceling a queued prompt edit", async () => {
         const sendAiPrompt = vi
             .fn()
             .mockRejectedValueOnce(
-                new Error("La sesión todavía está ocupada."),
+                new Error("The session is still busy."),
             );
 
         Object.defineProperty(globalThis, "window", {
@@ -219,12 +219,12 @@ describe("ai-store queue", () => {
             relativePath: "src/previous.ts",
         });
         const previousComposerParts = [
-            { text: "draft previo", type: "text" as const },
+            { text: "previous draft", type: "text" as const },
         ];
 
-        await useAiStore.getState().sendPrompt(TAB, "hola", {
+        await useAiStore.getState().sendPrompt(TAB, "hello", {
             attachments: [createImageAttachment()],
-            composerPartsSnapshot: [{ text: "hola", type: "text" }],
+            composerPartsSnapshot: [{ text: "hello", type: "text" }],
             fileContextsSnapshot: [createFileContext()],
         });
 
@@ -259,7 +259,7 @@ describe("ai-store queue", () => {
         expect(restoredSession?.queue[0]?.id).toBe(queuedPrompt?.id);
     });
 
-    it("preserva el id y la posicion original al guardar un queued prompt en edicion", async () => {
+    it("preserves id and original position when saving an edited queued prompt", async () => {
         const sendAiPrompt = vi.fn();
 
         Object.defineProperty(globalThis, "window", {
@@ -279,11 +279,11 @@ describe("ai-store queue", () => {
             }),
         );
 
-        await useAiStore.getState().sendPrompt(TAB, "primero", {
-            composerPartsSnapshot: [{ text: "primero", type: "text" }],
+        await useAiStore.getState().sendPrompt(TAB, "first", {
+            composerPartsSnapshot: [{ text: "first", type: "text" }],
         });
-        await useAiStore.getState().sendPrompt(TAB, "segundo", {
-            composerPartsSnapshot: [{ text: "segundo", type: "text" }],
+        await useAiStore.getState().sendPrompt(TAB, "second", {
+            composerPartsSnapshot: [{ text: "second", type: "text" }],
         });
 
         const queuedSession = useAiStore.getState().sessions[TAB.sessionId];
@@ -293,11 +293,11 @@ describe("ai-store queue", () => {
         useAiStore
             .getState()
             .editQueuedPrompt(TAB.sessionId, secondPrompt?.id ?? "", [
-                { text: "draft local", type: "text" },
+                { text: "local draft", type: "text" },
             ]);
 
-        await useAiStore.getState().sendPrompt(TAB, "segundo editado", {
-            composerPartsSnapshot: [{ text: "segundo editado", type: "text" }],
+        await useAiStore.getState().sendPrompt(TAB, "second edited", {
+            composerPartsSnapshot: [{ text: "second edited", type: "text" }],
         });
 
         const nextSession = useAiStore.getState().sessions[TAB.sessionId];
@@ -307,15 +307,15 @@ describe("ai-store queue", () => {
             firstPrompt?.id,
             secondPrompt?.id,
         ]);
-        expect(nextSession?.queue[1]?.prompt).toBe("segundo editado");
+        expect(nextSession?.queue[1]?.prompt).toBe("second edited");
         expect(nextSession?.queue[1]?.createdAt).toBe(secondPrompt?.createdAt);
     });
 
-    it("permite limpiar la cola completa incluso si habia un mensaje en edicion", async () => {
+    it("allows clearing the full queue even if a message is being edited", async () => {
         const sendAiPrompt = vi
             .fn()
             .mockRejectedValueOnce(
-                new Error("La sesión todavía está ocupada."),
+                new Error("The session is still busy."),
             );
 
         Object.defineProperty(globalThis, "window", {
@@ -331,7 +331,7 @@ describe("ai-store queue", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(createSnapshot());
 
-        await useAiStore.getState().sendPrompt(TAB, "hola");
+        await useAiStore.getState().sendPrompt(TAB, "hello");
 
         const queuedPrompt =
             useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
@@ -346,10 +346,10 @@ describe("ai-store queue", () => {
         expect(sessionAfterClear?.queue).toEqual([]);
     });
 
-    it("marca queued prompts como failed cuando el dispatch automático falla", async () => {
+    it("marks queued prompts as failed when automatic dispatch fails", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("La sesión todavía está ocupada."))
+            .mockRejectedValueOnce(new Error("The session is still busy."))
             .mockRejectedValueOnce(new Error("Boom"));
 
         Object.defineProperty(globalThis, "window", {
@@ -365,7 +365,7 @@ describe("ai-store queue", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(createSnapshot());
 
-        await useAiStore.getState().sendPrompt(TAB, "hola");
+        await useAiStore.getState().sendPrompt(TAB, "hello");
 
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({
@@ -383,10 +383,10 @@ describe("ai-store queue", () => {
         });
     });
 
-    it("permite reintentar un queued prompt fallido con sendQueuedPromptNow", async () => {
+    it("allows retrying a failed queued prompt with sendQueuedPromptNow", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("La sesión todavía está ocupada."))
+            .mockRejectedValueOnce(new Error("The session is still busy."))
             .mockRejectedValueOnce(new Error("Boom"))
             .mockResolvedValueOnce(undefined);
 
@@ -403,7 +403,7 @@ describe("ai-store queue", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(createSnapshot());
 
-        await useAiStore.getState().sendPrompt(TAB, "hola");
+        await useAiStore.getState().sendPrompt(TAB, "hello");
 
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({
@@ -434,7 +434,7 @@ describe("ai-store queue", () => {
         });
     });
 
-    it("guarda diff zoom compartido por sesión en el store", () => {
+    it("stores session-shared diff zoom in the store", () => {
         useAiStore.getState().registerSessionTab(TAB);
 
         expect(useAiStore.getState().sessions[TAB.sessionId]?.diffZoom).toBe(
@@ -448,7 +448,7 @@ describe("ai-store queue", () => {
         );
     });
 
-    it("permite contexto completo y fragmento de líneas del mismo archivo, pero no duplica el mismo rango", () => {
+    it("allows full context and line fragments from same file without duplicating the same range", () => {
         useAiStore.getState().registerSessionTab(TAB);
 
         const fullFileContext = createFileContext();
@@ -480,7 +480,7 @@ describe("ai-store queue", () => {
         ).toEqual([fullFileContext, lineFragmentContext]);
     });
 
-    it("inserta la selección del editor como selection_mention y evita duplicados", () => {
+    it("inserts editor selection as selection_mention and avoids duplicates", () => {
         useAiStore.getState().registerSessionTab(TAB);
 
         useAiStore.getState().attachSelectionMention(TAB.sessionId, {

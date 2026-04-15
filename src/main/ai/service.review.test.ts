@@ -47,7 +47,7 @@ function createTrackedFile(
 }
 
 describe("AiService tracked file review merging", () => {
-    it("acumula cambios consecutivos sobre el mismo archivo", () => {
+    it("accumulates consecutive updates for the same file", () => {
         const firstTrackedFile = createTrackedFile({
             newText: "line 1\nline 2",
             oldText: "line 1",
@@ -82,7 +82,7 @@ describe("AiService tracked file review merging", () => {
         );
     });
 
-    it("acumula aunque el siguiente diff no encadene con el newText previo", () => {
+    it("accumulates even when the next diff does not chain with the previous newText", () => {
         const firstTrackedFile = createTrackedFile({
             newText: "line 1\nline 2",
             oldText: "line 1",
@@ -116,7 +116,7 @@ describe("AiService tracked file review merging", () => {
         );
     });
 
-    it("mantiene la base pendiente cuando ya habia hunks aceptados", () => {
+    it("keeps the pending base when hunks were already accepted", () => {
         const originalTrackedFile = createTrackedFile({
             newText: "A\nb\nC\nd",
             oldText: "a\nb\nc\nd",
@@ -167,7 +167,7 @@ describe("AiService tracked file review merging", () => {
         );
     });
 
-    it("elimina el tracked file si la secuencia neta no deja diff", () => {
+    it("removes tracked file if the net sequence leaves no diff", () => {
         const createdTrackedFile = createTrackedFile({
             kind: "create",
             newText: "temporary content",
@@ -189,7 +189,7 @@ describe("AiService tracked file review merging", () => {
         expect(trackedFiles).toEqual([]);
     });
 
-    it("ancla los hunks al documento actual aunque existan cambios previos", () => {
+    it("anchors hunks to the current document even when previous changes exist", () => {
         const hunks = __testing.computeDiffHunks(
             "alpha\nbeta\ngamma",
             "zero\nalpha\nBETA\ngamma",
@@ -211,7 +211,7 @@ describe("AiService tracked file review merging", () => {
         });
     });
 
-    it("mantiene un ancla visible para borrados al final del archivo", () => {
+    it("keeps a visible anchor for deletions at end of file", () => {
         const hunks = __testing.computeDiffHunks(
             "alpha\nbeta",
             "alpha",

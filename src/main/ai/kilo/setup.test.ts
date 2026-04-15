@@ -60,7 +60,7 @@ afterEach(() => {
 });
 
 describe("Kilo setup", () => {
-    it("resuelve Kilo desde COMANDO_KILO_ACP_BIN con acp", () => {
+    it("resolves Kilo from COMANDO_KILO_ACP_BIN with acp", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-kilo-env-"),
         );
@@ -84,7 +84,7 @@ describe("Kilo setup", () => {
         }
     });
 
-    it("resuelve Kilo desde el path configurado y hace fallback a PATH", () => {
+    it("resolves Kilo from configured path and falls back to PATH", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-kilo-path-"),
         );
@@ -110,7 +110,7 @@ describe("Kilo setup", () => {
         }
     });
 
-    it("detecta auth desde auth.json usando fallback HOME/.local/share", () => {
+    it("detects auth from auth.json using HOME/.local/share fallback", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-kilo-auth-json-"),
         );
@@ -154,7 +154,7 @@ describe("Kilo setup", () => {
         }
     });
 
-    it("detecta auth desde kilo.db y respeta authInvalidatedAtMs", () => {
+    it("detects auth from kilo.db and respects authInvalidatedAtMs", () => {
         const status = JSON.parse(
             execFileSync(
                 "node",
@@ -235,7 +235,7 @@ describe("Kilo setup", () => {
         expect(status?.modifiedAtMs).not.toBeNull();
     });
 
-    it("muestra auth requerida cuando encuentra binario pero no sesión activa", () => {
+    it("shows auth required when binary exists but no active session is present", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-kilo-status-"),
         );
@@ -258,7 +258,7 @@ describe("Kilo setup", () => {
         }
     });
 
-    it("reconoce los errores de autenticación de Kilo que deben invalidar setup", () => {
+    it("recognizes Kilo authentication errors that should invalidate setup", () => {
         expect(
             isKiloAuthenticationError(
                 "You were signed out. Reconnect Kilo to continue.",

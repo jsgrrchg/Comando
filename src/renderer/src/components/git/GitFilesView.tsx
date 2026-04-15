@@ -1,4 +1,5 @@
 import {
+    useRef,
     useState,
     type DragEvent as ReactDragEvent,
     type MouseEvent as ReactMouseEvent,
@@ -10,7 +11,9 @@ import {
 
 import { GitEmptyState } from "./GitUi";
 import { GitTreeView } from "./GitTreeView";
+import { StickyFolderOverlay } from "./StickyFolderOverlay";
 import type { GitFilesViewProps } from "./types";
+import { useStickyFolders } from "./useStickyFolders";
 
 export function GitFilesView({
     className,
@@ -18,6 +21,13 @@ export function GitFilesView({
     ...treeProps
 }: GitFilesViewProps) {
     const [isRootDropActive, setIsRootDropActive] = useState(false);
+    const scrollRef = useRef<HTMLDivElement | null>(null);
+    const { stickyFolders, stickyFolderPaths } = useStickyFolders({
+        scrollContainerRef: scrollRef,
+        nodes: treeProps.nodes,
+        expandedPaths: treeProps.expandedPaths,
+        layout: treeProps.layout ?? "tree",
+    });
 
     if (treeProps.nodes.length === 0) {
         return (
@@ -29,6 +39,7 @@ export function GitFilesView({
 
     return (
         <div
+            ref={scrollRef}
             className={[
                 "min-h-0 flex-1 overflow-y-auto px-2 py-2",
                 isRootDropActive
@@ -108,7 +119,14 @@ export function GitFilesView({
                 });
             }}
         >
-            <GitTreeView {...treeProps} />
+            <StickyFolderOverlay
+                stickyFolders={stickyFolders}
+                enableNodeDrag={treeProps.enableNodeDrag}
+                onToggleDirectory={treeProps.onToggleDirectory}
+                onNodeDragStart={treeProps.onNodeDragStart}
+                onNodeDrop={treeProps.onNodeDrop}
+            />
+            <GitTreeView {...treeProps} stickyFolderPaths={stickyFolderPaths} />
         </div>
     );
 }

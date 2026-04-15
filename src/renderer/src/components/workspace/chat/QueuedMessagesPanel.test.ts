@@ -22,7 +22,7 @@ function createQueuedPrompt(
 }
 
 describe("QueuedMessagesPanel", () => {
-    it("renderiza el header, el mensaje en edicion y las acciones del queue", () => {
+    it("renders header, editing message, and queue actions", () => {
         const markup = renderToStaticMarkup(
             createElement(QueuedMessagesPanel, {
                 editingItem: createQueuedPrompt({
@@ -55,7 +55,7 @@ describe("QueuedMessagesPanel", () => {
         expect(markup).toContain("Retry failing message");
     });
 
-    it("permite arrancar colapsado sin renderizar la lista", () => {
+    it("starts collapsed without rendering the list", () => {
         const markup = renderToStaticMarkup(
             createElement(QueuedMessagesPanel, {
                 defaultCollapsed: true,
@@ -73,7 +73,7 @@ describe("QueuedMessagesPanel", () => {
         expect(markup).not.toContain("Review src/app.ts");
     });
 
-    it("no renderiza nada cuando no hay cola ni mensaje en edicion", () => {
+    it("renders nothing when there are no queued messages or edit message", () => {
         const markup = renderToStaticMarkup(
             createElement(QueuedMessagesPanel, {
                 items: [],

@@ -2032,7 +2032,7 @@ function isBusySession(snapshot: AiSessionSnapshot): boolean {
 function isSessionBusyError(error: unknown): boolean {
     return (
         error instanceof Error &&
-        error.message === "La sesión todavía está ocupada."
+        error.message === "The session is still busy."
     );
 }
 

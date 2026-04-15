@@ -23,7 +23,7 @@ function createChange(overrides: Partial<GitChangeEntry> = {}): GitChangeEntry {
 }
 
 describe("buildGitChangeGroups", () => {
-    it("resume los +/- por grupo sin mostrar ceros vacios", () => {
+    it("sums +/- per group without showing zero values", () => {
         const groups = buildGitChangeGroups(
             [
                 createChange({
@@ -52,7 +52,7 @@ describe("buildGitChangeGroups", () => {
         );
     });
 
-    it("mantiene los ceros en el meta de archivo, como en Zed", () => {
+    it("preserves zero values in file metadata, like Zed", () => {
         const groups = buildGitChangeGroups(
             [
                 createChange({

@@ -31,7 +31,7 @@ function resolveExplicitCandidate(rawCandidate, envName) {
             : (resolveFromPath(candidate) ?? path.resolve(candidate));
     if (!isExecutableFile(absolutePath)) {
         throw new Error(
-            `${envName} apunta a un binario no ejecutable: ${absolutePath}`,
+            `${envName} points to a non-executable binary: ${absolutePath}`,
         );
     }
 
@@ -41,7 +41,7 @@ function resolveExplicitCandidate(rawCandidate, envName) {
 function ensureVendoredSourceExists() {
     if (!fs.existsSync(codexVendorDir)) {
         throw new Error(
-            "No existe vendor/codex-acp. Corre la importación del vendor antes de stagear el runtime.",
+            "vendor/codex-acp does not exist. Import the vendor before staging the runtime.",
         );
     }
 }
@@ -64,7 +64,7 @@ function migrateLegacyTargetDir() {
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(
-            `[stage:codex-runtime] no se pudo migrar el target legacy (${message}). Se seguirá usando mientras exista.`,
+            `[stage:codex-runtime] Could not migrate legacy target (${message}). Existing one will be used while it exists.`,
         );
     }
 }
@@ -85,7 +85,7 @@ function buildVendoredReleaseBinary() {
 
     if (result.error) {
         throw new Error(
-            `No se pudo ejecutar ${cargoCommand}. Instala Rust/Cargo o define COMANDO_CODEX_ACP_BUNDLE_BIN con un binario ya compilado.`,
+            `Failed to run ${cargoCommand}. Install Rust/Cargo or set COMANDO_CODEX_ACP_BUNDLE_BIN to a prebuilt binary.`,
         );
     }
 
@@ -95,7 +95,7 @@ function buildVendoredReleaseBinary() {
 
     if (!isExecutableFile(codexTargetReleaseBinary)) {
         throw new Error(
-            `Cargo terminó, pero no apareció el binario esperado en ${codexTargetReleaseBinary}.`,
+            `Cargo finished, but the expected binary was not found at ${codexTargetReleaseBinary}.`,
         );
     }
 

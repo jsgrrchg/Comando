@@ -101,7 +101,7 @@ function createTrackedFile(
 }
 
 describe("ChangeReviewPanel", () => {
-    it("renderiza el caso single-file con acciones y diff expandable", () => {
+    it("renders single-file case with actions and expandable diff", () => {
         const markup = renderToStaticMarkup(
             createElement(ChangeReviewPanel, {
                 activity: createActivity(),
@@ -129,7 +129,7 @@ describe("ChangeReviewPanel", () => {
         );
     });
 
-    it("renderiza el caso multi-file con rows independientes", () => {
+    it("renders multi-file case with independent rows", () => {
         const primaryDiff = createActivity().diffs[0];
         if (!primaryDiff) {
             throw new Error("Expected a primary diff for the test.");

@@ -9,7 +9,7 @@ import {
 } from "./shell-layout";
 
 describe("shell-layout", () => {
-    it("mantiene el workspace central dentro de limites minimos", () => {
+    it("keeps central workspace within minimum limits", () => {
         const normalizedLayout = normalizeShellLayout(
             {
                 leftWidth: 900,
@@ -22,7 +22,7 @@ describe("shell-layout", () => {
         );
     });
 
-    it("redimensiona un panel y respeta los clamps del viewport", () => {
+    it("resizes a panel and respects viewport clamps", () => {
         const resizedLayout = resizeShellPanel(
             createDefaultShellLayout(),
             "left",
@@ -35,7 +35,7 @@ describe("shell-layout", () => {
         );
     });
 
-    it("ajusta con teclado en pasos discretos", () => {
+    it("nudges with keyboard in discrete steps", () => {
         const nudgedLayout = nudgeShellPanel(
             createDefaultShellLayout(),
             "left",

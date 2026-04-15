@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 describe("GitService", () => {
-    it("resuelve repositorios, worktrees, branches y estado sucio", async () => {
+    it("resolves repositories, worktrees, branches, and dirty state", async () => {
         const rootPath = createGitRepositoryFixture();
         const featureWorktreePath = path.join(
             path.dirname(rootPath),
@@ -96,7 +96,7 @@ describe("GitService", () => {
         );
     });
 
-    it("parsea diffs de archivos modificados y no rastreados", async () => {
+    it("parses diffs for modified and untracked files", async () => {
         const rootPath = createGitRepositoryFixture();
 
         git(rootPath, ["init", "-b", "main"]);
@@ -128,7 +128,7 @@ describe("GitService", () => {
         expect(untrackedDiff.raw).toContain("diff --git");
     });
 
-    it("lista historial y detalle de commits", async () => {
+    it("lists history and commit details", async () => {
         const rootPath = createGitRepositoryFixture();
 
         git(rootPath, ["init", "-b", "main"]);
@@ -170,7 +170,7 @@ describe("GitService", () => {
         );
     });
 
-    it("clasifica paths fuera de un repo como no repositorio", async () => {
+    it("classifies paths outside a repo as non-repository", async () => {
         const rootPath = createGitRepositoryFixture();
         const service = new GitService({ cacheSnapshots: false });
         const resolution = await service.resolveRepository(rootPath);
@@ -179,7 +179,7 @@ describe("GitService", () => {
         expect(resolution.canonicalRootPath).toBeNull();
     });
 
-    it("aplica preflight antes de hacer commit", async () => {
+    it("runs preflight checks before committing", async () => {
         const rootPath = createGitRepositoryFixture();
         const isolatedHome = createGitRepositoryFixture();
         const previousHome = process.env.HOME;

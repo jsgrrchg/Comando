@@ -397,13 +397,13 @@ export class AiService {
             liveSession.snapshot.status === "waiting_permission" ||
             liveSession.snapshot.status === "waiting_user_input"
         ) {
-            throw new Error("La sesión todavía está ocupada.");
+            throw new Error("The session is still busy.");
         }
 
         const now = new Date().toISOString();
         const promptText = input.prompt.trim();
         if (!promptText && input.attachments.length === 0) {
-            throw new Error("Escribe un prompt antes de enviarlo.");
+            throw new Error("Type a prompt before sending it.");
         }
 
         liveSession.snapshot = finalizeStreamingMessages({
@@ -455,7 +455,7 @@ export class AiService {
             const message =
                 error instanceof Error
                     ? error.message
-                    : `${getRuntimeDisplayName(input.runtimeId)} ACP no pudo completar el prompt.`;
+                    : `${getRuntimeDisplayName(input.runtimeId)} could not complete the prompt.`;
             this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, message);
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
@@ -601,7 +601,7 @@ export class AiService {
 
             if (authMethod === null || authMethod === "gateway") {
                 throw new Error(
-                    "Selecciona un método de login de Claude antes de abrir la autenticación.",
+                    "Select a Claude login method before opening authentication.",
                 );
             }
 
@@ -634,13 +634,13 @@ export class AiService {
 
             if (authMethod === null) {
                 throw new Error(
-                    "Selecciona un método válido de Gemini antes de abrir la autenticación.",
+                    "Select a valid Gemini login method before opening authentication.",
                 );
             }
 
             if (authMethod === "use_gemini") {
                 throw new Error(
-                    "Gemini API key no necesita abrir un terminal de login. Guarda la API key desde la configuración.",
+                    "The Gemini API key does not need a login terminal. Save the API key from settings.",
                 );
             }
 
@@ -660,7 +660,7 @@ export class AiService {
         if (input.runtimeId === "kilo") {
             if (input.methodId !== "kilo-login") {
                 throw new Error(
-                    "Selecciona Kilo login antes de abrir la autenticación.",
+                    "Select Kilo login before opening authentication.",
                 );
             }
 
@@ -742,7 +742,7 @@ export class AiService {
         }
 
         throw new Error(
-            `${getRuntimeDisplayName(input.runtimeId)} no soporta este flujo de autenticación todavía.`,
+            `${getRuntimeDisplayName(input.runtimeId)} does not support this authentication flow yet.`,
         );
     }
 
@@ -813,11 +813,11 @@ export class AiService {
     respondPermission(input: AiPermissionResponseInput): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession?.pendingPermission) {
-            throw new Error("No hay una solicitud de permiso pendiente.");
+            throw new Error("There is no pending permission request.");
         }
 
         if (liveSession.pendingPermission.requestId !== input.requestId) {
-            throw new Error("La solicitud de permiso ya no coincide.");
+            throw new Error("The permission request no longer matches.");
         }
 
         liveSession.snapshot = {
@@ -852,16 +852,16 @@ export class AiService {
     async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
-            throw new Error("No se encontró la sesión AI.");
+            throw new Error("The AI session was not found.");
         }
 
         const pendingUserInput = liveSession.snapshot.pendingUserInput;
         if (!pendingUserInput) {
-            throw new Error("No hay una solicitud de input pendiente.");
+            throw new Error("There is no pending input request.");
         }
 
         if (pendingUserInput.requestId !== input.requestId) {
-            throw new Error("La solicitud de input ya no coincide.");
+            throw new Error("The input request no longer matches.");
         }
 
         const answers = input.answers
@@ -879,7 +879,7 @@ export class AiService {
             .filter((answer) => answer.answers.length > 0);
 
         if (!pendingUserInput.turnId) {
-            throw new Error("La solicitud de input no tiene un turnId válido.");
+            throw new Error("Input request is missing a valid turnId.");
         }
 
         const promptText = buildUserInputResponsePrompt(
@@ -968,7 +968,7 @@ export class AiService {
         );
 
         if (!trackedFile) {
-            throw new Error("No se encontró el archivo a revisar.");
+            throw new Error("The file to review was not found.");
         }
 
         await this.#revertTrackedFile(liveSession, trackedFile);
@@ -991,7 +991,7 @@ export class AiService {
         );
 
         if (!trackedFile) {
-            throw new Error("No se encontró el archivo a revisar.");
+            throw new Error("The file to review was not found.");
         }
 
         const nextTrackedFile = resolveTrackedFileHunks(
@@ -1020,7 +1020,7 @@ export class AiService {
         );
 
         if (!trackedFile) {
-            throw new Error("No se encontró el archivo a revisar.");
+            throw new Error("The file to review was not found.");
         }
 
         const nextTrackedFile = resolveTrackedFileHunks(
@@ -1108,7 +1108,7 @@ export class AiService {
         ) {
             throw new Error(
                 resolvedRuntime.status.message ??
-                    `${getRuntimeDisplayName(input.runtimeId)} ACP no está disponible en esta máquina.`,
+                    `${getRuntimeDisplayName(input.runtimeId)} ACP is not available on this machine.`,
             );
         }
 
@@ -1238,7 +1238,7 @@ export class AiService {
                 stderrText ||
                 (error instanceof Error
                     ? error.message
-                    : `No se pudo iniciar ${getRuntimeDisplayName(input.runtimeId)} ACP.`);
+                    : `Could not start ${getRuntimeDisplayName(input.runtimeId)} ACP.`);
             this.#invalidateRuntimeAuthIfNeeded(input.runtimeId, message);
             liveSession.snapshot = {
                 ...liveSession.snapshot,
@@ -1276,7 +1276,7 @@ export class AiService {
                     runtimeSessionId: liveSession.snapshot.runtimeSessionId,
                 };
             } catch {
-                // Si no se puede reanudar, abrimos una nueva.
+                // If the session cannot be resumed, start a new one.
             } finally {
                 liveSession.isRestoring = false;
             }
@@ -1559,7 +1559,7 @@ export class AiService {
 
         const snapshot = this.#persistence.loadSessionSnapshot(sessionId);
         if (!snapshot) {
-            throw new Error("No se encontró la sesión AI.");
+            throw new Error("The AI session was not found.");
         }
 
         return Promise.resolve({
@@ -2042,7 +2042,7 @@ export class AiService {
 
         const snapshot = this.#persistence.loadSessionSnapshot(sessionId);
         if (!snapshot) {
-            throw new Error("No se encontró la sesión AI.");
+            throw new Error("The AI session was not found.");
         }
 
         const nextSnapshot = mutate(snapshot);
@@ -2071,7 +2071,7 @@ export class AiService {
 
     #requireRuntimeSessionId(liveSession: LiveAcpSession): string {
         if (!liveSession.snapshot.runtimeSessionId) {
-            throw new Error("La sesión ACP todavía no está inicializada.");
+            throw new Error("The ACP session is not initialized yet.");
         }
 
         return liveSession.snapshot.runtimeSessionId;
@@ -2115,7 +2115,7 @@ export class AiService {
 
         if (!insidePrimaryScope && !insideAdditionalRoot) {
             throw new Error(
-                `${getRuntimeDisplayName(liveSession.runtimeId)} intentó acceder a un path fuera del proyecto.`,
+                `${getRuntimeDisplayName(liveSession.runtimeId)} attempted to access a path outside the project.`,
             );
         }
 
@@ -2155,7 +2155,7 @@ export class AiService {
             .join("\n");
         const lastError =
             stderrText ||
-            `${getRuntimeDisplayName(liveSession.runtimeId)} ACP terminó inesperadamente (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
+            `${getRuntimeDisplayName(liveSession.runtimeId)} ACP ended unexpectedly (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
         this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, lastError);
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
@@ -2362,7 +2362,7 @@ export class AiService {
 
             throw new Error(
                 stderrText ||
-                    `No se pudo completar la autenticación de ${getRuntimeDisplayName(runtimeId)}.`,
+                    `Failed to complete ${getRuntimeDisplayName(runtimeId)} authentication.`,
             );
         } finally {
             child.kill();

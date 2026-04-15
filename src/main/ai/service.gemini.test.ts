@@ -5,7 +5,7 @@ import type { AiRuntimeStatus, GeminiRuntimeSettings } from "@shared/ipc";
 import { AiService } from "./service";
 
 describe("AiService Gemini branch", () => {
-    it("guarda settings Gemini, persiste secretos y emite runtime status", () => {
+    it("stores Gemini settings, persists secrets, and emits runtime status", () => {
         let savedSettings: GeminiRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const secretValues = new Map<string, string>();

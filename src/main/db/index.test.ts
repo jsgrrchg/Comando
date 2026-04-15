@@ -12,7 +12,7 @@ import {
 import { databaseMigrations } from "./migrations";
 
 describe("databaseMigrations", () => {
-    it("definen la base local y el soporte Git para worktrees", () => {
+    it("defines the local base and Git support for worktrees", () => {
         const [
             foundationMigration,
             projectsMigration,
@@ -94,7 +94,7 @@ describe("databaseMigrations", () => {
         );
     });
 
-    it("backfillea canonical_root_path y worktree_id desde un esquema previo", () => {
+    it("backfills canonical_root_path and worktree_id from a previous schema", () => {
         const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-db-"));
         const databaseFile = path.join(dataDir, "comando.sqlite3");
 

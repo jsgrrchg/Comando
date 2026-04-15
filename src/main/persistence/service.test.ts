@@ -9,7 +9,7 @@ import {
 import { PersistenceService } from "./service";
 
 describe("PersistenceService", () => {
-    it("crea y restaura una sesion principal aislada por windowId", () => {
+    it("creates and restores an isolated main session per windowId", () => {
         const connection = createTestConnection();
         seedProject(connection, "project-1");
 
@@ -63,7 +63,7 @@ describe("PersistenceService", () => {
         });
     });
 
-    it("no restaura sesiones marcadas como cerradas", () => {
+    it("does not restore sessions marked as closed", () => {
         const connection = createTestConnection();
         const service = new PersistenceService(connection);
 

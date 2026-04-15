@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { SettingsService } from "./service";
 
 describe("SettingsService", () => {
-    it("guarda y recarga el snapshot global de settings", () => {
+    it("stores and reloads the global settings snapshot", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -51,7 +51,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("tolera settings corruptos y devuelve defaults", () => {
+    it("tolerates corrupt settings and returns defaults", () => {
         const connection = createFakeSettingsConnection({
             app: {
                 "appearance.file_tree_scale": "??",
@@ -100,7 +100,7 @@ describe("SettingsService", () => {
         expect(service.loadProjectSettings("project-a")).toEqual(null);
     });
 
-    it("guarda y recarga el path configurado de codex", () => {
+    it("stores and reloads the configured Codex path", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -130,7 +130,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("guarda y recarga settings Gemini", () => {
+    it("stores and reloads Gemini settings", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -169,7 +169,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("guarda y recarga settings Kilo", () => {
+    it("stores and reloads Kilo settings", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -193,7 +193,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("guarda y recarga settings por proyecto", () => {
+    it("stores and reloads project-specific settings", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -228,7 +228,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("acepta presets traidos desde reference app", () => {
+    it("accepts presets imported from reference app", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -273,7 +273,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("normaliza aliases legacy de fuentes al cargar settings", () => {
+    it("normalizes legacy font aliases when loading settings", () => {
         const connection = createFakeSettingsConnection({
             app: {
                 "editor.font_family": "jetbrains-mono",
@@ -294,7 +294,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("guarda y recarga nuevas fuentes de reference app para AI", () => {
+    it("stores and reloads new reference app fonts for AI", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,

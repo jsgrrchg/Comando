@@ -87,7 +87,7 @@ if (!hasSingleInstanceLock) {
                           try {
                               app.addRecentDocument(projectPath);
                           } catch {
-                              // Ignoramos problemas del sistema operativo.
+                              // Ignore non-critical operating system errors.
                           }
                       }
                     : undefined,

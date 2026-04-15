@@ -54,7 +54,7 @@ function createDiffFile(overrides: Partial<GitDiffFile> = {}): GitDiffFile {
 }
 
 describe("GitDiffsView", () => {
-    it("renderiza líneas de diff con el renderer resaltado compartido", () => {
+    it("renders diff lines with the shared highlighted renderer", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createDiffFile()]}
@@ -72,7 +72,7 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("const after = true;");
     });
 
-    it("permite aplicar la tipografía configurada del editor al código del diff", () => {
+    it("applies configured editor typography to diff code", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 codeFontFamily="CustomMono"
@@ -84,7 +84,7 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("font-family:CustomMono");
     });
 
-    it("respeta el interlineado configurado para el código del diff", () => {
+    it("respects the configured line height for diff code", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 codeLineHeight={1.85}
@@ -96,7 +96,7 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("line-height:1.85");
     });
 
-    it("respeta el tamaño de letra configurado para el código del diff", () => {
+    it("respects the configured font size for diff code", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 codeFontSize={17}
@@ -108,7 +108,7 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("font-size:17px");
     });
 
-    it("mantiene el mensaje para archivos binarios", () => {
+    it("keeps the message for binary files", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[

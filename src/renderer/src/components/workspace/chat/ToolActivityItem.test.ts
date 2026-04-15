@@ -70,7 +70,7 @@ function createTrackedFile(
 }
 
 describe("ToolActivityItem", () => {
-    it("usa ChangeReviewPanel cuando hay tracked files o diffs reviewables", () => {
+    it("uses ChangeReviewPanel when tracked files or reviewable diffs exist", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -119,7 +119,7 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
-    it("cae al card de file tool cuando no hay preview reviewable", () => {
+    it("falls back to file tool card when no reviewable preview exists", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity(),
@@ -136,7 +136,7 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
-    it("renderiza turn_started como divisor sutil al estilo reference app", () => {
+    it("renders turn_started as a subtle reference app-style divider", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -157,7 +157,7 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Context window: 128000");
     });
 
-    it("resalta payloads estructurados y salida terminal en los detalles", () => {
+    it("highlights structured payloads and terminal output in details", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({

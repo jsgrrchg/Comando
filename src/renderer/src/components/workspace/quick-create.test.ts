@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createWorkspaceQuickFile } from "./quick-create";
 
 describe("createWorkspaceQuickFile", () => {
-    it("crea y abre un archivo untitled en la raiz del proyecto", async () => {
+    it("creates and opens an untitled file in the project root", async () => {
         const createEntry = vi.fn(() =>
             Promise.resolve({
                 kind: "file" as const,
@@ -41,7 +41,7 @@ describe("createWorkspaceQuickFile", () => {
         expect(reportError).not.toHaveBeenCalled();
     });
 
-    it("usa el siguiente nombre disponible cuando untitled ya existe", async () => {
+    it("uses the next available untitled name when untitled already exists", async () => {
         const createEntry = vi
             .fn()
             .mockRejectedValueOnce(
@@ -90,7 +90,7 @@ describe("createWorkspaceQuickFile", () => {
         expect(reportError).not.toHaveBeenCalled();
     });
 
-    it("reporta el error cuando la creacion falla por otra razon", async () => {
+    it("reports the error when creation fails for another reason", async () => {
         const createEntry = vi.fn(() =>
             Promise.reject(new Error("Permission denied.")),
         );

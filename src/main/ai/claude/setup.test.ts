@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 describe("Claude setup", () => {
-    it("resuelve Claude con Node embebido y vendor embebido stageado", () => {
+    it("resolves Claude with embedded Node and staged embedded vendor", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-claude-bundled-"),
         );
@@ -118,7 +118,7 @@ describe("Claude setup", () => {
         }
     });
 
-    it("detecta auth Claude desde ~/.claude.json respetando la config guardada", () => {
+    it("detects Claude auth from ~/.claude.json while respecting saved config", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-claude-auth-"),
         );
@@ -182,7 +182,7 @@ describe("Claude setup", () => {
         }
     });
 
-    it("inyecta gateway y secretos Claude sin pisar valores externos", () => {
+    it("injects Claude gateway and secrets without overwriting external values", () => {
         const secretStore = createFakeSecretStore({
             "ai.claude:anthropic_auth_token": "stored-token",
             "ai.claude:anthropic_custom_headers": '{"x-test":"1"}',
@@ -207,7 +207,7 @@ describe("Claude setup", () => {
         expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('{"x-test":"1"}');
     });
 
-    it("rechaza gateways remotos sobre HTTP", () => {
+    it("rejects remote HTTP gateways", () => {
         expect(
             gatewayValidationError({
                 ...createEmptyClaudeSettings(),

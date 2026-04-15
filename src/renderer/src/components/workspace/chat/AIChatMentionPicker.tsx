@@ -49,7 +49,7 @@ interface PickerPosition {
 
 /* ─── Helpers ─── */
 
-const FETCH_KEYWORDS = ["fetch", "web", "search", "buscar", "internet"];
+const FETCH_KEYWORDS = ["fetch", "web", "search", "internet"];
 
 export function getMentionSuggestions(
     query: string,

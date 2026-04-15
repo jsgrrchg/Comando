@@ -90,7 +90,7 @@ function createItem(): ReviewFileItem {
 }
 
 describe("ReviewFileRow compact", () => {
-    it("renderiza la fila compacta alineada con el panel de reference app", () => {
+    it("renders compact row aligned with the reference app panel", () => {
         const markup = renderToStaticMarkup(
             createElement(ReviewFileRow, {
                 diffZoom: 0.72,
