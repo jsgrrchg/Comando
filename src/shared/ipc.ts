@@ -1165,6 +1165,7 @@ export interface AiSessionSnapshot {
 }
 
 export interface SendAiPromptInput {
+    readonly additionalRoots?: readonly string[];
     readonly attachments: readonly AiImageAttachment[];
     readonly projectId: string | null;
     readonly prompt: string;

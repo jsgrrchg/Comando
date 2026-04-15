@@ -114,6 +114,7 @@ interface AiServiceOptions {
 }
 
 interface LiveAcpSession {
+    additionalRoots: readonly string[];
     child: ChildProcessWithoutNullStreams;
     closing: boolean;
     connection: ClientSideConnection;
@@ -150,7 +151,9 @@ interface OpenRuntimeSessionResult extends AcpSessionCatalogPayload {
 type SessionDescriptor = Pick<
     PrepareAiSessionInput,
     "projectId" | "runtimeId" | "sessionId" | "title" | "worktreeId"
->;
+> & {
+    readonly additionalRoots?: readonly string[];
+};
 
 export class AiService {
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
@@ -874,9 +877,11 @@ export class AiService {
         ownerWindowId: string,
     ): Promise<LiveAcpSession> {
         const existing = this.#sessions.get(input.sessionId);
+        const additionalRoots = normalizeAdditionalRoots(input.additionalRoots);
         if (
             existing?.snapshot.runtimeSessionId &&
-            existing.runtimeId === input.runtimeId
+            existing.runtimeId === input.runtimeId &&
+            sameAdditionalRoots(existing.additionalRoots, additionalRoots)
         ) {
             existing.ownerWindowId = ownerWindowId;
             return existing;
@@ -942,6 +947,7 @@ export class AiService {
         const connection = new ClientSideConnection(() => client, stream);
 
         Object.assign(liveSession, {
+            additionalRoots,
             child,
             closing: false,
             connection,
@@ -1045,10 +1051,16 @@ export class AiService {
     async #openRuntimeSession(
         liveSession: LiveAcpSession,
     ): Promise<OpenRuntimeSessionResult> {
+        const additionalDirectories =
+            liveSession.additionalRoots.length > 0
+                ? [...liveSession.additionalRoots]
+                : undefined;
+
         if (liveSession.snapshot.runtimeSessionId) {
             try {
                 liveSession.isRestoring = true;
                 const response = await liveSession.connection.loadSession({
+                    additionalDirectories,
                     cwd: liveSession.cwd,
                     mcpServers: [],
                     sessionId: liveSession.snapshot.runtimeSessionId,
@@ -1067,6 +1079,7 @@ export class AiService {
         }
 
         const response = await liveSession.connection.newSession({
+            additionalDirectories,
             cwd: liveSession.cwd,
             mcpServers: [],
         });
@@ -1243,7 +1256,7 @@ export class AiService {
         liveSession: LiveAcpSession,
         params: ReadTextFileRequest,
     ): Promise<{ content: string }> {
-        const absolutePath = this.#resolveAbsoluteSessionPath(
+        const absolutePath = this.#resolveReadableSessionPath(
             liveSession,
             params.path,
         );
@@ -1345,6 +1358,7 @@ export class AiService {
         }
 
         return Promise.resolve({
+            additionalRoots: [],
             child: null as never,
             closing: true,
             connection: null as never,
@@ -1720,20 +1734,24 @@ export class AiService {
         return liveSession.snapshot.runtimeSessionId;
     }
 
-    #resolveAbsoluteSessionPath(
+    #resolveReadableSessionPath(
         liveSession: LiveAcpSession,
         candidatePath: string,
     ): string {
-        return this.#resolveSessionPathInfo(liveSession, candidatePath)
-            .absolutePath;
+        return this.#resolveSessionPathInfo(liveSession, candidatePath, {
+            allowAdditionalRoots: true,
+        }).absolutePath;
     }
 
     #resolveSessionPathInfo(
         liveSession: Pick<
             LiveAcpSession,
-            "cwd" | "projectRoot" | "runtimeId" | "snapshot"
+            "additionalRoots" | "cwd" | "projectRoot" | "runtimeId" | "snapshot"
         >,
         candidatePath: string,
+        options: {
+            readonly allowAdditionalRoots?: boolean;
+        } = {},
     ): {
         readonly absolutePath: string;
         readonly displayPath: string;
@@ -1743,19 +1761,26 @@ export class AiService {
         const absolutePath = path.isAbsolute(candidatePath)
             ? path.resolve(candidatePath)
             : path.resolve(scopeRoot, candidatePath);
+        const insidePrimaryScope =
+            absolutePath === scopeRoot ||
+            absolutePath.startsWith(`${scopeRoot}${path.sep}`);
+        const insideAdditionalRoot =
+            options.allowAdditionalRoots === true &&
+            liveSession.additionalRoots.some((rootPath) =>
+                isPathInsideRoot(absolutePath, rootPath),
+            );
 
-        if (
-            absolutePath !== scopeRoot &&
-            !absolutePath.startsWith(`${scopeRoot}${path.sep}`)
-        ) {
+        if (!insidePrimaryScope && !insideAdditionalRoot) {
             throw new Error(
                 `${getRuntimeDisplayName(liveSession.runtimeId)} intentó acceder a un path fuera del proyecto.`,
             );
         }
 
-        const relativePath = absolutePath.startsWith(`${scopeRoot}${path.sep}`)
-            ? toPosixPath(path.relative(scopeRoot, absolutePath))
-            : null;
+        const relativePath =
+            insidePrimaryScope &&
+            absolutePath.startsWith(`${scopeRoot}${path.sep}`)
+                ? toPosixPath(path.relative(scopeRoot, absolutePath))
+                : null;
 
         return {
             absolutePath,
@@ -3113,6 +3138,55 @@ async function readTextIfExists(absolutePath: string): Promise<string | null> {
 
         throw error;
     }
+}
+
+function normalizeAdditionalRoots(
+    roots: readonly string[] | undefined,
+): string[] {
+    if (!roots || roots.length === 0) {
+        return [];
+    }
+
+    const seen = new Set<string>();
+    const normalizedRoots: string[] = [];
+
+    for (const rootPath of roots) {
+        if (!rootPath?.trim()) {
+            continue;
+        }
+
+        const normalized = path.resolve(rootPath);
+        if (seen.has(normalized)) {
+            continue;
+        }
+
+        seen.add(normalized);
+        normalizedRoots.push(normalized);
+    }
+
+    normalizedRoots.sort((left, right) => left.localeCompare(right));
+    return normalizedRoots;
+}
+
+function sameAdditionalRoots(
+    left: readonly string[],
+    right: readonly string[],
+): boolean {
+    if (left.length !== right.length) {
+        return false;
+    }
+
+    return left.every((entry, index) => entry === right[index]);
+}
+
+function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
+    const resolvedCandidate = path.resolve(candidatePath);
+    const resolvedRoot = path.resolve(rootPath);
+
+    return (
+        resolvedCandidate === resolvedRoot ||
+        resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
+    );
 }
 
 function toPosixPath(candidatePath: string): string {

@@ -8,6 +8,10 @@ import {
     type PointerEvent as ReactPointerEvent,
 } from "react";
 
+import {
+    emitWorkspaceTabComposerDrag,
+    type WorkspaceTabComposerDragItem,
+} from "@renderer/app/drag-and-drop";
 import type { WorkspaceTab } from "@shared/ipc";
 
 import type { SplitDirection } from "@renderer/app/workspace/tree";
@@ -29,6 +33,7 @@ type Rect = {
 type DragPhase = "dragging" | "idle" | "pending";
 
 export type WorkspaceDraggedTab = {
+    readonly composerDragItem?: WorkspaceTabComposerDragItem | null;
     readonly isDirty: boolean;
     readonly kind: WorkspaceTab["kind"];
     readonly paneId: string;
@@ -43,6 +48,9 @@ export type WorkspaceTabDropTarget =
           readonly lineRect: Rect;
           readonly paneId: string;
           readonly type: "strip";
+      }
+    | {
+          readonly type: "composer";
       }
     | {
           readonly paneId: string;
@@ -83,6 +91,10 @@ type UseWorkspaceTabDragOptions = {
         tabId: string,
         targetIndex: number,
     ) => Promise<void>;
+    readonly resolveExternalDropTarget?: (
+        draggedTab: WorkspaceDraggedTab,
+        pointer: Point,
+    ) => Extract<WorkspaceTabDropTarget, { type: "composer" }> | null;
 };
 
 type HitTestResult = {
@@ -110,6 +122,7 @@ export function useWorkspaceTabDrag({
     onDropToSplit,
     onMoveToPane,
     onReorder,
+    resolveExternalDropTarget,
 }: UseWorkspaceTabDragOptions) {
     const [dragState, setDragState] = useState<DragState>(idleState);
     const dragStateRef = useRef<DragState>(idleState);
@@ -166,6 +179,10 @@ export function useWorkspaceTabDrag({
                 return;
             }
 
+            if (target.type === "composer") {
+                return;
+            }
+
             if (target.type === "strip") {
                 if (target.paneId === draggedTab.paneId) {
                     await onReorder(
@@ -209,50 +226,64 @@ export function useWorkspaceTabDrag({
         [onDropToSplit, onMoveToPane, onReorder],
     );
 
-    const performHitTest = useCallback((pointer: Point): HitTestResult => {
-        for (const [paneId, strip] of tabStripRefs.current) {
-            const stripRect = rectFromDom(strip.getBoundingClientRect());
-            if (!pointWithinRect(pointer, stripRect)) {
-                continue;
+    const performHitTest = useCallback(
+        (pointer: Point): HitTestResult => {
+            const draggedTab = dragStateRef.current.draggedTab;
+            if (draggedTab && resolveExternalDropTarget) {
+                const externalTarget = resolveExternalDropTarget(
+                    draggedTab,
+                    pointer,
+                );
+                if (externalTarget) {
+                    return { target: externalTarget };
+                }
             }
 
-            autoScrollTabStrip(strip, pointer.x);
-            return {
-                target: resolveStripDropTarget(
+            for (const [paneId, strip] of tabStripRefs.current) {
+                const stripRect = rectFromDom(strip.getBoundingClientRect());
+                if (!pointWithinRect(pointer, stripRect)) {
+                    continue;
+                }
+
+                autoScrollTabStrip(strip, pointer.x);
+                return {
+                    target: resolveStripDropTarget(
+                        paneId,
+                        strip,
+                        pointer.x,
+                        dragStateRef.current.draggedTab?.tabId ?? null,
+                    ),
+                };
+            }
+
+            for (const [paneId, pane] of paneRefs.current) {
+                const paneRect = rectFromDom(pane.getBoundingClientRect());
+                if (!pointWithinRect(pointer, paneRect)) {
+                    continue;
+                }
+
+                const splitTarget = resolveSplitDropTarget(
                     paneId,
-                    strip,
-                    pointer.x,
-                    dragStateRef.current.draggedTab?.tabId ?? null,
-                ),
-            };
-        }
+                    paneRect,
+                    pointer,
+                );
+                if (splitTarget) {
+                    return { target: splitTarget };
+                }
 
-        for (const [paneId, pane] of paneRefs.current) {
-            const paneRect = rectFromDom(pane.getBoundingClientRect());
-            if (!pointWithinRect(pointer, paneRect)) {
-                continue;
+                return {
+                    target: {
+                        paneId,
+                        rect: insetRect(paneRect, OVERLAY_INSET_PX),
+                        type: "pane-center",
+                    },
+                };
             }
 
-            const splitTarget = resolveSplitDropTarget(
-                paneId,
-                paneRect,
-                pointer,
-            );
-            if (splitTarget) {
-                return { target: splitTarget };
-            }
-
-            return {
-                target: {
-                    paneId,
-                    rect: insetRect(paneRect, OVERLAY_INSET_PX),
-                    type: "pane-center",
-                },
-            };
-        }
-
-        return { target: null };
-    }, []);
+            return { target: null };
+        },
+        [resolveExternalDropTarget],
+    );
 
     const schedulePointerFrame = useCallback(() => {
         if (animationFrameRef.current !== null) {
@@ -278,6 +309,14 @@ export function useWorkspaceTabDrag({
                 nextPhase === "dragging"
                     ? performHitTest(pointer)
                     : { target: null };
+
+            if (nextPhase === "dragging" && currentState.draggedTab) {
+                emitComposerDragPhase(
+                    currentState.draggedTab,
+                    currentState.phase === "pending" ? "start" : "move",
+                    pointer,
+                );
+            }
 
             setDragState((previousState) => ({
                 ...previousState,
@@ -330,6 +369,11 @@ export function useWorkspaceTabDrag({
     const cancelDrag = useCallback(() => {
         suppressClickUntilRef.current =
             performance.now() + CLICK_SUPPRESSION_MS;
+        emitComposerDragPhase(
+            dragStateRef.current.draggedTab,
+            "cancel",
+            dragStateRef.current.pointerCurrent,
+        );
         clearDragState();
     }, [clearDragState]);
 
@@ -375,6 +419,7 @@ export function useWorkspaceTabDrag({
                     y: event.clientY,
                 };
                 const { target } = performHitTest(pointer);
+                emitComposerDragPhase(finalState.draggedTab, "end", pointer);
                 suppressClickUntilRef.current =
                     performance.now() + CLICK_SUPPRESSION_MS;
                 clearDragState();
@@ -386,6 +431,11 @@ export function useWorkspaceTabDrag({
         };
 
         const handlePointerCancel = () => {
+            emitComposerDragPhase(
+                dragStateRef.current.draggedTab,
+                "cancel",
+                dragStateRef.current.pointerCurrent,
+            );
             clearDragState();
         };
 
@@ -446,6 +496,24 @@ export function useWorkspaceTabDrag({
             setTabStripElement,
         ],
     );
+}
+
+function emitComposerDragPhase(
+    draggedTab: WorkspaceDraggedTab | null,
+    phase: "cancel" | "end" | "move" | "start",
+    pointer: Point | null,
+): void {
+    const item = draggedTab?.composerDragItem ?? null;
+    if (!item) {
+        return;
+    }
+
+    emitWorkspaceTabComposerDrag({
+        item,
+        phase,
+        x: pointer?.x ?? 0,
+        y: pointer?.y ?? 0,
+    });
 }
 
 function resolveStripDropTarget(

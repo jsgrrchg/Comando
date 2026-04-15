@@ -36,6 +36,7 @@ import {
     type AiComposerDraftPart,
     type QueuedPrompt,
 } from "@renderer/app/ai/sessionReviewContracts";
+import { collectExternalComposerRoots } from "@renderer/components/workspace/chat/composerParts";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -174,6 +175,7 @@ interface AiStore {
         tab: RuntimeWorkspaceChatTab,
         prompt: string,
         options?: {
+            readonly additionalRoots?: readonly string[];
             readonly attachments?: readonly AiImageAttachment[];
             readonly composerPartsSnapshot?: readonly AiComposerDraftPart[];
             readonly fileContextsSnapshot?: readonly AiFileContextAttachment[];
@@ -978,6 +980,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
         try {
             const result = await dispatchPrompt(
                 {
+                    additionalRoots: collectExternalComposerRoots(
+                        queuedPrompt.composerPartsSnapshot,
+                    ),
                     projectId: latestSession.meta.projectId,
                     runtimeId: latestSession.meta.runtimeId,
                     sessionId,
@@ -1073,6 +1078,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
         const dispatchResult = await dispatchPrompt(
             {
+                additionalRoots:
+                    options.additionalRoots ??
+                    collectExternalComposerRoots(
+                        queuedPrompt.composerPartsSnapshot,
+                    ),
                 projectId: tab.projectId,
                 runtimeId: tab.runtimeId,
                 sessionId: tab.sessionId,
@@ -1246,6 +1256,7 @@ function buildSessionMeta(tab: RuntimeAiSessionTab): RegisteredSessionMeta {
 
 async function dispatchPrompt(
     meta: {
+        readonly additionalRoots?: readonly string[];
         readonly projectId: string | null;
         readonly runtimeId: AiRuntimeId;
         readonly sessionId: string;
@@ -1276,6 +1287,7 @@ async function dispatchPrompt(
 
     try {
         await getComandoApi().sendAiPrompt({
+            additionalRoots: meta.additionalRoots,
             attachments,
             projectId: meta.projectId,
             prompt,
@@ -1393,6 +1405,9 @@ async function drainQueueIfNeeded(
     try {
         const result = await dispatchPrompt(
             {
+                additionalRoots: collectExternalComposerRoots(
+                    nextQueuedPrompt.composerPartsSnapshot,
+                ),
                 projectId: session.meta.projectId,
                 runtimeId: session.meta.runtimeId,
                 sessionId,

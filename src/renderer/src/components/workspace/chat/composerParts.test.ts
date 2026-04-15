@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import type { AIComposerPart } from "./composerParts";
 import {
+    appendFileAttachmentPart,
     appendSelectionMentionPart,
+    collectExternalComposerRoots,
     composerPartsToPlainText,
     serializeComposerPartsForPrompt,
 } from "./composerParts";
@@ -52,5 +54,66 @@ describe("composerParts", () => {
         expect(composerPartsToPlainText(parts)).toBe(
             "Inspect [(12:18) const value = 1;]",
         );
+    });
+
+    it("appends external file attachments as pills with trailing spacing", () => {
+        const parts = appendFileAttachmentPart(
+            [{ type: "text", text: "Review" }],
+            {
+                filePath: "/tmp/spec.pdf",
+                label: "spec.pdf",
+                mimeType: "application/pdf",
+            },
+        );
+
+        expect(parts).toEqual([
+            { type: "text", text: "Review " },
+            {
+                type: "file_attachment",
+                filePath: "/tmp/spec.pdf",
+                label: "spec.pdf",
+                mimeType: "application/pdf",
+            },
+            { type: "text", text: " " },
+        ]);
+    });
+
+    it("serializes external file attachments as readable prompt paths", () => {
+        const parts: AIComposerPart[] = [
+            { type: "text", text: "Inspect " },
+            {
+                type: "file_attachment",
+                filePath: "/tmp/spec.pdf",
+                label: "spec.pdf",
+                mimeType: "application/pdf",
+            },
+        ];
+
+        expect(serializeComposerPartsForPrompt(parts)).toBe(
+            "Inspect /tmp/spec.pdf",
+        );
+        expect(composerPartsToPlainText(parts)).toBe("Inspect [spec.pdf]");
+    });
+
+    it("collects additional roots for external file and folder pills", () => {
+        const parts: AIComposerPart[] = [
+            {
+                type: "file_attachment",
+                filePath: "/Users/test/Desktop/spec.pdf",
+                label: "spec.pdf",
+                mimeType: "application/pdf",
+            },
+            { type: "text", text: " " },
+            {
+                type: "folder_mention",
+                folderPath: "/Users/test/Desktop/research",
+                label: "research",
+            },
+        ];
+
+        expect(collectExternalComposerRoots(parts)).toEqual([
+            "/Users/test/Desktop",
+            "/Users/test/Desktop/research",
+        ]);
     });
 });

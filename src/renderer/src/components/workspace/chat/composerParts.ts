@@ -118,7 +118,7 @@ export function serializeComposerPartsForPrompt(
                         ? `${part.path}:${part.startLine}`
                         : `${part.path}:${part.startLine}-${part.endLine}`;
                 case "file_attachment":
-                    return `[${part.label}]`;
+                    return part.filePath;
             }
         })
         .join("");
@@ -202,6 +202,25 @@ export function appendPlanMentionPart(
     return normalizeComposerParts(withSpace);
 }
 
+export function appendFileAttachmentPart(
+    parts: readonly AIComposerPart[],
+    file: {
+        readonly filePath: string;
+        readonly mimeType: string;
+        readonly label: string;
+    },
+): AIComposerPart[] {
+    const withSpace = ensureTrailingSpace(parts);
+    withSpace.push({
+        type: "file_attachment",
+        filePath: file.filePath,
+        label: file.label,
+        mimeType: file.mimeType,
+    });
+    withSpace.push({ type: "text", text: " " });
+    return normalizeComposerParts(withSpace);
+}
+
 export function appendSelectionMentionPart(
     parts: readonly AIComposerPart[],
     selection: {
@@ -220,4 +239,69 @@ export function appendSelectionMentionPart(
 
 export function isComposerEmpty(parts: readonly AIComposerPart[]): boolean {
     return parts.every((p) => p.type === "text" && p.text.trim().length === 0);
+}
+
+export function collectExternalComposerRoots(
+    parts: readonly AIComposerPart[],
+): string[] {
+    const roots = new Set<string>();
+
+    for (const part of parts) {
+        if (part.type === "file_attachment") {
+            if (isAbsolutePath(part.filePath)) {
+                roots.add(getParentPath(part.filePath));
+            }
+            continue;
+        }
+
+        if (part.type === "folder_mention" && isAbsolutePath(part.folderPath)) {
+            roots.add(trimTrailingSeparators(part.folderPath));
+            continue;
+        }
+
+        if (part.type === "file_mention" && isAbsolutePath(part.path)) {
+            roots.add(getParentPath(part.path));
+        }
+    }
+
+    return Array.from(roots);
+}
+
+function isAbsolutePath(candidatePath: string): boolean {
+    return (
+        candidatePath.startsWith("/") ||
+        candidatePath.startsWith("\\\\") ||
+        /^[A-Za-z]:[\\/]/.test(candidatePath)
+    );
+}
+
+function getParentPath(candidatePath: string): string {
+    const normalized = trimTrailingSeparators(candidatePath);
+    const slashIndex = Math.max(
+        normalized.lastIndexOf("/"),
+        normalized.lastIndexOf("\\"),
+    );
+
+    if (slashIndex < 0) {
+        return normalized;
+    }
+
+    if (slashIndex === 0) {
+        return normalized.slice(0, 1);
+    }
+
+    const drivePrefix = normalized.slice(0, 2);
+    if (/^[A-Za-z]:$/.test(drivePrefix) && slashIndex === 2) {
+        return normalized.slice(0, 3);
+    }
+
+    return normalized.slice(0, slashIndex);
+}
+
+function trimTrailingSeparators(candidatePath: string): string {
+    if (candidatePath === "/" || /^[A-Za-z]:[\\/]?$/.test(candidatePath)) {
+        return candidatePath;
+    }
+
+    return candidatePath.replace(/[\\/]+$/, "");
 }

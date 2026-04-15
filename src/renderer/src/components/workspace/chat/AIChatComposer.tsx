@@ -20,12 +20,16 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 
 import {
     COMPOSER_PROJECT_ENTRY_MIME,
+    getExternalComposerDropItems,
+    WORKSPACE_TAB_COMPOSER_DRAG_EVENT,
     parseComposerProjectEntryDragData,
+    type WorkspaceTabComposerDragDetail,
 } from "@renderer/app/drag-and-drop";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import type { AIComposerPart } from "./composerParts";
 import {
+    appendFileAttachmentPart,
     appendFileMentionPart,
     appendFolderMentionPart,
     normalizeComposerParts,
@@ -135,6 +139,21 @@ function createSelectionMentionNode(
     return el;
 }
 
+function createFileAttachmentNode(
+    part: Extract<AIComposerPart, { type: "file_attachment" }>,
+    metrics: ChatPillMetrics,
+): HTMLSpanElement {
+    const el = document.createElement("span");
+    el.contentEditable = "false";
+    el.dataset.kind = "file_attachment";
+    el.dataset.filePath = part.filePath;
+    el.dataset.mimeType = part.mimeType;
+    el.dataset.label = part.label;
+    el.textContent = part.label;
+    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.file);
+    return el;
+}
+
 /* ─── DOM → parts extraction ─── */
 
 function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
@@ -186,6 +205,20 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
                         path: el.dataset.path,
                         selectedText: el.dataset.selectedText,
                         startLine: Number(el.dataset.startLine),
+                    });
+                }
+                return;
+            case "file_attachment":
+                if (
+                    el.dataset.filePath &&
+                    el.dataset.mimeType &&
+                    el.dataset.label
+                ) {
+                    parts.push({
+                        type: "file_attachment",
+                        filePath: el.dataset.filePath,
+                        label: el.dataset.label,
+                        mimeType: el.dataset.mimeType,
                     });
                 }
                 return;
@@ -251,6 +284,9 @@ function syncComposerDom(
                 break;
             case "selection_mention":
                 root.appendChild(createSelectionMentionNode(part, metrics));
+                break;
+            case "file_attachment":
+                root.appendChild(createFileAttachmentNode(part, metrics));
                 break;
             default:
                 break;
@@ -414,11 +450,14 @@ export function AIChatComposer({
     const composerRef = useRef<HTMLDivElement>(null);
     const [customHeight, setCustomHeight] = useState<number | null>(null);
     const [isFileDragOver, setIsFileDragOver] = useState(false);
+    const [isWorkspaceTabDragOver, setIsWorkspaceTabDragOver] = useState(false);
     const dragOverCounter = useRef(0);
     const resizeSession = useRef<{
         startY: number;
         startHeight: number;
     } | null>(null);
+    const partsRef = useRef(parts);
+    const onChangeRef = useRef(onChange);
 
     const [mentionState, setMentionState] = useState<{
         open: boolean;
@@ -453,6 +492,14 @@ export function AIChatComposer({
         draftFileContexts.length > 0;
     const canSubmit = !disabled && hasDraft;
     const submitLabel = isSessionBusy ? "Queue" : "Send";
+
+    useEffect(() => {
+        partsRef.current = parts;
+    }, [parts]);
+
+    useEffect(() => {
+        onChangeRef.current = onChange;
+    }, [onChange]);
 
     /* ─ Sync parts → DOM when parts change externally ─ */
     useEffect(() => {
@@ -494,6 +541,33 @@ export function AIChatComposer({
         lastSyncedParts.current = JSON.stringify(newParts);
         onChange(newParts);
     }, [onChange]);
+
+    const applyWorkspaceTabComposerDrop = useCallback(
+        (detail: WorkspaceTabComposerDragDetail) => {
+            if (disabled || !detail.item) {
+                return;
+            }
+
+            const nextParts: AIComposerPart[] = appendFileMentionPart(
+                partsRef.current,
+                {
+                    label: detail.item.label,
+                    path: detail.item.relativePath,
+                    relativePath: detail.item.relativePath,
+                    languageId: getLanguageIdFromPath(detail.item.relativePath),
+                },
+            );
+
+            onChangeRef.current(nextParts);
+
+            const root = composerRef.current;
+            if (root) {
+                root.focus();
+                setCaretAtEnd(root);
+            }
+        },
+        [disabled],
+    );
 
     /* ─ Update inline pickers ─ */
     const updatePickers = useCallback(async () => {
@@ -806,6 +880,39 @@ export function AIChatComposer({
             }
 
             if (e.dataTransfer.files.length > 0) {
+                const externalItems = getExternalComposerDropItems(
+                    e.dataTransfer,
+                );
+                let nextParts: AIComposerPart[] = [...parts];
+                let partsChanged = false;
+
+                for (const item of externalItems) {
+                    if (
+                        item.kind === "file_attachment" &&
+                        item.mimeType.startsWith("image/")
+                    ) {
+                        continue;
+                    }
+
+                    nextParts =
+                        item.kind === "folder_mention"
+                            ? appendFolderMentionPart(
+                                  nextParts,
+                                  item.folderPath,
+                                  item.label,
+                              )
+                            : appendFileAttachmentPart(nextParts, {
+                                  filePath: item.filePath,
+                                  label: item.label,
+                                  mimeType: item.mimeType,
+                              });
+                    partsChanged = true;
+                }
+
+                if (partsChanged) {
+                    onChange(nextParts);
+                }
+
                 for (const file of e.dataTransfer.files) {
                     if (file.type.startsWith("image/") && onPasteImage) {
                         onPasteImage(file);
@@ -815,6 +922,50 @@ export function AIChatComposer({
         },
         [disabled, onChange, onPasteImage, parts],
     );
+
+    useEffect(() => {
+        const handleWorkspaceTabDrag = (event: Event) => {
+            const customEvent =
+                event as CustomEvent<WorkspaceTabComposerDragDetail>;
+            const detail = customEvent.detail;
+            const shell = shellRef.current;
+            if (!shell) {
+                return;
+            }
+
+            if (detail.phase === "cancel" || !detail.item) {
+                setIsWorkspaceTabDragOver(false);
+                return;
+            }
+
+            const rect = shell.getBoundingClientRect();
+            const isOver =
+                detail.x >= rect.left &&
+                detail.x <= rect.right &&
+                detail.y >= rect.top &&
+                detail.y <= rect.bottom;
+
+            if (detail.phase === "start" || detail.phase === "move") {
+                setIsWorkspaceTabDragOver(isOver);
+                return;
+            }
+
+            setIsWorkspaceTabDragOver(false);
+            if (detail.phase === "end" && isOver) {
+                applyWorkspaceTabComposerDrop(detail);
+            }
+        };
+
+        window.addEventListener(
+            WORKSPACE_TAB_COMPOSER_DRAG_EVENT,
+            handleWorkspaceTabDrag,
+        );
+        return () =>
+            window.removeEventListener(
+                WORKSPACE_TAB_COMPOSER_DRAG_EVENT,
+                handleWorkspaceTabDrag,
+            );
+    }, [applyWorkspaceTabComposerDrop]);
 
     /* ─ Resize handle ─ */
     const shellRef = useRef<HTMLDivElement>(null);
@@ -870,6 +1021,7 @@ export function AIChatComposer({
     return (
         <div
             ref={shellRef}
+            data-ai-composer-drop-zone="true"
             className="relative flex flex-col"
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
@@ -886,9 +1038,10 @@ export function AIChatComposer({
                 }
             }}
             style={{
-                boxShadow: isFileDragOver
-                    ? "0 0 0 2px color-mix(in srgb, var(--color-accent) 20%, transparent)"
-                    : "none",
+                boxShadow:
+                    isFileDragOver || isWorkspaceTabDragOver
+                        ? "0 0 0 2px color-mix(in srgb, var(--color-accent) 20%, transparent)"
+                        : "none",
                 overflow: "hidden",
                 transition: "box-shadow 0.15s ease",
                 ...(customHeight != null ? { height: customHeight } : {}),
