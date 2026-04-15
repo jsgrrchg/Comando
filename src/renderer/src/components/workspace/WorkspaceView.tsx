@@ -78,6 +78,7 @@ import {
     computeGitGutterMarkers,
     type GitGutterMarker,
 } from "@renderer/components/workspace/gitGutter";
+import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import {
@@ -1704,6 +1705,10 @@ function getFindController(editor: MonacoEditor.IStandaloneCodeEditor) {
     } | null;
 }
 
+function countTextLines(text: string): number {
+    return text.split("\n").length;
+}
+
 function FileTabView({
     isActivePane,
     onAttachLineFragment,
@@ -2361,6 +2366,33 @@ function FileTabView({
     const editorLineHeightPx = Math.round(
         editorSettings.fontSize * editorSettings.lineHeight,
     );
+    const inlineReviewWordWrap =
+        document && shouldEnableDocumentWrapping(document) ? "on" : "off";
+    const inlineReviewDiffEditorOptions = useMemo(
+        () =>
+            buildInlineReviewDiffEditorOptions({
+                fontFamily: editorFontFamily,
+                fontSize: editorSettings.fontSize,
+                lineHeight: editorLineHeightPx,
+                minimapEnabled: editorSettings.minimapEnabled,
+                modifiedLineCount: countTextLines(
+                    inlineReviewTrackedFile?.newText ?? "",
+                ),
+                originalLineCount: countTextLines(
+                    inlineReviewTrackedFile?.oldText ?? "",
+                ),
+                wordWrap: inlineReviewWordWrap,
+            }),
+        [
+            editorFontFamily,
+            editorLineHeightPx,
+            editorSettings.fontSize,
+            editorSettings.minimapEnabled,
+            inlineReviewTrackedFile?.newText,
+            inlineReviewTrackedFile?.oldText,
+            inlineReviewWordWrap,
+        ],
+    );
 
     useEffect(() => {
         if (!document || document.kind === "image" || !canEdit) {
@@ -2592,38 +2624,7 @@ function FileTabView({
                                     (previous) => previous + 1,
                                 );
                             }}
-                            options={{
-                                automaticLayout: true,
-                                fontFamily: editorFontFamily,
-                                fontLigatures: true,
-                                fontSize: editorSettings.fontSize,
-                                glyphMargin: false,
-                                hideCursorInOverviewRuler: true,
-                                lineHeight: editorLineHeightPx,
-                                lineDecorationsWidth: 0,
-                                lineNumbersMinChars: 3,
-                                minimap: {
-                                    enabled: editorSettings.minimapEnabled,
-                                },
-                                originalEditable: false,
-                                overviewRulerBorder: false,
-                                overviewRulerLanes: 0,
-                                padding: { top: 16, bottom: 16 },
-                                readOnly: true,
-                                renderOverviewRuler: false,
-                                renderSideBySide: false,
-                                scrollbar: {
-                                    alwaysConsumeMouseWheel: false,
-                                    horizontalScrollbarSize: 6,
-                                    useShadows: false,
-                                    verticalScrollbarSize: 6,
-                                },
-                                scrollBeyondLastLine: false,
-                                smoothScrolling: true,
-                                wordWrap: shouldEnableDocumentWrapping(document)
-                                    ? "on"
-                                    : "off",
-                            }}
+                            options={inlineReviewDiffEditorOptions}
                             original={inlineReviewTrackedFile.oldText ?? ""}
                             originalModelPath={`${document.absolutePath}::review::original`}
                             theme={editorTheme}
