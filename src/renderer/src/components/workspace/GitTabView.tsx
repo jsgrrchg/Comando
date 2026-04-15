@@ -86,6 +86,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     const openGitCommitTab = useWorkspaceStore(
         (state) => state.openGitCommitTab,
     );
+    const openFileTab = useWorkspaceStore((state) => state.openFileTab);
 
     const projectId = tab.projectId;
     const worktreeId = tab.worktreeId ?? null;
@@ -324,6 +325,17 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             worktreeId,
         });
     }, [activeCommit, openGitCommitTab, projectId, worktreeId]);
+
+    const openProjectFile = useCallback(
+        (relativePath: string) => {
+            if (!projectId) {
+                return;
+            }
+
+            void openFileTab(projectId, relativePath, worktreeId);
+        },
+        [openFileTab, projectId, worktreeId],
+    );
 
     const confirmSearch = useCallback(() => {
         setSearchQuery(searchDraft);
@@ -789,36 +801,43 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                     </div>
                 </section>
 
-                <div
-                    aria-label="Resize commit details sidebar"
-                    aria-orientation="vertical"
-                    className="group relative z-10 flex w-[7px] cursor-col-resize touch-none items-center justify-center bg-transparent"
-                    onDoubleClick={() =>
-                        setDetailSidebarWidth(DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH)
-                    }
-                    onPointerDown={handleDetailSidebarResizePointerDown}
-                    role="separator"
-                    title="Drag to resize"
-                >
-                    <div className="workspace-divider h-full w-px bg-border transition-colors duration-100 group-hover:bg-accent" />
-                </div>
+                {activeCommit ? (
+                    <>
+                        <div
+                            aria-label="Resize commit details sidebar"
+                            aria-orientation="vertical"
+                            className="group relative z-10 flex w-[7px] cursor-col-resize touch-none items-center justify-center bg-transparent"
+                            onDoubleClick={() =>
+                                setDetailSidebarWidth(
+                                    DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH,
+                                )
+                            }
+                            onPointerDown={handleDetailSidebarResizePointerDown}
+                            role="separator"
+                            title="Drag to resize"
+                        >
+                            <div className="workspace-divider h-full w-px bg-border transition-colors duration-100 group-hover:bg-accent" />
+                        </div>
 
-                <aside
-                    className="shell-scrollbar min-h-0 overflow-y-auto"
-                    style={{
-                        minWidth: MIN_GIT_DETAIL_SIDEBAR_WIDTH,
-                        width: detailSidebarWidth,
-                    }}
-                >
-                    <GitCommitDetailSidebar
-                        commit={activeCommit}
-                        detail={activeCommitDetail}
-                        isLoading={activeCommitLoading}
-                        onClearSelection={() => selectCommitSha(null)}
-                        onOpenCommit={openActiveCommit}
-                        remoteLink={remoteLink}
-                    />
-                </aside>
+                        <aside
+                            className="shell-scrollbar min-h-0 overflow-y-auto"
+                            style={{
+                                minWidth: MIN_GIT_DETAIL_SIDEBAR_WIDTH,
+                                width: detailSidebarWidth,
+                            }}
+                        >
+                            <GitCommitDetailSidebar
+                                commit={activeCommit}
+                                detail={activeCommitDetail}
+                                isLoading={activeCommitLoading}
+                                onClearSelection={() => selectCommitSha(null)}
+                                onOpenCommit={openActiveCommit}
+                                onOpenFile={openProjectFile}
+                                remoteLink={remoteLink}
+                            />
+                        </aside>
+                    </>
+                ) : null}
             </div>
         </div>
     );
@@ -830,6 +849,7 @@ function GitCommitDetailSidebar({
     isLoading,
     onClearSelection,
     onOpenCommit,
+    onOpenFile,
     remoteLink,
 }: {
     readonly commit: GitHistoryCommitSummary | null;
@@ -837,6 +857,7 @@ function GitCommitDetailSidebar({
     readonly isLoading: boolean;
     readonly onClearSelection: () => void;
     readonly onOpenCommit: () => void;
+    readonly onOpenFile: (relativePath: string) => void;
     readonly remoteLink: ReturnType<typeof buildGitRemoteCommitLink>;
 }) {
     if (!commit) {
@@ -1005,18 +1026,15 @@ function GitCommitDetailSidebar({
                                         lastSlash >= 0
                                             ? file.path.slice(0, lastSlash)
                                             : "";
-
-                                    return (
-                                        <div
-                                            className="flex items-center justify-between gap-3 text-[11px]"
-                                            key={`${commit.sha}:${file.path}`}
-                                        >
+                                    const canOpenFile = file.kind !== "delete";
+                                    const rowContent = (
+                                        <>
                                             <div className="flex min-w-0 items-center gap-1.5">
-                                                <span className="shrink-0 font-mono text-text-primary">
+                                                <span className="shrink-0 font-mono text-text-primary transition-colors duration-150 group-hover/file:text-text-primary">
                                                     {fileName}
                                                 </span>
                                                 {dirPath ? (
-                                                    <span className="truncate text-text-tertiary">
+                                                    <span className="truncate text-text-tertiary transition-colors duration-150 group-hover/file:text-text-secondary">
                                                         {dirPath}
                                                     </span>
                                                 ) : null}
@@ -1041,6 +1059,33 @@ function GitCommitDetailSidebar({
                                                     </span>
                                                 ) : null}
                                             </div>
+                                        </>
+                                    );
+
+                                    if (canOpenFile) {
+                                        return (
+                                            <button
+                                                aria-label={`Open file ${file.path}`}
+                                                className="group/file flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors duration-150 hover:bg-[color-mix(in_srgb,var(--color-bg-secondary)_82%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--color-bg-secondary)_82%,transparent)] focus-visible:outline-none"
+                                                key={`${commit.sha}:${file.path}`}
+                                                onClick={() =>
+                                                    onOpenFile(file.path)
+                                                }
+                                                title={file.path}
+                                                type="button"
+                                            >
+                                                {rowContent}
+                                            </button>
+                                        );
+                                    }
+
+                                    return (
+                                        <div
+                                            className="group/file flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-[11px] opacity-85"
+                                            key={`${commit.sha}:${file.path}`}
+                                            title={`${file.path} is not available in the current workspace`}
+                                        >
+                                            {rowContent}
                                         </div>
                                     );
                                 })}
