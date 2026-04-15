@@ -55,6 +55,7 @@ function createReviewItem(
         canOpen: true,
         canReject: true,
         canResolveHunks: true,
+        openRelativePath: path,
         diff: {
             hunks: hunkIds.map((hunkId, index) => ({
                 id: hunkId,
@@ -162,9 +163,13 @@ describe("reviewTabPersistence", () => {
         );
 
         expect(globalThis.localStorage.getItem(key)).not.toBeNull();
-        expect(readPersistedReviewViewState("project-1", "worktree-1", "session-1")).toEqual(
-            persisted,
-        );
+        expect(
+            readPersistedReviewViewState(
+                "project-1",
+                "worktree-1",
+                "session-1",
+            ),
+        ).toEqual(persisted);
     });
 
     it("resolves anchors after a rename by matching path aliases", () => {
@@ -208,7 +213,10 @@ describe("reviewTabPersistence", () => {
         const anchor = createPersistedReviewAnchor(sourceItem, ["hunk-1"]);
 
         expect(
-            resolvePersistedReviewAnchor(anchor, [newerCandidate, exactCandidate]),
+            resolvePersistedReviewAnchor(anchor, [
+                newerCandidate,
+                exactCandidate,
+            ]),
         ).toEqual({
             fileUpdatedAt: "2026-04-14T12:00:00.000Z",
             hunkIds: ["hunk-1"],
@@ -237,7 +245,10 @@ describe("reviewTabPersistence", () => {
         const anchor = createPersistedReviewAnchor(previousItem, ["hunk-1"]);
 
         expect(
-            resolvePersistedReviewAnchor(anchor, [newerCollision, exactUpdatedAtCandidate]),
+            resolvePersistedReviewAnchor(anchor, [
+                newerCollision,
+                exactUpdatedAtCandidate,
+            ]),
         ).toEqual({
             fileUpdatedAt: "2026-04-14T12:00:00.000Z",
             hunkIds: ["hunk-1"],
@@ -245,7 +256,6 @@ describe("reviewTabPersistence", () => {
             pathAliases: ["src/exact.ts", "src/shared.ts"],
         });
     });
-
 
     it("avoids clobbering newer persisted state and merges expanded keys on stale writes", () => {
         vi.useFakeTimers();

@@ -13,6 +13,14 @@ interface ResolveProjectFileReferenceOptions {
     readonly projectRoots: readonly (string | null | undefined)[];
 }
 
+interface CollectProjectFileRootsOptions {
+    readonly canonicalProjectRoot?: string | null;
+    readonly currentWorktreeRoot?: string | null;
+    readonly projectRoot?: string | null;
+    readonly repositoryCanonicalRoot?: string | null;
+    readonly repositoryRoot?: string | null;
+}
+
 interface ParsedLineRange {
     readonly endLine: number | null;
     readonly path: string;
@@ -105,6 +113,30 @@ export function resolveProjectFileReference(
     }
 
     return null;
+}
+
+export function collectProjectFileRoots(
+    options: CollectProjectFileRootsOptions,
+): string[] {
+    const roots = new Set<string>();
+
+    if (options.projectRoot) {
+        roots.add(options.projectRoot);
+    }
+    if (options.canonicalProjectRoot) {
+        roots.add(options.canonicalProjectRoot);
+    }
+    if (options.repositoryRoot) {
+        roots.add(options.repositoryRoot);
+    }
+    if (options.repositoryCanonicalRoot) {
+        roots.add(options.repositoryCanonicalRoot);
+    }
+    if (options.currentWorktreeRoot) {
+        roots.add(options.currentWorktreeRoot);
+    }
+
+    return [...roots];
 }
 
 function decodeTarget(target: string): string | null {

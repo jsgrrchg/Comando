@@ -10,7 +10,9 @@ import {
     getFileTone,
 } from "./editedFilesPresentationModel";
 
-function createTrackedFile(overrides: Partial<AiTrackedFile> = {}): AiTrackedFile {
+function createTrackedFile(
+    overrides: Partial<AiTrackedFile> = {},
+): AiTrackedFile {
     return {
         identityKey: "tracked-file",
         hunks: [],
@@ -59,6 +61,7 @@ describe("editedFilesPresentationModel", () => {
             expect.objectContaining({
                 canOpen: true,
                 canReject: true,
+                openRelativePath: "src/next/location.ts",
                 summary: "Moved from location.ts",
                 tone: {
                     accent: "var(--diff-move)",
@@ -70,6 +73,7 @@ describe("editedFilesPresentationModel", () => {
             expect.objectContaining({
                 canOpen: false,
                 canReject: false,
+                openRelativePath: null,
                 summary: "Modified",
                 tone: {
                     accent: "var(--diff-warn)",
@@ -140,6 +144,26 @@ describe("editedFilesPresentationModel", () => {
             fileCount: 3,
             partialCount: 1,
         });
+    });
+
+    it("accepts a resolver callback for openable paths", () => {
+        const absoluteFile = createTrackedFile({
+            identityKey: "absolute",
+            path: "/workspace/comando/src/absolute.ts",
+        });
+
+        const items = deriveReviewItems([absoluteFile], (file) =>
+            file.path === "/workspace/comando/src/absolute.ts"
+                ? "src/absolute.ts"
+                : null,
+        );
+
+        expect(items[0]).toEqual(
+            expect.objectContaining({
+                canOpen: true,
+                openRelativePath: "src/absolute.ts",
+            }),
+        );
     });
 
     it("exposes tone and summary helpers directly", () => {

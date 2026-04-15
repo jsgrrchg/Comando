@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    collectProjectFileRoots,
     parseProjectFileReference,
     resolveProjectFileReference,
 } from "./projectFileReferences";
@@ -53,14 +54,15 @@ describe("projectFileReferences", () => {
     });
 
     it("keeps relative paths ready to open in tabs", () => {
-        expect(resolveProjectFileReference("./src/app.ts", { projectRoots: [] }))
-            .toEqual({
-                endLine: null,
-                isAbsolute: false,
-                path: "src/app.ts",
-                relativePath: "src/app.ts",
-                startLine: null,
-            });
+        expect(
+            resolveProjectFileReference("./src/app.ts", { projectRoots: [] }),
+        ).toEqual({
+            endLine: null,
+            isAbsolute: false,
+            path: "src/app.ts",
+            relativePath: "src/app.ts",
+            startLine: null,
+        });
     });
 
     it("rejects external URLs and references outside project", () => {
@@ -74,5 +76,21 @@ describe("projectFileReferences", () => {
                 projectRoots: ["/Users/test/workspace/comando"],
             }),
         ).toBeNull();
+    });
+
+    it("collects unique project and worktree roots for path resolution", () => {
+        expect(
+            collectProjectFileRoots({
+                canonicalProjectRoot: "/Users/test/workspace/comando",
+                currentWorktreeRoot: "/Users/test/worktrees/comando-feature",
+                projectRoot: "/Users/test/workspace/comando",
+                repositoryCanonicalRoot: "/Users/test/workspace/comando",
+                repositoryRoot: "/Users/test/workspace/comando/.git/..",
+            }),
+        ).toEqual([
+            "/Users/test/workspace/comando",
+            "/Users/test/workspace/comando/.git/..",
+            "/Users/test/worktrees/comando-feature",
+        ]);
     });
 });

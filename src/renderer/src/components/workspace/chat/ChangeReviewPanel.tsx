@@ -5,6 +5,7 @@ import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import type { ResolvedProjectFileReference } from "../projectFileReferences";
 import { EditedFileDiffPreview } from "../review/EditedFileDiffPreview";
 import {
     getNeutralButtonStyle,
@@ -202,16 +203,32 @@ function looksAbsolutePath(path: string): boolean {
 function canOpenItem(
     item: ChangeReviewItem,
     projectId: string | null,
+    resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null,
 ): boolean {
     if (!projectId) {
         return false;
     }
 
+    return resolveOpenPath(item, resolveFileReference) !== null;
+}
+
+function resolveOpenPath(
+    item: ChangeReviewItem,
+    resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null,
+): string | null {
     if (item.diff.kind === "delete") {
-        return false;
+        return null;
     }
 
-    return !looksAbsolutePath(item.path);
+    if (!looksAbsolutePath(item.path)) {
+        return item.path;
+    }
+
+    return resolveFileReference?.(item.path)?.relativePath ?? null;
 }
 
 function renderStatus(activity: AiToolActivity) {
@@ -418,6 +435,9 @@ export interface ChangeReviewPanelProps {
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
     readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
     readonly trackedFiles?: readonly AiTrackedFile[];
     readonly worktreeId?: string | null;
 }
@@ -428,6 +448,7 @@ export function ChangeReviewPanel({
     defaultExpandedFileKeys = [],
     onOpenFile,
     projectId,
+    resolveFileReference,
     trackedFiles = [],
     worktreeId = null,
 }: ChangeReviewPanelProps) {
@@ -454,18 +475,19 @@ export function ChangeReviewPanel({
     const canDecreaseZoom = diffZoom > DIFF_ZOOM_MIN;
     const canIncreaseZoom = diffZoom < DIFF_ZOOM_MAX;
     const canOpenSingleItem = singleItem
-        ? canOpenItem(singleItem, projectId)
+        ? canOpenItem(singleItem, projectId, resolveFileReference)
         : false;
 
     const openItem = useCallback(
         (item: ChangeReviewItem) => {
-            if (!canOpenItem(item, projectId) || !projectId) {
+            const openPath = resolveOpenPath(item, resolveFileReference);
+            if (!projectId || !openPath) {
                 return;
             }
 
             void onOpenFile(
                 projectId,
-                item.path,
+                openPath,
                 worktreeId,
                 item.file
                     ? {
@@ -475,7 +497,7 @@ export function ChangeReviewPanel({
                     : null,
             );
         },
-        [onOpenFile, projectId, worktreeId],
+        [onOpenFile, projectId, resolveFileReference, worktreeId],
     );
 
     const toggleExpandedFile = useCallback((key: string) => {
@@ -739,7 +761,11 @@ export function ChangeReviewPanel({
                                 item={item}
                                 key={item.key}
                                 onOpen={
-                                    canOpenItem(item, projectId)
+                                    canOpenItem(
+                                        item,
+                                        projectId,
+                                        resolveFileReference,
+                                    )
                                         ? () => openItem(item)
                                         : null
                                 }

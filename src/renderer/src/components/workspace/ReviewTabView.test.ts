@@ -19,10 +19,53 @@ const mockAiStoreState = vi.hoisted(() => ({
     },
 }));
 
+const mockProjectsStoreState = vi.hoisted(() => ({
+    current: {
+        projects: [
+            {
+                canonicalRootPath: "/workspace/comando",
+                id: "project-1",
+                rootPath: "/workspace/comando",
+            },
+        ],
+    },
+}));
+
+const mockGitStoreState = vi.hoisted(() => ({
+    current: {
+        snapshots: {
+            "project-1::primary": {
+                canonicalRootPath: "/workspace/comando",
+                rootPath: "/workspace/comando",
+                worktrees: [
+                    {
+                        id: "primary",
+                        isCurrent: true,
+                        isPrimary: true,
+                        rootPath: "/workspace/comando",
+                    },
+                ],
+            },
+        },
+    },
+}));
+
 vi.mock("@renderer/app/store/ai-store", () => ({
     useAiStore: (
         selector: (state: typeof mockAiStoreState.current) => unknown,
     ) => selector(mockAiStoreState.current),
+}));
+
+vi.mock("@renderer/app/store/projects-store", () => ({
+    useProjectsStore: (
+        selector: (state: typeof mockProjectsStoreState.current) => unknown,
+    ) => selector(mockProjectsStoreState.current),
+}));
+
+vi.mock("@renderer/app/store/git-store", () => ({
+    useGitStore: (
+        selector: (state: typeof mockGitStoreState.current) => unknown,
+    ) => selector(mockGitStoreState.current),
 }));
 
 import { ReviewTabView } from "./ReviewTabView";

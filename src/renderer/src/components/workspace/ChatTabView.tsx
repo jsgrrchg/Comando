@@ -56,6 +56,7 @@ import {
     type ToolActivityReviewEntry,
 } from "./chat/toolActivityReviewModel";
 import {
+    collectProjectFileRoots,
     resolveProjectFileReference,
     type ResolvedProjectFileReference,
 } from "./projectFileReferences";
@@ -448,46 +449,7 @@ export function ChatTabView({
             ),
         [snapshot.trackedFiles],
     );
-    const pendingReviewOpenablePathSet = useMemo(() => {
-        if (!tab.projectId) {
-            return new Set<string>();
-        }
-
-        return new Set(
-            pendingTrackedFiles
-                .filter((trackedFile) => trackedFile.kind !== "delete")
-                .filter((trackedFile) => !looksAbsolutePath(trackedFile.path))
-                .map((trackedFile) => trackedFile.path),
-        );
-    }, [pendingTrackedFiles, tab.projectId]);
-    const pendingReviewItems = useMemo(
-        () =>
-            deriveReviewItems(
-                pendingTrackedFiles,
-                pendingReviewOpenablePathSet,
-            ),
-        [pendingReviewOpenablePathSet, pendingTrackedFiles],
-    );
-    const pendingReviewSummary = useMemo(
-        () => deriveReviewSummary(pendingReviewItems),
-        [pendingReviewItems],
-    );
-    const pendingReviewCount = pendingReviewItems.length;
     const projectFileRoots = useMemo(() => {
-        const roots = new Set<string>();
-        if (projectSummary?.rootPath) {
-            roots.add(projectSummary.rootPath);
-        }
-        if (projectSummary?.canonicalRootPath) {
-            roots.add(projectSummary.canonicalRootPath);
-        }
-        if (gitSnapshot?.rootPath) {
-            roots.add(gitSnapshot.rootPath);
-        }
-        if (gitSnapshot?.canonicalRootPath) {
-            roots.add(gitSnapshot.canonicalRootPath);
-        }
-
         const activeWorktreeRootPath = tab.worktreeId
             ? (gitSnapshot?.worktrees.find(
                   (worktree) => worktree.id === tab.worktreeId,
@@ -497,11 +459,14 @@ export function ChatTabView({
               gitSnapshot?.worktrees.find((worktree) => worktree.isPrimary)
                   ?.rootPath ??
               null);
-        if (activeWorktreeRootPath) {
-            roots.add(activeWorktreeRootPath);
-        }
 
-        return [...roots];
+        return collectProjectFileRoots({
+            canonicalProjectRoot: projectSummary?.canonicalRootPath,
+            currentWorktreeRoot: activeWorktreeRootPath,
+            projectRoot: projectSummary?.rootPath,
+            repositoryCanonicalRoot: gitSnapshot?.canonicalRootPath,
+            repositoryRoot: gitSnapshot?.rootPath,
+        });
     }, [
         gitSnapshot?.canonicalRootPath,
         gitSnapshot?.rootPath,
@@ -510,6 +475,28 @@ export function ChatTabView({
         projectSummary?.rootPath,
         tab.worktreeId,
     ]);
+    const resolvePendingReviewOpenPath = useCallback(
+        (trackedFile: ReviewFileItem["file"]) =>
+            trackedFile.kind === "delete"
+                ? null
+                : (resolveProjectFileReference(trackedFile.path, {
+                      projectRoots: projectFileRoots,
+                  })?.relativePath ?? null),
+        [projectFileRoots],
+    );
+    const pendingReviewItems = useMemo(
+        () =>
+            deriveReviewItems(
+                pendingTrackedFiles,
+                resolvePendingReviewOpenPath,
+            ),
+        [pendingTrackedFiles, resolvePendingReviewOpenPath],
+    );
+    const pendingReviewSummary = useMemo(
+        () => deriveReviewSummary(pendingReviewItems),
+        [pendingReviewItems],
+    );
+    const pendingReviewCount = pendingReviewItems.length;
     const resolveChatFileReference = useCallback(
         (reference: string): ResolvedProjectFileReference | null => {
             if (!tab.projectId || projectFileRoots.length === 0) {
@@ -813,13 +800,14 @@ export function ChatTabView({
 
     const handleOpenPendingReviewItem = useCallback(
         (item: ReviewFileItem) => {
-            if (!tab.projectId || !item.canOpen) {
+            const openRelativePath = item.openRelativePath;
+            if (!tab.projectId || !item.canOpen || !openRelativePath) {
                 return;
             }
 
             void onOpenFile(
                 tab.projectId,
-                item.file.path,
+                openRelativePath,
                 tab.worktreeId ?? null,
                 {
                     path: item.file.path,
@@ -3546,10 +3534,4 @@ function formatAttachmentSize(sizeBytes: number | null): string {
 
 function toAttachmentDataUrl(attachment: AiImageAttachment): string {
     return `data:${attachment.mimeType};base64,${attachment.dataBase64}`;
-}
-
-function looksAbsolutePath(candidatePath: string): boolean {
-    return (
-        candidatePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(candidatePath)
-    );
 }

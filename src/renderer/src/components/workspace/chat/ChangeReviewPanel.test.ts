@@ -178,4 +178,39 @@ describe("ChangeReviewPanel", () => {
         expect(markup).toContain("src/secondary.ts");
         expect(markup).toContain("chat-review-diff:file-1");
     });
+
+    it("keeps the open action available for absolute tracked paths when they resolve into the project", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ChangeReviewPanel, {
+                activity: createActivity({
+                    diffs: [
+                        {
+                            ...createActivity().diffs[0],
+                            path: "/workspace/comando/src/app.ts",
+                        },
+                    ],
+                }),
+                defaultExpanded: true,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                resolveFileReference: (reference) =>
+                    reference === "/workspace/comando/src/app.ts"
+                        ? {
+                              endLine: null,
+                              isAbsolute: true,
+                              path: reference,
+                              relativePath: "src/app.ts",
+                              startLine: null,
+                          }
+                        : null,
+                trackedFiles: [
+                    createTrackedFile({
+                        path: "/workspace/comando/src/app.ts",
+                    }),
+                ],
+            }),
+        );
+
+        expect(markup).toContain("Open");
+    });
 });

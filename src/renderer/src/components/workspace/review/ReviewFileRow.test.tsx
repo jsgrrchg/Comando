@@ -9,6 +9,7 @@ function createItem(): ReviewFileItem {
         canOpen: true,
         canReject: true,
         canResolveHunks: true,
+        openRelativePath: "src/app.ts",
         diff: {
             hunks: [
                 {
@@ -127,7 +128,8 @@ describe("ReviewFileRow", () => {
         );
 
         expect(markup).toContain("app.ts");
-        expect(markup).not.toContain("Open File");
+        expect(markup).toContain("Open File");
+        expect(markup).toContain("not-allowed");
         expect(markup).not.toContain("review-file-diff:file-1");
     });
 });

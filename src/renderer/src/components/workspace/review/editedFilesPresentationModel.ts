@@ -27,6 +27,7 @@ export interface ReviewFileItem {
     readonly tone: ReviewFileTone;
     readonly summary: string;
     readonly canOpen: boolean;
+    readonly openRelativePath: string | null;
     readonly canReject: boolean;
     readonly canResolveHunks: boolean;
 }
@@ -112,10 +113,18 @@ function sortTrackedFiles(files: readonly AiTrackedFile[]): AiTrackedFile[] {
 
 export function deriveReviewItems(
     files: readonly AiTrackedFile[],
-    canOpenByPath: ReadonlySet<string> = new Set<string>(),
+    canOpenByPath:
+        | ReadonlySet<string>
+        | ((file: AiTrackedFile) => string | null) = new Set<string>(),
 ): ReviewFileItem[] {
     return sortTrackedFiles(files).map((file) => {
         const diff = createDiffFromTrackedFile(file);
+        const openRelativePath =
+            typeof canOpenByPath === "function"
+                ? canOpenByPath(file)
+                : canOpenByPath.has(file.path)
+                  ? file.path
+                  : null;
 
         return {
             file,
@@ -124,7 +133,8 @@ export function deriveReviewItems(
             stats: computeFileStats(diff),
             tone: getFileTone(file),
             summary: getFileSummary(file),
-            canOpen: canOpenByPath.has(file.path),
+            canOpen: openRelativePath !== null,
+            openRelativePath,
             canReject: file.reversible !== false,
             canResolveHunks: canResolveFileHunks(file, diff),
         };

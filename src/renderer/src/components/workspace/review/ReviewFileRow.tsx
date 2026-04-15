@@ -207,24 +207,30 @@ export function ReviewFileRow({
                         additions={item.stats.additions}
                         deletions={item.stats.deletions}
                     />
-                    {canShowOpen ? (
+                    <div className="flex shrink-0 items-center gap-0.5">
                         <button
                             aria-label="Open File"
                             className="review-action-btn shrink-0"
-                            onClick={onOpen}
+                            disabled={!canShowOpen}
+                            onClick={canShowOpen ? onOpen : undefined}
                             onMouseEnter={(e) => {
-                                e.currentTarget.style.opacity = "1";
+                                if (canShowOpen) {
+                                    e.currentTarget.style.opacity = "1";
+                                }
                             }}
                             onMouseLeave={(e) => {
-                                e.currentTarget.style.opacity = "0.65";
+                                if (canShowOpen) {
+                                    e.currentTarget.style.opacity = "0.65";
+                                }
                             }}
                             style={{
                                 background: "transparent",
                                 border: "none",
                                 color: "var(--color-text-secondary)",
-                                cursor: "pointer",
+                                cursor: canShowOpen ? "pointer" : "not-allowed",
                                 fontSize: "11px",
-                                opacity: 0.65,
+                                fontWeight: 500,
+                                opacity: canShowOpen ? 0.65 : 0.25,
                                 padding: "2px 3px",
                                 transition:
                                     "opacity 100ms ease, filter 100ms ease",
@@ -232,10 +238,8 @@ export function ReviewFileRow({
                             title="Open File"
                             type="button"
                         >
-                            ↗
+                            open
                         </button>
-                    ) : null}
-                    <div className="flex shrink-0 items-center gap-0.5">
                         <button
                             aria-label="Reject"
                             className="review-action-btn shrink-0"
@@ -258,7 +262,7 @@ export function ReviewFileRow({
                                 cursor: item.canReject
                                     ? "pointer"
                                     : "not-allowed",
-                                fontSize: "11px",
+                                fontSize: "13px",
                                 opacity: item.canReject ? 0.6 : 0.2,
                                 padding: "2px 3px",
                                 transition:
@@ -284,7 +288,7 @@ export function ReviewFileRow({
                                 border: "none",
                                 color: "var(--diff-add)",
                                 cursor: "pointer",
-                                fontSize: "11px",
+                                fontSize: "13px",
                                 opacity: 0.6,
                                 padding: "2px 3px",
                                 transition:
@@ -449,36 +453,40 @@ export function ReviewFileRow({
                     deletions={item.stats.deletions}
                 />
                 <div className="flex shrink-0 items-center gap-1.5">
-                    {canShowOpen ? (
-                        <button
-                            className="review-action-btn shrink-0"
-                            onClick={onOpen}
-                            onMouseEnter={(e) => {
+                    <button
+                        className="review-action-btn shrink-0"
+                        disabled={!canShowOpen}
+                        onClick={canShowOpen ? onOpen : undefined}
+                        onMouseEnter={(e) => {
+                            if (canShowOpen) {
                                 e.currentTarget.style.backgroundColor =
                                     "color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent)";
-                            }}
-                            onMouseLeave={(e) => {
+                            }
+                        }}
+                        onMouseLeave={(e) => {
+                            if (canShowOpen) {
                                 e.currentTarget.style.backgroundColor =
                                     "transparent";
-                            }}
-                            style={{
-                                background: "transparent",
-                                border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                                borderRadius: 3,
-                                color: "var(--color-text-secondary)",
-                                cursor: "pointer",
-                                fontSize: "0.68em",
-                                fontWeight: 500,
-                                lineHeight: "20px",
-                                padding: "0 6px",
-                                transition:
-                                    "background-color 100ms ease, filter 100ms ease",
-                            }}
-                            type="button"
-                        >
-                            open
-                        </button>
-                    ) : null}
+                            }
+                        }}
+                        style={{
+                            background: "transparent",
+                            border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                            borderRadius: 3,
+                            color: "var(--color-text-secondary)",
+                            cursor: canShowOpen ? "pointer" : "not-allowed",
+                            fontSize: "0.68em",
+                            fontWeight: 500,
+                            lineHeight: "20px",
+                            opacity: canShowOpen ? 1 : 0.35,
+                            padding: "0 6px",
+                            transition:
+                                "background-color 100ms ease, filter 100ms ease",
+                        }}
+                        type="button"
+                    >
+                        open
+                    </button>
                     {item.canReject ? (
                         <button
                             className="review-action-btn shrink-0"

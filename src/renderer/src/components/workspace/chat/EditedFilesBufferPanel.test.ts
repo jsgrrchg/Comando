@@ -13,6 +13,7 @@ function createItem(overrides: Partial<ReviewFileItem> = {}): ReviewFileItem {
         canOpen: true,
         canReject: true,
         canResolveHunks: true,
+        openRelativePath: "src/app.ts",
         diff: {
             hunks: [
                 {

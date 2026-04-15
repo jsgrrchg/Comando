@@ -115,7 +115,7 @@ export function EditedFilesBufferPanel({
                     style={{
                         color: "var(--color-text-secondary)",
                         fontSize: "10px",
-                        fontWeight: 600,
+                        fontWeight: 800,
                         letterSpacing: "0.06em",
                         textTransform: "uppercase",
                     }}
@@ -211,7 +211,7 @@ export function EditedFilesBufferPanel({
                                 rejectableCount === 0
                                     ? "not-allowed"
                                     : "pointer",
-                            fontSize: "11px",
+                            fontSize: "13px",
                             fontWeight: 600,
                             opacity: rejectableCount === 0 ? 0.25 : 0.6,
                             padding: "2px 3px",
@@ -230,7 +230,7 @@ export function EditedFilesBufferPanel({
                             border: "none",
                             color: "var(--diff-add)",
                             cursor: "pointer",
-                            fontSize: "11px",
+                            fontSize: "13px",
                             fontWeight: 600,
                             opacity: 0.6,
                             padding: "2px 3px",

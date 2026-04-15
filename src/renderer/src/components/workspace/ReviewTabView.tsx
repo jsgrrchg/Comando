@@ -7,10 +7,16 @@ import {
     DEFAULT_AI_DIFF_ZOOM,
 } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { useGitStore } from "@renderer/app/store/git-store";
+import { useProjectsStore } from "@renderer/app/store/projects-store";
 import type {
     RuntimeWorkspaceFileReviewContext,
     RuntimeWorkspaceReviewTab,
 } from "@renderer/app/workspace/tree";
+import {
+    collectProjectFileRoots,
+    resolveProjectFileReference,
+} from "./projectFileReferences";
 import {
     deriveReviewItems,
     deriveReviewSummary,
@@ -356,21 +362,61 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                 ),
         [snapshot.trackedFiles],
     );
-    const openablePathSet = useMemo(() => {
+    const projectSummary = useProjectsStore((state) =>
+        tab.projectId
+            ? (state.projects.find((project) => project.id === tab.projectId) ??
+              null)
+            : null,
+    );
+    const gitSnapshot = useGitStore((state) => {
         if (!tab.projectId) {
-            return new Set<string>();
+            return null;
         }
 
-        return new Set(
-            trackedFiles
-                .filter((trackedFile) => trackedFile.kind !== "delete")
-                .filter((trackedFile) => !looksAbsolutePath(trackedFile.path))
-                .map((trackedFile) => trackedFile.path),
+        return (
+            state.snapshots[
+                `${tab.projectId}::${tab.worktreeId ?? "primary"}`
+            ] ?? null
         );
-    }, [tab.projectId, trackedFiles]);
+    });
+    const projectFileRoots = useMemo(() => {
+        const activeWorktreeRootPath = tab.worktreeId
+            ? (gitSnapshot?.worktrees.find(
+                  (worktree) => worktree.id === tab.worktreeId,
+              )?.rootPath ?? null)
+            : (gitSnapshot?.worktrees.find((worktree) => worktree.isCurrent)
+                  ?.rootPath ??
+              gitSnapshot?.worktrees.find((worktree) => worktree.isPrimary)
+                  ?.rootPath ??
+              null);
+
+        return collectProjectFileRoots({
+            canonicalProjectRoot: projectSummary?.canonicalRootPath,
+            currentWorktreeRoot: activeWorktreeRootPath,
+            projectRoot: projectSummary?.rootPath,
+            repositoryCanonicalRoot: gitSnapshot?.canonicalRootPath,
+            repositoryRoot: gitSnapshot?.rootPath,
+        });
+    }, [
+        gitSnapshot?.canonicalRootPath,
+        gitSnapshot?.rootPath,
+        gitSnapshot?.worktrees,
+        projectSummary?.canonicalRootPath,
+        projectSummary?.rootPath,
+        tab.worktreeId,
+    ]);
+    const resolveTrackedFileOpenPath = useCallback(
+        (trackedFile: ReviewFileItem["file"]) =>
+            trackedFile.kind === "delete"
+                ? null
+                : (resolveProjectFileReference(trackedFile.path, {
+                      projectRoots: projectFileRoots,
+                  })?.relativePath ?? null),
+        [projectFileRoots],
+    );
     const items = useMemo(
-        () => deriveReviewItems(trackedFiles, openablePathSet),
-        [openablePathSet, trackedFiles],
+        () => deriveReviewItems(trackedFiles, resolveTrackedFileOpenPath),
+        [resolveTrackedFileOpenPath, trackedFiles],
     );
     const summary = useMemo(() => deriveReviewSummary(items), [items]);
     const rejectableCount = useMemo(
@@ -647,13 +693,14 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
 
     const handleOpenFile = useCallback(
         (item: ReviewFileItem) => {
-            if (!tab.projectId || !item.canOpen) {
+            const openRelativePath = item.openRelativePath;
+            if (!tab.projectId || !item.canOpen || !openRelativePath) {
                 return;
             }
 
             void onOpenFile(
                 tab.projectId,
-                item.file.path,
+                openRelativePath,
                 tab.worktreeId ?? null,
                 {
                     path: item.file.path,
@@ -728,7 +775,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
             style={{ backgroundColor: "var(--color-bg-primary)" }}
         >
             <div
-                className="shrink-0 px-5 py-3"
+                className="shrink-0 px-4 py-1.5"
                 style={{
                     backgroundColor: "var(--color-bg-secondary)",
                     borderBottom:
@@ -736,35 +783,21 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                     fontFamily: "var(--font-mono)",
                 }}
             >
-                <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4">
-                    <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                            <span
-                                style={{
-                                    color: "var(--color-text-secondary)",
-                                    fontSize: "10px",
-                                    fontWeight: 600,
-                                    letterSpacing: "0.06em",
-                                    textTransform: "uppercase",
-                                }}
-                            >
-                                Pending Changes
-                            </span>
-                            <ReviewStatChips summary={summary} />
-                        </div>
-                        <div
-                            style={{
-                                color: "var(--color-text-secondary)",
-                                fontSize: "10px",
-                                marginTop: 4,
-                                opacity: 0.5,
-                            }}
-                        >
-                            review and accept or reject pending edits
-                        </div>
-                    </div>
-
-                    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                <div className="mx-auto flex w-full max-w-5xl items-center gap-3">
+                    <span
+                        className="shrink-0"
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontSize: "10px",
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                        }}
+                    >
+                        Pending Changes
+                    </span>
+                    <ReviewStatChips summary={summary} />
+                    <div className="ml-auto flex shrink-0 items-center gap-1.5">
                         <div
                             style={{
                                 backgroundColor:
@@ -785,6 +818,8 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                     )
                                 }
                                 style={{
+                                    borderRight:
+                                        "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
                                     color: canDecreaseZoom
                                         ? "var(--color-text-primary)"
                                         : "var(--color-text-secondary)",
@@ -798,21 +833,6 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                             >
                                 -
                             </button>
-                            <div
-                                style={{
-                                    borderLeft:
-                                        "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                                    borderRight:
-                                        "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                                    color: "var(--color-text-secondary)",
-                                    fontSize: "0.75em",
-                                    minWidth: 46,
-                                    padding: "6px 8px",
-                                    textAlign: "center",
-                                }}
-                            >
-                                {Math.round(diffZoom * 100)}%
-                            </div>
                             <button
                                 aria-label="Increase diff zoom"
                                 disabled={!canIncreaseZoom}
@@ -837,25 +857,6 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 +
                             </button>
                         </div>
-                        {AI_REVIEW_UNDO_ENABLED ? (
-                            <button
-                                className="review-action-btn"
-                                style={{
-                                    background: "transparent",
-                                    border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                                    borderRadius: 3,
-                                    color: "var(--color-text-secondary)",
-                                    cursor: "pointer",
-                                    fontSize: "10px",
-                                    fontWeight: 500,
-                                    lineHeight: "20px",
-                                    padding: "0 8px",
-                                }}
-                                type="button"
-                            >
-                                undo reject
-                            </button>
-                        ) : null}
                         <button
                             className="review-action-btn"
                             onClick={
@@ -1023,10 +1024,4 @@ function createEmptySnapshot(
         updatedAt: now,
         worktreeId: tab.worktreeId ?? null,
     };
-}
-
-function looksAbsolutePath(candidatePath: string): boolean {
-    return (
-        candidatePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(candidatePath)
-    );
 }

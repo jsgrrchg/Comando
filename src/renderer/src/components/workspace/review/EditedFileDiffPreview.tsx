@@ -322,12 +322,12 @@ export function EditedFileDiffPreview({
     );
     const interactiveHunksEnabled = Boolean(
         file &&
-            onKeepHunk &&
-            onRejectHunk &&
-            file.isText &&
-            file.reversible !== false &&
-            file.hunks.length > 0 &&
-            decisionHunks.length > 0,
+        onKeepHunk &&
+        onRejectHunk &&
+        file.isText &&
+        file.reversible !== false &&
+        file.hunks.length > 0 &&
+        decisionHunks.length > 0,
     );
 
     if (!expanded) {
@@ -341,7 +341,8 @@ export function EditedFileDiffPreview({
     return (
         <div
             style={{
-                borderTop: "1px solid color-mix(in srgb, var(--color-border) 35%, transparent)",
+                borderTop:
+                    "1px solid color-mix(in srgb, var(--color-border) 35%, transparent)",
             }}
         >
             <div
@@ -412,7 +413,8 @@ export function EditedFileDiffPreview({
                                             overflow: "hidden",
                                         }}
                                     >
-                                        {block.decisionHunkIndexes.length > 1 ? (
+                                        {block.decisionHunkIndexes.length >
+                                        1 ? (
                                             <div
                                                 style={{
                                                     color: "var(--color-text-secondary)",
@@ -434,9 +436,7 @@ export function EditedFileDiffPreview({
                                                     !file
                                                 ) {
                                                     return (
-                                                        <div
-                                                            key={segment.key}
-                                                        >
+                                                        <div key={segment.key}>
                                                             {renderDiffLines(
                                                                 segment.lines,
                                                                 {
@@ -451,12 +451,13 @@ export function EditedFileDiffPreview({
                                                     );
                                                 }
 
-                                                const hunkId = resolveTrackedHunkId(
-                                                    file,
-                                                    diff,
-                                                    decisionHunks,
-                                                    segment.decisionHunkIndex,
-                                                );
+                                                const hunkId =
+                                                    resolveTrackedHunkId(
+                                                        file,
+                                                        diff,
+                                                        decisionHunks,
+                                                        segment.decisionHunkIndex,
+                                                    );
 
                                                 return (
                                                     <div
@@ -472,12 +473,7 @@ export function EditedFileDiffPreview({
                                                         }
                                                         key={segment.key}
                                                         style={{
-                                                            backgroundColor:
-                                                                "color-mix(in srgb, var(--color-bg-elevated) 72%, transparent)",
-                                                            border: "1px solid color-mix(in srgb, var(--color-border) 32%, transparent)",
-                                                            borderRadius: 4,
-                                                            margin: "4px 0",
-                                                            overflow: "hidden",
+                                                            margin: "16px 0 4px",
                                                             position:
                                                                 "relative",
                                                         }}
@@ -501,8 +497,13 @@ export function EditedFileDiffPreview({
                                                         ) : null}
                                                         <div
                                                             style={{
-                                                                paddingRight:
-                                                                    4,
+                                                                backgroundColor:
+                                                                    "color-mix(in srgb, var(--color-bg-elevated) 72%, transparent)",
+                                                                border: "1px solid color-mix(in srgb, var(--color-border) 32%, transparent)",
+                                                                borderRadius: 4,
+                                                                overflow:
+                                                                    "hidden",
+                                                                paddingRight: 4,
                                                                 paddingTop: 4,
                                                             }}
                                                         >

@@ -878,6 +878,7 @@ export function ToolActivityItem({
                     activity={activity}
                     onOpenFile={onOpenFile}
                     projectId={projectId}
+                    resolveFileReference={resolveFileReference}
                     trackedFiles={trackedFiles}
                     worktreeId={worktreeId}
                 />
