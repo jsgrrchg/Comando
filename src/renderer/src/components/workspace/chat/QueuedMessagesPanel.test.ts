@@ -87,4 +87,29 @@ describe("QueuedMessagesPanel", () => {
 
         expect(markup).toBe("");
     });
+
+    it("hides sending messages from the visible queue", () => {
+        const markup = renderToStaticMarkup(
+            createElement(QueuedMessagesPanel, {
+                items: [
+                    createQueuedPrompt(),
+                    createQueuedPrompt({
+                        id: "queued-2",
+                        prompt: "Still dispatching",
+                        status: "sending",
+                    }),
+                ],
+                onCancelEdit: () => {},
+                onClearAll: () => {},
+                onDelete: () => {},
+                onEdit: () => {},
+                onSendNow: () => {},
+            }),
+        );
+
+        expect(markup).toContain("queue (1)");
+        expect(markup).toContain("Review src/app.ts");
+        expect(markup).not.toContain("Still dispatching");
+        expect(markup).not.toContain("sending…");
+    });
 });
