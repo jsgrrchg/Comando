@@ -21,7 +21,6 @@ import { createPortal } from "react-dom";
 
 import type {
     AiFileContextAttachment,
-    AiTrackedFile,
     GitFileDiff,
     ProjectFileDocument,
     WorkspaceNode,
@@ -61,11 +60,16 @@ import {
 } from "@renderer/app/store/workspace-store";
 import {
     collectPaneNodes,
-    type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceFileReviewContext,
+    type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
     type RuntimeWorkspaceTerminalTab,
 } from "@renderer/app/workspace/tree";
+import {
+    collectPendingTrackedFilesFromSessions,
+    findBestPendingTrackedFile,
+    isInlineReviewSupported,
+} from "@renderer/app/workspace/pending-review";
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
 import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabView";
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
@@ -74,27 +78,10 @@ import {
     computeGitGutterMarkers,
     type GitGutterMarker,
 } from "@renderer/components/workspace/gitGutter";
+import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
+import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import {
-    canResolveFileHunks,
-    computeFileStats,
-    getFileSummary,
-    getFileTone,
-} from "@renderer/components/workspace/review/editedFilesPresentationModel";
-import {
-    createDiffFromTrackedFile,
-    formatDiffStat,
-} from "@renderer/components/workspace/review/reviewDiff";
-import {
-    getAccentButtonStyle,
-    getDangerButtonStyle,
-    getStatChipStyle,
-    getToneBorderStyle,
-} from "@renderer/components/workspace/review/reviewStyles";
-import {
-    computeReviewHunkStats,
-    formatReviewHunkFocusSummary,
     getReviewHunkVisualEndLine,
-    getReviewKindLabel,
     getSelectedReviewLine,
 } from "@renderer/components/workspace/review/fileReviewBarPresentation";
 import {
@@ -658,7 +645,7 @@ function WorkspacePaneView({
                 projectId,
                 relativePath,
                 worktreeId ?? activeTabWorktreeId,
-                reviewContext ?? null,
+                reviewContext,
             );
         },
         [activeTabWorktreeId, openFileTab],
@@ -1741,11 +1728,9 @@ function FileTabView({
     const editorTheme = useMonacoTheme();
     const editorSettings = useResolvedEditorSettings(tab.projectId);
     const aiSessions = useAiStore((state) => state.sessions);
-    const keepTrackedFile = useAiStore((state) => state.keepTrackedFile);
     const keepTrackedFileHunks = useAiStore(
         (state) => state.keepTrackedFileHunks,
     );
-    const rejectTrackedFile = useAiStore((state) => state.rejectTrackedFile);
     const rejectTrackedFileHunks = useAiStore(
         (state) => state.rejectTrackedFileHunks,
     );
@@ -2412,62 +2397,6 @@ function FileTabView({
         );
     }
 
-    const reviewBar =
-        trackedFile && !inlineReviewTrackedFile
-            ? (() => {
-                  const activeTrackedFile = trackedFile;
-                  const activeReviewKey =
-                      reviewSignature ?? activeTrackedFile.identityKey;
-
-                  return (
-                      <FileReviewBar
-                          onKeepFile={() =>
-                              void keepTrackedFile({
-                                  path: activeTrackedFile.path,
-                                  sessionId: activeTrackedFile.sessionId,
-                              })
-                          }
-                          onKeepHunk={() => {
-                              if (!selectedHunk) {
-                                  return;
-                              }
-
-                              void keepTrackedFileHunks({
-                                  hunkIds: [selectedHunk.id],
-                                  path: activeTrackedFile.path,
-                                  sessionId: activeTrackedFile.sessionId,
-                              });
-                          }}
-                          onRejectFile={() =>
-                              void rejectTrackedFile({
-                                  path: activeTrackedFile.path,
-                                  sessionId: activeTrackedFile.sessionId,
-                              })
-                          }
-                          onRejectHunk={() => {
-                              if (!selectedHunk) {
-                                  return;
-                              }
-
-                              void rejectTrackedFileHunks({
-                                  hunkIds: [selectedHunk.id],
-                                  path: activeTrackedFile.path,
-                                  sessionId: activeTrackedFile.sessionId,
-                              });
-                          }}
-                          onSelectHunk={(hunkId) =>
-                              setSelectedHunkState({
-                                  hunkId,
-                                  key: activeReviewKey,
-                              })
-                          }
-                          selectedHunkId={selectedHunk?.id ?? null}
-                          trackedFile={activeTrackedFile}
-                      />
-                  );
-              })()
-            : null;
-
     return (
         <div className="flex h-full min-h-0 flex-col">
             <FilePathBar
@@ -2527,9 +2456,6 @@ function FileTabView({
                     {tab.saveError}
                 </FileSyncNotice>
             ) : null}
-
-            {reviewBar}
-
             <div className="min-h-0 flex-1">
                 {inlineReviewTrackedFile ? (
                     <div
@@ -2835,342 +2761,6 @@ function ImageFileView({
                     </div>
                 )}
             </div>
-        </div>
-    );
-}
-
-function FileReviewBar({
-    onKeepFile,
-    onKeepHunk,
-    onRejectFile,
-    onRejectHunk,
-    onSelectHunk,
-    selectedHunkId,
-    trackedFile,
-}: {
-    readonly onKeepFile: () => void;
-    readonly onKeepHunk: () => void;
-    readonly onRejectFile: () => void;
-    readonly onRejectHunk: () => void;
-    readonly onSelectHunk: (hunkId: string) => void;
-    readonly selectedHunkId: string | null;
-    readonly trackedFile: AiTrackedFile;
-}) {
-    const diff = useMemo(
-        () => createDiffFromTrackedFile(trackedFile),
-        [trackedFile],
-    );
-    const stats = useMemo(() => computeFileStats(diff), [diff]);
-    const tone = useMemo(() => getFileTone(trackedFile), [trackedFile]);
-    const summary = useMemo(() => getFileSummary(trackedFile), [trackedFile]);
-    const selectedHunk = useMemo(
-        () =>
-            trackedFile.hunks.find((hunk) => hunk.id === selectedHunkId) ??
-            trackedFile.hunks[0] ??
-            null,
-        [selectedHunkId, trackedFile.hunks],
-    );
-    const canResolveHunks = useMemo(
-        () => canResolveFileHunks(trackedFile, diff),
-        [diff, trackedFile],
-    );
-    const canRejectFile = trackedFile.reversible !== false;
-    const hunkActionDisabled = !selectedHunk || !canResolveHunks;
-    const pillButtonBaseStyle = {
-        borderRadius: 999,
-        fontSize: "11px",
-        fontWeight: 600,
-        lineHeight: "16px",
-        padding: "6px 12px",
-        transition:
-            "background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease, transform 140ms ease",
-    };
-    const keepButtonStyle = {
-        ...getAccentButtonStyle(),
-        ...pillButtonBaseStyle,
-        backgroundColor:
-            "color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-secondary))",
-    };
-    const rejectButtonStyle = {
-        ...getDangerButtonStyle(!canRejectFile),
-        ...pillButtonBaseStyle,
-    };
-    const kindLabel = getReviewKindLabel(trackedFile.kind);
-    const kindAccent =
-        trackedFile.kind === "create"
-            ? "var(--diff-add)"
-            : trackedFile.kind === "delete"
-              ? "var(--diff-remove)"
-              : trackedFile.kind === "move"
-                ? "var(--diff-move)"
-                : "var(--color-accent)";
-    const kindBadgeStyle = {
-        alignItems: "center",
-        backgroundColor: `color-mix(in srgb, ${kindAccent} 10%, var(--color-bg-secondary))`,
-        border: `1px solid color-mix(in srgb, ${kindAccent} 28%, var(--color-border))`,
-        borderRadius: 999,
-        color: kindAccent,
-        display: "inline-flex",
-        fontSize: "10px",
-        fontWeight: 700,
-        letterSpacing: "0.12em",
-        padding: "2px 10px",
-        textTransform: "uppercase" as const,
-    };
-
-    return (
-        <div
-            className="border-b border-border px-3 py-3"
-            style={{
-                ...getToneBorderStyle(tone.accent),
-                backgroundColor:
-                    "color-mix(in srgb, var(--color-accent) 3%, var(--color-bg-panel))",
-            }}
-        >
-            <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span
-                            className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.16em] text-text-secondary"
-                            style={{ fontWeight: 700 }}
-                        >
-                            <span
-                                aria-hidden="true"
-                                className="h-2 w-2 rounded-full"
-                                style={{ backgroundColor: tone.accent }}
-                            />
-                            Pending Review
-                        </span>
-                        <span style={kindBadgeStyle}>{kindLabel}</span>
-                        {tone.badge ? (
-                            <span
-                                className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]"
-                                style={{
-                                    backgroundColor:
-                                        "color-mix(in srgb, var(--diff-warn) 10%, var(--color-bg-secondary))",
-                                    border: "1px solid color-mix(in srgb, var(--diff-warn) 24%, var(--color-border))",
-                                    color: "var(--diff-warn)",
-                                }}
-                            >
-                                {tone.badge}
-                            </span>
-                        ) : null}
-                        {trackedFile.previousPath ? (
-                            <span
-                                className="truncate text-[11px] text-text-secondary"
-                                title={trackedFile.previousPath}
-                            >
-                                from {trackedFile.previousPath}
-                            </span>
-                        ) : null}
-                    </div>
-                    <div
-                        className="mt-1.5 truncate text-sm font-medium text-text-primary"
-                        title={trackedFile.path}
-                    >
-                        {trackedFile.path}
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span style={getStatChipStyle("var(--diff-add)")}>
-                            +
-                            {formatDiffStat(stats.additions, stats.approximate)}
-                        </span>
-                        <span style={getStatChipStyle("var(--diff-remove)")}>
-                            -
-                            {formatDiffStat(stats.deletions, stats.approximate)}
-                        </span>
-                        <span style={getStatChipStyle(tone.accent)}>
-                            {trackedFile.hunks.length} pending hunk
-                            {trackedFile.hunks.length === 1 ? "" : "s"}
-                        </span>
-                        <span
-                            className="text-[12px] text-text-secondary"
-                            title={summary}
-                        >
-                            {summary}
-                        </span>
-                    </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                    <span
-                        className="text-[11px] text-text-secondary"
-                        style={{ maxWidth: 220 }}
-                    >
-                        Inline review is available for text updates only.
-                    </span>
-                    <button
-                        className="app-no-drag"
-                        onClick={onKeepFile}
-                        style={keepButtonStyle}
-                        type="button"
-                    >
-                        Keep File
-                    </button>
-                    <button
-                        className="app-no-drag"
-                        disabled={!canRejectFile}
-                        onClick={onRejectFile}
-                        style={rejectButtonStyle}
-                        type="button"
-                    >
-                        Reject File
-                    </button>
-                </div>
-            </div>
-
-            {trackedFile.hunks.length > 0 ? (
-                <div
-                    className="mt-3 border-t pt-3"
-                    style={{
-                        borderTopColor:
-                            "color-mix(in srgb, var(--color-border) 76%, transparent)",
-                    }}
-                >
-                    <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
-                        <div className="min-w-0 flex-1 overflow-x-auto pb-1">
-                            <div className="flex min-w-max items-stretch gap-2">
-                                {trackedFile.hunks.map((hunk, index) => {
-                                    const isSelected =
-                                        hunk.id === selectedHunk?.id;
-                                    const hunkStats =
-                                        computeReviewHunkStats(hunk);
-
-                                    return (
-                                        <button
-                                            className="app-no-drag"
-                                            key={hunk.id}
-                                            onClick={() =>
-                                                onSelectHunk(hunk.id)
-                                            }
-                                            style={{
-                                                alignItems: "flex-start",
-                                                backgroundColor: isSelected
-                                                    ? `color-mix(in srgb, ${tone.accent} 13%, var(--color-bg-secondary))`
-                                                    : "color-mix(in srgb, var(--color-bg-secondary) 88%, transparent)",
-                                                border: `1px solid ${
-                                                    isSelected
-                                                        ? `color-mix(in srgb, ${tone.accent} 48%, var(--color-border))`
-                                                        : "color-mix(in srgb, var(--color-border) 88%, transparent)"
-                                                }`,
-                                                borderRadius: 14,
-                                                boxShadow: isSelected
-                                                    ? `0 0 0 1px color-mix(in srgb, ${tone.accent} 16%, transparent)`
-                                                    : "none",
-                                                color: isSelected
-                                                    ? "var(--color-text-primary)"
-                                                    : "var(--color-text-secondary)",
-                                                cursor: "pointer",
-                                                display: "flex",
-                                                flexDirection: "column",
-                                                gap: 4,
-                                                minWidth: 128,
-                                                padding: "8px 10px",
-                                                textAlign: "left",
-                                                transform: isSelected
-                                                    ? "translateY(-1px)"
-                                                    : "translateY(0)",
-                                                transition:
-                                                    "background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
-                                            }}
-                                            title={`Focus ${formatReviewHunkFocusSummary(hunk)}`}
-                                            type="button"
-                                        >
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-[11px] font-semibold">
-                                                    Hunk {index + 1}
-                                                </span>
-                                                <span
-                                                    className="text-[10px]"
-                                                    style={{
-                                                        color: isSelected
-                                                            ? tone.accent
-                                                            : "var(--color-text-secondary)",
-                                                    }}
-                                                >
-                                                    L
-                                                    {getSelectedReviewLine(
-                                                        hunk,
-                                                    )}
-                                                </span>
-                                            </div>
-                                            <div className="flex items-center gap-2 text-[10px]">
-                                                {hunkStats.additions > 0 ? (
-                                                    <span
-                                                        style={{
-                                                            color: "var(--diff-add)",
-                                                        }}
-                                                    >
-                                                        +
-                                                        {formatDiffStat(
-                                                            hunkStats.additions,
-                                                        )}
-                                                    </span>
-                                                ) : null}
-                                                {hunkStats.deletions > 0 ? (
-                                                    <span
-                                                        style={{
-                                                            color: "var(--diff-remove)",
-                                                        }}
-                                                    >
-                                                        -
-                                                        {formatDiffStat(
-                                                            hunkStats.deletions,
-                                                        )}
-                                                    </span>
-                                                ) : null}
-                                            </div>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                            <button
-                                className="app-no-drag"
-                                disabled={hunkActionDisabled}
-                                onClick={onKeepHunk}
-                                style={{
-                                    ...keepButtonStyle,
-                                    cursor: hunkActionDisabled
-                                        ? "not-allowed"
-                                        : "pointer",
-                                    opacity: hunkActionDisabled ? 0.45 : 1,
-                                }}
-                                type="button"
-                            >
-                                Keep Hunk
-                            </button>
-                            <button
-                                className="app-no-drag"
-                                disabled={hunkActionDisabled}
-                                onClick={onRejectHunk}
-                                style={{
-                                    ...getDangerButtonStyle(hunkActionDisabled),
-                                    ...pillButtonBaseStyle,
-                                }}
-                                type="button"
-                            >
-                                Reject Hunk
-                            </button>
-                        </div>
-                    </div>
-
-                    {selectedHunk ? (
-                        <div className="mt-2 text-[11px] text-text-secondary">
-                            {formatReviewHunkFocusSummary(selectedHunk)}
-                        </div>
-                    ) : null}
-
-                    {!canResolveHunks ? (
-                        <div className="mt-2 text-[11px] text-text-secondary">
-                            Hunk-level actions are available for reversible text
-                            updates.
-                        </div>
-                    ) : null}
-                </div>
-            ) : null}
         </div>
     );
 }
@@ -3512,54 +3102,13 @@ function findTrackedFileForDocument(
     sessions: ReturnType<typeof useAiStore.getState>["sessions"],
     document: ProjectFileDocument,
     reviewContext: RuntimeWorkspaceFileReviewContext | null,
-): AiTrackedFile | null {
-    const pendingTrackedFiles = Object.values(sessions)
-        .flatMap((session) => session.snapshot?.trackedFiles ?? [])
-        .filter((trackedFile) => trackedFile.reviewState === "pending");
-
-    const contextMatch =
-        reviewContext &&
-        pendingTrackedFiles.find(
-            (trackedFile) =>
-                trackedFile.sessionId === reviewContext.sessionId &&
-                trackedFile.path === reviewContext.path,
-        );
-
-    if (contextMatch) {
-        return contextMatch;
-    }
-
-    return (
-        pendingTrackedFiles
-            .filter((trackedFile) =>
-                matchesTrackedFileDocument(trackedFile, document),
-            )
-            .sort((left, right) =>
-                right.updatedAt.localeCompare(left.updatedAt),
-            )[0] ?? null
-    );
-}
-
-function matchesTrackedFileDocument(
-    trackedFile: AiTrackedFile,
-    document: ProjectFileDocument,
-): boolean {
-    return (
-        trackedFile.path === document.relativePath ||
-        trackedFile.path === document.absolutePath ||
-        trackedFile.previousPath === document.relativePath ||
-        trackedFile.previousPath === document.absolutePath
-    );
-}
-
-function isInlineReviewSupported(trackedFile: AiTrackedFile | null): boolean {
-    return Boolean(
-        trackedFile &&
-        trackedFile.isText &&
-        trackedFile.kind === "update" &&
-        trackedFile.oldText !== null &&
-        trackedFile.newText !== null,
-    );
+) {
+    return findBestPendingTrackedFile({
+        paths: [document.relativePath, document.absolutePath],
+        preferInlineReview: true,
+        reviewContext,
+        trackedFiles: collectPendingTrackedFilesFromSessions(sessions),
+    });
 }
 
 function areMonacoSuggestionsEnabledForLanguage(

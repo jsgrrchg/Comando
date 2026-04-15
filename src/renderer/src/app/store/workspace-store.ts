@@ -57,6 +57,11 @@ import {
     type SplitDirection,
     type WorkspaceTreeState,
 } from "../workspace/tree";
+import {
+    collectPendingTrackedFilesFromSessions,
+    resolveFileTabReviewContext,
+} from "../workspace/pending-review";
+import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
 
 export type WorkspaceQuickCreateAction =
@@ -482,9 +487,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         projectId: string,
         relativePath: string,
         worktreeId: string | null = null,
-        reviewContext: RuntimeWorkspaceFileReviewContext | null = null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => {
         try {
+            const trackedFiles = collectPendingTrackedFilesFromSessions(
+                useAiStore.getState().sessions,
+            );
             const existingTab = findExistingFileTab(
                 get(),
                 projectId,
@@ -497,11 +505,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     return;
                 }
 
+                const nextReviewContext = resolveFileTabReviewContext({
+                    existingReviewContext: existingTab.reviewContext,
+                    relativePath,
+                    requestedReviewContext: reviewContext,
+                    trackedFiles,
+                });
+
                 set((state) => ({
                     ...setFileTabReviewContext(
                         selectPaneTab(state, paneId, existingTab.id),
                         existingTab.id,
-                        reviewContext,
+                        nextReviewContext,
                     ),
                     error: null,
                 }));
@@ -525,7 +540,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 isSaving: false,
                 kind: "file",
                 loadError: null,
-                reviewContext,
+                reviewContext: resolveFileTabReviewContext({
+                    relativePath,
+                    requestedReviewContext: reviewContext,
+                    trackedFiles,
+                }),
                 projectId,
                 relativePath,
                 savedContent: "",
