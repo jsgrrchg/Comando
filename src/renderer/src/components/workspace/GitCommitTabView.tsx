@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { buildGitRemoteCommitLink } from "@renderer/app/git/remote-link";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
@@ -190,14 +190,11 @@ export function GitCommitTabView({
                     className="mt-3 flex flex-wrap items-center gap-2 text-text-secondary"
                     style={{ fontSize: metadataFontSize }}
                 >
-                    <button
+                    <CopyableHash
                         className="rounded-md border border-border px-2 py-1 font-mono transition-colors hover:bg-bg-secondary hover:text-text-primary"
-                        onClick={() => void copyToClipboard(detail.sha)}
-                        title={detail.sha}
-                        type="button"
-                    >
-                        {detail.sha.slice(0, 8)}
-                    </button>
+                        display={detail.sha.slice(0, 8)}
+                        sha={detail.sha}
+                    />
                     <button
                         className="rounded-md border border-border px-2 py-1 transition-colors hover:bg-bg-secondary hover:text-text-primary"
                         onClick={() => void copyToClipboard(detail.authorEmail)}
@@ -256,4 +253,34 @@ async function copyToClipboard(value: string): Promise<void> {
     } catch (error) {
         console.error(error);
     }
+}
+
+function CopyableHash({
+    sha,
+    display,
+    className,
+}: {
+    sha: string;
+    display: string;
+    className?: string;
+}) {
+    const [copied, setCopied] = useState(false);
+
+    const handleClick = () => {
+        void copyToClipboard(sha).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        });
+    };
+
+    return (
+        <button
+            className={className}
+            onClick={handleClick}
+            title={sha}
+            type="button"
+        >
+            {copied ? "Copied" : display}
+        </button>
+    );
 }
