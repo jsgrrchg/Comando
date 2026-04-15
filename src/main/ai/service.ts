@@ -1419,10 +1419,20 @@ export class AiService {
                 break;
             case "tool_call":
                 nextSnapshot = finalizeStreamingMessages(nextSnapshot);
-                nextSnapshot = mapToolCallUpdate(nextSnapshot, update, now);
+                nextSnapshot = mapToolCallUpdate(
+                    liveSession,
+                    nextSnapshot,
+                    update,
+                    now,
+                );
                 break;
             case "tool_call_update":
-                nextSnapshot = mapToolCallUpdate(nextSnapshot, update, now);
+                nextSnapshot = mapToolCallUpdate(
+                    liveSession,
+                    nextSnapshot,
+                    update,
+                    now,
+                );
                 break;
             case "plan":
                 nextSnapshot = {
@@ -3031,6 +3041,7 @@ const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
 const terminalOutputBuffers = new Map<string, string>();
 
 function mapToolCallUpdate(
+    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
     updatedAt: string,
@@ -3081,10 +3092,12 @@ function mapToolCallUpdate(
         }
     }
 
+    const normalizeDiffPath = (candidatePath: string) =>
+        normalizeTrackedDiffPath(liveSession, candidatePath);
     const nextActivity = {
         createdAt: existing?.createdAt ?? updatedAt,
         diffs: content
-            ? collectDiffs(content, toolKind)
+            ? collectDiffs(content, toolKind, normalizeDiffPath)
             : (existing?.diffs ?? []),
         exitCode,
         id: update.toolCallId,
@@ -3141,6 +3154,7 @@ function mapToolCallUpdate(
                                     toolKind,
                                     update.toolCallId,
                                     updatedAt,
+                                    normalizeDiffPath,
                                 ),
                             )
                           : trackedFiles,
@@ -3153,28 +3167,41 @@ function mapToolCallUpdate(
 function collectDiffs(
     content: readonly ToolCallContent[] | null | undefined,
     toolKind: string,
+    normalizePath: (candidatePath: string) => string = (candidatePath) =>
+        candidatePath,
 ): readonly AiFileDiff[] {
     return (content ?? []).flatMap((entry) =>
-        entry.type === "diff" ? [diffToAiFileDiff(entry, toolKind)] : [],
+        entry.type === "diff"
+            ? [diffToAiFileDiff(entry, toolKind, normalizePath)]
+            : [],
     );
 }
 
-function diffToAiFileDiff(diff: Diff, toolKind: string): AiFileDiff {
-    const previousPath = readDiffMetaString(
+function diffToAiFileDiff(
+    diff: Diff,
+    toolKind: string,
+    normalizePath: (candidatePath: string) => string = (candidatePath) =>
+        candidatePath,
+): AiFileDiff {
+    const previousPathValue = readDiffMetaString(
         diff._meta,
         NEVERWRITE_DIFF_PREVIOUS_PATH_KEY,
     );
+    const path = normalizePath(diff.path);
+    const previousPath = previousPathValue
+        ? normalizePath(previousPathValue)
+        : null;
     const kind = inferDiffKind(diff, toolKind, previousPath);
     const oldText = normalizeOldText(diff.oldText ?? null);
     const newText = normalizeNewText(kind, diff.newText ?? null);
 
     return {
-        hunks: readDiffHunks(diff._meta, diff.path),
+        hunks: readDiffHunks(diff._meta, path),
         isText: true,
         kind,
         newText,
         oldText,
-        path: diff.path,
+        path,
         previousPath,
         reversible: isDiffReversible(kind, oldText),
     };
@@ -3186,8 +3213,10 @@ function diffToTrackedFile(
     toolKind: string,
     toolCallId: string,
     updatedAt: string,
+    normalizePath: (candidatePath: string) => string = (candidatePath) =>
+        candidatePath,
 ): AiTrackedFile {
-    const fileDiff = diffToAiFileDiff(diff, toolKind);
+    const fileDiff = diffToAiFileDiff(diff, toolKind, normalizePath);
     const hunks =
         fileDiff.hunks.length > 0
             ? fileDiff.hunks
@@ -3196,7 +3225,7 @@ function diffToTrackedFile(
               ? computeDiffHunks(
                     fileDiff.oldText ?? "",
                     fileDiff.newText ?? "",
-                    diff.path,
+                    fileDiff.path,
                 )
               : [];
 
@@ -3775,8 +3804,34 @@ function toPosixPath(candidatePath: string): string {
     return candidatePath.split(path.sep).join("/");
 }
 
+function normalizeTrackedDiffPath(
+    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    candidatePath: string,
+): string {
+    const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
+    const absolutePath = path.isAbsolute(candidatePath)
+        ? path.resolve(candidatePath)
+        : path.resolve(scopeRoot, candidatePath);
+
+    if (
+        absolutePath === scopeRoot ||
+        absolutePath.startsWith(`${scopeRoot}${path.sep}`)
+    ) {
+        const relativePath = path.relative(scopeRoot, absolutePath);
+        return relativePath.length > 0
+            ? toPosixPath(relativePath)
+            : toPosixPath(path.basename(absolutePath));
+    }
+
+    return path.isAbsolute(candidatePath)
+        ? absolutePath
+        : toPosixPath(candidatePath);
+}
+
 export const __testing = {
     computeDiffHunks,
+    diffToAiFileDiff,
+    normalizeTrackedDiffPath,
     resolveTrackedFileHunks,
     upsertTrackedFile,
 };

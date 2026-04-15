@@ -228,4 +228,42 @@ describe("AiService tracked file review merging", () => {
             visualStartLine: 1,
         });
     });
+
+    it("normalizes tool diff paths back into project-relative paths", () => {
+        expect(
+            __testing.normalizeTrackedDiffPath(
+                {
+                    cwd: "/workspace/comando",
+                    projectRoot: "/workspace/comando",
+                },
+                "/workspace/comando/src/app.ts",
+            ),
+        ).toBe("src/app.ts");
+
+        expect(
+            __testing.diffToAiFileDiff(
+                {
+                    _meta: {
+                        neverwritePreviousPath:
+                            "/workspace/comando/src/previous.ts",
+                    },
+                    newText: "export const value = 2;\n",
+                    oldText: "export const value = 1;\n",
+                    path: "/workspace/comando/src/app.ts",
+                } as never,
+                "edit",
+                (candidatePath) =>
+                    __testing.normalizeTrackedDiffPath(
+                        {
+                            cwd: "/workspace/comando",
+                            projectRoot: "/workspace/comando",
+                        },
+                        candidatePath,
+                    ),
+            ),
+        ).toMatchObject({
+            path: "src/app.ts",
+            previousPath: "src/previous.ts",
+        });
+    });
 });
