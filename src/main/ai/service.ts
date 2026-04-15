@@ -1249,6 +1249,7 @@ export class AiService {
                     liveSession.snapshot,
                     openedSession,
                 ),
+                lastError: null,
                 runtimeSessionId: openedSession.runtimeSessionId,
             };
             await this.#applyStoredSessionSelections(
@@ -1257,18 +1258,14 @@ export class AiService {
             );
             liveSession.snapshot = {
                 ...liveSession.snapshot,
+                lastError: null,
                 status: getPreparedSessionStatus(liveSession.snapshot),
                 updatedAt: new Date().toISOString(),
             };
             this.#persistAndBroadcast(liveSession);
             return liveSession;
         } catch (error) {
-            const stderrText = liveSession.stderrChunks
-                .join("")
-                .trim()
-                .split("\n")
-                .slice(-4)
-                .join("\n");
+            const stderrText = getRecentStderrText(liveSession.stderrChunks);
             const message =
                 stderrText ||
                 (error instanceof Error
@@ -2250,11 +2247,8 @@ export class AiService {
         }
 
         const stderrText = liveSession.stderrChunks
-            .join("")
-            .trim()
-            .split("\n")
-            .slice(-4)
-            .join("\n");
+            ? getRecentStderrText(liveSession.stderrChunks)
+            : "";
         const lastError =
             stderrText ||
             `${getRuntimeDisplayName(liveSession.runtimeId)} ACP ended unexpectedly (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
@@ -2451,12 +2445,7 @@ export class AiService {
         try {
             await action(connection);
         } catch (error) {
-            const stderrText = stderrChunks
-                .join("")
-                .trim()
-                .split("\n")
-                .slice(-4)
-                .join("\n");
+            const stderrText = getRecentStderrText(stderrChunks);
 
             if (error instanceof Error && error.message.trim()) {
                 throw error;
@@ -3768,6 +3757,24 @@ function getPreparedSessionStatus(
         return "error";
     }
     return "idle";
+}
+
+function getRecentStderrText(stderrChunks: readonly string[]): string {
+    const normalized = stripAnsiControlSequences(stderrChunks.join(""))
+        .trim()
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter((line) => line.length > 0);
+
+    if (normalized.length === 0) {
+        return "";
+    }
+
+    return normalized.slice(-4).join("\n");
+}
+
+function stripAnsiControlSequences(value: string): string {
+    return value.replace(/\u001B\[[0-9;]*m/g, "");
 }
 
 function isBusyAiSessionStatus(status: AiSessionSnapshot["status"]): boolean {

@@ -320,4 +320,14 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ON workspace_tabs(worktree_id);
     `,
     },
+    {
+        id: "0008-project-visibility",
+        sql: `
+      ALTER TABLE projects
+        ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0;
+
+      CREATE INDEX IF NOT EXISTS idx_projects_visibility
+        ON projects(is_hidden);
+    `,
+    },
 ];

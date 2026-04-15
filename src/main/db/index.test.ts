@@ -21,9 +21,10 @@ describe("databaseMigrations", () => {
             projectSettingsMigration,
             shellStateMigration,
             gitWorktreesMigration,
+            projectVisibilityMigration,
         ] = databaseMigrations;
 
-        expect(databaseMigrations).toHaveLength(7);
+        expect(databaseMigrations).toHaveLength(8);
         expect(foundationMigration?.id).toBe("0001-foundation");
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
@@ -92,6 +93,11 @@ describe("databaseMigrations", () => {
         expect(gitWorktreesMigration?.sql).toContain(
             "json_extract(payload_json, '$.projectId')",
         );
+        expect(projectVisibilityMigration?.id).toBe("0008-project-visibility");
+        expect(projectVisibilityMigration?.sql).toContain(
+            "ALTER TABLE projects",
+        );
+        expect(projectVisibilityMigration?.sql).toContain("is_hidden");
     });
 
     it("backfills canonical_root_path and worktree_id from a previous schema", () => {

@@ -35,6 +35,7 @@ import {
 import { shouldIgnoreEntry } from "./ignore";
 
 interface PersistedProjectRow {
+    readonly is_hidden?: number;
     readonly id: string;
     readonly name: string;
     readonly canonical_root_path: string;
@@ -103,6 +104,7 @@ export class ProjectService {
                 FROM projects
                 LEFT JOIN recent_projects
                     ON recent_projects.project_id = projects.id
+                WHERE projects.is_hidden = 0
                 ORDER BY
                     recent_projects.last_opened_at IS NULL,
                     recent_projects.last_opened_at DESC,
@@ -189,6 +191,19 @@ export class ProjectService {
             WHERE canonical_root_path = ?
             `,
         );
+        const reviveProject = this.#connection.prepare<
+            [string, string, string, string],
+            void
+        >(
+            `
+            UPDATE projects
+            SET name = ?,
+                updated_at = ?,
+                is_hidden = 0
+            WHERE id = ?
+              AND canonical_root_path = ?
+            `,
+        );
         const findExistingWorktree = this.#connection.prepare<
             [string],
             { id: string } | undefined
@@ -211,6 +226,12 @@ export class ProjectService {
                     );
 
                     if (existing) {
+                        reviveProject.run(
+                            path.basename(projectPathMeta.canonicalRootPath),
+                            now,
+                            existing.id,
+                            projectPathMeta.canonicalRootPath,
+                        );
                         ensureProjectRoots({
                             canonicalRootPath:
                                 projectPathMeta.canonicalRootPath,
@@ -299,7 +320,19 @@ export class ProjectService {
         }
 
         this.#connection
-            .prepare<[string], void>("DELETE FROM projects WHERE id = ?")
+            .prepare<[string], void>(
+                `
+                UPDATE projects
+                SET is_hidden = 1
+                WHERE id = ?
+                `,
+            )
+            .run(projectId);
+        this.#connection
+            .prepare<
+                [string],
+                void
+            >("DELETE FROM recent_projects WHERE project_id = ?")
             .run(projectId);
     }
 
