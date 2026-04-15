@@ -26,7 +26,6 @@ describe("SettingsService", () => {
             shellState: {
                 activeSurface: "workspace",
                 leftWidth: 280,
-                rightWidth: 360,
             },
         });
 
@@ -48,7 +47,6 @@ describe("SettingsService", () => {
             shellState: {
                 activeSurface: "workspace",
                 leftWidth: 280,
-                rightWidth: 360,
             },
         });
     });

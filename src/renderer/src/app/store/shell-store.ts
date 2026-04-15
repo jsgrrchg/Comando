@@ -19,7 +19,6 @@ type SidebarView = "files" | "git";
 interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
     readonly leftCollapsed: boolean;
-    readonly rightCollapsed: boolean;
     readonly sidebarView: SidebarView;
     readonly viewportWidth: number;
     focusSurface: (surface: ShellSurface) => void;
@@ -27,20 +26,33 @@ interface ShellStore extends ShellLayoutDimensions {
     resizePanel: (side: ShellPanelSide, nextWidth: number) => void;
     nudgePanel: (side: ShellPanelSide, delta: number) => void;
     setLeftCollapsed: (collapsed: boolean) => void;
-    setRightCollapsed: (collapsed: boolean) => void;
     setSidebarView: (view: SidebarView) => void;
     toggleLeftCollapsed: () => void;
-    toggleRightCollapsed: () => void;
     toggleSidebarView: () => void;
     syncViewport: (viewportWidth: number) => void;
+}
+
+type LegacyShellSnapshot = PersistedShellState & {
+    readonly activeSurface?: string | null;
+    readonly sidebarView?: string | null;
+};
+
+function normalizeActiveSurface(
+    surface: LegacyShellSnapshot["activeSurface"],
+): ShellSurface {
+    return surface === "projects" ? "projects" : "workspace";
+}
+
+function normalizeSidebarView(
+    view: LegacyShellSnapshot["sidebarView"],
+): SidebarView {
+    return view === "git" ? "git" : "files";
 }
 
 export const useShellStore = create<ShellStore>((set) => ({
     activeSurface: "workspace",
     leftCollapsed: false,
     leftWidth: initialLayout.leftWidth,
-    rightCollapsed: false,
-    rightWidth: initialLayout.rightWidth,
     sidebarView: "files",
     viewportWidth: 1440,
     focusSurface: (surface) => set({ activeSurface: surface }),
@@ -49,13 +61,19 @@ export const useShellStore = create<ShellStore>((set) => ({
             return;
         }
 
+        const legacySnapshot = snapshot as LegacyShellSnapshot;
+
         set((state) => ({
-            activeSurface: snapshot.activeSurface as ShellSurface,
-            leftCollapsed: snapshot.leftCollapsed ?? false,
-            rightCollapsed: snapshot.rightCollapsed ?? false,
-            sidebarView: snapshot.sidebarView ?? "files",
+            activeSurface: normalizeActiveSurface(legacySnapshot.activeSurface),
+            leftCollapsed: legacySnapshot.leftCollapsed ?? false,
+            sidebarView: normalizeSidebarView(legacySnapshot.sidebarView),
             viewportWidth: state.viewportWidth,
-            ...normalizeShellLayout(snapshot, state.viewportWidth),
+            ...normalizeShellLayout(
+                {
+                    leftWidth: legacySnapshot.leftWidth,
+                },
+                state.viewportWidth,
+            ),
         }));
     },
     resizePanel: (side, nextWidth) =>
@@ -67,12 +85,9 @@ export const useShellStore = create<ShellStore>((set) => ({
             nudgeShellPanel(state, side, delta, state.viewportWidth),
         ),
     setLeftCollapsed: (collapsed) => set({ leftCollapsed: collapsed }),
-    setRightCollapsed: (collapsed) => set({ rightCollapsed: collapsed }),
     setSidebarView: (view) => set({ sidebarView: view }),
     toggleLeftCollapsed: () =>
         set((state) => ({ leftCollapsed: !state.leftCollapsed })),
-    toggleRightCollapsed: () =>
-        set((state) => ({ rightCollapsed: !state.rightCollapsed })),
     toggleSidebarView: () =>
         set((state) => ({
             sidebarView: state.sidebarView === "files" ? "git" : "files",

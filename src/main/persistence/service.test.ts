@@ -19,7 +19,6 @@ describe("PersistenceService", () => {
             shellState: {
                 activeSurface: "workspace",
                 leftWidth: 280,
-                rightWidth: 360,
             },
         });
         const windowId = created.windowContext?.windowId;
@@ -43,7 +42,6 @@ describe("PersistenceService", () => {
             shellState: {
                 activeSurface: "workspace",
                 leftWidth: 280,
-                rightWidth: 360,
             },
             windowContext: {
                 projectId: "project-1",

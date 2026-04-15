@@ -1,29 +1,24 @@
-export type ShellPanelSide = "left" | "right";
+export type ShellPanelSide = "left";
 
-export type ShellSurface = "projects" | "workspace" | "utility" | "composer";
+export type ShellSurface = "projects" | "workspace" | "composer";
 
 export interface ShellLayoutDimensions {
     readonly leftWidth: number;
-    readonly rightWidth: number;
 }
 
 export const shellLayoutConstraints = {
     defaultLeftWidth: 252,
-    defaultRightWidth: 328,
     framePadding: 24,
     handleWidth: 1,
     minCenterWidth: 520,
     minLeftWidth: 224,
     maxLeftWidth: 340,
-    minRightWidth: 280,
-    maxRightWidth: 420,
     keyboardStep: 24,
 } as const;
 
 export function createDefaultShellLayout(): ShellLayoutDimensions {
     return {
         leftWidth: shellLayoutConstraints.defaultLeftWidth,
-        rightWidth: shellLayoutConstraints.defaultRightWidth,
     };
 }
 
@@ -31,21 +26,12 @@ export function normalizeShellLayout(
     layout: ShellLayoutDimensions,
     viewportWidth: number,
 ): ShellLayoutDimensions {
-    const leftWidth = clamp(
-        layout.leftWidth,
-        shellLayoutConstraints.minLeftWidth,
-        getLeftMaxWidth(viewportWidth, layout.rightWidth),
-    );
-
-    const rightWidth = clamp(
-        layout.rightWidth,
-        shellLayoutConstraints.minRightWidth,
-        getRightMaxWidth(viewportWidth, leftWidth),
-    );
-
     return {
-        leftWidth,
-        rightWidth,
+        leftWidth: clamp(
+            layout.leftWidth,
+            shellLayoutConstraints.minLeftWidth,
+            getLeftMaxWidth(viewportWidth),
+        ),
     };
 }
 
@@ -55,20 +41,11 @@ export function resizeShellPanel(
     nextWidth: number,
     viewportWidth: number,
 ): ShellLayoutDimensions {
-    if (side === "left") {
-        return normalizeShellLayout(
-            {
-                leftWidth: nextWidth,
-                rightWidth: layout.rightWidth,
-            },
-            viewportWidth,
-        );
-    }
-
+    void layout;
+    void side;
     return normalizeShellLayout(
         {
-            leftWidth: layout.leftWidth,
-            rightWidth: nextWidth,
+            leftWidth: nextWidth,
         },
         viewportWidth,
     );
@@ -80,33 +57,19 @@ export function nudgeShellPanel(
     delta: number,
     viewportWidth: number,
 ): ShellLayoutDimensions {
-    const currentWidth = side === "left" ? layout.leftWidth : layout.rightWidth;
+    void side;
+    const currentWidth = layout.leftWidth;
     return resizeShellPanel(layout, side, currentWidth + delta, viewportWidth);
 }
 
-function getLeftMaxWidth(viewportWidth: number, rightWidth: number): number {
+function getLeftMaxWidth(viewportWidth: number): number {
     return Math.max(
         shellLayoutConstraints.minLeftWidth,
         Math.min(
             shellLayoutConstraints.maxLeftWidth,
             viewportWidth -
                 shellLayoutConstraints.framePadding -
-                shellLayoutConstraints.handleWidth * 2 -
-                rightWidth -
-                shellLayoutConstraints.minCenterWidth,
-        ),
-    );
-}
-
-function getRightMaxWidth(viewportWidth: number, leftWidth: number): number {
-    return Math.max(
-        shellLayoutConstraints.minRightWidth,
-        Math.min(
-            shellLayoutConstraints.maxRightWidth,
-            viewportWidth -
-                shellLayoutConstraints.framePadding -
-                shellLayoutConstraints.handleWidth * 2 -
-                leftWidth -
+                shellLayoutConstraints.handleWidth -
                 shellLayoutConstraints.minCenterWidth,
         ),
     );

@@ -13,16 +13,12 @@ describe("shell-layout", () => {
         const normalizedLayout = normalizeShellLayout(
             {
                 leftWidth: 900,
-                rightWidth: 900,
             },
             1280,
         );
 
         expect(normalizedLayout.leftWidth).toBeLessThanOrEqual(
             shellLayoutConstraints.maxLeftWidth,
-        );
-        expect(normalizedLayout.rightWidth).toBeLessThanOrEqual(
-            shellLayoutConstraints.maxRightWidth,
         );
     });
 
@@ -37,21 +33,18 @@ describe("shell-layout", () => {
         expect(resizedLayout.leftWidth).toBeLessThanOrEqual(
             shellLayoutConstraints.maxLeftWidth,
         );
-        expect(resizedLayout.rightWidth).toBe(
-            shellLayoutConstraints.defaultRightWidth,
-        );
     });
 
     it("ajusta con teclado en pasos discretos", () => {
         const nudgedLayout = nudgeShellPanel(
             createDefaultShellLayout(),
-            "right",
+            "left",
             -shellLayoutConstraints.keyboardStep,
             1440,
         );
 
-        expect(nudgedLayout.rightWidth).toBe(
-            shellLayoutConstraints.defaultRightWidth -
+        expect(nudgedLayout.leftWidth).toBe(
+            shellLayoutConstraints.defaultLeftWidth -
                 shellLayoutConstraints.keyboardStep,
         );
     });

@@ -159,8 +159,6 @@ export function App() {
     const leftWidth = useShellStore((state) => state.leftWidth);
     const nudgePanel = useShellStore((state) => state.nudgePanel);
     const resizePanel = useShellStore((state) => state.resizePanel);
-    const rightCollapsed = useShellStore((state) => state.rightCollapsed);
-    const rightWidth = useShellStore((state) => state.rightWidth);
     const setLeftCollapsed = useShellStore((state) => state.setLeftCollapsed);
     const setSidebarView = useShellStore((state) => state.setSidebarView);
     const sidebarView = useShellStore((state) => state.sidebarView);
@@ -472,8 +470,6 @@ export function App() {
                 activeSurface,
                 leftCollapsed,
                 leftWidth,
-                rightCollapsed,
-                rightWidth,
                 sidebarView,
             });
         }, 120);
@@ -486,8 +482,6 @@ export function App() {
         leftCollapsed,
         leftWidth,
         persistenceReady,
-        rightCollapsed,
-        rightWidth,
         sidebarView,
     ]);
 
@@ -1772,10 +1766,7 @@ export function App() {
 
                         <main
                             className="surface-focus min-h-0 bg-bg-primary"
-                            data-active={
-                                activeSurface === "workspace" ||
-                                activeSurface === "utility"
-                            }
+                            data-active={activeSurface === "workspace"}
                             onClick={() => focusSurface("workspace")}
                             onFocus={() => focusSurface("workspace")}
                             tabIndex={0}

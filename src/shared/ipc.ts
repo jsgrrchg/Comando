@@ -164,11 +164,7 @@ export interface ProjectEditorSettings {
     readonly suggestionsEnabled: boolean | null;
 }
 
-export type PersistedShellSurface =
-    | "projects"
-    | "workspace"
-    | "utility"
-    | "composer";
+export type PersistedShellSurface = "projects" | "workspace" | "composer";
 
 export interface DatabaseStatus {
     readonly databaseFile: string;
@@ -191,8 +187,6 @@ export interface PersistedShellState {
     readonly activeSurface: PersistedShellSurface;
     readonly leftCollapsed?: boolean;
     readonly leftWidth: number;
-    readonly rightCollapsed?: boolean;
-    readonly rightWidth: number;
     readonly sidebarView?: "files" | "git";
 }
 
