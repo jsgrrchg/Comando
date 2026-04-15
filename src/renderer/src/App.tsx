@@ -2126,7 +2126,7 @@ export function App() {
                     />
                 )}
 
-                {leftCollapsed && (
+                {leftCollapsed && sidebarOverlayVisible && (
                     <div
                         className="flex min-h-0 flex-col bg-bg-panel"
                         style={{
@@ -2136,19 +2136,8 @@ export function App() {
                             bottom: 0,
                             width: leftWidth,
                             zIndex: 10,
-                            boxShadow: sidebarOverlayVisible
-                                ? "var(--shadow-soft)"
-                                : "none",
+                            boxShadow: "var(--shadow-soft)",
                             borderRight: "1px solid var(--color-border)",
-                            transition:
-                                "opacity 200ms ease, transform 200ms ease",
-                            opacity: sidebarOverlayVisible ? 1 : 0,
-                            transform: sidebarOverlayVisible
-                                ? "translateX(0)"
-                                : "translateX(-8px)",
-                            pointerEvents: sidebarOverlayVisible
-                                ? "auto"
-                                : "none",
                         }}
                         onMouseEnter={() => {
                             if (overlayDismissRef.current) {
