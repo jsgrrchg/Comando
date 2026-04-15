@@ -695,6 +695,46 @@ button {
     color: var(--color-text-primary);
 }
 
+.sidebar-collapse-toggle {
+    position: absolute;
+    top: 12px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-bg-elevated) 72%, transparent);
+    color: color-mix(in srgb, var(--color-text-secondary) 92%, white 8%);
+    cursor: pointer;
+    opacity: 0.82;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        color 120ms ease,
+        opacity 120ms ease,
+        transform 120ms ease;
+}
+
+.sidebar-collapse-toggle:hover {
+    background: var(--color-bg-tertiary);
+    border-color: color-mix(
+        in srgb,
+        var(--color-border-strong) 72%,
+        transparent
+    );
+    color: var(--color-text-primary);
+    opacity: 1;
+    transform: translateY(-1px);
+}
+
+.sidebar-collapse-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+    outline-offset: 1px;
+}
+
 .project-switcher-menu {
     position: absolute;
     bottom: 100%;
