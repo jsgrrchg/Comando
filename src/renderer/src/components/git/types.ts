@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-export type GitPanelTabId = "files" | "changes" | "diffs";
+export type GitPanelTabId = "changes" | "diffs";
 
 export type GitViewLayout = "list" | "tree";
 
@@ -203,7 +203,6 @@ export interface GitPanelProps {
     readonly changes: GitChangesViewProps;
     readonly className?: string;
     readonly diffs: GitDiffsViewProps;
-    readonly files: GitFilesViewProps;
     readonly onTabChange: (tab: GitPanelTabId) => void;
     readonly tabCounts?: Partial<Record<GitPanelTabId, number>>;
     readonly title?: string;

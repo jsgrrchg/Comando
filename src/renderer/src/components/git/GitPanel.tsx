@@ -1,7 +1,6 @@
 import { GitActionButton } from "./GitUi";
 import { GitChangesView } from "./GitChangesView";
 import { GitDiffsView } from "./GitDiffsView";
-import { GitFilesView } from "./GitFilesView";
 import type { GitPanelProps, GitPanelTabId } from "./types";
 
 export function GitPanel({
@@ -9,7 +8,6 @@ export function GitPanel({
     changes,
     className,
     diffs,
-    files,
     onTabChange,
     tabCounts,
     toolbar,
@@ -39,9 +37,7 @@ export function GitPanel({
             ) : null}
 
             <div className="min-h-0 flex-1 overflow-y-auto">
-                {activeTab === "files" ? (
-                    <GitFilesView {...files} />
-                ) : activeTab === "changes" ? (
+                {activeTab === "changes" ? (
                     <GitChangesView {...changes} />
                 ) : (
                     <GitDiffsView {...diffs} />
@@ -71,7 +67,6 @@ export function GitPanelTabs({
         readonly id: GitPanelTabId;
         readonly label: string;
     }[] = [
-        { id: "files", label: "Files" },
         { id: "changes", label: "Changes" },
         { id: "diffs", label: "Diffs" },
     ];

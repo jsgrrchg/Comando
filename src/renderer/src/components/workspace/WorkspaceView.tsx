@@ -50,6 +50,10 @@ import {
     saveProjectEditorSettings,
 } from "@renderer/app/settings/client";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
+import {
+    COMPOSER_PROJECT_ENTRY_MIME,
+    serializeComposerProjectEntryDragData,
+} from "@renderer/app/drag-and-drop";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import {
@@ -977,6 +981,7 @@ function WorkspacePaneView({
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
                                         data-workspace-tab-id={tabId}
+                                        draggable={tab.kind === "file"}
                                         key={tabId}
                                         onClick={(event) => {
                                             if (tabDrag.handleTabClick(event)) {
@@ -988,6 +993,28 @@ function WorkspacePaneView({
                                         onContextMenu={(event) =>
                                             handleTabContextMenu(event, tabId)
                                         }
+                                        onDragStart={(event) => {
+                                            if (tab.kind !== "file") return;
+                                            const fileTab =
+                                                tab as RuntimeWorkspaceFileTab;
+                                            event.dataTransfer.effectAllowed =
+                                                "copyMove";
+                                            event.dataTransfer.setData(
+                                                COMPOSER_PROJECT_ENTRY_MIME,
+                                                serializeComposerProjectEntryDragData(
+                                                    {
+                                                        kind: "file",
+                                                        name: fileTab.title,
+                                                        relativePath:
+                                                            fileTab.relativePath,
+                                                    },
+                                                ),
+                                            );
+                                            event.dataTransfer.setData(
+                                                "text/plain",
+                                                fileTab.relativePath,
+                                            );
+                                        }}
                                         onPointerDown={(event) =>
                                             tabDrag.beginTabPointerDown(
                                                 {
