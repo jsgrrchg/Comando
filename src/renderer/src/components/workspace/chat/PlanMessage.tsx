@@ -27,8 +27,15 @@ function getPlanStatusLabel(entries: readonly AiPlanEntry[]): string {
 
 /* ─── Component ─── */
 
-export function PlanMessage({ plan }: { readonly plan: AiPlan }) {
+export function PlanMessage({
+    onDismiss,
+    plan,
+}: {
+    readonly onDismiss?: () => void;
+    readonly plan: AiPlan;
+}) {
     const [expanded, setExpanded] = useState(true);
+    const canExpand = plan.entries.length > 0;
 
     const completedCount = plan.entries.filter(
         (e) => e.status === "completed",
@@ -46,45 +53,75 @@ export function PlanMessage({ plan }: { readonly plan: AiPlan }) {
             }}
         >
             {/* Header */}
-            <button
-                className="flex w-full items-center gap-1 px-1 py-1 text-left"
-                onClick={() => setExpanded(!expanded)}
-                style={{
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                }}
-                type="button"
-            >
-                <span
-                    className="rounded-md px-1.5 py-0.5 text-xs"
-                    style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--color-bg-secondary) 74%, transparent)",
-                        border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                        color: "var(--color-text-secondary)",
+            <div className="flex items-center gap-1 px-1 py-1">
+                <button
+                    aria-expanded={expanded}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 py-0.5 text-left"
+                    onClick={() => {
+                        if (canExpand) {
+                            setExpanded((current) => !current);
+                        }
                     }}
-                >
-                    {expanded ? "▾" : "▸"}
-                </span>
-                <span
-                    className="flex-1 font-medium"
                     style={{
-                        color: "var(--color-text-secondary)",
-                        fontSize: "0.875rem",
+                        background: "none",
+                        border: "none",
+                        cursor: canExpand ? "pointer" : "default",
                     }}
+                    type="button"
                 >
-                    Plan
-                </span>
-                <span
-                    style={{
-                        color: "var(--color-text-secondary)",
-                        fontSize: "0.76em",
-                    }}
-                >
-                    {statusLabel}
-                </span>
-            </button>
+                    <span
+                        className="inline-flex shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-xs"
+                        style={{
+                            backgroundColor:
+                                "color-mix(in srgb, var(--color-bg-secondary) 74%, transparent)",
+                            border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
+                            color: "var(--color-text-secondary)",
+                            fontWeight: 500,
+                        }}
+                    >
+                        {canExpand ? (expanded ? "▾" : "▸") : "•"}
+                    </span>
+                    <span
+                        className="min-w-0 flex-1 font-medium"
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontSize: "0.875rem",
+                        }}
+                    >
+                        Plan
+                    </span>
+                    <span
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontSize: "0.76em",
+                        }}
+                    >
+                        {statusLabel}
+                    </span>
+                </button>
+                {onDismiss ? (
+                    <button
+                        aria-label="Dismiss plan banner"
+                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+                        onClick={onDismiss}
+                        style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "var(--color-text-secondary)",
+                            cursor: "pointer",
+                            fontSize: 14,
+                            lineHeight: 1,
+                            opacity: 0.72,
+                            transition:
+                                "opacity 140ms ease, background-color 140ms ease",
+                        }}
+                        title="Dismiss plan banner"
+                        type="button"
+                    >
+                        <span aria-hidden="true">×</span>
+                    </button>
+                ) : null}
+            </div>
 
             {/* Entries */}
             {expanded ? (

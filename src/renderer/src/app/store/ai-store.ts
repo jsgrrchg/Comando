@@ -73,6 +73,7 @@ interface AiSessionClientState {
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly draftComposerParts: readonly AiComposerDraftPart[];
     readonly draftFileContexts: readonly AiFileContextAttachment[];
+    readonly dismissedPlanUpdatedAt: string | null;
     readonly diffZoom: number | null;
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
@@ -121,6 +122,7 @@ interface AiStore {
         sessionId: string,
     ) => readonly AiComposerDraftPart[] | null;
     clearDraftAttachments: (sessionId: string) => void;
+    dismissSessionPlan: (sessionId: string, planUpdatedAt: string) => void;
     attachSelectionMention: (
         sessionId: string,
         selection: {
@@ -438,6 +440,25 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     cancelSession: async (sessionId) => {
         await getComandoApi().cancelAiSession(sessionId);
+    },
+
+    dismissSessionPlan: (sessionId, planUpdatedAt) => {
+        set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session) {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        dismissedPlanUpdatedAt: planUpdatedAt,
+                    },
+                },
+            };
+        });
     },
 
     ensureSession: async (tab) => {
@@ -1294,6 +1315,7 @@ function createSessionState(
         draftAttachments: [],
         draftComposerParts: createEmptyComposerDraftParts(),
         draftFileContexts: [],
+        dismissedPlanUpdatedAt: null,
         diffZoom: preferences?.diffZoom ?? null,
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,

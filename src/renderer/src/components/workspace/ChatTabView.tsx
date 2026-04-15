@@ -49,6 +49,7 @@ import {
 } from "./chat/composerParts";
 import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
+import { shouldShowPlanBanner } from "./chat/planBannerState";
 import {
     buildFileContextLabel,
     buildFileContextTitle,
@@ -193,6 +194,7 @@ export function ChatTabView({
     );
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const clearDraftAttachments = useAiStore((s) => s.clearDraftAttachments);
+    const dismissSessionPlan = useAiStore((s) => s.dismissSessionPlan);
 
     const keepAllTrackedFiles = useAiStore((s) => s.keepAllTrackedFiles);
     const keepTrackedFile = useAiStore((s) => s.keepTrackedFile);
@@ -432,10 +434,17 @@ export function ChatTabView({
         sessionState?.draftComposerParts ?? EMPTY_COMPOSER_PARTS;
     const draftFileContexts =
         sessionState?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
+    const dismissedPlanUpdatedAt = sessionState?.dismissedPlanUpdatedAt ?? null;
     const editingQueuedPrompt = sessionState?.editingQueuedPrompt ?? null;
     const queuedPrompts = sessionState?.queue ?? [];
     const pendingPermission = snapshot.pendingPermission;
     const pendingUserInput = snapshot.pendingUserInput;
+    const visiblePlan = shouldShowPlanBanner(
+        snapshot.plan,
+        dismissedPlanUpdatedAt,
+    )
+        ? snapshot.plan
+        : null;
     const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
     const chatFontFamily = useMemo(
         () => buildChatFontFamily(aiChatSettings.chatFontFamily),
@@ -1549,7 +1558,7 @@ export function ChatTabView({
                                 })
                               : null
                     : null}
-                {snapshot.plan ? (
+                {visiblePlan ? (
                     <div
                         className="shrink-0 px-3 pb-1 pt-2"
                         style={{
@@ -1557,7 +1566,15 @@ export function ChatTabView({
                                 "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                         }}
                     >
-                        <PlanMessage plan={snapshot.plan} />
+                        <PlanMessage
+                            onDismiss={() => {
+                                dismissSessionPlan(
+                                    snapshot.sessionId,
+                                    visiblePlan.updatedAt,
+                                );
+                            }}
+                            plan={visiblePlan}
+                        />
                     </div>
                 ) : null}
 

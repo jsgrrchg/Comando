@@ -201,6 +201,19 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("stores the dismissed plan revision per session", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+
+        useAiStore
+            .getState()
+            .dismissSessionPlan(TAB.sessionId, "2026-04-15T12:00:00.000Z");
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.dismissedPlanUpdatedAt,
+        ).toBe("2026-04-15T12:00:00.000Z");
+    });
+
     it("removes queued prompts from the queue while they are dispatching", async () => {
         const deferredDispatch = createDeferred<void>();
         const sendAiPrompt = vi
