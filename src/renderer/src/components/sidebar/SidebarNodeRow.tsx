@@ -98,7 +98,7 @@ export function SidebarNodeRow({
                                 action.disabled
                                     ? "cursor-not-allowed text-text-secondary/50"
                                     : action.danger
-                                      ? "text-red-600 hover:bg-red-500/10"
+                                      ? "text-[var(--diff-remove)] hover:bg-[color-mix(in_srgb,var(--diff-remove)_10%,transparent)]"
                                       : "text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                             ].join(" ")}
                             disabled={action.disabled}
@@ -163,10 +163,12 @@ function RowContent({
 function BadgePill({ badge }: { readonly badge: SidebarBadge }) {
     const toneClasses = {
         accent: "border-accent/25 bg-accent/10 text-accent-strong",
-        danger: "border-red-500/20 bg-red-500/10 text-red-600",
+        danger: "border-[color-mix(in_srgb,var(--diff-remove)_25%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_10%,transparent)] text-[var(--diff-remove)]",
         neutral: "border-border bg-bg-elevated text-text-secondary",
-        success: "border-emerald-500/20 bg-emerald-500/10 text-emerald-600",
-        warning: "border-amber-500/20 bg-amber-500/10 text-amber-700",
+        success:
+            "border-[color-mix(in_srgb,var(--diff-add)_25%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-add)_10%,transparent)] text-[var(--diff-add)]",
+        warning:
+            "border-[color-mix(in_srgb,var(--diff-warn)_25%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-warn)_10%,transparent)] text-[var(--diff-warn)]",
     } as const;
 
     return (

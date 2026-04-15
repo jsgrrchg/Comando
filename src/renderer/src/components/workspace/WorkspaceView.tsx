@@ -31,6 +31,7 @@ import {
     resolveEditorLanguage,
     shouldWrapEditorLanguage,
 } from "@shared/editor-language";
+import { isPointOverComposerDropZone } from "@renderer/app/drag-and-drop";
 import {
     clampRoundedInt,
     DEFAULT_EDITOR_FONT_SIZE,
@@ -165,6 +166,10 @@ export function WorkspaceView({
         onDropToSplit: dropTabToSplit,
         onMoveToPane: moveTabToPane,
         onReorder: reorderTab,
+        resolveExternalDropTarget: (_draggedTab, pointer) =>
+            isPointOverComposerDropZone(pointer.x, pointer.y)
+                ? { type: "composer" }
+                : null,
     });
 
     useEffect(() => {
@@ -1030,6 +1035,15 @@ function WorkspacePaneView({
                                                             : false,
                                                     kind: tab.kind,
                                                     paneId: node.id,
+                                                    composerDragItem:
+                                                        tab.kind === "file"
+                                                            ? {
+                                                                  kind: "file_mention",
+                                                                  label: tab.title,
+                                                                  relativePath:
+                                                                      tab.relativePath,
+                                                              }
+                                                            : null,
                                                     sourceIndex:
                                                         node.tabIds.indexOf(
                                                             tabId,
@@ -1050,7 +1064,7 @@ function WorkspacePaneView({
                                             {tabDisplayTitle}
                                         </span>
                                         {"isDirty" in tab && tab.isDirty ? (
-                                            <span className="text-[9px] text-amber-500">
+                                            <span className="text-[9px] text-[var(--diff-warn)]">
                                                 ●
                                             </span>
                                         ) : null}
@@ -1295,7 +1309,9 @@ function WorkspaceTabDragOverlay({
                     <TabIcon kind={draggedTab.kind} title={draggedTab.title} />
                     <span className="truncate">{draggedTab.title}</span>
                     {draggedTab.isDirty ? (
-                        <span className="text-[9px] text-amber-500">●</span>
+                        <span className="text-[9px] text-[var(--diff-warn)]">
+                            ●
+                        </span>
                     ) : null}
                 </div>
             </div>
@@ -2559,8 +2575,8 @@ function FileSyncNotice({
 }) {
     const toneClassName =
         tone === "danger"
-            ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
-            : "border-amber-500/30 bg-amber-500/10 text-amber-100";
+            ? "border-[color-mix(in_srgb,var(--diff-remove)_30%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_10%,transparent)] text-[var(--diff-remove)]"
+            : "border-[color-mix(in_srgb,var(--diff-warn)_30%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-warn)_10%,transparent)] text-[var(--diff-warn)]";
 
     return (
         <div

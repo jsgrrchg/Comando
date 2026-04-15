@@ -214,7 +214,7 @@ function GroupDiffStat({ description }: { readonly description: string }) {
                     <span
                         key={i}
                         style={{
-                            color: "var(--color-status-added, #22c55e)",
+                            color: "var(--diff-add)",
                         }}
                     >
                         {part}
@@ -223,7 +223,7 @@ function GroupDiffStat({ description }: { readonly description: string }) {
                     <span
                         key={i}
                         style={{
-                            color: "var(--color-status-deleted, #ef4444)",
+                            color: "var(--diff-remove)",
                         }}
                     >
                         {part}
@@ -239,13 +239,13 @@ function GroupDiffStat({ description }: { readonly description: string }) {
 function groupCountColor(groupId: GitChangeGroupId): string {
     switch (groupId) {
         case "staged":
-            return "#22c55e";
+            return "var(--diff-add)";
         case "changes":
-            return "#eab308";
+            return "var(--diff-warn)";
         case "untracked":
             return "var(--color-accent)";
         case "conflicts":
-            return "#ef4444";
+            return "var(--diff-remove)";
         default:
             return "var(--color-text-secondary)";
     }

@@ -268,7 +268,7 @@
 :root {
     color-scheme: light;
     font-family: var(--font-sans);
-    --vibrancy-opacity: 50%;
+    --vibrancy-opacity: 82%;
     background: color-mix(
         in srgb,
         var(--color-bg-primary) var(--vibrancy-opacity),

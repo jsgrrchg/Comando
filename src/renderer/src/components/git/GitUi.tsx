@@ -8,11 +8,11 @@ function toneClasses(tone: GitStatusTone): string {
         case "accent":
             return "border-[color-mix(in_srgb,var(--color-accent)_30%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_12%,var(--color-bg-secondary))] text-[color-mix(in_srgb,var(--color-accent)_82%,var(--color-text-primary))]";
         case "danger":
-            return "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300";
+            return "border-[color-mix(in_srgb,var(--diff-remove)_25%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_10%,transparent)] text-[var(--diff-remove)]";
         case "success":
-            return "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+            return "border-[color-mix(in_srgb,var(--diff-add)_25%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-add)_10%,transparent)] text-[var(--diff-add)]";
         case "warning":
-            return "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+            return "border-[color-mix(in_srgb,var(--diff-warn)_25%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-warn)_10%,transparent)] text-[var(--diff-warn)]";
         case "neutral":
         default:
             return "border-border bg-bg-secondary text-text-secondary";
@@ -24,11 +24,11 @@ function actionToneClasses(tone: GitActionTone): string {
         case "accent":
             return "border-[color-mix(in_srgb,var(--color-accent)_32%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_14%,var(--color-bg-elevated))] text-text-primary";
         case "danger":
-            return "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300";
+            return "border-[color-mix(in_srgb,var(--diff-remove)_30%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_12%,transparent)] text-[var(--diff-remove)]";
         case "success":
-            return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+            return "border-[color-mix(in_srgb,var(--diff-add)_30%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-add)_12%,transparent)] text-[var(--diff-add)]";
         case "warning":
-            return "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+            return "border-[color-mix(in_srgb,var(--diff-warn)_30%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-warn)_12%,transparent)] text-[var(--diff-warn)]";
         case "neutral":
         default:
             return "border-border bg-bg-elevated text-text-primary";
@@ -39,7 +39,10 @@ export function GitBadge({
     children,
     className,
     tone = "neutral",
-}: PropsWithChildren<{ readonly className?: string; readonly tone?: GitStatusTone }>) {
+}: PropsWithChildren<{
+    readonly className?: string;
+    readonly tone?: GitStatusTone;
+}>) {
     return (
         <span
             className={[

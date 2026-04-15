@@ -621,16 +621,16 @@ function statusColor(status: GitNodeStatus): string {
     switch (status) {
         case "added":
         case "staged":
-            return "var(--color-status-added, #22c55e)";
+            return "var(--diff-add)";
         case "modified":
         case "renamed":
         case "mixed":
-            return "var(--color-status-modified, #f59e0b)";
+            return "var(--diff-warn)";
         case "deleted":
         case "conflict":
-            return "var(--color-status-deleted, #ef4444)";
+            return "var(--diff-remove)";
         case "untracked":
-            return "var(--color-status-untracked, var(--color-accent))";
+            return "var(--color-accent)";
         case "clean":
         default:
             return "var(--color-text-secondary)";

@@ -112,7 +112,7 @@ export function ContextMenu<T>({
                             entry.disabled
                                 ? "cursor-not-allowed text-text-secondary/50"
                                 : entry.danger
-                                  ? "text-red-600 hover:bg-red-500/10"
+                                  ? "text-[var(--diff-remove)] hover:bg-[color-mix(in_srgb,var(--diff-remove)_10%,transparent)]"
                                   : "text-text-primary hover:bg-bg-tertiary",
                         ].join(" ")}
                         disabled={entry.disabled}

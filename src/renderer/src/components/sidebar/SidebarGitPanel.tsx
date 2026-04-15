@@ -246,14 +246,14 @@ export function SidebarGitPanel({
                         <span className="font-mono text-[10px]">
                             <span
                                 style={{
-                                    color: "var(--color-status-added, #22c55e)",
+                                    color: "var(--diff-add)",
                                 }}
                             >
                                 +{totalAdded}
                             </span>{" "}
                             <span
                                 style={{
-                                    color: "var(--color-status-deleted, #ef4444)",
+                                    color: "var(--diff-remove)",
                                 }}
                             >
                                 -{totalDeleted}

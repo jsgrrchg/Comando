@@ -228,19 +228,17 @@ function StatusDot({
 }) {
     if (!status) return null;
 
-    const colors: Record<NonNullable<typeof status>, string> = {
-        clean: "bg-emerald-500",
-        conflicted: "bg-red-500",
-        dirty: "bg-amber-500",
-        missing: "bg-neutral-400",
+    const colorStyles: Record<NonNullable<typeof status>, string> = {
+        clean: "var(--diff-add)",
+        conflicted: "var(--diff-remove)",
+        dirty: "var(--diff-warn)",
+        missing: "var(--color-text-secondary)",
     };
 
     return (
         <span
-            className={[
-                "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-                colors[status],
-            ].join(" ")}
+            className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ backgroundColor: colorStyles[status] }}
             title={formatStatusLabel(status)}
         />
     );

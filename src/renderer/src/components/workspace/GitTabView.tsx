@@ -1,4 +1,5 @@
 import {
+    Fragment,
     useCallback,
     useEffect,
     useMemo,
@@ -17,17 +18,12 @@ import {
     formatGitCommitDateTime,
     formatGitHistoryDate,
     getRefPillStyle,
+    getTemporalGroupLabel,
 } from "@renderer/app/git/history-presentation";
-import { summarizeGitRepository } from "@renderer/app/git/presentation";
 import { useGitStore } from "@renderer/app/store/git-store";
-import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitTab } from "@renderer/app/workspace/tree";
-import {
-    GitActionButton,
-    GitAuthorAvatar,
-    GitEmptyState,
-} from "@renderer/components/git";
+import { GitAuthorAvatar, GitEmptyState } from "@renderer/components/git";
 
 const GRAPH_COLORS = [
     "var(--color-accent)",
@@ -45,6 +41,9 @@ const DEFAULT_GIT_HISTORY_COLUMN_WIDTHS = {
     date: 88,
     description: 320,
 } as const;
+const DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH = 420;
+const MIN_GIT_DETAIL_SIDEBAR_WIDTH = 280;
+const MIN_GIT_HISTORY_PANE_WIDTH = 420;
 
 type GitHistoryColumnKey =
     | "author"
@@ -63,8 +62,11 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     const [searchDraft, setSearchDraft] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
     const [isCaseSensitive, setIsCaseSensitive] = useState(false);
+    const [detailSidebarWidth, setDetailSidebarWidth] = useState(
+        DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH,
+    );
     const searchInputRef = useRef<HTMLInputElement | null>(null);
-    const projects = useProjectsStore((state) => state.projects);
+    const splitContainerRef = useRef<HTMLDivElement | null>(null);
     const snapshots = useGitStore((state) => state.snapshots);
     const historyByContext = useGitStore((state) => state.historyByContext);
     const commitDetailsByContext = useGitStore(
@@ -81,9 +83,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     const refreshHistory = useGitStore((state) => state.refreshHistory);
     const ensureCommitDetail = useGitStore((state) => state.ensureCommitDetail);
     const selectCommit = useGitStore((state) => state.selectCommit);
-    const fetchRepository = useGitStore((state) => state.fetchRepository);
-    const pullRepository = useGitStore((state) => state.pullRepository);
-    const pushRepository = useGitStore((state) => state.pushRepository);
     const openGitCommitTab = useWorkspaceStore(
         (state) => state.openGitCommitTab,
     );
@@ -91,9 +90,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     const projectId = tab.projectId;
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
-    const project = projectId
-        ? (projects.find((candidate) => candidate.id === projectId) ?? null)
-        : null;
     const snapshot = contextKey ? (snapshots[contextKey] ?? null) : null;
     const history = contextKey
         ? (historyByContext[contextKey] ?? EMPTY_HISTORY)
@@ -108,11 +104,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     const rawSelectedCommitSha = contextKey
         ? selectedCommitShas[contextKey]
         : undefined;
-    const summary = useMemo(
-        () => summarizeGitRepository(project, snapshot),
-        [project, snapshot],
-    );
-
     useEffect(() => {
         if (!projectId || snapshot) {
             return;
@@ -163,6 +154,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         () => createGitHistoryColumnWidths(graphColumnMinWidth),
     );
     const resizeCleanupRef = useRef<(() => void) | null>(null);
+    const detailResizeCleanupRef = useRef<(() => void) | null>(null);
     const effectiveColumnWidths = useMemo(
         () => coerceGitHistoryColumnWidths(columnWidths, graphColumnMinWidth),
         [columnWidths, graphColumnMinWidth],
@@ -193,6 +185,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     useEffect(() => {
         return () => {
             resizeCleanupRef.current?.();
+            detailResizeCleanupRef.current?.();
         };
     }, []);
 
@@ -431,6 +424,69 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         [openActiveCommit, selectRelativeCommit],
     );
 
+    const handleDetailSidebarResizePointerDown = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            detailResizeCleanupRef.current?.();
+
+            const startX = event.clientX;
+            const startWidth = detailSidebarWidth;
+            const previousCursor = document.body.style.cursor;
+            const previousUserSelect = document.body.style.userSelect;
+
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+
+            const handlePointerMove = (pointerEvent: PointerEvent) => {
+                const containerWidth =
+                    splitContainerRef.current?.getBoundingClientRect().width ??
+                    0;
+
+                if (containerWidth <= 0) {
+                    return;
+                }
+
+                const delta = pointerEvent.clientX - startX;
+                const maxSidebarWidth = Math.max(
+                    MIN_GIT_DETAIL_SIDEBAR_WIDTH,
+                    containerWidth - MIN_GIT_HISTORY_PANE_WIDTH,
+                );
+
+                setDetailSidebarWidth(
+                    Math.round(
+                        clampWidth(
+                            startWidth - delta,
+                            MIN_GIT_DETAIL_SIDEBAR_WIDTH,
+                            maxSidebarWidth,
+                        ),
+                    ),
+                );
+            };
+
+            const cleanup = () => {
+                document.body.style.cursor = previousCursor;
+                document.body.style.userSelect = previousUserSelect;
+                window.removeEventListener("pointermove", handlePointerMove);
+                window.removeEventListener("pointerup", handlePointerUp);
+                window.removeEventListener("pointercancel", handlePointerUp);
+                detailResizeCleanupRef.current = null;
+            };
+
+            const handlePointerUp = () => {
+                cleanup();
+            };
+
+            detailResizeCleanupRef.current = cleanup;
+
+            window.addEventListener("pointermove", handlePointerMove);
+            window.addEventListener("pointerup", handlePointerUp);
+            window.addEventListener("pointercancel", handlePointerUp);
+        },
+        [detailSidebarWidth],
+    );
+
     if (!projectId) {
         return (
             <div className="flex h-full items-center justify-center px-6">
@@ -442,19 +498,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         );
     }
 
-    const headerTitle =
-        summary?.branchName != null
-            ? `${summary.repositoryName ?? "Repository"} / ${summary.branchName}`
-            : (summary?.repositoryName ?? project?.name ?? "Git");
-    const headerSubtitle = [
-        summary?.worktreeName,
-        summary?.stateLabel,
-        summary?.upstreamName ? `upstream ${summary.upstreamName}` : null,
-        summary?.aheadBy ? `+${summary.aheadBy}` : null,
-        summary?.behindBy ? `-${summary.behindBy}` : null,
-    ]
-        .filter(Boolean)
-        .join("  ");
     const searchHasNoMatches =
         searchQuery.trim().length > 0 && matchedCommitShas.length === 0;
 
@@ -464,147 +507,109 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             onKeyDown={handleRootKeyDown}
             tabIndex={0}
         >
-            <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-                <div className="min-w-0">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
-                        Git
-                    </p>
-                    <p className="truncate text-[13px] font-medium text-text-primary">
-                        {headerTitle}
-                    </p>
-                    {headerSubtitle ? (
-                        <p className="truncate text-[11px] text-text-secondary">
-                            {headerSubtitle}
-                        </p>
-                    ) : null}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5">
-                    <GitActionButton
-                        action={{
-                            disabled: !projectId,
-                            id: "fetch",
-                            label: "Fetch",
-                            onClick: () =>
-                                void fetchRepository(projectId, worktreeId),
-                        }}
-                    />
-                    <GitActionButton
-                        action={{
-                            disabled: !projectId,
-                            id: "pull",
-                            label: "Pull",
-                            onClick: () =>
-                                void pullRepository(projectId, worktreeId),
-                        }}
-                    />
-                    <GitActionButton
-                        action={{
-                            disabled: !projectId,
-                            id: "push",
-                            label: "Push",
-                            onClick: () =>
-                                void pushRepository(projectId, worktreeId),
-                        }}
-                    />
-                </div>
-            </header>
-
             {error ? (
-                <div className="border-b border-border px-4 py-2 text-[11px] text-red-600 dark:text-red-300">
+                <div
+                    className="border-b border-border px-4 py-2 text-[11px]"
+                    style={{ color: "var(--diff-remove)" }}
+                >
                     {error}
                 </div>
             ) : null}
 
             <div className="border-b border-border px-4 py-2">
-                <div className="flex items-center gap-2">
-                    <div
-                        className={[
-                            "project-switcher-search mb-0 flex-1",
-                            searchHasNoMatches ? "border-red-500/45" : "",
-                        ].join(" ")}
-                    >
-                        <svg
-                            fill="none"
-                            height="12"
-                            style={{ opacity: 0.4, flexShrink: 0 }}
-                            viewBox="0 0 16 16"
-                            width="12"
-                        >
-                            <circle
-                                cx="7"
-                                cy="7"
-                                r="5"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
-                            />
-                            <path
-                                d="m13 13-2.5-2.5"
-                                stroke="currentColor"
-                                strokeLinecap="round"
-                                strokeWidth="1.5"
-                            />
-                        </svg>
-                        <input
-                            autoCapitalize="off"
-                            autoCorrect="off"
-                            className="project-switcher-search-input"
-                            onChange={(event) =>
-                                setSearchDraft(event.target.value)
-                            }
-                            onKeyDown={(event) => {
-                                if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    confirmSearch();
-                                }
-                            }}
-                            placeholder="Search commits..."
-                            ref={searchInputRef}
-                            spellCheck={false}
-                            value={searchDraft}
-                        />
-                        <button
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <div
                             className={[
-                                "rounded px-1.5 py-0.5 text-[11px] transition-colors",
-                                isCaseSensitive
-                                    ? "bg-[color-mix(in_srgb,var(--color-accent)_12%,var(--color-bg-elevated))] text-text-primary"
-                                    : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary",
+                                "project-switcher-search mb-0 flex-1",
+                                searchHasNoMatches
+                                    ? "border-[color-mix(in_srgb,var(--diff-remove)_45%,transparent)]"
+                                    : "",
                             ].join(" ")}
-                            onClick={() =>
-                                setIsCaseSensitive((current) => !current)
-                            }
+                        >
+                            <svg
+                                fill="none"
+                                height="12"
+                                style={{ opacity: 0.4, flexShrink: 0 }}
+                                viewBox="0 0 16 16"
+                                width="12"
+                            >
+                                <circle
+                                    cx="7"
+                                    cy="7"
+                                    r="5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                />
+                                <path
+                                    d="m13 13-2.5-2.5"
+                                    stroke="currentColor"
+                                    strokeLinecap="round"
+                                    strokeWidth="1.5"
+                                />
+                            </svg>
+                            <input
+                                autoCapitalize="off"
+                                autoCorrect="off"
+                                className="project-switcher-search-input"
+                                onChange={(event) =>
+                                    setSearchDraft(event.target.value)
+                                }
+                                onKeyDown={(event) => {
+                                    if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        confirmSearch();
+                                    }
+                                }}
+                                placeholder="Search commits..."
+                                ref={searchInputRef}
+                                spellCheck={false}
+                                value={searchDraft}
+                            />
+                            <button
+                                className={[
+                                    "rounded px-1.5 py-0.5 text-[11px] transition-colors",
+                                    isCaseSensitive
+                                        ? "bg-[color-mix(in_srgb,var(--color-accent)_12%,var(--color-bg-elevated))] text-text-primary"
+                                        : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary",
+                                ].join(" ")}
+                                onClick={() =>
+                                    setIsCaseSensitive((current) => !current)
+                                }
+                                type="button"
+                            >
+                                Aa
+                            </button>
+                        </div>
+
+                        <button
+                            className="ide-button px-2 py-1"
+                            disabled={matchedCommitShas.length === 0}
+                            onClick={() => selectSearchMatch("previous")}
                             type="button"
                         >
-                            Aa
+                            {"<"}
                         </button>
+                        <button
+                            className="ide-button px-2 py-1"
+                            disabled={matchedCommitShas.length === 0}
+                            onClick={() => selectSearchMatch("next")}
+                            type="button"
+                        >
+                            {">"}
+                        </button>
+                        <span className="min-w-12 text-right font-mono text-[11px] text-text-secondary">
+                            {selectedMatchIndex >= 0 &&
+                            matchedCommitShas.length > 0
+                                ? `${selectedMatchIndex + 1}/${matchedCommitShas.length}`
+                                : `0/${matchedCommitShas.length}`}
+                        </span>
                     </div>
-
-                    <button
-                        className="ide-button px-2 py-1"
-                        disabled={matchedCommitShas.length === 0}
-                        onClick={() => selectSearchMatch("previous")}
-                        type="button"
-                    >
-                        {"<"}
-                    </button>
-                    <button
-                        className="ide-button px-2 py-1"
-                        disabled={matchedCommitShas.length === 0}
-                        onClick={() => selectSearchMatch("next")}
-                        type="button"
-                    >
-                        {">"}
-                    </button>
-                    <span className="min-w-12 text-right font-mono text-[11px] text-text-secondary">
-                        {selectedMatchIndex >= 0 && matchedCommitShas.length > 0
-                            ? `${selectedMatchIndex + 1}/${matchedCommitShas.length}`
-                            : `0/${matchedCommitShas.length}`}
-                    </span>
                 </div>
             </div>
 
-            <div className="flex min-h-0 flex-1">
-                <section className="min-h-0 flex-[1.6] overflow-hidden border-r border-border">
+            <div className="flex min-h-0 flex-1" ref={splitContainerRef}>
+                <section className="min-h-0 min-w-0 flex-1 overflow-hidden">
                     <div className="shell-scrollbar h-full overflow-auto">
                         <div
                             className="sticky top-0 z-10 grid border-b border-border bg-bg-primary px-3 py-2 text-[11px] text-text-secondary"
@@ -665,81 +670,146 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                                 </GitEmptyState>
                             </div>
                         ) : (
-                            graphRows.map((row) => (
-                                <button
-                                    className={[
-                                        "grid w-full items-stretch px-3 text-left text-[12px] transition-colors",
-                                        activeCommit?.sha === row.commit.sha
-                                            ? "bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
-                                            : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary",
-                                    ].join(" ")}
-                                    key={row.commit.sha}
-                                    onClick={() => {
-                                        selectCommitSha(row.commit.sha);
-                                    }}
-                                    style={{
-                                        gridTemplateColumns:
-                                            gitHistoryGridTemplate,
-                                        minWidth: gitHistoryTableMinWidth,
-                                    }}
-                                    type="button"
-                                >
-                                    <GitHistoryGraphCell
-                                        bottomLanes={row.bottomLanes}
-                                        colorId={row.colorId}
-                                        graphWidth={graphColumnWidth}
-                                        laneIndex={row.laneIndex}
-                                        parentColumns={row.parentColumns}
-                                        topLanes={row.topLanes}
-                                    />
+                            graphRows.map((row, rowIndex) => {
+                                const groupLabel = getTemporalGroupLabel(
+                                    row.commit.authoredAt,
+                                );
+                                const prevLabel =
+                                    rowIndex > 0
+                                        ? getTemporalGroupLabel(
+                                              graphRows[rowIndex - 1].commit
+                                                  .authoredAt,
+                                          )
+                                        : null;
+                                const showSeparator = groupLabel !== prevLabel;
 
-                                    <div className="min-w-0 border-b border-border-subtle py-2.5 pr-4">
-                                        <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                                            {row.commit.refs.map(
-                                                (reference) => (
-                                                    <GitReferencePill
-                                                        key={`${row.commit.sha}:${reference.label}`}
-                                                        kind={reference.kind}
-                                                        label={reference.label}
-                                                    />
-                                                ),
-                                            )}
-                                        </div>
-                                        <div className="truncate text-[12px] text-text-primary">
-                                            {renderHighlightedText(
-                                                row.commit.subject,
-                                                searchQuery,
-                                                isCaseSensitive,
-                                                matchedCommitSet.has(
-                                                    row.commit.sha,
-                                                ),
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
-                                        {formatGitHistoryDate(
-                                            row.commit.authoredAt,
+                                return (
+                                    <Fragment key={row.commit.sha}>
+                                        {showSeparator && (
+                                            <div className="flex items-center gap-2 px-4 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-tertiary">
+                                                <span>{groupLabel}</span>
+                                                <div className="h-px flex-1 bg-border-subtle" />
+                                            </div>
                                         )}
-                                    </div>
+                                        <button
+                                            className={[
+                                                "group/row grid w-full items-stretch border-l-[3px] border-l-transparent pl-[9px] pr-3 text-left text-[12px] transition-[color,background-color,border-color] duration-120",
+                                                activeCommit?.sha ===
+                                                row.commit.sha
+                                                    ? "!border-l-[--row-branch-color] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
+                                                    : "text-text-secondary hover:border-l-[--row-branch-color] hover:bg-bg-secondary hover:text-text-primary",
+                                            ].join(" ")}
+                                            onClick={() => {
+                                                selectCommitSha(row.commit.sha);
+                                            }}
+                                            style={
+                                                {
+                                                    gridTemplateColumns:
+                                                        gitHistoryGridTemplate,
+                                                    minWidth:
+                                                        gitHistoryTableMinWidth,
+                                                    "--row-branch-color":
+                                                        GRAPH_COLORS[
+                                                            row.colorId %
+                                                                GRAPH_COLORS.length
+                                                        ],
+                                                } as React.CSSProperties
+                                            }
+                                            type="button"
+                                        >
+                                            <GitHistoryGraphCell
+                                                bottomLanes={row.bottomLanes}
+                                                colorId={row.colorId}
+                                                graphWidth={graphColumnWidth}
+                                                laneIndex={row.laneIndex}
+                                                parentColumns={
+                                                    row.parentColumns
+                                                }
+                                                topLanes={row.topLanes}
+                                            />
 
-                                    <div className="min-w-0 truncate border-b border-border-subtle py-2.5 pr-3 text-[11px]">
-                                        {row.commit.authorName}
-                                    </div>
+                                            <div className="min-w-0 border-b border-border-subtle py-2.5 pr-4">
+                                                <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                                                    {row.commit.refs.map(
+                                                        (reference) => (
+                                                            <GitReferencePill
+                                                                key={`${row.commit.sha}:${reference.label}`}
+                                                                kind={
+                                                                    reference.kind
+                                                                }
+                                                                label={
+                                                                    reference.label
+                                                                }
+                                                            />
+                                                        ),
+                                                    )}
+                                                </div>
+                                                <div className="truncate text-[12px] text-text-primary">
+                                                    {renderHighlightedText(
+                                                        row.commit.subject,
+                                                        searchQuery,
+                                                        isCaseSensitive,
+                                                        matchedCommitSet.has(
+                                                            row.commit.sha,
+                                                        ),
+                                                    )}
+                                                </div>
+                                            </div>
 
-                                    <div
-                                        className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-[11px]"
-                                        title={row.commit.sha}
-                                    >
-                                        {row.commit.shortSha}
-                                    </div>
-                                </button>
-                            ))
+                                            <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
+                                                {formatGitHistoryDate(
+                                                    row.commit.authoredAt,
+                                                )}
+                                            </div>
+
+                                            <div className="flex min-w-0 items-center gap-1.5 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
+                                                <GitAuthorAvatar
+                                                    email={
+                                                        row.commit.authorEmail
+                                                    }
+                                                    name={row.commit.authorName}
+                                                    size={20}
+                                                />
+                                                <span className="truncate">
+                                                    {row.commit.authorName}
+                                                </span>
+                                            </div>
+
+                                            <div
+                                                className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-[11px]"
+                                                title={row.commit.sha}
+                                            >
+                                                {row.commit.shortSha}
+                                            </div>
+                                        </button>
+                                    </Fragment>
+                                );
+                            })
                         )}
                     </div>
                 </section>
 
-                <aside className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
+                <div
+                    aria-label="Resize commit details sidebar"
+                    aria-orientation="vertical"
+                    className="group relative z-10 flex w-[7px] cursor-col-resize touch-none items-center justify-center bg-transparent"
+                    onDoubleClick={() =>
+                        setDetailSidebarWidth(DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH)
+                    }
+                    onPointerDown={handleDetailSidebarResizePointerDown}
+                    role="separator"
+                    title="Drag to resize"
+                >
+                    <div className="workspace-divider h-full w-px bg-border transition-colors duration-100 group-hover:bg-accent" />
+                </div>
+
+                <aside
+                    className="shell-scrollbar min-h-0 overflow-y-auto"
+                    style={{
+                        minWidth: MIN_GIT_DETAIL_SIDEBAR_WIDTH,
+                        width: detailSidebarWidth,
+                    }}
+                >
                     <GitCommitDetailSidebar
                         commit={activeCommit}
                         detail={activeCommitDetail}
@@ -924,36 +994,56 @@ function GitCommitDetailSidebar({
                                     ) : null}
                                 </div>
 
-                                {changedFiles.map((file) => (
-                                    <div
-                                        className="flex items-center justify-between gap-3 text-[11px]"
-                                        key={`${commit.sha}:${file.path}`}
-                                    >
-                                        <div className="min-w-0 truncate font-mono text-text-primary">
-                                            {file.path}
-                                        </div>
-                                        <div className="flex shrink-0 items-center gap-1.5 text-text-secondary">
-                                            {file.additions ? (
-                                                <span
-                                                    style={{
-                                                        color: "var(--diff-add)",
-                                                    }}
-                                                >
-                                                    +{file.additions}
+                                {changedFiles.map((file) => {
+                                    const lastSlash =
+                                        file.path.lastIndexOf("/");
+                                    const fileName =
+                                        lastSlash >= 0
+                                            ? file.path.slice(lastSlash + 1)
+                                            : file.path;
+                                    const dirPath =
+                                        lastSlash >= 0
+                                            ? file.path.slice(0, lastSlash)
+                                            : "";
+
+                                    return (
+                                        <div
+                                            className="flex items-center justify-between gap-3 text-[11px]"
+                                            key={`${commit.sha}:${file.path}`}
+                                        >
+                                            <div className="flex min-w-0 items-center gap-1.5">
+                                                <span className="shrink-0 font-mono text-text-primary">
+                                                    {fileName}
                                                 </span>
-                                            ) : null}
-                                            {file.deletions ? (
-                                                <span
-                                                    style={{
-                                                        color: "var(--diff-remove)",
-                                                    }}
-                                                >
-                                                    -{file.deletions}
-                                                </span>
-                                            ) : null}
+                                                {dirPath ? (
+                                                    <span className="truncate text-text-tertiary">
+                                                        {dirPath}
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                            <div className="flex shrink-0 items-center gap-1.5 text-text-secondary">
+                                                {file.additions ? (
+                                                    <span
+                                                        style={{
+                                                            color: "var(--diff-add)",
+                                                        }}
+                                                    >
+                                                        +{file.additions}
+                                                    </span>
+                                                ) : null}
+                                                {file.deletions ? (
+                                                    <span
+                                                        style={{
+                                                            color: "var(--diff-remove)",
+                                                        }}
+                                                    >
+                                                        -{file.deletions}
+                                                    </span>
+                                                ) : null}
+                                            </div>
                                         </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         ) : null}
 

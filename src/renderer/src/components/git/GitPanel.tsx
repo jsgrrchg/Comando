@@ -235,8 +235,8 @@ export function GitCommitFooter({
                                     flexShrink: 0,
                                     color:
                                         syncStatus.tone === "success"
-                                            ? "var(--color-status-added, #22c55e)"
-                                            : "var(--color-status-deleted, #ef4444)",
+                                            ? "var(--diff-add)"
+                                            : "var(--diff-remove)",
                                 }}
                             >
                                 {syncStatus.message}
@@ -459,7 +459,7 @@ export function GitCommitFooter({
                 >
                     <div className="min-w-0 px-1 text-[10px] text-text-secondary">
                         {commit.error ? (
-                            <span className="text-red-600 dark:text-red-300">
+                            <span style={{ color: "var(--diff-remove)" }}>
                                 {commit.error}
                             </span>
                         ) : commit.hint ? (

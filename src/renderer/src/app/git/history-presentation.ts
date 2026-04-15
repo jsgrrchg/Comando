@@ -128,6 +128,33 @@ export function convertCommitFilesToDiffFiles(
     return files.map((file) => convertCommitFileToDiffFile(file));
 }
 
+export function getTemporalGroupLabel(dateStr: string): string {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const startOfToday = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+    );
+    const commitDay = new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate(),
+    );
+    const diffDays = Math.floor(
+        (startOfToday.getTime() - commitDay.getTime()) / 86_400_000,
+    );
+
+    if (diffDays <= 0) return "Today";
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) return "This Week";
+    if (diffDays < 14) return "Last Week";
+    return new Intl.DateTimeFormat("en", {
+        month: "long",
+        year: "numeric",
+    }).format(date);
+}
+
 export function formatGitHistoryDate(value: string): string {
     return new Intl.DateTimeFormat("en", {
         day: "numeric",
