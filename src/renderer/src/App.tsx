@@ -90,6 +90,7 @@ export function App() {
     const hydrateBootstrap = useAppStore((state) => state.hydrate);
 
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+    const addProjects = useProjectsStore((state) => state.addProjects);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const fullyLoadedTreeProjects = useProjectsStore(
         (state) => state.fullyLoadedTreeProjects,
@@ -317,11 +318,10 @@ export function App() {
 
             void refreshProjectTree(payload.projectId, preferredWorktreeId);
             void refreshProjectTabs(payload.projectId, preferredWorktreeId);
-            void refreshGitProject(payload.projectId, preferredWorktreeId);
         });
 
         return unsubscribe;
-    }, [refreshGitProject, refreshProjectTabs, refreshProjectTree]);
+    }, [refreshProjectTabs, refreshProjectTree]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -1782,34 +1782,23 @@ export function App() {
             </div>
 
             <div className="border-t border-border/50 px-2 py-2">
-                <button
-                    className="sidebar-action-row app-no-drag w-full"
-                    onClick={openSettingsWindow}
-                    type="button"
-                >
-                    <svg
-                        aria-hidden="true"
-                        className="h-4 w-4 shrink-0"
-                        fill="none"
-                        viewBox="0 0 16 16"
-                    >
-                        <path
-                            d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
-                            stroke="currentColor"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1"
-                        />
-                        <circle
-                            cx="8"
-                            cy="8"
-                            r="2.1"
-                            stroke="currentColor"
-                            strokeWidth="1.4"
-                        />
-                    </svg>
-                    <span>Settings</span>
-                </button>
+                <ProjectSwitcher
+                    activeProject={activeProject}
+                    onOpenProjects={() => {
+                        void addProjects();
+                    }}
+                    onOpenSettings={openSettingsWindow}
+                    onSelectProject={(projectId) => {
+                        if (projectId === activeProjectId) {
+                            return;
+                        }
+
+                        void getComandoApi()?.openProjectWindow({
+                            projectId,
+                        });
+                    }}
+                    projects={projects}
+                />
             </div>
         </>
     );
@@ -2181,6 +2170,209 @@ export function App() {
                     onClose={() => setFileTreeContextMenu(null)}
                 />
             ) : null}
+        </div>
+    );
+}
+
+function ProjectSwitcher({
+    activeProject,
+    onOpenProjects,
+    onOpenSettings,
+    onSelectProject,
+    projects,
+}: {
+    readonly activeProject: ProjectSummary | null;
+    readonly onOpenProjects: () => void;
+    readonly onOpenSettings: () => void;
+    readonly onSelectProject: (projectId: string) => void;
+    readonly projects: readonly ProjectSummary[];
+}) {
+    const [open, setOpen] = useState(false);
+    const [search, setSearch] = useState("");
+    const ref = useRef<HTMLDivElement | null>(null);
+    const searchRef = useRef<HTMLInputElement | null>(null);
+    const normalizedSearch = search.trim().toLowerCase();
+    const filteredProjects = projects.filter((project) => {
+        if (!normalizedSearch) return true;
+        return (
+            project.name.toLowerCase().includes(normalizedSearch) ||
+            project.rootPath.toLowerCase().includes(normalizedSearch)
+        );
+    });
+
+    useEffect(() => {
+        if (!open) return;
+        searchRef.current?.focus();
+        const handleDown = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node)) {
+                setOpen(false);
+                setSearch("");
+            }
+        };
+        const handleKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") {
+                setOpen(false);
+                setSearch("");
+            }
+        };
+        document.addEventListener("mousedown", handleDown);
+        document.addEventListener("keydown", handleKey);
+        return () => {
+            document.removeEventListener("mousedown", handleDown);
+            document.removeEventListener("keydown", handleKey);
+        };
+    }, [open]);
+
+    const handleAction = (action: () => void) => {
+        setOpen(false);
+        setSearch("");
+        queueMicrotask(action);
+    };
+
+    const menuItem = (
+        label: string,
+        action: () => void,
+        checked = false,
+        muted = false,
+    ) => (
+        <button
+            className="project-switcher-menu-item"
+            key={label}
+            onClick={() => handleAction(action)}
+            type="button"
+        >
+            <span className="project-switcher-check">{checked ? "✓" : ""}</span>
+            <span
+                className="truncate"
+                style={{
+                    color: muted
+                        ? "var(--color-text-secondary)"
+                        : "var(--color-text-primary)",
+                }}
+            >
+                {label}
+            </span>
+        </button>
+    );
+
+    return (
+        <div ref={ref} style={{ position: "relative" }}>
+            {open && (
+                <div className="project-switcher-menu">
+                    {projects.length > 0 && (
+                        <div className="project-switcher-search">
+                            <svg
+                                fill="none"
+                                height="12"
+                                style={{ opacity: 0.4, flexShrink: 0 }}
+                                viewBox="0 0 16 16"
+                                width="12"
+                            >
+                                <circle
+                                    cx="7"
+                                    cy="7"
+                                    r="5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                />
+                                <path
+                                    d="m13 13-2.5-2.5"
+                                    stroke="currentColor"
+                                    strokeLinecap="round"
+                                    strokeWidth="1.5"
+                                />
+                            </svg>
+                            <input
+                                className="project-switcher-search-input"
+                                onChange={(e) => setSearch(e.target.value)}
+                                onKeyDown={(e) => e.stopPropagation()}
+                                placeholder="Search projects…"
+                                ref={searchRef}
+                                value={search}
+                            />
+                            <span className="project-switcher-search-count">
+                                {filteredProjects.length}/{projects.length}
+                            </span>
+                        </div>
+                    )}
+                    <div className="project-switcher-list">
+                        {projects.length > 0 &&
+                        filteredProjects.length === 0 ? (
+                            <div className="project-switcher-empty">
+                                No projects match your search.
+                            </div>
+                        ) : (
+                            filteredProjects.map((project) =>
+                                menuItem(
+                                    project.name,
+                                    () => onSelectProject(project.id),
+                                    project.id === activeProject?.id,
+                                ),
+                            )
+                        )}
+                    </div>
+                    {projects.length > 0 && (
+                        <div className="project-switcher-sep" />
+                    )}
+                    {menuItem("Open folder…", onOpenProjects, false, true)}
+                    {menuItem("Settings", onOpenSettings, false, true)}
+                </div>
+            )}
+
+            <button
+                className="sidebar-action-row app-no-drag w-full"
+                onClick={() => setOpen((v) => !v)}
+                type="button"
+            >
+                <svg
+                    aria-hidden="true"
+                    fill="none"
+                    height="13"
+                    style={{ flexShrink: 0 }}
+                    viewBox="0 0 16 16"
+                    width="13"
+                >
+                    <path
+                        d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
+                        stroke="currentColor"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="1"
+                    />
+                    <circle
+                        cx="8"
+                        cy="8"
+                        r="2.1"
+                        stroke="currentColor"
+                        strokeWidth="1.4"
+                    />
+                </svg>
+                <span
+                    className="flex-1 truncate text-left"
+                    style={{
+                        color: "var(--color-text-primary)",
+                        fontWeight: 500,
+                    }}
+                >
+                    {activeProject?.name ?? "Open project"}
+                </span>
+                <svg
+                    aria-hidden="true"
+                    fill="none"
+                    height="10"
+                    style={{ flexShrink: 0 }}
+                    viewBox="0 0 16 16"
+                    width="10"
+                >
+                    <path
+                        d="M5 6l3-3 3 3M5 10l3 3 3-3"
+                        stroke="currentColor"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="1.5"
+                    />
+                </svg>
+            </button>
         </div>
     );
 }
