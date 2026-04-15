@@ -1105,6 +1105,43 @@ button {
     background: transparent;
 }
 
+.monaco-editor .line-numbers.git-gutter-line-number {
+    position: relative !important;
+}
+
+.monaco-editor .line-numbers.git-gutter-line-number::before {
+    content: "";
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 2px;
+    width: 2px;
+    border-radius: 999px;
+    opacity: 0.9;
+    pointer-events: none;
+}
+
+.monaco-editor .line-numbers.git-gutter-line-number--add::before {
+    background: color-mix(in srgb, var(--diff-add) 88%, transparent);
+}
+
+.monaco-editor .line-numbers.git-gutter-line-number--modify::before {
+    background: color-mix(in srgb, var(--diff-warn) 86%, transparent);
+}
+
+.monaco-editor .line-numbers.git-gutter-line-number--delete-top::before,
+.monaco-editor .line-numbers.git-gutter-line-number--delete-bottom::before {
+    background: color-mix(in srgb, var(--diff-remove) 90%, transparent);
+    height: 6px;
+    top: -2px;
+    bottom: auto;
+}
+
+.monaco-editor .line-numbers.git-gutter-line-number--delete-bottom::before {
+    top: auto;
+    bottom: -2px;
+}
+
 .inline-review-diff .monaco-editor .line-numbers.dimmed-line-number {
     display: none !important;
 }
