@@ -489,6 +489,7 @@ function WorkspacePaneView({
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        targetPaneId?: string | null,
     ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
     const paneCount = useWorkspaceStore(
@@ -646,9 +647,10 @@ function WorkspacePaneView({
                 relativePath,
                 worktreeId ?? activeTabWorktreeId,
                 reviewContext,
+                node.id,
             );
         },
-        [activeTabWorktreeId, openFileTab],
+        [activeTabWorktreeId, node.id, openFileTab],
     );
 
     const handleCreateAgentFromFocusedProvider = useCallback(() => {

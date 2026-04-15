@@ -120,6 +120,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        targetPaneId?: string | null,
     ) => Promise<void>;
     openReviewTab: (input: {
         readonly projectId: string | null;
@@ -494,11 +495,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         relativePath: string,
         worktreeId: string | null = null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        targetPaneId?: string | null,
     ) => {
         try {
             const trackedFiles = collectPendingTrackedFilesFromSessions(
                 useAiStore.getState().sessions,
             );
+            const resolvedPaneId =
+                targetPaneId &&
+                collectPaneNodes(get().rootNode).some(
+                    (pane) => pane.id === targetPaneId,
+                )
+                    ? targetPaneId
+                    : get().activePaneId;
             const existingTab = findExistingFileTab(
                 get(),
                 projectId,
@@ -561,7 +570,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             };
 
             set((state) => ({
-                ...attachTabToPane(state, state.activePaneId, tab),
+                ...attachTabToPane(state, resolvedPaneId, tab),
                 error: null,
             }));
             await persistWorkspaceState(get);
