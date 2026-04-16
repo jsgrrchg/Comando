@@ -6,6 +6,7 @@ import {
     IPC_CHANNELS,
     IPC_EVENTS,
     type AppBootstrapSnapshot,
+    type AiSessionUpdate,
     type AiPermissionResponseInput,
     type AiRuntimeAuthLaunchInput,
     type AiRuntimeAuthLogoutInput,
@@ -15,7 +16,6 @@ import {
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
     type AiSessionRenameMutationInput,
-    type AiSessionSnapshot,
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
@@ -77,33 +77,6 @@ import {
     type WriteTerminalInput,
     type WorkspaceSnapshot,
 } from "@shared/ipc";
-
-window.addEventListener("error", (event: ErrorEvent) => {
-    const filename =
-        typeof event.filename === "string" && event.filename.length > 0
-            ? event.filename
-            : "unknown";
-    const line = typeof event.lineno === "number" ? event.lineno : 0;
-    const column = typeof event.colno === "number" ? event.colno : 0;
-    const reason =
-        event.error instanceof Error
-            ? (event.error.stack ?? event.error.message)
-            : String(event.message);
-
-    console.error(`[renderer-error] ${reason} (${filename}:${line}:${column})`);
-});
-
-window.addEventListener(
-    "unhandledrejection",
-    (event: PromiseRejectionEvent) => {
-        const reason =
-            event.reason instanceof Error
-                ? (event.reason.stack ?? event.reason.message)
-                : String(event.reason);
-
-        console.error(`[renderer-unhandledrejection] ${reason}`);
-    },
-);
 
 window.addEventListener("DOMContentLoaded", () => {
     document.documentElement?.setAttribute("data-comando-preload", "ready");
@@ -528,9 +501,9 @@ const comandoApi: ComandoApi = {
     onAiSessionSnapshot: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
-            snapshot: AiSessionSnapshot,
+            update: AiSessionUpdate,
         ) => {
-            listener(snapshot);
+            listener(update);
         };
 
         ipcRenderer.on(IPC_EVENTS.aiSessionSnapshot, handleEvent);

@@ -25,6 +25,7 @@ interface WorkspaceTabRow {
     readonly id: string;
     readonly kind: string;
     readonly payload_json: string;
+    readonly position?: number;
     readonly title: string;
     readonly worktree_id: string | null;
 }
@@ -137,10 +138,27 @@ export class WorkspaceService {
                 updated_at = excluded.updated_at
             `,
         );
-        const deleteTabs = this.#connection.prepare<[string], void>(
-            "DELETE FROM workspace_tabs WHERE workspace_id = ?",
+        const loadExistingTabs = this.#connection.prepare<
+            [string],
+            WorkspaceTabRow
+        >(
+            `
+            SELECT
+                id,
+                kind,
+                title,
+                payload_json,
+                created_at,
+                worktree_id,
+                position
+            FROM workspace_tabs
+            WHERE workspace_id = ?
+            `,
         );
-        const insertTab = this.#connection.prepare<
+        const deleteTab = this.#connection.prepare<[string, string], void>(
+            "DELETE FROM workspace_tabs WHERE workspace_id = ? AND id = ?",
+        );
+        const upsertTab = this.#connection.prepare<
             [
                 string,
                 string,
@@ -165,6 +183,14 @@ export class WorkspaceService {
                 position
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                kind = excluded.kind,
+                title = excluded.title,
+                payload_json = excluded.payload_json,
+                created_at = excluded.created_at,
+                worktree_id = excluded.worktree_id,
+                position = excluded.position
             `,
         );
 
@@ -177,19 +203,47 @@ export class WorkspaceService {
                     now,
                     now,
                 );
-                deleteTabs.run(workspaceId);
+                const existingTabsById = new Map(
+                    loadExistingTabs
+                        .all(workspaceId)
+                        .map((row) => [row.id, row] as const),
+                );
+                const nextTabIds = new Set<string>();
 
                 nextSnapshot.tabs.forEach((tab, index) => {
-                    insertTab.run(
+                    const serializedPayload = JSON.stringify(serializeTab(tab));
+                    const nextWorktreeId = tab.worktreeId ?? null;
+                    const existingTab = existingTabsById.get(tab.id);
+                    nextTabIds.add(tab.id);
+
+                    if (
+                        existingTab &&
+                        existingTab.kind === tab.kind &&
+                        existingTab.title === tab.title &&
+                        existingTab.payload_json === serializedPayload &&
+                        existingTab.created_at === tab.createdAt &&
+                        existingTab.worktree_id === nextWorktreeId &&
+                        existingTab.position === index
+                    ) {
+                        return;
+                    }
+
+                    upsertTab.run(
                         tab.id,
                         workspaceId,
                         tab.kind,
                         tab.title,
-                        JSON.stringify(serializeTab(tab)),
+                        serializedPayload,
                         tab.createdAt,
-                        tab.worktreeId ?? null,
+                        nextWorktreeId,
                         index,
                     );
+                });
+
+                existingTabsById.forEach((_row, tabId) => {
+                    if (!nextTabIds.has(tabId)) {
+                        deleteTab.run(workspaceId, tabId);
+                    }
                 });
 
                 syncChatPersistence(this.#connection, nextSnapshot.tabs);

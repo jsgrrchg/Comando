@@ -33,6 +33,7 @@ interface ExistingDraftRow {
 }
 
 interface PersistedRuntimeCatalogRow {
+    readonly value: string | null;
     readonly transcript_json: string | null;
 }
 
@@ -81,7 +82,10 @@ export class AiPersistence {
         const fallback = createEmptyAiSessionSnapshot({
             projectId: row.project_id,
             runtimeId:
-                row.runtime === "claude" || row.runtime === "codex"
+                row.runtime === "claude" ||
+                row.runtime === "codex" ||
+                row.runtime === "gemini" ||
+                row.runtime === "kilo"
                     ? row.runtime
                     : "codex",
             sessionId,
@@ -96,10 +100,13 @@ export class AiPersistence {
         );
 
         if (!raw) {
-            return fallback;
+            return mergeRuntimeCatalogIntoSnapshot(
+                fallback,
+                this.loadLatestRuntimeCatalog(fallback.runtimeId),
+            );
         }
 
-        return {
+        const snapshot = {
             availableCommands: normalizeAvailableCommands(
                 raw.availableCommands,
             ),
@@ -144,6 +151,11 @@ export class AiPersistence {
                     ? raw.worktreeId
                     : fallback.worktreeId,
         };
+
+        return mergeRuntimeCatalogIntoSnapshot(
+            snapshot,
+            this.loadLatestRuntimeCatalog(snapshot.runtimeId),
+        );
     }
 
     loadLatestRuntimeCatalog(
@@ -159,27 +171,37 @@ export class AiPersistence {
     > | null {
         const row = this.#connection
             .prepare<
-                [AiSessionSnapshot["runtimeId"]],
+                [string, AiSessionSnapshot["runtimeId"]],
                 PersistedRuntimeCatalogRow | undefined
             >(
                 `
-                SELECT chat_transcripts.transcript_json
-                FROM chat_sessions
-                LEFT JOIN chat_transcripts
-                    ON chat_transcripts.session_id = chat_sessions.id
-                WHERE chat_sessions.runtime = ?
-                ORDER BY chat_sessions.updated_at DESC
-                LIMIT 1
+                SELECT
+                    (
+                        SELECT value
+                        FROM app_settings
+                        WHERE key = ?
+                        LIMIT 1
+                    ) AS value,
+                    (
+                        SELECT chat_transcripts.transcript_json
+                        FROM chat_sessions
+                        LEFT JOIN chat_transcripts
+                            ON chat_transcripts.session_id = chat_sessions.id
+                        WHERE chat_sessions.runtime = ?
+                        ORDER BY chat_sessions.updated_at DESC
+                        LIMIT 1
+                    ) AS transcript_json
                 `,
             )
-            .get(runtimeId);
+            .get(getRuntimeCatalogKey(runtimeId), runtimeId);
 
-        if (!row?.transcript_json) {
+        const rawJson = row?.value ?? row?.transcript_json ?? null;
+        if (!rawJson) {
             return null;
         }
 
         const raw = parseJsonWithFallback<Record<string, unknown> | null>(
-            row.transcript_json,
+            rawJson,
             null,
         );
 
@@ -297,6 +319,7 @@ export class AiPersistence {
         const now = new Date().toISOString();
         const draftToPersist =
             draft ?? this.#loadCurrentDraft(snapshot.sessionId);
+        const runtimeCatalog = extractRuntimeCatalog(snapshot);
 
         this.#connection
             .prepare<
@@ -352,6 +375,24 @@ export class AiPersistence {
                 now,
             );
 
+        if (hasRuntimeCatalog(runtimeCatalog)) {
+            this.#connection
+                .prepare<[string, string, string], void>(
+                    `
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    `,
+                )
+                .run(
+                    getRuntimeCatalogKey(snapshot.runtimeId),
+                    JSON.stringify(runtimeCatalog),
+                    now,
+                );
+        }
+
         this.#connection
             .prepare<[string, string, string, number, string, string], void>(
                 `
@@ -373,7 +414,7 @@ export class AiPersistence {
             .run(
                 `transcript:${snapshot.sessionId}`,
                 snapshot.sessionId,
-                JSON.stringify(snapshot),
+                JSON.stringify(createPersistedSessionSnapshot(snapshot)),
                 snapshot.messages.length,
                 now,
                 now,
@@ -399,6 +440,12 @@ function getRuntimeSelectionPreferencesKey(
     runtimeId: AiSessionSnapshot["runtimeId"],
 ): string {
     return `ai.runtime_preferences.${runtimeId}`;
+}
+
+function getRuntimeCatalogKey(
+    runtimeId: AiSessionSnapshot["runtimeId"],
+): string {
+    return `ai.runtime_catalog.${runtimeId}`;
 }
 
 function createEmptyRuntimeSelectionPreferences(): PersistedRuntimeSelectionPreferences {
@@ -548,6 +595,115 @@ export function createEmptyAiSessionSnapshot(options: {
         trackedFiles: [],
         updatedAt: now,
         worktreeId: options.worktreeId ?? null,
+    };
+}
+
+function createPersistedSessionSnapshot(
+    snapshot: AiSessionSnapshot,
+): Omit<
+    AiSessionSnapshot,
+    "availableCommands" | "configOptions" | "modes" | "models"
+> {
+    return {
+        lastError: snapshot.lastError,
+        messages: snapshot.messages,
+        modeId: snapshot.modeId,
+        modelId: snapshot.modelId,
+        pendingPermission: snapshot.pendingPermission,
+        pendingUserInput: snapshot.pendingUserInput,
+        plan: snapshot.plan,
+        projectId: snapshot.projectId,
+        runtimeId: snapshot.runtimeId,
+        runtimeSessionId: snapshot.runtimeSessionId,
+        sessionId: snapshot.sessionId,
+        status: snapshot.status,
+        title: snapshot.title,
+        toolActivity: snapshot.toolActivity,
+        trackedFiles: snapshot.trackedFiles,
+        updatedAt: snapshot.updatedAt,
+        worktreeId: snapshot.worktreeId ?? null,
+    };
+}
+
+function extractRuntimeCatalog(
+    snapshot: Pick<
+        AiSessionSnapshot,
+        | "availableCommands"
+        | "configOptions"
+        | "modeId"
+        | "modes"
+        | "modelId"
+        | "models"
+    >,
+): Pick<
+    AiSessionSnapshot,
+    | "availableCommands"
+    | "configOptions"
+    | "modeId"
+    | "modes"
+    | "modelId"
+    | "models"
+> {
+    return {
+        availableCommands: snapshot.availableCommands,
+        configOptions: snapshot.configOptions,
+        modeId: snapshot.modeId,
+        modes: snapshot.modes,
+        modelId: snapshot.modelId,
+        models: snapshot.models,
+    };
+}
+
+function hasRuntimeCatalog(
+    catalog: Pick<
+        AiSessionSnapshot,
+        | "availableCommands"
+        | "configOptions"
+        | "modeId"
+        | "modes"
+        | "modelId"
+        | "models"
+    > | null,
+): boolean {
+    return Boolean(
+        catalog &&
+        (catalog.availableCommands.length > 0 ||
+            catalog.configOptions.length > 0 ||
+            catalog.modes.length > 0 ||
+            catalog.models.length > 0),
+    );
+}
+
+function mergeRuntimeCatalogIntoSnapshot(
+    snapshot: AiSessionSnapshot,
+    catalog: Pick<
+        AiSessionSnapshot,
+        | "availableCommands"
+        | "configOptions"
+        | "modeId"
+        | "modes"
+        | "modelId"
+        | "models"
+    > | null,
+): AiSessionSnapshot {
+    if (!catalog) {
+        return snapshot;
+    }
+
+    return {
+        ...snapshot,
+        availableCommands:
+            snapshot.availableCommands.length > 0
+                ? snapshot.availableCommands
+                : catalog.availableCommands,
+        configOptions:
+            snapshot.configOptions.length > 0
+                ? snapshot.configOptions
+                : catalog.configOptions,
+        modeId: snapshot.modeId ?? catalog.modeId,
+        modes: snapshot.modes.length > 0 ? snapshot.modes : catalog.modes,
+        modelId: snapshot.modelId ?? catalog.modelId,
+        models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
 }
 

@@ -12,8 +12,10 @@ import type {
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionPatch,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
+    AiSessionUpdate,
     AiSettingsSnapshot,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
@@ -36,7 +38,6 @@ import {
     cloneDraftFileContexts,
     createEmptyComposerDraftParts,
     normalizeAiDiffZoom,
-    normalizePendingReviewCardTextZoom,
     type AiComposerDraftPart,
     type QueuedPrompt,
 } from "@renderer/app/ai/sessionReviewContracts";
@@ -82,7 +83,6 @@ interface AiSessionClientState {
     readonly isHydrating: boolean;
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
-    readonly pendingReviewCardTextZoom: number | null;
     readonly queue: readonly QueuedPrompt[];
     readonly snapshot: AiSessionSnapshot | null;
 }
@@ -116,6 +116,7 @@ interface AiStore {
     readonly runtimeStatusById: Partial<Record<AiRuntimeId, AiRuntimeStatus>>;
     readonly sessions: Record<string, AiSessionClientState>;
     applyRuntimeStatus: (status: AiRuntimeStatus) => void;
+    applySessionUpdate: (update: AiSessionUpdate) => void;
     applySessionSnapshot: (snapshot: AiSessionSnapshot) => void;
     cancelSession: (sessionId: string) => Promise<void>;
     cancelQueuedPromptEdit: (
@@ -195,10 +196,6 @@ interface AiStore {
         status: QueuedPrompt["status"],
     ) => void;
     setSessionDiffZoom: (sessionId: string, diffZoom: number) => void;
-    setSessionPendingReviewCardTextZoom: (
-        sessionId: string,
-        pendingReviewCardTextZoom: number,
-    ) => void;
     setSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
     setSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
     setSessionConfigOption: (
@@ -409,6 +406,69 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 [status.runtimeId]: status,
             },
         }));
+    },
+
+    applySessionUpdate: (update) => {
+        if (update.kind === "snapshot") {
+            get().applySessionSnapshot(update.snapshot);
+            return;
+        }
+
+        set((state) => {
+            const session =
+                state.sessions[update.patch.sessionId] ?? createSessionState();
+            const baseSnapshot =
+                session.snapshot ??
+                (session.meta
+                    ? createEmptySessionSnapshot(
+                          {
+                              createdAt: new Date().toISOString(),
+                              draft: "",
+                              id: update.patch.sessionId,
+                              kind: "chat",
+                              projectId: session.meta.projectId,
+                              runtimeId: session.meta.runtimeId,
+                              sessionId: update.patch.sessionId,
+                              title: session.meta.title,
+                              worktreeId: session.meta.worktreeId,
+                          },
+                          state.runtimeCatalogById[update.patch.runtimeId] ??
+                              null,
+                      )
+                    : null);
+
+            if (!baseSnapshot) {
+                return state;
+            }
+
+            const nextSnapshot = applySessionPatch(baseSnapshot, update.patch);
+            const nextCatalog = hasCatalogChanges(update.patch.changes)
+                ? extractRuntimeCatalog(nextSnapshot)
+                : null;
+
+            return {
+                runtimeCatalogById:
+                    nextCatalog && hasRuntimeCatalog(nextCatalog)
+                        ? {
+                              ...state.runtimeCatalogById,
+                              [update.patch.runtimeId]: nextCatalog,
+                          }
+                        : state.runtimeCatalogById,
+                sessions: {
+                    ...state.sessions,
+                    [update.patch.sessionId]: {
+                        ...session,
+                        hydrated: true,
+                        isDispatching: false,
+                        isHydrating: false,
+                        localError: nextSnapshot.lastError,
+                        snapshot: nextSnapshot,
+                    },
+                },
+            };
+        });
+
+        void drainQueueIfNeeded(update.patch.sessionId, get, set);
     },
 
     applySessionSnapshot: (snapshot) => {
@@ -863,30 +923,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
         });
     },
 
-    setSessionPendingReviewCardTextZoom: (
-        sessionId,
-        pendingReviewCardTextZoom,
-    ) => {
-        const normalizedPendingReviewCardTextZoom =
-            normalizePendingReviewCardTextZoom(pendingReviewCardTextZoom);
-
-        set((state) => {
-            const nextSession = {
-                ...(state.sessions[sessionId] ?? createSessionState()),
-                pendingReviewCardTextZoom: normalizedPendingReviewCardTextZoom,
-            };
-
-            persistSessionReviewPreferencesForSession(nextSession, sessionId);
-
-            return {
-                sessions: {
-                    ...state.sessions,
-                    [sessionId]: nextSession,
-                },
-            };
-        });
-    },
-
     respondPermission: async (input) => {
         await getComandoApi().respondAiPermission(input);
     },
@@ -1324,18 +1360,13 @@ function createSessionState(
         isHydrating: false,
         localError: null,
         meta: null,
-        pendingReviewCardTextZoom:
-            preferences?.pendingReviewCardTextZoom ?? null,
         queue: [],
         snapshot: null,
     };
 }
 
 function persistSessionReviewPreferencesForSession(
-    session: Pick<
-        AiSessionClientState,
-        "diffZoom" | "meta" | "pendingReviewCardTextZoom"
-    >,
+    session: Pick<AiSessionClientState, "diffZoom" | "meta">,
     sessionId: string,
 ) {
     if (!session.meta) {
@@ -1348,7 +1379,6 @@ function persistSessionReviewPreferencesForSession(
         sessionId,
         {
             diffZoom: session.diffZoom,
-            pendingReviewCardTextZoom: session.pendingReviewCardTextZoom,
         },
     );
 }
@@ -1496,6 +1526,29 @@ function mergeRuntimeCatalogIntoSnapshot(
         modelId: snapshot.modelId ?? catalog.modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
+}
+
+function applySessionPatch(
+    snapshot: AiSessionSnapshot,
+    patch: AiSessionPatch,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        ...patch.changes,
+        runtimeId: snapshot.runtimeId,
+        sessionId: snapshot.sessionId,
+    };
+}
+
+function hasCatalogChanges(changes: AiSessionPatch["changes"]): boolean {
+    return Boolean(
+        changes.availableCommands !== undefined ||
+        changes.configOptions !== undefined ||
+        changes.modeId !== undefined ||
+        changes.modes !== undefined ||
+        changes.modelId !== undefined ||
+        changes.models !== undefined,
+    );
 }
 
 function buildSessionMeta(tab: RuntimeAiSessionTab): RegisteredSessionMeta {

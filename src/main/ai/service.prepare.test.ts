@@ -4,18 +4,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiRuntimeStatus, AiSessionSnapshot } from "@shared/ipc";
 
-const initializeMock = vi.fn(async () => undefined);
-const loadSessionMock = vi.fn(async () => ({
-    configOptions: [],
-    modes: [],
-    models: [],
-}));
-const newSessionMock = vi.fn(async () => ({
-    configOptions: [],
-    modes: [],
-    models: [],
-    sessionId: "runtime-session-2",
-}));
+const initializeMock = vi.fn(() => Promise.resolve(undefined));
+const loadSessionMock = vi.fn(() =>
+    Promise.resolve({
+        configOptions: [],
+        modes: [],
+        models: [],
+    }),
+);
+const newSessionMock = vi.fn(() =>
+    Promise.resolve({
+        configOptions: [],
+        modes: [],
+        models: [],
+        sessionId: "runtime-session-2",
+    }),
+);
 const spawnMock = vi.fn(() => ({
     kill: vi.fn(),
     on: vi.fn(),

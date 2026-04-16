@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import type { AiSessionSnapshot } from "@shared/ipc";
+
 import { databaseMigrations } from "@main/db/migrations";
 import {
     applyMigrations,
@@ -36,26 +38,29 @@ describe("AiPersistence", () => {
             "medium",
         );
 
-        expect(persistence.loadLatestRuntimeCatalog("codex")).toEqual(
-            expect.objectContaining({
-                configOptions: expect.arrayContaining([
-                    expect.objectContaining({
-                        id: "sandbox_mode",
-                        value: "full",
-                    }),
-                    expect.objectContaining({
-                        id: "model",
-                        value: "gpt-5.4-mini",
-                    }),
-                    expect.objectContaining({
-                        category: "reasoning",
-                        id: "thought_level",
-                        value: "medium",
-                    }),
-                ]),
-                modelId: "gpt-5.4-mini",
-            }),
-        );
+        const catalog = persistence.loadLatestRuntimeCatalog("codex");
+
+        expect(catalog?.modelId).toBe("gpt-5.4-mini");
+        expect(
+            catalog?.configOptions.some(
+                (option) =>
+                    option.id === "sandbox_mode" && option.value === "full",
+            ),
+        ).toBe(true);
+        expect(
+            catalog?.configOptions.some(
+                (option) =>
+                    option.id === "model" && option.value === "gpt-5.4-mini",
+            ),
+        ).toBe(true);
+        expect(
+            catalog?.configOptions.some(
+                (option) =>
+                    option.id === "thought_level" &&
+                    option.category === "reasoning" &&
+                    option.value === "medium",
+            ),
+        ).toBe(true);
     });
 
     it("loads saved runtime selection preferences independently from session history", () => {
@@ -77,6 +82,99 @@ describe("AiPersistence", () => {
             modeId: "plan",
             modelId: "gpt-5.4-mini",
         });
+    });
+
+    it("persists a compact transcript snapshot and restores the runtime catalog separately", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot: AiSessionSnapshot = {
+            availableCommands: [
+                {
+                    description: "Create plan",
+                    id: "plan",
+                    insertText: "/plan ",
+                    label: "/plan",
+                },
+            ],
+            configOptions: createCatalogTranscript({
+                access: "read-only",
+                modelId: "gpt-5",
+                reasoning: "high",
+            }).configOptions as AiSessionSnapshot["configOptions"],
+            lastError: null,
+            messages: [
+                {
+                    attachments: [],
+                    content: "hello",
+                    createdAt: "2026-04-15T10:00:00.000Z",
+                    id: "msg-1",
+                    kind: "user",
+                    status: "completed",
+                },
+            ],
+            modeId: null,
+            modes: [],
+            modelId: "gpt-5",
+            models: createCatalogTranscript({
+                access: "read-only",
+                modelId: "gpt-5",
+                reasoning: "high",
+            }).models as AiSessionSnapshot["models"],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-compact",
+            status: "idle",
+            title: "Compact session",
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-15T10:00:00.000Z",
+            worktreeId: null,
+        };
+
+        persistence.saveSessionSnapshot(snapshot);
+
+        const storedTranscript = connection
+            .prepare<[string], { transcript_json: string } | undefined>(
+                `
+                SELECT transcript_json
+                FROM chat_transcripts
+                WHERE session_id = ?
+                `,
+            )
+            .get(snapshot.sessionId);
+
+        expect(storedTranscript).toBeDefined();
+        expect(storedTranscript?.transcript_json).toBeTruthy();
+        expect(
+            JSON.parse(storedTranscript?.transcript_json ?? "{}"),
+        ).not.toHaveProperty("configOptions");
+        expect(
+            JSON.parse(storedTranscript?.transcript_json ?? "{}"),
+        ).not.toHaveProperty("availableCommands");
+
+        const catalog = persistence.loadLatestRuntimeCatalog("codex");
+
+        expect(catalog?.modelId).toBe("gpt-5");
+        expect(
+            catalog?.configOptions.some(
+                (option) =>
+                    option.id === "sandbox_mode" &&
+                    option.value === "read-only",
+            ),
+        ).toBe(true);
+        expect(persistence.loadSessionSnapshot(snapshot.sessionId)).toEqual(
+            expect.objectContaining({
+                availableCommands: snapshot.availableCommands,
+                configOptions: snapshot.configOptions,
+                messages: snapshot.messages,
+                sessionId: snapshot.sessionId,
+                title: snapshot.title,
+            }),
+        );
     });
 });
 

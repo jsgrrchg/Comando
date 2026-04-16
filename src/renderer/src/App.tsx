@@ -12,23 +12,24 @@ import {
 import type {
     ComandoApi,
     PersistenceSnapshot,
+    ProjectTreeNode,
     ProjectSummary,
     SettingsSnapshot,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
+import { setCachedAppEditorSettings } from "./app/settings/client";
 import {
+    buildFlatGitTreeNodesFromProjectEntries,
     buildGitTreeNodesFromProjectTree,
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
 import {
-    collectProjectQuickOpenFiles,
-    searchProjectQuickOpenFiles,
+    searchProjectQuickOpenEntries,
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
-import { buildFilteredProjectTree } from "./app/projects/tree-filter";
 import {
     COMPOSER_PROJECT_ENTRY_MIME,
     serializeComposerProjectEntryDragData,
@@ -39,7 +40,7 @@ import { useGitStore } from "./app/store/git-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
-import { findPaneById } from "./app/workspace/tree";
+import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
 import {
     getProjectEntryParentRelativePath,
     GitTreeView,
@@ -86,6 +87,17 @@ type FileTreeInlineEditorState = {
     readonly path: string;
 };
 
+function selectActiveWorkspaceTab(
+    state: ReturnType<typeof useWorkspaceStore.getState>,
+): RuntimeWorkspaceTab | null {
+    const activePane = findPaneById(state.rootNode, state.activePaneId);
+    if (!activePane?.activeTabId) {
+        return null;
+    }
+
+    return state.tabsById[activePane.activeTabId] ?? null;
+}
+
 export function App() {
     useSystemTheme();
 
@@ -96,12 +108,6 @@ export function App() {
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
     const addProjects = useProjectsStore((state) => state.addProjects);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
-    const fullyLoadedTreeProjects = useProjectsStore(
-        (state) => state.fullyLoadedTreeProjects,
-    );
-    const loadEntireProjectTree = useProjectsStore(
-        (state) => state.loadEntireProjectTree,
-    );
     const loadingNodeKeys = useProjectsStore((state) => state.loadingNodeKeys);
     const projects = useProjectsStore((state) => state.projects);
     const projectsError = useProjectsStore((state) => state.error);
@@ -168,8 +174,7 @@ export function App() {
         (state) => state.activePaneId,
     );
     const workspaceError = useWorkspaceStore((state) => state.error);
-    const workspaceRootNode = useWorkspaceStore((state) => state.rootNode);
-    const workspaceTabsById = useWorkspaceStore((state) => state.tabsById);
+    const activeWorkspaceTab = useWorkspaceStore(selectActiveWorkspaceTab);
 
     const activeSurface = useShellStore((state) => state.activeSurface);
     const focusSurface = useShellStore((state) => state.focusSurface);
@@ -189,8 +194,8 @@ export function App() {
     const applyAiRuntimeStatus = useAiStore(
         (state) => state.applyRuntimeStatus,
     );
-    const applyAiSessionSnapshot = useAiStore(
-        (state) => state.applySessionSnapshot,
+    const applyAiSessionUpdate = useAiStore(
+        (state) => state.applySessionUpdate,
     );
     const addDraftFileContext = useAiStore(
         (state) => state.addDraftFileContext,
@@ -206,13 +211,18 @@ export function App() {
     const [projectRootExpandedByContext, setProjectRootExpandedByContext] =
         useState<Record<string, boolean>>({});
     const [fileTreeFilter, setFileTreeFilter] = useState("");
+    const [fileTreeSearchResults, setFileTreeSearchResults] = useState<
+        readonly ProjectTreeNode[]
+    >([]);
     const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
     const [isQuickOpenLoading, setIsQuickOpenLoading] = useState(false);
     const [quickOpenQuery, setQuickOpenQuery] = useState("");
+    const [quickOpenSearchResults, setQuickOpenSearchResults] = useState<
+        readonly ProjectTreeNode[]
+    >([]);
     const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
     const [fileTreeInlineEditor, setFileTreeInlineEditor] =
         useState<FileTreeInlineEditorState | null>(null);
-    void isFileTreeSearchLoading;
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarSearchVisible, setSidebarSearchVisible] = useState(false);
@@ -221,7 +231,9 @@ export function App() {
     >(null);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const fileTreeInlineSubmitPendingRef = useRef(false);
+    const fileTreeSearchRequestRef = useRef(0);
     const overlayDismissRef = useRef<number | null>(null);
+    const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -248,6 +260,7 @@ export function App() {
                     return;
                 }
 
+                setCachedAppEditorSettings(settingsSnapshot?.editor);
                 hydrateAiSettings(settingsSnapshot?.ai ?? null);
                 hydrateShell(persistenceSnapshot?.shellState ?? null);
                 const persistedProjectId =
@@ -422,17 +435,15 @@ export function App() {
         const unsubscribeRuntime = comandoApi.onAiRuntimeStatus((status) => {
             applyAiRuntimeStatus(status);
         });
-        const unsubscribeSession = comandoApi.onAiSessionSnapshot(
-            (snapshot) => {
-                applyAiSessionSnapshot(snapshot);
-            },
-        );
+        const unsubscribeSession = comandoApi.onAiSessionSnapshot((update) => {
+            applyAiSessionUpdate(update);
+        });
 
         return () => {
             unsubscribeRuntime();
             unsubscribeSession();
         };
-    }, [applyAiRuntimeStatus, applyAiSessionSnapshot]);
+    }, [applyAiRuntimeStatus, applyAiSessionUpdate]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -537,18 +548,17 @@ export function App() {
         activeProjectId,
         activeWorktreeId,
     );
-    const isActiveProjectTreeFullyLoaded = activeProjectId
-        ? Boolean(fullyLoadedTreeProjects[activeProjectContextKey])
-        : false;
 
     useEffect(() => {
         setFileTreeFilter("");
+        setFileTreeSearchResults([]);
         setFileTreeContextMenu(null);
         setIsFileTreeSearchLoading(false);
         setIsFileTreeSearchOpen(false);
         setIsQuickOpenLoading(false);
         setIsQuickOpenOpen(false);
         setQuickOpenQuery("");
+        setQuickOpenSearchResults([]);
         setQuickOpenSelectedIndex(0);
     }, [activeProjectId, activeWorktreeId]);
 
@@ -571,68 +581,105 @@ export function App() {
     useEffect(() => {
         const normalizedFilter = fileTreeFilter.trim();
 
-        if (
-            !activeProjectId ||
-            !normalizedFilter ||
-            isActiveProjectTreeFullyLoaded
-        ) {
+        if (!activeProjectId || !normalizedFilter || !window.comando) {
+            fileTreeSearchRequestRef.current += 1;
+            setFileTreeSearchResults([]);
             setIsFileTreeSearchLoading(false);
             return;
         }
 
-        let isCancelled = false;
         setIsFileTreeSearchLoading(true);
+        const requestId = fileTreeSearchRequestRef.current + 1;
+        fileTreeSearchRequestRef.current = requestId;
+        const timeoutId = window.setTimeout(() => {
+            void window.comando
+                .searchProjectEntries({
+                    limit: 160,
+                    projectId: activeProjectId,
+                    query: normalizedFilter,
+                    worktreeId: activeWorktreeId,
+                })
+                .then((results) => {
+                    if (fileTreeSearchRequestRef.current !== requestId) {
+                        return;
+                    }
 
-        void loadEntireProjectTree(activeProjectId, activeWorktreeId).finally(
-            () => {
-                if (!isCancelled) {
+                    setFileTreeSearchResults(results);
+                })
+                .catch(() => {
+                    if (fileTreeSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
+                    setFileTreeSearchResults([]);
+                })
+                .finally(() => {
+                    if (fileTreeSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
                     setIsFileTreeSearchLoading(false);
-                }
-            },
-        );
+                });
+        }, 120);
 
         return () => {
-            isCancelled = true;
+            window.clearTimeout(timeoutId);
         };
-    }, [
-        activeProjectId,
-        activeWorktreeId,
-        fileTreeFilter,
-        isActiveProjectTreeFullyLoaded,
-        loadEntireProjectTree,
-    ]);
+    }, [activeProjectId, activeWorktreeId, fileTreeFilter]);
 
     useEffect(() => {
+        const normalizedQuery = quickOpenQuery.trim();
+
         if (
             !isQuickOpenOpen ||
             !activeProjectId ||
-            isActiveProjectTreeFullyLoaded
+            !normalizedQuery ||
+            !window.comando
         ) {
+            quickOpenSearchRequestRef.current += 1;
+            setQuickOpenSearchResults([]);
             setIsQuickOpenLoading(false);
             return;
         }
 
-        let isCancelled = false;
         setIsQuickOpenLoading(true);
+        const requestId = quickOpenSearchRequestRef.current + 1;
+        quickOpenSearchRequestRef.current = requestId;
+        const timeoutId = window.setTimeout(() => {
+            void window.comando
+                .searchProjectEntries({
+                    limit: 120,
+                    projectId: activeProjectId,
+                    query: normalizedQuery,
+                    worktreeId: activeWorktreeId,
+                })
+                .then((results) => {
+                    if (quickOpenSearchRequestRef.current !== requestId) {
+                        return;
+                    }
 
-        void loadEntireProjectTree(activeProjectId, activeWorktreeId).finally(
-            () => {
-                if (!isCancelled) {
+                    setQuickOpenSearchResults(results);
+                })
+                .catch(() => {
+                    if (quickOpenSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
+                    setQuickOpenSearchResults([]);
+                })
+                .finally(() => {
+                    if (quickOpenSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
                     setIsQuickOpenLoading(false);
-                }
-            },
-        );
+                });
+        }, 100);
 
         return () => {
-            isCancelled = true;
+            window.clearTimeout(timeoutId);
         };
-    }, [
-        activeProjectId,
-        activeWorktreeId,
-        isActiveProjectTreeFullyLoaded,
-        isQuickOpenOpen,
-        loadEntireProjectTree,
-    ]);
+    }, [activeProjectId, activeWorktreeId, isQuickOpenOpen, quickOpenQuery]);
 
     useEffect(() => {
         if (!isQuickOpenOpen) {
@@ -696,37 +743,27 @@ export function App() {
         () => treeNodes[activeProjectContextKey] ?? {},
         [activeProjectContextKey, treeNodes],
     );
-    const activeProjectTree = activeTreeNodesByParent[ROOT_NODE_KEY] ?? [];
+    const activeProjectTree = useMemo(
+        () => activeTreeNodesByParent[ROOT_NODE_KEY] ?? [],
+        [activeTreeNodesByParent],
+    );
     const activeExpandedDirectories = useMemo(
         () => expandedDirectories[activeProjectContextKey] ?? [],
         [activeProjectContextKey, expandedDirectories],
     );
     const normalizedFileTreeFilter = fileTreeFilter.trim();
-    const filteredFileTree = useMemo(
-        () =>
-            buildFilteredProjectTree(
-                activeTreeNodesByParent,
-                normalizedFileTreeFilter,
-            ),
-        [activeTreeNodesByParent, normalizedFileTreeFilter],
-    );
     const isFilteringFileTree = normalizedFileTreeFilter.length > 0;
-    const visibleFileTreeRoots = isFilteringFileTree
-        ? filteredFileTree.rootNodes
-        : activeProjectTree;
-    const visibleFileTreeNodesByParent = isFilteringFileTree
-        ? filteredFileTree.nodesByParent
-        : activeTreeNodesByParent;
-    const visibleExpandedDirectories = isFilteringFileTree
-        ? filteredFileTree.expandedDirectories
-        : activeExpandedDirectories;
-    const quickOpenFiles = useMemo(
-        () => collectProjectQuickOpenFiles(activeTreeNodesByParent),
-        [activeTreeNodesByParent],
+    const fileTreeSearchNodes = useMemo(
+        () => buildFlatGitTreeNodesFromProjectEntries(fileTreeSearchResults),
+        [fileTreeSearchResults],
     );
     const quickOpenResults = useMemo(
-        () => searchProjectQuickOpenFiles(quickOpenFiles, quickOpenQuery),
-        [quickOpenFiles, quickOpenQuery],
+        () =>
+            searchProjectQuickOpenEntries(
+                quickOpenSearchResults,
+                quickOpenQuery,
+            ),
+        [quickOpenQuery, quickOpenSearchResults],
     );
     useEffect(() => {
         if (quickOpenResults.length === 0) {
@@ -740,13 +777,6 @@ export function App() {
     }, [quickOpenResults.length]);
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
-    const activeWorkspacePane = findPaneById(
-        workspaceRootNode,
-        workspaceActivePaneId,
-    );
-    const activeWorkspaceTab = activeWorkspacePane?.activeTabId
-        ? (workspaceTabsById[activeWorkspacePane.activeTabId] ?? null)
-        : null;
     void closeTabsForProjectPath;
     void renameTabsForProjectPath;
     const activeFilePath =
@@ -1322,15 +1352,11 @@ export function App() {
     const sidebarFileNodes = useMemo(
         () =>
             buildGitTreeNodesFromProjectTree(
-                visibleFileTreeRoots,
-                visibleFileTreeNodesByParent,
-                visibleExpandedDirectories,
+                activeProjectTree,
+                activeTreeNodesByParent,
+                activeExpandedDirectories,
             ),
-        [
-            visibleExpandedDirectories,
-            visibleFileTreeNodesByParent,
-            visibleFileTreeRoots,
-        ],
+        [activeExpandedDirectories, activeProjectTree, activeTreeNodesByParent],
     );
 
     const sidebarTreeNodes = useMemo(() => {
@@ -1338,10 +1364,14 @@ export function App() {
             return [];
         }
 
+        if (isFilteringFileTree) {
+            return fileTreeSearchNodes;
+        }
+
         return [
             {
                 children: isProjectRootExpanded ? sidebarFileNodes : undefined,
-                hasChildren: visibleFileTreeRoots.length > 0,
+                hasChildren: activeProjectTree.length > 0,
                 id: `sidebar-root:${activeProjectContextKey}`,
                 isProjectRoot: true,
                 kind: "directory" as const,
@@ -1353,15 +1383,17 @@ export function App() {
     }, [
         activeProject,
         activeProjectContextKey,
+        activeProjectTree.length,
+        fileTreeSearchNodes,
+        isFilteringFileTree,
         isProjectRootExpanded,
         sidebarFileNodes,
-        visibleFileTreeRoots.length,
     ]);
 
     const { stickyFolders, stickyFolderPaths } = useStickyFolders({
         scrollContainerRef: sidebarScrollRef,
-        nodes: sidebarTreeNodes,
-        expandedPaths: visibleExpandedDirectories,
+        nodes: isFilteringFileTree ? [] : sidebarTreeNodes,
+        expandedPaths: isFilteringFileTree ? [] : activeExpandedDirectories,
         layout: "tree",
     });
 
@@ -1846,58 +1878,67 @@ export function App() {
                     >
                         {activeProject ? (
                             <>
-                                <StickyFolderOverlay
-                                    stickyFolders={stickyFolders}
-                                    enableNodeDrag
-                                    onToggleDirectory={(node) => {
-                                        if (node.isProjectRoot) {
-                                            setProjectRootExpandedByContext(
-                                                (currentState) => ({
-                                                    ...currentState,
-                                                    [activeProjectContextKey]:
-                                                        !isProjectRootExpanded,
-                                                }),
+                                {!isFilteringFileTree ? (
+                                    <StickyFolderOverlay
+                                        stickyFolders={stickyFolders}
+                                        enableNodeDrag
+                                        onToggleDirectory={(node) => {
+                                            if (node.isProjectRoot) {
+                                                setProjectRootExpandedByContext(
+                                                    (currentState) => ({
+                                                        ...currentState,
+                                                        [activeProjectContextKey]:
+                                                            !isProjectRootExpanded,
+                                                    }),
+                                                );
+                                                return;
+                                            }
+                                            if (!activeProjectId) return;
+                                            const treeNode =
+                                                findProjectTreeNodeByPath(
+                                                    activeTreeNodesByParent,
+                                                    node.path,
+                                                );
+                                            if (!treeNode) return;
+                                            void toggleDirectory(
+                                                activeProjectId,
+                                                treeNode,
+                                                activeWorktreeId,
                                             );
-                                            return;
-                                        }
-                                        if (!activeProjectId) return;
-                                        const treeNode =
-                                            findProjectTreeNodeByPath(
-                                                visibleFileTreeNodesByParent,
+                                        }}
+                                        onNodeDragStart={(
+                                            node,
+                                            dataTransfer,
+                                        ) => {
+                                            if (!dataTransfer) return;
+                                            dataTransfer.effectAllowed =
+                                                "copyMove";
+                                            dataTransfer.setData(
+                                                COMPOSER_PROJECT_ENTRY_MIME,
+                                                serializeComposerProjectEntryDragData(
+                                                    {
+                                                        kind: node.kind,
+                                                        name: node.name,
+                                                        relativePath: node.path,
+                                                    },
+                                                ),
+                                            );
+                                            dataTransfer.setData(
+                                                "text/plain",
                                                 node.path,
                                             );
-                                        if (!treeNode) return;
-                                        void toggleDirectory(
-                                            activeProjectId,
-                                            treeNode,
-                                            activeWorktreeId,
-                                        );
-                                    }}
-                                    onNodeDragStart={(node, dataTransfer) => {
-                                        if (!dataTransfer) return;
-                                        dataTransfer.effectAllowed = "copyMove";
-                                        dataTransfer.setData(
-                                            COMPOSER_PROJECT_ENTRY_MIME,
-                                            serializeComposerProjectEntryDragData(
-                                                {
-                                                    kind: node.kind,
-                                                    name: node.name,
-                                                    relativePath: node.path,
-                                                },
-                                            ),
-                                        );
-                                        dataTransfer.setData(
-                                            "text/plain",
-                                            node.path,
-                                        );
-                                    }}
-                                    onNodeDrop={(dragData, destinationNode) => {
-                                        void handleMoveTreeNode(
+                                        }}
+                                        onNodeDrop={(
                                             dragData,
                                             destinationNode,
-                                        );
-                                    }}
-                                />
+                                        ) => {
+                                            void handleMoveTreeNode(
+                                                dragData,
+                                                destinationNode,
+                                            );
+                                        }}
+                                    />
+                                ) : null}
                                 <GitTreeView
                                     activePath={activeFilePath}
                                     editingDraftName={
@@ -1907,7 +1948,21 @@ export function App() {
                                         fileTreeInlineEditor?.path ?? null
                                     }
                                     enableNodeDrag
-                                    expandedPaths={visibleExpandedDirectories}
+                                    emptyState={
+                                        isFilteringFileTree
+                                            ? isFileTreeSearchLoading
+                                                ? "Searching project files..."
+                                                : "No matching files or folders."
+                                            : undefined
+                                    }
+                                    expandedPaths={
+                                        isFilteringFileTree
+                                            ? []
+                                            : activeExpandedDirectories
+                                    }
+                                    layout={
+                                        isFilteringFileTree ? "list" : "tree"
+                                    }
                                     nodes={sidebarTreeNodes}
                                     onEditingCancel={cancelFileTreeInlineEditor}
                                     onEditingDraftNameChange={(value) => {
@@ -1970,37 +2025,41 @@ export function App() {
                                             destinationNode,
                                         );
                                     }}
-                                    onToggleDirectory={(node) => {
-                                        if (node.isProjectRoot) {
-                                            setProjectRootExpandedByContext(
-                                                (currentState) => ({
-                                                    ...currentState,
-                                                    [activeProjectContextKey]:
-                                                        !isProjectRootExpanded,
-                                                }),
-                                            );
-                                            return;
-                                        }
+                                    onToggleDirectory={
+                                        isFilteringFileTree
+                                            ? undefined
+                                            : (node) => {
+                                                  if (node.isProjectRoot) {
+                                                      setProjectRootExpandedByContext(
+                                                          (currentState) => ({
+                                                              ...currentState,
+                                                              [activeProjectContextKey]:
+                                                                  !isProjectRootExpanded,
+                                                          }),
+                                                      );
+                                                      return;
+                                                  }
 
-                                        if (!activeProjectId) {
-                                            return;
-                                        }
+                                                  if (!activeProjectId) {
+                                                      return;
+                                                  }
 
-                                        const treeNode =
-                                            findProjectTreeNodeByPath(
-                                                visibleFileTreeNodesByParent,
-                                                node.path,
-                                            );
-                                        if (!treeNode) {
-                                            return;
-                                        }
+                                                  const treeNode =
+                                                      findProjectTreeNodeByPath(
+                                                          activeTreeNodesByParent,
+                                                          node.path,
+                                                      );
+                                                  if (!treeNode) {
+                                                      return;
+                                                  }
 
-                                        void toggleDirectory(
-                                            activeProjectId,
-                                            treeNode,
-                                            activeWorktreeId,
-                                        );
-                                    }}
+                                                  void toggleDirectory(
+                                                      activeProjectId,
+                                                      treeNode,
+                                                      activeWorktreeId,
+                                                  );
+                                              }
+                                    }
                                     showStatusIndicator={false}
                                 />
                             </>

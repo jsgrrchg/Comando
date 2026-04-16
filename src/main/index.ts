@@ -5,7 +5,7 @@ import { appIdentity } from "@shared/app-identity";
 import {
     IPC_EVENTS,
     type AiRuntimeStatus,
-    type AiSessionSnapshot,
+    type AiSessionUpdate,
     type AppBootstrapSnapshot,
     type GitRepositoryInvalidation,
     type GitRepositorySnapshot,
@@ -441,15 +441,7 @@ function attachMainWindowLifecycle(
         terminalService?.closeOwnedByWindow(context.windowId);
         aiService?.closeOwnedByWindow(context.windowId);
     });
-    window.on("unresponsive", () => {
-        console.warn(
-            `[window:${context.windowId}] Renderer became unresponsive.`,
-        );
-    });
-    window.webContents.on("render-process-gone", (_event, details) => {
-        console.error(
-            `[window:${context.windowId}] Renderer process gone: ${details.reason}`,
-        );
+    window.webContents.on("render-process-gone", () => {
         persistWindowState();
 
         if (window.isDestroyed()) {
@@ -577,7 +569,7 @@ function broadcastAiRuntimeStatus(payload: AiRuntimeStatus): void {
 
 function broadcastAiSessionSnapshot(
     ownerWindowId: string,
-    payload: AiSessionSnapshot,
+    payload: AiSessionUpdate,
 ): void {
     if (!ownerWindowId) {
         for (const window of BrowserWindow.getAllWindows()) {

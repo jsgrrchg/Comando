@@ -133,7 +133,6 @@ export interface AppAiChatSettings {
     readonly chatFontSize: number;
     readonly composerFontFamily: ChatFontFamily;
     readonly composerFontSize: number;
-    readonly pendingReviewCardTextZoom: number;
     readonly reviewDiffZoom: number;
     readonly requireCmdEnterToSend: boolean;
     readonly screenshotRetentionSeconds: number;
@@ -153,6 +152,7 @@ export interface ProjectAppearanceSettings {
 }
 
 export interface AppEditorSettings {
+    readonly autoSaveDelayMs: number;
     readonly fontFamily: EditorFontFamily;
     readonly fontSize: number;
     readonly lineHeight: number;
@@ -1211,6 +1211,26 @@ export interface AiSessionSnapshot {
     readonly worktreeId?: string | null;
 }
 
+export type AiSessionPatchChanges = Partial<
+    Omit<AiSessionSnapshot, "runtimeId" | "sessionId">
+>;
+
+export interface AiSessionPatch {
+    readonly changes: AiSessionPatchChanges;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
+}
+
+export type AiSessionUpdate =
+    | {
+          readonly kind: "patch";
+          readonly patch: AiSessionPatch;
+      }
+    | {
+          readonly kind: "snapshot";
+          readonly snapshot: AiSessionSnapshot;
+      };
+
 export interface SendAiPromptInput {
     readonly additionalRoots?: readonly string[];
     readonly attachments: readonly AiImageAttachment[];
@@ -1476,6 +1496,6 @@ export interface ComandoApi {
         listener: (status: AiRuntimeStatus) => void,
     ) => () => void;
     onAiSessionSnapshot: (
-        listener: (snapshot: AiSessionSnapshot) => void,
+        listener: (update: AiSessionUpdate) => void,
     ) => () => void;
 }

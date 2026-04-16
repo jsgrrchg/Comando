@@ -193,10 +193,109 @@ describe("WorkspaceService", () => {
 
         expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
     });
+
+    it("updates only the rows that changed when saving the same workspace again", () => {
+        const connection = createTestConnection();
+        const service = new WorkspaceService(connection);
+        const workspaceId = "workspace-diff";
+
+        const firstSnapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-tab-1",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "file-tab-2"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "file-tab-1",
+                    kind: "file",
+                    projectId: "project-1",
+                    relativePath: "src/app.ts",
+                    title: "app.ts",
+                    worktreeId: null,
+                },
+                {
+                    createdAt: "2026-04-14T00:01:00.000Z",
+                    id: "file-tab-2",
+                    kind: "file",
+                    projectId: "project-1",
+                    relativePath: "src/other.ts",
+                    title: "other.ts",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        service.saveSnapshot(workspaceId, firstSnapshot);
+
+        const changesAfterFirstSave = getTotalChanges(connection);
+
+        const layoutOnlySnapshot: WorkspaceSnapshot = {
+            ...firstSnapshot,
+            rootNode: {
+                id: "pane-root",
+                tabIds: ["file-tab-1", "file-tab-2"],
+                activeTabId: "file-tab-2",
+                type: "pane",
+            },
+        };
+
+        service.saveSnapshot(workspaceId, layoutOnlySnapshot);
+
+        expect(getTotalChanges(connection) - changesAfterFirstSave).toBe(1);
+
+        const replacementSnapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-tab-1",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "file-tab-3"],
+                type: "pane",
+            },
+            tabs: [
+                firstSnapshot.tabs[0],
+                {
+                    createdAt: "2026-04-14T00:02:00.000Z",
+                    id: "file-tab-3",
+                    kind: "file",
+                    projectId: "project-1",
+                    relativePath: "src/new.ts",
+                    title: "new.ts",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        const changesBeforeReplacement = getTotalChanges(connection);
+        service.saveSnapshot(workspaceId, replacementSnapshot);
+
+        expect(getTotalChanges(connection) - changesBeforeReplacement).toBe(3);
+        expect(service.loadSnapshot(workspaceId)).toEqual(replacementSnapshot);
+    });
 });
 
 function createTestConnection() {
     const connection = createSqliteCompatConnection();
     applyMigrations(connection, databaseMigrations);
     return connection;
+}
+
+function getTotalChanges(
+    connection: ReturnType<typeof createTestConnection>,
+): number {
+    const row = connection
+        .prepare<
+            [],
+            { total_changes: number }
+        >("SELECT total_changes() AS total_changes")
+        .get();
+
+    if (!row) {
+        throw new Error("Expected SQLite total_changes() to return a row.");
+    }
+
+    return row.total_changes;
 }

@@ -4,6 +4,7 @@ import type {
     AiFileContextAttachment,
     AiImageAttachment,
     AiSessionSnapshot,
+    AiSessionUpdate,
     WorkspaceChatTab,
 } from "@shared/ipc";
 
@@ -212,6 +213,74 @@ describe("ai-store queue", () => {
             useAiStore.getState().sessions[TAB.sessionId]
                 ?.dismissedPlanUpdatedAt,
         ).toBe("2026-04-15T12:00:00.000Z");
+    });
+
+    it("merges incremental session patches without replacing the whole snapshot", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                availableCommands: [
+                    {
+                        description: "Plan",
+                        id: "plan",
+                        insertText: "/plan ",
+                        label: "/plan",
+                    },
+                ],
+                messages: [
+                    {
+                        attachments: [],
+                        content: "hello",
+                        createdAt: "2026-04-14T00:00:00.000Z",
+                        id: "msg-1",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+            }),
+        );
+
+        const update: AiSessionUpdate = {
+            kind: "patch",
+            patch: {
+                changes: {
+                    messages: [
+                        {
+                            attachments: [],
+                            content: "hello world",
+                            createdAt: "2026-04-14T00:00:00.000Z",
+                            id: "msg-1",
+                            kind: "assistant",
+                            status: "streaming",
+                        },
+                    ],
+                    status: "streaming",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                },
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+            },
+        };
+
+        useAiStore.getState().applySessionUpdate(update);
+
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.snapshot).toEqual(
+            expect.objectContaining({
+                availableCommands: [
+                    expect.objectContaining({
+                        id: "plan",
+                    }),
+                ],
+                messages: [
+                    expect.objectContaining({
+                        content: "hello world",
+                        status: "streaming",
+                    }),
+                ],
+                status: "streaming",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
     });
 
     it("removes queued prompts from the queue while they are dispatching", async () => {
@@ -619,23 +688,12 @@ describe("ai-store queue", () => {
         expect(useAiStore.getState().sessions[TAB.sessionId]?.diffZoom).toBe(
             null,
         );
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]
-                ?.pendingReviewCardTextZoom,
-        ).toBe(null);
 
         useAiStore.getState().setSessionDiffZoom(TAB.sessionId, 0.823);
-        useAiStore
-            .getState()
-            .setSessionPendingReviewCardTextZoom(TAB.sessionId, 1.073);
 
         expect(useAiStore.getState().sessions[TAB.sessionId]?.diffZoom).toBe(
             0.82,
         );
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]
-                ?.pendingReviewCardTextZoom,
-        ).toBe(1.07);
 
         expect(
             globalThis.localStorage.getItem(
@@ -646,15 +704,6 @@ describe("ai-store queue", () => {
                 ),
             ),
         ).toContain('"diffZoom":0.82');
-        expect(
-            globalThis.localStorage.getItem(
-                getSessionReviewPreferencesStorageKey(
-                    TAB.projectId,
-                    TAB.worktreeId,
-                    TAB.sessionId,
-                ),
-            ),
-        ).toContain('"pendingReviewCardTextZoom":1.07');
     });
 
     it("hydrates persisted session review presentation preferences on register", () => {
@@ -666,7 +715,6 @@ describe("ai-store queue", () => {
             ),
             JSON.stringify({
                 diffZoom: 0.84,
-                pendingReviewCardTextZoom: 1.12,
                 updatedAt: Date.now(),
                 version: 1,
             }),
@@ -677,10 +725,6 @@ describe("ai-store queue", () => {
         expect(useAiStore.getState().sessions[TAB.sessionId]?.diffZoom).toBe(
             0.84,
         );
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]
-                ?.pendingReviewCardTextZoom,
-        ).toBe(1.12);
     });
 
     it("allows full context and line fragments from same file without duplicating the same range", () => {

@@ -11,6 +11,18 @@ import {
     getDefaultAppEditorSettings,
 } from "./theme";
 
+let cachedAppEditorSettings: AppEditorSettings | null = null;
+
+export function getCachedAppEditorSettings(): AppEditorSettings | null {
+    return cachedAppEditorSettings;
+}
+
+export function setCachedAppEditorSettings(
+    editor: AppEditorSettings | null | undefined,
+): void {
+    cachedAppEditorSettings = editor ?? null;
+}
+
 export async function loadAppAppearanceSettings(): Promise<AppAppearanceSettings> {
     const snapshot = await getComandoApi().getSettingsSnapshot();
     return snapshot.appearance ?? getDefaultAppAppearance();
@@ -49,6 +61,7 @@ export async function saveAiChatSettings(
 
 export async function loadAppEditorSettings(): Promise<AppEditorSettings> {
     const snapshot = await getComandoApi().getSettingsSnapshot();
+    setCachedAppEditorSettings(snapshot.editor);
     return snapshot.editor ?? getDefaultAppEditorSettings();
 }
 
@@ -63,6 +76,7 @@ export async function saveAppEditorSettings(
     };
 
     await getComandoApi().saveSettingsSnapshot(nextSnapshot);
+    setCachedAppEditorSettings(editor);
 }
 
 function getComandoApi() {

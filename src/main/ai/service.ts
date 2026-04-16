@@ -42,6 +42,7 @@ import type {
     AiSessionModeMutationInput,
     AiSessionModel,
     AiSessionModelMutationInput,
+    AiSessionUpdate,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
     AiTrackedFile,
@@ -111,6 +112,14 @@ const NEVERWRITE_USER_INPUT_EVENT_TYPE = "user_input_request";
 const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX =
     "__neverwrite_user_input_response__:";
 
+function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
+    return Writable.toWeb(stream) as WritableStream<Uint8Array>;
+}
+
+function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
+    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+}
+
 interface AiServiceOptions {
     readonly projectService: ProjectService;
     readonly settingsService: SettingsService;
@@ -118,7 +127,7 @@ interface AiServiceOptions {
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly onSessionSnapshot: (
         ownerWindowId: string,
-        snapshot: AiSessionSnapshot,
+        update: AiSessionUpdate,
     ) => void;
     readonly persistence: AiPersistence;
 }
@@ -136,9 +145,11 @@ interface LiveAcpSession {
         readonly resolve: (response: RequestPermissionResponse) => void;
     } | null;
     pendingAdditionalRoots: readonly string[] | null;
+    pendingPersistTimer: ReturnType<typeof setTimeout> | null;
     projectRoot: string | null;
     runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
+    lastBroadcastSnapshot: AiSessionSnapshot | null;
     stderrChunks: string[];
 }
 
@@ -166,11 +177,13 @@ type SessionDescriptor = Pick<
     readonly additionalRoots?: readonly string[];
 };
 
+const AI_SESSION_STREAMING_FLUSH_MS = 120;
+
 export class AiService {
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionSnapshot: (
         ownerWindowId: string,
-        snapshot: AiSessionSnapshot,
+        update: AiSessionUpdate,
     ) => void;
     readonly #persistence: AiPersistence;
     readonly #projectService: ProjectService;
@@ -551,7 +564,7 @@ export class AiService {
         );
     }
 
-    async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
+    renameSession(input: AiSessionRenameMutationInput): void {
         this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
             setTitleOnSnapshot(snapshot, input.title),
         );
@@ -576,6 +589,9 @@ export class AiService {
         }
 
         liveSession.closing = true;
+        this.#flushLiveSessionPersistence(liveSession, {
+            broadcast: false,
+        });
         this.#resolvePendingPermission(liveSession, null);
 
         try {
@@ -607,6 +623,9 @@ export class AiService {
             }
 
             liveSession.closing = true;
+            this.#flushLiveSessionPersistence(liveSession, {
+                broadcast: false,
+            });
             this.#resolvePendingPermission(liveSession, null);
             liveSession.child.kill();
             this.#sessions.delete(sessionId);
@@ -1178,8 +1197,8 @@ export class AiService {
                 this.#writeTextFile(liveSession, params),
         };
         const stream = ndJsonStream(
-            Writable.toWeb(child.stdin),
-            Readable.toWeb(child.stdout),
+            toWebByteWritable(child.stdin),
+            toWebByteReadable(child.stdout),
         );
         const connection = new ClientSideConnection(() => client, stream);
 
@@ -1190,9 +1209,11 @@ export class AiService {
             connection,
             cwd,
             isRestoring: false,
+            lastBroadcastSnapshot: null,
             ownerWindowId,
             pendingPermission: null,
             pendingAdditionalRoots: null,
+            pendingPersistTimer: null,
             projectRoot,
             runtimeId: input.runtimeId,
             snapshot: {
@@ -1615,9 +1636,11 @@ export class AiService {
                       )
                     : process.cwd(),
             isRestoring: false,
+            lastBroadcastSnapshot: snapshot,
             ownerWindowId: "",
             pendingPermission: null,
             pendingAdditionalRoots: null,
+            pendingPersistTimer: null,
             projectRoot:
                 snapshot.projectId !== null
                     ? this.#projectService.getProjectRootPath(
@@ -1902,11 +1925,43 @@ export class AiService {
     }
 
     #persistAndBroadcast(liveSession: LiveAcpSession): void {
+        if (shouldFlushLiveSessionImmediately(liveSession.snapshot)) {
+            this.#flushLiveSessionPersistence(liveSession);
+            return;
+        }
+
+        if (liveSession.pendingPersistTimer !== null) {
+            return;
+        }
+
+        liveSession.pendingPersistTimer = setTimeout(() => {
+            liveSession.pendingPersistTimer = null;
+            this.#flushLiveSessionPersistence(liveSession);
+        }, AI_SESSION_STREAMING_FLUSH_MS);
+    }
+
+    #flushLiveSessionPersistence(
+        liveSession: LiveAcpSession,
+        options: {
+            readonly broadcast?: boolean;
+        } = {},
+    ): void {
+        if (liveSession.pendingPersistTimer !== null) {
+            clearTimeout(liveSession.pendingPersistTimer);
+            liveSession.pendingPersistTimer = null;
+        }
+
         this.#persistence.saveSessionSnapshot(liveSession.snapshot);
-        this.#onSessionSnapshot(
-            liveSession.ownerWindowId,
-            liveSession.snapshot,
-        );
+        if (options.broadcast !== false) {
+            this.#onSessionSnapshot(
+                liveSession.ownerWindowId,
+                buildAiSessionUpdate(
+                    liveSession.lastBroadcastSnapshot,
+                    liveSession.snapshot,
+                ),
+            );
+        }
+        liveSession.lastBroadcastSnapshot = liveSession.snapshot;
     }
 
     #resolveDesiredSelections(
@@ -2143,7 +2198,10 @@ export class AiService {
 
         const nextSnapshot = mutate(snapshot);
         this.#persistence.saveSessionSnapshot(nextSnapshot);
-        this.#onSessionSnapshot("", nextSnapshot);
+        this.#onSessionSnapshot("", {
+            kind: "snapshot",
+            snapshot: nextSnapshot,
+        });
         return nextSnapshot;
     }
 
@@ -2266,6 +2324,9 @@ export class AiService {
     #disposeLiveSession(sessionId: string, liveSession: LiveAcpSession): void {
         this.#sessions.delete(sessionId);
         liveSession.closing = true;
+        this.#flushLiveSessionPersistence(liveSession, {
+            broadcast: false,
+        });
         this.#resolvePendingPermission(liveSession, null);
         liveSession.child.kill();
         terminalOutputBuffers.clear();
@@ -2421,22 +2482,22 @@ export class AiService {
         });
 
         const client: Client = {
-            readTextFile: async () => {
+            readTextFile: () => {
                 throw new Error("Runtime auth does not support file reads.");
             },
-            requestPermission: async () => {
+            requestPermission: () => {
                 throw new Error(
                     "Runtime auth does not support permission requests.",
                 );
             },
-            sessionUpdate: async () => undefined,
-            writeTextFile: async () => {
+            sessionUpdate: () => Promise.resolve(undefined),
+            writeTextFile: () => {
                 throw new Error("Runtime auth does not support file writes.");
             },
         };
         const stream = ndJsonStream(
-            Writable.toWeb(child.stdin),
-            Readable.toWeb(child.stdout),
+            toWebByteWritable(child.stdin),
+            toWebByteReadable(child.stdout),
         );
         const connection = new ClientSideConnection(() => client, stream);
 
@@ -2489,6 +2550,89 @@ export class AiService {
         this.#settingsService.saveKiloRuntimeSettings(nextSettings);
         this.#onRuntimeStatus(getKiloRuntimeStatus(nextSettings));
     }
+}
+
+function shouldFlushLiveSessionImmediately(
+    snapshot: AiSessionSnapshot,
+): boolean {
+    return (
+        snapshot.status !== "streaming" ||
+        snapshot.pendingPermission !== null ||
+        snapshot.pendingUserInput !== null ||
+        snapshot.lastError !== null
+    );
+}
+
+function buildAiSessionUpdate(
+    previousSnapshot: AiSessionSnapshot | null,
+    nextSnapshot: AiSessionSnapshot,
+): AiSessionUpdate {
+    if (!previousSnapshot) {
+        return {
+            kind: "snapshot",
+            snapshot: nextSnapshot,
+        };
+    }
+
+    const changes = createAiSessionPatchChanges(previousSnapshot, nextSnapshot);
+
+    if (Object.keys(changes).length === 0) {
+        return {
+            kind: "snapshot",
+            snapshot: nextSnapshot,
+        };
+    }
+
+    return {
+        kind: "patch",
+        patch: {
+            changes,
+            runtimeId: nextSnapshot.runtimeId,
+            sessionId: nextSnapshot.sessionId,
+        },
+    };
+}
+
+function createAiSessionPatchChanges(
+    previousSnapshot: AiSessionSnapshot,
+    nextSnapshot: AiSessionSnapshot,
+): Partial<Omit<AiSessionSnapshot, "runtimeId" | "sessionId">> {
+    const changes: Record<string, unknown> = {};
+
+    const patchableKeys = [
+        "availableCommands",
+        "configOptions",
+        "lastError",
+        "messages",
+        "modeId",
+        "modes",
+        "modelId",
+        "models",
+        "pendingPermission",
+        "pendingUserInput",
+        "plan",
+        "projectId",
+        "runtimeSessionId",
+        "status",
+        "title",
+        "toolActivity",
+        "trackedFiles",
+        "updatedAt",
+        "worktreeId",
+    ] satisfies readonly (keyof Omit<
+        AiSessionSnapshot,
+        "runtimeId" | "sessionId"
+    >)[];
+
+    for (const key of patchableKeys) {
+        if (previousSnapshot[key] !== nextSnapshot[key]) {
+            changes[key] = nextSnapshot[key];
+        }
+    }
+
+    return changes as Partial<
+        Omit<AiSessionSnapshot, "runtimeId" | "sessionId">
+    >;
 }
 
 function normalizeOptionalText(value: string | null): string | null {
@@ -3686,8 +3830,10 @@ function getRecentStderrText(stderrChunks: readonly string[]): string {
     return normalized.slice(-4).join("\n");
 }
 
+const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
 function stripAnsiControlSequences(value: string): string {
-    return value.replace(/\u001B\[[0-9;]*m/g, "");
+    return value.replace(ANSI_ESCAPE_RE, "");
 }
 
 function isBusyAiSessionStatus(status: AiSessionSnapshot["status"]): boolean {

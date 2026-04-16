@@ -822,7 +822,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             error: null,
             rootNode: resizeSplit(state.rootNode, splitId, nextSizes),
         }));
-        await persistWorkspaceState(get);
+        await flushWorkspacePersistence(get, { force: true });
     },
 
     restartTerminalTab: async (tabId) => {
@@ -1066,6 +1066,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 }));
 
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
+
+const WORKSPACE_PERSIST_DEBOUNCE_MS = 180;
+
+let pendingWorkspacePersistTimer: ReturnType<typeof setTimeout> | null = null;
+let workspacePersistDirty = false;
+let workspacePersistGet: GetWorkspaceState | null = null;
+let workspacePersistInFlight: Promise<void> | null = null;
 
 export function getWorkspaceTabRuntimeId(
     tab: RuntimeWorkspaceTab | null | undefined,
@@ -1323,14 +1330,106 @@ async function hydrateRuntimeTabs(
     );
 }
 
-async function persistWorkspaceState(get: GetWorkspaceState): Promise<void> {
+function persistWorkspaceState(get: GetWorkspaceState): Promise<void> {
+    scheduleWorkspacePersistence(get);
+    return Promise.resolve();
+}
+
+export async function flushWorkspacePersistenceForTests(): Promise<void> {
+    await flushWorkspacePersistence(undefined, { force: true });
+}
+
+export function resetWorkspacePersistenceForTests(): void {
+    if (pendingWorkspacePersistTimer !== null) {
+        clearTimeout(pendingWorkspacePersistTimer);
+        pendingWorkspacePersistTimer = null;
+    }
+
+    workspacePersistDirty = false;
+    workspacePersistGet = null;
+    workspacePersistInFlight = null;
+}
+
+function scheduleWorkspacePersistence(get: GetWorkspaceState): void {
+    workspacePersistGet = get;
+    workspacePersistDirty = true;
+
+    if (
+        pendingWorkspacePersistTimer !== null ||
+        workspacePersistInFlight !== null
+    ) {
+        return;
+    }
+
+    // Buffer persistence to avoid serializing snapshots for every transient UI mutation.
+    pendingWorkspacePersistTimer = setTimeout(() => {
+        pendingWorkspacePersistTimer = null;
+        void flushWorkspacePersistence();
+    }, WORKSPACE_PERSIST_DEBOUNCE_MS);
+}
+
+async function flushWorkspacePersistence(
+    get?: GetWorkspaceState,
+    options: {
+        readonly force?: boolean;
+    } = {},
+): Promise<void> {
+    if (get) {
+        workspacePersistGet = get;
+    }
+
+    if (options.force) {
+        workspacePersistDirty = true;
+    }
+
+    if (!workspacePersistGet) {
+        return;
+    }
+
+    if (pendingWorkspacePersistTimer !== null) {
+        clearTimeout(pendingWorkspacePersistTimer);
+        pendingWorkspacePersistTimer = null;
+    }
+
+    if (workspacePersistInFlight) {
+        await workspacePersistInFlight;
+
+        if (workspacePersistDirty) {
+            await flushWorkspacePersistence();
+        }
+
+        return;
+    }
+
+    if (!workspacePersistDirty) {
+        return;
+    }
+
+    workspacePersistDirty = false;
+    const persistPromise = persistWorkspaceStateNow(workspacePersistGet);
+    workspacePersistInFlight = persistPromise;
+
+    try {
+        await persistPromise;
+    } finally {
+        if (workspacePersistInFlight === persistPromise) {
+            workspacePersistInFlight = null;
+        }
+    }
+
+    if (workspacePersistDirty) {
+        await flushWorkspacePersistence();
+    }
+}
+
+async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
     try {
         const state = get();
         await getComandoApi().saveWorkspaceSnapshot(
             workspaceStateToSnapshot(state),
         );
-    } catch (error) {
-        console.error(error);
+    } catch {
+        return;
     }
 }
 
@@ -1432,16 +1531,16 @@ async function bootTerminalSession(
 async function safeCloseTerminal(sessionId: string): Promise<void> {
     try {
         await getComandoApi().closeTerminalSession(sessionId);
-    } catch (error) {
-        console.error(error);
+    } catch {
+        return;
     }
 }
 
 async function safeCloseAiSession(sessionId: string): Promise<void> {
     try {
         await getComandoApi().closeAiSession(sessionId);
-    } catch (error) {
-        console.error(error);
+    } catch {
+        return;
     }
 }
 

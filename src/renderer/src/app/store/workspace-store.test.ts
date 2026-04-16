@@ -7,11 +7,13 @@ import {
     type WorkspaceTreeState,
 } from "../workspace/tree";
 import {
+    flushWorkspacePersistenceForTests,
     getBestMatchingChatTabId,
     getPaneChatTabId,
     getPaneRuntimeId,
     getWorkspaceChatTabId,
     getWorkspaceTabRuntimeId,
+    resetWorkspacePersistenceForTests,
     useWorkspaceStore,
 } from "./workspace-store";
 
@@ -28,6 +30,7 @@ const openProjectFileMock =
 
 describe("workspace file opening", () => {
     beforeEach(() => {
+        resetWorkspacePersistenceForTests();
         saveWorkspaceSnapshotMock.mockClear();
         closeAiSessionMock.mockClear();
         openProjectFileMock.mockReset();
@@ -72,6 +75,7 @@ describe("workspace file opening", () => {
     });
 
     afterEach(() => {
+        resetWorkspacePersistenceForTests();
         vi.unstubAllGlobals();
     });
 
@@ -145,6 +149,7 @@ describe("workspace file opening", () => {
             relativePath: "src/app.ts",
             worktreeId: "worktree-1",
         });
+        await flushWorkspacePersistenceForTests();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });
 
@@ -248,6 +253,7 @@ describe("workspace file opening", () => {
         expect(rightPane.tabIds).toHaveLength(1);
         expect(rightPane.activeTabId).toBe(rightPane.tabIds[0]);
         expect(openProjectFileMock).not.toHaveBeenCalled();
+        await flushWorkspacePersistenceForTests();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
 
         const duplicatedTabId = rightPane.tabIds[0];
@@ -268,6 +274,145 @@ describe("workspace file opening", () => {
             reviewContext: null,
             savedContent: "export const value = 1;\n",
             worktreeId: "worktree-1",
+        });
+    });
+
+    it("buffers multiple workspace mutations into a single snapshot save", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "chat-1",
+                        id: "pane-a",
+                        tabIds: ["chat-1", "file-1"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: "chat-2",
+                        id: "pane-b",
+                        tabIds: ["chat-2"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "chat-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "chat-1",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Chat 1",
+                    worktreeId: null,
+                },
+                "chat-2": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "chat-2",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "claude",
+                    sessionId: "session-2",
+                    title: "Chat 2",
+                    worktreeId: null,
+                },
+                "file-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-1",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "README.md",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "README.md",
+                    viewState: null,
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().selectTab("pane-a", "file-1");
+        await useWorkspaceStore.getState().selectTab("pane-b", "chat-2");
+        await useWorkspaceStore.getState().setActivePane("pane-b");
+
+        expect(saveWorkspaceSnapshotMock).not.toHaveBeenCalled();
+
+        await flushWorkspacePersistenceForTests();
+
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes split resize immediately when the drag is committed", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-left",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {},
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .resizeSplit("split-root", [0.68, 0.32]);
+
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledTimes(1);
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledWith({
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-left",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.68, 0.32],
+                type: "split",
+            },
+            tabs: [],
         });
     });
 
