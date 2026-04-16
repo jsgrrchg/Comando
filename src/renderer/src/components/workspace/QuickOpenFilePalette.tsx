@@ -177,7 +177,7 @@ export function QuickOpenFilePalette({
                             "color-mix(in srgb, var(--color-border) 50%, transparent)",
                     }}
                 >
-                    <span>{loading ? "Indexing…" : ""}</span>
+                    <span>{loading ? "Searching…" : ""}</span>
                     <span>↑↓ Navigate · Enter Open · Esc Close</span>
                 </div>
             </div>

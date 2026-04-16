@@ -1501,8 +1501,8 @@ function renderHighlightedText(
 async function copyToClipboard(value: string): Promise<void> {
     try {
         await navigator.clipboard.writeText(value);
-    } catch (error) {
-        console.error(error);
+    } catch {
+        return;
     }
 }
 

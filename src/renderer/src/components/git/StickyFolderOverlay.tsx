@@ -28,23 +28,27 @@ const STICKY_CONTAINER_STYLE: CSSProperties = {
     pointerEvents: "none",
 };
 
-const STICKY_CHROME_STYLE: CSSProperties = {
-    left: -8,
-    width: "calc(100% + 16px)",
-    boxSizing: "border-box",
-    overflow: "hidden",
-};
+function stickyChrome(scrollLeft: number): CSSProperties {
+    return {
+        left: scrollLeft - 8,
+        width: "calc(100% + 16px)",
+        boxSizing: "border-box",
+        overflow: "hidden",
+    };
+}
 
 const STICKY_EDGE_SHADOW = "0 2px 6px rgba(0,0,0,0.18)";
 
 export function StickyFolderOverlay({
     stickyFolders,
+    scrollLeft = 0,
     enableNodeDrag = false,
     onToggleDirectory,
     onNodeDragStart,
     onNodeDrop,
 }: {
     readonly stickyFolders: readonly StickyFolder[];
+    readonly scrollLeft?: number;
     readonly enableNodeDrag?: boolean;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly onNodeDragStart?: (
@@ -68,7 +72,7 @@ export function StickyFolderOverlay({
                     style={{
                         position: "absolute",
                         top,
-                        ...STICKY_CHROME_STYLE,
+                        ...stickyChrome(scrollLeft),
                         zIndex: 20 - depth,
                         background:
                             "color-mix(in srgb, var(--color-bg-primary) var(--vibrancy-opacity, 100%), transparent)",

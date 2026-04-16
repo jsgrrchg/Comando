@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WorkspaceSnapshot } from "@shared/ipc";
 
@@ -41,6 +41,7 @@ describe("ProjectService", () => {
     const tempDirs: string[] = [];
 
     afterEach(() => {
+        vi.restoreAllMocks();
         for (const tempDir of tempDirs.splice(0)) {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -121,6 +122,96 @@ describe("ProjectService", () => {
             absolutePath: projectFilePath,
             projectId: reopenedProject.id,
         });
+    });
+
+    it("reuses the cached search index until project contents change", async () => {
+        const connection = createTestConnection();
+        const projectService = createProjectService(connection);
+        const projectRoot = createTempProject(tempDirs, "search-cache");
+
+        fs.mkdirSync(path.join(projectRoot, "src", "workspace"), {
+            recursive: true,
+        });
+        fs.writeFileSync(
+            path.join(projectRoot, "src", "workspace", "WorkspaceView.tsx"),
+            "export const WorkspaceView = () => null;\n",
+        );
+        fs.writeFileSync(
+            path.join(projectRoot, "src", "helpers.ts"),
+            "export const helper = true;\n",
+        );
+
+        const [project] = projectService.addProjectPaths([projectRoot]);
+        expect(project).toBeDefined();
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        const readdirSpy = vi.spyOn(fs, "readdirSync");
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 10,
+                projectId: project.id,
+                query: "wsv",
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                kind: "file",
+                relativePath: "src/workspace/WorkspaceView.tsx",
+            }),
+        ]);
+
+        const initialDirectoryReads = readdirSpy.mock.calls.length;
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 10,
+                projectId: project.id,
+                query: "helper",
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                kind: "file",
+                relativePath: "src/helpers.ts",
+            }),
+        ]);
+        expect(readdirSpy.mock.calls.length).toBe(initialDirectoryReads);
+
+        fs.writeFileSync(
+            path.join(projectRoot, "src", "workspace", "workspace-hints.ts"),
+            "export const hints = true;\n",
+        );
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 10,
+                projectId: project.id,
+                query: "hints",
+            }),
+        ).resolves.toEqual([]);
+
+        await projectService.saveProjectFile({
+            content: "export const hints = true;\n",
+            projectId: project.id,
+            relativePath: "src/workspace/workspace-hints.ts",
+        });
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 10,
+                projectId: project.id,
+                query: "hints",
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                kind: "file",
+                relativePath: "src/workspace/workspace-hints.ts",
+            }),
+        ]);
+        expect(readdirSpy.mock.calls.length).toBeGreaterThan(
+            initialDirectoryReads,
+        );
     });
 });
 

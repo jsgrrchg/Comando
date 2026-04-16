@@ -18,6 +18,20 @@ export function buildGitTreeNodesFromProjectTree(
     );
 }
 
+export function buildFlatGitTreeNodesFromProjectEntries(
+    entries: readonly ProjectTreeNode[],
+): readonly GitTreeNode[] {
+    return entries.map((node) => ({
+        hasChildren: node.hasChildren,
+        id: node.id,
+        kind: node.kind,
+        name: node.name,
+        path: node.relativePath,
+        secondaryText: node.parentRelativePath ?? "Project root",
+        status: mapGitNodeStatus(node.gitStatus),
+    }));
+}
+
 export function findProjectTreeNodeByPath(
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     relativePath: string,

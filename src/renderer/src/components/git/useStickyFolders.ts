@@ -19,6 +19,7 @@ export interface StickyFolder {
 export interface UseStickyFoldersResult {
     readonly stickyFolders: readonly StickyFolder[];
     readonly stickyFolderPaths: ReadonlySet<string>;
+    readonly scrollLeft: number;
 }
 
 export function useStickyFolders({
@@ -33,8 +34,9 @@ export function useStickyFolders({
     readonly layout: GitViewLayout;
 }): UseStickyFoldersResult {
     const [scrollTop, setScrollTop] = useState(0);
+    const [scrollLeft, setScrollLeft] = useState(0);
     const [scale, setScale] = useState(1);
-    const [paddingTop, setPaddingTop] = useState(0);
+    const paddingTopRef = useRef(0);
     const rafRef = useRef(0);
 
     useEffect(() => {
@@ -56,12 +58,14 @@ export function useStickyFolders({
         }
 
         readScale();
-        setPaddingTop(parseFloat(getComputedStyle(container).paddingTop) || 0);
+        paddingTopRef.current =
+            parseFloat(getComputedStyle(container).paddingTop) || 0;
 
         const onScroll = () => {
             cancelAnimationFrame(rafRef.current);
             rafRef.current = requestAnimationFrame(() => {
-                setScrollTop(container!.scrollTop);
+                setScrollTop(container.scrollTop);
+                setScrollLeft(container.scrollLeft);
             });
         };
 
@@ -104,10 +108,11 @@ export function useStickyFolders({
                     continue;
                 }
 
-                const rowTop = paddingTop + i * effectiveRowHeight;
+                const rowTop = paddingTopRef.current + i * effectiveRowHeight;
                 const lastDescIdx = folderLastDescendant.get(i) ?? i;
                 const sectionBottom =
-                    paddingTop + (lastDescIdx + 1) * effectiveRowHeight;
+                    paddingTopRef.current +
+                    (lastDescIdx + 1) * effectiveRowHeight;
 
                 if (
                     rowTop < scrollTop + stickyY &&
@@ -125,7 +130,7 @@ export function useStickyFolders({
             const lastDescIdx =
                 folderLastDescendant.get(bestIndex) ?? bestIndex;
             const sectionBottom =
-                paddingTop + (lastDescIdx + 1) * effectiveRowHeight;
+                paddingTopRef.current + (lastDescIdx + 1) * effectiveRowHeight;
             const maxTop = sectionBottom - scrollTop - effectiveRowHeight;
             const top = Math.min(stickyY, maxTop);
 
@@ -138,12 +143,12 @@ export function useStickyFolders({
         }
 
         return result;
-    }, [flatRows, folderLastDescendant, scrollTop, scale, paddingTop]);
+    }, [flatRows, folderLastDescendant, scrollTop, scale]);
 
     const stickyFolderPaths = useMemo(
         () => new Set(stickyFolders.map((f) => f.path)),
         [stickyFolders],
     );
 
-    return { stickyFolders, stickyFolderPaths };
+    return { stickyFolders, stickyFolderPaths, scrollLeft };
 }

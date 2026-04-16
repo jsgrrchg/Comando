@@ -22,7 +22,7 @@ export function GitFilesView({
 }: GitFilesViewProps) {
     const [isRootDropActive, setIsRootDropActive] = useState(false);
     const scrollRef = useRef<HTMLDivElement | null>(null);
-    const { stickyFolders, stickyFolderPaths } = useStickyFolders({
+    const { stickyFolders, stickyFolderPaths, scrollLeft } = useStickyFolders({
         scrollContainerRef: scrollRef,
         nodes: treeProps.nodes,
         expandedPaths: treeProps.expandedPaths,
@@ -121,6 +121,7 @@ export function GitFilesView({
         >
             <StickyFolderOverlay
                 stickyFolders={stickyFolders}
+                scrollLeft={scrollLeft}
                 enableNodeDrag={treeProps.enableNodeDrag}
                 onToggleDirectory={treeProps.onToggleDirectory}
                 onNodeDragStart={treeProps.onNodeDragStart}

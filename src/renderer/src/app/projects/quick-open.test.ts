@@ -4,6 +4,7 @@ import type { ProjectTreeNode } from "@shared/ipc";
 
 import {
     collectProjectQuickOpenFiles,
+    searchProjectQuickOpenEntries,
     searchProjectQuickOpenFiles,
 } from "./quick-open";
 
@@ -66,6 +67,23 @@ describe("project quick open", () => {
         });
 
         const matches = searchProjectQuickOpenFiles(files, "wsv");
+
+        expect(matches[0]?.relativePath).toBe(
+            "src/components/workspace/WorkspaceView.tsx",
+        );
+    });
+
+    it("can rank quick open results from backend search entries", () => {
+        const matches = searchProjectQuickOpenEntries(
+            [
+                createNode(
+                    "src/components/workspace/WorkspaceView.tsx",
+                    "file",
+                ),
+                createNode("src/components/sidebar/SidebarSection.tsx", "file"),
+            ],
+            "wsv",
+        );
 
         expect(matches[0]?.relativePath).toBe(
             "src/components/workspace/WorkspaceView.tsx",

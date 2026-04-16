@@ -21,6 +21,13 @@ import type {
     SaveProjectFileInput,
     SearchProjectEntriesInput,
 } from "@shared/ipc";
+import {
+    compactProjectSearchValue,
+    getProjectSearchDepth,
+    normalizeProjectSearchQuery,
+    scoreProjectSearchCandidate,
+    type ProjectSearchCandidate,
+} from "@shared/project-search";
 
 import {
     createProjectEntry,
@@ -71,6 +78,15 @@ interface PendingProjectInvalidation {
     readonly timeout: NodeJS.Timeout;
 }
 
+interface IndexedProjectEntry extends ProjectSearchCandidate {
+    readonly extension: string | null;
+    readonly hasChildren: boolean;
+    readonly kind: ProjectTreeNode["kind"];
+    readonly name: string;
+    readonly parentRelativePath: string | null;
+    readonly relativePath: string;
+}
+
 interface ProjectServiceOptions {
     readonly connection: Database.Database;
     readonly onProjectTreeInvalidated: (
@@ -91,6 +107,7 @@ export class ProjectService {
         string,
         PendingProjectInvalidation
     >();
+    readonly #searchIndexes = new Map<string, readonly IndexedProjectEntry[]>();
 
     constructor(options: ProjectServiceOptions) {
         this.#connection = options.connection;
@@ -325,6 +342,7 @@ export class ProjectService {
         this.#closeWatcher(projectId);
         for (const worktree of this.listProjectWorktrees(projectId)) {
             this.#gitSnapshots.delete(worktree.rootPath);
+            this.#invalidateProjectSearchIndex(worktree.rootPath);
         }
 
         this.#connection
@@ -405,7 +423,7 @@ export class ProjectService {
     async searchProjectEntries(
         input: SearchProjectEntriesInput,
     ): Promise<ProjectTreeNode[]> {
-        const normalizedQuery = input.query.trim().toLowerCase();
+        const normalizedQuery = normalizeProjectSearchQuery(input.query);
         if (!normalizedQuery) {
             return [];
         }
@@ -417,78 +435,35 @@ export class ProjectService {
         this.#ensureWatcher(project.id, project.rootPath);
         const gitSnapshot = await this.#getGitSnapshot(project.rootPath);
         const limit = Math.max(1, input.limit ?? 20);
+        const indexedEntries = this.#getProjectSearchIndex(project.rootPath);
         const scoredEntries: {
             readonly node: ProjectTreeNode;
             readonly score: number;
         }[] = [];
-        const queue = [project.rootPath];
-
-        while (queue.length > 0) {
-            const currentDirectory = queue.shift();
-            if (!currentDirectory) {
-                break;
-            }
-
-            let entries: fs.Dirent[] = [];
-            try {
-                entries = fs.readdirSync(currentDirectory, {
-                    withFileTypes: true,
-                });
-            } catch {
+        for (const entry of indexedEntries) {
+            const score = scoreProjectSearchCandidate(entry, normalizedQuery);
+            if (score < 0) {
                 continue;
             }
 
-            for (const entry of entries) {
-                if (shouldIgnoreEntry(entry.name, entry.isDirectory())) {
-                    continue;
-                }
-
-                const absolutePath = path.join(currentDirectory, entry.name);
-                const relativePath = normalizeRelativePath(
-                    path.relative(project.rootPath, absolutePath),
-                );
-                const score = scoreProjectEntry(
-                    entry.name,
-                    relativePath,
-                    normalizedQuery,
-                );
-
-                if (entry.isDirectory()) {
-                    queue.push(absolutePath);
-                }
-
-                if (score <= 0) {
-                    continue;
-                }
-
-                const kind = entry.isDirectory() ? "directory" : "file";
-                scoredEntries.push({
-                    node: {
-                        id: `${input.projectId}:${relativePath}`,
-                        extension:
-                            kind === "file"
-                                ? path.extname(entry.name).slice(1) || null
-                                : null,
-                        gitStatus:
-                            kind === "directory"
-                                ? getDirectoryBadge(relativePath, gitSnapshot)
-                                : (gitSnapshot.exactBadges.get(relativePath) ??
-                                  null),
-                        hasChildren:
-                            kind === "directory"
-                                ? directoryHasVisibleChildren(absolutePath)
-                                : false,
-                        kind,
-                        name: entry.name,
-                        parentRelativePath:
-                            path.posix.dirname(relativePath) === "."
-                                ? null
-                                : path.posix.dirname(relativePath),
-                        relativePath,
-                    },
-                    score,
-                });
-            }
+            scoredEntries.push({
+                node: {
+                    id: `${input.projectId}:${entry.relativePath}`,
+                    extension: entry.extension,
+                    gitStatus:
+                        entry.kind === "directory"
+                            ? getDirectoryBadge(entry.relativePath, gitSnapshot)
+                            : (gitSnapshot.exactBadges.get(
+                                  entry.relativePath,
+                              ) ?? null),
+                    hasChildren: entry.hasChildren,
+                    kind: entry.kind,
+                    name: entry.name,
+                    parentRelativePath: entry.parentRelativePath,
+                    relativePath: entry.relativePath,
+                },
+                score,
+            });
         }
 
         return scoredEntries
@@ -514,6 +489,7 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
         this.#gitSnapshots.delete(project.rootPath);
+        this.#invalidateProjectSearchIndex(project.rootPath);
 
         return writeProjectFile({
             content: input.content,
@@ -543,6 +519,7 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
         this.#gitSnapshots.delete(project.rootPath);
+        this.#invalidateProjectSearchIndex(project.rootPath);
 
         const entry = await createProjectEntry({
             kind: input.kind,
@@ -571,6 +548,7 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
         this.#gitSnapshots.delete(project.rootPath);
+        this.#invalidateProjectSearchIndex(project.rootPath);
 
         const entry = await renameProjectEntry({
             nextName: input.nextName,
@@ -597,6 +575,7 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
         this.#gitSnapshots.delete(project.rootPath);
+        this.#invalidateProjectSearchIndex(project.rootPath);
 
         await deleteProjectEntry({
             relativePath: input.relativePath,
@@ -797,6 +776,12 @@ export class ProjectService {
         });
 
         transaction();
+        for (const existingRow of existingRows) {
+            this.#invalidateProjectSearchIndex(existingRow.root_path);
+        }
+        for (const desiredWorktree of desiredWorktrees.values()) {
+            this.#invalidateProjectSearchIndex(desiredWorktree.rootPath);
+        }
         return this.listProjectWorktrees(projectId);
     }
 
@@ -839,6 +824,7 @@ export class ProjectService {
         this.#watchers.clear();
         this.#gitSnapshots.clear();
         this.#pendingInvalidations.clear();
+        this.#searchIndexes.clear();
     }
 
     #getProjectById(projectId: string): {
@@ -1001,6 +987,7 @@ export class ProjectService {
                         normalizeProjectWatchRelativePath(relativePath);
 
                     this.#gitSnapshots.delete(rootPath);
+                    this.#invalidateProjectSearchIndex(rootPath);
                     this.#scheduleInvalidation(
                         projectId,
                         this.#findWorktreeIdByRootPath(projectId, rootPath),
@@ -1103,6 +1090,22 @@ export class ProjectService {
         );
 
         return matchedWorktree?.isPrimary ? null : worktreeId;
+    }
+
+    #getProjectSearchIndex(rootPath: string): readonly IndexedProjectEntry[] {
+        const normalizedRootPath = path.resolve(rootPath);
+        const cachedIndex = this.#searchIndexes.get(normalizedRootPath);
+        if (cachedIndex) {
+            return cachedIndex;
+        }
+
+        const nextIndex = buildProjectSearchIndex(normalizedRootPath);
+        this.#searchIndexes.set(normalizedRootPath, nextIndex);
+        return nextIndex;
+    }
+
+    #invalidateProjectSearchIndex(rootPath: string): void {
+        this.#searchIndexes.delete(path.resolve(rootPath));
     }
 }
 
@@ -1290,20 +1293,90 @@ function mergeProjectInvalidationRelativePaths(
     return new Set([...currentRelativePaths, ...nextRelativePaths]);
 }
 
-function createBackgroundSafeGit(rootPath: string) {
-    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+function buildProjectSearchIndex(
+    rootPath: string,
+): readonly IndexedProjectEntry[] {
+    const queue = [path.resolve(rootPath)];
+    const pendingEntries: {
+        readonly extension: string | null;
+        readonly kind: ProjectTreeNode["kind"];
+        readonly name: string;
+        readonly parentRelativePath: string | null;
+        readonly relativePath: string;
+    }[] = [];
+    const directoryChildren = new Map<string, boolean>();
+
+    while (queue.length > 0) {
+        const currentDirectory = queue.shift();
+        if (!currentDirectory) {
+            break;
+        }
+
+        let entries: fs.Dirent[] = [];
+        try {
+            entries = fs.readdirSync(currentDirectory, {
+                withFileTypes: true,
+            });
+        } catch {
+            continue;
+        }
+
+        const visibleEntries = entries.filter(
+            (entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()),
+        );
+        const currentRelativePath = normalizeRelativePath(
+            path.relative(rootPath, currentDirectory),
+        );
+
+        if (currentRelativePath !== ".") {
+            directoryChildren.set(
+                currentRelativePath,
+                visibleEntries.length > 0,
+            );
+        }
+
+        for (const entry of visibleEntries) {
+            const absolutePath = path.join(currentDirectory, entry.name);
+            const relativePath = normalizeRelativePath(
+                path.relative(rootPath, absolutePath),
+            );
+            const kind = entry.isDirectory() ? "directory" : "file";
+
+            pendingEntries.push({
+                extension:
+                    kind === "file"
+                        ? path.extname(entry.name).slice(1) || null
+                        : null,
+                kind,
+                name: entry.name,
+                parentRelativePath:
+                    path.posix.dirname(relativePath) === "."
+                        ? null
+                        : path.posix.dirname(relativePath),
+                relativePath,
+            });
+
+            if (entry.isDirectory()) {
+                queue.push(absolutePath);
+            }
+        }
+    }
+
+    return pendingEntries.map((entry) => ({
+        ...entry,
+        compactPath: compactProjectSearchValue(entry.relativePath),
+        depth: getProjectSearchDepth(entry.relativePath),
+        hasChildren:
+            entry.kind === "directory"
+                ? (directoryChildren.get(entry.relativePath) ?? false)
+                : false,
+        lowerName: entry.name.toLowerCase(),
+        lowerPath: entry.relativePath.toLowerCase(),
+    }));
 }
 
-function directoryHasVisibleChildren(directoryPath: string): boolean {
-    try {
-        return fs
-            .readdirSync(directoryPath, { withFileTypes: true })
-            .some(
-                (entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()),
-            );
-    } catch {
-        return false;
-    }
+function createBackgroundSafeGit(rootPath: string) {
+    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
 }
 
 function getDirectoryBadge(
@@ -1317,35 +1390,4 @@ function getDirectoryBadge(
     }
 
     return gitSnapshot.exactBadges.get(directoryRelativePath) ?? null;
-}
-
-function scoreProjectEntry(
-    name: string,
-    relativePath: string,
-    normalizedQuery: string,
-): number {
-    const normalizedName = name.toLowerCase();
-    const normalizedPath = relativePath.toLowerCase();
-
-    if (normalizedName === normalizedQuery) {
-        return 120;
-    }
-
-    if (normalizedName.startsWith(normalizedQuery)) {
-        return 90;
-    }
-
-    if (normalizedPath.startsWith(normalizedQuery)) {
-        return 75;
-    }
-
-    if (normalizedName.includes(normalizedQuery)) {
-        return 55;
-    }
-
-    if (normalizedPath.includes(normalizedQuery)) {
-        return 35;
-    }
-
-    return 0;
 }

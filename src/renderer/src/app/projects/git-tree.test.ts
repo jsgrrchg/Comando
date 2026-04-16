@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectTreeNode } from "@shared/ipc";
 
 import {
+    buildFlatGitTreeNodesFromProjectEntries,
     buildGitTreeNodesFromProjectTree,
     findProjectTreeNodeByPath,
 } from "./git-tree";
@@ -89,5 +90,25 @@ describe("findProjectTreeNodeByPath", () => {
         );
 
         expect(found).toEqual(fileNode);
+    });
+});
+
+describe("buildFlatGitTreeNodesFromProjectEntries", () => {
+    it("keeps parent context in flat search results", () => {
+        const nodes = buildFlatGitTreeNodesFromProjectEntries([
+            makeNode("src/components/App.tsx", "file", "src/components"),
+            makeNode("src/components", "directory", "src"),
+        ]);
+
+        expect(nodes).toEqual([
+            expect.objectContaining({
+                path: "src/components/App.tsx",
+                secondaryText: "src/components",
+            }),
+            expect.objectContaining({
+                path: "src/components",
+                secondaryText: "src",
+            }),
+        ]);
     });
 });
