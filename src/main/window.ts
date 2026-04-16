@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,18 +7,6 @@ import { appIdentity } from "@shared/app-identity";
 import type { PersistedWindowState } from "@shared/ipc";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
-const rendererDebugSnapshotPath = path.join(
-    os.tmpdir(),
-    "comando-renderer-snapshot.json",
-);
-const rendererDebugEventsPath = path.join(
-    os.tmpdir(),
-    "comando-renderer-events.log",
-);
-
-function appendRendererDebugEvent(message: string): void {
-    fs.appendFileSync(rendererDebugEventsPath, `${message}\n`, "utf8");
-}
 
 function createBaseWindow(options: {
     readonly backgroundColor: string;
@@ -62,45 +48,6 @@ function createBaseWindow(options: {
         },
     });
 
-    window.webContents.on(
-        "console-message",
-        (_event, level, message, line, sourceId) => {
-            appendRendererDebugEvent(
-                `[renderer:${options.title}] console(${level}) ${message} (${sourceId}:${line})`,
-            );
-            console.error(
-                `[renderer:${options.title}] console(${level}) ${message} (${sourceId}:${line})`,
-            );
-        },
-    );
-    window.webContents.on(
-        "did-fail-load",
-        (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-            appendRendererDebugEvent(
-                `[renderer:${options.title}] did-fail-load code=${errorCode} description=${errorDescription} url=${validatedURL} mainFrame=${String(isMainFrame)}`,
-            );
-            console.error(
-                `[renderer:${options.title}] did-fail-load code=${errorCode} description=${errorDescription} url=${validatedURL} mainFrame=${String(isMainFrame)}`,
-            );
-        },
-    );
-    window.webContents.on("render-process-gone", (_event, details) => {
-        appendRendererDebugEvent(
-            `[renderer:${options.title}] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`,
-        );
-        console.error(
-            `[renderer:${options.title}] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`,
-        );
-    });
-    window.webContents.on("preload-error", (_event, preloadPath, error) => {
-        appendRendererDebugEvent(
-            `[renderer:${options.title}] preload-error path=${preloadPath} error=${error.message}`,
-        );
-        console.error(
-            `[renderer:${options.title}] preload-error path=${preloadPath} error=${error.message}`,
-        );
-    });
-
     if (process.env.ELECTRON_RENDERER_URL) {
         const url = new URL(process.env.ELECTRON_RENDERER_URL);
         url.search = options.search ?? "";
@@ -113,59 +60,6 @@ function createBaseWindow(options: {
 
     window.webContents.on("did-finish-load", () => {
         window.setTitle(options.title);
-        setTimeout(() => {
-            window.webContents
-                .executeJavaScript(
-                    `
-                        (() => {
-                            const root = document.getElementById("root");
-                            return {
-                                bodyChildren: document.body.children.length,
-                                bodyTextLength: document.body.innerText.length,
-                                preloadFlag: document.documentElement.dataset.comandoPreload ?? null,
-                                readyState: document.readyState,
-                                rendererBootFlag: document.documentElement.dataset.comandoRenderer ?? null,
-                                rendererMountedFlag: document.documentElement.dataset.comandoRendered ?? null,
-                                rootChildCount: root?.childElementCount ?? -1,
-                                rootHtmlLength: root?.innerHTML.length ?? -1,
-                                rootTextLength: root?.innerText.length ?? -1,
-                                title: document.title,
-                            };
-                        })();
-                    `,
-                    true,
-                )
-                .then((snapshot) => {
-                    fs.writeFileSync(
-                        rendererDebugSnapshotPath,
-                        `${JSON.stringify(snapshot, null, 2)}\n`,
-                        "utf8",
-                    );
-                    appendRendererDebugEvent(
-                        `[renderer:${options.title}] did-finish-load snapshot=${JSON.stringify(snapshot)}`,
-                    );
-                    console.error(
-                        `[renderer:${options.title}] did-finish-load snapshot=${JSON.stringify(snapshot)}`,
-                    );
-                })
-                .catch((error: unknown) => {
-                    const message =
-                        error instanceof Error
-                            ? (error.stack ?? error.message)
-                            : String(error);
-                    fs.writeFileSync(
-                        rendererDebugSnapshotPath,
-                        `${JSON.stringify({ error: message }, null, 2)}\n`,
-                        "utf8",
-                    );
-                    appendRendererDebugEvent(
-                        `[renderer:${options.title}] did-finish-load inspect-error=${message}`,
-                    );
-                    console.error(
-                        `[renderer:${options.title}] did-finish-load inspect-error=${message}`,
-                    );
-                });
-        }, 1500);
     });
 
     if (options.restoredState?.isMaximized) {

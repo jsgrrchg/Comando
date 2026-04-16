@@ -24,7 +24,6 @@ vi.mock("@renderer/app/hooks/use-ai-chat-settings", () => ({
         chatFontSize: 14,
         composerFontFamily: "system",
         composerFontSize: 14,
-        pendingReviewCardTextZoom: 1,
         requireCmdEnterToSend: false,
         reviewDiffZoom: 0.72,
         screenshotRetentionSeconds: 0,

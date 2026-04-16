@@ -60,4 +60,40 @@ describe("MarkdownContent", () => {
         expect(markup).toContain("(8:14) - Si ves que un");
         expect(markup).toContain("expande");
     });
+
+    it("keeps ordered items grouped when they contain paragraphs and nested bullets", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: [
+                    "1. Plan principal",
+                    "Mientras esperas, mantienes el contexto.",
+                    "   - Recuperas el hilo",
+                    "   - Sigues con una salida decente",
+                    "",
+                    "1. Objetivo",
+                    "Primero estabilizar el flujo.",
+                    "   - Luego refinar detalles",
+                ].join("\n"),
+            }),
+        );
+
+        expect(markup).toContain("<ol");
+        expect(markup).toContain("<li");
+        expect(markup.match(/<ol/g)?.length).toBe(1);
+        expect(markup).toContain("<ul");
+        expect(markup).toContain("Mientras esperas, mantienes el contexto.");
+        expect(markup).toContain("Luego refinar detalles");
+    });
+
+    it("respects the starting number of ordered lists", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: "3. Third item\n4. Fourth item",
+            }),
+        );
+
+        expect(markup).toContain('<ol start="3"');
+        expect(markup).toContain("Third item");
+        expect(markup).toContain("Fourth item");
+    });
 });

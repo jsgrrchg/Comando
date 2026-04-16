@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
+
+import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 
 import { DiffStatBar, ReviewFileRow } from "../review/ReviewFileRow";
 import type {
@@ -29,44 +31,34 @@ function toggleKey(
 }
 
 export interface EditedFilesBufferPanelProps {
-    readonly canDecreaseTextZoom?: boolean;
-    readonly canIncreaseTextZoom?: boolean;
     readonly defaultCollapsed?: boolean;
     readonly diffZoom: number;
     readonly items: readonly ReviewFileItem[];
     readonly lineWrapping?: boolean;
-    readonly onDecreaseTextZoom?: () => void;
     readonly onKeepAll: () => void;
     readonly onKeepHunk?: (item: ReviewFileItem, hunkId: string) => void;
     readonly onKeepItem: (item: ReviewFileItem) => void;
     readonly onOpenItem?: (item: ReviewFileItem) => void;
     readonly onOpenReview: () => void;
-    readonly onIncreaseTextZoom?: () => void;
     readonly onRejectAll: () => void;
     readonly onRejectHunk?: (item: ReviewFileItem, hunkId: string) => void;
     readonly onRejectItem: (item: ReviewFileItem) => void;
-    readonly pendingReviewCardTextZoom?: number;
     readonly summary: ReviewSummary;
 }
 
-export function EditedFilesBufferPanel({
-    canDecreaseTextZoom = false,
-    canIncreaseTextZoom = false,
+export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
     defaultCollapsed = false,
     diffZoom,
     items,
     lineWrapping,
-    onDecreaseTextZoom,
     onKeepAll,
     onKeepHunk,
     onKeepItem,
     onOpenItem,
     onOpenReview,
-    onIncreaseTextZoom,
     onRejectAll,
     onRejectHunk,
     onRejectItem,
-    pendingReviewCardTextZoom = 1.15,
     summary,
 }: EditedFilesBufferPanelProps) {
     const [collapsed, setCollapsed] = useState(defaultCollapsed);
@@ -90,7 +82,7 @@ export function EditedFilesBufferPanel({
             style={{
                 border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                 fontFamily: "var(--font-mono)",
-                fontSize: `${pendingReviewCardTextZoom}em`,
+                fontSize: `${FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM}em`,
             }}
         >
             <div
@@ -196,57 +188,6 @@ export function EditedFilesBufferPanel({
                 )}
 
                 <div className="ml-auto flex items-center gap-1.5">
-                    <div
-                        style={{
-                            background:
-                                "color-mix(in srgb, var(--color-bg-primary) 48%, transparent)",
-                            border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                            borderRadius: 4,
-                            display: "flex",
-                            overflow: "hidden",
-                        }}
-                    >
-                        <button
-                            aria-label="Decrease pending review text size"
-                            disabled={!canDecreaseTextZoom}
-                            onClick={onDecreaseTextZoom}
-                            style={{
-                                borderRight:
-                                    "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                                color: canDecreaseTextZoom
-                                    ? "var(--color-text-primary)"
-                                    : "var(--color-text-secondary)",
-                                cursor: canDecreaseTextZoom
-                                    ? "pointer"
-                                    : "not-allowed",
-                                fontSize: toEm(10),
-                                opacity: canDecreaseTextZoom ? 1 : 0.45,
-                                padding: "4px 8px",
-                            }}
-                            type="button"
-                        >
-                            A-
-                        </button>
-                        <button
-                            aria-label="Increase pending review text size"
-                            disabled={!canIncreaseTextZoom}
-                            onClick={onIncreaseTextZoom}
-                            style={{
-                                color: canIncreaseTextZoom
-                                    ? "var(--color-text-primary)"
-                                    : "var(--color-text-secondary)",
-                                cursor: canIncreaseTextZoom
-                                    ? "pointer"
-                                    : "not-allowed",
-                                fontSize: toEm(10),
-                                opacity: canIncreaseTextZoom ? 1 : 0.45,
-                                padding: "4px 8px",
-                            }}
-                            type="button"
-                        >
-                            A+
-                        </button>
-                    </div>
                     <button
                         className="review-action-btn"
                         onClick={onOpenReview}
@@ -357,4 +298,6 @@ export function EditedFilesBufferPanel({
             ) : null}
         </section>
     );
-}
+});
+
+EditedFilesBufferPanel.displayName = "EditedFilesBufferPanel";

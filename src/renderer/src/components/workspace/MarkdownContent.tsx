@@ -8,6 +8,10 @@ import {
 } from "react";
 
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
+import {
+    parseMarkdownListItem,
+    type MarkdownListItem,
+} from "../../app/editor/markdownLists";
 import { HighlightedCodeText } from "../../app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "../../app/editor/useCodeLanguageSupport";
 import { useTextContextMenu } from "../context-menu/useTextContextMenu";
@@ -139,6 +143,11 @@ interface InlineOptions {
     ) => ResolvedProjectFileReference | null;
 }
 
+interface ParsedList {
+    readonly element: ReactElement;
+    readonly nextIndex: number;
+}
+
 function getPillVariant(label: string): ChatPillVariant {
     if (label === "@fetch") return "success";
     if (label === "/plan") return "neutral";
@@ -262,6 +271,224 @@ function renderInline(
     if (tail) parts.push(tail);
 
     return parts;
+}
+
+function getIndentWidth(indent: string): number {
+    let width = 0;
+
+    for (const char of indent) {
+        width += char === "\t" ? 4 : 1;
+    }
+
+    return width;
+}
+
+function findNextNonEmptyLineIndex(
+    lines: readonly string[],
+    startIndex: number,
+): number {
+    for (let index = startIndex; index < lines.length; index++) {
+        if ((lines[index] ?? "").trim().length > 0) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function renderParagraphLines(
+    lines: readonly string[],
+    key: string,
+    inlineOptions?: InlineOptions,
+): ReactElement {
+    return (
+        <div
+            key={key}
+            style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+            }}
+        >
+            {lines.map((line, index) => (
+                <div
+                    key={`${key}-${index}`}
+                    style={{
+                        lineHeight: 1.6,
+                        maxWidth: "100%",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                    }}
+                >
+                    {renderInline(line, inlineOptions)}
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function buildListItemLeadLine(item: MarkdownListItem): string {
+    if (!item.isTask) {
+        return item.content;
+    }
+
+    return `[${item.taskMarker ?? " "}] ${item.content}`;
+}
+
+function parseList(
+    lines: readonly string[],
+    startIndex: number,
+    inlineOptions?: InlineOptions,
+): ParsedList | null {
+    const firstItem = parseMarkdownListItem(lines[startIndex] ?? "");
+    if (!firstItem) {
+        return null;
+    }
+
+    const ordered = firstItem.orderedNumber !== null;
+    const baseIndentWidth = getIndentWidth(firstItem.indent);
+    const startNumber =
+        ordered && firstItem.orderedNumber !== 1
+            ? firstItem.orderedNumber
+            : undefined;
+    const items: ReactElement[] = [];
+    let cursor = startIndex;
+
+    while (cursor < lines.length) {
+        const currentItem = parseMarkdownListItem(lines[cursor] ?? "");
+        if (!currentItem) {
+            break;
+        }
+
+        const currentIndentWidth = getIndentWidth(currentItem.indent);
+        const currentOrdered = currentItem.orderedNumber !== null;
+        if (
+            currentIndentWidth !== baseIndentWidth ||
+            currentOrdered !== ordered
+        ) {
+            break;
+        }
+
+        const childElements: ReactElement[] = [];
+        let paragraphLines = [buildListItemLeadLine(currentItem)];
+        let paragraphCount = 0;
+        cursor += 1;
+
+        const flushParagraph = () => {
+            if (paragraphLines.length === 0) {
+                return;
+            }
+
+            childElements.push(
+                renderParagraphLines(
+                    paragraphLines,
+                    `list-item-${startIndex}-${items.length}-${paragraphCount}`,
+                    inlineOptions,
+                ),
+            );
+            paragraphLines = [];
+            paragraphCount += 1;
+        };
+
+        while (cursor < lines.length) {
+            const currentLine = lines[cursor] ?? "";
+            const trimmedLine = currentLine.trim();
+
+            if (trimmedLine.length === 0) {
+                flushParagraph();
+                const nextNonEmptyIndex = findNextNonEmptyLineIndex(
+                    lines,
+                    cursor + 1,
+                );
+                if (nextNonEmptyIndex === -1) {
+                    cursor = lines.length;
+                    break;
+                }
+
+                const nextItem = parseMarkdownListItem(
+                    lines[nextNonEmptyIndex] ?? "",
+                );
+                if (nextItem) {
+                    const nextIndentWidth = getIndentWidth(nextItem.indent);
+                    if (nextIndentWidth <= baseIndentWidth) {
+                        cursor = nextNonEmptyIndex;
+                        break;
+                    }
+                }
+
+                cursor = nextNonEmptyIndex;
+                continue;
+            }
+
+            const nextItem = parseMarkdownListItem(currentLine);
+            if (nextItem) {
+                const nextIndentWidth = getIndentWidth(nextItem.indent);
+                if (nextIndentWidth > baseIndentWidth) {
+                    flushParagraph();
+                    const nestedList = parseList(lines, cursor, inlineOptions);
+                    if (nestedList) {
+                        childElements.push(nestedList.element);
+                        cursor = nestedList.nextIndex;
+                        continue;
+                    }
+                }
+
+                if (nextIndentWidth <= baseIndentWidth) {
+                    break;
+                }
+            }
+
+            paragraphLines.push(trimmedLine);
+            cursor += 1;
+        }
+
+        flushParagraph();
+        items.push(
+            <li key={`list-item-${startIndex}-${items.length}`}>
+                <div
+                    style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                    }}
+                >
+                    {childElements}
+                </div>
+            </li>,
+        );
+    }
+
+    if (items.length === 0) {
+        return null;
+    }
+
+    return {
+        element: ordered ? (
+            <ol
+                key={`ol-${startIndex}`}
+                start={startNumber}
+                style={{
+                    listStyleType: "decimal",
+                    margin: "4px 0",
+                    paddingLeft: "1.25rem",
+                }}
+            >
+                {items}
+            </ol>
+        ) : (
+            <ul
+                key={`ul-${startIndex}`}
+                style={{
+                    listStyleType: "disc",
+                    margin: "4px 0",
+                    paddingLeft: "1.25rem",
+                }}
+            >
+                {items}
+            </ul>
+        ),
+        nextIndex: cursor,
+    };
 }
 
 /* ─── Copy button SVG icons ─── */
@@ -636,65 +863,31 @@ function TextBlock({
             }
         }
 
-        /* ─ Unordered list ─ */
-        if (/^[-*+]\s+/.test(trimmed)) {
-            const items: string[] = [];
-            while (
-                i < lines.length &&
-                /^[-*+]\s+/.test(lines[i]?.trimStart() ?? "")
-            ) {
-                items.push(
-                    (lines[i] ?? "").trimStart().replace(/^[-*+]\s+/, ""),
-                );
-                i++;
+        /* ─ Lists ─ */
+        if (parseMarkdownListItem(line)) {
+            const parsedList = parseList(lines, i, inlineOptions);
+            if (parsedList) {
+                elements.push(parsedList.element);
+                i = parsedList.nextIndex;
+                continue;
             }
-            elements.push(
-                <ul
-                    key={`ul-${i}`}
-                    style={{
-                        listStyleType: "disc",
-                        margin: "4px 0",
-                        paddingLeft: "1.25rem",
-                    }}
-                >
-                    {items.map((item, idx) => (
-                        <li key={idx} style={{ lineHeight: 1.6 }}>
-                            {renderInline(item, inlineOptions)}
-                        </li>
-                    ))}
-                </ul>,
-            );
-            continue;
         }
 
-        /* ─ Ordered list ─ */
-        if (/^\d+[.)]\s+/.test(trimmed)) {
-            const items: string[] = [];
-            while (
-                i < lines.length &&
-                /^\d+[.)]\s+/.test(lines[i]?.trimStart() ?? "")
-            ) {
-                items.push(
-                    (lines[i] ?? "").trimStart().replace(/^\d+[.)]\s+/, ""),
-                );
-                i++;
-            }
+        if (/^[-*+]\s+/.test(trimmed) || /^\d+[.)]\s+/.test(trimmed)) {
             elements.push(
-                <ol
-                    key={`ol-${i}`}
+                <div
+                    key={i}
                     style={{
-                        listStyleType: "decimal",
-                        margin: "4px 0",
-                        paddingLeft: "1.25rem",
+                        lineHeight: 1.6,
+                        maxWidth: "100%",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
                     }}
                 >
-                    {items.map((item, idx) => (
-                        <li key={idx} style={{ lineHeight: 1.6 }}>
-                            {renderInline(item, inlineOptions)}
-                        </li>
-                    ))}
-                </ol>,
+                    {renderInline(trimmed, inlineOptions)}
+                </div>,
             );
+            i++;
             continue;
         }
 

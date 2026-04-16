@@ -994,22 +994,34 @@ export function collectPaneNodes(node: WorkspaceNode): WorkspacePaneNode[] {
     return node.children.flatMap((child) => collectPaneNodes(child));
 }
 
-export function findPaneById(
+export function findWorkspaceNodeById(
     node: WorkspaceNode,
-    paneId: string,
-): WorkspacePaneNode | null {
+    nodeId: string,
+): WorkspaceNode | null {
+    if (node.id === nodeId) {
+        return node;
+    }
+
     if (node.type === "pane") {
-        return node.id === paneId ? node : null;
+        return null;
     }
 
     for (const child of node.children) {
-        const match = findPaneById(child, paneId);
+        const match = findWorkspaceNodeById(child, nodeId);
         if (match) {
             return match;
         }
     }
 
     return null;
+}
+
+export function findPaneById(
+    node: WorkspaceNode,
+    paneId: string,
+): WorkspacePaneNode | null {
+    const match = findWorkspaceNodeById(node, paneId);
+    return match?.type === "pane" ? match : null;
 }
 
 export function findPaneIdForTab(

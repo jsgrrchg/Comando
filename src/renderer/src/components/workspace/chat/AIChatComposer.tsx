@@ -25,6 +25,7 @@ import {
     parseComposerProjectEntryDragData,
     type WorkspaceTabComposerDragDetail,
 } from "@renderer/app/drag-and-drop";
+import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import type { AIComposerPart } from "./composerParts";
@@ -516,6 +517,7 @@ export function AIChatComposer({
 
     const lastSyncedParts = useRef<string>("");
     const lastResetNonceRef = useRef<number | null>(null);
+    const mentionSearchRequestRef = useRef(0);
 
     const metrics = useMemo(
         () => getChatPillMetrics(composerFontSize),
@@ -533,6 +535,17 @@ export function AIChatComposer({
         draftFileContexts.length > 0;
     const canSubmit = !disabled && hasDraft;
     const submitLabel = isSessionBusy ? "Queue" : "Send";
+
+    useRenderProbe("AIChatComposer", {
+        attachments: draftAttachments.length,
+        canSubmit,
+        contexts: draftFileContexts.length,
+        isSessionBusy,
+        mentionOpen: mentionState.open,
+        parts: parts.length,
+        slashOpen: slashState.open,
+        submitLabel,
+    });
 
     useEffect(() => {
         partsRef.current = parts;
@@ -617,7 +630,18 @@ export function AIChatComposer({
 
         const mentionMatch = getInlineTriggerMatch(root, /(^|\s)@([^\s@]*)$/);
         if (mentionMatch) {
+            const requestId = mentionSearchRequestRef.current + 1;
+            mentionSearchRequestRef.current = requestId;
             const entries = await onSearchProjectEntries(mentionMatch.query);
+            if (mentionSearchRequestRef.current !== requestId) {
+                return;
+            }
+
+            const nextMatch = getInlineTriggerMatch(root, /(^|\s)@([^\s@]*)$/);
+            if (!nextMatch || nextMatch.query !== mentionMatch.query) {
+                return;
+            }
+
             const items = getMentionSuggestions(mentionMatch.query, entries);
             setMentionState({
                 open: true,
@@ -628,6 +652,8 @@ export function AIChatComposer({
             setSlashState((s) => ({ ...s, open: false }));
             return;
         }
+
+        mentionSearchRequestRef.current += 1;
 
         const slashMatch = getInlineTriggerMatch(root, /(^|\s)\/([^\s/]*)$/);
         if (slashMatch) {

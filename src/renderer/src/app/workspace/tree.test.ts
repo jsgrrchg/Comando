@@ -330,8 +330,9 @@ describe("workspace tree helpers", () => {
             },
         });
 
+        const sourceDocument = sourceTab.document!;
         const withSavedDocument = replaceFileDocument(withSaving, "file-2", {
-            ...sourceTab.document,
+            ...sourceDocument,
             content: "saved content",
             modifiedAtMs: 2,
         });

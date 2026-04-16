@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
-import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
-import { useAiStore } from "@renderer/app/store/ai-store";
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { MarkdownContent } from "../MarkdownContent";
@@ -348,12 +348,6 @@ function FileToolMessage({
     ) => ResolvedProjectFileReference | null;
     readonly worktreeId: string | null;
 }) {
-    const aiChatSettings = useAiChatSettings();
-    const pendingReviewCardTextZoom = useAiStore(
-        (state) =>
-            state.sessions[activity.sessionId]?.pendingReviewCardTextZoom ??
-            aiChatSettings.pendingReviewCardTextZoom,
-    );
     const [expanded, setExpanded] = useState(false);
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
@@ -533,7 +527,7 @@ function FileToolMessage({
                                       backgroundColor:
                                           "var(--color-bg-tertiary)",
                                       border: "1px solid var(--color-border)",
-                                      fontSize: `${pendingReviewCardTextZoom}em`,
+                                      fontSize: `${FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM}em`,
                                   }}
                               >
                                   <div className="flex items-center justify-between gap-2">
@@ -840,7 +834,7 @@ function GenericToolMessage({
 
 /* ─── Public component ─── */
 
-export function ToolActivityItem({
+export const ToolActivityItem = memo(function ToolActivityItem({
     activity,
     onOpenFile,
     onOpenFileReference,
@@ -871,6 +865,14 @@ export function ToolActivityItem({
     );
     const hasInlineReview =
         activity.diffs.length > 0 || trackedFiles.length > 0;
+
+    useRenderProbe("ToolActivityItem", {
+        activityId: activity.id,
+        diffs: activity.diffs.length,
+        hasInlineReview,
+        pendingTrackedFiles: pendingTrackedFiles.length,
+        trackedFiles: trackedFiles.length,
+    });
 
     if (isTurnStartedActivity(activity)) {
         return <TurnStartedDivider activity={activity} />;
@@ -913,5 +915,53 @@ export function ToolActivityItem({
             onOpenFileReference={onOpenFileReference}
             resolveFileReference={resolveFileReference}
         />
+    );
+}, areToolActivityItemPropsEqual);
+
+ToolActivityItem.displayName = "ToolActivityItem";
+
+function areToolActivityItemPropsEqual(
+    previous: Readonly<{
+        readonly activity: AiToolActivity;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly trackedFiles?: readonly AiTrackedFile[];
+        readonly projectId: string | null;
+        readonly resolveFileReference?: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly worktreeId?: string | null;
+    }>,
+    next: Readonly<{
+        readonly activity: AiToolActivity;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly trackedFiles?: readonly AiTrackedFile[];
+        readonly projectId: string | null;
+        readonly resolveFileReference?: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly worktreeId?: string | null;
+    }>,
+) {
+    return (
+        previous.activity === next.activity &&
+        previous.projectId === next.projectId &&
+        previous.trackedFiles === next.trackedFiles &&
+        previous.worktreeId === next.worktreeId
     );
 }

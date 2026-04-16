@@ -76,7 +76,6 @@ function createItem(): ReviewFileItem {
             toolCallId: "tool-1",
             updatedAt: "2026-04-14T12:00:00.000Z",
         },
-        lines: [],
         stats: {
             additions: 1,
             approximate: false,

@@ -1,12 +1,13 @@
 import type { ReviewFileItem } from "./editedFilesPresentationModel";
 
-const REVIEW_VIEW_STATE_VERSION = 1;
+const REVIEW_VIEW_STATE_VERSION = 2;
 const REVIEW_VIEW_STATE_PREFIX = "comando.ai.review.view";
 
 export interface PersistedReviewAnchor {
     readonly fileUpdatedAt: string;
     readonly hunkIds: readonly string[];
     readonly identityKey: string;
+    readonly offsetWithinItem?: number;
     readonly pathAliases?: readonly string[];
 }
 
@@ -75,6 +76,7 @@ function anchorsEqual(
         left.identityKey === right.identityKey &&
         left.fileUpdatedAt === right.fileUpdatedAt &&
         arraysEqual(left.hunkIds, right.hunkIds) &&
+        left.offsetWithinItem === right.offsetWithinItem &&
         arraysEqual(left.pathAliases ?? [], right.pathAliases ?? [])
     );
 }
@@ -110,6 +112,8 @@ function normalizeAnchor(raw: unknown): PersistedReviewAnchor | null {
     const identityKey = (raw as { identityKey?: unknown }).identityKey;
     const fileUpdatedAt = (raw as { fileUpdatedAt?: unknown }).fileUpdatedAt;
     const hunkIds = (raw as { hunkIds?: unknown }).hunkIds;
+    const offsetWithinItem = (raw as { offsetWithinItem?: unknown })
+        .offsetWithinItem;
     const pathAliases = (raw as { pathAliases?: unknown }).pathAliases;
 
     if (
@@ -126,6 +130,11 @@ function normalizeAnchor(raw: unknown): PersistedReviewAnchor | null {
             (entry): entry is string => typeof entry === "string",
         ),
         identityKey,
+        offsetWithinItem:
+            typeof offsetWithinItem === "number" &&
+            Number.isFinite(offsetWithinItem)
+                ? Math.max(0, Math.round(offsetWithinItem))
+                : undefined,
         pathAliases: Array.isArray(pathAliases)
             ? normalizePathAliases(
                   pathAliases.filter(
@@ -136,7 +145,9 @@ function normalizeAnchor(raw: unknown): PersistedReviewAnchor | null {
     };
 }
 
-function normalizePersistedState(raw: unknown): PersistedReviewViewState | null {
+function normalizePersistedState(
+    raw: unknown,
+): PersistedReviewViewState | null {
     if (!raw || typeof raw !== "object") {
         return null;
     }
@@ -149,7 +160,7 @@ function normalizePersistedState(raw: unknown): PersistedReviewViewState | null 
     const writerId = (raw as { writerId?: unknown }).writerId;
 
     if (
-        version !== REVIEW_VIEW_STATE_VERSION ||
+        (version !== 1 && version !== REVIEW_VIEW_STATE_VERSION) ||
         !Array.isArray(expandedIdentityKeys) ||
         typeof scrollTop !== "number" ||
         !Number.isFinite(scrollTop) ||
@@ -208,8 +219,14 @@ function compareAnchorCandidates(
         return leftExact ? -1 : 1;
     }
 
-    const leftDistance = getUpdatedAtDistance(left.file.updatedAt, anchorUpdatedAt);
-    const rightDistance = getUpdatedAtDistance(right.file.updatedAt, anchorUpdatedAt);
+    const leftDistance = getUpdatedAtDistance(
+        left.file.updatedAt,
+        anchorUpdatedAt,
+    );
+    const rightDistance = getUpdatedAtDistance(
+        right.file.updatedAt,
+        anchorUpdatedAt,
+    );
 
     if (leftDistance !== rightDistance) {
         return leftDistance - rightDistance;
@@ -306,7 +323,11 @@ export function persistReviewViewState(
         return null;
     }
 
-    const existing = readPersistedReviewViewState(projectId, worktreeId, sessionId);
+    const existing = readPersistedReviewViewState(
+        projectId,
+        worktreeId,
+        sessionId,
+    );
     const nextExpandedIdentityKeys = normalizeExpandedIdentityKeys(
         state.expandedIdentityKeys,
     );
@@ -355,11 +376,19 @@ export function persistReviewViewState(
 export function createPersistedReviewAnchor(
     item: ReviewFileItem,
     hunkIds: readonly string[] = [],
+    options?: {
+        readonly offsetWithinItem?: number;
+    },
 ): PersistedReviewAnchor {
     return {
         fileUpdatedAt: item.file.updatedAt,
         hunkIds: [...hunkIds],
         identityKey: item.file.identityKey,
+        offsetWithinItem:
+            typeof options?.offsetWithinItem === "number" &&
+            Number.isFinite(options.offsetWithinItem)
+                ? Math.max(0, Math.round(options.offsetWithinItem))
+                : undefined,
         pathAliases: getCandidatePathAliases(item),
     };
 }
@@ -382,5 +411,7 @@ export function resolvePersistedReviewAnchor(
         existingHunkIds.has(hunkId),
     );
 
-    return createPersistedReviewAnchor(item, resolvedHunkIds);
+    return createPersistedReviewAnchor(item, resolvedHunkIds, {
+        offsetWithinItem: anchor.offsetWithinItem,
+    });
 }

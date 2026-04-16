@@ -1,4 +1,5 @@
 import {
+    memo,
     useCallback,
     useEffect,
     useLayoutEffect,
@@ -6,6 +7,7 @@ import {
     useRef,
     useState,
     type ReactNode,
+    type RefObject,
 } from "react";
 
 import type {
@@ -17,21 +19,17 @@ import type {
     AiSessionSnapshot,
     ClaudeAuthMethodId,
     GeminiAuthMethodId,
+    ProjectTreeNode,
     SecretValuePatch,
 } from "@shared/ipc";
 
-import {
-    PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
-    PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
-    PENDING_REVIEW_CARD_TEXT_ZOOM_STEP,
-    stepPendingReviewCardTextZoom,
-} from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceFileReviewContext,
@@ -42,13 +40,21 @@ import { LanguageIcon } from "./LanguageIcon";
 import { MarkdownContent } from "./MarkdownContent";
 import { AIChatComposer } from "./chat/AIChatComposer";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
+import {
+    areMessagesEquivalent,
+    reconcileChatTimelineModel,
+    type ChatTimelineModel,
+    type ChatTimelineRow,
+} from "./chat/chatTimelineModel";
 import { isScrollViewportNearBottom } from "./chat/chatScroll";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
+    appendSelectionMentionPart,
     composerPartsToPlainText,
     createEmptyComposerParts,
     serializeComposerPartsForPrompt,
 } from "./chat/composerParts";
+import { registerComposerSelectionMentionHandler } from "./chat/composerSelectionBridge";
 import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
 import { shouldShowPlanBanner } from "./chat/planBannerState";
@@ -59,10 +65,6 @@ import {
 } from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
-import {
-    deriveToolActivityReviewEntries,
-    type ToolActivityReviewEntry,
-} from "./chat/toolActivityReviewModel";
 import {
     collectProjectFileRoots,
     resolveProjectFileReference,
@@ -87,16 +89,6 @@ interface ChatTabViewProps {
     readonly onOpenReview: () => Promise<void>;
     readonly tab: RuntimeWorkspaceChatTab;
 }
-
-type TimelineRow =
-    | {
-          readonly kind: "message";
-          readonly message: AiSessionSnapshot["messages"][number];
-      }
-    | {
-          readonly kind: "tool";
-          readonly reviewEntry: ToolActivityReviewEntry;
-      };
 
 /* ─── Constants ─── */
 
@@ -154,7 +146,7 @@ type AiRuntimeCatalog = Pick<
 
 /* ─── Main component ─── */
 
-export function ChatTabView({
+export const ChatTabView = memo(function ChatTabView({
     onDraftChange,
     onOpenFile,
     onOpenReview,
@@ -176,9 +168,6 @@ export function ChatTabView({
     const removeQueuedPrompt = useAiStore((s) => s.removeQueuedPrompt);
     const respondPermission = useAiStore((s) => s.respondPermission);
     const respondUserInput = useAiStore((s) => s.respondUserInput);
-    const setSessionPendingReviewCardTextZoom = useAiStore(
-        (s) => s.setSessionPendingReviewCardTextZoom,
-    );
     const saveClaudeRuntimeSettings = useAiStore(
         (s) => s.saveClaudeRuntimeSettings,
     );
@@ -246,9 +235,18 @@ export function ChatTabView({
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
+    const stableTimelineRef = useRef<{
+        readonly model: ChatTimelineModel | null;
+        readonly sessionId: string;
+    }>({
+        model: null,
+        sessionId: tab.sessionId,
+    });
     const composerPartsRef = useRef<AIComposerPart[]>(
         createEmptyComposerParts(),
     );
+    const persistedDraftRef = useRef(tab.draft);
+    const lastSeenDraftComposerPartsSerializedRef = useRef("");
 
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
@@ -261,6 +259,44 @@ export function ChatTabView({
             titleInputRef.current?.select();
         }
     }, [isEditingTitle]);
+
+    useEffect(() => {
+        persistedDraftRef.current = tab.draft;
+    }, [tab.draft, tab.sessionId]);
+
+    const flushChatDraft = useCallback(
+        (draft: string) => {
+            if (persistedDraftRef.current === draft) {
+                return;
+            }
+
+            persistedDraftRef.current = draft;
+            onDraftChange(draft);
+        },
+        [onDraftChange],
+    );
+
+    useEffect(() => {
+        return () => {
+            flushChatDraft(composerPartsToPlainText(composerPartsRef.current));
+            setDraftComposerParts(
+                tab.sessionId,
+                cloneComposerPartsForDraft(composerPartsRef.current),
+            );
+        };
+    }, [flushChatDraft, setDraftComposerParts, tab.sessionId]);
+
+    const flushDraftComposerParts = useCallback(
+        (parts: readonly AIComposerPart[]) => {
+            const serialized = JSON.stringify(parts);
+            lastSeenDraftComposerPartsSerializedRef.current = serialized;
+            setDraftComposerParts(
+                tab.sessionId,
+                cloneComposerPartsForDraft(parts),
+            );
+        },
+        [setDraftComposerParts, tab.sessionId],
+    );
 
     const commitTitleEdit = useCallback(() => {
         if (skipTitleCommitRef.current) {
@@ -450,6 +486,15 @@ export function ChatTabView({
         ? snapshot.plan
         : null;
     const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
+    useEffect(() => {
+        if (lastSeenDraftComposerPartsSerializedRef.current.length > 0) {
+            return;
+        }
+
+        lastSeenDraftComposerPartsSerializedRef.current =
+            JSON.stringify(draftComposerParts);
+    }, [draftComposerParts]);
+
     const chatFontFamily = useMemo(
         () => buildChatFontFamily(aiChatSettings.chatFontFamily),
         [aiChatSettings.chatFontFamily],
@@ -545,13 +590,6 @@ export function ChatTabView({
         [onOpenFile, tab.projectId, tab.worktreeId],
     );
     const diffZoom = sessionState?.diffZoom ?? aiChatSettings.reviewDiffZoom;
-    const pendingReviewCardTextZoom =
-        sessionState?.pendingReviewCardTextZoom ??
-        aiChatSettings.pendingReviewCardTextZoom;
-    const canDecreasePendingReviewCardTextZoom =
-        pendingReviewCardTextZoom > PENDING_REVIEW_CARD_TEXT_ZOOM_MIN;
-    const canIncreasePendingReviewCardTextZoom =
-        pendingReviewCardTextZoom < PENDING_REVIEW_CARD_TEXT_ZOOM_MAX;
     const hasComposerContext =
         pendingPermission !== null ||
         pendingUserInput !== null ||
@@ -582,29 +620,41 @@ export function ChatTabView({
         return undefined;
     }, [isStreaming, streamStartTime]);
 
-    const timeline = useMemo((): TimelineRow[] => {
-        const toolReviewEntries = deriveToolActivityReviewEntries(
-            snapshot.toolActivity,
-            snapshot.trackedFiles,
+    const timelineModel = useMemo(() => {
+        const previousTimelineModel =
+            stableTimelineRef.current.sessionId === tab.sessionId
+                ? stableTimelineRef.current.model
+                : null;
+        const nextTimelineModel = reconcileChatTimelineModel(
+            previousTimelineModel,
+            {
+                messages: snapshot.messages,
+                status: snapshot.status,
+                toolActivity: snapshot.toolActivity,
+                trackedFiles: snapshot.trackedFiles,
+            },
         );
-        const rows: TimelineRow[] = [];
-        for (const message of snapshot.messages)
-            rows.push({ kind: "message", message });
-        for (const reviewEntry of toolReviewEntries)
-            rows.push({ kind: "tool", reviewEntry });
-        rows.sort((a, b) => {
-            const aT =
-                a.kind === "message"
-                    ? a.message.createdAt
-                    : a.reviewEntry.activity.createdAt;
-            const bT =
-                b.kind === "message"
-                    ? b.message.createdAt
-                    : b.reviewEntry.activity.createdAt;
-            return aT.localeCompare(bT);
-        });
-        return rows;
-    }, [snapshot.messages, snapshot.toolActivity, snapshot.trackedFiles]);
+        stableTimelineRef.current = {
+            model: nextTimelineModel,
+            sessionId: tab.sessionId,
+        };
+        return nextTimelineModel;
+    }, [
+        snapshot.messages,
+        snapshot.status,
+        snapshot.toolActivity,
+        snapshot.trackedFiles,
+        tab.sessionId,
+    ]);
+
+    useRenderProbe("ChatTabView", {
+        composerPartCount: composerParts.length,
+        hasComposerContext,
+        pendingReviewCount,
+        queuedPrompts: queuedPrompts.length,
+        sessionId: tab.sessionId,
+        timelineRows: timelineModel.orderedRows.length,
+    });
 
     const isNearBottom = useCallback((el: HTMLDivElement) => {
         return isScrollViewportNearBottom(
@@ -758,10 +808,10 @@ export function ChatTabView({
         const submittedAttachments = [...draftAttachments];
         const submittedFileContexts = [...draftFileContexts];
 
-        onDraftChange("");
+        flushChatDraft("");
         setComposerParts(createEmptyComposerParts());
         setComposerResetNonce((current) => current + 1);
-        setDraftComposerParts(tab.sessionId, createEmptyComposerParts());
+        flushDraftComposerParts(createEmptyComposerParts());
         clearDraftAttachments(tab.sessionId);
         clearDraftFileContexts(tab.sessionId);
         setComposerError(null);
@@ -789,8 +839,8 @@ export function ChatTabView({
             }
 
             setComposerParts(submittedParts);
-            onDraftChange(composerPartsToPlainText(submittedParts));
-            setDraftComposerParts(tab.sessionId, submittedParts);
+            flushChatDraft(composerPartsToPlainText(submittedParts));
+            flushDraftComposerParts(submittedParts);
             setDraftAttachments(tab.sessionId, submittedAttachments);
             for (const fileContext of submittedFileContexts) {
                 addDraftFileContext(tab.sessionId, fileContext);
@@ -801,10 +851,8 @@ export function ChatTabView({
     const handleComposerPartsChange = useCallback(
         (newParts: AIComposerPart[]) => {
             setComposerParts(newParts);
-            onDraftChange(composerPartsToPlainText(newParts));
-            setDraftComposerParts(tab.sessionId, newParts);
         },
-        [onDraftChange, setDraftComposerParts, tab.sessionId],
+        [],
     );
 
     const handleEditQueuedPrompt = useCallback(
@@ -819,11 +867,16 @@ export function ChatTabView({
             }
 
             setComposerParts([...restoredParts]);
-            onDraftChange(composerPartsToPlainText(restoredParts));
-            setDraftComposerParts(tab.sessionId, restoredParts);
+            flushChatDraft(composerPartsToPlainText(restoredParts));
+            flushDraftComposerParts(restoredParts);
             setComposerError(null);
         },
-        [editQueuedPrompt, onDraftChange, setDraftComposerParts, tab.sessionId],
+        [
+            editQueuedPrompt,
+            flushChatDraft,
+            flushDraftComposerParts,
+            tab.sessionId,
+        ],
     );
 
     const handleCancelQueuedPromptEdit = useCallback(() => {
@@ -834,26 +887,34 @@ export function ChatTabView({
 
         setComposerParts([...restoredParts]);
         setComposerResetNonce((current) => current + 1);
-        onDraftChange(composerPartsToPlainText(restoredParts));
-        setDraftComposerParts(tab.sessionId, restoredParts);
+        flushChatDraft(composerPartsToPlainText(restoredParts));
+        flushDraftComposerParts(restoredParts);
         setComposerError(null);
     }, [
         cancelQueuedPromptEdit,
-        onDraftChange,
-        setDraftComposerParts,
+        flushChatDraft,
+        flushDraftComposerParts,
         tab.sessionId,
     ]);
 
     useEffect(() => {
-        const currentSerialized = JSON.stringify(composerParts);
         const nextSerialized = JSON.stringify(draftComposerParts);
+        const previousStoreSerialized =
+            lastSeenDraftComposerPartsSerializedRef.current;
+        lastSeenDraftComposerPartsSerializedRef.current = nextSerialized;
+
+        if (nextSerialized === previousStoreSerialized) {
+            return;
+        }
+
+        const currentSerialized = JSON.stringify(composerParts);
         if (currentSerialized === nextSerialized) {
             return;
         }
 
         setComposerParts(cloneComposerPartsForDraft(draftComposerParts));
-        onDraftChange(composerPartsToPlainText(draftComposerParts));
-    }, [composerParts, draftComposerParts, onDraftChange]);
+        flushChatDraft(composerPartsToPlainText(draftComposerParts));
+    }, [composerParts, draftComposerParts, flushChatDraft]);
 
     const handleClearQueuedPrompts = useCallback(() => {
         clearQueuedPrompts(tab.sessionId);
@@ -942,10 +1003,25 @@ export function ChatTabView({
         },
         [rejectTrackedFileHunks, tab.sessionId],
     );
+    const handleOpenReviewTab = useCallback(() => {
+        void onOpenReview();
+    }, [onOpenReview]);
 
     useEffect(() => {
         composerPartsRef.current = composerParts;
     }, [composerParts]);
+
+    useEffect(() => {
+        return registerComposerSelectionMentionHandler(
+            tab.sessionId,
+            (selection) => {
+                setComposerParts((currentParts) =>
+                    appendSelectionMentionPart(currentParts, selection),
+                );
+                setComposerError(null);
+            },
+        );
+    }, [tab.sessionId]);
 
     const handlePasteImage = useCallback(
         (file: File) => {
@@ -953,19 +1029,66 @@ export function ChatTabView({
         },
         [appendImageFiles],
     );
+    const projectSearchTimeoutRef = useRef<number | null>(null);
+    const pendingProjectSearchQueryRef = useRef("");
+    const pendingProjectSearchResolversRef = useRef<
+        Array<(entries: readonly ProjectTreeNode[]) => void>
+    >([]);
+
+    useEffect(() => {
+        return () => {
+            if (projectSearchTimeoutRef.current !== null) {
+                window.clearTimeout(projectSearchTimeoutRef.current);
+                projectSearchTimeoutRef.current = null;
+            }
+
+            const pendingResolversRef = pendingProjectSearchResolversRef;
+            const pendingResolvers = pendingResolversRef.current.splice(0);
+            pendingResolvers.forEach((resolve) => resolve([]));
+        };
+    }, []);
 
     const handleSearchProjectEntries = useCallback(
-        async (query: string) => {
-            if (!tab.projectId || query.length < 1) return [];
-            try {
-                return await window.comando.searchProjectEntries({
-                    limit: 10,
-                    projectId: tab.projectId,
-                    query,
-                });
-            } catch {
-                return [];
+        (query: string) => {
+            const normalizedQuery = query.trim();
+            const projectId = tab.projectId;
+            if (!projectId || normalizedQuery.length < 1 || !window.comando) {
+                return Promise.resolve([] as const);
             }
+
+            pendingProjectSearchQueryRef.current = normalizedQuery;
+
+            return new Promise<readonly ProjectTreeNode[]>((resolve) => {
+                pendingProjectSearchResolversRef.current.push(resolve);
+
+                if (projectSearchTimeoutRef.current !== null) {
+                    window.clearTimeout(projectSearchTimeoutRef.current);
+                }
+
+                projectSearchTimeoutRef.current = window.setTimeout(() => {
+                    projectSearchTimeoutRef.current = null;
+                    const pendingResolvers =
+                        pendingProjectSearchResolversRef.current.splice(0);
+                    const searchQuery = pendingProjectSearchQueryRef.current;
+
+                    void window.comando
+                        .searchProjectEntries({
+                            limit: 12,
+                            projectId,
+                            query: searchQuery,
+                        })
+                        .then((entries) => {
+                            pendingResolvers.forEach((callback) =>
+                                callback(entries),
+                            );
+                        })
+                        .catch(() => {
+                            pendingResolvers.forEach((callback) =>
+                                callback([]),
+                            );
+                        });
+                }, 120);
+            });
         },
         [tab.projectId],
     );
@@ -1637,51 +1760,24 @@ export function ChatTabView({
                     </div>
                 ) : null}
 
-                {/* Message timeline */}
-                <div
-                    ref={scrollRef}
-                    className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
+                <ChatTimeline
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={aiChatSettings.chatFontSize}
+                    elapsed={elapsed}
+                    historyRows={timelineModel.historyRows}
+                    isStreaming={isStreaming}
+                    liveTailRow={timelineModel.liveTailRow}
+                    onOpenFile={onOpenFile}
+                    onOpenResolvedFileReference={
+                        handleOpenResolvedFileReference
+                    }
                     onScroll={handleScroll}
-                >
-                    <div
-                        ref={timelineContentRef}
-                        className="min-w-0 space-y-2"
-                        style={{ fontFamily: chatFontFamily }}
-                    >
-                        {timeline.map((row) =>
-                            row.kind === "message" ? (
-                                <ChatMessageRow
-                                    chatFontFamily={chatFontFamily}
-                                    chatFontSize={aiChatSettings.chatFontSize}
-                                    key={row.message.id}
-                                    message={row.message}
-                                    onOpenFile={handleOpenResolvedFileReference}
-                                    resolveFileReference={
-                                        resolveChatFileReference
-                                    }
-                                />
-                            ) : (
-                                <ToolActivityItem
-                                    activity={row.reviewEntry.activity}
-                                    key={row.reviewEntry.activity.id}
-                                    onOpenFile={onOpenFile}
-                                    onOpenFileReference={
-                                        handleOpenResolvedFileReference
-                                    }
-                                    projectId={tab.projectId}
-                                    resolveFileReference={
-                                        resolveChatFileReference
-                                    }
-                                    trackedFiles={row.reviewEntry.trackedFiles}
-                                    worktreeId={tab.worktreeId ?? null}
-                                />
-                            ),
-                        )}
-                        {isStreaming ? (
-                            <StreamingIndicator elapsed={elapsed} />
-                        ) : null}
-                    </div>
-                </div>
+                    projectId={tab.projectId}
+                    resolveFileReference={resolveChatFileReference}
+                    scrollRef={scrollRef}
+                    timelineContentRef={timelineContentRef}
+                    worktreeId={tab.worktreeId ?? null}
+                />
 
                 {/* Context cards (edits, queue, errors) */}
                 {hasComposerContext ? (
@@ -1720,45 +1816,16 @@ export function ChatTabView({
 
                         {pendingReviewCount > 0 ? (
                             <EditedFilesBufferPanel
-                                canDecreaseTextZoom={
-                                    canDecreasePendingReviewCardTextZoom
-                                }
-                                canIncreaseTextZoom={
-                                    canIncreasePendingReviewCardTextZoom
-                                }
                                 diffZoom={diffZoom}
                                 items={pendingReviewItems}
-                                onDecreaseTextZoom={() =>
-                                    setSessionPendingReviewCardTextZoom(
-                                        tab.sessionId,
-                                        stepPendingReviewCardTextZoom(
-                                            pendingReviewCardTextZoom,
-                                            -PENDING_REVIEW_CARD_TEXT_ZOOM_STEP,
-                                        ),
-                                    )
-                                }
                                 onKeepAll={handleKeepAllPendingReview}
                                 onKeepHunk={handleKeepPendingReviewHunk}
                                 onKeepItem={handleKeepPendingReviewItem}
                                 onOpenItem={handleOpenPendingReviewItem}
-                                onOpenReview={() => {
-                                    void onOpenReview();
-                                }}
-                                onIncreaseTextZoom={() =>
-                                    setSessionPendingReviewCardTextZoom(
-                                        tab.sessionId,
-                                        stepPendingReviewCardTextZoom(
-                                            pendingReviewCardTextZoom,
-                                            PENDING_REVIEW_CARD_TEXT_ZOOM_STEP,
-                                        ),
-                                    )
-                                }
+                                onOpenReview={handleOpenReviewTab}
                                 onRejectAll={handleRejectAllPendingReview}
                                 onRejectHunk={handleRejectPendingReviewHunk}
                                 onRejectItem={handleRejectPendingReviewItem}
-                                pendingReviewCardTextZoom={
-                                    pendingReviewCardTextZoom
-                                }
                                 summary={pendingReviewSummary}
                             />
                         ) : null}
@@ -1785,12 +1852,6 @@ export function ChatTabView({
                             hasAgentControls ? (
                                 <AIChatAgentControls
                                     configOptions={snapshot.configOptions}
-                                    disabled={
-                                        isStreaming ||
-                                        snapshot.status ===
-                                            "waiting_permission" ||
-                                        snapshot.status === "waiting_user_input"
-                                    }
                                     modeId={snapshot.modeId ?? ""}
                                     modelId={snapshot.modelId ?? ""}
                                     modes={snapshot.modes}
@@ -1861,7 +1922,9 @@ export function ChatTabView({
             </div>
         </div>
     );
-}
+}, areChatTabViewPropsEqual);
+
+ChatTabView.displayName = "ChatTabView";
 
 /* ─── Render helpers (static fragments) ─── */
 
@@ -2187,7 +2250,7 @@ function renderClaudeRuntimeConfig(props: {
                     <textarea
                         autoCapitalize="off"
                         autoCorrect="off"
-                        className="ide-input app-no-drag min-h-[74px] resize-y"
+                        className="ide-input app-no-drag min-h-18.5 resize-y"
                         onChange={(event) =>
                             props.onChangeGatewayAuthToken(event.target.value)
                         }
@@ -2214,7 +2277,7 @@ function renderClaudeRuntimeConfig(props: {
                     <textarea
                         autoCapitalize="off"
                         autoCorrect="off"
-                        className="ide-input app-no-drag min-h-[88px] resize-y"
+                        className="ide-input app-no-drag min-h-22 resize-y"
                         onChange={(event) =>
                             props.onChangeGatewayCustomHeaders(
                                 event.target.value,
@@ -2743,7 +2806,7 @@ function AttachmentPillFrame(props: {
                 </span>
             ) : null}
             <span
-                className="max-w-[150px] truncate text-xs"
+                className="max-w-37.5 truncate text-xs"
                 style={{
                     color: palette.color,
                 }}
@@ -2798,6 +2861,476 @@ function ImageAttachmentChip(props: {
             title={`${label} • ${sizeLabel}`}
             variant="file"
         />
+    );
+}
+
+const ChatTimeline = memo(function ChatTimeline({
+    chatFontFamily,
+    chatFontSize,
+    elapsed,
+    historyRows,
+    isStreaming,
+    liveTailRow,
+    onOpenFile,
+    onOpenResolvedFileReference,
+    onScroll,
+    projectId,
+    resolveFileReference,
+    scrollRef,
+    timelineContentRef,
+    worktreeId,
+}: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly elapsed: string;
+    readonly historyRows: readonly ChatTimelineRow[];
+    readonly isStreaming: boolean;
+    readonly liveTailRow: ChatTimelineRow | null;
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void>;
+    readonly onOpenResolvedFileReference: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly onScroll: () => void;
+    readonly projectId: string | null;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+    readonly worktreeId: string | null;
+}) {
+    useRenderProbe("ChatTimeline", {
+        historyRows: historyRows.length,
+        isStreaming,
+        rows: historyRows.length + (liveTailRow ? 1 : 0),
+    });
+
+    return (
+        <div
+            ref={scrollRef}
+            className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
+            onScroll={onScroll}
+        >
+            <div
+                ref={timelineContentRef}
+                className="min-w-0 space-y-2"
+                style={{ fontFamily: chatFontFamily }}
+            >
+                <ChatTimelineHistory
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
+                    historyRows={historyRows}
+                    onOpenFile={onOpenFile}
+                    onOpenResolvedFileReference={onOpenResolvedFileReference}
+                    projectId={projectId}
+                    resolveFileReference={resolveFileReference}
+                    worktreeId={worktreeId}
+                />
+                <ChatTimelineLiveTail
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
+                    onOpenFile={onOpenFile}
+                    onOpenResolvedFileReference={onOpenResolvedFileReference}
+                    projectId={projectId}
+                    resolveFileReference={resolveFileReference}
+                    row={liveTailRow}
+                    worktreeId={worktreeId}
+                />
+                {isStreaming ? <StreamingIndicator elapsed={elapsed} /> : null}
+            </div>
+        </div>
+    );
+}, areChatTimelinePropsEqual);
+
+ChatTimeline.displayName = "ChatTimeline";
+
+const ChatTimelineHistory = memo(function ChatTimelineHistory({
+    chatFontFamily,
+    chatFontSize,
+    historyRows,
+    onOpenFile,
+    onOpenResolvedFileReference,
+    projectId,
+    resolveFileReference,
+    worktreeId,
+}: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly historyRows: readonly ChatTimelineRow[];
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void>;
+    readonly onOpenResolvedFileReference: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly projectId: string | null;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly worktreeId: string | null;
+}) {
+    return historyRows.map((row) => (
+        <ChatTimelineRowView
+            chatFontFamily={chatFontFamily}
+            chatFontSize={chatFontSize}
+            key={row.id}
+            onOpenFile={onOpenFile}
+            onOpenResolvedFileReference={onOpenResolvedFileReference}
+            projectId={projectId}
+            resolveFileReference={resolveFileReference}
+            row={row}
+            worktreeId={worktreeId}
+        />
+    ));
+}, areChatTimelineHistoryPropsEqual);
+
+ChatTimelineHistory.displayName = "ChatTimelineHistory";
+
+const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
+    chatFontFamily,
+    chatFontSize,
+    onOpenFile,
+    onOpenResolvedFileReference,
+    projectId,
+    resolveFileReference,
+    row,
+    worktreeId,
+}: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void>;
+    readonly onOpenResolvedFileReference: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly projectId: string | null;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly row: ChatTimelineRow | null;
+    readonly worktreeId: string | null;
+}) {
+    if (!row) {
+        return null;
+    }
+
+    return (
+        <ChatTimelineRowView
+            chatFontFamily={chatFontFamily}
+            chatFontSize={chatFontSize}
+            onOpenFile={onOpenFile}
+            onOpenResolvedFileReference={onOpenResolvedFileReference}
+            projectId={projectId}
+            resolveFileReference={resolveFileReference}
+            row={row}
+            worktreeId={worktreeId}
+        />
+    );
+}, areChatTimelineLiveTailPropsEqual);
+
+ChatTimelineLiveTail.displayName = "ChatTimelineLiveTail";
+
+const ChatTimelineRowView = memo(function ChatTimelineRowView({
+    chatFontFamily,
+    chatFontSize,
+    onOpenFile,
+    onOpenResolvedFileReference,
+    projectId,
+    resolveFileReference,
+    row,
+    worktreeId,
+}: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void>;
+    readonly onOpenResolvedFileReference: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly projectId: string | null;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly row: ChatTimelineRow;
+    readonly worktreeId: string | null;
+}) {
+    if (row.kind === "message") {
+        return (
+            <ChatMessageRow
+                chatFontFamily={chatFontFamily}
+                chatFontSize={chatFontSize}
+                message={row.message}
+                onOpenFile={onOpenResolvedFileReference}
+                resolveFileReference={resolveFileReference}
+            />
+        );
+    }
+
+    return (
+        <ToolActivityItem
+            activity={row.reviewEntry.activity}
+            onOpenFile={onOpenFile}
+            onOpenFileReference={onOpenResolvedFileReference}
+            projectId={projectId}
+            resolveFileReference={resolveFileReference}
+            trackedFiles={row.reviewEntry.trackedFiles}
+            worktreeId={worktreeId}
+        />
+    );
+}, areChatTimelineRowViewPropsEqual);
+
+ChatTimelineRowView.displayName = "ChatTimelineRowView";
+
+function areChatTimelinePropsEqual(
+    previous: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly elapsed: string;
+        readonly historyRows: readonly ChatTimelineRow[];
+        readonly isStreaming: boolean;
+        readonly liveTailRow: ChatTimelineRow | null;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly onScroll: () => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly scrollRef: RefObject<HTMLDivElement | null>;
+        readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+        readonly worktreeId: string | null;
+    }>,
+    next: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly elapsed: string;
+        readonly historyRows: readonly ChatTimelineRow[];
+        readonly isStreaming: boolean;
+        readonly liveTailRow: ChatTimelineRow | null;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly onScroll: () => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly scrollRef: RefObject<HTMLDivElement | null>;
+        readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+        readonly worktreeId: string | null;
+    }>,
+) {
+    return (
+        previous.chatFontFamily === next.chatFontFamily &&
+        previous.chatFontSize === next.chatFontSize &&
+        previous.elapsed === next.elapsed &&
+        previous.historyRows === next.historyRows &&
+        previous.isStreaming === next.isStreaming &&
+        previous.liveTailRow === next.liveTailRow &&
+        previous.projectId === next.projectId &&
+        previous.scrollRef === next.scrollRef &&
+        previous.timelineContentRef === next.timelineContentRef &&
+        previous.worktreeId === next.worktreeId
+    );
+}
+
+function areChatTimelineHistoryPropsEqual(
+    previous: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly historyRows: readonly ChatTimelineRow[];
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly worktreeId: string | null;
+    }>,
+    next: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly historyRows: readonly ChatTimelineRow[];
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly worktreeId: string | null;
+    }>,
+) {
+    return (
+        previous.chatFontFamily === next.chatFontFamily &&
+        previous.chatFontSize === next.chatFontSize &&
+        previous.historyRows === next.historyRows &&
+        previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenResolvedFileReference ===
+            next.onOpenResolvedFileReference &&
+        previous.projectId === next.projectId &&
+        previous.resolveFileReference === next.resolveFileReference &&
+        previous.worktreeId === next.worktreeId
+    );
+}
+
+function areChatTimelineLiveTailPropsEqual(
+    previous: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly row: ChatTimelineRow | null;
+        readonly worktreeId: string | null;
+    }>,
+    next: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly row: ChatTimelineRow | null;
+        readonly worktreeId: string | null;
+    }>,
+) {
+    return (
+        previous.chatFontFamily === next.chatFontFamily &&
+        previous.chatFontSize === next.chatFontSize &&
+        previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenResolvedFileReference ===
+            next.onOpenResolvedFileReference &&
+        previous.projectId === next.projectId &&
+        previous.resolveFileReference === next.resolveFileReference &&
+        previous.row === next.row &&
+        previous.worktreeId === next.worktreeId
+    );
+}
+
+function areChatTimelineRowViewPropsEqual(
+    previous: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly row: ChatTimelineRow;
+        readonly worktreeId: string | null;
+    }>,
+    next: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly onOpenFile: (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        ) => Promise<void>;
+        readonly onOpenResolvedFileReference: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
+        readonly projectId: string | null;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+        readonly row: ChatTimelineRow;
+        readonly worktreeId: string | null;
+    }>,
+) {
+    return (
+        previous.chatFontFamily === next.chatFontFamily &&
+        previous.chatFontSize === next.chatFontSize &&
+        previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenResolvedFileReference ===
+            next.onOpenResolvedFileReference &&
+        previous.projectId === next.projectId &&
+        previous.resolveFileReference === next.resolveFileReference &&
+        previous.row === next.row &&
+        previous.worktreeId === next.worktreeId
+    );
+}
+
+function areChatTabViewPropsEqual(
+    previous: Readonly<ChatTabViewProps>,
+    next: Readonly<ChatTabViewProps>,
+) {
+    return (
+        previous.onDraftChange === next.onDraftChange &&
+        previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenReview === next.onOpenReview &&
+        previous.tab === next.tab
     );
 }
 
@@ -3137,7 +3670,7 @@ function UserInputRequestCard({
 
 /* ─── Message row ─── */
 
-function ChatMessageRow({
+const ChatMessageRow = memo(function ChatMessageRow({
     chatFontFamily,
     chatFontSize,
     message,
@@ -3194,6 +3727,37 @@ function ChatMessageRow({
             onOpenFile={onOpenFile}
             resolveFileReference={resolveFileReference}
         />
+    );
+}, areChatMessageRowPropsEqual);
+
+ChatMessageRow.displayName = "ChatMessageRow";
+
+function areChatMessageRowPropsEqual(
+    previous: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly message: AiSessionSnapshot["messages"][number];
+        readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+    }>,
+    next: Readonly<{
+        readonly chatFontFamily?: string;
+        readonly chatFontSize?: number;
+        readonly message: AiSessionSnapshot["messages"][number];
+        readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+        readonly resolveFileReference: (
+            reference: string,
+        ) => ResolvedProjectFileReference | null;
+    }>,
+) {
+    return (
+        previous.chatFontFamily === next.chatFontFamily &&
+        previous.chatFontSize === next.chatFontSize &&
+        previous.onOpenFile === next.onOpenFile &&
+        previous.resolveFileReference === next.resolveFileReference &&
+        areMessagesEquivalent(previous.message, next.message)
     );
 }
 
@@ -3436,7 +4000,7 @@ function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
             className="flex items-baseline gap-2 py-1"
             style={{ fontSize: "0.74em", lineHeight: 1.2 }}
         >
-            <span className="inline-flex items-baseline gap-[3px]">
+            <span className="inline-flex items-baseline gap-0.75">
                 {[0, 1, 2].map((i) => (
                     <span
                         className="inline-block rounded-full"

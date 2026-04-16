@@ -1,7 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import "./app/editor/monaco";
 import { App } from "./App";
 import { SettingsApp } from "./SettingsApp";
 import "./styles.css";

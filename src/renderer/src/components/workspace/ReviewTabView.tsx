@@ -12,6 +12,10 @@ import type {
     RuntimeWorkspaceReviewTab,
 } from "@renderer/app/workspace/tree";
 import {
+    MeasuredVirtualList,
+    type MeasuredVirtualListHandle,
+} from "@renderer/components/virtual/MeasuredVirtualList";
+import {
     collectProjectFileRoots,
     resolveProjectFileReference,
 } from "./projectFileReferences";
@@ -37,6 +41,10 @@ import {
     type PersistedReviewAnchor,
 } from "./review/reviewTabPersistence";
 import { getNeutralButtonStyle } from "./review/reviewStyles";
+
+const REVIEW_VIRTUALIZATION_THRESHOLD = 12;
+const REVIEW_VIRTUALIZATION_OVERSCAN = 4;
+const REVIEW_FILE_ROW_GAP = 12;
 
 interface ReviewTabViewProps {
     readonly onOpenFile: (
@@ -153,6 +161,152 @@ function useReviewExpansion(
         expandedKeys,
         toggleFile,
     };
+}
+
+function estimateReviewFileRowHeight(
+    item: ReviewFileItem,
+    expanded: boolean,
+    diffZoom: number,
+): number {
+    const baseHeight = 72;
+
+    if (!expanded) {
+        return baseHeight;
+    }
+
+    if (!item.diff.isText || item.diff.hunks.length === 0) {
+        return baseHeight + 84;
+    }
+
+    const diffLineCount = item.diff.hunks.reduce(
+        (total, hunk) => total + hunk.lines.length,
+        0,
+    );
+
+    return Math.min(
+        1800,
+        baseHeight +
+            96 +
+            item.diff.hunks.length * 18 +
+            diffLineCount * Math.max(16, 18 * diffZoom),
+    );
+}
+
+function findElementByDatasetValue(
+    elements: readonly HTMLElement[],
+    key: "reviewFileKey" | "reviewHunkKey",
+    value: string,
+): HTMLElement | null {
+    for (const element of elements) {
+        if (element.dataset[key] === value) {
+            return element;
+        }
+    }
+
+    return null;
+}
+
+function createViewportPersistedAnchor(
+    container: HTMLDivElement,
+    itemsByIdentityKey: ReadonlyMap<string, ReviewFileItem>,
+): PersistedReviewAnchor | null {
+    const containerRect = container.getBoundingClientRect();
+    const fileRows = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-review-file-key]"),
+    );
+
+    const anchorRow =
+        fileRows.find((row) => {
+            const rect = row.getBoundingClientRect();
+            return rect.bottom > containerRect.top + 1;
+        }) ??
+        fileRows[0] ??
+        null;
+
+    const identityKey = anchorRow?.dataset.reviewFileKey;
+    if (!anchorRow || !identityKey) {
+        return null;
+    }
+
+    const item = itemsByIdentityKey.get(identityKey);
+    if (!item) {
+        return null;
+    }
+
+    const rowRect = anchorRow.getBoundingClientRect();
+    const itemStart = container.scrollTop + (rowRect.top - containerRect.top);
+    const offsetWithinItem = Math.max(
+        0,
+        Math.round(container.scrollTop - itemStart),
+    );
+    const hunkRows = Array.from(
+        anchorRow.querySelectorAll<HTMLElement>("[data-review-hunk-key]"),
+    );
+    const anchorHunk =
+        hunkRows.find((hunk) => {
+            const rect = hunk.getBoundingClientRect();
+            return rect.bottom > containerRect.top + 1;
+        }) ?? null;
+    const anchorHunkId = anchorHunk?.dataset.reviewHunkKey;
+
+    return createPersistedReviewAnchor(
+        item,
+        anchorHunkId ? [anchorHunkId] : [],
+        {
+            offsetWithinItem,
+        },
+    );
+}
+
+function restorePersistedAnchorInViewport(
+    container: HTMLDivElement,
+    anchor: PersistedReviewAnchor,
+): boolean {
+    const fileRows = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-review-file-key]"),
+    );
+    const fileRow = findElementByDatasetValue(
+        fileRows,
+        "reviewFileKey",
+        anchor.identityKey,
+    );
+
+    if (!fileRow) {
+        return false;
+    }
+
+    if (anchor.hunkIds.length > 0) {
+        const hunkRows = Array.from(
+            fileRow.querySelectorAll<HTMLElement>("[data-review-hunk-key]"),
+        );
+
+        for (const hunkId of anchor.hunkIds) {
+            const hunkRow = findElementByDatasetValue(
+                hunkRows,
+                "reviewHunkKey",
+                hunkId,
+            );
+            if (!hunkRow) {
+                continue;
+            }
+
+            hunkRow.scrollIntoView({ block: "center" });
+            return true;
+        }
+    }
+
+    if (typeof anchor.offsetWithinItem === "number") {
+        const containerRect = container.getBoundingClientRect();
+        const rowRect = fileRow.getBoundingClientRect();
+        const itemStart =
+            container.scrollTop + (rowRect.top - containerRect.top);
+
+        container.scrollTop = Math.max(0, itemStart + anchor.offsetWithinItem);
+        return true;
+    }
+
+    fileRow.scrollIntoView({ block: "start" });
+    return true;
 }
 
 function ReviewEmptyState({
@@ -417,6 +571,22 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         () => deriveReviewItems(trackedFiles, resolveTrackedFileOpenPath),
         [resolveTrackedFileOpenPath, trackedFiles],
     );
+    const itemsByIdentityKey = useMemo(
+        () =>
+            new Map(
+                items.map((item) => [item.file.identityKey, item] as const),
+            ),
+        [items],
+    );
+    const itemIndexByIdentityKey = useMemo(
+        () =>
+            new Map(
+                items.map(
+                    (item, index) => [item.file.identityKey, index] as const,
+                ),
+            ),
+        [items],
+    );
     const summary = useMemo(() => deriveReviewSummary(items), [items]);
     const rejectableCount = useMemo(
         () => items.filter((item) => item.canReject).length,
@@ -425,6 +595,8 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     const diffZoom = sessionState?.diffZoom ?? aiChatSettings.reviewDiffZoom;
     const canDecreaseZoom = diffZoom > DIFF_ZOOM_MIN;
     const canIncreaseZoom = diffZoom < DIFF_ZOOM_MAX;
+    const shouldVirtualizeItems =
+        !currentError && items.length >= REVIEW_VIRTUALIZATION_THRESHOLD;
 
     const [persistVersion, setPersistVersion] = useState(0);
     const reviewStorageKey = useMemo(
@@ -471,26 +643,57 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     const persistedAnchorRef = useRef<PersistedReviewAnchor | null>(
         initialAnchor,
     );
+    const pendingRestoreAnchorRef = useRef<PersistedReviewAnchor | null>(
+        initialAnchor,
+    );
     const reviewWriterIdRef = useRef(createWriterId());
     const lastSeenPersistedUpdatedAtRef = useRef<number>(0);
     const didRunPersistEffectRef = useRef(false);
     const restoreAppliedRef = useRef(false);
+    const restoreCompletedRef = useRef(false);
     const scrollPersistTimerRef = useRef<number | null>(null);
     const storageRefreshTimerRef = useRef<number | null>(null);
     const pendingScrollTopRef = useRef<number | null>(null);
+    const restoreAttemptFrameRef = useRef<number | null>(null);
+    const restoreAttemptCountRef = useRef(0);
+    const reviewVirtualListApiRef = useRef<MeasuredVirtualListHandle | null>(
+        null,
+    );
+    const [isReviewVirtualListReady, setIsReviewVirtualListReady] =
+        useState(false);
     const expandedKeysSignature = useMemo(
         () => [...expansion.expandedKeys].sort().join("\u0000"),
         [expansion.expandedKeys],
     );
 
     const persistViewState = useCallback(
-        (nextScrollTop?: number) => {
+        (
+            nextScrollTop?: number,
+            anchorOverride?: PersistedReviewAnchor | null,
+        ) => {
+            const derivedAnchor =
+                anchorOverride ??
+                (() => {
+                    const container = scrollContainerRef.current;
+                    if (!container) {
+                        return persistedAnchorRef.current;
+                    }
+
+                    return (
+                        createViewportPersistedAnchor(
+                            container,
+                            itemsByIdentityKey,
+                        ) ?? persistedAnchorRef.current
+                    );
+                })();
+
+            persistedAnchorRef.current = derivedAnchor;
             const persisted = persistReviewViewState(
                 tab.projectId,
                 tab.worktreeId ?? null,
                 tab.sessionId,
                 {
-                    anchor: persistedAnchorRef.current,
+                    anchor: derivedAnchor,
                     expandedIdentityKeys: expansion.expandedKeys,
                     scrollTop:
                         nextScrollTop ??
@@ -510,6 +713,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         },
         [
             expansion.expandedKeys,
+            itemsByIdentityKey,
             persistedState?.scrollTop,
             tab.projectId,
             tab.sessionId,
@@ -536,6 +740,14 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         }, 80);
     }, []);
 
+    const flushScheduledRestoreAttempt = useCallback(() => {
+        if (restoreAttemptFrameRef.current != null) {
+            window.cancelAnimationFrame(restoreAttemptFrameRef.current);
+            restoreAttemptFrameRef.current = null;
+        }
+        restoreAttemptCountRef.current = 0;
+    }, []);
+
     const schedulePersistFromScroll = useCallback(
         (scrollTop: number) => {
             pendingScrollTopRef.current = scrollTop;
@@ -552,6 +764,52 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         },
         [persistViewState],
     );
+
+    const handleReviewVirtualListReady = useCallback(
+        (handle: MeasuredVirtualListHandle | null) => {
+            reviewVirtualListApiRef.current = handle;
+            setIsReviewVirtualListReady(handle !== null);
+        },
+        [],
+    );
+
+    const scheduleRestoreAttempt = useCallback(() => {
+        if (restoreAttemptFrameRef.current != null) {
+            return;
+        }
+
+        restoreAttemptFrameRef.current = window.requestAnimationFrame(() => {
+            restoreAttemptFrameRef.current = null;
+
+            const anchor = pendingRestoreAnchorRef.current;
+            const container = scrollContainerRef.current;
+
+            if (
+                restoreCompletedRef.current ||
+                !restoreAppliedRef.current ||
+                !anchor ||
+                !container
+            ) {
+                restoreAttemptCountRef.current = 0;
+                return;
+            }
+
+            if (restorePersistedAnchorInViewport(container, anchor)) {
+                restoreCompletedRef.current = true;
+                pendingRestoreAnchorRef.current = null;
+                restoreAttemptCountRef.current = 0;
+                return;
+            }
+
+            if (
+                shouldVirtualizeItems &&
+                restoreAttemptCountRef.current < REVIEW_VIRTUALIZATION_OVERSCAN
+            ) {
+                restoreAttemptCountRef.current += 1;
+                scheduleRestoreAttempt();
+            }
+        });
+    }, [shouldVirtualizeItems]);
 
     useEffect(() => {
         if (persistedState?.updatedAt) {
@@ -607,10 +865,17 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     }, [expandedKeysSignature, persistViewState]);
 
     useEffect(() => {
-        if (persistedAnchorRef.current == null && initialAnchor) {
-            persistedAnchorRef.current = initialAnchor;
-        }
-    }, [initialAnchor]);
+        flushScheduledRestoreAttempt();
+        restoreAppliedRef.current = false;
+        restoreCompletedRef.current = false;
+        persistedAnchorRef.current = initialAnchor;
+        pendingRestoreAnchorRef.current = initialAnchor;
+    }, [
+        flushScheduledRestoreAttempt,
+        initialAnchor,
+        persistedState?.scrollTop,
+        shouldVirtualizeItems,
+    ]);
 
     useEffect(() => {
         if (restoreAppliedRef.current || items.length === 0) {
@@ -622,44 +887,62 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
             return;
         }
 
+        const anchor = pendingRestoreAnchorRef.current;
+        if (shouldVirtualizeItems && anchor && !isReviewVirtualListReady) {
+            return;
+        }
+
         restoreAppliedRef.current = true;
+
+        if (anchor) {
+            const anchorIndex = itemIndexByIdentityKey.get(anchor.identityKey);
+            if (shouldVirtualizeItems && typeof anchorIndex === "number") {
+                reviewVirtualListApiRef.current?.scrollToIndex(anchorIndex, {
+                    align: "start",
+                    offset: anchor.offsetWithinItem ?? 0,
+                });
+                scheduleRestoreAttempt();
+                return;
+            }
+
+            if (restorePersistedAnchorInViewport(container, anchor)) {
+                restoreCompletedRef.current = true;
+                pendingRestoreAnchorRef.current = null;
+                return;
+            }
+        }
+
         if (persistedState?.scrollTop) {
             container.scrollTop = persistedState.scrollTop;
         }
 
-        const anchor = resolvePersistedReviewAnchor(
-            persistedState?.anchor ?? null,
-            items,
-        );
-        if (!anchor) {
+        restoreCompletedRef.current = true;
+        pendingRestoreAnchorRef.current = null;
+    }, [
+        isReviewVirtualListReady,
+        itemIndexByIdentityKey,
+        items.length,
+        persistedState?.scrollTop,
+        scheduleRestoreAttempt,
+        shouldVirtualizeItems,
+    ]);
+
+    useEffect(() => {
+        if (
+            restoreCompletedRef.current ||
+            !restoreAppliedRef.current ||
+            !pendingRestoreAnchorRef.current
+        ) {
             return;
         }
 
-        const hunkTarget = Array.from(
-            container.querySelectorAll<HTMLElement>("[data-review-hunk-key]"),
-        ).find((element) => {
-            const reviewFileKey = element.dataset.reviewFileKey;
-            const reviewHunkKey = element.dataset.reviewHunkKey;
-            return (
-                reviewFileKey === anchor.identityKey &&
-                !!reviewHunkKey &&
-                anchor.hunkIds.includes(reviewHunkKey)
-            );
-        });
-
-        if (hunkTarget) {
-            hunkTarget.scrollIntoView({ block: "center" });
-            return;
-        }
-
-        const fileTarget = Array.from(
-            container.querySelectorAll<HTMLElement>("[data-review-file-key]"),
-        ).find(
-            (element) => element.dataset.reviewFileKey === anchor.identityKey,
-        );
-
-        fileTarget?.scrollIntoView({ block: "center" });
-    }, [items, persistedState]);
+        scheduleRestoreAttempt();
+    }, [
+        expandedKeysSignature,
+        items,
+        scheduleRestoreAttempt,
+        shouldVirtualizeItems,
+    ]);
 
     useEffect(() => {
         if (persistedState?.anchor == null || items.length === 0) {
@@ -675,19 +958,25 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         }
 
         persistedAnchorRef.current = null;
+        pendingRestoreAnchorRef.current = null;
         persistViewState();
     }, [items, persistViewState, persistedState?.anchor]);
 
     useEffect(
         () => () => {
             flushScheduledScrollPersist();
+            flushScheduledRestoreAttempt();
             if (storageRefreshTimerRef.current != null) {
                 window.clearTimeout(storageRefreshTimerRef.current);
                 storageRefreshTimerRef.current = null;
             }
             persistViewState();
         },
-        [flushScheduledScrollPersist, persistViewState],
+        [
+            flushScheduledRestoreAttempt,
+            flushScheduledScrollPersist,
+            persistViewState,
+        ],
     );
 
     const handleOpenFile = useCallback(
@@ -939,7 +1228,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                 }
                 ref={scrollContainerRef}
             >
-                <div className="mx-auto flex w-full max-w-5xl flex-col gap-3">
+                <div className="mx-auto w-full max-w-5xl">
                     {currentError ? (
                         <div
                             style={{
@@ -960,34 +1249,97 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
 
                     {items.length === 0 ? (
                         <ReviewEmptyState hasUndo={AI_REVIEW_UNDO_ENABLED} />
+                    ) : shouldVirtualizeItems ? (
+                        <MeasuredVirtualList
+                            defaultViewportHeight={900}
+                            estimateSize={(item, index) =>
+                                estimateReviewFileRowHeight(
+                                    item,
+                                    expansion.expandedKeys.has(
+                                        item.file.identityKey,
+                                    ),
+                                    diffZoom,
+                                ) +
+                                (index === items.length - 1
+                                    ? 0
+                                    : REVIEW_FILE_ROW_GAP)
+                            }
+                            getItemKey={(item) => item.file.identityKey}
+                            items={items}
+                            onReady={handleReviewVirtualListReady}
+                            overscan={REVIEW_VIRTUALIZATION_OVERSCAN}
+                            renderItem={({ index, item }) => (
+                                <div
+                                    style={{
+                                        paddingBottom:
+                                            index === items.length - 1
+                                                ? 0
+                                                : REVIEW_FILE_ROW_GAP,
+                                    }}
+                                >
+                                    <ReviewFileRow
+                                        diffZoom={diffZoom}
+                                        expanded={expansion.expandedKeys.has(
+                                            item.file.identityKey,
+                                        )}
+                                        item={item}
+                                        key={item.file.identityKey}
+                                        onKeep={() => handleKeepFile(item)}
+                                        onKeepHunk={(hunkId) =>
+                                            handleKeepHunk(item, hunkId)
+                                        }
+                                        onOpen={
+                                            item.canOpen
+                                                ? () => handleOpenFile(item)
+                                                : undefined
+                                        }
+                                        onReject={() => handleRejectFile(item)}
+                                        onRejectHunk={(hunkId) =>
+                                            handleRejectHunk(item, hunkId)
+                                        }
+                                        onToggle={() =>
+                                            expansion.toggleFile(
+                                                item.file.identityKey,
+                                            )
+                                        }
+                                        variant="full"
+                                    />
+                                </div>
+                            )}
+                            scrollContainerRef={scrollContainerRef}
+                        />
                     ) : (
-                        items.map((item) => (
-                            <ReviewFileRow
-                                diffZoom={diffZoom}
-                                expanded={expansion.expandedKeys.has(
-                                    item.file.identityKey,
-                                )}
-                                item={item}
-                                key={item.file.identityKey}
-                                onKeep={() => handleKeepFile(item)}
-                                onKeepHunk={(hunkId) =>
-                                    handleKeepHunk(item, hunkId)
-                                }
-                                onOpen={
-                                    item.canOpen
-                                        ? () => handleOpenFile(item)
-                                        : undefined
-                                }
-                                onReject={() => handleRejectFile(item)}
-                                onRejectHunk={(hunkId) =>
-                                    handleRejectHunk(item, hunkId)
-                                }
-                                onToggle={() =>
-                                    expansion.toggleFile(item.file.identityKey)
-                                }
-                                variant="full"
-                            />
-                        ))
+                        <div className="flex flex-col gap-3">
+                            {items.map((item) => (
+                                <ReviewFileRow
+                                    diffZoom={diffZoom}
+                                    expanded={expansion.expandedKeys.has(
+                                        item.file.identityKey,
+                                    )}
+                                    item={item}
+                                    key={item.file.identityKey}
+                                    onKeep={() => handleKeepFile(item)}
+                                    onKeepHunk={(hunkId) =>
+                                        handleKeepHunk(item, hunkId)
+                                    }
+                                    onOpen={
+                                        item.canOpen
+                                            ? () => handleOpenFile(item)
+                                            : undefined
+                                    }
+                                    onReject={() => handleRejectFile(item)}
+                                    onRejectHunk={(hunkId) =>
+                                        handleRejectHunk(item, hunkId)
+                                    }
+                                    onToggle={() =>
+                                        expansion.toggleFile(
+                                            item.file.identityKey,
+                                        )
+                                    }
+                                    variant="full"
+                                />
+                            ))}
+                        </div>
                     )}
                 </div>
             </div>

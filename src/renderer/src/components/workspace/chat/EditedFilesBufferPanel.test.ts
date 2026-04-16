@@ -79,7 +79,6 @@ function createItem(overrides: Partial<ReviewFileItem> = {}): ReviewFileItem {
             toolCallId: "tool-1",
             updatedAt: "2026-04-14T12:00:00.000Z",
         },
-        lines: [],
         stats: {
             additions: 1,
             approximate: false,
@@ -168,6 +167,9 @@ describe("EditedFilesBufferPanel", () => {
         expect(markup).toContain("app.ts");
         expect(markup).toContain("secondary.ts");
         expect(markup).toContain("Open File");
+        expect(markup).toContain("font-size:1.25em");
+        expect(markup).not.toContain("A+");
+        expect(markup).not.toContain("A-");
     });
 
     it("starts collapsed to keep the sidebar compact", () => {

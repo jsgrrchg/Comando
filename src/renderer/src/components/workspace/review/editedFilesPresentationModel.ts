@@ -1,11 +1,9 @@
 import type { AiFileDiff, AiTrackedFile } from "@shared/ipc";
 
 import {
-    computeDiffLines,
     computeDiffStats,
     createDiffFromTrackedFile,
     getFileNameFromPath,
-    type DiffLine,
 } from "./reviewDiff";
 
 export interface ReviewFileTone {
@@ -22,7 +20,6 @@ export interface ReviewFileStats {
 export interface ReviewFileItem {
     readonly file: AiTrackedFile;
     readonly diff: AiFileDiff;
-    readonly lines: readonly DiffLine[];
     readonly stats: ReviewFileStats;
     readonly tone: ReviewFileTone;
     readonly summary: string;
@@ -129,7 +126,6 @@ export function deriveReviewItems(
         return {
             file,
             diff,
-            lines: computeDiffLines(diff),
             stats: computeFileStats(diff),
             tone: getFileTone(file),
             summary: getFileSummary(file),

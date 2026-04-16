@@ -53,6 +53,7 @@ describe("QueuedMessagesPanel", () => {
         expect(markup).toContain("Edit");
         expect(markup).toContain("send");
         expect(markup).toContain("Retry failing message");
+        expect(markup).toContain("font-size:1.25em");
     });
 
     it("starts collapsed without rendering the list", () => {

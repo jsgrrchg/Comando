@@ -10,7 +10,12 @@ import { createPortal } from "react-dom";
 
 import type { AiAvailableCommand } from "@shared/ipc";
 
-import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
+import {
+    CHAT_COMPOSER_PICKER_MAX_HEIGHT,
+    CHAT_COMPOSER_PICKER_MAX_WIDTH,
+    CHAT_COMPOSER_PICKER_MIN_WIDTH,
+    getViewportSafeMenuPosition,
+} from "@renderer/app/utils/menu-position";
 
 interface AIChatCommandPickerProps {
     readonly anchorRef: RefObject<HTMLElement | null>;
@@ -65,21 +70,27 @@ export function AIChatCommandPicker({
         const anchorRect = anchor.getBoundingClientRect();
         const menuRect = listRef.current?.getBoundingClientRect();
         const width = Math.min(
-            340,
-            Math.max(220, Math.ceil(menuRect?.width ?? 220)),
+            CHAT_COMPOSER_PICKER_MAX_WIDTH,
+            Math.max(
+                CHAT_COMPOSER_PICKER_MIN_WIDTH,
+                Math.ceil(menuRect?.width ?? CHAT_COMPOSER_PICKER_MIN_WIDTH),
+            ),
         );
         const availableHeightAbove = Math.max(0, anchorRect.top - y - 8);
         const availableHeightBelow = Math.max(
             0,
             window.innerHeight - anchorRect.bottom - y - 8,
         );
-        const estimatedHeight = Math.min(280, items.length * 44 + 8);
+        const estimatedHeight = Math.min(
+            CHAT_COMPOSER_PICKER_MAX_HEIGHT,
+            items.length * 52 + 12,
+        );
         const measuredHeight = Math.ceil(menuRect?.height ?? estimatedHeight);
         const openAbove =
             availableHeightAbove >= measuredHeight ||
             availableHeightAbove >= availableHeightBelow;
         const maxHeight = Math.min(
-            280,
+            CHAT_COMPOSER_PICKER_MAX_HEIGHT,
             openAbove ? availableHeightAbove : availableHeightBelow,
         );
         const height = Math.min(maxHeight, measuredHeight);
@@ -153,11 +164,12 @@ export function AIChatCommandPicker({
                 borderRadius: 10,
                 boxShadow: "var(--shadow-soft)",
                 left: position?.x ?? 8,
-                maxHeight: position?.maxHeight ?? 280,
-                maxWidth: 340,
-                minWidth: 220,
+                maxHeight:
+                    position?.maxHeight ?? CHAT_COMPOSER_PICKER_MAX_HEIGHT,
+                maxWidth: CHAT_COMPOSER_PICKER_MAX_WIDTH,
+                minWidth: CHAT_COMPOSER_PICKER_MIN_WIDTH,
                 overflowY: "auto",
-                padding: 4,
+                padding: 6,
                 position: "fixed",
                 top: position?.y ?? 8,
                 zIndex: 10010,
@@ -191,14 +203,14 @@ export function AIChatCommandPicker({
                                 ? "var(--color-bg-tertiary)"
                                 : "transparent",
                             border: "none",
-                            borderRadius: 6,
+                            borderRadius: 8,
                             color: "var(--color-text-primary)",
                             cursor: "pointer",
                             display: "flex",
                             flexDirection: "column",
-                            fontSize: "0.82em",
-                            gap: 2,
-                            padding: "6px 10px",
+                            fontSize: "0.9em",
+                            gap: 4,
+                            padding: "8px 12px",
                             textAlign: "left",
                             transition: "background-color 100ms ease",
                             width: "100%",

@@ -1,9 +1,7 @@
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
-import Editor, { DiffEditor } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
+import type { FitAddon } from "@xterm/addon-fit";
+import type { Terminal } from "@xterm/xterm";
 import {
     useCallback,
     useEffect,
@@ -19,14 +17,13 @@ import {
     type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useShallow } from "zustand/react/shallow";
 
 import type {
     AiFileContextAttachment,
+    AiTrackedFile,
     GitFileDiff,
     ProjectFileDocument,
-    WorkspaceNode,
-    WorkspacePaneNode,
-    WorkspaceSplitNode,
 } from "@shared/ipc";
 import {
     resolveEditorLanguage,
@@ -45,11 +42,6 @@ import {
 } from "@shared/typography";
 
 import {
-    applyMonacoThemeFromDom,
-    getMonacoThemeFromDom,
-    type ComandoMonacoTheme,
-} from "@renderer/app/editor/monaco";
-import {
     continueMarkdownList,
     indentMarkdownListItems,
     outdentMarkdownListItems,
@@ -60,6 +52,7 @@ import {
     saveAppEditorSettings,
 } from "@renderer/app/settings/client";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
+import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
@@ -68,6 +61,7 @@ import {
 } from "@renderer/app/store/workspace-store";
 import {
     collectPaneNodes,
+    findWorkspaceNodeById,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
@@ -89,6 +83,7 @@ import {
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
 import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/editorModelPath";
+import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import {
@@ -148,6 +143,132 @@ type QuickCreateSubmenuState = {
     readonly y: number;
 } | null;
 
+type WorkspaceReviewTabHandle = {
+    readonly id: string;
+    readonly sessionId: string;
+};
+
+type ReviewTabAutoCloseCandidate = {
+    readonly hasError: boolean;
+    readonly hasPendingTrackedFiles: boolean;
+    readonly hydrated: boolean;
+    readonly isHydrating: boolean;
+    readonly reviewTabId: string;
+    readonly sessionId: string;
+};
+
+type MonacoSurfaceRuntime = {
+    readonly DiffEditor: typeof import("@monaco-editor/react").DiffEditor;
+    readonly Editor: typeof import("@monaco-editor/react").default;
+    readonly applyMonacoThemeFromDom: typeof import("@renderer/app/editor/monaco").applyMonacoThemeFromDom;
+};
+
+type XtermSurfaceRuntime = {
+    readonly FitAddon: typeof import("@xterm/addon-fit").FitAddon;
+    readonly Terminal: typeof import("@xterm/xterm").Terminal;
+};
+
+type ComandoMonacoTheme = "comando-dark" | "comando-light";
+
+const EMPTY_TAB_IDS: readonly string[] = [];
+
+function createReviewTabHandleKey(reviewTab: WorkspaceReviewTabHandle): string {
+    return JSON.stringify([reviewTab.id, reviewTab.sessionId]);
+}
+
+function parseReviewTabHandleKey(key: string): WorkspaceReviewTabHandle {
+    const [id, sessionId] = JSON.parse(key) as [string, string];
+    return { id, sessionId };
+}
+
+function selectWorkspaceReviewTabHandleKeys(
+    state: ReturnType<typeof useWorkspaceStore.getState>,
+): readonly string[] {
+    return Object.values(state.tabsById)
+        .filter((tab) => tab.kind === "review")
+        .map((tab) =>
+            createReviewTabHandleKey({
+                id: tab.id,
+                sessionId: tab.sessionId,
+            }),
+        );
+}
+
+function createReviewTabAutoCloseCandidateKey(
+    candidate: ReviewTabAutoCloseCandidate,
+): string {
+    return JSON.stringify([
+        candidate.reviewTabId,
+        candidate.sessionId,
+        candidate.hydrated,
+        candidate.isHydrating,
+        candidate.hasError,
+        candidate.hasPendingTrackedFiles,
+    ]);
+}
+
+function parseReviewTabAutoCloseCandidateKey(
+    key: string,
+): ReviewTabAutoCloseCandidate {
+    const [
+        reviewTabId,
+        sessionId,
+        hydrated,
+        isHydrating,
+        hasError,
+        hasPendingTrackedFiles,
+    ] = JSON.parse(key) as [string, string, boolean, boolean, boolean, boolean];
+    return {
+        hasError,
+        hasPendingTrackedFiles,
+        hydrated,
+        isHydrating,
+        reviewTabId,
+        sessionId,
+    };
+}
+
+function buildReviewTabAutoCloseCandidateKeys(
+    reviewTabs: readonly WorkspaceReviewTabHandle[],
+    sessions: ReturnType<typeof useAiStore.getState>["sessions"],
+): readonly string[] {
+    return reviewTabs.map((reviewTab) => {
+        const sessionState = sessions[reviewTab.sessionId];
+        const trackedFiles = sessionState?.snapshot?.trackedFiles ?? [];
+        const hasPendingTrackedFiles = trackedFiles.some(
+            (trackedFile) => trackedFile.reviewState === "pending",
+        );
+
+        return createReviewTabAutoCloseCandidateKey({
+            hasError: Boolean(
+                sessionState?.localError || sessionState?.snapshot?.lastError,
+            ),
+            hasPendingTrackedFiles,
+            hydrated: Boolean(sessionState?.hydrated),
+            isHydrating: sessionState?.isHydrating ?? false,
+            reviewTabId: reviewTab.id,
+            sessionId: reviewTab.sessionId,
+        });
+    });
+}
+
+function getTrackedFileSignature(file: AiTrackedFile | null): string | null {
+    if (!file) {
+        return null;
+    }
+
+    return JSON.stringify([
+        file.identityKey,
+        file.kind,
+        file.path,
+        file.previousPath,
+        file.reviewState,
+        file.sessionId,
+        file.updatedAt,
+        file.version,
+    ]);
+}
+
 function isQuickCreateMenuSeparator(
     entry: QuickCreateMenuEntry,
 ): entry is QuickCreateMenuSeparator {
@@ -160,13 +281,37 @@ export function WorkspaceView({
     onRequestCreateFile,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
-    const rootNode = useWorkspaceStore((state) => state.rootNode);
-    const tabsById = useWorkspaceStore((state) => state.tabsById);
-    const aiSessions = useAiStore((state) => state.sessions);
     const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
     const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
     const reorderTab = useWorkspaceStore((state) => state.reorderTab);
+    const rootNodeId = useWorkspaceStore((state) => state.rootNode.id);
+    const reviewTabKeys = useWorkspaceStore(
+        useShallow(selectWorkspaceReviewTabHandleKeys),
+    );
     const autoClosingReviewTabIdsRef = useRef<Set<string>>(new Set());
+    const reviewTabs = useMemo(
+        () => reviewTabKeys.map((key) => parseReviewTabHandleKey(key)),
+        [reviewTabKeys],
+    );
+    const reviewTabAutoCloseCandidateKeys = useAiStore(
+        useShallow(
+            useCallback(
+                (state: ReturnType<typeof useAiStore.getState>) =>
+                    buildReviewTabAutoCloseCandidateKeys(
+                        reviewTabs,
+                        state.sessions,
+                    ),
+                [reviewTabs],
+            ),
+        ),
+    );
+    const reviewTabAutoCloseCandidates = useMemo(
+        () =>
+            reviewTabAutoCloseCandidateKeys.map((key) =>
+                parseReviewTabAutoCloseCandidateKey(key),
+            ),
+        [reviewTabAutoCloseCandidateKeys],
+    );
     const tabDrag = useWorkspaceTabDrag({
         onDropToSplit: dropTabToSplit,
         onMoveToPane: moveTabToPane,
@@ -177,54 +322,43 @@ export function WorkspaceView({
                 : null,
     });
 
+    useRenderProbe("WorkspaceView", {});
+
     useEffect(() => {
-        const knownTabIds = new Set(Object.keys(tabsById));
+        const knownReviewTabIds = new Set(reviewTabs.map((tab) => tab.id));
+
         for (const tabId of autoClosingReviewTabIdsRef.current) {
-            if (!knownTabIds.has(tabId)) {
+            if (!knownReviewTabIds.has(tabId)) {
                 autoClosingReviewTabIdsRef.current.delete(tabId);
             }
         }
 
-        const reviewTabsToClose = Object.values(tabsById).filter((tab) => {
-            if (tab.kind !== "review") {
-                return false;
-            }
-
-            const sessionState = aiSessions[tab.sessionId];
-            if (!sessionState?.hydrated || sessionState.isHydrating) {
-                return false;
-            }
-
-            if (sessionState.localError || sessionState.snapshot?.lastError) {
-                return false;
-            }
-
-            const hasPendingTrackedFiles =
-                sessionState.snapshot?.trackedFiles.some(
-                    (trackedFile) => trackedFile.reviewState === "pending",
-                ) ?? false;
-
-            return !hasPendingTrackedFiles;
-        });
-
-        for (const tab of reviewTabsToClose) {
-            if (autoClosingReviewTabIdsRef.current.has(tab.id)) {
+        for (const candidate of reviewTabAutoCloseCandidates) {
+            if (
+                !candidate.hydrated ||
+                candidate.isHydrating ||
+                candidate.hasError ||
+                candidate.hasPendingTrackedFiles ||
+                autoClosingReviewTabIdsRef.current.has(candidate.reviewTabId)
+            ) {
                 continue;
             }
 
-            autoClosingReviewTabIdsRef.current.add(tab.id);
-            void closeTab(tab.id).finally(() => {
-                autoClosingReviewTabIdsRef.current.delete(tab.id);
+            autoClosingReviewTabIdsRef.current.add(candidate.reviewTabId);
+            void closeTab(candidate.reviewTabId).finally(() => {
+                autoClosingReviewTabIdsRef.current.delete(
+                    candidate.reviewTabId,
+                );
             });
         }
-    }, [aiSessions, closeTab, tabsById]);
+    }, [closeTab, reviewTabAutoCloseCandidates, reviewTabs]);
 
     return (
         <div className="h-full min-h-0 bg-bg-primary">
             <WorkspaceNodeView
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
-                node={rootNode}
+                nodeId={rootNodeId}
                 onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
@@ -242,22 +376,33 @@ export function WorkspaceView({
 function WorkspaceNodeView({
     defaultProjectId,
     defaultWorktreeId,
-    node,
+    nodeId,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
-    readonly node: WorkspaceNode;
+    readonly nodeId: string;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
+    const node = useWorkspaceStore(
+        useCallback(
+            (state: ReturnType<typeof useWorkspaceStore.getState>) =>
+                findWorkspaceNodeById(state.rootNode, nodeId),
+            [nodeId],
+        ),
+    );
+    if (!node) {
+        return null;
+    }
+
     if (node.type === "pane") {
         return (
             <WorkspacePaneView
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
-                node={node}
+                paneId={node.id}
                 onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
@@ -268,7 +413,7 @@ function WorkspaceNodeView({
         <WorkspaceSplitView
             defaultProjectId={defaultProjectId}
             defaultWorktreeId={defaultWorktreeId}
-            node={node}
+            splitId={node.id}
             onRequestCreateFile={onRequestCreateFile}
             tabDrag={tabDrag}
         />
@@ -278,22 +423,34 @@ function WorkspaceNodeView({
 function WorkspaceSplitView({
     defaultProjectId,
     defaultWorktreeId,
-    node,
+    splitId,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
-    readonly node: WorkspaceSplitNode;
+    readonly splitId: string;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
+    const node = useWorkspaceStore(
+        useCallback(
+            (state: ReturnType<typeof useWorkspaceStore.getState>) => {
+                const match = findWorkspaceNodeById(state.rootNode, splitId);
+                return match?.type === "split" ? match : null;
+            },
+            [splitId],
+        ),
+    );
     const resizeSplit = useWorkspaceStore((state) => state.resizeSplit);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const [dragState, setDragState] = useState<SplitDragState>(null);
+    const [previewSizes, setPreviewSizes] = useState<readonly number[] | null>(
+        null,
+    );
 
     const handlePointerMove = useEffectEvent((event: PointerEvent) => {
-        if (!dragState || !containerRef.current) {
+        if (!node || !dragState || !containerRef.current) {
             return;
         }
 
@@ -319,15 +476,25 @@ function WorkspaceSplitView({
             return;
         }
 
-        void resizeSplit(node.id, nextSizes);
+        setPreviewSizes(nextSizes);
     });
 
     const stopDragging = useEffectEvent(() => {
+        if (
+            node &&
+            dragState &&
+            previewSizes &&
+            !areSplitSizesEqual(previewSizes, dragState.startSizes)
+        ) {
+            void resizeSplit(node.id, previewSizes);
+        }
+
+        setPreviewSizes(null);
         setDragState(null);
     });
 
     useEffect(() => {
-        if (!dragState) {
+        if (!node || !dragState) {
             return;
         }
 
@@ -337,14 +504,22 @@ function WorkspaceSplitView({
         document.body.style.cursor = nextCursor;
 
         window.addEventListener("pointermove", handlePointerMove);
+        window.addEventListener("pointercancel", stopDragging);
         window.addEventListener("pointerup", stopDragging);
 
         return () => {
             document.body.style.cursor = previousCursor;
             window.removeEventListener("pointermove", handlePointerMove);
+            window.removeEventListener("pointercancel", stopDragging);
             window.removeEventListener("pointerup", stopDragging);
         };
-    }, [dragState, node.axis]);
+    }, [dragState, node]);
+
+    if (!node) {
+        return null;
+    }
+
+    const sizes = previewSizes ?? node.sizes;
 
     return (
         <div
@@ -362,7 +537,7 @@ function WorkspaceSplitView({
                     handleIndex={index}
                     isLast={index === node.children.length - 1}
                     key={child.id}
-                    node={child}
+                    nodeId={child.id}
                     onRequestCreateFile={onRequestCreateFile}
                     onPointerDown={(event) =>
                         setDragState({
@@ -374,11 +549,21 @@ function WorkspaceSplitView({
                             startSizes: node.sizes,
                         })
                     }
-                    size={node.sizes[index] ?? 1 / node.children.length}
+                    size={sizes[index] ?? 1 / node.children.length}
                     tabDrag={tabDrag}
                 />
             ))}
         </div>
+    );
+}
+
+function areSplitSizesEqual(
+    left: readonly number[],
+    right: readonly number[],
+): boolean {
+    return (
+        left.length === right.length &&
+        left.every((size, index) => size === right[index])
     );
 }
 
@@ -388,7 +573,7 @@ function FragmentPane({
     defaultWorktreeId,
     handleIndex,
     isLast,
-    node,
+    nodeId,
     onRequestCreateFile,
     onPointerDown,
     size,
@@ -399,7 +584,7 @@ function FragmentPane({
     readonly defaultWorktreeId: string | null;
     readonly handleIndex: number;
     readonly isLast: boolean;
-    readonly node: WorkspaceNode;
+    readonly nodeId: string;
     readonly onRequestCreateFile: () => void;
     readonly onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
     readonly size: number;
@@ -418,7 +603,7 @@ function FragmentPane({
                 <WorkspaceNodeView
                     defaultProjectId={defaultProjectId}
                     defaultWorktreeId={defaultWorktreeId}
-                    node={node}
+                    nodeId={nodeId}
                     onRequestCreateFile={onRequestCreateFile}
                     tabDrag={tabDrag}
                 />
@@ -461,16 +646,25 @@ function FragmentPane({
 function WorkspacePaneView({
     defaultProjectId,
     defaultWorktreeId,
-    node,
+    paneId,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
-    readonly node: WorkspacePaneNode;
+    readonly paneId: string;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
+    const node = useWorkspaceStore(
+        useCallback(
+            (state: ReturnType<typeof useWorkspaceStore.getState>) => {
+                const match = findWorkspaceNodeById(state.rootNode, paneId);
+                return match?.type === "pane" ? match : null;
+            },
+            [paneId],
+        ),
+    );
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const attachSelectionMention = useAiStore((s) => s.attachSelectionMention);
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
@@ -503,9 +697,27 @@ function WorkspacePaneView({
     const paneCount = useWorkspaceStore(
         (state) => collectPaneNodes(state.rootNode).length,
     );
+    const paneNodeId = node?.id ?? paneId;
+    const paneTabIds = node?.tabIds ?? EMPTY_TAB_IDS;
+    const paneActiveTabId = node?.activeTabId ?? null;
+    const paneTabs = useWorkspaceStore(
+        useShallow(
+            useCallback(
+                (state: ReturnType<typeof useWorkspaceStore.getState>) =>
+                    paneTabIds
+                        .map((tabId) => state.tabsById[tabId] ?? null)
+                        .filter(
+                            (tab): tab is RuntimeWorkspaceTab => tab !== null,
+                        ),
+                [paneTabIds],
+            ),
+        ),
+    );
     const selectTab = useWorkspaceStore((state) => state.selectTab);
     const setActivePane = useWorkspaceStore((state) => state.setActivePane);
-    const tabsById = useWorkspaceStore((state) => state.tabsById);
+    const hasAnyChatTab = useWorkspaceStore((state) =>
+        Object.values(state.tabsById).some((tab) => tab.kind === "chat"),
+    );
     const updateChatDraft = useWorkspaceStore((state) => state.updateChatDraft);
     const updateFileDraft = useWorkspaceStore((state) => state.updateFileDraft);
     const reloadFileTab = useWorkspaceStore((state) => state.reloadFileTab);
@@ -527,10 +739,26 @@ function WorkspacePaneView({
         useState<QuickCreateMenuState>(null);
     const [isProjectFileDragOverPane, setIsProjectFileDragOverPane] =
         useState(false);
-
-    const activeTab = node.activeTabId ? tabsById[node.activeTabId] : null;
-    const isActivePane = activePaneId === node.id;
+    const contextTabId = tabContextMenu?.payload.tabId ?? null;
+    const contextTab = useWorkspaceStore(
+        useCallback(
+            (state) =>
+                contextTabId ? (state.tabsById[contextTabId] ?? null) : null,
+            [contextTabId],
+        ),
+    );
+    const activeTab = paneActiveTabId
+        ? (paneTabs.find((tab) => tab.id === paneActiveTabId) ?? null)
+        : null;
+    const activeChatTab = activeTab?.kind === "chat" ? activeTab : null;
+    const isActivePane = activePaneId === paneNodeId;
     const activeTabWorktreeId = activeTab?.worktreeId ?? null;
+
+    useRenderProbe("WorkspacePaneView", {
+        activeTabId: activeTab?.id ?? null,
+        paneId: node?.id ?? paneId,
+        tabCount: node?.tabIds.length ?? 0,
+    });
 
     const handleTabStripWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
         const container = tabStripRef.current;
@@ -556,15 +784,10 @@ function WorkspacePaneView({
             return [];
         }
 
-        const tabIndex = node.tabIds.indexOf(tabContextMenu.payload.tabId);
+        const tabIndex = paneTabIds.indexOf(tabContextMenu.payload.tabId);
         if (tabIndex === -1) {
             return [];
         }
-
-        const contextTab = tabsById[tabContextMenu.payload.tabId];
-        const activeChatTab = Object.values(tabsById).find(
-            (t) => t.kind === "chat",
-        );
 
         const entries: ContextMenuEntry[] = [
             {
@@ -574,13 +797,13 @@ function WorkspacePaneView({
             {
                 label: "Close Others",
                 action: () => void closeOtherTabs(tabContextMenu.payload.tabId),
-                disabled: node.tabIds.length <= 1,
+                disabled: paneTabIds.length <= 1,
             },
             {
                 label: "Close Tabs to the Right",
                 action: () =>
                     void closeTabsToRight(tabContextMenu.payload.tabId),
-                disabled: tabIndex === node.tabIds.length - 1,
+                disabled: tabIndex === paneTabIds.length - 1,
             },
             { type: "separator" },
             {
@@ -597,14 +820,34 @@ function WorkspacePaneView({
             },
         ];
 
-        if (contextTab?.kind === "file" && activeChatTab?.kind === "chat") {
+        if (contextTab?.kind === "file") {
             const ext = contextTab.relativePath.split(".").pop() ?? null;
             entries.push(
                 { type: "separator" },
                 {
                     label: "Add to Chat",
                     action: () => {
-                        addDraftFileContext(activeChatTab.sessionId, {
+                        const workspaceState = useWorkspaceStore.getState();
+                        const targetChatTabId = getBestMatchingChatTabId(
+                            workspaceState,
+                            {
+                                currentPaneId: paneNodeId,
+                                lastFocusedChatTabId:
+                                    workspaceState.lastFocusedChatTabId,
+                                projectId: contextTab.projectId,
+                                recentFocusedChatTabIds:
+                                    workspaceState.recentFocusedChatTabIds,
+                                worktreeId: contextTab.worktreeId ?? null,
+                            },
+                        );
+                        const targetChatTab = targetChatTabId
+                            ? workspaceState.tabsById[targetChatTabId]
+                            : null;
+                        if (targetChatTab?.kind !== "chat") {
+                            return;
+                        }
+
+                        addDraftFileContext(targetChatTab.sessionId, {
                             id: `file-ctx:${crypto.randomUUID()}`,
                             projectId: contextTab.projectId,
                             relativePath: contextTab.relativePath,
@@ -615,6 +858,7 @@ function WorkspacePaneView({
                             }).id,
                         });
                     },
+                    disabled: !hasAnyChatTab,
                 },
             );
         }
@@ -628,8 +872,8 @@ function WorkspacePaneView({
     ) {
         event.preventDefault();
         event.stopPropagation();
-        void setActivePane(node.id);
-        void selectTab(node.id, tabId);
+        void setActivePane(paneNodeId);
+        void selectTab(paneNodeId, tabId);
         setTabContextMenu({
             x: event.clientX,
             y: event.clientY,
@@ -657,11 +901,36 @@ function WorkspacePaneView({
                 relativePath,
                 worktreeId ?? activeTabWorktreeId,
                 reviewContext,
-                node.id,
+                paneNodeId,
             );
         },
-        [activeTabWorktreeId, node.id, openFileTab],
+        [activeTabWorktreeId, openFileTab, paneNodeId],
     );
+
+    const handleChatDraftChange = useCallback(
+        (draft: string) => {
+            if (!activeChatTab) {
+                return;
+            }
+
+            void updateChatDraft(activeChatTab.id, draft);
+        },
+        [activeChatTab, updateChatDraft],
+    );
+
+    const handleOpenActiveChatReview = useCallback(() => {
+        if (!activeChatTab) {
+            return Promise.resolve();
+        }
+
+        return openReviewTab({
+            projectId: activeChatTab.projectId,
+            runtimeId: activeChatTab.runtimeId,
+            sessionId: activeChatTab.sessionId,
+            title: activeChatTab.title,
+            worktreeId: activeChatTab.worktreeId ?? null,
+        });
+    }, [activeChatTab, openReviewTab]);
 
     const canAcceptPaneProjectFileDrag = useCallback(
         (event: ReactDragEvent<HTMLElement>) => {
@@ -756,14 +1025,14 @@ function WorkspacePaneView({
                 dragData.relativePath,
                 defaultWorktreeId ?? null,
                 undefined,
-                node.id,
+                paneNodeId,
             );
         },
         [
             defaultProjectId,
             defaultWorktreeId,
-            node.id,
             openFileTab,
+            paneNodeId,
             resetPaneProjectFileDrag,
         ],
     );
@@ -802,7 +1071,7 @@ function WorkspacePaneView({
                     tabsById: currentState.tabsById,
                 },
                 {
-                    currentPaneId: node.id,
+                    currentPaneId: paneNodeId,
                     lastFocusedChatTabId: currentState.lastFocusedChatTabId,
                     projectId: context.projectId,
                     recentFocusedChatTabIds:
@@ -812,7 +1081,7 @@ function WorkspacePaneView({
             );
 
             if (candidateTabId) {
-                const paneId = findPaneIdByTabId(candidateTabId) ?? node.id;
+                const paneId = findPaneIdByTabId(candidateTabId) ?? paneNodeId;
 
                 await setActivePane(paneId);
                 await selectTab(paneId, candidateTabId);
@@ -820,12 +1089,21 @@ function WorkspacePaneView({
                 const targetTab =
                     useWorkspaceStore.getState().tabsById[candidateTabId];
                 if (targetTab?.kind === "chat") {
-                    attachSelectionMention(targetTab.sessionId, {
+                    const selection = {
                         endLine: context.endLine ?? context.startLine ?? 1,
                         path: context.relativePath,
                         selectedText: context.selectedText ?? "",
                         startLine: context.startLine ?? 1,
-                    });
+                    };
+                    const appendedLocally =
+                        await appendSelectionMentionToComposer({
+                            ...selection,
+                            sessionId: targetTab.sessionId,
+                        });
+
+                    if (!appendedLocally) {
+                        attachSelectionMention(targetTab.sessionId, selection);
+                    }
                 }
                 return;
             }
@@ -848,18 +1126,26 @@ function WorkspacePaneView({
             );
 
             if (createdChatTab?.kind === "chat") {
-                attachSelectionMention(createdChatTab.sessionId, {
+                const selection = {
                     endLine: context.endLine ?? context.startLine ?? 1,
                     path: context.relativePath,
                     selectedText: context.selectedText ?? "",
                     startLine: context.startLine ?? 1,
+                };
+                const appendedLocally = await appendSelectionMentionToComposer({
+                    ...selection,
+                    sessionId: createdChatTab.sessionId,
                 });
+
+                if (!appendedLocally) {
+                    attachSelectionMention(createdChatTab.sessionId, selection);
+                }
             }
         },
         [
             attachSelectionMention,
             createChatTab,
-            node.id,
+            paneNodeId,
             selectTab,
             setActivePane,
         ],
@@ -1028,7 +1314,7 @@ function WorkspacePaneView({
                 event.preventDefault();
                 event.stopPropagation();
                 void selectAdjacentTab(
-                    node.id,
+                    paneNodeId,
                     event.shiftKey ? "previous" : "next",
                 );
                 return;
@@ -1078,9 +1364,13 @@ function WorkspacePaneView({
         handleCreateAgentFromFocusedProvider,
         handleCreateFile,
         isActivePane,
-        node.id,
+        paneNodeId,
         selectAdjacentTab,
     ]);
+
+    if (!node) {
+        return null;
+    }
 
     return (
         <>
@@ -1095,9 +1385,9 @@ function WorkspacePaneView({
                 onDragLeave={handlePaneDragLeave}
                 onDragOver={handlePaneDragOver}
                 onDrop={handlePaneDrop}
-                onMouseDown={() => void setActivePane(node.id)}
+                onMouseDown={() => void setActivePane(paneNodeId)}
                 ref={(element) => {
-                    tabDrag.setPaneElement(node.id, element);
+                    tabDrag.setPaneElement(paneNodeId, element);
                 }}
             >
                 {isProjectFileDragOverPane ? (
@@ -1106,25 +1396,20 @@ function WorkspacePaneView({
                 <div className="app-drag flex items-center justify-between border-b border-border bg-bg-chrome px-0">
                     <div
                         className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
-                        data-workspace-pane-id={node.id}
+                        data-workspace-pane-id={paneNodeId}
                         onWheel={handleTabStripWheel}
                         ref={(element) => {
                             tabStripRef.current = element;
-                            tabDrag.setTabStripElement(node.id, element);
+                            tabDrag.setTabStripElement(paneNodeId, element);
                         }}
                     >
-                        {node.tabIds.length === 0 ? (
+                        {paneTabIds.length === 0 ? (
                             <span className="px-2.5 py-1.5 text-[11px] text-text-secondary">
                                 Empty pane
                             </span>
                         ) : (
-                            node.tabIds.map((tabId) => {
-                                const tab = tabsById[tabId];
-                                if (!tab) {
-                                    return null;
-                                }
-
-                                const isActive = tabId === node.activeTabId;
+                            paneTabs.map((tab, tabIndex) => {
+                                const isActive = tab.id === paneActiveTabId;
                                 const tabDisplayTitle =
                                     getWorkspaceTabDisplayTitle(tab);
 
@@ -1133,24 +1418,24 @@ function WorkspacePaneView({
                                         className={[
                                             "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-border-subtle px-3 text-[12px] transition",
                                             tabDrag.draggedTab?.tabId ===
-                                                tabId && tabDrag.isDragging
+                                                tab.id && tabDrag.isDragging
                                                 ? "opacity-35"
                                                 : "",
                                             isActive
                                                 ? "z-10 bg-bg-primary text-text-primary shadow-[inset_0_-2px_0_0_var(--color-accent)]"
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
-                                        data-workspace-tab-id={tabId}
-                                        key={tabId}
+                                        data-workspace-tab-id={tab.id}
+                                        key={tab.id}
                                         onClick={(event) => {
                                             if (tabDrag.handleTabClick(event)) {
                                                 return;
                                             }
 
-                                            void selectTab(node.id, tabId);
+                                            void selectTab(paneNodeId, tab.id);
                                         }}
                                         onContextMenu={(event) =>
-                                            handleTabContextMenu(event, tabId)
+                                            handleTabContextMenu(event, tab.id)
                                         }
                                         onPointerDown={(event) =>
                                             tabDrag.beginTabPointerDown(
@@ -1160,7 +1445,7 @@ function WorkspacePaneView({
                                                             ? tab.isDirty
                                                             : false,
                                                     kind: tab.kind,
-                                                    paneId: node.id,
+                                                    paneId: paneNodeId,
                                                     composerDragItem:
                                                         tab.kind === "file"
                                                             ? {
@@ -1170,11 +1455,8 @@ function WorkspacePaneView({
                                                                       tab.relativePath,
                                                               }
                                                             : null,
-                                                    sourceIndex:
-                                                        node.tabIds.indexOf(
-                                                            tabId,
-                                                        ),
-                                                    tabId,
+                                                    sourceIndex: tabIndex,
+                                                    tabId: tab.id,
                                                     title: tabDisplayTitle,
                                                 },
                                                 event,
@@ -1190,7 +1472,7 @@ function WorkspacePaneView({
                                             {tabDisplayTitle}
                                         </span>
                                         {"isDirty" in tab && tab.isDirty ? (
-                                            <span className="text-[9px] text-[var(--diff-warn)]">
+                                            <span className="text-[9px] text-(--diff-warn)">
                                                 ●
                                             </span>
                                         ) : null}
@@ -1213,7 +1495,7 @@ function WorkspacePaneView({
                                             data-workspace-tab-close="true"
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                void closeTab(tabId);
+                                                void closeTab(tab.id);
                                             }}
                                             role="button"
                                             tabIndex={-1}
@@ -1243,7 +1525,7 @@ function WorkspacePaneView({
                         <span className="mx-1 h-3 w-px bg-border" />
                         <PaneActionButton
                             label="×"
-                            onClick={() => void closePane(node.id)}
+                            onClick={() => void closePane(paneNodeId)}
                             title="Close pane"
                         />
                     </div>
@@ -1278,20 +1560,9 @@ function WorkspacePaneView({
                             />
                         ) : (
                             <ChatTabView
-                                onDraftChange={(draft) =>
-                                    void updateChatDraft(activeTab.id, draft)
-                                }
+                                onDraftChange={handleChatDraftChange}
                                 onOpenFile={handleOpenWorkspaceFile}
-                                onOpenReview={() =>
-                                    openReviewTab({
-                                        projectId: activeTab.projectId,
-                                        runtimeId: activeTab.runtimeId,
-                                        sessionId: activeTab.sessionId,
-                                        title: activeTab.title,
-                                        worktreeId:
-                                            activeTab.worktreeId ?? null,
-                                    })
-                                }
+                                onOpenReview={handleOpenActiveChatReview}
                                 tab={activeTab}
                             />
                         )
@@ -1408,9 +1679,7 @@ function WorkspaceTabDragOverlay({
                     <TabIcon kind={draggedTab.kind} title={draggedTab.title} />
                     <span className="truncate">{draggedTab.title}</span>
                     {draggedTab.isDirty ? (
-                        <span className="text-[9px] text-[var(--diff-warn)]">
-                            ●
-                        </span>
+                        <span className="text-[9px] text-(--diff-warn)">●</span>
                     ) : null}
                 </div>
             </div>
@@ -1673,6 +1942,40 @@ function getQuickCreateButtonTitle(
         default:
             return "Open last item: Codex chat";
     }
+}
+
+function waitForNextAnimationFrame(): Promise<void> {
+    return new Promise((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+    });
+}
+
+async function appendSelectionMentionToComposer(input: {
+    readonly endLine: number;
+    readonly path: string;
+    readonly selectedText: string;
+    readonly sessionId: string;
+    readonly startLine: number;
+}): Promise<boolean> {
+    if (
+        appendSelectionMentionToRegisteredComposer(input.sessionId, {
+            endLine: input.endLine,
+            path: input.path,
+            selectedText: input.selectedText,
+            startLine: input.startLine,
+        })
+    ) {
+        return true;
+    }
+
+    await waitForNextAnimationFrame();
+
+    return appendSelectionMentionToRegisteredComposer(input.sessionId, {
+        endLine: input.endLine,
+        path: input.path,
+        selectedText: input.selectedText,
+        startLine: input.startLine,
+    });
 }
 
 function tryAttachEditorSelectionToComposer(input: {
@@ -1954,9 +2257,40 @@ function FileTabView({
     ) => Promise<void>;
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
-    const editorTheme = useMonacoTheme();
+    const document = tab.document;
+    const canEdit = document
+        ? !document.isBinary && !document.isTooLarge
+        : false;
+    const {
+        loadError: monacoLoadError,
+        retryLoad: retryMonacoLoad,
+        runtime,
+    } = useMonacoSurfaceRuntime(canEdit);
+    const editorTheme = useMonacoTheme(runtime);
     const editorSettings = useResolvedEditorSettings();
-    const aiSessions = useAiStore((state) => state.sessions);
+    const trackedFileSignature = useAiStore(
+        useCallback(
+            (state: ReturnType<typeof useAiStore.getState>) =>
+                getTrackedFileSignature(
+                    document
+                        ? findTrackedFileForDocument(
+                              state.sessions,
+                              document,
+                              tab.reviewContext,
+                          )
+                        : null,
+                ),
+            [document, tab.reviewContext],
+        ),
+    );
+    void trackedFileSignature;
+    const trackedFile = document
+        ? findTrackedFileForDocument(
+              useAiStore.getState().sessions,
+              document,
+              tab.reviewContext,
+          )
+        : null;
     const keepTrackedFileHunks = useAiStore(
         (state) => state.keepTrackedFileHunks,
     );
@@ -1966,7 +2300,6 @@ function FileTabView({
     const updateFileViewState = useWorkspaceStore(
         (state) => state.updateFileViewState,
     );
-    const document = tab.document;
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
     );
@@ -1995,25 +2328,6 @@ function FileTabView({
             readonly hunkId: string;
             readonly top: number;
         } | null>(null);
-    const [selectedHunkState, setSelectedHunkState] = useState<{
-        readonly hunkId: string | null;
-        readonly key: string | null;
-    }>({
-        hunkId: null,
-        key: null,
-    });
-
-    const trackedFile = useMemo(
-        () =>
-            document
-                ? findTrackedFileForDocument(
-                      aiSessions,
-                      document,
-                      tab.reviewContext,
-                  )
-                : null,
-        [aiSessions, document, tab.reviewContext],
-    );
     const documentLanguageId = document?.languageId ?? "plaintext";
     const gitSnapshot = useGitStore((state) => {
         const contextKey = `${tab.projectId}::${tab.worktreeId ?? "primary"}`;
@@ -2033,15 +2347,7 @@ function FileTabView({
     const reviewSignature = trackedFile
         ? `${trackedFile.identityKey}:${trackedFile.hunks.map((hunk) => hunk.id).join(",")}`
         : null;
-    const selectedHunkId =
-        selectedHunkState.key === reviewSignature
-            ? selectedHunkState.hunkId
-            : null;
     const showInlineReview = canShowInlineReview;
-    const selectedHunk =
-        trackedFile?.hunks.find((hunk) => hunk.id === selectedHunkId) ??
-        trackedFile?.hunks[0] ??
-        null;
     const inlineReviewTrackedFile =
         showInlineReview &&
         canShowInlineReview &&
@@ -2227,20 +2533,6 @@ function FileTabView({
         tab.relativePath,
         tab.title,
     ]);
-
-    useEffect(() => {
-        if (!showInlineReview || !selectedHunk) {
-            return;
-        }
-
-        const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
-        const maxLineNumber = modifiedEditor?.getModel()?.getLineCount() ?? 1;
-        const lineNumber = Math.min(
-            getSelectedReviewLine(selectedHunk),
-            maxLineNumber,
-        );
-        modifiedEditor?.revealLineInCenter(Math.max(lineNumber, 1));
-    }, [selectedHunk, showInlineReview]);
 
     const clearInlineReviewHoverHideTimer = useCallback(() => {
         if (inlineReviewHoverHideTimerRef.current == null) {
@@ -2441,12 +2733,8 @@ function FileTabView({
     ]);
 
     const handleEditorBeforeMount = useCallback(() => {
-        applyMonacoThemeFromDom();
-    }, []);
-
-    const canEdit = document
-        ? !document.isBinary && !document.isTooLarge
-        : false;
+        runtime?.applyMonacoThemeFromDom();
+    }, [runtime]);
 
     useEffect(() => {
         if (
@@ -2549,7 +2837,7 @@ function FileTabView({
 
         const timeout = window.setTimeout(() => {
             void onSave(tab.id);
-        }, 900);
+        }, editorSettings.autoSaveDelayMs);
 
         return () => {
             window.clearTimeout(timeout);
@@ -2557,6 +2845,7 @@ function FileTabView({
     }, [
         canEdit,
         document,
+        editorSettings.autoSaveDelayMs,
         onSave,
         tab.draftContent,
         tab.hasExternalChange,
@@ -2746,6 +3035,31 @@ function FileTabView({
         );
     }
 
+    if (!runtime) {
+        return (
+            <DeferredSurfaceState
+                actionLabel={monacoLoadError ? "Retry editor load" : undefined}
+                onAction={monacoLoadError ? retryMonacoLoad : undefined}
+                path={document.absolutePath}
+                statusLabel={
+                    monacoLoadError ? "Editor unavailable" : "Loading editor..."
+                }
+                title={
+                    monacoLoadError
+                        ? "Could not load the editor"
+                        : "Preparing editor..."
+                }
+            >
+                {monacoLoadError
+                    ? monacoLoadError
+                    : "Monaco is loading on demand for this tab."}
+            </DeferredSurfaceState>
+        );
+    }
+
+    const DiffEditorComponent = runtime.DiffEditor;
+    const EditorComponent = runtime.Editor;
+
     return (
         <div className="flex h-full min-h-0 flex-col">
             <FilePathBar
@@ -2811,8 +3125,10 @@ function FileTabView({
                         className="inline-review-diff relative h-full"
                         ref={inlineReviewContainerRef}
                     >
-                        <DiffEditor
+                        <DiffEditorComponent
                             beforeMount={handleEditorBeforeMount}
+                            keepCurrentModifiedModel
+                            keepCurrentOriginalModel
                             language={document.languageId}
                             modified={inlineReviewTrackedFile.newText ?? ""}
                             modifiedModelPath={buildWorkspaceEditorModelPath(
@@ -2822,6 +3138,7 @@ function FileTabView({
                             )}
                             onMount={(editor) => {
                                 diffEditorRef.current = editor;
+                                const mountedModels = editor.getModel();
                                 const modifiedEditor =
                                     editor.getModifiedEditor();
                                 const cleanupAttachShortcut =
@@ -2856,9 +3173,12 @@ function FileTabView({
                                 syncFindWidgetVisibility();
 
                                 editor.onDidDispose(() => {
+                                    mountedModels?.original?.dispose();
+                                    mountedModels?.modified?.dispose();
                                     cleanupAttachShortcut?.();
                                     cleanupFindWidgetEscape?.();
                                     findStateListener?.dispose();
+                                    diffEditorRef.current = null;
                                     inlineReviewDecorationsRef.current = null;
                                     setIsInlineReviewFindWidgetVisible(false);
                                 });
@@ -2881,12 +3201,6 @@ function FileTabView({
                         hoveredInlineReviewHunkState ? (
                             <InlineReviewHunkZone
                                 onAccept={() => {
-                                    setSelectedHunkState({
-                                        hunkId: hoveredInlineReviewHunk.id,
-                                        key:
-                                            reviewSignature ??
-                                            inlineReviewTrackedFile.identityKey,
-                                    });
                                     void keepTrackedFileHunks({
                                         hunkIds: [hoveredInlineReviewHunk.id],
                                         path: inlineReviewTrackedFile.path,
@@ -2903,12 +3217,6 @@ function FileTabView({
                                     scheduleInlineReviewOverlayHide();
                                 }}
                                 onReject={() => {
-                                    setSelectedHunkState({
-                                        hunkId: hoveredInlineReviewHunk.id,
-                                        key:
-                                            reviewSignature ??
-                                            inlineReviewTrackedFile.identityKey,
-                                    });
                                     void rejectTrackedFileHunks({
                                         hunkIds: [hoveredInlineReviewHunk.id],
                                         path: inlineReviewTrackedFile.path,
@@ -2921,7 +3229,7 @@ function FileTabView({
                         ) : null}
                     </div>
                 ) : (
-                    <Editor
+                    <EditorComponent
                         beforeMount={handleEditorBeforeMount}
                         language={document.languageId}
                         onChange={(value: string | undefined) =>
@@ -3030,6 +3338,176 @@ function FileTabView({
                         value={tab.draftContent}
                     />
                 )}
+            </div>
+        </div>
+    );
+}
+
+function useMonacoSurfaceRuntime(enabled: boolean): {
+    readonly loadError: string | null;
+    readonly retryLoad: () => void;
+    readonly runtime: MonacoSurfaceRuntime | null;
+} {
+    const [runtime, setRuntime] = useState<MonacoSurfaceRuntime | null>(null);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [loadVersion, setLoadVersion] = useState(0);
+
+    useEffect(() => {
+        if (!enabled || runtime) {
+            return;
+        }
+
+        let cancelled = false;
+        setLoadError(null);
+
+        void Promise.all([
+            import("@monaco-editor/react"),
+            import("@renderer/app/editor/monaco"),
+        ])
+            .then(([monacoReact, monacoTheme]) => {
+                if (cancelled) {
+                    return;
+                }
+
+                setRuntime({
+                    DiffEditor: monacoReact.DiffEditor,
+                    Editor: monacoReact.default,
+                    applyMonacoThemeFromDom:
+                        monacoTheme.applyMonacoThemeFromDom,
+                });
+            })
+            .catch((error) => {
+                console.error(error);
+                if (cancelled) {
+                    return;
+                }
+
+                setLoadError(
+                    error instanceof Error
+                        ? error.message
+                        : "The editor bundle could not be loaded.",
+                );
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [enabled, loadVersion, runtime]);
+
+    const retryLoad = useCallback(() => {
+        setRuntime(null);
+        setLoadError(null);
+        setLoadVersion((current) => current + 1);
+    }, []);
+
+    return {
+        loadError,
+        retryLoad,
+        runtime,
+    };
+}
+
+function useXtermSurfaceRuntime(): {
+    readonly loadError: string | null;
+    readonly retryLoad: () => void;
+    readonly runtime: XtermSurfaceRuntime | null;
+} {
+    const [runtime, setRuntime] = useState<XtermSurfaceRuntime | null>(null);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [loadVersion, setLoadVersion] = useState(0);
+
+    useEffect(() => {
+        if (runtime) {
+            return;
+        }
+
+        let cancelled = false;
+        setLoadError(null);
+
+        void Promise.all([
+            import("@xterm/xterm/css/xterm.css"),
+            import("@xterm/xterm"),
+            import("@xterm/addon-fit"),
+        ])
+            .then(([, xtermModule, fitAddonModule]) => {
+                if (cancelled) {
+                    return;
+                }
+
+                setRuntime({
+                    FitAddon: fitAddonModule.FitAddon,
+                    Terminal: xtermModule.Terminal,
+                });
+            })
+            .catch((error) => {
+                console.error(error);
+                if (cancelled) {
+                    return;
+                }
+
+                setLoadError(
+                    error instanceof Error
+                        ? error.message
+                        : "The terminal bundle could not be loaded.",
+                );
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [loadVersion, runtime]);
+
+    const retryLoad = useCallback(() => {
+        setRuntime(null);
+        setLoadError(null);
+        setLoadVersion((current) => current + 1);
+    }, []);
+
+    return {
+        loadError,
+        retryLoad,
+        runtime,
+    };
+}
+
+function DeferredSurfaceState({
+    actionLabel,
+    children,
+    onAction,
+    path,
+    statusLabel,
+    title,
+}: {
+    readonly actionLabel?: string;
+    readonly children: ReactNode;
+    readonly onAction?: () => void;
+    readonly path?: string;
+    readonly statusLabel?: string;
+    readonly title: string;
+}) {
+    return (
+        <div className="flex h-full min-h-0 flex-col">
+            {path ? (
+                <FilePathBar path={path} statusLabel={statusLabel} />
+            ) : null}
+            <div className="flex h-full items-center justify-center px-6 text-center">
+                <div className="max-w-lg">
+                    <div className="text-sm font-medium text-text-primary">
+                        {title}
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-text-secondary">
+                        {children}
+                    </p>
+                    {actionLabel && onAction ? (
+                        <button
+                            className="mt-4 rounded-md border border-border px-3 py-1.5 text-[11px] font-medium text-text-primary transition hover:bg-bg-secondary"
+                            onClick={onAction}
+                            type="button"
+                        >
+                            {actionLabel}
+                        </button>
+                    ) : null}
+                </div>
             </div>
         </div>
     );
@@ -3145,7 +3623,7 @@ function InlineReviewHunkZone({
 }) {
     return (
         <div
-            className="pointer-events-none absolute right-4 z-[3] flex justify-end"
+            className="pointer-events-none absolute right-4 z-3 flex justify-end"
             style={{
                 top: Math.max(top, 4),
             }}
@@ -3224,17 +3702,18 @@ function TerminalTabView({
     readonly onSendInput: (sessionId: string, data: string) => Promise<void>;
     readonly tab: RuntimeWorkspaceTerminalTab;
 }) {
+    const { loadError, retryLoad, runtime } = useXtermSurfaceRuntime();
     const containerRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const writtenLengthRef = useRef(0);
 
     useEffect(() => {
-        if (!containerRef.current) {
+        if (!runtime || !containerRef.current) {
             return;
         }
 
-        const terminal = new Terminal({
+        const terminal = new runtime.Terminal({
             allowTransparency: false,
             convertEol: true,
             cursorBlink: true,
@@ -3245,7 +3724,7 @@ function TerminalTabView({
             scrollback: 5000,
             theme: getTerminalTheme(),
         });
-        const fitAddon = new FitAddon();
+        const fitAddon = new runtime.FitAddon();
         terminal.loadAddon(fitAddon);
         terminal.open(containerRef.current);
         fitAddon.fit();
@@ -3271,7 +3750,7 @@ function TerminalTabView({
             fitAddonRef.current = null;
             writtenLengthRef.current = 0;
         };
-    }, [onResize, onSendInput, tab.sessionId]);
+    }, [onResize, onSendInput, runtime, tab.sessionId]);
 
     useEffect(() => {
         const terminal = terminalRef.current;
@@ -3292,6 +3771,27 @@ function TerminalTabView({
         terminal.write(nextChunk);
         writtenLengthRef.current = tab.output.length;
     }, [tab.output]);
+
+    if (!runtime) {
+        return (
+            <DeferredSurfaceState
+                actionLabel={loadError ? "Retry terminal load" : undefined}
+                onAction={loadError ? retryLoad : undefined}
+                statusLabel={
+                    loadError ? "Terminal unavailable" : "Loading terminal..."
+                }
+                title={
+                    loadError
+                        ? "Could not load the terminal"
+                        : "Preparing terminal..."
+                }
+            >
+                {loadError
+                    ? loadError
+                    : "xterm is loading on demand for this tab."}
+            </DeferredSurfaceState>
+        );
+    }
 
     return (
         <div className="terminal-surface h-full min-h-0">
@@ -3487,9 +3987,21 @@ function areMonacoSuggestionsEnabledForLanguage(
     return suggestionsEnabled;
 }
 
-function useMonacoTheme(): ComandoMonacoTheme {
+function getMonacoThemeFromDocument(): ComandoMonacoTheme {
+    if (typeof document === "undefined") {
+        return "comando-light";
+    }
+
+    return document.documentElement.classList.contains("dark")
+        ? "comando-dark"
+        : "comando-light";
+}
+
+function useMonacoTheme(
+    runtime: Pick<MonacoSurfaceRuntime, "applyMonacoThemeFromDom"> | null,
+): ComandoMonacoTheme {
     const [theme, setTheme] = useState<ComandoMonacoTheme>(() =>
-        getMonacoThemeFromDom(),
+        getMonacoThemeFromDocument(),
     );
 
     useEffect(() => {
@@ -3497,7 +4009,11 @@ function useMonacoTheme(): ComandoMonacoTheme {
 
         const updateTheme = () => {
             frameHandle = 0;
-            setTheme(applyMonacoThemeFromDom());
+            setTheme(
+                runtime
+                    ? runtime.applyMonacoThemeFromDom()
+                    : getMonacoThemeFromDocument(),
+            );
         };
 
         const scheduleThemeUpdate = () => {
@@ -3522,7 +4038,7 @@ function useMonacoTheme(): ComandoMonacoTheme {
                 window.cancelAnimationFrame(frameHandle);
             }
         };
-    }, []);
+    }, [runtime]);
 
     return theme;
 }

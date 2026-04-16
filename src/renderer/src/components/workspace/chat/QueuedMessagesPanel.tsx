@@ -1,8 +1,15 @@
 import { useState } from "react";
 
 import type { QueuedPrompt } from "@renderer/app/ai/sessionReviewContracts";
+import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 
 import { composerPartsToPlainText } from "./composerParts";
+
+const BASE_TEXT_SIZE_PX = 16;
+
+function toEm(value: number): string {
+    return `${value / BASE_TEXT_SIZE_PX}em`;
+}
 
 function summarizeQueuedPrompt(item: QueuedPrompt): string {
     const promptSummary = item.prompt.trim();
@@ -90,7 +97,10 @@ export function QueuedMessagesPanel({
         <div
             className="flex flex-col gap-1"
             data-testid="queued-messages-panel"
-            style={{ fontFamily: "var(--font-mono)" }}
+            style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: `${FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM}em`,
+            }}
         >
             {items.length > 0 ? (
                 <div className="flex items-center justify-between px-1">
@@ -102,7 +112,7 @@ export function QueuedMessagesPanel({
                             border: "none",
                             color: "var(--color-text-secondary)",
                             cursor: "pointer",
-                            fontSize: "10px",
+                            fontSize: toEm(10),
                             fontWeight: 600,
                             letterSpacing: "0.06em",
                             padding: 0,
@@ -113,7 +123,7 @@ export function QueuedMessagesPanel({
                         <span
                             style={{
                                 display: "inline-flex",
-                                fontSize: "10px",
+                                fontSize: toEm(10),
                                 transform: effectiveCollapsed
                                     ? "rotate(0deg)"
                                     : "rotate(90deg)",
@@ -132,7 +142,7 @@ export function QueuedMessagesPanel({
                             border: "none",
                             color: "var(--color-text-secondary)",
                             cursor: canClearAll ? "pointer" : "not-allowed",
-                            fontSize: "10px",
+                            fontSize: toEm(10),
                             fontWeight: 500,
                             opacity: canClearAll ? 0.6 : 0.25,
                             padding: 0,
@@ -157,7 +167,7 @@ export function QueuedMessagesPanel({
                         <span
                             style={{
                                 color: "var(--color-accent)",
-                                fontSize: "10px",
+                                fontSize: toEm(10),
                                 fontWeight: 600,
                                 opacity: 0.8,
                             }}
@@ -168,7 +178,7 @@ export function QueuedMessagesPanel({
                             className="truncate"
                             style={{
                                 color: "var(--color-text-primary)",
-                                fontSize: "11px",
+                                fontSize: toEm(11),
                             }}
                             title={summarizeQueuedPrompt(editingItem)}
                         >
@@ -184,7 +194,7 @@ export function QueuedMessagesPanel({
                             borderRadius: 3,
                             color: "var(--color-text-secondary)",
                             cursor: "pointer",
-                            fontSize: "10px",
+                            fontSize: toEm(10),
                             fontWeight: 500,
                             lineHeight: "16px",
                             padding: "0 5px",
@@ -225,7 +235,7 @@ export function QueuedMessagesPanel({
                                     style={{
                                         color: "var(--color-text-secondary)",
                                         flexShrink: 0,
-                                        fontSize: "10px",
+                                        fontSize: toEm(10),
                                         fontWeight: 500,
                                         opacity: 0.5,
                                         textAlign: "right",
@@ -238,7 +248,7 @@ export function QueuedMessagesPanel({
                                     className="min-w-0 flex-1 truncate"
                                     style={{
                                         color: "var(--color-text-primary)",
-                                        fontSize: "11px",
+                                        fontSize: toEm(11),
                                     }}
                                     title={summary}
                                 >
@@ -248,7 +258,7 @@ export function QueuedMessagesPanel({
                                     style={{
                                         color: getStatusColor(item.status),
                                         flexShrink: 0,
-                                        fontSize: "10px",
+                                        fontSize: toEm(10),
                                         fontWeight: 500,
                                         opacity: 0.7,
                                     }}
@@ -268,7 +278,7 @@ export function QueuedMessagesPanel({
                                             cursor: sending
                                                 ? "not-allowed"
                                                 : "pointer",
-                                            fontSize: "11px",
+                                            fontSize: toEm(11),
                                             opacity: sending ? 0.2 : 0.5,
                                             padding: "2px 3px",
                                         }}
@@ -286,7 +296,7 @@ export function QueuedMessagesPanel({
                                                 border: "none",
                                                 color: "var(--color-text-secondary)",
                                                 cursor: "pointer",
-                                                fontSize: "11px",
+                                                fontSize: toEm(11),
                                                 opacity: 0.5,
                                                 padding: "2px 3px",
                                             }}
@@ -311,7 +321,7 @@ export function QueuedMessagesPanel({
                                             cursor: sending
                                                 ? "not-allowed"
                                                 : "pointer",
-                                            fontSize: "10px",
+                                            fontSize: toEm(10),
                                             fontWeight: 500,
                                             lineHeight: "16px",
                                             opacity: sending ? 0.3 : 0.7,

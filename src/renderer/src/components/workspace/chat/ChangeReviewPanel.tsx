@@ -1,9 +1,16 @@
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import {
+    memo,
+    useCallback,
+    useMemo,
+    useState,
+    type CSSProperties,
+} from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import type { ResolvedProjectFileReference } from "../projectFileReferences";
@@ -444,7 +451,7 @@ export interface ChangeReviewPanelProps {
     readonly worktreeId?: string | null;
 }
 
-export function ChangeReviewPanel({
+export const ChangeReviewPanel = memo(function ChangeReviewPanel({
     activity,
     defaultExpanded = false,
     defaultExpandedFileKeys = [],
@@ -481,6 +488,16 @@ export function ChangeReviewPanel({
     const canOpenSingleItem = singleItem
         ? canOpenItem(singleItem, projectId, resolveFileReference)
         : false;
+
+    useRenderProbe("ChangeReviewPanel", {
+        activityId: activity.id,
+        expanded,
+        itemCount: items.length,
+        pendingTrackedFiles: trackedFiles.filter(
+            (trackedFile) => trackedFile.reviewState === "pending",
+        ).length,
+        summaryFiles: summary.fileCount,
+    });
 
     const openItem = useCallback(
         (item: ChangeReviewItem) => {
@@ -786,5 +803,21 @@ export function ChangeReviewPanel({
                 )
             ) : null}
         </div>
+    );
+}, areChangeReviewPanelPropsEqual);
+
+ChangeReviewPanel.displayName = "ChangeReviewPanel";
+
+function areChangeReviewPanelPropsEqual(
+    previous: Readonly<ChangeReviewPanelProps>,
+    next: Readonly<ChangeReviewPanelProps>,
+) {
+    return (
+        previous.activity === next.activity &&
+        previous.defaultExpanded === next.defaultExpanded &&
+        previous.defaultExpandedFileKeys === next.defaultExpandedFileKeys &&
+        previous.projectId === next.projectId &&
+        previous.trackedFiles === next.trackedFiles &&
+        previous.worktreeId === next.worktreeId
     );
 }
