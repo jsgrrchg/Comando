@@ -16,12 +16,7 @@ import {
     type RuntimeActionOption,
     type RuntimeCardOption,
 } from "./components/settings";
-import {
-    DEFAULT_AI_DIFF_ZOOM,
-    DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM,
-    PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
-    PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
-} from "./app/ai/sessionReviewContracts";
+import { DEFAULT_AI_DIFF_ZOOM } from "./app/ai/sessionReviewContracts";
 import {
     loadAiChatSettings,
     loadAppEditorSettings,
@@ -188,6 +183,16 @@ export function SettingsApp() {
         void saveAppEditorSettings(nextEditor);
     };
 
+    const handleAppEditorAutoSaveDelayMsChange = (autoSaveDelayMs: number) => {
+        const nextEditor: AppEditorSettings = {
+            ...appEditor,
+            autoSaveDelayMs,
+        };
+
+        setAppEditor(nextEditor);
+        void saveAppEditorSettings(nextEditor);
+    };
+
     const handleAppEditorFontSizeChange = (fontSize: number) => {
         const nextEditor: AppEditorSettings = {
             ...appEditor,
@@ -291,10 +296,6 @@ export function SettingsApp() {
                 composerFontFamily: aiChat.composerFontFamily,
                 composerFontFamilies: composerFontFamilies,
                 composerFontSize: aiChat.composerFontSize,
-                pendingReviewCardTextZoomPercent: Math.round(
-                    (aiChat.pendingReviewCardTextZoom ??
-                        DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM) * 100,
-                ),
                 requireCmdEnterToSend: aiChat.requireCmdEnterToSend,
                 reviewDiffZoomPercent: Math.round(
                     (aiChat.reviewDiffZoom ?? DEFAULT_AI_DIFF_ZOOM) * 100,
@@ -313,16 +314,6 @@ export function SettingsApp() {
                     }),
                 onComposerFontSizeChange: (size) =>
                     updateAiChat({ composerFontSize: size }),
-                onPendingReviewCardTextZoomPercentChange: (percent) =>
-                    updateAiChat({
-                        pendingReviewCardTextZoom: Math.min(
-                            PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
-                            Math.max(
-                                PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
-                                percent / 100,
-                            ),
-                        ),
-                    }),
                 onRequireCmdEnterChange: (value) =>
                     updateAiChat({ requireCmdEnterToSend: value }),
                 onReviewDiffZoomPercentChange: (percent) =>
@@ -354,6 +345,7 @@ export function SettingsApp() {
                 zoomFactor: appAppearance.zoomFactor,
             }}
             appEditor={{
+                autoSaveDelayMs: appEditor.autoSaveDelayMs,
                 fontFamilies: appEditorFontFamilies.map((fontFamily) => ({
                     description: fontFamily.description,
                     disabled: fontFamily.disabled,
@@ -367,6 +359,7 @@ export function SettingsApp() {
                 lineHeight: appEditor.lineHeight,
                 minimapEnabled: appEditor.minimapEnabled,
                 suggestionsEnabled: appEditor.suggestionsEnabled,
+                onAutoSaveDelayMsChange: handleAppEditorAutoSaveDelayMsChange,
                 onFontFamilyChange: handleAppEditorFontFamilyChange,
                 onFontSizeChange: handleAppEditorFontSizeChange,
                 onLineHeightChange: handleAppEditorLineHeightChange,

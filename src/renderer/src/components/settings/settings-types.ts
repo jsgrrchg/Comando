@@ -31,6 +31,7 @@ export interface SettingsThemeControlState {
 }
 
 export interface SettingsEditorControlState {
+    readonly autoSaveDelayMs: number;
     readonly fontFamilyId: string;
     readonly fontFamilies: readonly EditorFontFamilyOption[];
     readonly fontSize: number;
@@ -38,6 +39,7 @@ export interface SettingsEditorControlState {
     readonly minimapEnabled: boolean;
     readonly suggestionsEnabled: boolean;
     readonly disabled?: boolean;
+    readonly onAutoSaveDelayMsChange?: (autoSaveDelayMs: number) => void;
     readonly onFontFamilyChange?: (fontFamilyId: string) => void;
     readonly onFontSizeChange?: (fontSize: number) => void;
     readonly onLineHeightChange?: (lineHeight: number) => void;
@@ -85,7 +87,6 @@ export interface SettingsAiChatState {
     readonly composerFontFamily: string;
     readonly composerFontFamilies: readonly ChatFontFamilyOption[];
     readonly composerFontSize: number;
-    readonly pendingReviewCardTextZoomPercent: number;
     readonly requireCmdEnterToSend: boolean;
     readonly reviewDiffZoomPercent: number;
     readonly screenshotRetentionSeconds: number;
@@ -94,9 +95,6 @@ export interface SettingsAiChatState {
     readonly onChatFontSizeChange?: (size: number) => void;
     readonly onComposerFontFamilyChange?: (id: string) => void;
     readonly onComposerFontSizeChange?: (size: number) => void;
-    readonly onPendingReviewCardTextZoomPercentChange?: (
-        percent: number,
-    ) => void;
     readonly onRequireCmdEnterChange?: (value: boolean) => void;
     readonly onReviewDiffZoomPercentChange?: (percent: number) => void;
     readonly onScreenshotRetentionChange?: (seconds: number) => void;

@@ -376,11 +376,13 @@ export function NumberStepper({
     value,
     min,
     max,
+    inputWidth,
     onChange,
 }: {
     value: number;
     min: number;
     max: number;
+    inputWidth?: number;
     onChange: (v: number) => void;
 }) {
     const inputRef = useRef<HTMLInputElement>(null);
@@ -462,7 +464,7 @@ export function NumberStepper({
                     }
                 }}
                 style={{
-                    width: 34,
+                    width: inputWidth ?? 34,
                     textAlign: "center",
                     border: "none",
                     background: "transparent",

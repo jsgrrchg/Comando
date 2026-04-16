@@ -1,14 +1,14 @@
 import { useState } from "react";
 import {
-    PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
-    PENDING_REVIEW_CARD_TEXT_ZOOM_MIN,
-} from "@renderer/app/ai/sessionReviewContracts";
-import {
     APP_ZOOM_FACTOR_MAX,
     APP_ZOOM_FACTOR_MIN,
     APP_ZOOM_FACTOR_STEP,
     formatAppZoomPercent,
 } from "@shared/app-zoom";
+import {
+    EDITOR_AUTOSAVE_DELAY_MS_MAX,
+    EDITOR_AUTOSAVE_DELAY_MS_MIN,
+} from "@shared/editor-autosave";
 import {
     FILE_TREE_SCALE_MAX,
     FILE_TREE_SCALE_MIN,
@@ -427,6 +427,19 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
         <div>
             <SectionLabel>Typography</SectionLabel>
             <Row
+                label="Autosave delay"
+                description="Delay after the last edit before dirty files are saved automatically, in milliseconds."
+                control={
+                    <NumberStepper
+                        value={state.autoSaveDelayMs}
+                        min={EDITOR_AUTOSAVE_DELAY_MS_MIN}
+                        max={EDITOR_AUTOSAVE_DELAY_MS_MAX}
+                        inputWidth={52}
+                        onChange={(v) => state.onAutoSaveDelayMsChange?.(v)}
+                    />
+                }
+            />
+            <Row
                 label="Font size"
                 description={`Text size in the editor, in pixels. This does not change the overall app zoom. Shortcut: ${editorZoomShortcut}.`}
                 control={
@@ -540,24 +553,6 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                         max={96}
                         onChange={(v) =>
                             state.onReviewDiffZoomPercentChange?.(v)
-                        }
-                    />
-                }
-            />
-            <Row
-                label="Pending review card text"
-                description="Default text size for pending-review cards in the workspace. Session overrides keep their own value."
-                control={
-                    <NumberStepper
-                        value={state.pendingReviewCardTextZoomPercent}
-                        min={Math.round(
-                            PENDING_REVIEW_CARD_TEXT_ZOOM_MIN * 100,
-                        )}
-                        max={Math.round(
-                            PENDING_REVIEW_CARD_TEXT_ZOOM_MAX * 100,
-                        )}
-                        onChange={(v) =>
-                            state.onPendingReviewCardTextZoomPercentChange?.(v)
                         }
                     />
                 }

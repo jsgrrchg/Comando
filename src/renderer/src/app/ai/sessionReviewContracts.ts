@@ -5,10 +5,7 @@ import type {
 } from "@shared/ipc";
 
 export const DEFAULT_AI_DIFF_ZOOM = 0.72;
-export const DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM = 1.15;
-export const PENDING_REVIEW_CARD_TEXT_ZOOM_MIN = 0.85;
-export const PENDING_REVIEW_CARD_TEXT_ZOOM_MAX = 1.25;
-export const PENDING_REVIEW_CARD_TEXT_ZOOM_STEP = 0.05;
+export const FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM = 1.25;
 
 // Fase 0 / Ruta B: el undo de reject queda fuera del alcance inicial.
 export const AI_REVIEW_UNDO_ENABLED = false;
@@ -116,26 +113,4 @@ export function normalizeAiDiffZoom(value: number): number {
     }
 
     return Math.round(value * 100) / 100;
-}
-
-export function normalizePendingReviewCardTextZoom(value: number): number {
-    if (!Number.isFinite(value)) {
-        return DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM;
-    }
-
-    return (
-        Math.round(
-            Math.min(
-                PENDING_REVIEW_CARD_TEXT_ZOOM_MAX,
-                Math.max(PENDING_REVIEW_CARD_TEXT_ZOOM_MIN, value),
-            ) * 100,
-        ) / 100
-    );
-}
-
-export function stepPendingReviewCardTextZoom(
-    value: number,
-    delta: number,
-): number {
-    return normalizePendingReviewCardTextZoom(value + delta);
 }

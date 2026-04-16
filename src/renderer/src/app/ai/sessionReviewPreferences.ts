@@ -1,8 +1,8 @@
-import type { RuntimeWorkspaceChatTab, RuntimeWorkspaceReviewTab } from "../workspace/tree";
-import {
-    normalizeAiDiffZoom,
-    normalizePendingReviewCardTextZoom,
-} from "./sessionReviewContracts";
+import type {
+    RuntimeWorkspaceChatTab,
+    RuntimeWorkspaceReviewTab,
+} from "../workspace/tree";
+import { normalizeAiDiffZoom } from "./sessionReviewContracts";
 
 const SESSION_REVIEW_PREFERENCES_VERSION = 1;
 const SESSION_REVIEW_PREFERENCES_PREFIX = "comando.ai.review.preferences";
@@ -11,7 +11,6 @@ type RuntimeAiSessionTab = RuntimeWorkspaceChatTab | RuntimeWorkspaceReviewTab;
 
 export interface SessionReviewPreferences {
     readonly diffZoom: number | null;
-    readonly pendingReviewCardTextZoom: number | null;
 }
 
 interface PersistedSessionReviewPreferences extends SessionReviewPreferences {
@@ -57,16 +56,6 @@ function normalizeOptionalDiffZoom(value: unknown): number | null {
     return normalizeAiDiffZoom(value);
 }
 
-function normalizeOptionalPendingReviewCardTextZoom(
-    value: unknown,
-): number | null {
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-        return null;
-    }
-
-    return normalizePendingReviewCardTextZoom(value);
-}
-
 function normalizePreferences(
     raw: unknown,
 ): PersistedSessionReviewPreferences | null {
@@ -88,10 +77,6 @@ function normalizePreferences(
     return {
         diffZoom: normalizeOptionalDiffZoom(
             (raw as { diffZoom?: unknown }).diffZoom,
-        ),
-        pendingReviewCardTextZoom: normalizeOptionalPendingReviewCardTextZoom(
-            (raw as { pendingReviewCardTextZoom?: unknown })
-                .pendingReviewCardTextZoom,
         ),
         updatedAt,
         version: SESSION_REVIEW_PREFERENCES_VERSION,
@@ -125,7 +110,6 @@ export function readSessionReviewPreferences(
 
         return {
             diffZoom: normalized.diffZoom,
-            pendingReviewCardTextZoom: normalized.pendingReviewCardTextZoom,
         };
     } catch {
         return null;
@@ -148,12 +132,6 @@ export function persistSessionReviewPreferences(
             preferences.diffZoom == null
                 ? null
                 : normalizeAiDiffZoom(preferences.diffZoom),
-        pendingReviewCardTextZoom:
-            preferences.pendingReviewCardTextZoom == null
-                ? null
-                : normalizePendingReviewCardTextZoom(
-                      preferences.pendingReviewCardTextZoom,
-                  ),
         updatedAt: Date.now(),
         version: SESSION_REVIEW_PREFERENCES_VERSION,
     };

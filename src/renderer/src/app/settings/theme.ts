@@ -1,5 +1,9 @@
 import { APP_ZOOM_FACTOR_DEFAULT, clampAppZoomFactor } from "@shared/app-zoom";
 import {
+    EDITOR_AUTOSAVE_DELAY_MS_DEFAULT,
+    clampEditorAutosaveDelayMs,
+} from "@shared/editor-autosave";
+import {
     FILE_TREE_SCALE_DEFAULT,
     clampFileTreeScale,
 } from "@shared/file-tree-scale";
@@ -12,10 +16,7 @@ import type {
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
-import {
-    DEFAULT_AI_DIFF_ZOOM,
-    DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM,
-} from "@renderer/app/ai/sessionReviewContracts";
+import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import {
     DEFAULT_AI_CHAT_FONT_SIZE,
     DEFAULT_AI_COMPOSER_FONT_SIZE,
@@ -1000,6 +1001,7 @@ export function getDefaultAppAppearance(): AppAppearanceSettings {
 
 export function getDefaultAppEditorSettings(): AppEditorSettings {
     return {
+        autoSaveDelayMs: EDITOR_AUTOSAVE_DELAY_MS_DEFAULT,
         fontFamily: "sf-mono",
         fontSize: DEFAULT_EDITOR_FONT_SIZE,
         lineHeight: 1.55,
@@ -1014,7 +1016,6 @@ export function getDefaultAiChatSettings(): AppAiChatSettings {
         chatFontSize: DEFAULT_AI_CHAT_FONT_SIZE,
         composerFontFamily: "system",
         composerFontSize: DEFAULT_AI_COMPOSER_FONT_SIZE,
-        pendingReviewCardTextZoom: DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM,
         reviewDiffZoom: DEFAULT_AI_DIFF_ZOOM,
         requireCmdEnterToSend: false,
         screenshotRetentionSeconds: 0,
@@ -1062,6 +1063,9 @@ export function resolveEditorSettings(
     const defaults = getDefaultAppEditorSettings();
 
     return {
+        autoSaveDelayMs: clampEditorAutosaveDelayMs(
+            appEditor?.autoSaveDelayMs ?? defaults.autoSaveDelayMs,
+        ),
         fontFamily: appEditor?.fontFamily ?? defaults.fontFamily,
         fontSize: appEditor?.fontSize ?? defaults.fontSize,
         lineHeight: appEditor?.lineHeight ?? defaults.lineHeight,

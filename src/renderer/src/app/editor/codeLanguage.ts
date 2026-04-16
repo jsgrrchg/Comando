@@ -279,12 +279,8 @@ function loadCachedLanguageByKey(
 
     const loader = Promise.resolve(loadLanguageByKey(key))
         .then((language) => toLanguageSupport(language))
-        .catch((error) => {
+        .catch(() => {
             languageCache.delete(key);
-            console.error(
-                `Failed to load CodeMirror language support for "${key}".`,
-                error,
-            );
             return null;
         });
     languageCache.set(key, loader);

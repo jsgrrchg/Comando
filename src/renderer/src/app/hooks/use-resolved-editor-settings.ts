@@ -2,7 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { AppEditorSettings } from "@shared/ipc";
 
-import { loadAppEditorSettings } from "../settings/client";
+import {
+    getCachedAppEditorSettings,
+    loadAppEditorSettings,
+    setCachedAppEditorSettings,
+} from "../settings/client";
 import {
     getDefaultAppEditorSettings,
     resolveEditorSettings,
@@ -10,7 +14,7 @@ import {
 
 export function useResolvedEditorSettings(): AppEditorSettings {
     const [appEditor, setAppEditor] = useState<AppEditorSettings>(
-        getDefaultAppEditorSettings(),
+        () => getCachedAppEditorSettings() ?? getDefaultAppEditorSettings(),
     );
 
     const loadAppEditor = useCallback(async () => {
@@ -37,14 +41,17 @@ export function useResolvedEditorSettings(): AppEditorSettings {
             return;
         }
 
-        const unsubscribeSettings = window.comando.onSettingsUpdated(() => {
-            void loadAppEditor();
-        });
+        const unsubscribeSettings = window.comando.onSettingsUpdated(
+            (payload) => {
+                setCachedAppEditorSettings(payload.editor);
+                setAppEditor(payload.editor ?? getDefaultAppEditorSettings());
+            },
+        );
 
         return () => {
             unsubscribeSettings();
         };
-    }, [loadAppEditor]);
+    }, []);
 
     return resolveEditorSettings(appEditor);
 }
