@@ -7,6 +7,8 @@ import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
+import { extendMarkdownLanguageConfiguration } from "./markdownSyntax";
+
 export type ComandoMonacoTheme = "comando-light" | "comando-dark";
 
 type MonacoEnvironmentShape = {
@@ -287,9 +289,15 @@ function registerLanguageIds(
 function configureMarkdownFenceLanguages() {
     registerLanguageIds(
         ["markdown"],
-        basicLanguage(
-            () =>
-                import("monaco-editor/esm/vs/basic-languages/markdown/markdown.js"),
+        basicLanguage(() =>
+            import("monaco-editor/esm/vs/basic-languages/markdown/markdown.js").then(
+                (markdownModule) => ({
+                    ...markdownModule,
+                    conf: extendMarkdownLanguageConfiguration(
+                        markdownModule.conf,
+                    ),
+                }),
+            ),
         ),
     );
     registerLanguageIds(
