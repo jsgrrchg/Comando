@@ -270,6 +270,254 @@ describe("workspace file opening", () => {
             worktreeId: "worktree-1",
         });
     });
+
+    it("refreshes only clean tabs affected by the invalidated paths", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-clean-match",
+                id: "pane-root",
+                tabIds: [
+                    "file-clean-match",
+                    "file-clean-other",
+                    "file-dirty-match",
+                ],
+                type: "pane",
+            },
+            tabsById: {
+                "file-clean-match": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: {
+                        absolutePath: "/tmp/src/app.ts",
+                        content: "export const app = 1;\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "typescript",
+                        languageLabel: "TypeScript",
+                        mimeType: "text/typescript",
+                        modifiedAtMs: 1,
+                        name: "app.ts",
+                        projectId: "project-1",
+                        relativePath: "src/app.ts",
+                        sizeBytes: 22,
+                    },
+                    draftContent: "export const app = 1;\n",
+                    hasExternalChange: false,
+                    id: "file-clean-match",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "src/app.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "export const app = 1;\n",
+                    title: "app.ts",
+                    viewState: null,
+                    worktreeId: null,
+                },
+                "file-clean-other": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: {
+                        absolutePath: "/tmp/src/other.ts",
+                        content: "export const other = 1;\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "typescript",
+                        languageLabel: "TypeScript",
+                        mimeType: "text/typescript",
+                        modifiedAtMs: 1,
+                        name: "other.ts",
+                        projectId: "project-1",
+                        relativePath: "src/other.ts",
+                        sizeBytes: 24,
+                    },
+                    draftContent: "export const other = 1;\n",
+                    hasExternalChange: false,
+                    id: "file-clean-other",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "src/other.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "export const other = 1;\n",
+                    title: "other.ts",
+                    viewState: null,
+                    worktreeId: null,
+                },
+                "file-dirty-match": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: {
+                        absolutePath: "/tmp/docs/guide.md",
+                        content: "# Guide\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "markdown",
+                        languageLabel: "Markdown",
+                        mimeType: "text/markdown",
+                        modifiedAtMs: 1,
+                        name: "guide.md",
+                        projectId: "project-1",
+                        relativePath: "docs/guide.md",
+                        sizeBytes: 8,
+                    },
+                    draftContent: "# Guide\nDraft note\n",
+                    hasExternalChange: false,
+                    id: "file-dirty-match",
+                    isDirty: true,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "docs/guide.md",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "# Guide\n",
+                    title: "guide.md",
+                    viewState: null,
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [
+                "src/app.ts",
+                "docs/guide.md",
+            ]);
+
+        const state = useWorkspaceStore.getState();
+        expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        expect(openProjectFileMock).toHaveBeenCalledWith({
+            projectId: "project-1",
+            relativePath: "src/app.ts",
+            worktreeId: null,
+        });
+        expect(state.tabsById["file-dirty-match"]).toMatchObject({
+            hasExternalChange: false,
+            isDirty: true,
+            saveError: null,
+        });
+        expect(state.tabsById["file-clean-other"]).toMatchObject({
+            draftContent: "export const other = 1;\n",
+            isDirty: false,
+        });
+    });
+
+    it("skips dirty tabs during broad project invalidations", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-clean",
+                id: "pane-root",
+                tabIds: ["file-clean", "file-dirty"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-clean": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: {
+                        absolutePath: "/tmp/src/main.ts",
+                        content: "export const main = 1;\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "typescript",
+                        languageLabel: "TypeScript",
+                        mimeType: "text/typescript",
+                        modifiedAtMs: 1,
+                        name: "main.ts",
+                        projectId: "project-1",
+                        relativePath: "src/main.ts",
+                        sizeBytes: 23,
+                    },
+                    draftContent: "export const main = 1;\n",
+                    hasExternalChange: false,
+                    id: "file-clean",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "src/main.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "export const main = 1;\n",
+                    title: "main.ts",
+                    viewState: null,
+                    worktreeId: null,
+                },
+                "file-dirty": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: {
+                        absolutePath: "/tmp/src/notes.md",
+                        content: "Notes\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "markdown",
+                        languageLabel: "Markdown",
+                        mimeType: "text/markdown",
+                        modifiedAtMs: 1,
+                        name: "notes.md",
+                        projectId: "project-1",
+                        relativePath: "src/notes.md",
+                        sizeBytes: 6,
+                    },
+                    draftContent: "Notes\nDraft\n",
+                    hasExternalChange: false,
+                    id: "file-dirty",
+                    isDirty: true,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "src/notes.md",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "Notes\n",
+                    title: "notes.md",
+                    viewState: null,
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().refreshProjectTabs("project-1");
+
+        const state = useWorkspaceStore.getState();
+        expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        expect(openProjectFileMock).toHaveBeenCalledWith({
+            projectId: "project-1",
+            relativePath: "src/main.ts",
+            worktreeId: null,
+        });
+        expect(state.tabsById["file-dirty"]).toMatchObject({
+            hasExternalChange: false,
+            isDirty: true,
+            saveError: null,
+        });
+    });
 });
 
 describe("workspace runtime focus helpers", () => {

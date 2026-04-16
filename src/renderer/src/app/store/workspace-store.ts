@@ -135,6 +135,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     refreshProjectTabs: (
         projectId: string,
         worktreeId?: string | null,
+        invalidatedRelativePaths?: readonly string[] | null,
     ) => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
     reorderTab: (
@@ -736,6 +737,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     refreshProjectTabs: async (
         projectId: string,
         worktreeId: string | null = null,
+        invalidatedRelativePaths: readonly string[] | null = null,
     ) => {
         const fileTabs = Object.values(get().tabsById).filter(
             (tab): tab is RuntimeWorkspaceFileTab =>
@@ -751,16 +753,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
         await Promise.all(
             fileTabs.map(async (tab) => {
-                if (tab.isDirty) {
-                    set((state) => ({
-                        ...setFileTabExternalChange(
-                            state,
-                            tab.id,
-                            true,
-                            "This file changed on disk while you have unsaved edits.",
-                        ),
-                        error: null,
-                    }));
+                if (
+                    !isFileTabAffectedByProjectInvalidation(
+                        tab.relativePath,
+                        invalidatedRelativePaths,
+                    ) ||
+                    tab.isDirty ||
+                    tab.isSaving
+                ) {
                     return;
                 }
 
@@ -1571,4 +1571,25 @@ function normalizeWorktreeId(
     worktreeId: string | null | undefined,
 ): string | null {
     return worktreeId ?? null;
+}
+
+function isFileTabAffectedByProjectInvalidation(
+    tabRelativePath: string,
+    invalidatedRelativePaths: readonly string[] | null | undefined,
+): boolean {
+    if (!invalidatedRelativePaths || invalidatedRelativePaths.length === 0) {
+        return true;
+    }
+
+    return invalidatedRelativePaths.some((invalidatedRelativePath) =>
+        doProjectPathsOverlap(tabRelativePath, invalidatedRelativePath),
+    );
+}
+
+function doProjectPathsOverlap(leftPath: string, rightPath: string): boolean {
+    return (
+        leftPath === rightPath ||
+        leftPath.startsWith(`${rightPath}/`) ||
+        rightPath.startsWith(`${leftPath}/`)
+    );
 }

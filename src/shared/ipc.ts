@@ -766,6 +766,7 @@ export interface RevealProjectEntryInput {
 export interface ProjectTreeInvalidation {
     readonly projectId: string;
     readonly occurredAt: string;
+    readonly relativePaths?: readonly string[] | null;
     readonly worktreeId?: string | null;
 }
 

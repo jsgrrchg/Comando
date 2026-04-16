@@ -66,6 +66,11 @@ interface GitSnapshot {
     readonly exactBadges: ReadonlyMap<string, GitStatusBadge>;
 }
 
+interface PendingProjectInvalidation {
+    readonly relativePaths: ReadonlySet<string> | null;
+    readonly timeout: NodeJS.Timeout;
+}
+
 interface ProjectServiceOptions {
     readonly connection: Database.Database;
     readonly onProjectTreeInvalidated: (
@@ -82,7 +87,10 @@ export class ProjectService {
     readonly #onProjectTouched?: (projectPath: string) => void;
     readonly #watchers = new Map<string, fs.FSWatcher>();
     readonly #gitSnapshots = new Map<string, GitSnapshot>();
-    readonly #pendingInvalidations = new Map<string, NodeJS.Timeout>();
+    readonly #pendingInvalidations = new Map<
+        string,
+        PendingProjectInvalidation
+    >();
 
     constructor(options: ProjectServiceOptions) {
         this.#connection = options.connection;
@@ -520,6 +528,7 @@ export class ProjectService {
                     input.projectId,
                     project.worktreeId,
                 ),
+                [input.relativePath],
             );
             return document;
         });
@@ -548,6 +557,7 @@ export class ProjectService {
                 input.projectId,
                 project.worktreeId,
             ),
+            [entry.relativePath],
         );
         return entry;
     }
@@ -575,6 +585,7 @@ export class ProjectService {
                 input.projectId,
                 project.worktreeId,
             ),
+            [input.relativePath, entry.relativePath],
         );
         return entry;
     }
@@ -598,6 +609,7 @@ export class ProjectService {
                 input.projectId,
                 project.worktreeId,
             ),
+            [input.relativePath],
         );
     }
 
@@ -820,8 +832,8 @@ export class ProjectService {
             watcher.close();
         }
 
-        for (const timeout of this.#pendingInvalidations.values()) {
-            clearTimeout(timeout);
+        for (const pendingInvalidation of this.#pendingInvalidations.values()) {
+            clearTimeout(pendingInvalidation.timeout);
         }
 
         this.#watchers.clear();
@@ -985,10 +997,16 @@ export class ProjectService {
                         return;
                     }
 
+                    const normalizedRelativePath =
+                        normalizeProjectWatchRelativePath(relativePath);
+
                     this.#gitSnapshots.delete(rootPath);
                     this.#scheduleInvalidation(
                         projectId,
                         this.#findWorktreeIdByRootPath(projectId, rootPath),
+                        normalizedRelativePath
+                            ? [normalizedRelativePath]
+                            : null,
                     );
                 },
             );
@@ -1003,23 +1021,37 @@ export class ProjectService {
     #scheduleInvalidation(
         projectId: string,
         worktreeId: string | null = null,
+        relativePaths: readonly string[] | null = null,
     ): void {
         const invalidationKey = `${projectId}:${worktreeId ?? "primary"}`;
-        const existingTimeout = this.#pendingInvalidations.get(invalidationKey);
-        if (existingTimeout) {
-            clearTimeout(existingTimeout);
+        const existingInvalidation =
+            this.#pendingInvalidations.get(invalidationKey);
+        if (existingInvalidation) {
+            clearTimeout(existingInvalidation.timeout);
         }
+
+        const mergedRelativePaths = mergeProjectInvalidationRelativePaths(
+            existingInvalidation?.relativePaths ?? null,
+            normalizeProjectInvalidationRelativePaths(relativePaths),
+        );
 
         const timeout = setTimeout(() => {
             this.#pendingInvalidations.delete(invalidationKey);
             this.#onProjectTreeInvalidated({
                 occurredAt: new Date().toISOString(),
                 projectId,
+                relativePaths:
+                    mergedRelativePaths === null
+                        ? null
+                        : Array.from(mergedRelativePaths),
                 worktreeId,
             });
         }, 140);
 
-        this.#pendingInvalidations.set(invalidationKey, timeout);
+        this.#pendingInvalidations.set(invalidationKey, {
+            relativePaths: mergedRelativePaths,
+            timeout,
+        });
     }
 
     #closeWatcher(projectId: string): void {
@@ -1032,12 +1064,13 @@ export class ProjectService {
             this.#watchers.delete(watcherKey);
         }
 
-        for (const [invalidationKey, timeout] of this.#pendingInvalidations) {
+        for (const [invalidationKey, pendingInvalidation] of this
+            .#pendingInvalidations) {
             if (!invalidationKey.startsWith(`${projectId}:`)) {
                 continue;
             }
 
-            clearTimeout(timeout);
+            clearTimeout(pendingInvalidation.timeout);
             this.#pendingInvalidations.delete(invalidationKey);
         }
     }
@@ -1176,19 +1209,85 @@ function runGitPathCommand(
 export function shouldIgnoreProjectWatchPath(
     relativePath: string | Buffer | null,
 ): boolean {
-    if (relativePath == null) {
+    const normalizedPath = normalizeProjectWatchRelativePath(relativePath);
+    if (normalizedPath == null) {
         return false;
+    }
+
+    const normalizedLowerPath = normalizedPath.toLowerCase();
+    const segments = normalizedLowerPath.split("/");
+    const fileName = segments.at(-1) ?? normalizedLowerPath;
+
+    return (
+        normalizedLowerPath === ".git/index" ||
+        normalizedLowerPath === ".git/index.lock" ||
+        segments.some((segment) =>
+            ignoredProjectWatchDirectoryNames.has(segment),
+        ) ||
+        ignoredProjectWatchFileNames.has(fileName) ||
+        fileName.endsWith(".tsbuildinfo")
+    );
+}
+
+const ignoredProjectWatchDirectoryNames = new Set([
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "out",
+    "target",
+]);
+
+const ignoredProjectWatchFileNames = new Set([".ds_store", "thumbs.db"]);
+
+function normalizeProjectWatchRelativePath(
+    relativePath: string | Buffer | null,
+): string | null {
+    if (relativePath == null) {
+        return null;
     }
 
     const normalizedPath = relativePath
         .toString()
         .replaceAll("\\", "/")
         .replace(/^\.\/+/, "")
-        .toLowerCase();
+        .replace(/^\/+/, "")
+        .trim();
 
-    return (
-        normalizedPath === ".git/index" || normalizedPath === ".git/index.lock"
-    );
+    if (!normalizedPath || normalizedPath === ".") {
+        return null;
+    }
+
+    return normalizeRelativePath(normalizedPath);
+}
+
+function normalizeProjectInvalidationRelativePaths(
+    relativePaths: readonly string[] | null,
+): ReadonlySet<string> | null {
+    if (relativePaths === null) {
+        return null;
+    }
+
+    const normalizedRelativePaths = new Set<string>();
+    for (const relativePath of relativePaths) {
+        const normalizedPath = normalizeProjectWatchRelativePath(relativePath);
+        if (normalizedPath) {
+            normalizedRelativePaths.add(normalizedPath);
+        }
+    }
+
+    return normalizedRelativePaths.size > 0 ? normalizedRelativePaths : null;
+}
+
+function mergeProjectInvalidationRelativePaths(
+    currentRelativePaths: ReadonlySet<string> | null,
+    nextRelativePaths: ReadonlySet<string> | null,
+): ReadonlySet<string> | null {
+    if (currentRelativePaths === null || nextRelativePaths === null) {
+        return null;
+    }
+
+    return new Set([...currentRelativePaths, ...nextRelativePaths]);
 }
 
 function createBackgroundSafeGit(rootPath: string) {

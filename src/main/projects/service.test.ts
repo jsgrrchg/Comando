@@ -22,6 +22,14 @@ describe("project watcher filtering", () => {
         expect(shouldIgnoreProjectWatchPath(".git\\index")).toBe(true);
     });
 
+    it("ignores generated outputs that should not refresh the workspace", () => {
+        expect(shouldIgnoreProjectWatchPath("dist/main.js")).toBe(true);
+        expect(shouldIgnoreProjectWatchPath("build/output/app.js")).toBe(true);
+        expect(shouldIgnoreProjectWatchPath("tsconfig.web.tsbuildinfo")).toBe(
+            true,
+        );
+    });
+
     it("keeps invalidating for regular project files and unknown events", () => {
         expect(shouldIgnoreProjectWatchPath("src/main.ts")).toBe(false);
         expect(shouldIgnoreProjectWatchPath(".git/HEAD")).toBe(false);
@@ -50,6 +58,9 @@ describe("ProjectService", () => {
 
         const [firstProject] = projectService.addProjectPaths([projectRoot]);
         expect(firstProject).toBeDefined();
+        if (!firstProject) {
+            throw new Error("Expected the first project to be created.");
+        }
 
         const snapshot: WorkspaceSnapshot = {
             activePaneId: "pane-root",
@@ -64,17 +75,17 @@ describe("ProjectService", () => {
                     createdAt: "2026-04-15T00:00:00.000Z",
                     id: "file-tab-1",
                     kind: "file",
-                    projectId: firstProject!.id,
+                    projectId: firstProject.id,
                     relativePath: "src/index.ts",
                     title: "index.ts",
-                    worktreeId: `${firstProject!.id}:primary`,
+                    worktreeId: `${firstProject.id}:primary`,
                 },
             ],
         };
 
         workspaceService.saveSnapshot("workspace-1", snapshot);
 
-        projectService.removeProject(firstProject!.id);
+        projectService.removeProject(firstProject.id);
         expect(projectService.listProjects()).toEqual([]);
 
         const hiddenProjectRow = connection
@@ -87,25 +98,28 @@ describe("ProjectService", () => {
             )
             .get(projectRoot);
         expect(hiddenProjectRow).toEqual({
-            id: firstProject!.id,
+            id: firstProject.id,
             is_hidden: 1,
         });
 
         const [reopenedProject] = projectService.addProjectPaths([projectRoot]);
-        expect(reopenedProject?.id).toBe(firstProject!.id);
+        expect(reopenedProject?.id).toBe(firstProject.id);
+        if (!reopenedProject) {
+            throw new Error("Expected the project to be re-added.");
+        }
 
         const restoredSnapshot = workspaceService.loadSnapshot("workspace-1");
         expect(restoredSnapshot).toEqual(snapshot);
 
         await expect(
             projectService.openProjectFile({
-                projectId: reopenedProject!.id,
+                projectId: reopenedProject.id,
                 relativePath: "src/index.ts",
-                worktreeId: `${reopenedProject!.id}:primary`,
+                worktreeId: `${reopenedProject.id}:primary`,
             }),
         ).resolves.toMatchObject({
             absolutePath: projectFilePath,
-            projectId: reopenedProject!.id,
+            projectId: reopenedProject.id,
         });
     });
 });

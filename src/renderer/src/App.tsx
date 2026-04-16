@@ -307,7 +307,11 @@ export function App() {
                 null;
 
             void refreshProjectTree(payload.projectId, preferredWorktreeId);
-            void refreshProjectTabs(payload.projectId, preferredWorktreeId);
+            void refreshProjectTabs(
+                payload.projectId,
+                preferredWorktreeId,
+                payload.relativePaths ?? null,
+            );
         });
 
         return unsubscribe;
