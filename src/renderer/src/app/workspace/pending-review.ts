@@ -1,3 +1,4 @@
+import { syncTrackedFile } from "@shared/ai-tracked-file";
 import type { AiTrackedFile } from "@shared/ipc";
 
 import type { RuntimeWorkspaceFileReviewContext } from "./tree";
@@ -13,6 +14,7 @@ export function collectPendingTrackedFilesFromSessions(
 ): readonly AiTrackedFile[] {
     return Object.values(sessions)
         .flatMap((session) => session?.snapshot?.trackedFiles ?? [])
+        .map((trackedFile) => syncTrackedFile(trackedFile))
         .filter((trackedFile) => trackedFile.reviewState === "pending");
 }
 
@@ -28,10 +30,10 @@ export function isInlineReviewSupported(
 ): trackedFile is AiTrackedFile {
     return Boolean(
         trackedFile &&
-            trackedFile.isText &&
-            trackedFile.kind === "update" &&
-            trackedFile.oldText !== null &&
-            trackedFile.newText !== null,
+        trackedFile.isText &&
+        trackedFile.kind === "update" &&
+        trackedFile.oldText !== null &&
+        trackedFile.newText !== null,
     );
 }
 

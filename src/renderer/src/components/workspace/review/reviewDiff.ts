@@ -41,8 +41,6 @@ export interface StructuredDiffResult {
     readonly lines: readonly DiffLine[];
 }
 
-export const FULL_DIFF_MAX_LINES = 700;
-export const LARGE_FILE_PREVIEW_MAX_LINES = 2000;
 export const DIFF_CONTEXT_LINES = 5;
 export const DIFF_PANEL_MAX_HEIGHT = 520;
 export const DIFF_ZOOM_MIN = 0.64;
@@ -92,13 +90,6 @@ function isPureMove(diff: AiFileDiff): boolean {
     );
 }
 
-function isLargeUpdateDiff(
-    oldLines: readonly string[],
-    newLines: readonly string[],
-) {
-    return Math.max(oldLines.length, newLines.length) > FULL_DIFF_MAX_LINES;
-}
-
 export function shouldWrapDiffPreview(
     filePath: string | null | undefined,
 ): boolean {
@@ -112,12 +103,10 @@ export function shouldWrapDiffPreview(
 export function buildLcsTable(
     oldLines: readonly string[],
     newLines: readonly string[],
-): number[][] {
+): Uint32Array[] {
     const rows = oldLines.length + 1;
     const cols = newLines.length + 1;
-    const table = Array.from({ length: rows }, () =>
-        new Array<number>(cols).fill(0),
-    );
+    const table = Array.from({ length: rows }, () => new Uint32Array(cols));
 
     for (let row = 1; row < rows; row += 1) {
         for (let col = 1; col < cols; col += 1) {
@@ -515,90 +504,10 @@ function groupApproximateDiffLines(
     };
 }
 
-function buildLargeFilePreview(
-    oldLines: readonly string[],
-    newLines: readonly string[],
-): StructuredDiffResult {
-    const limit = Math.min(
-        Math.max(oldLines.length, newLines.length),
-        LARGE_FILE_PREVIEW_MAX_LINES,
-    );
-    const lines: DiffLine[] = [];
-    let oldLineNumber = 1;
-    let newLineNumber = 1;
-
-    for (let index = 0; index < limit; index += 1) {
-        const oldLine = oldLines[index];
-        const newLine = newLines[index];
-
-        if (oldLine === newLine) {
-            lines.push({
-                type: "context",
-                prefix: "  ",
-                text: newLine ?? oldLine ?? "",
-                oldLineNumber,
-                newLineNumber,
-            });
-            oldLineNumber += 1;
-            newLineNumber += 1;
-            continue;
-        }
-
-        if (oldLine !== undefined) {
-            lines.push({
-                type: "remove",
-                prefix: "- ",
-                text: oldLine,
-                oldLineNumber,
-                newLineNumber: null,
-            });
-            oldLineNumber += 1;
-        }
-
-        if (newLine !== undefined) {
-            lines.push({
-                type: "add",
-                prefix: "+ ",
-                text: newLine,
-                oldLineNumber: null,
-                newLineNumber,
-            });
-            newLineNumber += 1;
-        }
-    }
-
-    const totalLines = Math.max(oldLines.length, newLines.length);
-    const previewLabel =
-        totalLines > LARGE_FILE_PREVIEW_MAX_LINES
-            ? `(large file preview — showing first ${LARGE_FILE_PREVIEW_MAX_LINES} of ${totalLines} lines)`
-            : `(large file preview — ${totalLines} lines shown without full diff matching)`;
-
-    lines.push({
-        type: "separator",
-        prefix: "",
-        text: previewLabel,
-    });
-
-    return {
-        approximate: true,
-        hunks: [],
-        decisionHunks: [],
-        visualBlocks: [],
-        lines,
-    };
-}
-
 export function computeApproximateDiffLines(
     oldText: string | null | undefined,
     newText: string | null | undefined,
 ): StructuredDiffResult {
-    const oldLines = splitDiffText(oldText);
-    const newLines = splitDiffText(newText);
-
-    if (isLargeUpdateDiff(oldLines, newLines)) {
-        return buildLargeFilePreview(oldLines, newLines);
-    }
-
     return groupApproximateDiffLines(oldText, newText);
 }
 
@@ -690,10 +599,8 @@ export function computeDiffLines(diff: AiFileDiff): readonly DiffLine[] {
         return computeExactDiffLines(diff.hunks).lines;
     }
 
-    const oldLines = splitDiffText(diff.oldText);
-    const newLines = splitDiffText(diff.newText);
-
     if (diff.kind === "create") {
+        const newLines = splitDiffText(diff.newText);
         return newLines.map((line, index) => ({
             type: "add" as const,
             prefix: "+ ",
@@ -714,6 +621,7 @@ export function computeDiffLines(diff: AiFileDiff): readonly DiffLine[] {
             ];
         }
 
+        const oldLines = splitDiffText(diff.oldText);
         return oldLines.map((line, index) => ({
             type: "remove" as const,
             prefix: "- ",
@@ -725,10 +633,6 @@ export function computeDiffLines(diff: AiFileDiff): readonly DiffLine[] {
 
     if (isPureMove(diff)) {
         return [];
-    }
-
-    if (isLargeUpdateDiff(oldLines, newLines)) {
-        return buildLargeFilePreview(oldLines, newLines).lines;
     }
 
     return groupApproximateDiffLines(diff.oldText, diff.newText).lines;
@@ -745,15 +649,7 @@ export function computeVisualDiffBlocks(
         return computeExactDiffLines(diff.hunks).hunks;
     }
 
-    const oldLines = splitDiffText(diff.oldText);
-    const newLines = splitDiffText(diff.newText);
-
-    if (
-        diff.kind === "create" ||
-        diff.kind === "delete" ||
-        isPureMove(diff) ||
-        isLargeUpdateDiff(oldLines, newLines)
-    ) {
+    if (diff.kind === "create" || diff.kind === "delete" || isPureMove(diff)) {
         return [];
     }
 
@@ -771,15 +667,7 @@ export function computeDecisionHunks(
         return computeExactDiffLines(diff.hunks).decisionHunks;
     }
 
-    const oldLines = splitDiffText(diff.oldText);
-    const newLines = splitDiffText(diff.newText);
-
-    if (
-        diff.kind === "create" ||
-        diff.kind === "delete" ||
-        isPureMove(diff) ||
-        isLargeUpdateDiff(oldLines, newLines)
-    ) {
+    if (diff.kind === "create" || diff.kind === "delete" || isPureMove(diff)) {
         return [];
     }
 
@@ -813,10 +701,8 @@ export function computeFileDiffStats(diff: AiFileDiff): DiffStats {
         return { additions, deletions };
     }
 
-    const oldLines = splitDiffText(diff.oldText);
-    const newLines = splitDiffText(diff.newText);
-
     if (diff.kind === "create") {
+        const newLines = splitDiffText(diff.newText);
         return { additions: newLines.length, deletions: 0 };
     }
 
@@ -824,39 +710,12 @@ export function computeFileDiffStats(diff: AiFileDiff): DiffStats {
         if (diff.reversible === false) {
             return { additions: 0, deletions: 0, approximate: true };
         }
+        const oldLines = splitDiffText(diff.oldText);
         return { additions: 0, deletions: oldLines.length };
     }
 
     if (isPureMove(diff)) {
         return { additions: 0, deletions: 0 };
-    }
-
-    if (isLargeUpdateDiff(oldLines, newLines)) {
-        let additions = 0;
-        let deletions = 0;
-        const limit = Math.min(
-            Math.max(oldLines.length, newLines.length),
-            LARGE_FILE_PREVIEW_MAX_LINES,
-        );
-
-        for (let index = 0; index < limit; index += 1) {
-            const oldLine = oldLines[index];
-            const newLine = newLines[index];
-
-            if (oldLine === newLine) {
-                continue;
-            }
-
-            if (oldLine !== undefined) {
-                deletions += 1;
-            }
-
-            if (newLine !== undefined) {
-                additions += 1;
-            }
-        }
-
-        return { additions, deletions, approximate: true };
     }
 
     const lines = groupApproximateDiffLines(diff.oldText, diff.newText).lines;

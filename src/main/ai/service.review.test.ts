@@ -266,4 +266,42 @@ describe("AiService tracked file review merging", () => {
             previousPath: "src/previous.ts",
         });
     });
+
+    it("recomputes text hunks instead of trusting external diff metadata", () => {
+        const oldText = "alpha\nbeta\ngamma";
+        const newText = "alpha\nBETA\ngamma";
+
+        expect(
+            __testing.diffToAiFileDiff(
+                {
+                    _meta: {
+                        neverwriteHunks: [
+                            {
+                                lines: [
+                                    { text: "alpha", type: "remove" },
+                                    { text: "beta", type: "remove" },
+                                    { text: "gamma", type: "remove" },
+                                    { text: "alpha", type: "add" },
+                                    { text: "BETA", type: "add" },
+                                    { text: "gamma", type: "add" },
+                                ],
+                                newCount: 3,
+                                newStart: 1,
+                                oldCount: 3,
+                                oldStart: 1,
+                                visualEndLine: 3,
+                                visualStartLine: 1,
+                            },
+                        ],
+                    },
+                    newText,
+                    oldText,
+                    path: "notes/example.md",
+                } as never,
+                "edit",
+            ).hunks,
+        ).toEqual(
+            __testing.computeDiffHunks(oldText, newText, "notes/example.md"),
+        );
+    });
 });

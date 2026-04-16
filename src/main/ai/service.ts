@@ -26,7 +26,6 @@ import {
     type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 import type {
-    AiDiffHunk,
     AiFileDiff,
     AiImageAttachment,
     AiPermissionRequest,
@@ -106,7 +105,6 @@ import {
     resolveKiloRuntime,
 } from "./kilo/setup";
 
-const NEVERWRITE_DIFF_HUNKS_KEY = "neverwriteHunks";
 const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
 const NEVERWRITE_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
 const NEVERWRITE_USER_INPUT_EVENT_TYPE = "user_input_request";
@@ -3189,7 +3187,7 @@ function diffToAiFileDiff(
     const newText = normalizeNewText(kind, diff.newText ?? null);
 
     return {
-        hunks: readDiffHunks(diff._meta, path),
+        hunks: computeTextDiffHunks(path, oldText, newText),
         isText: true,
         kind,
         newText,
@@ -3210,17 +3208,6 @@ function diffToTrackedFile(
         candidatePath,
 ): AiTrackedFile {
     const fileDiff = diffToAiFileDiff(diff, toolKind, normalizePath);
-    const hunks =
-        fileDiff.hunks.length > 0
-            ? fileDiff.hunks
-            : fileDiff.isText &&
-                (fileDiff.oldText !== null || fileDiff.newText !== null)
-              ? computeDiffHunks(
-                    fileDiff.oldText ?? "",
-                    fileDiff.newText ?? "",
-                    fileDiff.path,
-                )
-              : [];
 
     return syncTrackedFile({
         identityKey: fileDiff.previousPath
@@ -3228,7 +3215,7 @@ function diffToTrackedFile(
             : fileDiff.path,
         currentText: fileDiff.newText ?? "",
         diffBase: fileDiff.oldText ?? "",
-        hunks,
+        hunks: fileDiff.hunks,
         isText: true,
         kind: fileDiff.kind,
         newText: fileDiff.newText,
@@ -3286,6 +3273,18 @@ function normalizeNewText(
     }
 
     return value ?? "";
+}
+
+function computeTextDiffHunks(
+    path: string,
+    oldText: string | null,
+    newText: string | null,
+) {
+    if (oldText === null && newText === null) {
+        return [];
+    }
+
+    return computeDiffHunks(oldText ?? "", newText ?? "", path);
 }
 
 function isDiffReversible(
@@ -3452,92 +3451,6 @@ function readDiffMetaString(meta: unknown, key: string): string | null {
 
     const value = meta[key];
     return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function readDiffHunks(meta: unknown, seed: string): readonly AiDiffHunk[] {
-    if (!isRecord(meta) || !Array.isArray(meta[NEVERWRITE_DIFF_HUNKS_KEY])) {
-        return [];
-    }
-
-    return meta[NEVERWRITE_DIFF_HUNKS_KEY].map((hunk, index) =>
-        parseDiffHunk(hunk, `${seed}:${index}`),
-    ).filter((hunk): hunk is NonNullable<typeof hunk> => Boolean(hunk));
-}
-
-function parseDiffHunk(value: unknown, seed: string): AiDiffHunk | null {
-    if (!isRecord(value) || !Array.isArray(value.lines)) {
-        return null;
-    }
-
-    const lines = value.lines
-        .map((line, lineIndex) => {
-            if (!isRecord(line) || typeof line.text !== "string") {
-                return null;
-            }
-            if (
-                line.type !== "add" &&
-                line.type !== "context" &&
-                line.type !== "remove"
-            ) {
-                return null;
-            }
-
-            const lineType: "add" | "context" | "remove" = line.type;
-
-            return {
-                id:
-                    typeof line.id === "string"
-                        ? line.id
-                        : `line:${seed}:${lineIndex}`,
-                text: line.text,
-                type: lineType,
-            };
-        })
-        .filter((line): line is NonNullable<typeof line> => Boolean(line));
-    if (lines.length === 0) {
-        return null;
-    }
-
-    return {
-        id: seed,
-        lines,
-        newCount:
-            typeof value.newCount === "number"
-                ? value.newCount
-                : typeof value.new_count === "number"
-                  ? value.new_count
-                  : 0,
-        newStart:
-            typeof value.newStart === "number"
-                ? value.newStart
-                : typeof value.new_start === "number"
-                  ? value.new_start
-                  : 1,
-        oldCount:
-            typeof value.oldCount === "number"
-                ? value.oldCount
-                : typeof value.old_count === "number"
-                  ? value.old_count
-                  : 0,
-        oldStart:
-            typeof value.oldStart === "number"
-                ? value.oldStart
-                : typeof value.old_start === "number"
-                  ? value.old_start
-                  : 1,
-        visualEndLine:
-            typeof value.visualEndLine === "number"
-                ? value.visualEndLine
-                : typeof value.visual_end_line === "number"
-                  ? value.visual_end_line
-                  : undefined,
-        visualStartLine:
-            typeof value.visualStartLine === "number"
-                ? value.visualStartLine
-                : typeof value.visual_start_line === "number"
-                  ? value.visual_start_line
-                  : undefined,
-    };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

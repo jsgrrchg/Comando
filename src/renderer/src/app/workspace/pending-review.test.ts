@@ -160,6 +160,93 @@ describe("pending review helpers", () => {
                     snapshot: { trackedFiles: [pending] },
                 },
             }),
-        ).toEqual([pending]);
+        ).toEqual([
+            {
+                ...pending,
+                hunks: [
+                    {
+                        id: "src/pending.ts:1:1:0",
+                        lines: [
+                            {
+                                id: "line:src/pending.ts:1:1:0",
+                                text: "const next = false;",
+                                type: "remove",
+                            },
+                            {
+                                id: "line:src/pending.ts:1:1:1",
+                                text: "const next = true;",
+                                type: "add",
+                            },
+                        ],
+                        newCount: 1,
+                        newStart: 1,
+                        oldCount: 1,
+                        oldStart: 1,
+                        visualEndLine: 1,
+                        visualStartLine: 1,
+                    },
+                ],
+            },
+        ]);
+    });
+
+    it("recomputes stale pending hunks before exposing them to the UI", () => {
+        const stale = createTrackedFile({
+            currentText: "alpha\nBETA\ngamma",
+            diffBase: "alpha\nbeta\ngamma",
+            hunks: [
+                {
+                    id: "stale-hunk",
+                    lines: [
+                        { id: "1", text: "alpha", type: "remove" },
+                        { id: "2", text: "beta", type: "remove" },
+                        { id: "3", text: "gamma", type: "remove" },
+                        { id: "4", text: "alpha", type: "add" },
+                        { id: "5", text: "BETA", type: "add" },
+                        { id: "6", text: "gamma", type: "add" },
+                    ],
+                    newCount: 3,
+                    newStart: 1,
+                    oldCount: 3,
+                    oldStart: 1,
+                    visualEndLine: 3,
+                    visualStartLine: 1,
+                },
+            ],
+            newText: "alpha\nBETA\ngamma",
+            oldText: "alpha\nbeta\ngamma",
+            path: "src/stale.ts",
+            sessionId: "session-stale",
+        });
+
+        expect(
+            collectPendingTrackedFilesFromSessions({
+                "session-stale": {
+                    snapshot: { trackedFiles: [stale] },
+                },
+            })[0]?.hunks,
+        ).toEqual([
+            {
+                id: "src/stale.ts:2:2:0",
+                lines: [
+                    {
+                        id: "line:src/stale.ts:2:2:0",
+                        text: "beta",
+                        type: "remove",
+                    },
+                    {
+                        id: "line:src/stale.ts:2:2:1",
+                        text: "BETA",
+                        type: "add",
+                    },
+                ],
+                newCount: 1,
+                newStart: 2,
+                oldCount: 1,
+                oldStart: 2,
+                visualEndLine: 2,
+                visualStartLine: 2,
+            },
+        ]);
     });
 });

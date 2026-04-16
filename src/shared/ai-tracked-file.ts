@@ -126,23 +126,13 @@ function buildTrackedFile(
         options.kind ??
         inferTrackedFileKindFromTexts(previousPath, oldText, newText);
     const canRecompute = kind === "create" || oldText !== null;
-    const shouldReuseExistingHunks =
-        options.currentText === undefined &&
-        options.diffBase === undefined &&
-        options.kind === undefined &&
-        options.newText === undefined &&
-        options.oldText === undefined &&
-        options.path === undefined &&
-        file.hunks.length > 0;
 
     return {
         ...file,
         currentText,
         diffBase,
         hunks: canRecompute
-            ? shouldReuseExistingHunks
-                ? [...file.hunks]
-                : computeDiffHunks(diffBase, currentText, path)
+            ? computeDiffHunks(diffBase, currentText, path)
             : [...file.hunks],
         identityKey: options.identityKey ?? file.identityKey,
         kind,
@@ -418,11 +408,6 @@ export function computeDiffHunks(
     const oldLines = splitTextLines(oldText);
     const newLines = splitTextLines(newText);
     const maxVisualLine = Math.max(newLines.length, 1);
-    const maxMatrixCells = 400_000;
-
-    if (oldLines.length * newLines.length > maxMatrixCells) {
-        return buildSingleHunk(seed, oldLines, newLines);
-    }
 
     const matrix = Array.from(
         { length: oldLines.length + 1 },
@@ -545,45 +530,4 @@ export function computeDiffHunks(
 
     flushPending();
     return hunks;
-}
-
-function buildSingleHunk(
-    seed: string,
-    oldLines: readonly string[],
-    newLines: readonly string[],
-): readonly AiDiffHunk[] {
-    const lines = [
-        ...oldLines.map((text, index) => ({
-            id: `line:${seed}:remove:${index}`,
-            text,
-            type: "remove" as const,
-        })),
-        ...newLines.map((text, index) => ({
-            id: `line:${seed}:add:${index}`,
-            text,
-            type: "add" as const,
-        })),
-    ];
-    if (lines.length === 0) {
-        return [];
-    }
-
-    const visualRange = buildVisualLineRange(
-        1,
-        newLines.length,
-        newLines.length,
-    );
-
-    return [
-        {
-            id: `${seed}:1:1:0`,
-            lines,
-            newCount: newLines.length,
-            newStart: 1,
-            oldCount: oldLines.length,
-            oldStart: 1,
-            visualEndLine: visualRange.endLine,
-            visualStartLine: visualRange.startLine,
-        },
-    ];
 }

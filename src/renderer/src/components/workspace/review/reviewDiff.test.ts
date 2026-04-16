@@ -118,7 +118,7 @@ describe("reviewDiff", () => {
         ]);
     });
 
-    it("falls back to large-file previews and marks stats as approximate", () => {
+    it("computes exact diffs beyond the previous large-file preview threshold", () => {
         const oldText = buildLineText("old", 710);
         const newText = buildLineText("new", 710);
         const diff = createDiff({
@@ -128,15 +128,18 @@ describe("reviewDiff", () => {
 
         const lines = computeDiffLines(diff);
         const stats = computeFileDiffStats(diff);
-        const lastLine = lines[lines.length - 1];
 
-        expect(lastLine).toBeDefined();
-        expect(lastLine?.type).toBe("separator");
-        expect(lastLine?.text).toContain("large file preview");
+        expect(
+            lines.some((line) => line.text.includes("large file preview")),
+        ).toBe(false);
+        expect(lines.filter((line) => line.type === "add")).toHaveLength(710);
+        expect(lines.filter((line) => line.type === "remove")).toHaveLength(
+            710,
+        );
+        expect(stats.approximate).not.toBe(true);
         expect(stats).toEqual(
             expect.objectContaining({
                 additions: 710,
-                approximate: true,
                 deletions: 710,
             }),
         );
