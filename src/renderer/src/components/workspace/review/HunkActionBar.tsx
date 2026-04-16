@@ -25,9 +25,9 @@ const BAR_STYLE: CSSProperties = {
     boxShadow: "0 6px 16px rgb(0 0 0 / 0.12)",
     display: "flex",
     gap: 4,
-    left: 8,
     padding: 3,
     position: "absolute",
+    right: 8,
     top: -12,
     zIndex: 3,
 };

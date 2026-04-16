@@ -115,6 +115,22 @@ describe("EditedFileDiffPreview", () => {
         expect(markup).not.toContain("Accept hunk 1");
     });
 
+    it("positions inline hunk actions on the right edge", () => {
+        const markup = renderToStaticMarkup(
+            <EditedFileDiffPreview
+                diff={createDiff()}
+                diffZoom={0.72}
+                expanded
+                file={createTrackedFile()}
+                onKeepHunk={() => {}}
+                onRejectHunk={() => {}}
+            />,
+        );
+
+        expect(markup).toContain("right:8px");
+        expect(markup).not.toContain("left:8px");
+    });
+
     it("disables wrapping for code files by default", () => {
         const markup = renderToStaticMarkup(
             <EditedFileDiffPreview
