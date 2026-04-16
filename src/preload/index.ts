@@ -82,6 +82,45 @@ window.addEventListener("DOMContentLoaded", () => {
     document.documentElement?.setAttribute("data-comando-preload", "ready");
 });
 
+const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
+let aiSessionSnapshotPort: MessagePort | null = null;
+
+function notifyAiSessionSnapshotListeners(update: AiSessionUpdate): void {
+    for (const listener of aiSessionSnapshotListeners) {
+        listener(update);
+    }
+}
+
+function bindAiSessionSnapshotPort(port: MessagePort): void {
+    aiSessionSnapshotPort?.close();
+    aiSessionSnapshotPort = port;
+    aiSessionSnapshotPort.onmessage = (event) => {
+        notifyAiSessionSnapshotListeners(event.data as AiSessionUpdate);
+    };
+    aiSessionSnapshotPort.start();
+}
+
+function handleAiSessionSnapshotFallback(
+    _event: Electron.IpcRendererEvent,
+    update: AiSessionUpdate,
+): void {
+    notifyAiSessionSnapshotListeners(update);
+}
+
+ipcRenderer.on(IPC_EVENTS.aiSessionStreamPort, (event) => {
+    const [port] = event.ports;
+    if (!port) {
+        return;
+    }
+
+    bindAiSessionSnapshotPort(port);
+});
+
+window.addEventListener("beforeunload", () => {
+    aiSessionSnapshotPort?.close();
+    aiSessionSnapshotPort = null;
+});
+
 const comandoApi: ComandoApi = {
     getBootstrapSnapshot: () =>
         ipcRenderer.invoke(
@@ -499,20 +538,24 @@ const comandoApi: ComandoApi = {
         };
     },
     onAiSessionSnapshot: (listener) => {
-        const handleEvent = (
-            _event: Electron.IpcRendererEvent,
-            update: AiSessionUpdate,
-        ) => {
-            listener(update);
-        };
+        if (aiSessionSnapshotListeners.size === 0) {
+            ipcRenderer.on(
+                IPC_EVENTS.aiSessionSnapshot,
+                handleAiSessionSnapshotFallback,
+            );
+        }
 
-        ipcRenderer.on(IPC_EVENTS.aiSessionSnapshot, handleEvent);
+        aiSessionSnapshotListeners.add(listener);
 
         return () => {
-            ipcRenderer.removeListener(
-                IPC_EVENTS.aiSessionSnapshot,
-                handleEvent,
-            );
+            aiSessionSnapshotListeners.delete(listener);
+
+            if (aiSessionSnapshotListeners.size === 0) {
+                ipcRenderer.removeListener(
+                    IPC_EVENTS.aiSessionSnapshot,
+                    handleAiSessionSnapshotFallback,
+                );
+            }
         };
     },
 };

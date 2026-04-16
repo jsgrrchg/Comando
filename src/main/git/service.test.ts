@@ -128,6 +128,64 @@ describe("GitService", () => {
         expect(untrackedDiff.raw).toContain("diff --git");
     });
 
+    it("lists remotes and collects staged and unstaged diff stats", async () => {
+        const rootPath = createGitRepositoryFixture();
+        const remotePath = createGitRepositoryFixture();
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        git(remotePath, ["init", "--bare"]);
+
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        fs.writeFileSync(path.join(rootPath, "notes.txt"), "note\n");
+        git(rootPath, ["add", "."]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+        git(rootPath, ["remote", "add", "origin", remotePath]);
+        git(rootPath, ["push", "-u", "origin", "main"]);
+
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\nworld\n");
+        git(rootPath, ["add", "README.md"]);
+        fs.writeFileSync(path.join(rootPath, "notes.txt"), "note\nextra\n");
+
+        const service = new GitService({ cacheSnapshots: false });
+        const remotes = await service.listRemotes(
+            rootPath,
+            "origin/main",
+            2,
+            1,
+        );
+        const diffStats = await service.getDiffStats(rootPath);
+        const statsByKey = new Map(
+            diffStats.map((entry) => [
+                entry.key,
+                {
+                    additions: entry.additions,
+                    deletions: entry.deletions,
+                },
+            ]),
+        );
+
+        expect(remotes).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    aheadBy: 2,
+                    behindBy: 1,
+                    isDefault: true,
+                    name: "origin",
+                }),
+            ]),
+        );
+        expect(statsByKey.get("staged:README.md")).toMatchObject({
+            additions: 1,
+            deletions: 0,
+        });
+        expect(statsByKey.get("unstaged:notes.txt")).toMatchObject({
+            additions: 1,
+            deletions: 0,
+        });
+    });
+
     it("lists history and commit details", async () => {
         const rootPath = createGitRepositoryFixture();
 

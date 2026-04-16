@@ -2,10 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { simpleGit } from "simple-git";
+import type { GitRemoteSummary } from "@shared/ipc";
 
 import type {
     GitBranchSummary,
     GitCommitDetail,
+    GitDiffStatRecord,
     GitFileDiff,
     GitFileDiffOptions,
     GitHistoryCommitSummary,
@@ -18,6 +20,7 @@ import type {
     GitWorktreeSummary,
 } from "./types";
 
+import { mainProcessPerformance } from "../observability/performance";
 import { buildGitStatusSnapshot, createEmptyGitScopeCounts } from "./status";
 import {
     buildBranchWorktreeMap,
@@ -32,7 +35,113 @@ export interface GitServiceOptions {
     readonly cacheSnapshots?: boolean;
 }
 
-export class GitService {
+export interface GitGateway {
+    resolveRepository(inputPath: string): Promise<GitRepositoryResolution>;
+    getRepositorySnapshot(inputPath: string): Promise<GitRepositorySnapshot>;
+    getStatus(inputPath: string): Promise<GitStatusSnapshot>;
+    getSyncStatus(inputPath: string): Promise<GitSyncStatus | null>;
+    listWorktrees(inputPath: string): Promise<readonly GitWorktreeSummary[]>;
+    listBranches(
+        inputPath: string,
+        options?: GitListBranchesOptions,
+    ): Promise<readonly GitBranchSummary[]>;
+    getFileDiff(
+        inputPath: string,
+        relativePath: string,
+        options?: GitFileDiffOptions,
+    ): Promise<GitFileDiff>;
+    listHistory(
+        inputPath: string,
+        options?: GitListHistoryOptions,
+    ): Promise<readonly GitHistoryCommitSummary[]>;
+    getCommitDetail(
+        inputPath: string,
+        commitSha: string,
+    ): Promise<GitCommitDetail>;
+    stagePaths(
+        inputPath: string,
+        relativePaths: readonly string[],
+    ): Promise<GitRepositorySnapshot>;
+    unstagePaths(
+        inputPath: string,
+        relativePaths: readonly string[],
+    ): Promise<GitRepositorySnapshot>;
+    discardPaths(
+        inputPath: string,
+        relativePaths: readonly string[],
+    ): Promise<GitRepositorySnapshot>;
+    commit(
+        inputPath: string,
+        message: string,
+        options?: {
+            readonly amend?: boolean;
+            readonly noVerify?: boolean;
+        },
+    ): Promise<{
+        readonly commitSha: string;
+        readonly snapshot: GitRepositorySnapshot;
+    }>;
+    checkoutBranch(
+        inputPath: string,
+        options: {
+            readonly branchName: string;
+            readonly force?: boolean;
+            readonly newBranchName?: string | null;
+            readonly startPoint?: string | null;
+        },
+    ): Promise<GitRepositorySnapshot>;
+    createWorktree(
+        inputPath: string,
+        options: {
+            readonly branchName: string;
+            readonly force?: boolean;
+            readonly path: string;
+            readonly startPoint?: string | null;
+        },
+    ): Promise<GitRepositorySnapshot>;
+    removeWorktree(
+        inputPath: string,
+        options: {
+            readonly force?: boolean;
+            readonly path: string;
+        },
+    ): Promise<GitRepositorySnapshot>;
+    fetch(
+        inputPath: string,
+        options?: {
+            readonly prune?: boolean;
+            readonly remoteName?: string | null;
+        },
+    ): Promise<GitRepositorySnapshot>;
+    pull(
+        inputPath: string,
+        options?: {
+            readonly rebase?: boolean;
+            readonly remoteName?: string | null;
+            readonly remoteRef?: string | null;
+        },
+    ): Promise<GitRepositorySnapshot>;
+    push(
+        inputPath: string,
+        options?: {
+            readonly force?: boolean;
+            readonly remoteName?: string | null;
+            readonly remoteRef?: string | null;
+            readonly setUpstream?: boolean;
+        },
+    ): Promise<GitRepositorySnapshot>;
+    listRemotes(
+        inputPath: string,
+        trackingBranchName: string | null,
+        aheadBy: number,
+        behindBy: number,
+    ): Promise<readonly GitRemoteSummary[]>;
+    getDiffStats(inputPath: string): Promise<readonly GitDiffStatRecord[]>;
+    invalidate(inputPath?: string): void;
+    clear(): void;
+}
+
+export class GitService implements GitGateway {
     readonly #cacheSnapshots: boolean;
     readonly #snapshotCache = new Map<string, GitRepositorySnapshot>();
     readonly #resolutionCache = new Map<string, GitRepositoryResolution>();
@@ -62,59 +171,80 @@ export class GitService {
         inputPath: string,
     ): Promise<GitRepositorySnapshot> {
         const normalizedPath = path.resolve(inputPath);
-        const cachedSnapshot = this.#snapshotCache.get(normalizedPath);
-        if (cachedSnapshot) {
-            return cachedSnapshot;
-        }
+        const cacheState = this.#snapshotCache.has(normalizedPath)
+            ? "hit"
+            : "miss";
 
-        const resolution = await this.resolveRepository(normalizedPath);
-        if (resolution.state !== "ready" || !resolution.canonicalRootPath) {
-            const snapshot = {
-                branches: [],
-                fetchedAt: new Date().toISOString(),
-                resolution,
-                status: {
-                    counts: createEmptyGitScopeCounts(),
-                    entries: [],
-                    hasConflicts: false,
-                    hasStaged: false,
-                    hasUnstaged: false,
-                    hasUntracked: false,
-                    isClean: true,
-                    sync: null,
-                    tree: [],
-                } satisfies GitStatusSnapshot,
-                worktrees: [],
-            } satisfies GitRepositorySnapshot;
+        return mainProcessPerformance.measureAsync(
+            "git.getRepositorySnapshot",
+            async () => {
+                const cachedSnapshot = this.#snapshotCache.get(normalizedPath);
+                if (cachedSnapshot) {
+                    return cachedSnapshot;
+                }
 
-            if (this.#cacheSnapshots) {
-                this.#snapshotCache.set(normalizedPath, snapshot);
-            }
+                const resolution = await this.resolveRepository(normalizedPath);
+                if (
+                    resolution.state !== "ready" ||
+                    !resolution.canonicalRootPath
+                ) {
+                    const snapshot = {
+                        branches: [],
+                        fetchedAt: new Date().toISOString(),
+                        resolution,
+                        status: {
+                            counts: createEmptyGitScopeCounts(),
+                            entries: [],
+                            hasConflicts: false,
+                            hasStaged: false,
+                            hasUnstaged: false,
+                            hasUntracked: false,
+                            isClean: true,
+                            sync: null,
+                            tree: [],
+                        } satisfies GitStatusSnapshot,
+                        worktrees: [],
+                    } satisfies GitRepositorySnapshot;
 
-            return snapshot;
-        }
+                    if (this.#cacheSnapshots) {
+                        this.#snapshotCache.set(normalizedPath, snapshot);
+                    }
 
-        const rootPath = resolution.canonicalRootPath;
-        const [worktrees, status, branchWorktreeMap] = await Promise.all([
-            listGitWorktrees(rootPath, rootPath),
-            this.getStatus(rootPath),
-            buildBranchWorktreeMap(rootPath),
-        ]);
-        const branches = await listGitBranches(rootPath, {}, branchWorktreeMap);
+                    return snapshot;
+                }
 
-        const snapshot = {
-            branches,
-            fetchedAt: new Date().toISOString(),
-            resolution,
-            status,
-            worktrees,
-        } satisfies GitRepositorySnapshot;
+                const rootPath = resolution.canonicalRootPath;
+                const [worktrees, status, branchWorktreeMap] =
+                    await Promise.all([
+                        listGitWorktrees(rootPath, rootPath),
+                        this.getStatus(rootPath),
+                        buildBranchWorktreeMap(rootPath),
+                    ]);
+                const branches = await listGitBranches(
+                    rootPath,
+                    {},
+                    branchWorktreeMap,
+                );
 
-        if (this.#cacheSnapshots) {
-            this.#snapshotCache.set(normalizedPath, snapshot);
-        }
+                const snapshot = {
+                    branches,
+                    fetchedAt: new Date().toISOString(),
+                    resolution,
+                    status,
+                    worktrees,
+                } satisfies GitRepositorySnapshot;
 
-        return snapshot;
+                if (this.#cacheSnapshots) {
+                    this.#snapshotCache.set(normalizedPath, snapshot);
+                }
+
+                return snapshot;
+            },
+            {
+                cache: cacheState,
+                inputPath: normalizedPath,
+            },
+        );
     }
 
     async getStatus(inputPath: string): Promise<GitStatusSnapshot> {
@@ -181,6 +311,75 @@ export class GitService {
             options,
             worktreeMap,
         );
+    }
+
+    async listRemotes(
+        inputPath: string,
+        trackingBranchName: string | null,
+        aheadBy: number,
+        behindBy: number,
+    ): Promise<readonly GitRemoteSummary[]> {
+        const resolution = await this.resolveRepository(inputPath);
+        if (resolution.state !== "ready" || !resolution.canonicalRootPath) {
+            return [];
+        }
+
+        try {
+            const git = createBackgroundSafeGit(resolution.canonicalRootPath);
+            const remotes = await git.getRemotes(true);
+            const defaultRemoteName =
+                extractRemoteName(trackingBranchName) ??
+                (remotes.some((remote) => remote.name === "origin")
+                    ? "origin"
+                    : (remotes[0]?.name ?? null));
+
+            return remotes.map((remote) => ({
+                aheadBy: remote.name === defaultRemoteName ? aheadBy : 0,
+                behindBy: remote.name === defaultRemoteName ? behindBy : 0,
+                fetchUrl:
+                    typeof remote.refs.fetch === "string"
+                        ? remote.refs.fetch
+                        : null,
+                isDefault: remote.name === defaultRemoteName,
+                name: remote.name,
+                pushUrl:
+                    typeof remote.refs.push === "string"
+                        ? remote.refs.push
+                        : null,
+                refName:
+                    remote.name === defaultRemoteName
+                        ? trackingBranchName
+                        : null,
+            }));
+        } catch {
+            return [];
+        }
+    }
+
+    async getDiffStats(
+        inputPath: string,
+    ): Promise<readonly GitDiffStatRecord[]> {
+        const resolution = await this.resolveRepository(inputPath);
+        if (resolution.state !== "ready" || !resolution.canonicalRootPath) {
+            return [];
+        }
+
+        const stats: GitDiffStatRecord[] = [];
+        const git = createBackgroundSafeGit(resolution.canonicalRootPath);
+
+        try {
+            const [unstaged, staged] = await Promise.all([
+                git.diff(["--numstat"]),
+                git.diff(["--cached", "--numstat"]),
+            ]);
+
+            collectNumstatRecords(unstaged, "unstaged", stats);
+            collectNumstatRecords(staged, "staged", stats);
+        } catch {
+            // Diff stats are best-effort metadata for the UI.
+        }
+
+        return stats;
     }
 
     async getFileDiff(
@@ -253,33 +452,43 @@ export class GitService {
         inputPath: string,
         relativePaths: readonly string[],
     ): Promise<GitRepositorySnapshot> {
-        const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
-        const normalizedPaths = normalizeGitPaths(relativePaths);
+        return mainProcessPerformance.measureAsync(
+            "git.discardPaths",
+            async () => {
+                const rootPath =
+                    await this.#requireReadyRepositoryRoot(inputPath);
+                const git = simpleGit(rootPath);
+                const normalizedPaths = normalizeGitPaths(relativePaths);
 
-        for (const relativePath of normalizedPaths) {
-            const status = await git.raw([
-                "status",
-                "--porcelain=v1",
-                "--",
-                relativePath,
-            ]);
-            const firstLine = status.trim().split("\n")[0] ?? "";
-            const absolutePath = path.join(rootPath, relativePath);
+                for (const relativePath of normalizedPaths) {
+                    const status = await git.raw([
+                        "status",
+                        "--porcelain=v1",
+                        "--",
+                        relativePath,
+                    ]);
+                    const firstLine = status.trim().split("\n")[0] ?? "";
+                    const absolutePath = path.join(rootPath, relativePath);
 
-            if (firstLine.startsWith("??")) {
-                await fs.promises.rm(absolutePath, {
-                    force: true,
-                    recursive: true,
-                });
-                continue;
-            }
+                    if (firstLine.startsWith("??")) {
+                        await fs.promises.rm(absolutePath, {
+                            force: true,
+                            recursive: true,
+                        });
+                        continue;
+                    }
 
-            await git.raw(["restore", "--", relativePath]);
-        }
+                    await git.raw(["restore", "--", relativePath]);
+                }
 
-        this.invalidate(inputPath);
-        return this.getRepositorySnapshot(inputPath);
+                this.invalidate(inputPath);
+                return this.getRepositorySnapshot(inputPath);
+            },
+            {
+                inputPath: path.resolve(inputPath),
+                pathCount: relativePaths.length,
+            },
+        );
     }
 
     async commit(
@@ -565,6 +774,50 @@ async function readGitConfig(
 
 function normalizeGitPaths(paths: readonly string[]): string[] {
     return paths.map((filePath) => filePath.split(path.sep).join("/"));
+}
+
+function extractRemoteName(trackingBranchName: string | null): string | null {
+    if (!trackingBranchName) {
+        return null;
+    }
+
+    const [remoteName] = trackingBranchName.split("/", 1);
+    return remoteName || null;
+}
+
+function collectNumstatRecords(
+    raw: string,
+    scope: string,
+    records: GitDiffStatRecord[],
+): void {
+    for (const line of raw.split("\n")) {
+        if (!line.trim()) {
+            continue;
+        }
+
+        const parts = line.split("\t");
+        if (parts.length < 3) {
+            continue;
+        }
+
+        const [additionsRaw, deletionsRaw, filePath] = parts;
+        if (additionsRaw === "-" || deletionsRaw === "-") {
+            continue;
+        }
+
+        const additions = Number.parseInt(additionsRaw, 10);
+        const deletions = Number.parseInt(deletionsRaw, 10);
+
+        if (Number.isNaN(additions) || Number.isNaN(deletions)) {
+            continue;
+        }
+
+        records.push({
+            additions,
+            deletions,
+            key: `${scope}:${filePath}`,
+        });
+    }
 }
 
 function createBackgroundSafeGit(rootPath: string) {

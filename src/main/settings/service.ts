@@ -151,6 +151,27 @@ interface SettingRow {
     readonly value: string;
 }
 
+export interface SettingsGateway {
+    loadSnapshot(): SettingsSnapshot;
+    saveSnapshot(snapshot: SettingsSnapshot): void;
+    loadAppAppearanceSettings(): AppAppearanceSettings;
+    saveAppAppearanceSettings(settings: AppAppearanceSettings): void;
+    loadAppEditorSettings(): AppEditorSettings;
+    saveAppEditorSettings(settings: AppEditorSettings): void;
+    loadAiChatSettings(): AppAiChatSettings;
+    saveAiChatSettings(settings: AppAiChatSettings): void;
+    loadProjectSettings(projectId: string): ProjectSettingsSnapshot | null;
+    saveProjectSettings(snapshot: ProjectSettingsSnapshot): void;
+    loadCodexRuntimeSettings(): CodexRuntimeSettings;
+    saveCodexRuntimeSettings(settings: CodexRuntimeSettings): void;
+    loadClaudeRuntimeSettings(): ClaudeRuntimeSettings;
+    saveClaudeRuntimeSettings(settings: ClaudeRuntimeSettings): void;
+    loadGeminiRuntimeSettings(): GeminiRuntimeSettings;
+    saveGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void;
+    loadKiloRuntimeSettings(): KiloRuntimeSettings;
+    saveKiloRuntimeSettings(settings: KiloRuntimeSettings): void;
+}
+
 export class SettingsService {
     readonly #connection: Database.Database;
 

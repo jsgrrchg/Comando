@@ -1,65 +1,33 @@
-import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-
-import type Database from "better-sqlite3";
-import { simpleGit } from "simple-git";
 
 import type {
     CreateProjectEntryInput,
     DeleteProjectEntryInput,
-    GitStatusBadge,
     ListProjectTreeInput,
     OpenProjectFileInput,
     ProjectEntryMutationResult,
     ProjectFileDocument,
     ProjectSummary,
-    ProjectTreeNode,
     ProjectTreeInvalidation,
+    ProjectTreeNode,
     RenameProjectEntryInput,
     SaveProjectFileInput,
     SearchProjectEntriesInput,
 } from "@shared/ipc";
+import { normalizeProjectSearchQuery } from "@shared/project-search";
+
+import { mainProcessPerformance } from "../observability/performance";
+import { logWorkerClientCallFailure } from "../workers/supervisor";
+import type { ProjectStore, ProjectStoreWorktreeRecord } from "./store";
 import {
-    compactProjectSearchValue,
-    getProjectSearchDepth,
-    normalizeProjectSearchQuery,
-    scoreProjectSearchCandidate,
-    type ProjectSearchCandidate,
-} from "@shared/project-search";
-
+    createLocalProjectWorkerClient,
+    type ProjectWorkerGateway,
+} from "./client";
 import {
-    createProjectEntry,
-    deleteProjectEntry,
-    listProjectTreeChildren,
-    normalizeRelativePath,
-    readProjectFile,
-    renameProjectEntry,
-    resolveProjectPath,
-    writeProjectFile,
-} from "./tree";
-import { shouldIgnoreEntry } from "./ignore";
-
-interface PersistedProjectRow {
-    readonly is_hidden?: number;
-    readonly id: string;
-    readonly name: string;
-    readonly canonical_root_path: string;
-    readonly created_at: string;
-    readonly updated_at: string;
-    readonly last_opened_at: string | null;
-}
-
-interface PersistedProjectWorktreeRow {
-    readonly branch_name: string | null;
-    readonly head_sha: string | null;
-    readonly id: string;
-    readonly is_primary: number;
-    readonly project_id: string;
-    readonly root_path: string;
-    readonly updated_at: string;
-}
+    type ProjectRuntimeRegistrySnapshot,
+    shouldIgnoreProjectWatchPath,
+} from "./runtime";
+import { resolveProjectPath } from "./tree";
 
 interface ResolvedProjectScope {
     readonly canonicalRootPath: string;
@@ -68,355 +36,131 @@ interface ResolvedProjectScope {
     readonly worktreeId: string | null;
 }
 
-interface GitSnapshot {
-    readonly changedPaths: readonly string[];
-    readonly exactBadges: ReadonlyMap<string, GitStatusBadge>;
-}
-
-interface PendingProjectInvalidation {
-    readonly relativePaths: ReadonlySet<string> | null;
-    readonly timeout: NodeJS.Timeout;
-}
-
-interface IndexedProjectEntry extends ProjectSearchCandidate {
-    readonly extension: string | null;
-    readonly hasChildren: boolean;
-    readonly kind: ProjectTreeNode["kind"];
-    readonly name: string;
-    readonly parentRelativePath: string | null;
-    readonly relativePath: string;
-}
-
 interface ProjectServiceOptions {
-    readonly connection: Database.Database;
     readonly onProjectTreeInvalidated: (
         payload: ProjectTreeInvalidation,
     ) => void;
     readonly onProjectTouched?: (projectPath: string) => void;
+    readonly store: ProjectStore;
+    readonly worker?: ProjectWorkerGateway;
 }
 
 export class ProjectService {
-    readonly #connection: Database.Database;
+    readonly #indexedRoots = new Set<string>();
+    readonly #onProjectTouched?: (projectPath: string) => void;
     readonly #onProjectTreeInvalidated: (
         payload: ProjectTreeInvalidation,
     ) => void;
-    readonly #onProjectTouched?: (projectPath: string) => void;
-    readonly #watchers = new Map<string, fs.FSWatcher>();
-    readonly #gitSnapshots = new Map<string, GitSnapshot>();
-    readonly #pendingInvalidations = new Map<
-        string,
-        PendingProjectInvalidation
-    >();
-    readonly #searchIndexes = new Map<string, readonly IndexedProjectEntry[]>();
+    readonly #store: ProjectStore;
+    readonly #worker: ProjectWorkerGateway;
+    #pendingWorkerRegistrySync: Promise<void> | null = null;
+    #syncedWorkerRegistryVersion = 0;
+    #workerRegistryVersion = 1;
 
     constructor(options: ProjectServiceOptions) {
-        this.#connection = options.connection;
-        this.#onProjectTreeInvalidated = options.onProjectTreeInvalidated;
         this.#onProjectTouched = options.onProjectTouched;
+        this.#onProjectTreeInvalidated = options.onProjectTreeInvalidated;
+        this.#store = options.store;
+        this.#worker =
+            options.worker ??
+            createLocalProjectWorkerClient({
+                onProjectTreeInvalidated: (payload) => {
+                    this.handleProjectTreeInvalidation(payload);
+                },
+            });
     }
 
     listProjects(): ProjectSummary[] {
-        const rows = this.#connection
-            .prepare<[], PersistedProjectRow>(
-                `
-                SELECT
-                    projects.id,
-                    projects.name,
-                    projects.canonical_root_path,
-                    projects.created_at,
-                    projects.updated_at,
-                    recent_projects.last_opened_at
-                FROM projects
-                LEFT JOIN recent_projects
-                    ON recent_projects.project_id = projects.id
-                WHERE projects.is_hidden = 0
-                ORDER BY
-                    recent_projects.last_opened_at IS NULL,
-                    recent_projects.last_opened_at DESC,
-                    projects.name COLLATE NOCASE ASC
-                `,
-            )
-            .all();
-
-        for (const row of rows) {
-            this.#ensureWatcher(row.id, row.canonical_root_path);
-        }
-
-        return rows.map((row) => ({
-            createdAt: row.created_at,
-            id: row.id,
-            lastOpenedAt: row.last_opened_at,
-            name: row.name,
-            rootPath: row.canonical_root_path,
-            updatedAt: row.updated_at,
-        }));
-    }
-
-    addProjectPaths(projectPaths: readonly string[]): ProjectSummary[] {
-        const insertProject = this.#connection.prepare<
-            [string, string, string, string, string],
-            void
-        >(
-            `
-            INSERT INTO projects (id, name, canonical_root_path, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            `,
-        );
-        const insertRoot = this.#connection.prepare<
-            [string, string, number],
-            void
-        >(
-            `
-            INSERT OR IGNORE INTO project_roots (project_id, root_path, is_primary)
-            VALUES (?, ?, ?)
-            `,
-        );
-        const insertWorktree = this.#connection.prepare<
-            [
-                string,
-                string,
-                string,
-                string | null,
-                string | null,
-                number,
-                string,
-                string,
-            ],
-            void
-        >(
-            `
-            INSERT INTO project_worktrees (
-                id,
-                project_id,
-                root_path,
-                branch_name,
-                head_sha,
-                is_primary,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `,
-        );
-        const touchRecent = this.#connection.prepare<[string, string], void>(
-            `
-            INSERT INTO recent_projects (project_id, last_opened_at)
-            VALUES (?, ?)
-            ON CONFLICT(project_id) DO UPDATE SET
-                last_opened_at = excluded.last_opened_at
-            `,
-        );
-        const findExisting = this.#connection.prepare<
-            [string],
-            { id: string } | undefined
-        >(
-            `
-            SELECT id
-            FROM projects
-            WHERE canonical_root_path = ?
-            `,
-        );
-        const reviveProject = this.#connection.prepare<
-            [string, string, string, string],
-            void
-        >(
-            `
-            UPDATE projects
-            SET name = ?,
-                updated_at = ?,
-                is_hidden = 0
-            WHERE id = ?
-              AND canonical_root_path = ?
-            `,
-        );
-        const findExistingWorktree = this.#connection.prepare<
-            [string],
-            { id: string } | undefined
-        >(
-            `
-            SELECT id
-            FROM project_worktrees
-            WHERE root_path = ?
-            `,
-        );
-
-        const transaction = this.#connection.transaction(
-            (normalizedPaths: readonly string[]) => {
-                for (const normalizedPath of normalizedPaths) {
-                    const projectPathMeta =
-                        resolveProjectPathMetadata(normalizedPath);
-                    const now = new Date().toISOString();
-                    const existing = findExisting.get(
-                        projectPathMeta.canonicalRootPath,
-                    );
-
-                    if (existing) {
-                        reviveProject.run(
-                            path.basename(projectPathMeta.canonicalRootPath),
-                            now,
-                            existing.id,
-                            projectPathMeta.canonicalRootPath,
-                        );
-                        ensureProjectRoots({
-                            canonicalRootPath:
-                                projectPathMeta.canonicalRootPath,
-                            connection: this.#connection,
-                            insertRoot,
-                            projectId: existing.id,
-                            selectedRootPath: projectPathMeta.worktreeRootPath,
-                        });
-                        ensureProjectWorktree({
-                            connection: this.#connection,
-                            findExistingWorktree,
-                            insertWorktree,
-                            now,
-                            projectId: existing.id,
-                            rootPath: projectPathMeta.worktreeRootPath,
-                        });
-                        touchRecent.run(existing.id, now);
-                        this.#onProjectTouched?.(
-                            projectPathMeta.worktreeRootPath,
-                        );
-                        continue;
-                    }
-
-                    const projectId = randomUUID();
-                    insertProject.run(
-                        projectId,
-                        path.basename(projectPathMeta.canonicalRootPath),
-                        projectPathMeta.canonicalRootPath,
-                        now,
-                        now,
-                    );
-                    ensureProjectRoots({
-                        canonicalRootPath: projectPathMeta.canonicalRootPath,
-                        connection: this.#connection,
-                        insertRoot,
-                        projectId,
-                        selectedRootPath: projectPathMeta.worktreeRootPath,
-                    });
-                    insertWorktree.run(
-                        `${projectId}:primary`,
-                        projectId,
-                        projectPathMeta.canonicalRootPath,
-                        null,
-                        null,
-                        1,
-                        now,
-                        now,
-                    );
-                    if (
-                        projectPathMeta.worktreeRootPath !==
-                        projectPathMeta.canonicalRootPath
-                    ) {
-                        ensureProjectWorktree({
-                            connection: this.#connection,
-                            findExistingWorktree,
-                            insertWorktree,
-                            now,
-                            projectId,
-                            rootPath: projectPathMeta.worktreeRootPath,
-                        });
-                    }
-                    touchRecent.run(projectId, now);
-                    this.#onProjectTouched?.(projectPathMeta.worktreeRootPath);
-                }
+        return mainProcessPerformance.measureSync(
+            "db.projects.listProjects",
+            () => {
+                const projects = [...this.#store.listProjects()];
+                this.#scheduleWorkerRegistrySync();
+                return projects;
             },
         );
+    }
 
-        const normalizedPaths = projectPaths
-            .map((projectPath) => path.resolve(projectPath))
-            .filter((projectPath) => {
-                try {
-                    return fs.statSync(projectPath).isDirectory();
-                } catch {
-                    return false;
-                }
-            });
+    async addProjectPaths(
+        projectPaths: readonly string[],
+    ): Promise<ProjectSummary[]> {
+        const result = await this.#store.addProjectPaths(projectPaths);
+        this.#markWorkerRegistryDirty();
+        await this.#ensureWorkerRegistry();
 
-        transaction(normalizedPaths);
-        return this.listProjects();
+        for (const rootPath of result.touchedRootPaths) {
+            this.#onProjectTouched?.(rootPath);
+        }
+
+        return [...result.projects];
     }
 
     removeProject(projectId: string): void {
-        this.#closeWatcher(projectId);
-        for (const worktree of this.listProjectWorktrees(projectId)) {
-            this.#gitSnapshots.delete(worktree.rootPath);
-            this.#invalidateProjectSearchIndex(worktree.rootPath);
+        const rootPaths = this.listProjectWorktrees(projectId).map(
+            (worktree) => worktree.rootPath,
+        );
+        rootPaths.push(this.#getProjectById(projectId).rootPath);
+        for (const rootPath of rootPaths) {
+            this.#indexedRoots.delete(normalizeRootPath(rootPath));
         }
 
-        this.#connection
-            .prepare<[string], void>(
-                `
-                UPDATE projects
-                SET is_hidden = 1
-                WHERE id = ?
-                `,
-            )
-            .run(projectId);
-        this.#connection
-            .prepare<
-                [string],
-                void
-            >("DELETE FROM recent_projects WHERE project_id = ?")
-            .run(projectId);
+        this.#markWorkerRegistryDirty();
+        void this.#worker.removeProject(projectId).catch((error) => {
+            logProjectWorkerError("removeProject", error);
+        });
+        void this.#store.removeProject(projectId);
     }
 
     touchProject(projectId: string): void {
-        const now = new Date().toISOString();
         const project = this.#getProjectById(projectId);
-
-        this.#connection
-            .prepare<[string, string], void>(
-                `
-                INSERT INTO recent_projects (project_id, last_opened_at)
-                VALUES (?, ?)
-                ON CONFLICT(project_id) DO UPDATE SET
-                    last_opened_at = excluded.last_opened_at
-                `,
-            )
-            .run(projectId, now);
-
-        this.#connection
-            .prepare<
-                [string, string],
-                void
-            >("UPDATE projects SET updated_at = ? WHERE id = ?")
-            .run(now, projectId);
+        void this.#store.touchProject(projectId);
         this.#onProjectTouched?.(project.rootPath);
     }
 
     async listProjectTreeChildren(
         input: ListProjectTreeInput,
     ): Promise<ProjectTreeNode[]> {
+        await this.#ensureWorkerRegistry();
         const project = this.#resolveProjectScope(
             input.projectId,
             input.worktreeId ?? null,
         );
-        this.#ensureWatcher(project.id, project.rootPath);
-        const gitSnapshot = await this.#getGitSnapshot(project.rootPath);
 
-        return listProjectTreeChildren({
-            gitSnapshot,
-            parentRelativePath: input.parentRelativePath,
-            projectId: input.projectId,
-            rootPath: project.rootPath,
-        });
+        return await mainProcessPerformance
+            .measureAsync(
+                "projects.listProjectTreeChildren",
+                async () =>
+                    await this.#worker.listProjectTreeChildren({
+                        parentRelativePath: input.parentRelativePath,
+                        projectId: input.projectId,
+                        rootPath: project.rootPath,
+                        worktreeId: project.worktreeId,
+                    }),
+                {
+                    parentRelativePath: input.parentRelativePath ?? ".",
+                    projectId: input.projectId,
+                    transport: "worker",
+                    worktreeId: input.worktreeId ?? "primary",
+                },
+            )
+            .then((nodes) => [...nodes]);
     }
 
     async openProjectFile(
         input: OpenProjectFileInput,
     ): Promise<ProjectFileDocument> {
+        await this.#ensureWorkerRegistry();
         const project = this.#resolveProjectScope(
             input.projectId,
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
 
-        return readProjectFile({
+        return await this.#worker.openProjectFile({
             projectId: input.projectId,
             relativePath: input.relativePath,
             rootPath: project.rootPath,
+            worktreeId: project.worktreeId,
         });
     }
 
@@ -428,168 +172,111 @@ export class ProjectService {
             return [];
         }
 
+        await this.#ensureWorkerRegistry();
         const project = this.#resolveProjectScope(
             input.projectId,
             input.worktreeId ?? null,
         );
-        this.#ensureWatcher(project.id, project.rootPath);
-        const gitSnapshot = await this.#getGitSnapshot(project.rootPath);
-        const limit = Math.max(1, input.limit ?? 20);
-        const indexedEntries = this.#getProjectSearchIndex(project.rootPath);
-        const scoredEntries: {
-            readonly node: ProjectTreeNode;
-            readonly score: number;
-        }[] = [];
-        for (const entry of indexedEntries) {
-            const score = scoreProjectSearchCandidate(entry, normalizedQuery);
-            if (score < 0) {
-                continue;
-            }
-
-            scoredEntries.push({
-                node: {
-                    id: `${input.projectId}:${entry.relativePath}`,
-                    extension: entry.extension,
-                    gitStatus:
-                        entry.kind === "directory"
-                            ? getDirectoryBadge(entry.relativePath, gitSnapshot)
-                            : (gitSnapshot.exactBadges.get(
-                                  entry.relativePath,
-                              ) ?? null),
-                    hasChildren: entry.hasChildren,
-                    kind: entry.kind,
-                    name: entry.name,
-                    parentRelativePath: entry.parentRelativePath,
-                    relativePath: entry.relativePath,
-                },
-                score,
+        const normalizedRootPath = normalizeRootPath(project.rootPath);
+        const search = async () =>
+            await this.#worker.searchProjectEntries({
+                limit: input.limit,
+                projectId: input.projectId,
+                query: normalizedQuery,
+                rootPath: project.rootPath,
+                worktreeId: project.worktreeId,
             });
-        }
+        const response = this.#indexedRoots.has(normalizedRootPath)
+            ? await search()
+            : await mainProcessPerformance.measureAsync(
+                  "projects.buildSearchIndex",
+                  search,
+                  {
+                      projectId: input.projectId,
+                      rootPath: normalizedRootPath,
+                      transport: "worker",
+                      worktreeId: input.worktreeId ?? "primary",
+                  },
+              );
 
-        return scoredEntries
-            .sort(
-                (left, right) =>
-                    right.score - left.score ||
-                    left.node.relativePath.length -
-                        right.node.relativePath.length ||
-                    left.node.relativePath.localeCompare(
-                        right.node.relativePath,
-                    ),
-            )
-            .slice(0, limit)
-            .map((entry) => entry.node);
+        this.#indexedRoots.add(normalizedRootPath);
+        return [...response.nodes];
     }
 
     async saveProjectFile(
         input: SaveProjectFileInput,
     ): Promise<ProjectFileDocument> {
+        await this.#ensureWorkerRegistry();
         const project = this.#resolveProjectScope(
             input.projectId,
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(project.rootPath);
-        this.#invalidateProjectSearchIndex(project.rootPath);
 
-        return writeProjectFile({
+        return await this.#worker.saveProjectFile({
             content: input.content,
             expectedModifiedAtMs: input.expectedModifiedAtMs ?? null,
             projectId: input.projectId,
             relativePath: input.relativePath,
             rootPath: project.rootPath,
-        }).then((document) => {
-            this.#scheduleInvalidation(
-                input.projectId,
-                this.#normalizeWorktreeIdForInvalidation(
-                    input.projectId,
-                    project.worktreeId,
-                ),
-                [input.relativePath],
-            );
-            return document;
+            worktreeId: project.worktreeId,
         });
     }
 
     async createProjectEntry(
         input: CreateProjectEntryInput,
     ): Promise<ProjectEntryMutationResult> {
+        await this.#ensureWorkerRegistry();
         const project = this.#resolveProjectScope(
             input.projectId,
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(project.rootPath);
-        this.#invalidateProjectSearchIndex(project.rootPath);
 
-        const entry = await createProjectEntry({
+        return await this.#worker.createProjectEntry({
             kind: input.kind,
             name: input.name,
             parentRelativePath: input.parentRelativePath,
+            projectId: input.projectId,
             rootPath: project.rootPath,
+            worktreeId: project.worktreeId,
         });
-
-        this.#scheduleInvalidation(
-            input.projectId,
-            this.#normalizeWorktreeIdForInvalidation(
-                input.projectId,
-                project.worktreeId,
-            ),
-            [entry.relativePath],
-        );
-        return entry;
     }
 
     async renameProjectEntry(
         input: RenameProjectEntryInput,
     ): Promise<ProjectEntryMutationResult> {
+        await this.#ensureWorkerRegistry();
         const project = this.#resolveProjectScope(
             input.projectId,
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(project.rootPath);
-        this.#invalidateProjectSearchIndex(project.rootPath);
 
-        const entry = await renameProjectEntry({
+        return await this.#worker.renameProjectEntry({
             nextName: input.nextName,
             nextParentRelativePath: input.nextParentRelativePath,
+            projectId: input.projectId,
             relativePath: input.relativePath,
             rootPath: project.rootPath,
+            worktreeId: project.worktreeId,
         });
-
-        this.#scheduleInvalidation(
-            input.projectId,
-            this.#normalizeWorktreeIdForInvalidation(
-                input.projectId,
-                project.worktreeId,
-            ),
-            [input.relativePath, entry.relativePath],
-        );
-        return entry;
     }
 
     async deleteProjectEntry(input: DeleteProjectEntryInput): Promise<void> {
+        await this.#ensureWorkerRegistry();
         const project = this.#resolveProjectScope(
             input.projectId,
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        this.#gitSnapshots.delete(project.rootPath);
-        this.#invalidateProjectSearchIndex(project.rootPath);
 
-        await deleteProjectEntry({
+        await this.#worker.deleteProjectEntry({
+            projectId: input.projectId,
             relativePath: input.relativePath,
             rootPath: project.rootPath,
+            worktreeId: project.worktreeId,
         });
-
-        this.#scheduleInvalidation(
-            input.projectId,
-            this.#normalizeWorktreeIdForInvalidation(
-                input.projectId,
-                project.worktreeId,
-            ),
-            [input.relativePath],
-        );
     }
 
     getProjectRootPath(
@@ -611,196 +298,50 @@ export class ProjectService {
         );
     }
 
-    listProjectWorktrees(projectId: string): readonly {
-        readonly branchName: string | null;
-        readonly headSha: string | null;
-        readonly id: string;
-        readonly isPrimary: boolean;
-        readonly projectId: string;
-        readonly rootPath: string;
-        readonly updatedAt: string;
-    }[] {
-        return this.#connection
-            .prepare<[string], PersistedProjectWorktreeRow>(
-                `
-                SELECT
-                    id,
-                    project_id,
-                    root_path,
-                    branch_name,
-                    head_sha,
-                    is_primary,
-                    updated_at
-                FROM project_worktrees
-                WHERE project_id = ?
-                ORDER BY is_primary DESC, root_path COLLATE NOCASE ASC
-                `,
-            )
-            .all(projectId)
-            .map((row) => ({
-                branchName: row.branch_name,
-                headSha: row.head_sha,
-                id: row.id,
-                isPrimary: row.is_primary === 1,
-                projectId: row.project_id,
-                rootPath: row.root_path,
-                updatedAt: row.updated_at,
-            }));
+    listProjectWorktrees(
+        projectId: string,
+    ): readonly ProjectStoreWorktreeRecord[] {
+        return [...this.#store.listProjectWorktrees(projectId)];
     }
 
-    syncProjectWorktrees(
+    async syncProjectWorktrees(
         projectId: string,
         worktrees: readonly {
             readonly branchName: string | null;
             readonly headSha: string | null;
             readonly rootPath: string;
         }[],
-    ): readonly {
-        readonly branchName: string | null;
-        readonly headSha: string | null;
-        readonly id: string;
-        readonly isPrimary: boolean;
-        readonly projectId: string;
-        readonly rootPath: string;
-        readonly updatedAt: string;
-    }[] {
-        const canonicalRootPath = this.getProjectCanonicalRootPath(projectId);
-        const desiredWorktrees = new Map(
-            worktrees.map((worktree) => [
-                path.resolve(worktree.rootPath),
-                {
-                    branchName: worktree.branchName,
-                    headSha: worktree.headSha,
-                    rootPath: path.resolve(worktree.rootPath),
-                },
-            ]),
+    ): Promise<readonly ProjectStoreWorktreeRecord[]> {
+        const existingWorktrees = this.listProjectWorktrees(projectId);
+        const syncedWorktrees = await this.#store.syncProjectWorktrees(
+            projectId,
+            worktrees,
         );
 
-        if (!desiredWorktrees.has(canonicalRootPath)) {
-            desiredWorktrees.set(canonicalRootPath, {
-                branchName: null,
-                headSha: null,
-                rootPath: canonicalRootPath,
-            });
+        for (const existingWorktree of existingWorktrees) {
+            this.#indexedRoots.delete(
+                normalizeRootPath(existingWorktree.rootPath),
+            );
+        }
+        for (const syncedWorktree of syncedWorktrees) {
+            this.#indexedRoots.delete(
+                normalizeRootPath(syncedWorktree.rootPath),
+            );
         }
 
-        const existingRows = this.#connection
-            .prepare<[string], PersistedProjectWorktreeRow>(
-                `
-                SELECT
-                    id,
-                    project_id,
-                    root_path,
-                    branch_name,
-                    head_sha,
-                    is_primary,
-                    updated_at
-                FROM project_worktrees
-                WHERE project_id = ?
-                `,
-            )
-            .all(projectId);
-        const existingByPath = new Map(
-            existingRows.map((row) => [path.resolve(row.root_path), row]),
-        );
-        const upsertWorktree = this.#connection.prepare<
-            [
-                string,
-                string,
-                string,
-                string | null,
-                string | null,
-                number,
-                string,
-                string,
-            ],
-            void
-        >(
-            `
-            INSERT INTO project_worktrees (
-                id,
-                project_id,
-                root_path,
-                branch_name,
-                head_sha,
-                is_primary,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                root_path = excluded.root_path,
-                branch_name = excluded.branch_name,
-                head_sha = excluded.head_sha,
-                is_primary = excluded.is_primary,
-                updated_at = excluded.updated_at
-            `,
-        );
-        const deleteWorktree = this.#connection.prepare<[string], void>(
-            "DELETE FROM project_worktrees WHERE id = ?",
-        );
-        const now = new Date().toISOString();
+        this.#markWorkerRegistryDirty();
+        await this.#ensureWorkerRegistry();
 
-        const transaction = this.#connection.transaction(() => {
-            for (const existingRow of existingRows) {
-                const normalizedRootPath = path.resolve(existingRow.root_path);
-                if (desiredWorktrees.has(normalizedRootPath)) {
-                    continue;
-                }
-
-                if (existingRow.is_primary === 1) {
-                    continue;
-                }
-
-                deleteWorktree.run(existingRow.id);
-            }
-
-            for (const desiredWorktree of desiredWorktrees.values()) {
-                const existingRow = existingByPath.get(
-                    desiredWorktree.rootPath,
-                );
-                const isPrimary =
-                    desiredWorktree.rootPath === canonicalRootPath;
-                upsertWorktree.run(
-                    existingRow?.id ??
-                        (isPrimary ? `${projectId}:primary` : randomUUID()),
-                    projectId,
-                    desiredWorktree.rootPath,
-                    desiredWorktree.branchName,
-                    desiredWorktree.headSha,
-                    isPrimary ? 1 : 0,
-                    existingRow?.updated_at ?? now,
-                    now,
-                );
-            }
-        });
-
-        transaction();
-        for (const existingRow of existingRows) {
-            this.#invalidateProjectSearchIndex(existingRow.root_path);
-        }
-        for (const desiredWorktree of desiredWorktrees.values()) {
-            this.#invalidateProjectSearchIndex(desiredWorktree.rootPath);
-        }
-        return this.listProjectWorktrees(projectId);
+        return [...syncedWorktrees];
     }
 
     getWorktreeRootPath(worktreeId: string): string {
-        const row = this.#connection
-            .prepare<[string], { root_path: string } | undefined>(
-                `
-                SELECT root_path
-                FROM project_worktrees
-                WHERE id = ?
-                `,
-            )
-            .get(worktreeId);
-
-        if (!row) {
+        const worktree = this.#store.getProjectWorktree(worktreeId);
+        if (!worktree) {
             throw new Error("The requested worktree does not exist anymore.");
         }
 
-        return row.root_path;
+        return worktree.rootPath;
     }
 
     resolveProjectEntryPath(
@@ -813,18 +354,38 @@ export class ProjectService {
     }
 
     close(): void {
-        for (const watcher of this.#watchers.values()) {
-            watcher.close();
+        void this.#worker.close().catch((error) => {
+            logProjectWorkerError("close", error);
+        });
+        this.#indexedRoots.clear();
+    }
+
+    handleProjectTreeInvalidation(payload: ProjectTreeInvalidation): void {
+        try {
+            const project = this.#resolveProjectScope(
+                payload.projectId,
+                payload.worktreeId ?? null,
+            );
+            this.#indexedRoots.delete(normalizeRootPath(project.rootPath));
+        } catch {
+            // Ignore invalidations for projects removed while the worker was flushing.
         }
 
-        for (const pendingInvalidation of this.#pendingInvalidations.values()) {
-            clearTimeout(pendingInvalidation.timeout);
-        }
+        this.#onProjectTreeInvalidated(payload);
+    }
 
-        this.#watchers.clear();
-        this.#gitSnapshots.clear();
-        this.#pendingInvalidations.clear();
-        this.#searchIndexes.clear();
+    handleProjectWorkerRestarted(): void {
+        this.#indexedRoots.clear();
+        this.#syncedWorkerRegistryVersion = 0;
+        this.#pendingWorkerRegistrySync = null;
+        void this.#worker
+            .refreshAfterRestart()
+            .then(() => {
+                this.#scheduleWorkerRegistrySync();
+            })
+            .catch((error) => {
+                logProjectWorkerError("refreshAfterRestart", error);
+            });
     }
 
     #getProjectById(projectId: string): {
@@ -832,38 +393,15 @@ export class ProjectService {
         readonly id: string;
         readonly rootPath: string;
     } {
-        const row = this.#connection
-            .prepare<
-                [string],
-                | {
-                      canonical_root_path: string;
-                      id: string;
-                      root_path: string | null;
-                  }
-                | undefined
-            >(
-                `
-                SELECT
-                    projects.id,
-                    projects.canonical_root_path,
-                    project_worktrees.root_path
-                FROM projects
-                LEFT JOIN project_worktrees
-                    ON project_worktrees.project_id = projects.id
-                    AND project_worktrees.is_primary = 1
-                WHERE projects.id = ?
-                `,
-            )
-            .get(projectId);
-
-        if (!row) {
+        const project = this.#store.getProject(projectId);
+        if (!project) {
             throw new Error("The requested project does not exist anymore.");
         }
 
         return {
-            canonicalRootPath: row.canonical_root_path,
-            id: row.id,
-            rootPath: row.root_path ?? row.canonical_root_path,
+            canonicalRootPath: project.canonicalRootPath,
+            id: project.id,
+            rootPath: project.rootPath,
         };
     }
 
@@ -873,7 +411,7 @@ export class ProjectService {
     ): ResolvedProjectScope {
         const project = this.#getProjectById(projectId);
 
-        if (!worktreeId) {
+        if (!worktreeId || worktreeId.endsWith(":primary")) {
             return {
                 ...project,
                 worktreeId: this.getPrimaryWorktreeId(projectId),
@@ -881,7 +419,7 @@ export class ProjectService {
         }
 
         const worktree = this.#getProjectWorktreeById(worktreeId);
-        if (worktree.project_id !== projectId) {
+        if (worktree.projectId !== projectId) {
             throw new Error(
                 "The requested worktree does not belong to this project.",
             );
@@ -890,504 +428,92 @@ export class ProjectService {
         return {
             canonicalRootPath: project.canonicalRootPath,
             id: project.id,
-            rootPath: worktree.root_path,
+            rootPath: worktree.rootPath,
             worktreeId: worktree.id,
         };
     }
 
-    #getProjectWorktreeById(worktreeId: string): PersistedProjectWorktreeRow {
-        const row = this.#connection
-            .prepare<[string], PersistedProjectWorktreeRow | undefined>(
-                `
-                SELECT
-                    id,
-                    project_id,
-                    root_path,
-                    branch_name,
-                    head_sha,
-                    is_primary,
-                    updated_at
-                FROM project_worktrees
-                WHERE id = ?
-                `,
-            )
-            .get(worktreeId);
-
-        if (!row) {
+    #getProjectWorktreeById(worktreeId: string): ProjectStoreWorktreeRecord {
+        const worktree = this.#store.getProjectWorktree(worktreeId);
+        if (!worktree) {
             throw new Error("The requested worktree does not exist anymore.");
         }
 
-        return row;
+        return worktree;
     }
 
-    async #getGitSnapshot(rootPath: string): Promise<GitSnapshot> {
-        const cachedSnapshot = this.#gitSnapshots.get(rootPath);
-        if (cachedSnapshot) {
-            return cachedSnapshot;
-        }
-
-        try {
-            const status = await createBackgroundSafeGit(rootPath).status();
-            const exactBadges = new Map<string, GitStatusBadge>();
-
-            for (const filePath of status.modified) {
-                exactBadges.set(normalizeGitPath(filePath), "modified");
-            }
-
-            for (const filePath of status.created) {
-                exactBadges.set(normalizeGitPath(filePath), "added");
-            }
-
-            for (const filePath of status.deleted) {
-                exactBadges.set(normalizeGitPath(filePath), "deleted");
-            }
-
-            for (const filePath of status.not_added) {
-                exactBadges.set(normalizeGitPath(filePath), "untracked");
-            }
-
-            for (const rename of status.renamed) {
-                exactBadges.set(normalizeGitPath(rename.to), "modified");
-            }
-
-            const snapshot = {
-                changedPaths: [...exactBadges.keys()],
-                exactBadges,
-            } satisfies GitSnapshot;
-
-            this.#gitSnapshots.set(rootPath, snapshot);
-            return snapshot;
-        } catch {
-            const emptySnapshot = {
-                changedPaths: [],
-                exactBadges: new Map<string, GitStatusBadge>(),
-            } satisfies GitSnapshot;
-
-            this.#gitSnapshots.set(rootPath, emptySnapshot);
-            return emptySnapshot;
-        }
+    #markWorkerRegistryDirty(): void {
+        this.#workerRegistryVersion += 1;
     }
 
-    #ensureWatcher(projectId: string, rootPath: string): void {
-        const watcherKey = `${projectId}:${rootPath}`;
-        if (this.#watchers.has(watcherKey)) {
-            return;
-        }
-
-        try {
-            const watcher = fs.watch(
-                rootPath,
-                { recursive: process.platform !== "linux" },
-                (_eventType, relativePath) => {
-                    if (shouldIgnoreProjectWatchPath(relativePath)) {
-                        return;
-                    }
-
-                    const normalizedRelativePath =
-                        normalizeProjectWatchRelativePath(relativePath);
-
-                    this.#gitSnapshots.delete(rootPath);
-                    this.#invalidateProjectSearchIndex(rootPath);
-                    this.#scheduleInvalidation(
-                        projectId,
-                        this.#findWorktreeIdByRootPath(projectId, rootPath),
-                        normalizedRelativePath
-                            ? [normalizedRelativePath]
-                            : null,
-                    );
-                },
-            );
-
-            this.#watchers.set(watcherKey, watcher);
-        } catch {
-            // Some file systems do not support recursive watching. The tree still
-            // works, only live refresh is reduced until a stronger watcher lands.
-        }
-    }
-
-    #scheduleInvalidation(
-        projectId: string,
-        worktreeId: string | null = null,
-        relativePaths: readonly string[] | null = null,
-    ): void {
-        const invalidationKey = `${projectId}:${worktreeId ?? "primary"}`;
-        const existingInvalidation =
-            this.#pendingInvalidations.get(invalidationKey);
-        if (existingInvalidation) {
-            clearTimeout(existingInvalidation.timeout);
-        }
-
-        const mergedRelativePaths = mergeProjectInvalidationRelativePaths(
-            existingInvalidation?.relativePaths ?? null,
-            normalizeProjectInvalidationRelativePaths(relativePaths),
-        );
-
-        const timeout = setTimeout(() => {
-            this.#pendingInvalidations.delete(invalidationKey);
-            this.#onProjectTreeInvalidated({
-                occurredAt: new Date().toISOString(),
-                projectId,
-                relativePaths:
-                    mergedRelativePaths === null
-                        ? null
-                        : Array.from(mergedRelativePaths),
-                worktreeId,
-            });
-        }, 140);
-
-        this.#pendingInvalidations.set(invalidationKey, {
-            relativePaths: mergedRelativePaths,
-            timeout,
+    #scheduleWorkerRegistrySync(): void {
+        void this.#ensureWorkerRegistry().catch((error) => {
+            logProjectWorkerError("syncRegistry", error);
         });
     }
 
-    #closeWatcher(projectId: string): void {
-        for (const [watcherKey, watcher] of this.#watchers.entries()) {
-            if (!watcherKey.startsWith(`${projectId}:`)) {
-                continue;
+    async #ensureWorkerRegistry(): Promise<void> {
+        if (this.#syncedWorkerRegistryVersion === this.#workerRegistryVersion) {
+            return;
+        }
+
+        if (this.#pendingWorkerRegistrySync) {
+            await this.#pendingWorkerRegistrySync;
+            if (
+                this.#syncedWorkerRegistryVersion ===
+                this.#workerRegistryVersion
+            ) {
+                return;
             }
-
-            watcher.close();
-            this.#watchers.delete(watcherKey);
         }
 
-        for (const [invalidationKey, pendingInvalidation] of this
-            .#pendingInvalidations) {
-            if (!invalidationKey.startsWith(`${projectId}:`)) {
-                continue;
-            }
-
-            clearTimeout(pendingInvalidation.timeout);
-            this.#pendingInvalidations.delete(invalidationKey);
-        }
-    }
-
-    #findWorktreeIdByRootPath(
-        projectId: string,
-        rootPath: string,
-    ): string | null {
-        const normalizedRootPath = path.resolve(rootPath);
-        const matchedWorktree = this.listProjectWorktrees(projectId).find(
-            (worktree) =>
-                path.resolve(worktree.rootPath) === normalizedRootPath,
-        );
-
-        return matchedWorktree && !matchedWorktree.isPrimary
-            ? matchedWorktree.id
-            : null;
-    }
-
-    #normalizeWorktreeIdForInvalidation(
-        projectId: string,
-        worktreeId: string | null,
-    ): string | null {
-        if (!worktreeId) {
-            return null;
-        }
-
-        const matchedWorktree = this.listProjectWorktrees(projectId).find(
-            (worktree) => worktree.id === worktreeId,
-        );
-
-        return matchedWorktree?.isPrimary ? null : worktreeId;
-    }
-
-    #getProjectSearchIndex(rootPath: string): readonly IndexedProjectEntry[] {
-        const normalizedRootPath = path.resolve(rootPath);
-        const cachedIndex = this.#searchIndexes.get(normalizedRootPath);
-        if (cachedIndex) {
-            return cachedIndex;
-        }
-
-        const nextIndex = buildProjectSearchIndex(normalizedRootPath);
-        this.#searchIndexes.set(normalizedRootPath, nextIndex);
-        return nextIndex;
-    }
-
-    #invalidateProjectSearchIndex(rootPath: string): void {
-        this.#searchIndexes.delete(path.resolve(rootPath));
-    }
-}
-
-function normalizeGitPath(filePath: string): string {
-    return filePath.split(path.sep).join("/");
-}
-
-function ensureProjectRoots(options: {
-    readonly canonicalRootPath: string;
-    readonly connection: Database.Database;
-    readonly insertRoot: Database.Statement<[string, string, number]>;
-    readonly projectId: string;
-    readonly selectedRootPath: string;
-}): void {
-    options.insertRoot.run(options.projectId, options.canonicalRootPath, 1);
-
-    if (options.selectedRootPath !== options.canonicalRootPath) {
-        options.insertRoot.run(options.projectId, options.selectedRootPath, 0);
-    }
-}
-
-function ensureProjectWorktree(options: {
-    readonly connection: Database.Database;
-    readonly findExistingWorktree: Database.Statement<
-        [string],
-        { id: string } | undefined
-    >;
-    readonly insertWorktree: Database.Statement<
-        [
-            string,
-            string,
-            string,
-            string | null,
-            string | null,
-            number,
-            string,
-            string,
-        ]
-    >;
-    readonly now: string;
-    readonly projectId: string;
-    readonly rootPath: string;
-}): string {
-    const existing = options.findExistingWorktree.get(options.rootPath);
-    if (existing) {
-        return existing.id;
-    }
-
-    const worktreeId = randomUUID();
-    options.insertWorktree.run(
-        worktreeId,
-        options.projectId,
-        options.rootPath,
-        null,
-        null,
-        0,
-        options.now,
-        options.now,
-    );
-    return worktreeId;
-}
-
-function resolveProjectPathMetadata(projectPath: string): {
-    readonly canonicalRootPath: string;
-    readonly worktreeRootPath: string;
-} {
-    const resolvedPath = path.resolve(projectPath);
-    const worktreeRootPath =
-        runGitPathCommand(resolvedPath, ["rev-parse", "--show-toplevel"]) ??
-        resolvedPath;
-    const commonDir = runGitPathCommand(resolvedPath, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-    ]);
-    const canonicalRootPath =
-        commonDir && path.basename(commonDir) === ".git"
-            ? path.dirname(commonDir)
-            : worktreeRootPath;
-
-    return {
-        canonicalRootPath: path.resolve(canonicalRootPath),
-        worktreeRootPath: path.resolve(worktreeRootPath),
-    };
-}
-
-function runGitPathCommand(
-    cwd: string,
-    args: readonly string[],
-): string | null {
-    try {
-        const output = execFileSync("git", args, {
-            cwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
-
-        return output.length > 0 ? output : null;
-    } catch {
-        return null;
-    }
-}
-
-export function shouldIgnoreProjectWatchPath(
-    relativePath: string | Buffer | null,
-): boolean {
-    const normalizedPath = normalizeProjectWatchRelativePath(relativePath);
-    if (normalizedPath == null) {
-        return false;
-    }
-
-    const normalizedLowerPath = normalizedPath.toLowerCase();
-    const segments = normalizedLowerPath.split("/");
-    const fileName = segments.at(-1) ?? normalizedLowerPath;
-
-    return (
-        normalizedLowerPath === ".git/index" ||
-        normalizedLowerPath === ".git/index.lock" ||
-        segments.some((segment) =>
-            ignoredProjectWatchDirectoryNames.has(segment),
-        ) ||
-        ignoredProjectWatchFileNames.has(fileName) ||
-        fileName.endsWith(".tsbuildinfo")
-    );
-}
-
-const ignoredProjectWatchDirectoryNames = new Set([
-    "build",
-    "coverage",
-    "dist",
-    "node_modules",
-    "out",
-    "target",
-]);
-
-const ignoredProjectWatchFileNames = new Set([".ds_store", "thumbs.db"]);
-
-function normalizeProjectWatchRelativePath(
-    relativePath: string | Buffer | null,
-): string | null {
-    if (relativePath == null) {
-        return null;
-    }
-
-    const normalizedPath = relativePath
-        .toString()
-        .replaceAll("\\", "/")
-        .replace(/^\.\/+/, "")
-        .replace(/^\/+/, "")
-        .trim();
-
-    if (!normalizedPath || normalizedPath === ".") {
-        return null;
-    }
-
-    return normalizeRelativePath(normalizedPath);
-}
-
-function normalizeProjectInvalidationRelativePaths(
-    relativePaths: readonly string[] | null,
-): ReadonlySet<string> | null {
-    if (relativePaths === null) {
-        return null;
-    }
-
-    const normalizedRelativePaths = new Set<string>();
-    for (const relativePath of relativePaths) {
-        const normalizedPath = normalizeProjectWatchRelativePath(relativePath);
-        if (normalizedPath) {
-            normalizedRelativePaths.add(normalizedPath);
-        }
-    }
-
-    return normalizedRelativePaths.size > 0 ? normalizedRelativePaths : null;
-}
-
-function mergeProjectInvalidationRelativePaths(
-    currentRelativePaths: ReadonlySet<string> | null,
-    nextRelativePaths: ReadonlySet<string> | null,
-): ReadonlySet<string> | null {
-    if (currentRelativePaths === null || nextRelativePaths === null) {
-        return null;
-    }
-
-    return new Set([...currentRelativePaths, ...nextRelativePaths]);
-}
-
-function buildProjectSearchIndex(
-    rootPath: string,
-): readonly IndexedProjectEntry[] {
-    const queue = [path.resolve(rootPath)];
-    const pendingEntries: {
-        readonly extension: string | null;
-        readonly kind: ProjectTreeNode["kind"];
-        readonly name: string;
-        readonly parentRelativePath: string | null;
-        readonly relativePath: string;
-    }[] = [];
-    const directoryChildren = new Map<string, boolean>();
-
-    while (queue.length > 0) {
-        const currentDirectory = queue.shift();
-        if (!currentDirectory) {
-            break;
-        }
-
-        let entries: fs.Dirent[] = [];
-        try {
-            entries = fs.readdirSync(currentDirectory, {
-                withFileTypes: true,
+        const targetVersion = this.#workerRegistryVersion;
+        const snapshot = this.#buildWorkerRegistrySnapshot();
+        const syncPromise = this.#worker
+            .syncRegistry(snapshot)
+            .then(() => {
+                this.#syncedWorkerRegistryVersion = targetVersion;
+            })
+            .finally(() => {
+                if (this.#pendingWorkerRegistrySync === syncPromise) {
+                    this.#pendingWorkerRegistrySync = null;
+                }
             });
-        } catch {
-            continue;
-        }
+        this.#pendingWorkerRegistrySync = syncPromise;
+        await syncPromise;
 
-        const visibleEntries = entries.filter(
-            (entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()),
-        );
-        const currentRelativePath = normalizeRelativePath(
-            path.relative(rootPath, currentDirectory),
-        );
-
-        if (currentRelativePath !== ".") {
-            directoryChildren.set(
-                currentRelativePath,
-                visibleEntries.length > 0,
-            );
-        }
-
-        for (const entry of visibleEntries) {
-            const absolutePath = path.join(currentDirectory, entry.name);
-            const relativePath = normalizeRelativePath(
-                path.relative(rootPath, absolutePath),
-            );
-            const kind = entry.isDirectory() ? "directory" : "file";
-
-            pendingEntries.push({
-                extension:
-                    kind === "file"
-                        ? path.extname(entry.name).slice(1) || null
-                        : null,
-                kind,
-                name: entry.name,
-                parentRelativePath:
-                    path.posix.dirname(relativePath) === "."
-                        ? null
-                        : path.posix.dirname(relativePath),
-                relativePath,
-            });
-
-            if (entry.isDirectory()) {
-                queue.push(absolutePath);
-            }
+        if (this.#syncedWorkerRegistryVersion !== this.#workerRegistryVersion) {
+            await this.#ensureWorkerRegistry();
         }
     }
 
-    return pendingEntries.map((entry) => ({
-        ...entry,
-        compactPath: compactProjectSearchValue(entry.relativePath),
-        depth: getProjectSearchDepth(entry.relativePath),
-        hasChildren:
-            entry.kind === "directory"
-                ? (directoryChildren.get(entry.relativePath) ?? false)
-                : false,
-        lowerName: entry.name.toLowerCase(),
-        lowerPath: entry.relativePath.toLowerCase(),
-    }));
-}
+    #buildWorkerRegistrySnapshot(): ProjectRuntimeRegistrySnapshot {
+        const projects = this.#store.listProjects().map((project) => ({
+            id: project.id,
+            rootPath: project.rootPath,
+        }));
+        const worktrees = projects.flatMap((project) =>
+            this.#store.listProjectWorktrees(project.id).map((worktree) => ({
+                id: worktree.id,
+                isPrimary: worktree.isPrimary,
+                projectId: worktree.projectId,
+                rootPath: worktree.rootPath,
+            })),
+        );
 
-function createBackgroundSafeGit(rootPath: string) {
-    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
-}
-
-function getDirectoryBadge(
-    directoryRelativePath: string,
-    gitSnapshot: GitSnapshot,
-): GitStatusBadge | null {
-    for (const changedPath of gitSnapshot.changedPaths) {
-        if (changedPath.startsWith(`${directoryRelativePath}/`)) {
-            return "mixed";
-        }
+        return {
+            projects,
+            worktrees,
+        };
     }
-
-    return gitSnapshot.exactBadges.get(directoryRelativePath) ?? null;
 }
+
+function normalizeRootPath(rootPath: string): string {
+    return path.resolve(rootPath);
+}
+
+function logProjectWorkerError(method: string, error: unknown): void {
+    logWorkerClientCallFailure("projects", method, error);
+}
+
+export { shouldIgnoreProjectWatchPath };

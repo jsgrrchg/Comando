@@ -11,7 +11,7 @@ import type {
     ClaudeRuntimeSettings,
 } from "@shared/ipc";
 
-import type { SecretStoreService } from "@main/ai/secret-store";
+import type { SecretStoreGateway } from "@main/ai/secret-store";
 
 const CLAUDE_LOGIN_METHOD_ID = "claude-login";
 const CLAUDE_AI_LOGIN_METHOD_ID = "claude-ai-login";
@@ -69,7 +69,7 @@ interface GatewayEnvPolicy {
 
 export function getClaudeRuntimeStatus(
     settings: ClaudeRuntimeSettings,
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
     options: ResolveClaudeRuntimeOptions = {},
 ): AiRuntimeStatus {
     const resolved = resolveClaudeBinary(settings, options);
@@ -132,7 +132,7 @@ export function getClaudeRuntimeStatus(
 
 export function resolveClaudeRuntime(
     settings: ClaudeRuntimeSettings,
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
     options: ResolveClaudeRuntimeOptions = {},
 ): ResolvedClaudeRuntimeCommand {
     const resolved = resolveClaudeBinary(settings, options);
@@ -153,7 +153,7 @@ export function resolveClaudeRuntime(
 }
 
 export function loadClaudeSecretBundle(
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): ClaudeSecretBundle {
     return {
         anthropicAuthToken: secretStore.loadSecret(
@@ -168,7 +168,7 @@ export function loadClaudeSecretBundle(
 }
 
 export function saveClaudeSecrets(
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
     input: {
         readonly gatewayAuthToken: string | null;
         readonly gatewayCustomHeaders: string | null;
@@ -197,7 +197,7 @@ export function saveClaudeSecrets(
 export function applyClaudeAuthEnv(
     baseEnv: NodeJS.ProcessEnv,
     settings: ClaudeRuntimeSettings,
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): NodeJS.ProcessEnv {
     const env = { ...baseEnv };
     const secrets = loadClaudeSecretBundle(secretStore);

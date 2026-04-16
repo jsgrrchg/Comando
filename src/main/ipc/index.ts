@@ -82,32 +82,31 @@ import {
     shell,
     type OpenDialogOptions,
 } from "electron";
-import { simpleGit } from "simple-git";
 
 import type { AiService } from "@main/ai/service";
-import type { GitService } from "@main/git/service";
+import type { GitGateway } from "@main/git/service";
 import type { ProjectService } from "@main/projects/service";
-import type { PersistenceService } from "@main/persistence/service";
-import type { SettingsService } from "@main/settings/service";
+import type { PersistenceGateway } from "@main/persistence/service";
+import type { SettingsGateway } from "@main/settings/service";
 import {
     applyAppZoomToAllWindows,
     broadcastSettingsUpdated,
 } from "@main/settings/window-zoom";
 import { openSettingsWindow } from "@main/settings/window";
 import type { TerminalService } from "@main/terminals/service";
-import type { WorkspaceService } from "@main/workspace/service";
+import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
-    readonly gitService: GitService;
+    readonly gitService: GitGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
     readonly openProjectWindow: (input: OpenProjectWindowInput) => void;
-    readonly persistenceService: PersistenceService;
+    readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
-    readonly settingsService: SettingsService;
+    readonly settingsService: SettingsGateway;
     readonly terminalService: TerminalService;
-    readonly workspaceService: WorkspaceService;
+    readonly workspaceService: WorkspaceGateway;
 }
 
 export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
@@ -499,6 +498,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
             const snapshot = await adaptRepositorySnapshot(
                 options.projectService,
+                options.gitService,
                 input,
                 result.snapshot,
             );
@@ -550,6 +550,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
             const sharedSnapshot = await adaptRepositorySnapshot(
                 options.projectService,
+                options.gitService,
                 input,
                 snapshot,
             );
@@ -741,7 +742,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveWorkspaceSnapshot,
         (event, snapshot: WorkspaceSnapshot) => {
             const context = requireWindowContext(event.sender, "main");
-            options.workspaceService.saveSnapshot(
+            return options.workspaceService.saveSnapshot(
                 context.workspaceId!,
                 snapshot,
             );
@@ -1084,7 +1085,7 @@ async function adaptRepositorySnapshot(
     void gitService;
 
     const scope = resolveGitScope(projectService, input);
-    const syncedWorktrees = projectService.syncProjectWorktrees(
+    const syncedWorktrees = await projectService.syncProjectWorktrees(
         scope.projectId,
         snapshot.worktrees.map((worktree) => ({
             branchName: worktree.branchName,
@@ -1545,55 +1546,40 @@ interface ResolvedGitScope {
     readonly worktreeId: string | null;
 }
 
+type MainGitRepositorySnapshot = Awaited<
+    ReturnType<GitGateway["getRepositorySnapshot"]>
+>;
 type DiffStatEntry = { additions: number; deletions: number };
 type DiffStatMap = Map<string, DiffStatEntry>;
 
-async function getGitDiffStats(rootPath: string): Promise<DiffStatMap> {
+function buildDiffStatMap(
+    entries: Awaited<ReturnType<GitGateway["getDiffStats"]>>,
+): DiffStatMap {
     const stats: DiffStatMap = new Map();
-    const git = simpleGit(rootPath);
 
-    try {
-        const [unstaged, staged] = await Promise.all([
-            git.diff(["--numstat"]),
-            git.diff(["--cached", "--numstat"]),
-        ]);
-
-        parseNumstat(unstaged, "unstaged", stats);
-        parseNumstat(staged, "staged", stats);
-    } catch {
-        // stats are best-effort
+    for (const entry of entries) {
+        stats.set(entry.key, {
+            additions: entry.additions,
+            deletions: entry.deletions,
+        });
     }
 
     return stats;
 }
 
-function parseNumstat(raw: string, scope: string, stats: DiffStatMap): void {
-    for (const line of raw.split("\n")) {
-        if (!line.trim()) continue;
-        const parts = line.split("\t");
-        if (parts.length < 3) continue;
-        const [addStr, delStr, filePath] = parts;
-        if (addStr === "-" || delStr === "-") continue;
-        const additions = parseInt(addStr, 10);
-        const deletions = parseInt(delStr, 10);
-        if (Number.isNaN(additions) || Number.isNaN(deletions)) continue;
-        stats.set(`${scope}:${filePath}`, { additions, deletions });
-    }
-}
-
 async function buildSharedGitRepositorySnapshot(
     projectService: ProjectService,
-    gitService: GitService,
+    gitService: GitGateway,
     input: GitRepositoryScopeInput,
 ): Promise<SharedGitRepositorySnapshot> {
     const scope = resolveGitScope(projectService, input);
     const snapshot = await gitService.getRepositorySnapshot(scope.rootPath);
-    return adaptRepositorySnapshot(projectService, input, snapshot);
+    return adaptRepositorySnapshot(projectService, gitService, input, snapshot);
 }
 
 async function buildSharedGitBranches(
     projectService: ProjectService,
-    gitService: GitService,
+    gitService: GitGateway,
     input: GitBranchListInput,
 ): Promise<readonly SharedGitBranchSummary[]> {
     const scope = resolveGitScope(projectService, input);
@@ -1602,7 +1588,7 @@ async function buildSharedGitBranches(
         return [];
     }
 
-    const remotes = await listGitRemotes(
+    const remotes = await gitService.listRemotes(
         scope.rootPath,
         snapshot.status.sync?.trackingBranchName ?? null,
         snapshot.status.sync?.ahead ?? 0,
@@ -1617,7 +1603,7 @@ async function buildSharedGitBranches(
 
 async function buildSharedGitDiff(
     projectService: ProjectService,
-    gitService: GitService,
+    gitService: GitGateway,
     input: GitDiffInput,
 ): Promise<SharedGitFileDiff | null> {
     const scope = resolveGitScope(projectService, input);
@@ -1665,18 +1651,16 @@ async function buildSharedGitDiff(
 
 async function handleGitSnapshotMutation(
     projectService: ProjectService,
-    gitService: GitService,
+    gitService: GitGateway,
     input: GitRepositoryScopeInput,
     reason: GitRepositoryInvalidation["reason"],
-    mutate: (
-        rootPath: string,
-    ) => Promise<Awaited<ReturnType<GitService["getRepositorySnapshot"]>>>,
+    mutate: (rootPath: string) => Promise<MainGitRepositorySnapshot>,
 ): Promise<SharedGitRepositorySnapshot> {
-    void gitService;
     const scope = resolveGitScope(projectService, input);
     const snapshot = await mutate(scope.rootPath);
     const sharedSnapshot = await adaptRepositorySnapshot(
         projectService,
+        gitService,
         input,
         snapshot,
     );
@@ -1687,13 +1671,14 @@ async function handleGitSnapshotMutation(
 
 async function adaptRepositorySnapshot(
     projectService: ProjectService,
+    gitService: GitGateway,
     input: GitRepositoryScopeInput,
-    snapshot: Awaited<ReturnType<GitService["getRepositorySnapshot"]>>,
+    snapshot: MainGitRepositorySnapshot,
 ): Promise<SharedGitRepositorySnapshot> {
     const scope = resolveGitScope(projectService, input);
     const remotes =
         snapshot.resolution.state === "ready"
-            ? await listGitRemotes(
+            ? await gitService.listRemotes(
                   scope.rootPath,
                   snapshot.status.sync?.trackingBranchName ?? null,
                   snapshot.status.sync?.ahead ?? 0,
@@ -1702,7 +1687,7 @@ async function adaptRepositorySnapshot(
             : [];
     const syncedWorktrees =
         snapshot.resolution.state === "ready"
-            ? projectService.syncProjectWorktrees(
+            ? await projectService.syncProjectWorktrees(
                   input.projectId,
                   snapshot.worktrees.map((worktree) => ({
                       branchName: worktree.branchName,
@@ -1726,7 +1711,7 @@ async function adaptRepositorySnapshot(
     const behindBy = snapshot.status.sync?.behind ?? 0;
     const diffStats =
         snapshot.resolution.state === "ready"
-            ? await getGitDiffStats(scope.rootPath)
+            ? buildDiffStatMap(await gitService.getDiffStats(scope.rootPath))
             : new Map<string, DiffStatEntry>();
     const status: GitRepositoryStatusSummary = {
         changedCount: snapshot.status.entries.length,
@@ -1789,9 +1774,7 @@ function resolveGitScope(
 }
 
 function adaptGitChangeEntry(
-    entry: Awaited<
-        ReturnType<GitService["getRepositorySnapshot"]>
-    >["status"]["entries"][number],
+    entry: MainGitRepositorySnapshot["status"]["entries"][number],
     worktreeId: string | null,
     diffStats: DiffStatMap,
 ): SharedGitChangeEntry {
@@ -1819,7 +1802,7 @@ function adaptGitChangeEntry(
 function adaptGitWorktrees(
     scope: ResolvedGitScope,
     syncedWorktrees: ReturnType<ProjectService["listProjectWorktrees"]>,
-    snapshot: Awaited<ReturnType<GitService["getRepositorySnapshot"]>>,
+    snapshot: MainGitRepositorySnapshot,
 ): readonly SharedGitWorktreeSummary[] {
     const internalByPath = new Map(
         snapshot.worktrees.map((worktree) => [
@@ -1864,7 +1847,7 @@ function adaptGitWorktrees(
 }
 
 function adaptGitBranches(
-    snapshot: Awaited<ReturnType<GitService["getRepositorySnapshot"]>>,
+    snapshot: MainGitRepositorySnapshot,
     remotes: readonly GitRemoteSummary[],
 ): readonly SharedGitBranchSummary[] {
     const trackingBranchName = snapshot.status.sync?.trackingBranchName ?? null;
@@ -1913,7 +1896,7 @@ function adaptGitBranches(
 }
 
 function buildDetachedBranch(
-    snapshot: Awaited<ReturnType<GitService["getRepositorySnapshot"]>>,
+    snapshot: MainGitRepositorySnapshot,
     remotes: readonly GitRemoteSummary[],
 ): SharedGitBranchSummary | null {
     if (!snapshot.status.sync?.detached) {
@@ -1934,40 +1917,6 @@ function buildDetachedBranch(
             remotes.find((remote) => remote.isDefault)?.refName ??
             null,
     };
-}
-
-async function listGitRemotes(
-    rootPath: string,
-    trackingBranchName: string | null,
-    aheadBy: number,
-    behindBy: number,
-): Promise<readonly GitRemoteSummary[]> {
-    try {
-        const git = simpleGit(rootPath);
-        const remotes = await git.getRemotes(true);
-        const defaultRemoteName =
-            getRemoteNameFromRef(trackingBranchName) ??
-            (remotes.some((remote) => remote.name === "origin")
-                ? "origin"
-                : (remotes[0]?.name ?? null));
-
-        return remotes.map((remote) => ({
-            aheadBy: remote.name === defaultRemoteName ? aheadBy : 0,
-            behindBy: remote.name === defaultRemoteName ? behindBy : 0,
-            fetchUrl:
-                typeof remote.refs.fetch === "string"
-                    ? remote.refs.fetch
-                    : null,
-            isDefault: remote.name === defaultRemoteName,
-            name: remote.name,
-            pushUrl:
-                typeof remote.refs.push === "string" ? remote.refs.push : null,
-            refName:
-                remote.name === defaultRemoteName ? trackingBranchName : null,
-        }));
-    } catch {
-        return [];
-    }
 }
 
 function notifyGitSnapshot(

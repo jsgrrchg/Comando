@@ -97,6 +97,7 @@ export const IPC_EVENTS = {
     terminalExit: "terminals:exit",
     aiRuntimeStatus: "ai:runtime-status",
     aiSessionSnapshot: "ai:session-snapshot",
+    aiSessionStreamPort: "ai:session-stream-port",
 } as const;
 
 export interface SystemTheme {

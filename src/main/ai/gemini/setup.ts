@@ -10,7 +10,7 @@ import type {
     GeminiRuntimeSettings,
 } from "@shared/ipc";
 
-import type { SecretStoreService } from "@main/ai/secret-store";
+import type { SecretStoreGateway } from "@main/ai/secret-store";
 
 const GEMINI_PROGRAM_NAME = "gemini";
 const GEMINI_ACP_FLAG = "--acp";
@@ -50,7 +50,7 @@ interface GeminiSecretBundle {
 
 export function getGeminiRuntimeStatus(
     settings: GeminiRuntimeSettings,
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): AiRuntimeStatus {
     const resolved = resolveGeminiBinary(settings);
     const authMethods = getGeminiAuthMethods();
@@ -82,7 +82,7 @@ export function getGeminiRuntimeStatus(
 
 export function resolveGeminiRuntime(
     settings: GeminiRuntimeSettings,
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): ResolvedGeminiRuntimeCommand {
     const resolved = resolveGeminiBinary(settings);
     const status = getGeminiRuntimeStatus(settings, secretStore);
@@ -102,7 +102,7 @@ export function resolveGeminiRuntime(
 }
 
 export function loadGeminiSecretBundle(
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): GeminiSecretBundle {
     return {
         geminiApiKey: secretStore.loadSecret(
@@ -117,7 +117,7 @@ export function loadGeminiSecretBundle(
 }
 
 export function saveGeminiSecrets(
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
     input: {
         readonly geminiApiKey: string | null;
         readonly googleApiKey: string | null;
@@ -146,7 +146,7 @@ export function saveGeminiSecrets(
 export function applyGeminiAuthEnv(
     baseEnv: NodeJS.ProcessEnv,
     settings: GeminiRuntimeSettings,
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): NodeJS.ProcessEnv {
     const env = { ...baseEnv };
     const secrets = loadGeminiSecretBundle(secretStore);
@@ -185,7 +185,7 @@ export function applyGeminiAuthEnv(
 
 export function detectGeminiAuthMethod(
     settings: GeminiRuntimeSettings,
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): GeminiAuthMethodId | null {
     if (
         settings.authMethod === "use_gemini" &&
@@ -401,7 +401,7 @@ function commandFromExistingPath(
     };
 }
 
-function geminiApiKeyReady(secretStore: SecretStoreService): boolean {
+function geminiApiKeyReady(secretStore: SecretStoreGateway): boolean {
     if (envSecretPresent(process.env, "GEMINI_API_KEY")) {
         return true;
     }

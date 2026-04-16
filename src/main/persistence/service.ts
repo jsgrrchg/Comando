@@ -10,6 +10,8 @@ import type {
     WindowContextSnapshot,
 } from "@shared/ipc";
 
+import type { Awaitable } from "../db/awaitable";
+
 const DEFAULT_MAIN_WINDOW_HEIGHT = 960;
 const DEFAULT_MAIN_WINDOW_WIDTH = 1480;
 
@@ -47,6 +49,27 @@ export interface CreateMainWindowSessionInput {
     readonly projectId?: string | null;
     readonly worktreeId?: string | null;
     readonly shellState?: PersistedShellState | null;
+}
+
+export interface PersistenceGateway {
+    createMainWindowSession(
+        input?: CreateMainWindowSessionInput,
+    ): Awaitable<PersistenceSnapshot>;
+    listRestorableMainWindowSnapshots(): readonly PersistenceSnapshot[];
+    loadSnapshot(windowId: string): PersistenceSnapshot;
+    loadWindowState(windowId: string): PersistedWindowState | null;
+    saveActiveProjectId(
+        windowId: string,
+        projectId: string | null,
+        worktreeId?: string | null,
+    ): void;
+    saveShellState(
+        windowId: string,
+        shellState: PersistedShellState | null,
+    ): void;
+    saveWindowState(state: PersistedWindowState): void;
+    markWindowClosed(windowId: string): void;
+    markWindowOpen(windowId: string): void;
 }
 
 export class PersistenceService {

@@ -15,6 +15,9 @@ import type {
     WorkspaceTerminalTab,
 } from "@shared/ipc";
 
+import type { Awaitable } from "../db/awaitable";
+import { mainProcessPerformance } from "../observability/performance";
+
 interface WorkspaceLayoutRow {
     readonly active_pane_id: string;
     readonly root_node_json: string;
@@ -72,6 +75,17 @@ type WorkspaceTerminalPayload = Omit<
     "createdAt" | "id" | "title"
 >;
 
+export interface WorkspaceGateway {
+    loadSnapshot(workspaceId: string): Awaitable<WorkspaceSnapshot>;
+    saveSnapshot(
+        workspaceId: string,
+        snapshot: WorkspaceSnapshot,
+    ): Awaitable<void>;
+    loadChatSessionState(
+        sessionId: string,
+    ): Awaitable<PersistedChatSessionState | null>;
+}
+
 export class WorkspaceService {
     readonly #connection: Database.Database;
 
@@ -80,177 +94,186 @@ export class WorkspaceService {
     }
 
     loadSnapshot(workspaceId: string): WorkspaceSnapshot {
-        const layoutRow = this.#connection
-            .prepare<[string], WorkspaceLayoutRow | undefined>(
-                `
-                SELECT active_pane_id, root_node_json
-                FROM workspace_layouts
-                WHERE id = ?
-                `,
-            )
-            .get(workspaceId);
+        return mainProcessPerformance.measureSync(
+            "db.workspace.loadSnapshot",
+            () => {
+                const layoutRow = this.#connection
+                    .prepare<[string], WorkspaceLayoutRow | undefined>(
+                        `
+                        SELECT active_pane_id, root_node_json
+                        FROM workspace_layouts
+                        WHERE id = ?
+                        `,
+                    )
+                    .get(workspaceId);
 
-        if (!layoutRow) {
-            return createDefaultWorkspaceSnapshot();
-        }
+                if (!layoutRow) {
+                    return createDefaultWorkspaceSnapshot();
+                }
 
-        const tabRows = this.#connection
-            .prepare<[string], WorkspaceTabRow>(
-                `
-                SELECT id, kind, title, payload_json, created_at, worktree_id
-                FROM workspace_tabs
-                WHERE workspace_id = ?
-                ORDER BY position ASC
-                `,
-            )
-            .all(workspaceId);
+                const tabRows = this.#connection
+                    .prepare<[string], WorkspaceTabRow>(
+                        `
+                        SELECT id, kind, title, payload_json, created_at, worktree_id
+                        FROM workspace_tabs
+                        WHERE workspace_id = ?
+                        ORDER BY position ASC
+                        `,
+                    )
+                    .all(workspaceId);
 
-        return {
-            activePaneId: layoutRow.active_pane_id,
-            rootNode: parseJsonWithFallback<WorkspaceNode>(
-                layoutRow.root_node_json,
-                createDefaultWorkspaceSnapshot().rootNode,
-            ),
-            tabs: tabRows
-                .map((row) => deserializeTabRow(row))
-                .filter((tab): tab is WorkspaceTab => tab !== null),
-        };
+                return {
+                    activePaneId: layoutRow.active_pane_id,
+                    rootNode: parseJsonWithFallback<WorkspaceNode>(
+                        layoutRow.root_node_json,
+                        createDefaultWorkspaceSnapshot().rootNode,
+                    ),
+                    tabs: tabRows
+                        .map((row) => deserializeTabRow(row))
+                        .filter((tab): tab is WorkspaceTab => tab !== null),
+                };
+            },
+        );
     }
 
     saveSnapshot(workspaceId: string, snapshot: WorkspaceSnapshot): void {
-        const now = new Date().toISOString();
-        const upsertLayout = this.#connection.prepare<
-            [string, string, string, string, string],
-            void
-        >(
-            `
-            INSERT INTO workspace_layouts (
-                id,
-                root_node_json,
-                active_pane_id,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                root_node_json = excluded.root_node_json,
-                active_pane_id = excluded.active_pane_id,
-                updated_at = excluded.updated_at
-            `,
-        );
-        const loadExistingTabs = this.#connection.prepare<
-            [string],
-            WorkspaceTabRow
-        >(
-            `
-            SELECT
-                id,
-                kind,
-                title,
-                payload_json,
-                created_at,
-                worktree_id,
-                position
-            FROM workspace_tabs
-            WHERE workspace_id = ?
-            `,
-        );
-        const deleteTab = this.#connection.prepare<[string, string], void>(
-            "DELETE FROM workspace_tabs WHERE workspace_id = ? AND id = ?",
-        );
-        const upsertTab = this.#connection.prepare<
-            [
-                string,
-                string,
-                string,
-                string,
-                string,
-                string,
-                string | null,
-                number,
-            ],
-            void
-        >(
-            `
-            INSERT INTO workspace_tabs (
-                id,
-                workspace_id,
-                kind,
-                title,
-                payload_json,
-                created_at,
-                worktree_id,
-                position
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                workspace_id = excluded.workspace_id,
-                kind = excluded.kind,
-                title = excluded.title,
-                payload_json = excluded.payload_json,
-                created_at = excluded.created_at,
-                worktree_id = excluded.worktree_id,
-                position = excluded.position
-            `,
-        );
+        mainProcessPerformance.measureSync("db.workspace.saveSnapshot", () => {
+            const now = new Date().toISOString();
+            const upsertLayout = this.#connection.prepare<
+                [string, string, string, string, string],
+                void
+            >(
+                `
+                INSERT INTO workspace_layouts (
+                    id,
+                    root_node_json,
+                    active_pane_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    root_node_json = excluded.root_node_json,
+                    active_pane_id = excluded.active_pane_id,
+                    updated_at = excluded.updated_at
+                `,
+            );
+            const loadExistingTabs = this.#connection.prepare<
+                [string],
+                WorkspaceTabRow
+            >(
+                `
+                SELECT
+                    id,
+                    kind,
+                    title,
+                    payload_json,
+                    created_at,
+                    worktree_id,
+                    position
+                FROM workspace_tabs
+                WHERE workspace_id = ?
+                `,
+            );
+            const deleteTab = this.#connection.prepare<[string, string], void>(
+                "DELETE FROM workspace_tabs WHERE workspace_id = ? AND id = ?",
+            );
+            const upsertTab = this.#connection.prepare<
+                [
+                    string,
+                    string,
+                    string,
+                    string,
+                    string,
+                    string,
+                    string | null,
+                    number,
+                ],
+                void
+            >(
+                `
+                INSERT INTO workspace_tabs (
+                    id,
+                    workspace_id,
+                    kind,
+                    title,
+                    payload_json,
+                    created_at,
+                    worktree_id,
+                    position
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    kind = excluded.kind,
+                    title = excluded.title,
+                    payload_json = excluded.payload_json,
+                    created_at = excluded.created_at,
+                    worktree_id = excluded.worktree_id,
+                    position = excluded.position
+                `,
+            );
 
-        const transaction = this.#connection.transaction(
-            (nextSnapshot: WorkspaceSnapshot) => {
-                upsertLayout.run(
-                    workspaceId,
-                    JSON.stringify(nextSnapshot.rootNode),
-                    nextSnapshot.activePaneId,
-                    now,
-                    now,
-                );
-                const existingTabsById = new Map(
-                    loadExistingTabs
-                        .all(workspaceId)
-                        .map((row) => [row.id, row] as const),
-                );
-                const nextTabIds = new Set<string>();
-
-                nextSnapshot.tabs.forEach((tab, index) => {
-                    const serializedPayload = JSON.stringify(serializeTab(tab));
-                    const nextWorktreeId = tab.worktreeId ?? null;
-                    const existingTab = existingTabsById.get(tab.id);
-                    nextTabIds.add(tab.id);
-
-                    if (
-                        existingTab &&
-                        existingTab.kind === tab.kind &&
-                        existingTab.title === tab.title &&
-                        existingTab.payload_json === serializedPayload &&
-                        existingTab.created_at === tab.createdAt &&
-                        existingTab.worktree_id === nextWorktreeId &&
-                        existingTab.position === index
-                    ) {
-                        return;
-                    }
-
-                    upsertTab.run(
-                        tab.id,
+            const transaction = this.#connection.transaction(
+                (nextSnapshot: WorkspaceSnapshot) => {
+                    upsertLayout.run(
                         workspaceId,
-                        tab.kind,
-                        tab.title,
-                        serializedPayload,
-                        tab.createdAt,
-                        nextWorktreeId,
-                        index,
+                        JSON.stringify(nextSnapshot.rootNode),
+                        nextSnapshot.activePaneId,
+                        now,
+                        now,
                     );
-                });
+                    const existingTabsById = new Map(
+                        loadExistingTabs
+                            .all(workspaceId)
+                            .map((row) => [row.id, row] as const),
+                    );
+                    const nextTabIds = new Set<string>();
 
-                existingTabsById.forEach((_row, tabId) => {
-                    if (!nextTabIds.has(tabId)) {
-                        deleteTab.run(workspaceId, tabId);
-                    }
-                });
+                    nextSnapshot.tabs.forEach((tab, index) => {
+                        const serializedPayload = JSON.stringify(
+                            serializeTab(tab),
+                        );
+                        const nextWorktreeId = tab.worktreeId ?? null;
+                        const existingTab = existingTabsById.get(tab.id);
+                        nextTabIds.add(tab.id);
 
-                syncChatPersistence(this.#connection, nextSnapshot.tabs);
-            },
-        );
+                        if (
+                            existingTab &&
+                            existingTab.kind === tab.kind &&
+                            existingTab.title === tab.title &&
+                            existingTab.payload_json === serializedPayload &&
+                            existingTab.created_at === tab.createdAt &&
+                            existingTab.worktree_id === nextWorktreeId &&
+                            existingTab.position === index
+                        ) {
+                            return;
+                        }
 
-        transaction(snapshot);
+                        upsertTab.run(
+                            tab.id,
+                            workspaceId,
+                            tab.kind,
+                            tab.title,
+                            serializedPayload,
+                            tab.createdAt,
+                            nextWorktreeId,
+                            index,
+                        );
+                    });
+
+                    existingTabsById.forEach((_row, tabId) => {
+                        if (!nextTabIds.has(tabId)) {
+                            deleteTab.run(workspaceId, tabId);
+                        }
+                    });
+
+                    syncChatPersistence(this.#connection, nextSnapshot.tabs);
+                },
+            );
+
+            transaction(snapshot);
+        });
     }
 
     loadChatSessionState(sessionId: string): PersistedChatSessionState | null {

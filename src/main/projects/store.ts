@@ -1,0 +1,731 @@
+import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+
+import type Database from "better-sqlite3";
+
+import type { ProjectSummary } from "@shared/ipc";
+
+import type { Awaitable } from "../db/awaitable";
+
+interface PersistedProjectRow {
+    readonly is_hidden?: number;
+    readonly id: string;
+    readonly name: string;
+    readonly canonical_root_path: string;
+    readonly created_at: string;
+    readonly updated_at: string;
+    readonly last_opened_at: string | null;
+}
+
+interface PersistedProjectWorktreeRow {
+    readonly branch_name: string | null;
+    readonly head_sha: string | null;
+    readonly id: string;
+    readonly is_primary: number;
+    readonly project_id: string;
+    readonly root_path: string;
+    readonly updated_at: string;
+}
+
+export interface ProjectRecord {
+    readonly canonicalRootPath: string;
+    readonly id: string;
+    readonly rootPath: string;
+}
+
+export interface ProjectStoreProjectRecord extends ProjectSummary {
+    readonly canonicalRootPath: string;
+}
+
+export interface ProjectStoreWorktreeRecord {
+    readonly branchName: string | null;
+    readonly headSha: string | null;
+    readonly id: string;
+    readonly isPrimary: boolean;
+    readonly projectId: string;
+    readonly rootPath: string;
+    readonly updatedAt: string;
+}
+
+export interface ProjectStoreAddPathsResult {
+    readonly projects: readonly ProjectSummary[];
+    readonly touchedRootPaths: readonly string[];
+}
+
+export interface ProjectStore {
+    loadState(): ProjectStoreStateSnapshot;
+    addProjectPaths(
+        projectPaths: readonly string[],
+    ): Awaitable<ProjectStoreAddPathsResult>;
+    getProject(projectId: string): ProjectRecord | null;
+    getProjectWorktree(worktreeId: string): ProjectStoreWorktreeRecord | null;
+    listProjects(): readonly ProjectSummary[];
+    listProjectWorktrees(
+        projectId: string,
+    ): readonly ProjectStoreWorktreeRecord[];
+    removeProject(projectId: string): void;
+    syncProjectWorktrees(
+        projectId: string,
+        worktrees: readonly {
+            readonly branchName: string | null;
+            readonly headSha: string | null;
+            readonly rootPath: string;
+        }[],
+    ): Awaitable<readonly ProjectStoreWorktreeRecord[]>;
+    touchProject(projectId: string): void;
+}
+
+export interface ProjectStoreStateSnapshot {
+    readonly projects: readonly ProjectStoreProjectRecord[];
+    readonly worktrees: readonly ProjectStoreWorktreeRecord[];
+}
+
+export class SqliteProjectStore implements ProjectStore {
+    readonly #connection: Database.Database;
+
+    constructor(connection: Database.Database) {
+        this.#connection = connection;
+    }
+
+    loadState(): ProjectStoreStateSnapshot {
+        return {
+            projects: this.#listProjectRecords(),
+            worktrees: this.#listAllVisibleWorktrees(),
+        };
+    }
+
+    listProjects(): readonly ProjectSummary[] {
+        return this.#listProjectRecords().map((project) => ({
+            createdAt: project.createdAt,
+            id: project.id,
+            lastOpenedAt: project.lastOpenedAt,
+            name: project.name,
+            rootPath: project.rootPath,
+            updatedAt: project.updatedAt,
+        }));
+    }
+
+    addProjectPaths(
+        projectPaths: readonly string[],
+    ): ProjectStoreAddPathsResult {
+        const insertProject = this.#connection.prepare<
+            [string, string, string, string, string],
+            void
+        >(
+            `
+            INSERT INTO projects (id, name, canonical_root_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            `,
+        );
+        const insertRoot = this.#connection.prepare<
+            [string, string, number],
+            void
+        >(
+            `
+            INSERT OR IGNORE INTO project_roots (project_id, root_path, is_primary)
+            VALUES (?, ?, ?)
+            `,
+        );
+        const insertWorktree = this.#connection.prepare<
+            [
+                string,
+                string,
+                string,
+                string | null,
+                string | null,
+                number,
+                string,
+                string,
+            ],
+            void
+        >(
+            `
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+        );
+        const touchRecent = this.#connection.prepare<[string, string], void>(
+            `
+            INSERT INTO recent_projects (project_id, last_opened_at)
+            VALUES (?, ?)
+            ON CONFLICT(project_id) DO UPDATE SET
+                last_opened_at = excluded.last_opened_at
+            `,
+        );
+        const findExisting = this.#connection.prepare<
+            [string],
+            { id: string } | undefined
+        >(
+            `
+            SELECT id
+            FROM projects
+            WHERE canonical_root_path = ?
+            `,
+        );
+        const reviveProject = this.#connection.prepare<
+            [string, string, string, string],
+            void
+        >(
+            `
+            UPDATE projects
+            SET name = ?,
+                updated_at = ?,
+                is_hidden = 0
+            WHERE id = ?
+              AND canonical_root_path = ?
+            `,
+        );
+        const findExistingWorktree = this.#connection.prepare<
+            [string],
+            { id: string } | undefined
+        >(
+            `
+            SELECT id
+            FROM project_worktrees
+            WHERE root_path = ?
+            `,
+        );
+        const touchedRootPaths: string[] = [];
+
+        const transaction = this.#connection.transaction(
+            (normalizedPaths: readonly string[]) => {
+                for (const normalizedPath of normalizedPaths) {
+                    const projectPathMeta =
+                        resolveProjectPathMetadata(normalizedPath);
+                    const now = new Date().toISOString();
+                    const existing = findExisting.get(
+                        projectPathMeta.canonicalRootPath,
+                    );
+
+                    if (existing) {
+                        reviveProject.run(
+                            path.basename(projectPathMeta.canonicalRootPath),
+                            now,
+                            existing.id,
+                            projectPathMeta.canonicalRootPath,
+                        );
+                        ensureProjectRoots({
+                            canonicalRootPath:
+                                projectPathMeta.canonicalRootPath,
+                            insertRoot,
+                            projectId: existing.id,
+                            selectedRootPath: projectPathMeta.worktreeRootPath,
+                        });
+                        ensureProjectWorktree({
+                            findExistingWorktree,
+                            insertWorktree,
+                            now,
+                            projectId: existing.id,
+                            rootPath: projectPathMeta.worktreeRootPath,
+                        });
+                        touchRecent.run(existing.id, now);
+                        touchedRootPaths.push(projectPathMeta.worktreeRootPath);
+                        continue;
+                    }
+
+                    const projectId = randomUUID();
+                    insertProject.run(
+                        projectId,
+                        path.basename(projectPathMeta.canonicalRootPath),
+                        projectPathMeta.canonicalRootPath,
+                        now,
+                        now,
+                    );
+                    ensureProjectRoots({
+                        canonicalRootPath: projectPathMeta.canonicalRootPath,
+                        insertRoot,
+                        projectId,
+                        selectedRootPath: projectPathMeta.worktreeRootPath,
+                    });
+                    insertWorktree.run(
+                        `${projectId}:primary`,
+                        projectId,
+                        projectPathMeta.canonicalRootPath,
+                        null,
+                        null,
+                        1,
+                        now,
+                        now,
+                    );
+                    if (
+                        projectPathMeta.worktreeRootPath !==
+                        projectPathMeta.canonicalRootPath
+                    ) {
+                        ensureProjectWorktree({
+                            findExistingWorktree,
+                            insertWorktree,
+                            now,
+                            projectId,
+                            rootPath: projectPathMeta.worktreeRootPath,
+                        });
+                    }
+                    touchRecent.run(projectId, now);
+                    touchedRootPaths.push(projectPathMeta.worktreeRootPath);
+                }
+            },
+        );
+
+        const normalizedPaths = projectPaths
+            .map((projectPath) => path.resolve(projectPath))
+            .filter(isDirectoryPath);
+
+        transaction(normalizedPaths);
+
+        return {
+            projects: this.listProjects(),
+            touchedRootPaths,
+        };
+    }
+
+    removeProject(projectId: string): void {
+        this.#connection
+            .prepare<[string], void>(
+                `
+                UPDATE projects
+                SET is_hidden = 1
+                WHERE id = ?
+                `,
+            )
+            .run(projectId);
+        this.#connection
+            .prepare<
+                [string],
+                void
+            >("DELETE FROM recent_projects WHERE project_id = ?")
+            .run(projectId);
+    }
+
+    touchProject(projectId: string): void {
+        const now = new Date().toISOString();
+
+        this.#connection
+            .prepare<[string, string], void>(
+                `
+                INSERT INTO recent_projects (project_id, last_opened_at)
+                VALUES (?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    last_opened_at = excluded.last_opened_at
+                `,
+            )
+            .run(projectId, now);
+
+        this.#connection
+            .prepare<
+                [string, string],
+                void
+            >("UPDATE projects SET updated_at = ? WHERE id = ?")
+            .run(now, projectId);
+    }
+
+    getProject(projectId: string): ProjectRecord | null {
+        const row = this.#connection
+            .prepare<
+                [string],
+                | {
+                      canonical_root_path: string;
+                      id: string;
+                      root_path: string | null;
+                  }
+                | undefined
+            >(
+                `
+                SELECT
+                    projects.id,
+                    projects.canonical_root_path,
+                    project_worktrees.root_path
+                FROM projects
+                LEFT JOIN project_worktrees
+                    ON project_worktrees.project_id = projects.id
+                    AND project_worktrees.is_primary = 1
+                WHERE projects.id = ?
+                  AND projects.is_hidden = 0
+                `,
+            )
+            .get(projectId);
+
+        if (!row) {
+            return null;
+        }
+
+        return {
+            canonicalRootPath: row.canonical_root_path,
+            id: row.id,
+            rootPath: row.root_path ?? row.canonical_root_path,
+        };
+    }
+
+    getProjectWorktree(worktreeId: string): ProjectStoreWorktreeRecord | null {
+        const row = this.#connection
+            .prepare<[string], PersistedProjectWorktreeRow | undefined>(
+                `
+                SELECT
+                    id,
+                    project_id,
+                    root_path,
+                    branch_name,
+                    head_sha,
+                    is_primary,
+                    updated_at
+                FROM project_worktrees
+                WHERE id = ?
+                `,
+            )
+            .get(worktreeId);
+
+        return row ? mapWorktreeRow(row) : null;
+    }
+
+    listProjectWorktrees(
+        projectId: string,
+    ): readonly ProjectStoreWorktreeRecord[] {
+        return this.#connection
+            .prepare<[string], PersistedProjectWorktreeRow>(
+                `
+                SELECT
+                    id,
+                    project_id,
+                    root_path,
+                    branch_name,
+                    head_sha,
+                    is_primary,
+                    updated_at
+                FROM project_worktrees
+                WHERE project_id = ?
+                ORDER BY is_primary DESC, root_path COLLATE NOCASE ASC
+                `,
+            )
+            .all(projectId)
+            .map(mapWorktreeRow);
+    }
+
+    syncProjectWorktrees(
+        projectId: string,
+        worktrees: readonly {
+            readonly branchName: string | null;
+            readonly headSha: string | null;
+            readonly rootPath: string;
+        }[],
+    ): readonly ProjectStoreWorktreeRecord[] {
+        const project = this.getProject(projectId);
+        if (!project) {
+            throw new Error("The requested project does not exist anymore.");
+        }
+
+        const desiredWorktrees = new Map(
+            worktrees.map((worktree) => [
+                path.resolve(worktree.rootPath),
+                {
+                    branchName: worktree.branchName,
+                    headSha: worktree.headSha,
+                    rootPath: path.resolve(worktree.rootPath),
+                },
+            ]),
+        );
+
+        if (!desiredWorktrees.has(project.canonicalRootPath)) {
+            desiredWorktrees.set(project.canonicalRootPath, {
+                branchName: null,
+                headSha: null,
+                rootPath: project.canonicalRootPath,
+            });
+        }
+
+        const existingRows = this.#connection
+            .prepare<[string], PersistedProjectWorktreeRow>(
+                `
+                SELECT
+                    id,
+                    project_id,
+                    root_path,
+                    branch_name,
+                    head_sha,
+                    is_primary,
+                    updated_at
+                FROM project_worktrees
+                WHERE project_id = ?
+                `,
+            )
+            .all(projectId);
+        const existingByPath = new Map(
+            existingRows.map((row) => [path.resolve(row.root_path), row]),
+        );
+        const upsertWorktree = this.#connection.prepare<
+            [
+                string,
+                string,
+                string,
+                string | null,
+                string | null,
+                number,
+                string,
+                string,
+            ],
+            void
+        >(
+            `
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                root_path = excluded.root_path,
+                branch_name = excluded.branch_name,
+                head_sha = excluded.head_sha,
+                is_primary = excluded.is_primary,
+                updated_at = excluded.updated_at
+            `,
+        );
+        const deleteWorktree = this.#connection.prepare<[string], void>(
+            "DELETE FROM project_worktrees WHERE id = ?",
+        );
+        const now = new Date().toISOString();
+
+        const transaction = this.#connection.transaction(() => {
+            for (const existingRow of existingRows) {
+                const normalizedRootPath = path.resolve(existingRow.root_path);
+                if (desiredWorktrees.has(normalizedRootPath)) {
+                    continue;
+                }
+
+                if (existingRow.is_primary === 1) {
+                    continue;
+                }
+
+                deleteWorktree.run(existingRow.id);
+            }
+
+            for (const desiredWorktree of desiredWorktrees.values()) {
+                const existingRow = existingByPath.get(
+                    desiredWorktree.rootPath,
+                );
+                const isPrimary =
+                    desiredWorktree.rootPath === project.canonicalRootPath;
+                upsertWorktree.run(
+                    existingRow?.id ??
+                        (isPrimary ? `${projectId}:primary` : randomUUID()),
+                    projectId,
+                    desiredWorktree.rootPath,
+                    desiredWorktree.branchName,
+                    desiredWorktree.headSha,
+                    isPrimary ? 1 : 0,
+                    existingRow?.updated_at ?? now,
+                    now,
+                );
+            }
+        });
+
+        transaction();
+        return this.listProjectWorktrees(projectId);
+    }
+
+    getWorktreeRootPath(worktreeId: string): string {
+        const row = this.#connection
+            .prepare<[string], { root_path: string } | undefined>(
+                `
+                SELECT root_path
+                FROM project_worktrees
+                WHERE id = ?
+                `,
+            )
+            .get(worktreeId);
+
+        if (!row) {
+            throw new Error("The requested worktree does not exist anymore.");
+        }
+
+        return row.root_path;
+    }
+
+    #listAllVisibleWorktrees(): readonly ProjectStoreWorktreeRecord[] {
+        return this.#connection
+            .prepare<[], PersistedProjectWorktreeRow>(
+                `
+                SELECT
+                    project_worktrees.id,
+                    project_worktrees.project_id,
+                    project_worktrees.root_path,
+                    project_worktrees.branch_name,
+                    project_worktrees.head_sha,
+                    project_worktrees.is_primary,
+                    project_worktrees.updated_at
+                FROM project_worktrees
+                INNER JOIN projects
+                    ON projects.id = project_worktrees.project_id
+                WHERE projects.is_hidden = 0
+                ORDER BY
+                    project_worktrees.project_id,
+                    project_worktrees.is_primary DESC,
+                    project_worktrees.root_path COLLATE NOCASE ASC
+                `,
+            )
+            .all()
+            .map(mapWorktreeRow);
+    }
+
+    #listProjectRecords(): readonly ProjectStoreProjectRecord[] {
+        return this.#connection
+            .prepare<[], PersistedProjectRow>(
+                `
+                SELECT
+                    projects.id,
+                    projects.name,
+                    projects.canonical_root_path,
+                    projects.created_at,
+                    projects.updated_at,
+                    recent_projects.last_opened_at
+                FROM projects
+                LEFT JOIN recent_projects
+                    ON recent_projects.project_id = projects.id
+                WHERE projects.is_hidden = 0
+                ORDER BY
+                    recent_projects.last_opened_at IS NULL,
+                    recent_projects.last_opened_at DESC,
+                    projects.name COLLATE NOCASE ASC
+                `,
+            )
+            .all()
+            .map((row) => ({
+                canonicalRootPath: row.canonical_root_path,
+                createdAt: row.created_at,
+                id: row.id,
+                lastOpenedAt: row.last_opened_at,
+                name: row.name,
+                rootPath: row.canonical_root_path,
+                updatedAt: row.updated_at,
+            }));
+    }
+}
+
+function mapWorktreeRow(
+    row: PersistedProjectWorktreeRow,
+): ProjectStoreWorktreeRecord {
+    return {
+        branchName: row.branch_name,
+        headSha: row.head_sha,
+        id: row.id,
+        isPrimary: row.is_primary === 1,
+        projectId: row.project_id,
+        rootPath: row.root_path,
+        updatedAt: row.updated_at,
+    };
+}
+
+function ensureProjectRoots(options: {
+    readonly canonicalRootPath: string;
+    readonly insertRoot: Database.Statement<[string, string, number]>;
+    readonly projectId: string;
+    readonly selectedRootPath: string;
+}): void {
+    options.insertRoot.run(options.projectId, options.canonicalRootPath, 1);
+
+    if (options.selectedRootPath !== options.canonicalRootPath) {
+        options.insertRoot.run(options.projectId, options.selectedRootPath, 0);
+    }
+}
+
+function ensureProjectWorktree(options: {
+    readonly findExistingWorktree: Database.Statement<
+        [string],
+        { id: string } | undefined
+    >;
+    readonly insertWorktree: Database.Statement<
+        [
+            string,
+            string,
+            string,
+            string | null,
+            string | null,
+            number,
+            string,
+            string,
+        ]
+    >;
+    readonly now: string;
+    readonly projectId: string;
+    readonly rootPath: string;
+}): string {
+    const existing = options.findExistingWorktree.get(options.rootPath);
+    if (existing) {
+        return existing.id;
+    }
+
+    const worktreeId = randomUUID();
+    options.insertWorktree.run(
+        worktreeId,
+        options.projectId,
+        options.rootPath,
+        null,
+        null,
+        0,
+        options.now,
+        options.now,
+    );
+    return worktreeId;
+}
+
+function resolveProjectPathMetadata(projectPath: string): {
+    readonly canonicalRootPath: string;
+    readonly worktreeRootPath: string;
+} {
+    const resolvedPath = path.resolve(projectPath);
+    const worktreeRootPath =
+        runGitPathCommand(resolvedPath, ["rev-parse", "--show-toplevel"]) ??
+        resolvedPath;
+    const commonDir = runGitPathCommand(resolvedPath, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    ]);
+    const canonicalRootPath =
+        commonDir && path.basename(commonDir) === ".git"
+            ? path.dirname(commonDir)
+            : worktreeRootPath;
+
+    return {
+        canonicalRootPath: path.resolve(canonicalRootPath),
+        worktreeRootPath: path.resolve(worktreeRootPath),
+    };
+}
+
+function runGitPathCommand(
+    cwd: string,
+    args: readonly string[],
+): string | null {
+    try {
+        const output = execFileSync("git", args, {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+
+        return output.length > 0 ? output : null;
+    } catch {
+        return null;
+    }
+}
+
+function isDirectoryPath(projectPath: string): boolean {
+    try {
+        return fs.statSync(projectPath).isDirectory();
+    } catch {
+        return false;
+    }
+}

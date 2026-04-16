@@ -12,6 +12,7 @@ import {
     createSqliteCompatConnection,
 } from "@main/testing/sqlite-compat";
 import { WorkspaceService } from "@main/workspace/service";
+import { SqliteProjectStore } from "@main/projects/store";
 
 import { ProjectService, shouldIgnoreProjectWatchPath } from "./service";
 
@@ -57,7 +58,9 @@ describe("ProjectService", () => {
         fs.mkdirSync(path.dirname(projectFilePath), { recursive: true });
         fs.writeFileSync(projectFilePath, "export const value = 1;\n");
 
-        const [firstProject] = projectService.addProjectPaths([projectRoot]);
+        const [firstProject] = await projectService.addProjectPaths([
+            projectRoot,
+        ]);
         expect(firstProject).toBeDefined();
         if (!firstProject) {
             throw new Error("Expected the first project to be created.");
@@ -103,7 +106,9 @@ describe("ProjectService", () => {
             is_hidden: 1,
         });
 
-        const [reopenedProject] = projectService.addProjectPaths([projectRoot]);
+        const [reopenedProject] = await projectService.addProjectPaths([
+            projectRoot,
+        ]);
         expect(reopenedProject?.id).toBe(firstProject.id);
         if (!reopenedProject) {
             throw new Error("Expected the project to be re-added.");
@@ -141,7 +146,7 @@ describe("ProjectService", () => {
             "export const helper = true;\n",
         );
 
-        const [project] = projectService.addProjectPaths([projectRoot]);
+        const [project] = await projectService.addProjectPaths([projectRoot]);
         expect(project).toBeDefined();
         if (!project) {
             throw new Error("Expected the project to be created.");
@@ -213,6 +218,63 @@ describe("ProjectService", () => {
             initialDirectoryReads,
         );
     });
+
+    it("rebuilds worker registry and search caches after a worker restart", async () => {
+        const connection = createTestConnection();
+        const projectService = createProjectService(connection);
+        const projectRoot = createTempProject(tempDirs, "restart-cache");
+
+        fs.mkdirSync(path.join(projectRoot, "src"), {
+            recursive: true,
+        });
+        fs.writeFileSync(
+            path.join(projectRoot, "src", "RestartSignal.ts"),
+            "export const RestartSignal = true;\n",
+        );
+
+        const [project] = await projectService.addProjectPaths([projectRoot]);
+        expect(project).toBeDefined();
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        const readdirSpy = vi.spyOn(fs, "readdirSync");
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 10,
+                projectId: project.id,
+                query: "restartsignal",
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                kind: "file",
+                relativePath: "src/RestartSignal.ts",
+            }),
+        ]);
+
+        const cachedReadCount = readdirSpy.mock.calls.length;
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 10,
+                projectId: project.id,
+                query: "restartsignal",
+            }),
+        ).resolves.toHaveLength(1);
+        expect(readdirSpy.mock.calls.length).toBe(cachedReadCount);
+
+        projectService.handleProjectWorkerRestarted();
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 10,
+                projectId: project.id,
+                query: "restartsignal",
+            }),
+        ).resolves.toHaveLength(1);
+        expect(readdirSpy.mock.calls.length).toBeGreaterThan(cachedReadCount);
+    });
 });
 
 function createTestConnection() {
@@ -225,8 +287,8 @@ function createProjectService(
     connection: ReturnType<typeof createTestConnection>,
 ) {
     return new ProjectService({
-        connection,
         onProjectTreeInvalidated: () => {},
+        store: new SqliteProjectStore(connection),
     });
 }
 

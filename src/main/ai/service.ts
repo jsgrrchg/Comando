@@ -67,10 +67,13 @@ import {
 } from "@shared/ai-tracked-file";
 
 import type { ProjectService } from "@main/projects/service";
-import type { SettingsService } from "@main/settings/service";
-import type { SecretStoreService } from "@main/ai/secret-store";
+import type { SettingsGateway } from "@main/settings/service";
+import type { SecretStoreGateway } from "@main/ai/secret-store";
 
-import { createEmptyAiSessionSnapshot, AiPersistence } from "./persistence";
+import {
+    createEmptyAiSessionSnapshot,
+    type AiPersistenceGateway,
+} from "./persistence";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     applyCodexAuthEnv,
@@ -122,14 +125,14 @@ function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
 
 interface AiServiceOptions {
     readonly projectService: ProjectService;
-    readonly settingsService: SettingsService;
-    readonly secretStore: SecretStoreService;
+    readonly settingsService: SettingsGateway;
+    readonly secretStore: SecretStoreGateway;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly onSessionSnapshot: (
         ownerWindowId: string,
         update: AiSessionUpdate,
     ) => void;
-    readonly persistence: AiPersistence;
+    readonly persistence: AiPersistenceGateway;
 }
 
 interface LiveAcpSession {
@@ -185,10 +188,10 @@ export class AiService {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ) => void;
-    readonly #persistence: AiPersistence;
+    readonly #persistence: AiPersistenceGateway;
     readonly #projectService: ProjectService;
-    readonly #secretStore: SecretStoreService;
-    readonly #settingsService: SettingsService;
+    readonly #secretStore: SecretStoreGateway;
+    readonly #settingsService: SettingsGateway;
     readonly #sessions = new Map<string, LiveAcpSession>();
 
     constructor(options: AiServiceOptions) {
@@ -361,13 +364,15 @@ export class AiService {
         return status;
     }
 
-    getSessionSnapshot(sessionId: string): AiSessionSnapshot | null {
+    async getSessionSnapshot(
+        sessionId: string,
+    ): Promise<AiSessionSnapshot | null> {
         const liveSession = this.#sessions.get(sessionId);
         if (liveSession) {
             return liveSession.snapshot;
         }
 
-        return this.#persistence.loadSessionSnapshot(sessionId);
+        return await this.#persistence.loadSessionSnapshot(sessionId);
     }
 
     async prepareSession(
@@ -489,7 +494,7 @@ export class AiService {
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
-            const snapshot = this.#updateSessionSnapshot(
+            const snapshot = await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setModeOnSnapshot(currentSnapshot, input.modeId),
@@ -511,7 +516,7 @@ export class AiService {
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
-            const snapshot = this.#updateSessionSnapshot(
+            const snapshot = await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setModelOnSnapshot(currentSnapshot, input.modelId),
@@ -535,7 +540,7 @@ export class AiService {
     ): Promise<void> {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
-            const snapshot = this.#updateSessionSnapshot(
+            const snapshot = await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setConfigOptionOnSnapshot(
@@ -564,8 +569,8 @@ export class AiService {
         );
     }
 
-    renameSession(input: AiSessionRenameMutationInput): void {
-        this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+    async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
+        await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
             setTitleOnSnapshot(snapshot, input.title),
         );
     }
@@ -1166,7 +1171,7 @@ export class AiService {
         }
 
         const persistedSnapshot =
-            this.#persistence.loadSessionSnapshot(input.sessionId) ??
+            (await this.#persistence.loadSessionSnapshot(input.sessionId)) ??
             createEmptyAiSessionSnapshot({
                 projectId: input.projectId,
                 runtimeId: input.runtimeId,
@@ -1612,18 +1617,18 @@ export class AiService {
         return {};
     }
 
-    #loadSessionForReview(sessionId: string): Promise<LiveAcpSession> {
+    async #loadSessionForReview(sessionId: string): Promise<LiveAcpSession> {
         const liveSession = this.#sessions.get(sessionId);
         if (liveSession) {
-            return Promise.resolve(liveSession);
+            return liveSession;
         }
 
-        const snapshot = this.#persistence.loadSessionSnapshot(sessionId);
+        const snapshot = await this.#persistence.loadSessionSnapshot(sessionId);
         if (!snapshot) {
             throw new Error("The AI session was not found.");
         }
 
-        return Promise.resolve({
+        return {
             additionalRoots: [],
             child: null as never,
             closing: true,
@@ -1651,7 +1656,7 @@ export class AiService {
             runtimeId: snapshot.runtimeId,
             snapshot,
             stderrChunks: [],
-        });
+        };
     }
 
     async #revertTrackedFile(
@@ -2180,10 +2185,10 @@ export class AiService {
         this.#persistAndBroadcast(liveSession);
     }
 
-    #updateSessionSnapshot(
+    async #updateSessionSnapshot(
         sessionId: string,
         mutate: (snapshot: AiSessionSnapshot) => AiSessionSnapshot,
-    ): AiSessionSnapshot {
+    ): Promise<AiSessionSnapshot> {
         const liveSession = this.#sessions.get(sessionId);
         if (liveSession) {
             liveSession.snapshot = mutate(liveSession.snapshot);
@@ -2191,7 +2196,7 @@ export class AiService {
             return liveSession.snapshot;
         }
 
-        const snapshot = this.#persistence.loadSessionSnapshot(sessionId);
+        const snapshot = await this.#persistence.loadSessionSnapshot(sessionId);
         if (!snapshot) {
             throw new Error("The AI session was not found.");
         }

@@ -17,6 +17,9 @@ import type {
 } from "@shared/ipc";
 import { syncTrackedFile } from "@shared/ai-tracked-file";
 
+import type { Awaitable } from "../db/awaitable";
+import { mainProcessPerformance } from "../observability/performance";
+
 interface PersistedAiSessionRow {
     readonly draft: string;
     readonly project_id: string | null;
@@ -41,10 +44,48 @@ interface PersistedRuntimePreferencesRow {
     readonly value: string;
 }
 
-interface PersistedRuntimeSelectionPreferences {
+export interface PersistedRuntimeSelectionPreferences {
     readonly configOptions: Record<string, boolean | string>;
     readonly modeId: string | null;
     readonly modelId: string | null;
+}
+
+export type PersistedRuntimeCatalogSnapshot = Pick<
+    AiSessionSnapshot,
+    | "availableCommands"
+    | "configOptions"
+    | "modeId"
+    | "modes"
+    | "modelId"
+    | "models"
+>;
+
+export interface AiPersistenceGateway {
+    loadSessionSnapshot(sessionId: string): Awaitable<AiSessionSnapshot | null>;
+    loadLatestRuntimeCatalog(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+    ): PersistedRuntimeCatalogSnapshot | null;
+    loadRuntimeSelectionPreferences(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+    ): PersistedRuntimeSelectionPreferences;
+    saveRuntimeSelectionPreferences(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        patch: Partial<PersistedRuntimeSelectionPreferences>,
+    ): void;
+    saveRuntimeSelectionPreferenceOption(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        optionId: string,
+        value: boolean | string,
+    ): void;
+    saveRuntimeModePreference(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        modeId: string,
+    ): void;
+    saveRuntimeModelPreference(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        modelId: string,
+    ): void;
+    saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void;
 }
 
 export class AiPersistence {
@@ -55,106 +96,121 @@ export class AiPersistence {
     }
 
     loadSessionSnapshot(sessionId: string): AiSessionSnapshot | null {
-        const row = this.#connection
-            .prepare<[string], PersistedAiSessionRow | undefined>(
-                `
-                SELECT
-                    chat_sessions.project_id,
-                    chat_sessions.worktree_id,
-                    chat_sessions.title,
-                    chat_sessions.runtime,
-                    chat_sessions.status,
-                    chat_sessions.draft,
-                    chat_sessions.updated_at,
-                    chat_transcripts.transcript_json
-                FROM chat_sessions
-                LEFT JOIN chat_transcripts
-                    ON chat_transcripts.session_id = chat_sessions.id
-                WHERE chat_sessions.id = ?
-                `,
-            )
-            .get(sessionId);
+        return mainProcessPerformance.measureSync(
+            "db.ai.loadSessionSnapshot",
+            () => {
+                const row = this.#connection
+                    .prepare<[string], PersistedAiSessionRow | undefined>(
+                        `
+                        SELECT
+                            chat_sessions.project_id,
+                            chat_sessions.worktree_id,
+                            chat_sessions.title,
+                            chat_sessions.runtime,
+                            chat_sessions.status,
+                            chat_sessions.draft,
+                            chat_sessions.updated_at,
+                            chat_transcripts.transcript_json
+                        FROM chat_sessions
+                        LEFT JOIN chat_transcripts
+                            ON chat_transcripts.session_id = chat_sessions.id
+                        WHERE chat_sessions.id = ?
+                        `,
+                    )
+                    .get(sessionId);
 
-        if (!row) {
-            return null;
-        }
+                if (!row) {
+                    return null;
+                }
 
-        const fallback = createEmptyAiSessionSnapshot({
-            projectId: row.project_id,
-            runtimeId:
-                row.runtime === "claude" ||
-                row.runtime === "codex" ||
-                row.runtime === "gemini" ||
-                row.runtime === "kilo"
-                    ? row.runtime
-                    : "codex",
-            sessionId,
-            status: normalizeSessionStatus(row.status),
-            title: row.title,
-            updatedAt: row.updated_at,
-            worktreeId: row.worktree_id,
-        });
-        const raw = parseJsonWithFallback<Record<string, unknown> | null>(
-            row.transcript_json,
-            null,
-        );
+                const fallback = createEmptyAiSessionSnapshot({
+                    projectId: row.project_id,
+                    runtimeId:
+                        row.runtime === "claude" ||
+                        row.runtime === "codex" ||
+                        row.runtime === "gemini" ||
+                        row.runtime === "kilo"
+                            ? row.runtime
+                            : "codex",
+                    sessionId,
+                    status: normalizeSessionStatus(row.status),
+                    title: row.title,
+                    updatedAt: row.updated_at,
+                    worktreeId: row.worktree_id,
+                });
+                const raw = parseJsonWithFallback<Record<
+                    string,
+                    unknown
+                > | null>(row.transcript_json, null);
 
-        if (!raw) {
-            return mergeRuntimeCatalogIntoSnapshot(
-                fallback,
-                this.loadLatestRuntimeCatalog(fallback.runtimeId),
-            );
-        }
+                if (!raw) {
+                    return mergeRuntimeCatalogIntoSnapshot(
+                        fallback,
+                        this.loadLatestRuntimeCatalog(fallback.runtimeId),
+                    );
+                }
 
-        const snapshot = {
-            availableCommands: normalizeAvailableCommands(
-                raw.availableCommands,
-            ),
-            configOptions: normalizeConfigOptions(raw.configOptions),
-            lastError: typeof raw.lastError === "string" ? raw.lastError : null,
-            messages: normalizeMessages(raw.messages),
-            modeId: typeof raw.modeId === "string" ? raw.modeId : null,
-            modes: normalizeSessionModes(raw.modes),
-            modelId: typeof raw.modelId === "string" ? raw.modelId : null,
-            models: normalizeSessionModels(raw.models),
-            pendingPermission: normalizePermissionRequest(
-                raw.pendingPermission,
-            ),
-            pendingUserInput: normalizeUserInputRequest(raw.pendingUserInput),
-            plan: normalizePlan(raw.plan),
-            projectId: row.project_id,
-            runtimeId:
-                raw.runtimeId === "claude" ||
-                raw.runtimeId === "codex" ||
-                raw.runtimeId === "gemini" ||
-                raw.runtimeId === "kilo"
-                    ? raw.runtimeId
-                    : fallback.runtimeId,
-            runtimeSessionId:
-                typeof raw.runtimeSessionId === "string"
-                    ? raw.runtimeSessionId
-                    : null,
-            sessionId:
-                typeof raw.sessionId === "string"
-                    ? raw.sessionId
-                    : fallback.sessionId,
-            status: normalizeSessionStatus(raw.status),
-            title: typeof raw.title === "string" ? raw.title : fallback.title,
-            toolActivity: normalizeToolActivity(raw.toolActivity),
-            trackedFiles: normalizeTrackedFiles(raw.trackedFiles),
-            updatedAt:
-                typeof raw.updatedAt === "string"
-                    ? raw.updatedAt
-                    : fallback.updatedAt,
-            worktreeId:
-                typeof raw.worktreeId === "string" || raw.worktreeId === null
-                    ? raw.worktreeId
-                    : fallback.worktreeId,
-        };
+                const snapshot = {
+                    availableCommands: normalizeAvailableCommands(
+                        raw.availableCommands,
+                    ),
+                    configOptions: normalizeConfigOptions(raw.configOptions),
+                    lastError:
+                        typeof raw.lastError === "string"
+                            ? raw.lastError
+                            : null,
+                    messages: normalizeMessages(raw.messages),
+                    modeId: typeof raw.modeId === "string" ? raw.modeId : null,
+                    modes: normalizeSessionModes(raw.modes),
+                    modelId:
+                        typeof raw.modelId === "string" ? raw.modelId : null,
+                    models: normalizeSessionModels(raw.models),
+                    pendingPermission: normalizePermissionRequest(
+                        raw.pendingPermission,
+                    ),
+                    pendingUserInput: normalizeUserInputRequest(
+                        raw.pendingUserInput,
+                    ),
+                    plan: normalizePlan(raw.plan),
+                    projectId: row.project_id,
+                    runtimeId:
+                        raw.runtimeId === "claude" ||
+                        raw.runtimeId === "codex" ||
+                        raw.runtimeId === "gemini" ||
+                        raw.runtimeId === "kilo"
+                            ? raw.runtimeId
+                            : fallback.runtimeId,
+                    runtimeSessionId:
+                        typeof raw.runtimeSessionId === "string"
+                            ? raw.runtimeSessionId
+                            : null,
+                    sessionId:
+                        typeof raw.sessionId === "string"
+                            ? raw.sessionId
+                            : fallback.sessionId,
+                    status: normalizeSessionStatus(raw.status),
+                    title:
+                        typeof raw.title === "string"
+                            ? raw.title
+                            : fallback.title,
+                    toolActivity: normalizeToolActivity(raw.toolActivity),
+                    trackedFiles: normalizeTrackedFiles(raw.trackedFiles),
+                    updatedAt:
+                        typeof raw.updatedAt === "string"
+                            ? raw.updatedAt
+                            : fallback.updatedAt,
+                    worktreeId:
+                        typeof raw.worktreeId === "string" ||
+                        raw.worktreeId === null
+                            ? raw.worktreeId
+                            : fallback.worktreeId,
+                };
 
-        return mergeRuntimeCatalogIntoSnapshot(
-            snapshot,
-            this.loadLatestRuntimeCatalog(snapshot.runtimeId),
+                return mergeRuntimeCatalogIntoSnapshot(
+                    snapshot,
+                    this.loadLatestRuntimeCatalog(snapshot.runtimeId),
+                );
+            },
         );
     }
 
@@ -316,109 +372,114 @@ export class AiPersistence {
     }
 
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void {
-        const now = new Date().toISOString();
-        const draftToPersist =
-            draft ?? this.#loadCurrentDraft(snapshot.sessionId);
-        const runtimeCatalog = extractRuntimeCatalog(snapshot);
+        mainProcessPerformance.measureSync("db.ai.saveSessionSnapshot", () => {
+            const now = new Date().toISOString();
+            const draftToPersist =
+                draft ?? this.#loadCurrentDraft(snapshot.sessionId);
+            const runtimeCatalog = extractRuntimeCatalog(snapshot);
 
-        this.#connection
-            .prepare<
-                [
-                    string,
-                    string | null,
-                    string | null,
-                    string,
-                    string,
-                    string,
-                    string,
-                    string,
-                    string,
-                    string,
-                ],
-                void
-            >(
-                `
-                INSERT INTO chat_sessions (
-                    id,
-                    project_id,
-                    worktree_id,
-                    title,
-                    runtime,
-                    status,
-                    draft,
-                    created_at,
-                    updated_at,
-                    last_opened_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    project_id = excluded.project_id,
-                    worktree_id = excluded.worktree_id,
-                    title = excluded.title,
-                    runtime = excluded.runtime,
-                    status = excluded.status,
-                    draft = excluded.draft,
-                    updated_at = excluded.updated_at,
-                    last_opened_at = excluded.last_opened_at
-                `,
-            )
-            .run(
-                snapshot.sessionId,
-                snapshot.projectId,
-                snapshot.worktreeId ?? null,
-                snapshot.title,
-                snapshot.runtimeId,
-                snapshot.status,
-                draftToPersist,
-                now,
-                now,
-                now,
-            );
-
-        if (hasRuntimeCatalog(runtimeCatalog)) {
             this.#connection
-                .prepare<[string, string, string], void>(
+                .prepare<
+                    [
+                        string,
+                        string | null,
+                        string | null,
+                        string,
+                        string,
+                        string,
+                        string,
+                        string,
+                        string,
+                        string,
+                    ],
+                    void
+                >(
                     `
-                    INSERT INTO app_settings (key, value, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(key) DO UPDATE SET
-                        value = excluded.value,
+                    INSERT INTO chat_sessions (
+                        id,
+                        project_id,
+                        worktree_id,
+                        title,
+                        runtime,
+                        status,
+                        draft,
+                        created_at,
+                        updated_at,
+                        last_opened_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        project_id = excluded.project_id,
+                        worktree_id = excluded.worktree_id,
+                        title = excluded.title,
+                        runtime = excluded.runtime,
+                        status = excluded.status,
+                        draft = excluded.draft,
+                        updated_at = excluded.updated_at,
+                        last_opened_at = excluded.last_opened_at
+                    `,
+                )
+                .run(
+                    snapshot.sessionId,
+                    snapshot.projectId,
+                    snapshot.worktreeId ?? null,
+                    snapshot.title,
+                    snapshot.runtimeId,
+                    snapshot.status,
+                    draftToPersist,
+                    now,
+                    now,
+                    now,
+                );
+
+            if (hasRuntimeCatalog(runtimeCatalog)) {
+                this.#connection
+                    .prepare<[string, string, string], void>(
+                        `
+                        INSERT INTO app_settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET
+                            value = excluded.value,
+                            updated_at = excluded.updated_at
+                        `,
+                    )
+                    .run(
+                        getRuntimeCatalogKey(snapshot.runtimeId),
+                        JSON.stringify(runtimeCatalog),
+                        now,
+                    );
+            }
+
+            this.#connection
+                .prepare<
+                    [string, string, string, number, string, string],
+                    void
+                >(
+                    `
+                    INSERT INTO chat_transcripts (
+                        id,
+                        session_id,
+                        transcript_json,
+                        message_count,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        transcript_json = excluded.transcript_json,
+                        message_count = excluded.message_count,
                         updated_at = excluded.updated_at
                     `,
                 )
                 .run(
-                    getRuntimeCatalogKey(snapshot.runtimeId),
-                    JSON.stringify(runtimeCatalog),
+                    `transcript:${snapshot.sessionId}`,
+                    snapshot.sessionId,
+                    JSON.stringify(createPersistedSessionSnapshot(snapshot)),
+                    snapshot.messages.length,
+                    now,
                     now,
                 );
-        }
-
-        this.#connection
-            .prepare<[string, string, string, number, string, string], void>(
-                `
-                INSERT INTO chat_transcripts (
-                    id,
-                    session_id,
-                    transcript_json,
-                    message_count,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    transcript_json = excluded.transcript_json,
-                    message_count = excluded.message_count,
-                    updated_at = excluded.updated_at
-                `,
-            )
-            .run(
-                `transcript:${snapshot.sessionId}`,
-                snapshot.sessionId,
-                JSON.stringify(createPersistedSessionSnapshot(snapshot)),
-                snapshot.messages.length,
-                now,
-                now,
-            );
+        });
     }
 
     #loadCurrentDraft(sessionId: string): string {

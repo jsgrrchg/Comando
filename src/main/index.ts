@@ -1,4 +1,9 @@
-import { app, BrowserWindow } from "electron";
+import {
+    app,
+    BrowserWindow,
+    MessageChannelMain,
+    type MessagePortMain,
+} from "electron";
 
 import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
 import { appIdentity } from "@shared/app-identity";
@@ -17,16 +22,17 @@ import {
     type WindowContextSnapshot,
 } from "@shared/ipc";
 
-import { AiPersistence } from "./ai/persistence";
-import { SecretStoreService } from "./ai/secret-store";
+import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
-import { bootstrapDatabase, type DatabaseManager } from "./db";
-import { GitService } from "./git";
+import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
+import { createGitWorkerClient, type GitWorkerClient } from "./git";
 import { installApplicationMenu } from "./menu";
-import { PersistenceService } from "./persistence/service";
+import { mainProcessPerformance } from "./observability/performance";
+import type { PersistenceGateway } from "./persistence/service";
+import { createProjectWorkerClient } from "./projects/client";
 import { ProjectService } from "./projects/service";
 import { registerIpcHandlers } from "./ipc";
-import { SettingsService } from "./settings/service";
+import type { SettingsGateway } from "./settings/service";
 import {
     applyAppZoomToWindow,
     broadcastSettingsUpdated,
@@ -35,19 +41,20 @@ import { openSettingsWindow } from "./settings/window";
 import { TerminalService } from "./terminals/service";
 import { createMainWindow } from "./window";
 import { windowRegistry } from "./windows/registry";
-import { WorkspaceService } from "./workspace/service";
+import type { WorkspaceGateway } from "./workspace/service";
 
-let database: DatabaseManager | null = null;
+let dbWorkerClient: DbWorkerClient | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
-let persistenceService: PersistenceService | null = null;
+let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
-let gitService: GitService | null = null;
-let secretStore: SecretStoreService | null = null;
-let settingsService: SettingsService | null = null;
+let gitService: GitWorkerClient | null = null;
+let secretStore: SecretStoreGateway | null = null;
+let settingsService: SettingsGateway | null = null;
 let terminalService: TerminalService | null = null;
-let workspaceService: WorkspaceService | null = null;
+let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
+const aiSessionStreamPorts = new Map<string, MessagePortMain>();
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -67,131 +74,151 @@ if (!hasSingleInstanceLock) {
         void openNewMainWindow(null);
     });
 
-    void app.whenReady().then(() => {
-        database = bootstrapDatabase({
-            dataDir: app.getPath("userData"),
-        });
-        persistenceService = new PersistenceService(database.connection);
-        secretStore = new SecretStoreService(database.connection);
-        settingsService = new SettingsService(database.connection);
-        gitService = new GitService();
-        projectService = new ProjectService({
-            connection: database.connection,
-            onProjectTreeInvalidated: (payload) => {
-                broadcastProjectTreeInvalidation(payload);
-                broadcastProjectGitInvalidation(payload);
-            },
-            onProjectTouched:
-                process.platform === "darwin"
-                    ? (projectPath) => {
-                          try {
-                              app.addRecentDocument(projectPath);
-                          } catch {
-                              // Ignore non-critical operating system errors.
+    void app
+        .whenReady()
+        .then(async () => {
+            mainProcessPerformance.markAppWhenReady();
+            dbWorkerClient = await createDbWorkerClient({
+                dataDir: app.getPath("userData"),
+            });
+            persistenceService = dbWorkerClient.persistence;
+            secretStore = dbWorkerClient.secretStore;
+            settingsService = dbWorkerClient.settings;
+            gitService = await createGitWorkerClient();
+            const projectWorker = await createProjectWorkerClient({
+                onProjectTreeInvalidated: (payload) => {
+                    projectService?.handleProjectTreeInvalidation(payload);
+                },
+                onWorkerRestarted: () => {
+                    projectService?.handleProjectWorkerRestarted();
+                },
+            });
+            projectService = new ProjectService({
+                onProjectTreeInvalidated: (payload) => {
+                    broadcastProjectTreeInvalidation(payload);
+                    broadcastProjectGitInvalidation(payload);
+                },
+                onProjectTouched:
+                    process.platform === "darwin"
+                        ? (projectPath) => {
+                              try {
+                                  app.addRecentDocument(projectPath);
+                              } catch {
+                                  // Ignore non-critical operating system errors.
+                              }
                           }
-                      }
-                    : undefined,
-        });
-        aiService = new AiService({
-            onRuntimeStatus: broadcastAiRuntimeStatus,
-            onSessionSnapshot: broadcastAiSessionSnapshot,
-            persistence: new AiPersistence(database.connection),
-            projectService,
-            secretStore,
-            settingsService,
-        });
-        terminalService = new TerminalService({
-            onData: broadcastTerminalData,
-            onExit: broadcastTerminalExit,
-            projectService,
-        });
-        workspaceService = new WorkspaceService(database.connection);
+                        : undefined,
+                store: dbWorkerClient.projectStore,
+                worker: projectWorker,
+            });
+            aiService = new AiService({
+                onRuntimeStatus: broadcastAiRuntimeStatus,
+                onSessionSnapshot: broadcastAiSessionSnapshot,
+                persistence: dbWorkerClient.aiPersistence,
+                projectService,
+                secretStore,
+                settingsService,
+            });
+            terminalService = new TerminalService({
+                onData: broadcastTerminalData,
+                onExit: broadcastTerminalExit,
+                projectService,
+            });
+            workspaceService = dbWorkerClient.workspace;
 
-        bootstrapSnapshot = {
-            app: appIdentity,
-            database: database.status,
-            platform: process.platform,
-            startedAt: new Date().toISOString(),
-            versions: {
-                chrome: process.versions.chrome,
-                electron: process.versions.electron,
-                node: process.versions.node,
-            },
-        };
+            bootstrapSnapshot = {
+                app: appIdentity,
+                database: dbWorkerClient.status,
+                platform: process.platform,
+                startedAt: new Date().toISOString(),
+                versions: {
+                    chrome: process.versions.chrome,
+                    electron: process.versions.electron,
+                    node: process.versions.node,
+                },
+            };
 
-        registerIpcHandlers({
-            aiService,
-            getSnapshot: () => {
-                if (!bootstrapSnapshot) {
-                    throw new Error(
-                        "The initial bootstrap snapshot is not available yet.",
-                    );
+            registerIpcHandlers({
+                aiService,
+                getSnapshot: () => {
+                    if (!bootstrapSnapshot) {
+                        throw new Error(
+                            "The initial bootstrap snapshot is not available yet.",
+                        );
+                    }
+
+                    return bootstrapSnapshot;
+                },
+                persistenceService,
+                gitService,
+                openProjectWindow: (input) => {
+                    openOrFocusProjectWindow(input);
+                },
+                projectService,
+                settingsService,
+                terminalService,
+                workspaceService,
+            });
+
+            installApplicationMenu({
+                adjustAppZoom: (direction) => {
+                    updateAppZoom(direction);
+                },
+                closeFocusedWindowSurface: () => {
+                    const focusedWindow = BrowserWindow.getFocusedWindow();
+                    if (!focusedWindow) {
+                        return;
+                    }
+
+                    const context =
+                        windowRegistry.getContextByBrowserWindow(focusedWindow);
+                    if (context?.windowKind === "main") {
+                        focusedWindow.webContents.send(
+                            IPC_EVENTS.workspaceCloseActiveTab,
+                        );
+                        return;
+                    }
+
+                    focusedWindow.close();
+                },
+                focusProjectWindow: (projectId) => {
+                    const existingWindow =
+                        windowRegistry.getMainWindowByProjectId(projectId);
+                    if (!existingWindow) {
+                        return false;
+                    }
+
+                    focusExistingWindow(existingWindow);
+                    return true;
+                },
+                getFocusedMainWindowContext: () => {
+                    const mainWindow = windowRegistry.getFocusedMainWindow();
+                    return mainWindow
+                        ? windowRegistry.getContextByBrowserWindow(mainWindow)
+                        : null;
+                },
+                openNewMainWindow: (projectId) => {
+                    void openNewMainWindow(projectId ?? null);
+                },
+                openSettingsWindow: (projectId) =>
+                    openSettingsWindow(
+                        { projectId },
+                        loadCurrentAppZoomFactor(),
+                    ),
+            });
+
+            restoreMainWindows();
+
+            app.on("activate", () => {
+                if (windowRegistry.listMainWindowContexts().length === 0) {
+                    void openNewMainWindow(null);
                 }
-
-                return bootstrapSnapshot;
-            },
-            persistenceService,
-            gitService,
-            openProjectWindow: (input) => {
-                openOrFocusProjectWindow(input);
-            },
-            projectService,
-            settingsService,
-            terminalService,
-            workspaceService,
+            });
+        })
+        .catch((error) => {
+            console.error("[main] Failed to initialize the application", error);
+            app.quit();
         });
-
-        installApplicationMenu({
-            adjustAppZoom: (direction) => {
-                updateAppZoom(direction);
-            },
-            closeFocusedWindowSurface: () => {
-                const focusedWindow = BrowserWindow.getFocusedWindow();
-                if (!focusedWindow) {
-                    return;
-                }
-
-                const context =
-                    windowRegistry.getContextByBrowserWindow(focusedWindow);
-                if (context?.windowKind === "main") {
-                    focusedWindow.webContents.send(
-                        IPC_EVENTS.workspaceCloseActiveTab,
-                    );
-                    return;
-                }
-
-                focusedWindow.close();
-            },
-            focusProjectWindow: (projectId) => {
-                const existingWindow =
-                    windowRegistry.getMainWindowByProjectId(projectId);
-                if (!existingWindow) {
-                    return false;
-                }
-
-                focusExistingWindow(existingWindow);
-                return true;
-            },
-            getFocusedMainWindowContext: () => {
-                const mainWindow = windowRegistry.getFocusedMainWindow();
-                return mainWindow
-                    ? windowRegistry.getContextByBrowserWindow(mainWindow)
-                    : null;
-            },
-            openNewMainWindow: (projectId) =>
-                openNewMainWindow(projectId ?? null),
-            openSettingsWindow: (projectId) =>
-                openSettingsWindow({ projectId }, loadCurrentAppZoomFactor()),
-        });
-
-        restoreMainWindows();
-
-        app.on("activate", () => {
-            if (windowRegistry.listMainWindowContexts().length === 0) {
-                void openNewMainWindow(null);
-            }
-        });
-    });
 }
 
 app.on("window-all-closed", () => {
@@ -205,9 +232,15 @@ app.on("before-quit", () => {
 });
 
 app.on("will-quit", () => {
+    for (const windowId of [...aiSessionStreamPorts.keys()]) {
+        detachAiSessionStream(windowId);
+    }
+
+    mainProcessPerformance.flush();
+    mainProcessPerformance.stop();
     aiService?.close();
     aiService = null;
-    gitService?.clear();
+    void gitService?.close();
     gitService = null;
     projectService?.close();
     projectService = null;
@@ -217,15 +250,15 @@ app.on("will-quit", () => {
     secretStore = null;
     settingsService = null;
     workspaceService = null;
-    database?.close();
-    database = null;
+    void dbWorkerClient?.close();
+    dbWorkerClient = null;
 });
 
 function restoreMainWindows(): void {
     const snapshots =
         persistenceService?.listRestorableMainWindowSnapshots() ?? [];
     if (snapshots.length === 0) {
-        openNewMainWindow(null);
+        void openNewMainWindow(null);
         return;
     }
 
@@ -234,8 +267,8 @@ function restoreMainWindows(): void {
     }
 }
 
-function openNewMainWindow(projectId: string | null): void {
-    openNewMainWindowWithOptions({
+async function openNewMainWindow(projectId: string | null): Promise<void> {
+    await openNewMainWindowWithOptions({
         projectId,
     });
 }
@@ -249,7 +282,7 @@ function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
         input.projectId,
     );
     if (!existingWindow) {
-        openNewMainWindowWithOptions({
+        void openNewMainWindowWithOptions({
             projectId: input.projectId,
             worktreeId: input.worktreeId,
         });
@@ -285,10 +318,10 @@ function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
     }
 }
 
-function openNewMainWindowWithOptions(input: {
+async function openNewMainWindowWithOptions(input: {
     readonly projectId: string | null;
     readonly worktreeId?: string | null;
-}): void {
+}): Promise<void> {
     if (!persistenceService) {
         return;
     }
@@ -311,7 +344,7 @@ function openNewMainWindowWithOptions(input: {
         sourceContext?.windowKind === "main"
             ? persistenceService.loadSnapshot(sourceContext.windowId).shellState
             : undefined;
-    const snapshot = persistenceService.createMainWindowSession(
+    const snapshot = await persistenceService.createMainWindowSession(
         sourceShellState === undefined
             ? {
                   projectId: input.projectId,
@@ -339,6 +372,13 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
 
     const window = createMainWindow(snapshot.windowState);
     const context = snapshot.windowContext;
+
+    window.webContents.once("did-finish-load", () => {
+        mainProcessPerformance.markFirstMainWindowReady();
+    });
+    window.webContents.on("did-finish-load", () => {
+        attachAiSessionStream(window, context.windowId);
+    });
 
     applyAppZoomToWindow(window, loadCurrentAppZoomFactor());
     windowRegistry.register(window, context);
@@ -422,6 +462,9 @@ function attachMainWindowLifecycle(
     window.on("focus", () => {
         persistenceService?.markWindowOpen(context.windowId);
     });
+    window.webContents.on("did-start-loading", () => {
+        detachAiSessionStream(context.windowId);
+    });
     window.on("resize", schedulePersist);
     window.on("move", schedulePersist);
     window.on("maximize", schedulePersist);
@@ -434,6 +477,8 @@ function attachMainWindowLifecycle(
             clearTimeout(timeout);
         }
 
+        detachAiSessionStream(context.windowId);
+
         if (!isQuitting) {
             persistenceService?.markWindowClosed(context.windowId);
         }
@@ -442,6 +487,7 @@ function attachMainWindowLifecycle(
         aiService?.closeOwnedByWindow(context.windowId);
     });
     window.webContents.on("render-process-gone", () => {
+        detachAiSessionStream(context.windowId);
         persistWindowState();
 
         if (window.isDestroyed()) {
@@ -571,15 +617,75 @@ function broadcastAiSessionSnapshot(
     ownerWindowId: string,
     payload: AiSessionUpdate,
 ): void {
+    mainProcessPerformance.recordAiSessionUpdate(payload);
+
     if (!ownerWindowId) {
         for (const window of BrowserWindow.getAllWindows()) {
-            window.webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
+            dispatchAiSessionSnapshot(window, payload);
         }
         return;
     }
 
     const targetWindow = windowRegistry.getWindowByStableId(ownerWindowId);
-    targetWindow?.webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
+    if (targetWindow) {
+        dispatchAiSessionSnapshot(targetWindow, payload, ownerWindowId);
+    }
+}
+
+function attachAiSessionStream(window: BrowserWindow, windowId: string): void {
+    if (window.isDestroyed()) {
+        detachAiSessionStream(windowId);
+        return;
+    }
+
+    detachAiSessionStream(windowId);
+
+    const channel = new MessageChannelMain();
+
+    try {
+        window.webContents.postMessage(IPC_EVENTS.aiSessionStreamPort, null, [
+            channel.port2,
+        ]);
+        aiSessionStreamPorts.set(windowId, channel.port1);
+    } catch {
+        channel.port1.close();
+        channel.port2.close();
+    }
+}
+
+function detachAiSessionStream(windowId: string): void {
+    const port = aiSessionStreamPorts.get(windowId);
+    if (!port) {
+        return;
+    }
+
+    aiSessionStreamPorts.delete(windowId);
+    port.close();
+}
+
+function dispatchAiSessionSnapshot(
+    window: BrowserWindow,
+    payload: AiSessionUpdate,
+    windowId?: string,
+): void {
+    const stableWindowId =
+        windowId ??
+        windowRegistry.getContextByBrowserWindow(window)?.windowId ??
+        null;
+
+    if (stableWindowId) {
+        const port = aiSessionStreamPorts.get(stableWindowId);
+        if (port) {
+            try {
+                port.postMessage(payload);
+                return;
+            } catch {
+                detachAiSessionStream(stableWindowId);
+            }
+        }
+    }
+
+    window.webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
 }
 
 function broadcastTerminalData(

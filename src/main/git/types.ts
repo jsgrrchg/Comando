@@ -114,6 +114,12 @@ export interface GitRepositorySnapshot {
     readonly worktrees: readonly GitWorktreeSummary[];
 }
 
+export interface GitDiffStatRecord {
+    readonly additions: number;
+    readonly deletions: number;
+    readonly key: string;
+}
+
 export interface GitFileDiffLine {
     readonly newLineNumber: number | null;
     readonly oldLineNumber: number | null;

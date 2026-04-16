@@ -5,7 +5,7 @@ import type {
     CodexRuntimeSettings,
 } from "@shared/ipc";
 
-import type { SecretStoreService } from "@main/ai/secret-store";
+import type { SecretStoreGateway } from "@main/ai/secret-store";
 
 import { resolveCodexRuntime } from "@main/ai/resolver/runtime-resolver";
 
@@ -76,7 +76,7 @@ export function getCodexAuthMethods(): readonly AiAuthMethod[] {
 }
 
 export function loadCodexSecretBundle(
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
 ): CodexSecretBundle {
     return {
         codexApiKey: secretStore.loadSecret("ai.codex", CODEX_API_KEY_SECRET),
@@ -85,7 +85,7 @@ export function loadCodexSecretBundle(
 }
 
 export function saveCodexSecrets(
-    secretStore: SecretStoreService,
+    secretStore: SecretStoreGateway,
     input: CodexSecretBundle,
 ): {
     readonly hasCodexApiKey: boolean;
