@@ -221,11 +221,6 @@ const DiffFileSurface = memo(function DiffFileSurface({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
-                {collapsed ? (
-                    <span className="text-[11px] text-text-secondary">
-                        {describeCollapsedFile(file)}
-                    </span>
-                ) : null}
                 {file.summary ? (
                     <p className="flex items-center gap-1.5 text-[13px]">
                         <DiffSummaryColored summary={file.summary} />
@@ -338,18 +333,6 @@ function CollapseChevron({ collapsed }: { readonly collapsed: boolean }) {
             />
         </svg>
     );
-}
-
-function describeCollapsedFile(file: GitDiffFile): string {
-    if (!file.isText) {
-        return "binary";
-    }
-
-    if (file.hunks.length === 0) {
-        return "no hunks";
-    }
-
-    return `${file.hunks.length} hunk${file.hunks.length === 1 ? "" : "s"}`;
 }
 
 function formatHunkHeader(hunk: GitDiffHunk): string {
