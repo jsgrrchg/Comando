@@ -86,6 +86,7 @@ import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/ed
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
+import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/workspace/workspaceTabActivity";
 import {
     getReviewHunkVisualEndLine,
     getSelectedReviewLine,
@@ -1471,11 +1472,9 @@ function WorkspacePaneView({
                                         <span className="truncate">
                                             {tabDisplayTitle}
                                         </span>
-                                        {"isDirty" in tab && tab.isDirty ? (
-                                            <span className="text-[9px] text-(--diff-warn)">
-                                                ●
-                                            </span>
-                                        ) : null}
+                                        <WorkspaceTabActivityIndicator
+                                            tab={tab}
+                                        />
                                         {"hasExternalChange" in tab &&
                                         tab.hasExternalChange ? (
                                             <span
@@ -3953,6 +3952,52 @@ function TabIcon({
             <path d="M6 8.5h4M6 10.5h2.5" strokeWidth="0.8" />
         </svg>
     );
+}
+
+function WorkspaceTabActivityIndicator({
+    tab,
+}: {
+    readonly tab: RuntimeWorkspaceTab;
+}) {
+    const sessionId = tab.kind === "chat" ? tab.sessionId : null;
+    const activityIndicator = useAiStore(
+        useCallback(
+            (state: ReturnType<typeof useAiStore.getState>) => {
+                if (!sessionId) {
+                    return null;
+                }
+
+                const session = state.sessions[sessionId];
+                return resolveWorkspaceChatTabActivityIndicator({
+                    localError: session?.localError ?? null,
+                    snapshot: session?.snapshot ?? null,
+                });
+            },
+            [sessionId],
+        ),
+    );
+
+    if (activityIndicator) {
+        return (
+            <span
+                className={[
+                    "text-[9px]",
+                    activityIndicator.tone === "danger"
+                        ? "text-rose-500"
+                        : "text-(--diff-warn)",
+                ].join(" ")}
+                title={activityIndicator.title}
+            >
+                ●
+            </span>
+        );
+    }
+
+    if ("isDirty" in tab && tab.isDirty) {
+        return <span className="text-[9px] text-(--diff-warn)">●</span>;
+    }
+
+    return null;
 }
 
 function getWorkspaceTabDisplayTitle(tab: RuntimeWorkspaceTab): string {
