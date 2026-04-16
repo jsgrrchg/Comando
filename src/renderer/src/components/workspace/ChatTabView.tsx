@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -41,6 +42,7 @@ import { LanguageIcon } from "./LanguageIcon";
 import { MarkdownContent } from "./MarkdownContent";
 import { AIChatComposer } from "./chat/AIChatComposer";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
+import { isScrollViewportNearBottom } from "./chat/chatScroll";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
     composerPartsToPlainText,
@@ -241,7 +243,9 @@ export function ChatTabView({
     );
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
-    const wasNearBottom = useRef(true);
+    const timelineContentRef = useRef<HTMLDivElement | null>(null);
+    const shouldAutoFollowRef = useRef(true);
+    const pendingScrollFrameRef = useRef<number | null>(null);
     const composerPartsRef = useRef<AIComposerPart[]>(
         createEmptyComposerParts(),
     );
@@ -602,22 +606,77 @@ export function ChatTabView({
         return rows;
     }, [snapshot.messages, snapshot.toolActivity, snapshot.trackedFiles]);
 
+    const isNearBottom = useCallback((el: HTMLDivElement) => {
+        return isScrollViewportNearBottom(
+            el.scrollTop,
+            el.scrollHeight,
+            el.clientHeight,
+            NEAR_BOTTOM_THRESHOLD,
+        );
+    }, []);
+
     const scrollToBottom = useCallback(() => {
         const el = scrollRef.current;
         if (el) el.scrollTop = el.scrollHeight;
     }, []);
 
+    const scheduleScrollToBottom = useCallback(() => {
+        if (pendingScrollFrameRef.current !== null) {
+            window.cancelAnimationFrame(pendingScrollFrameRef.current);
+        }
+
+        pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
+            pendingScrollFrameRef.current = null;
+            scrollToBottom();
+        });
+    }, [scrollToBottom]);
+
     useEffect(() => {
-        if (wasNearBottom.current) scrollToBottom();
-    }, [timeline.length, scrollToBottom]);
+        return () => {
+            if (pendingScrollFrameRef.current !== null) {
+                window.cancelAnimationFrame(pendingScrollFrameRef.current);
+                pendingScrollFrameRef.current = null;
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        shouldAutoFollowRef.current = true;
+        scheduleScrollToBottom();
+    }, [scheduleScrollToBottom, tab.sessionId]);
+
+    useLayoutEffect(() => {
+        if (shouldAutoFollowRef.current) {
+            scheduleScrollToBottom();
+        }
+    }, [scheduleScrollToBottom, snapshot.updatedAt]);
+
+    useEffect(() => {
+        const scrollEl = scrollRef.current;
+        const contentEl = timelineContentRef.current;
+        if (!scrollEl || !contentEl || typeof ResizeObserver === "undefined") {
+            return;
+        }
+
+        const observer = new ResizeObserver(() => {
+            if (shouldAutoFollowRef.current) {
+                scheduleScrollToBottom();
+            }
+        });
+
+        observer.observe(scrollEl);
+        observer.observe(contentEl);
+
+        return () => {
+            observer.disconnect();
+        };
+    }, [scheduleScrollToBottom, tab.sessionId]);
 
     const handleScroll = useCallback(() => {
         const el = scrollRef.current;
         if (!el) return;
-        wasNearBottom.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight <
-            NEAR_BOTTOM_THRESHOLD;
-    }, []);
+        shouldAutoFollowRef.current = isNearBottom(el);
+    }, [isNearBottom]);
 
     const updateDraftAttachments = useCallback(
         (attachments: readonly AiImageAttachment[]) => {
@@ -1585,6 +1644,7 @@ export function ChatTabView({
                     onScroll={handleScroll}
                 >
                     <div
+                        ref={timelineContentRef}
                         className="min-w-0 space-y-2"
                         style={{ fontFamily: chatFontFamily }}
                     >
