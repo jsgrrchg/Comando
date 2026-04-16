@@ -1,7 +1,8 @@
 import { Menu, app, shell, type MenuItemConstructorOptions } from "electron";
 
-import { appIdentity } from "@shared/app-identity";
 import type { WindowContextSnapshot } from "@shared/ipc";
+
+import { appIdentity } from "./app-runtime";
 
 interface InstallApplicationMenuOptions {
     readonly adjustAppZoom: (

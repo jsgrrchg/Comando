@@ -6,7 +6,6 @@ import {
 } from "electron";
 
 import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
-import { appIdentity } from "@shared/app-identity";
 import {
     IPC_EVENTS,
     type AiRuntimeStatus,
@@ -22,6 +21,7 @@ import {
     type WindowContextSnapshot,
 } from "@shared/ipc";
 
+import { appIdentity, configureMainProcessApp } from "./app-runtime";
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
@@ -55,6 +55,8 @@ let terminalService: TerminalService | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
 const aiSessionStreamPorts = new Map<string, MessagePortMain>();
+
+configureMainProcessApp();
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 

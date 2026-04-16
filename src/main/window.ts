@@ -3,8 +3,9 @@ import { fileURLToPath } from "node:url";
 
 import { BrowserWindow } from "electron";
 
-import { appIdentity } from "@shared/app-identity";
 import type { PersistedWindowState } from "@shared/ipc";
+
+import { appIdentity } from "./app-runtime";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 

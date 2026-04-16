@@ -15,8 +15,9 @@ Base de la Fase 0 para una app Electron local-first orientada a programación co
 
 ## Scripts
 
-- `pnpm dev`: desarrollo local
+- `pnpm dev`: desarrollo local en canal `Comando Dev`
 - `pnpm build`: build de producción de `main`, `preload` y `renderer`
+- `pnpm package:mac`: empaqueta la `.app` release universal de macOS
 - `pnpm lint`: validación estática con ESLint
 - `pnpm test`: tests unitarios con Vitest
 - `pnpm check`: corrida tipo CI local
@@ -35,4 +36,5 @@ Base de la Fase 0 para una app Electron local-first orientada a programación co
 - Estilo de IPC: `invoke/handle` con contrato tipado compartido
 - Estado de UI: Zustand en el renderer
 - Persistencia local: SQLite con tabla `schema_migrations`
+- Canales de app: `dev` y `release` con identidad separada en `src/shared/app-identity.ts`
 - Bundle IDs: placeholders en `src/shared/app-identity.ts`

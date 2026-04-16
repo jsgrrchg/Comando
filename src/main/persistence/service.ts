@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 
 import type Database from "better-sqlite3";
 
-import { appIdentity } from "@shared/app-identity";
 import type {
     PersistenceSnapshot,
     PersistedShellState,
@@ -10,6 +9,7 @@ import type {
     WindowContextSnapshot,
 } from "@shared/ipc";
 
+import { appIdentity } from "../app-runtime";
 import type { Awaitable } from "../db/awaitable";
 
 const DEFAULT_MAIN_WINDOW_HEIGHT = 960;
