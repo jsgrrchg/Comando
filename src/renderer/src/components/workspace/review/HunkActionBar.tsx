@@ -100,25 +100,6 @@ export function HunkActionBar({
             style={BAR_STYLE}
         >
             <button
-                aria-label={`Accept hunk ${hunkIndex + 1}`}
-                className="review-action-btn"
-                onClick={onAccept}
-                onMouseEnter={() => setHoverAccept(true)}
-                onMouseLeave={() => setHoverAccept(false)}
-                style={{
-                    ...BASE_BUTTON_STYLE,
-                    background: "transparent",
-                    border: "none",
-                    color: "var(--diff-add)",
-                    filter: hoverAccept ? "brightness(1.1)" : "none",
-                    opacity: hoverAccept ? 1 : 0.7,
-                    transition: "opacity 100ms ease, filter 100ms ease",
-                }}
-                type="button"
-            >
-                ✓ accept
-            </button>
-            <button
                 aria-label={`Reject hunk ${hunkIndex + 1}`}
                 className="review-action-btn"
                 onClick={onReject}
@@ -136,6 +117,25 @@ export function HunkActionBar({
                 type="button"
             >
                 ✕ reject
+            </button>
+            <button
+                aria-label={`Accept hunk ${hunkIndex + 1}`}
+                className="review-action-btn"
+                onClick={onAccept}
+                onMouseEnter={() => setHoverAccept(true)}
+                onMouseLeave={() => setHoverAccept(false)}
+                style={{
+                    ...BASE_BUTTON_STYLE,
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--diff-add)",
+                    filter: hoverAccept ? "brightness(1.1)" : "none",
+                    opacity: hoverAccept ? 1 : 0.7,
+                    transition: "opacity 100ms ease, filter 100ms ease",
+                }}
+                type="button"
+            >
+                ✓ accept
             </button>
         </div>
     );
