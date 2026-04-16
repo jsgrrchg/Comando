@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import type { ReviewFileItem } from "./editedFilesPresentationModel";
 import { EditedFileDiffPreview } from "./EditedFileDiffPreview";
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
@@ -99,7 +101,7 @@ export interface ReviewFileRowProps {
     readonly variant: "compact" | "full";
 }
 
-export function ReviewFileRow({
+export const ReviewFileRow = memo(function ReviewFileRow({
     diffZoom,
     expanded,
     item,
@@ -535,4 +537,6 @@ export function ReviewFileRow({
             />
         </div>
     );
-}
+});
+
+ReviewFileRow.displayName = "ReviewFileRow";

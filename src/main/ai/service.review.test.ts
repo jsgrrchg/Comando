@@ -312,6 +312,7 @@ describe("AiService tracked file review merging", () => {
                     _meta: {
                         neverwriteEventType: "status",
                     },
+                    toolCallId: "neverwrite:status:item:msg-1",
                 } as never,
                 "Preparing input",
             ),
@@ -323,6 +324,7 @@ describe("AiService tracked file review merging", () => {
                     _meta: {
                         neverwriteEventType: "status",
                     },
+                    toolCallId: "neverwrite:status:item:msg-2",
                 } as never,
                 "Drafting response",
             ),
@@ -334,8 +336,62 @@ describe("AiService tracked file review merging", () => {
                     _meta: {
                         neverwriteEventType: "status",
                     },
+                    toolCallId: "neverwrite:status:item:msg-3",
                 } as never,
                 "Reasoning",
+            ),
+        ).toBe(false);
+    });
+
+    it("suppresses the tool_call_update completion that codex-acp emits without meta", () => {
+        // codex-acp omits meta on send_status_tool_call_update, which caused
+        // the "Drafting response" activity to reappear on turn completion.
+        // The stable toolCallId prefix lets us suppress it anyway.
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: null,
+                    toolCallId: "neverwrite:status:item:agent-msg-42",
+                } as never,
+                "Drafting response",
+            ),
+        ).toBe(true);
+
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: null,
+                    toolCallId: "neverwrite:status:item:user-msg-7",
+                } as never,
+                "Preparing input",
+            ),
+        ).toBe(true);
+    });
+
+    it("keeps turn-started status tool calls so they render as dividers", () => {
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: {
+                        neverwriteEventType: "status",
+                    },
+                    toolCallId: "neverwrite:status:turn:turn-1",
+                } as never,
+                "New turn",
+            ),
+        ).toBe(false);
+    });
+
+    it("does not suppress real tools whose title accidentally collides", () => {
+        // A legitimate tool call unrelated to codex-acp status events must
+        // not be silently dropped just because its title happens to match.
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: null,
+                    toolCallId: "normal-agent-tool-id",
+                } as never,
+                "Drafting response",
             ),
         ).toBe(false);
     });

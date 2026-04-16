@@ -774,8 +774,18 @@ export function getCompactPath(path: string, tailSegments = 3): string {
     return `.../${parts.slice(-tailSegments).join("/")}`;
 }
 
+// WeakMap keyed by the AiTrackedFile reference itself. Because tracked files are
+// replaced whole-object on every patch that touches them (never mutated),
+// referential equality is a safe identity for caching the derived diff.
+const trackedFileDiffCache = new WeakMap<AiTrackedFile, AiFileDiff>();
+
 export function createDiffFromTrackedFile(file: AiTrackedFile): AiFileDiff {
-    return {
+    const cached = trackedFileDiffCache.get(file);
+    if (cached) {
+        return cached;
+    }
+
+    const diff: AiFileDiff = {
         hunks: [...file.hunks],
         isText: file.isText,
         kind: file.kind,
@@ -785,4 +795,6 @@ export function createDiffFromTrackedFile(file: AiTrackedFile): AiFileDiff {
         previousPath: file.previousPath,
         reversible: file.reversible,
     };
+    trackedFileDiffCache.set(file, diff);
+    return diff;
 }

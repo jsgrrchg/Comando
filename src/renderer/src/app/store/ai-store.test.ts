@@ -790,4 +790,273 @@ describe("ai-store queue", () => {
             { type: "text", text: " " },
         ]);
     });
+
+    it("pauses the queue on cancelSession so the next idle snapshot does not auto-drain", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const cancelAiSession = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        // Two prompts typed while the agent is streaming.
+        await useAiStore.getState().sendPrompt(TAB, "first");
+        await useAiStore.getState().sendPrompt(TAB, "second");
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.queue.map((item) => item.prompt),
+        ).toEqual(["first", "second"]);
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+
+        await useAiStore.getState().cancelSession(TAB.sessionId);
+        expect(cancelAiSession).toHaveBeenCalledWith(TAB.sessionId);
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
+            true,
+        );
+
+        // The main process sends an idle snapshot right after the cancel.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        // Give any stray microtasks a chance to run; nothing should dispatch.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        const pausedSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(pausedSession?.queuePaused).toBe(true);
+        expect(pausedSession?.queue.map((item) => item.prompt)).toEqual([
+            "first",
+            "second",
+        ]);
+    });
+
+    it("resumes the paused queue after the next manual sendPrompt turn completes", async () => {
+        const manualDispatch = createDeferred<void>();
+        const sendAiPrompt = vi
+            .fn()
+            .mockImplementationOnce(() => manualDispatch.promise)
+            .mockResolvedValue(undefined);
+        const cancelAiSession = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "queued-one");
+        await useAiStore.getState().sendPrompt(TAB, "queued-two");
+
+        await useAiStore.getState().cancelSession(TAB.sessionId);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        // Nothing drained yet — queue is paused.
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+
+        // User manually sends a new prompt with the agent idle. This lifts
+        // the pause and dispatches directly; the dispatch stays pending
+        // while manualDispatch is unresolved so we can observe the
+        // intermediate state.
+        const resumePromise = useAiStore
+            .getState()
+            .sendPrompt(TAB, "manual-resume");
+
+        await vi.waitFor(() => {
+            expect(
+                useAiStore.getState().sessions[TAB.sessionId]?.isDispatching,
+            ).toBe(true);
+        });
+
+        expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        expect(sendAiPrompt.mock.calls[0][0]).toMatchObject({
+            prompt: "manual-resume",
+        });
+
+        const resumedSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(resumedSession?.queuePaused).toBe(false);
+        // The previously paused prompts are still queued, waiting for this
+        // turn to finish.
+        expect(resumedSession?.queue.map((item) => item.prompt)).toEqual([
+            "queued-one",
+            "queued-two",
+        ]);
+
+        // Simulate the manual turn finishing.
+        manualDispatch.resolve(undefined);
+        await resumePromise;
+
+        // The drain kicked off by sendPrompt after dispatch picks up the
+        // paused prompts in order. They resolve instantly via the default
+        // mock so both run back to back.
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(3);
+        });
+        expect(sendAiPrompt.mock.calls[1][0]).toMatchObject({
+            prompt: "queued-one",
+        });
+        expect(sendAiPrompt.mock.calls[2][0]).toMatchObject({
+            prompt: "queued-two",
+        });
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.queue,
+        ).toHaveLength(0);
+    });
+
+    it("resumes the paused queue when the user forces Send Now on a queued prompt", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const cancelAiSession = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "alpha");
+        await useAiStore.getState().sendPrompt(TAB, "beta");
+
+        await useAiStore.getState().cancelSession(TAB.sessionId);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+
+        const betaPromptId =
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[1]?.id ?? "";
+        await useAiStore
+            .getState()
+            .sendQueuedPromptNow(TAB.sessionId, betaPromptId);
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(2);
+        });
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
+            false,
+        );
+    });
+
+    it("clearQueuedPrompts resets the paused flag", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const cancelAiSession = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "only");
+        await useAiStore.getState().cancelSession(TAB.sessionId);
+
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
+            true,
+        );
+
+        useAiStore.getState().clearQueuedPrompts(TAB.sessionId);
+
+        const clearedSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(clearedSession?.queuePaused).toBe(false);
+        expect(clearedSession?.queue).toEqual([]);
+    });
+
+    it("clears the harmless pause flag when the user sends again after a cancel with an empty queue", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const cancelAiSession = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().cancelSession(TAB.sessionId);
+
+        // Main reports idle after the cancel completes.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        // Empty queue still gets the pause flag, but since there is nothing
+        // to hold back it stays harmless — the next sendPrompt dispatches
+        // directly and clears it via resumeQueue.
+        await useAiStore.getState().sendPrompt(TAB, "post-cancel");
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
+            false,
+        );
+    });
 });

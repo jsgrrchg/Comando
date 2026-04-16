@@ -1,4 +1,3 @@
-import { syncTrackedFile } from "@shared/ai-tracked-file";
 import type { AiTrackedFile } from "@shared/ipc";
 
 import type { RuntimeWorkspaceFileReviewContext } from "./tree";
@@ -9,13 +8,31 @@ type SessionWithTrackedFiles = {
     } | null;
 };
 
+// Cache keyed by the sessions record itself. Zustand swaps this record on
+// every mutation, so referential equality acts as a freshness signal; the
+// cache short-circuits the flatMap/filter pipeline when the same sessions
+// object is queried repeatedly (common under multiple FileTabView selectors
+// firing on each patch). We deliberately skip re-syncing the tracked files
+// here: the main process always runs them through syncTrackedFile before
+// emitting over IPC, and local optimistic mutations also produce synced
+// outputs (see resolveTrackedFileHunksInSnapshot). Re-syncing would force a
+// redundant O(n*m) LCS recompute for every freshly arrived file — the exact
+// work that caused the UI to lag when a new agent change landed.
+const collectPendingCache = new WeakMap<object, readonly AiTrackedFile[]>();
+
 export function collectPendingTrackedFilesFromSessions(
     sessions: Readonly<Record<string, SessionWithTrackedFiles | undefined>>,
 ): readonly AiTrackedFile[] {
-    return Object.values(sessions)
+    const cached = collectPendingCache.get(sessions);
+    if (cached) {
+        return cached;
+    }
+
+    const collected = Object.values(sessions)
         .flatMap((session) => session?.snapshot?.trackedFiles ?? [])
-        .map((trackedFile) => syncTrackedFile(trackedFile))
         .filter((trackedFile) => trackedFile.reviewState === "pending");
+    collectPendingCache.set(sessions, collected);
+    return collected;
 }
 
 export function matchesTrackedFilePath(

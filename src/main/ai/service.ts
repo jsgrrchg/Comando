@@ -112,6 +112,8 @@ import {
 const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
 const NEVERWRITE_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
 const NEVERWRITE_STATUS_EVENT_TYPE = "status";
+const NEVERWRITE_STATUS_EVENT_ID_PREFIX = "neverwrite:status:";
+const NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX = "neverwrite:status:turn:";
 const NEVERWRITE_USER_INPUT_EVENT_TYPE = "user_input_request";
 const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX =
     "__neverwrite_user_input_response__:";
@@ -3332,19 +3334,38 @@ function collectDiffs(
 }
 
 function shouldSuppressToolActivityUpdate(
-    update: Pick<ToolCall | ToolCallUpdate, "_meta">,
+    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
     title: string | null,
 ): boolean {
-    if (
-        !title ||
-        !isRecord(update._meta) ||
-        update._meta[NEVERWRITE_STATUS_EVENT_TYPE_KEY] !==
-            NEVERWRITE_STATUS_EVENT_TYPE
-    ) {
+    if (!title || !SUPPRESSED_NEVERWRITE_STATUS_TITLES.has(title)) {
         return false;
     }
 
-    return SUPPRESSED_NEVERWRITE_STATUS_TITLES.has(title);
+    // codex-acp tags the initial tool_call with meta.neverwriteEventType =
+    // "status", but the follow-up tool_call_update that completes the item
+    // is emitted without meta (see vendor/codex-acp/src/thread.rs ~1030,
+    // send_status_tool_call_update). Without a second signal the completion
+    // update slipped through, recreating the suppressed "Drafting response"
+    // activity after the agent's turn ended. The toolCallId prefix is
+    // stable across both events, so we use it as the authoritative marker.
+    // `turn:` ids are kept because the UI renders them as a timeline
+    // divider (see ToolActivityItem.isTurnStartedActivity).
+    if (
+        update.toolCallId.startsWith(NEVERWRITE_STATUS_EVENT_ID_PREFIX) &&
+        !update.toolCallId.startsWith(NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX)
+    ) {
+        return true;
+    }
+
+    if (
+        isRecord(update._meta) &&
+        update._meta[NEVERWRITE_STATUS_EVENT_TYPE_KEY] ===
+            NEVERWRITE_STATUS_EVENT_TYPE
+    ) {
+        return true;
+    }
+
+    return false;
 }
 
 function diffToAiFileDiff(

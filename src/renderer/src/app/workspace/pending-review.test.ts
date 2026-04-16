@@ -160,59 +160,32 @@ describe("pending review helpers", () => {
                     snapshot: { trackedFiles: [pending] },
                 },
             }),
-        ).toEqual([
-            {
-                ...pending,
-                hunks: [
-                    {
-                        id: "src/pending.ts:1:1:0",
-                        lines: [
-                            {
-                                id: "line:src/pending.ts:1:1:0",
-                                text: "const next = false;",
-                                type: "remove",
-                            },
-                            {
-                                id: "line:src/pending.ts:1:1:1",
-                                text: "const next = true;",
-                                type: "add",
-                            },
-                        ],
-                        newCount: 1,
-                        newStart: 1,
-                        oldCount: 1,
-                        oldStart: 1,
-                        visualEndLine: 1,
-                        visualStartLine: 1,
-                    },
-                ],
-            },
-        ]);
+        ).toEqual([pending]);
     });
 
-    it("recomputes stale pending hunks before exposing them to the UI", () => {
-        const stale = createTrackedFile({
+    it("returns pending tracked files without recomputing their hunks", () => {
+        // The renderer trusts that tracked files arriving over IPC (or via
+        // local optimistic mutations) have already been syncTrackedFile'd by
+        // the main process, so collect is a cheap pass-through. If a caller
+        // actually needs re-derived hunks it should call syncTrackedFile
+        // explicitly on the returned file.
+        const precomputedHunk = {
+            id: "precomputed-hunk",
+            lines: [
+                { id: "1", text: "beta", type: "remove" as const },
+                { id: "2", text: "BETA", type: "add" as const },
+            ],
+            newCount: 1,
+            newStart: 2,
+            oldCount: 1,
+            oldStart: 2,
+            visualEndLine: 2,
+            visualStartLine: 2,
+        };
+        const file = createTrackedFile({
             currentText: "alpha\nBETA\ngamma",
             diffBase: "alpha\nbeta\ngamma",
-            hunks: [
-                {
-                    id: "stale-hunk",
-                    lines: [
-                        { id: "1", text: "alpha", type: "remove" },
-                        { id: "2", text: "beta", type: "remove" },
-                        { id: "3", text: "gamma", type: "remove" },
-                        { id: "4", text: "alpha", type: "add" },
-                        { id: "5", text: "BETA", type: "add" },
-                        { id: "6", text: "gamma", type: "add" },
-                    ],
-                    newCount: 3,
-                    newStart: 1,
-                    oldCount: 3,
-                    oldStart: 1,
-                    visualEndLine: 3,
-                    visualStartLine: 1,
-                },
-            ],
+            hunks: [precomputedHunk],
             newText: "alpha\nBETA\ngamma",
             oldText: "alpha\nbeta\ngamma",
             path: "src/stale.ts",
@@ -222,31 +195,9 @@ describe("pending review helpers", () => {
         expect(
             collectPendingTrackedFilesFromSessions({
                 "session-stale": {
-                    snapshot: { trackedFiles: [stale] },
+                    snapshot: { trackedFiles: [file] },
                 },
             })[0]?.hunks,
-        ).toEqual([
-            {
-                id: "src/stale.ts:2:2:0",
-                lines: [
-                    {
-                        id: "line:src/stale.ts:2:2:0",
-                        text: "beta",
-                        type: "remove",
-                    },
-                    {
-                        id: "line:src/stale.ts:2:2:1",
-                        text: "BETA",
-                        type: "add",
-                    },
-                ],
-                newCount: 1,
-                newStart: 2,
-                oldCount: 1,
-                oldStart: 2,
-                visualEndLine: 2,
-                visualStartLine: 2,
-            },
-        ]);
+        ).toBe(file.hunks);
     });
 });

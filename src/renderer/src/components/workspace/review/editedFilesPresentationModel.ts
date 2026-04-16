@@ -108,6 +108,39 @@ function sortTrackedFiles(files: readonly AiTrackedFile[]): AiTrackedFile[] {
     );
 }
 
+// Cached ReviewFileItem keyed by the tracked file reference. Each entry also
+// remembers the openRelativePath used to build it so cache hits stay
+// consistent with the current resolver.
+const reviewFileItemCache = new WeakMap<
+    AiTrackedFile,
+    { openRelativePath: string | null; item: ReviewFileItem }
+>();
+
+function buildReviewFileItem(
+    file: AiTrackedFile,
+    openRelativePath: string | null,
+): ReviewFileItem {
+    const cached = reviewFileItemCache.get(file);
+    if (cached && cached.openRelativePath === openRelativePath) {
+        return cached.item;
+    }
+
+    const diff = createDiffFromTrackedFile(file);
+    const item: ReviewFileItem = {
+        file,
+        diff,
+        stats: computeFileStats(diff),
+        tone: getFileTone(file),
+        summary: getFileSummary(file),
+        canOpen: openRelativePath !== null,
+        openRelativePath,
+        canReject: file.reversible !== false,
+        canResolveHunks: canResolveFileHunks(file, diff),
+    };
+    reviewFileItemCache.set(file, { openRelativePath, item });
+    return item;
+}
+
 export function deriveReviewItems(
     files: readonly AiTrackedFile[],
     canOpenByPath:
@@ -115,7 +148,6 @@ export function deriveReviewItems(
         | ((file: AiTrackedFile) => string | null) = new Set<string>(),
 ): ReviewFileItem[] {
     return sortTrackedFiles(files).map((file) => {
-        const diff = createDiffFromTrackedFile(file);
         const openRelativePath =
             typeof canOpenByPath === "function"
                 ? canOpenByPath(file)
@@ -123,17 +155,7 @@ export function deriveReviewItems(
                   ? file.path
                   : null;
 
-        return {
-            file,
-            diff,
-            stats: computeFileStats(diff),
-            tone: getFileTone(file),
-            summary: getFileSummary(file),
-            canOpen: openRelativePath !== null,
-            openRelativePath,
-            canReject: file.reversible !== false,
-            canResolveHunks: canResolveFileHunks(file, diff),
-        };
+        return buildReviewFileItem(file, openRelativePath);
     });
 }
 

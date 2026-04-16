@@ -3960,21 +3960,21 @@ function WorkspaceTabActivityIndicator({
     readonly tab: RuntimeWorkspaceTab;
 }) {
     const sessionId = tab.kind === "chat" ? tab.sessionId : null;
-    const activityIndicator = useAiStore(
-        useCallback(
-            (state: ReturnType<typeof useAiStore.getState>) => {
-                if (!sessionId) {
-                    return null;
-                }
-
-                const session = state.sessions[sessionId];
-                return resolveWorkspaceChatTabActivityIndicator({
-                    localError: session?.localError ?? null,
-                    snapshot: session?.snapshot ?? null,
-                });
-            },
-            [sessionId],
-        ),
+    const localError = useAiStore((state) =>
+        sessionId ? (state.sessions[sessionId]?.localError ?? null) : null,
+    );
+    const status = useAiStore((state) =>
+        sessionId
+            ? (state.sessions[sessionId]?.snapshot?.status ?? null)
+            : null,
+    );
+    const activityIndicator = useMemo(
+        () =>
+            resolveWorkspaceChatTabActivityIndicator({
+                localError,
+                snapshot: status ? { status } : null,
+            }),
+        [localError, status],
     );
 
     if (activityIndicator) {

@@ -70,6 +70,7 @@ describe("workspace file opening", () => {
             lastFocusedChatTabId: null,
             lastFocusedRuntimeId: "codex",
             lastQuickCreateAction: "codex",
+            recentActiveTabIds: [],
             recentFocusedChatTabIds: [],
         }));
     });
@@ -1088,5 +1089,89 @@ describe("workspace runtime focus helpers", () => {
         expect(state.lastFocusedChatTabId).toBe("chat-1");
         expect(state.lastFocusedRuntimeId).toBe("codex");
         expect(state.recentFocusedChatTabIds).toEqual(["chat-1"]);
+    });
+
+    it("reactivates the most recently focused sibling tab when closing the active tab", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                activeTabId: "file-3",
+                id: "pane-a",
+                tabIds: ["file-1", "file-2", "file-3"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-1",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "a.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "a.ts",
+                    worktreeId: null,
+                },
+                "file-2": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-2",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "b.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "b.ts",
+                    worktreeId: null,
+                },
+                "file-3": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-3",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "c.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "c.ts",
+                    worktreeId: null,
+                },
+            },
+            recentActiveTabIds: ["file-3", "file-1", "file-2"],
+        }));
+
+        await useWorkspaceStore.getState().closeTab("file-3");
+
+        const state = useWorkspaceStore.getState();
+        if (state.rootNode.type !== "pane") {
+            throw new Error("Expected a single pane workspace.");
+        }
+
+        expect(state.rootNode.tabIds).toEqual(["file-1", "file-2"]);
+        expect(state.rootNode.activeTabId).toBe("file-1");
+        expect(state.recentActiveTabIds).toEqual(["file-1", "file-2"]);
     });
 });

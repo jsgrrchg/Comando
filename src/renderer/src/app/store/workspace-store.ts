@@ -82,6 +82,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     readonly lastFocusedChatTabId: string | null;
     readonly lastFocusedRuntimeId: AiRuntimeId;
     readonly lastQuickCreateAction: WorkspaceQuickCreateAction;
+    readonly recentActiveTabIds: readonly string[];
     readonly recentFocusedChatTabIds: readonly string[];
     appendTerminalOutput: (event: TerminalDataEvent) => void;
     closePane: (paneId: string) => Promise<void>;
@@ -205,6 +206,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     lastFocusedChatTabId: null,
     lastFocusedRuntimeId: "codex",
     lastQuickCreateAction: "codex",
+    recentActiveTabIds: [],
     recentFocusedChatTabIds: [],
 
     appendTerminalOutput: (event) => {
@@ -266,11 +268,42 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }
 
         set((state) => {
-            const nextState = closeWorkspaceTab(state, tabId);
+            const paneId = findPaneIdByTabId(state, tabId);
+            const activeTabId = paneId
+                ? getPaneActiveTabId(state, paneId)
+                : null;
+            const fallbackTabId =
+                paneId && activeTabId === tabId
+                    ? findMostRecentFocusedTabIdInPane(
+                          state,
+                          paneId,
+                          state.recentActiveTabIds,
+                          tabId,
+                      )
+                    : null;
+            const closedState = closeWorkspaceTab(state, tabId);
+            const nextState =
+                paneId &&
+                fallbackTabId &&
+                findPaneIdByTabId(closedState, fallbackTabId) === paneId
+                    ? {
+                          ...selectPaneTab(closedState, paneId, fallbackTabId),
+                          activePaneId: closedState.activePaneId,
+                      }
+                    : closedState;
             const recentFocusedChatTabIds = removeRecentChatFocus(
                 state.recentFocusedChatTabIds,
                 tabId,
             );
+            const recentActiveTabIds = fallbackTabId
+                ? recordRecentTabActivation(
+                      removeRecentTabActivation(
+                          state.recentActiveTabIds,
+                          tabId,
+                      ),
+                      fallbackTabId,
+                  )
+                : removeRecentTabActivation(state.recentActiveTabIds, tabId);
             const fallbackFocusedChatTabId =
                 findMostRecentExistingChatTabId(
                     nextState.tabsById,
@@ -295,6 +328,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     state.lastFocusedChatTabId === tabId
                         ? fallbackFocusedRuntimeId
                         : state.lastFocusedRuntimeId,
+                recentActiveTabIds,
                 recentFocusedChatTabIds,
             };
         });
@@ -333,6 +367,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             lastFocusedChatTabId: tab.id,
             lastFocusedRuntimeId: runtimeId,
             lastQuickCreateAction: runtimeId,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
             recentFocusedChatTabIds: recordRecentChatFocus(
                 state.recentFocusedChatTabIds,
                 tab.id,
@@ -363,6 +401,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
             lastQuickCreateAction: "terminal",
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
         }));
         await persistWorkspaceState(get);
         await bootTerminalSession(get, set, tab.id);
@@ -380,6 +422,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ...selectPaneTab(state, paneId, existingTab.id),
                 error: null,
                 lastQuickCreateAction: "git",
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    existingTab.id,
+                ),
             }));
             await persistWorkspaceState(get);
             return;
@@ -404,6 +450,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
             lastQuickCreateAction: "git",
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
         }));
         await persistWorkspaceState(get);
     },
@@ -424,6 +474,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             set((state) => ({
                 ...selectPaneTab(state, paneId, existingTab.id),
                 error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    existingTab.id,
+                ),
             }));
             await persistWorkspaceState(get);
             return;
@@ -442,6 +496,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         set((state) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
         }));
         await persistWorkspaceState(get);
     },
@@ -476,6 +534,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 lastFocusedRuntimeId:
                     getPaneRuntimeId(hydratedState, snapshot.activePaneId) ??
                     "codex",
+                recentActiveTabIds: recordRecentTabActivation(
+                    [],
+                    getPaneActiveTabId(hydratedState, snapshot.activePaneId),
+                ),
                 recentFocusedChatTabIds: recordRecentChatFocus(
                     [],
                     getPaneChatTabId(hydratedState, snapshot.activePaneId),
@@ -495,10 +557,21 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     moveActiveTab: async (paneId, direction) => {
-        set((state) => ({
-            ...moveActiveTabBetweenPanes(state, paneId, direction),
-            error: null,
-        }));
+        set((state) => {
+            const nextState = moveActiveTabBetweenPanes(
+                state,
+                paneId,
+                direction,
+            );
+            return {
+                ...nextState,
+                error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    getPaneActiveTabId(nextState, nextState.activePaneId),
+                ),
+            };
+        });
         await persistWorkspaceState(get);
     },
 
@@ -521,24 +594,42 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     moveTab: async (tabId, direction) => {
-        set((state) => ({
-            ...moveWorkspaceTabBetweenPanes(state, tabId, direction),
-            error: null,
-        }));
+        set((state) => {
+            const nextState = moveWorkspaceTabBetweenPanes(
+                state,
+                tabId,
+                direction,
+            );
+            return {
+                ...nextState,
+                error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    getPaneActiveTabId(nextState, nextState.activePaneId),
+                ),
+            };
+        });
         await persistWorkspaceState(get);
     },
 
     moveTabToPane: async (tabId, sourcePaneId, targetPaneId, targetIndex) => {
-        set((state) => ({
-            ...moveTabToPaneAtIndex(
+        set((state) => {
+            const nextState = moveTabToPaneAtIndex(
                 state,
                 tabId,
                 sourcePaneId,
                 targetPaneId,
                 targetIndex,
-            ),
-            error: null,
-        }));
+            );
+            return {
+                ...nextState,
+                error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    tabId,
+                ),
+            };
+        });
         await persistWorkspaceState(get);
     },
 
@@ -608,6 +699,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                         nextReviewContext,
                     ),
                     error: null,
+                    recentActiveTabIds: recordRecentTabActivation(
+                        state.recentActiveTabIds,
+                        existingTabInResolvedPane.id,
+                    ),
                 }));
 
                 if (
@@ -644,6 +739,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 set((state) => ({
                     ...attachTabToPane(state, resolvedPaneId, duplicatedTab),
                     error: null,
+                    recentActiveTabIds: recordRecentTabActivation(
+                        state.recentActiveTabIds,
+                        duplicatedTab.id,
+                    ),
                 }));
 
                 if (!sourceTab.document && !sourceTab.isDirty) {
@@ -682,6 +781,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             set((state) => ({
                 ...attachTabToPane(state, resolvedPaneId, tab),
                 error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    tab.id,
+                ),
             }));
             await persistWorkspaceState(get);
             await loadFileTabDocument(get, set, tab.id);
@@ -706,6 +809,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             set((state) => ({
                 ...selectPaneTab(state, paneId, existingTab.id),
                 error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    existingTab.id,
+                ),
             }));
             await persistWorkspaceState(get);
             return;
@@ -726,6 +833,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
             lastFocusedRuntimeId: input.runtimeId,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
         }));
         await persistWorkspaceState(get);
     },
@@ -917,6 +1028,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                    recentActiveTabIds: recordRecentTabActivation(
+                        state.recentActiveTabIds,
+                        getPaneActiveTabId(nextState, paneId),
+                    ),
                     recentFocusedChatTabIds: recordRecentChatFocus(
                         state.recentFocusedChatTabIds,
                         chatTabId,
@@ -942,6 +1057,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                    recentActiveTabIds: recordRecentTabActivation(
+                        state.recentActiveTabIds,
+                        tabId,
+                    ),
                     recentFocusedChatTabIds: recordRecentChatFocus(
                         state.recentFocusedChatTabIds,
                         chatTabId,
@@ -987,6 +1106,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
+                    recentActiveTabIds: recordRecentTabActivation(
+                        state.recentActiveTabIds,
+                        getPaneActiveTabId(nextState, paneId),
+                    ),
                     recentFocusedChatTabIds: recordRecentChatFocus(
                         state.recentFocusedChatTabIds,
                         chatTabId,
@@ -998,8 +1121,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     dropTabToSplit: async (tabId, sourcePaneId, targetPaneId, direction) => {
-        set((state) => ({
-            ...moveTabToSplit(
+        set((state) => {
+            const nextState = moveTabToSplit(
                 state,
                 tabId,
                 sourcePaneId,
@@ -1009,9 +1132,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     paneId: crypto.randomUUID(),
                     splitId: crypto.randomUUID(),
                 },
-            ),
-            error: null,
-        }));
+            );
+            return {
+                ...nextState,
+                error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    tabId,
+                ),
+            };
+        });
         await persistWorkspaceState(get);
     },
 
@@ -1128,6 +1258,17 @@ export function getPaneChatTabId(
     return getWorkspaceChatTabId(state.tabsById[pane.activeTabId]);
 }
 
+function getPaneActiveTabId(
+    state: Pick<WorkspaceTreeState, "rootNode">,
+    paneId: string,
+): string | null {
+    const pane = collectPaneNodes(state.rootNode).find(
+        (candidate) => candidate.id === paneId,
+    );
+
+    return pane?.activeTabId ?? null;
+}
+
 export function getBestMatchingChatTabId(
     state: Pick<WorkspaceTreeState, "rootNode" | "tabsById">,
     input: {
@@ -1190,6 +1331,49 @@ function recordRecentChatFocus(
             (recentChatTabId) => recentChatTabId !== chatTabId,
         ),
     ];
+}
+
+function recordRecentTabActivation(
+    recentActiveTabIds: readonly string[],
+    tabId: string | null,
+): readonly string[] {
+    if (!tabId) {
+        return recentActiveTabIds;
+    }
+
+    return [
+        tabId,
+        ...recentActiveTabIds.filter((recentTabId) => recentTabId !== tabId),
+    ];
+}
+
+function removeRecentTabActivation(
+    recentActiveTabIds: readonly string[],
+    tabId: string,
+): readonly string[] {
+    return recentActiveTabIds.filter((recentTabId) => recentTabId !== tabId);
+}
+
+function findMostRecentFocusedTabIdInPane(
+    state: Pick<WorkspaceTreeState, "rootNode">,
+    paneId: string,
+    recentActiveTabIds: readonly string[],
+    excludedTabId: string,
+): string | null {
+    const pane = collectPaneNodes(state.rootNode).find(
+        (candidate) => candidate.id === paneId,
+    );
+    if (!pane) {
+        return null;
+    }
+
+    return (
+        recentActiveTabIds.find(
+            (recentTabId) =>
+                recentTabId !== excludedTabId &&
+                pane.tabIds.includes(recentTabId),
+        ) ?? null
+    );
 }
 
 function removeRecentChatFocus(

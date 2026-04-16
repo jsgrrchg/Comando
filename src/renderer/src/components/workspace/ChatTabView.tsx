@@ -23,6 +23,8 @@ import type {
     SecretValuePatch,
 } from "@shared/ipc";
 
+import { useShallow } from "zustand/react/shallow";
+
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -209,7 +211,26 @@ export const ChatTabView = memo(function ChatTabView({
     const runtimeCatalog = useAiStore(
         (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
     );
-    const sessionState = useAiStore((s) => s.sessions[tab.sessionId]);
+    const sessionState = useAiStore(
+        useShallow((s) => {
+            const session = s.sessions[tab.sessionId];
+            if (!session) {
+                return null;
+            }
+
+            return {
+                diffZoom: session.diffZoom,
+                dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
+                draftAttachments: session.draftAttachments,
+                draftComposerParts: session.draftComposerParts,
+                draftFileContexts: session.draftFileContexts,
+                editingQueuedPrompt: session.editingQueuedPrompt,
+                localError: session.localError,
+                queue: session.queue,
+                snapshot: session.snapshot,
+            };
+        }),
+    );
     const projectSummary = useProjectsStore((state) =>
         tab.projectId
             ? (state.projects.find((project) => project.id === tab.projectId) ??

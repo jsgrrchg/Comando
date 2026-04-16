@@ -84,6 +84,13 @@ interface AiSessionClientState {
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
     readonly queue: readonly QueuedPrompt[];
+    // True after the user cancels an inference while there are still queued
+    // prompts. While paused, drainQueueIfNeeded is a no-op even when the
+    // agent becomes idle. Pause is released the next time the user manually
+    // sends a prompt (either through the composer or an explicit Send Now on
+    // a queued item), at which point that prompt dispatches and the rest of
+    // the queue resumes draining when its turn completes.
+    readonly queuePaused: boolean;
     readonly snapshot: AiSessionSnapshot | null;
 }
 
@@ -385,6 +392,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
                         queue: [],
+                        queuePaused: false,
                     },
                 },
             };
@@ -499,6 +507,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     cancelSession: async (sessionId) => {
+        // Pause the queue synchronously before hitting IPC so the idle
+        // snapshot that follows the cancel cannot race a drain and ship the
+        // next queued prompt. Pausing with an empty queue is fine — pause
+        // only matters while there is something to hold back.
+        pauseQueue(sessionId, set);
         await getComandoApi().cancelAiSession(sessionId);
     },
 
@@ -1192,6 +1205,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
+        // Clicking Send Now on a queued prompt is an explicit resume: the
+        // user is taking over what to dispatch next. Lift any pause so the
+        // remainder of the queue drains after this turn ends.
+        resumeQueue(sessionId, set);
+
         removeQueuedPromptById(sessionId, promptId, set);
 
         try {
@@ -1294,6 +1312,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
+        // The user is manually sending a prompt with the agent idle. If the
+        // queue was paused after a cancel, this is the explicit resume: the
+        // rest of the queued prompts will drain when this turn completes.
+        resumeQueue(tab.sessionId, set);
+
         if (editingQueuedPrompt) {
             commitQueuedPromptEdit(
                 tab.sessionId,
@@ -1361,6 +1384,7 @@ function createSessionState(
         localError: null,
         meta: null,
         queue: [],
+        queuePaused: false,
         snapshot: null,
     };
 }
@@ -1681,6 +1705,7 @@ async function drainQueueIfNeeded(
         !session.meta ||
         !session.snapshot ||
         session.queue.length === 0 ||
+        session.queuePaused ||
         isBusySession(session.snapshot)
     ) {
         return;
@@ -2018,6 +2043,44 @@ function removeQueuedPromptById(
                     queue: session.queue.filter(
                         (queuedPrompt) => queuedPrompt.id !== promptId,
                     ),
+                },
+            },
+        };
+    });
+}
+
+function pauseQueue(sessionId: string, set: SetAiState): void {
+    set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session || session.queuePaused) {
+            return state;
+        }
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    queuePaused: true,
+                },
+            },
+        };
+    });
+}
+
+function resumeQueue(sessionId: string, set: SetAiState): void {
+    set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session || !session.queuePaused) {
+            return state;
+        }
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    queuePaused: false,
                 },
             },
         };

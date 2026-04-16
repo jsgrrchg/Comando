@@ -146,8 +146,26 @@ function buildTrackedFile(
     };
 }
 
+// Cache keyed by the AiTrackedFile reference. Tracked files are treated as
+// immutable snapshots (any patch replaces the object whole), so the synced
+// result is deterministic per input reference. Without this cache, every
+// selector that calls collectPendingTrackedFilesFromSessions recomputes diff
+// hunks for every pending file on every store update.
+const syncedTrackedFileCache = new WeakMap<AiTrackedFile, AiTrackedFile>();
+
 export function syncTrackedFile(file: AiTrackedFile): AiTrackedFile {
-    return buildTrackedFile(file);
+    const cached = syncedTrackedFileCache.get(file);
+    if (cached) {
+        return cached;
+    }
+
+    const synced = buildTrackedFile(file);
+    syncedTrackedFileCache.set(file, synced);
+    // A file that is already in its synced form should also resolve to itself
+    // on subsequent calls to avoid a second cache miss when that output
+    // re-enters syncTrackedFile (e.g. through mergePendingTrackedFile).
+    syncedTrackedFileCache.set(synced, synced);
+    return synced;
 }
 
 function findTrackedFile(
