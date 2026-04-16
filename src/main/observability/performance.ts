@@ -373,8 +373,8 @@ class MainProcessPerformanceMonitor {
     }
 
     #log(level: LogLevel, message: string): void {
-        const logger = level === "warn" ? console.warn : console.info;
-        logger(message);
+        void level;
+        void message;
     }
 }
 
@@ -467,20 +467,5 @@ function readEnvNumber(name: string, fallback: number): number {
 }
 
 function shouldEnablePerformanceMetrics(): boolean {
-    if (!isMainThread) {
-        return false;
-    }
-
-    if (process.env.VITEST) {
-        return process.env.COMANDO_PERF_METRICS === "1";
-    }
-
-    if (process.env.COMANDO_PERF_METRICS === "1") {
-        return true;
-    }
-
-    return (
-        process.env.NODE_ENV === "development" ||
-        Boolean(process.env.ELECTRON_RENDERER_URL)
-    );
+    return isMainThread && process.env.COMANDO_PERF_METRICS === "1";
 }

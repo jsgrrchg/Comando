@@ -526,18 +526,8 @@ function logWorkerEvent(
     event: string,
     metadata?: Record<string, number | string | undefined>,
 ): void {
-    const logger =
-        level === "error"
-            ? console.error
-            : level === "warn"
-              ? console.warn
-              : console.info;
-    const suffix = metadata
-        ? Object.entries(metadata)
-              .filter(([, value]) => value !== undefined)
-              .map(([key, value]) => ` ${key}=${String(value)}`)
-              .join("")
-        : "";
-
-    logger(`[worker:${domain}][${event}]${suffix}`);
+    void level;
+    void domain;
+    void event;
+    void metadata;
 }
