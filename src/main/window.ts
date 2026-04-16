@@ -80,7 +80,7 @@ export function createMainWindow(
         backgroundColor: "#ffffff",
         height: 960,
         minHeight: 760,
-        minWidth: 1180,
+        minWidth: 700,
         restoredState,
         title: appIdentity.windowTitle,
         width: 1480,
