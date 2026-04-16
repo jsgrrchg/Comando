@@ -22,7 +22,6 @@ import {
 
 export type MentionSuggestion =
     | { readonly kind: "fetch" }
-    | { readonly kind: "plan" }
     | {
           readonly kind: "file";
           readonly entry: ProjectTreeNode;
@@ -68,10 +67,6 @@ export function getMentionSuggestions(
         results.push({ kind: "fetch" });
     }
 
-    if (!q || "plan".startsWith(q)) {
-        results.push({ kind: "plan" });
-    }
-
     for (const entry of entries) {
         if (results.length >= limit) break;
         const name = entry.name.toLowerCase();
@@ -105,28 +100,6 @@ function FetchIcon() {
             <circle cx="12" cy="12" r="10" />
             <line x1="2" x2="22" y1="12" y2="12" />
             <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-        </svg>
-    );
-}
-
-function PlanIcon() {
-    return (
-        <svg
-            fill="none"
-            height="12"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.5"
-            viewBox="0 0 24 24"
-            width="12"
-        >
-            <line x1="8" x2="21" y1="6" y2="6" />
-            <line x1="8" x2="21" y1="12" y2="12" />
-            <line x1="8" x2="21" y1="18" y2="18" />
-            <line x1="3" x2="3.01" y1="6" y2="6" />
-            <line x1="3" x2="3.01" y1="12" y2="12" />
-            <line x1="3" x2="3.01" y1="18" y2="18" />
         </svg>
     );
 }

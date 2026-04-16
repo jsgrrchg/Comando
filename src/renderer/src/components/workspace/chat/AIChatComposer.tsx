@@ -745,9 +745,6 @@ export function AIChatComposer({
                 case "fetch":
                     replaceTriggerWithPill({ type: "fetch_mention" });
                     break;
-                case "plan":
-                    replaceTriggerWithPill({ type: "plan_mention" });
-                    break;
                 case "file":
                     replaceTriggerWithPill({
                         type: "file_mention",
