@@ -1,7 +1,6 @@
 import type { GitRemoteSummary } from "@shared/ipc";
 
 const avatarMap = new Map<string, string>();
-const resolvedRepos = new Set<string>();
 let listeners: Array<() => void> = [];
 
 function parseNoReplyAvatar(email: string): string | null {
@@ -34,72 +33,13 @@ export function subscribeGitHubAvatars(listener: () => void): () => void {
     };
 }
 
-function notifyListeners(): void {
-    for (const listener of listeners) listener();
-}
-
-function parseGitHubRemote(
-    rawUrl: string,
-): { owner: string; repo: string } | null {
-    const httpsMatch =
-        /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec(
-            rawUrl.trim(),
-        );
-    if (httpsMatch?.[1] && httpsMatch[2]) {
-        return { owner: httpsMatch[1], repo: httpsMatch[2] };
-    }
-    const sshMatch =
-        /^(?:ssh:\/\/)?git@github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(
-            rawUrl.trim(),
-        );
-    if (sshMatch?.[1] && sshMatch[2]) {
-        return { owner: sshMatch[1], repo: sshMatch[2] };
-    }
-    return null;
-}
-
-export async function resolveGitHubAvatars(
+export function resolveGitHubAvatars(
     remotes: readonly GitRemoteSummary[],
-): Promise<void> {
-    const remote = remotes.find((r) => r.isDefault) ?? remotes[0];
-    if (!remote) return;
+): void {
+    void remotes;
 
-    const rawUrl = remote.fetchUrl ?? remote.pushUrl;
-    if (!rawUrl) return;
-
-    const parsed = parseGitHubRemote(rawUrl);
-    if (!parsed) return;
-
-    const repoKey = `${parsed.owner}/${parsed.repo}`;
-    if (resolvedRepos.has(repoKey)) return;
-    resolvedRepos.add(repoKey);
-
-    try {
-        const response = await fetch(
-            `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits?per_page=100`,
-            { headers: { Accept: "application/vnd.github.v3+json" } },
-        );
-        if (!response.ok) return;
-
-        const commits: ReadonlyArray<{
-            author?: { avatar_url?: string } | null;
-            commit?: { author?: { email?: string } | null } | null;
-        }> = await response.json();
-
-        let added = false;
-        for (const commit of commits) {
-            const email = commit.commit?.author?.email;
-            const avatarUrl = commit.author?.avatar_url;
-            if (email && avatarUrl) {
-                const normalized = email.trim().toLowerCase();
-                if (!avatarMap.has(normalized)) {
-                    avatarMap.set(normalized, avatarUrl);
-                    added = true;
-                }
-            }
-        }
-        if (added) notifyListeners();
-    } catch {
-        // Fall back to Gravatar/initials
-    }
+    // Renderer-side unauthenticated GitHub API requests produce noisy 404s for
+    // private repos. We intentionally rely on deterministic local fallbacks
+    // (`users.noreply.github.com`, Gravatar, initials) until avatar enrichment
+    // can be moved behind an authenticated/background integration.
 }

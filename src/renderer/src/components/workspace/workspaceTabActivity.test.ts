@@ -79,4 +79,30 @@ describe("resolveWorkspaceChatTabActivityIndicator", () => {
             }),
         ).toBeNull();
     });
+
+    it("returns stable references for identical activity states", () => {
+        expect(
+            resolveWorkspaceChatTabActivityIndicator({
+                localError: null,
+                snapshot: { status: "streaming" },
+            }),
+        ).toBe(
+            resolveWorkspaceChatTabActivityIndicator({
+                localError: null,
+                snapshot: { status: "waiting_permission" },
+            }),
+        );
+
+        expect(
+            resolveWorkspaceChatTabActivityIndicator({
+                localError: "Renderer failure",
+                snapshot: { status: "idle" },
+            }),
+        ).toBe(
+            resolveWorkspaceChatTabActivityIndicator({
+                localError: null,
+                snapshot: { status: "error" },
+            }),
+        );
+    });
 });
