@@ -36,7 +36,7 @@ export function useStickyFolders({
     const [scrollTop, setScrollTop] = useState(0);
     const [scrollLeft, setScrollLeft] = useState(0);
     const [scale, setScale] = useState(1);
-    const paddingTopRef = useRef(0);
+    const [paddingTop, setPaddingTop] = useState(0);
     const rafRef = useRef(0);
 
     useEffect(() => {
@@ -58,8 +58,9 @@ export function useStickyFolders({
         }
 
         readScale();
-        paddingTopRef.current =
-            parseFloat(getComputedStyle(container).paddingTop) || 0;
+        // DOM measurement on mount — feeds sticky-folder Y offsets in a useMemo.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setPaddingTop(parseFloat(getComputedStyle(container).paddingTop) || 0);
 
         const onScroll = () => {
             cancelAnimationFrame(rafRef.current);
@@ -108,11 +109,10 @@ export function useStickyFolders({
                     continue;
                 }
 
-                const rowTop = paddingTopRef.current + i * effectiveRowHeight;
+                const rowTop = paddingTop + i * effectiveRowHeight;
                 const lastDescIdx = folderLastDescendant.get(i) ?? i;
                 const sectionBottom =
-                    paddingTopRef.current +
-                    (lastDescIdx + 1) * effectiveRowHeight;
+                    paddingTop + (lastDescIdx + 1) * effectiveRowHeight;
 
                 if (
                     rowTop < scrollTop + stickyY &&
@@ -130,7 +130,7 @@ export function useStickyFolders({
             const lastDescIdx =
                 folderLastDescendant.get(bestIndex) ?? bestIndex;
             const sectionBottom =
-                paddingTopRef.current + (lastDescIdx + 1) * effectiveRowHeight;
+                paddingTop + (lastDescIdx + 1) * effectiveRowHeight;
             const maxTop = sectionBottom - scrollTop - effectiveRowHeight;
             const top = Math.min(stickyY, maxTop);
 
@@ -143,7 +143,7 @@ export function useStickyFolders({
         }
 
         return result;
-    }, [flatRows, folderLastDescendant, scrollTop, scale]);
+    }, [flatRows, folderLastDescendant, scrollTop, scale, paddingTop]);
 
     const stickyFolderPaths = useMemo(
         () => new Set(stickyFolders.map((f) => f.path)),

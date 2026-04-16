@@ -70,7 +70,7 @@ export function QuickOpenFilePalette({
 
     return createPortal(
         <div
-            className="app-no-drag fixed inset-0 z-[10030] flex items-start justify-center px-5 pt-[min(12vh,88px)]"
+            className="app-no-drag fixed inset-0 z-10030 flex items-start justify-center px-5 pt-[min(12vh,88px)]"
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget) {
                     onClose();
@@ -83,7 +83,7 @@ export function QuickOpenFilePalette({
             }}
         >
             <div
-                className="app-no-drag flex w-full max-w-[620px] flex-col overflow-hidden rounded-xl border"
+                className="app-no-drag flex w-full max-w-155 flex-col overflow-hidden rounded-xl border"
                 style={{
                     background: "var(--color-bg-elevated)",
                     borderColor:
@@ -124,7 +124,7 @@ export function QuickOpenFilePalette({
 
                             return (
                                 <button
-                                    className="flex w-full items-center gap-2.5 px-3.5 py-[5px] text-left"
+                                    className="flex w-full items-center gap-2.5 px-3.5 py-1.25 text-left"
                                     data-quick-open-selected={isSelected}
                                     key={item.relativePath}
                                     onClick={() => onSelect(item)}

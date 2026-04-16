@@ -203,7 +203,27 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         for (const [sha, el] of rowRefsMap.current) {
             next.set(sha, { top: el.offsetTop, height: el.offsetHeight });
         }
-        setRowPositions(next);
+        // DOM measurement: positions feed the SVG graph lines. Bail out when
+        // unchanged so this doesn't cause cascading renders.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setRowPositions((prev) => {
+            if (prev.size === next.size) {
+                let same = true;
+                for (const [sha, pos] of next) {
+                    const existing = prev.get(sha);
+                    if (
+                        !existing ||
+                        existing.top !== pos.top ||
+                        existing.height !== pos.height
+                    ) {
+                        same = false;
+                        break;
+                    }
+                }
+                if (same) return prev;
+            }
+            return next;
+        });
     }, [graphRows]);
 
     useEffect(() => {
@@ -758,10 +778,10 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                                                         );
                                                 }}
                                                 className={[
-                                                    "group/row grid w-full items-stretch border-l-[3px] border-l-transparent pl-[9px] pr-3 text-left text-[12px] transition-[color,background-color,border-color] duration-120",
+                                                    "group/row grid w-full items-stretch border-l-[3px] border-l-transparent pl-2.25 pr-3 text-left text-[12px] transition-[color,background-color,border-color] duration-120",
                                                     activeCommit?.sha ===
                                                     row.commit.sha
-                                                        ? "!border-l-[--row-branch-color] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
+                                                        ? "border-l-[--row-branch-color]! bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
                                                         : "text-text-secondary hover:border-l-[--row-branch-color] hover:bg-bg-secondary hover:text-text-primary",
                                                 ].join(" ")}
                                                 onClick={() => {
@@ -867,7 +887,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                         <div
                             aria-label="Resize commit details sidebar"
                             aria-orientation="vertical"
-                            className="group relative z-10 flex w-[7px] cursor-col-resize touch-none items-center justify-center bg-transparent"
+                            className="group relative z-10 flex w-1.75 cursor-col-resize touch-none items-center justify-center bg-transparent"
                             onDoubleClick={() =>
                                 setDetailSidebarWidth(
                                     DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH,
@@ -1240,11 +1260,11 @@ function GitHistoryGraphSVG({
         if (nextYCenter !== null) {
             const maxLanes = Math.max(
                 row.bottomLanes.length,
-                nextRow!.topLanes.length,
+                nextRow.topLanes.length,
             );
             for (let lane = 0; lane < maxLanes; lane++) {
                 const bottomColorId = row.bottomLanes[lane];
-                const topColorId = nextRow!.topLanes[lane];
+                const topColorId = nextRow.topLanes[lane];
                 if (bottomColorId !== undefined && topColorId !== undefined) {
                     const x = laneX(lane);
                     addPath(

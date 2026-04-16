@@ -284,7 +284,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
                                 {formatHunkHeader(hunk)}
                             </div>
                             <div className="overflow-x-auto">
-                                <div className="min-w-[640px]">
+                                <div className="min-w-160">
                                     {hunk.lines.map((line) => (
                                         <DiffLineRow
                                             codeFontFamily={codeFontFamily}

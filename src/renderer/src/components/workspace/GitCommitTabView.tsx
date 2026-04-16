@@ -80,12 +80,18 @@ export function GitCommitTabView({
         [diffFiles],
     );
     const [collapsedFileIds, setCollapsedFileIds] = useState<readonly string[]>(
-        [],
+        () => diffFiles.map((file) => file.id),
     );
+    const [lastDiffFileIdsKey, setLastDiffFileIdsKey] =
+        useState(diffFileIdsKey);
 
-    useEffect(() => {
+    // Reset collapsed state when the file identity set changes (React's
+    // derived-state-from-props pattern: setState during render is cheap and
+    // skips an extra effect pass).
+    if (lastDiffFileIdsKey !== diffFileIdsKey) {
+        setLastDiffFileIdsKey(diffFileIdsKey);
         setCollapsedFileIds(diffFiles.map((file) => file.id));
-    }, [diffFileIdsKey]);
+    }
 
     const allCollapsed =
         diffFiles.length > 0 && collapsedFileIds.length === diffFiles.length;

@@ -7,7 +7,6 @@ type RenderProbeDetails = Record<string, RenderProbeValue>;
 
 interface RenderProbeEvent {
     readonly component: string;
-    readonly commitMs: number;
     readonly count: number;
     readonly details: RenderProbeDetails;
     readonly sinceLastMs: number | null;
@@ -66,7 +65,9 @@ function getRenderProbeStore(): RenderProbeStore {
             }
 
             root.__COMANDO_RENDER_PROBE__.events.length = 0;
-            for (const key of Object.keys(root.__COMANDO_RENDER_PROBE__.counts)) {
+            for (const key of Object.keys(
+                root.__COMANDO_RENDER_PROBE__.counts,
+            )) {
                 delete root.__COMANDO_RENDER_PROBE__.counts[key];
             }
         };
@@ -92,7 +93,6 @@ export function useRenderProbe(
     details: RenderProbeDetails = {},
 ): void {
     const enabled = isRenderProbeEnabled(component);
-    const renderStartedAt = enabled ? performance.now() : 0;
     const lastCommitAtRef = useRef<number | null>(null);
 
     useEffect(() => {
@@ -104,12 +104,13 @@ export function useRenderProbe(
         const store = getRenderProbeStore();
         const count = (store.counts[component] ?? 0) + 1;
         const sinceLastMs =
-            lastCommitAtRef.current === null ? null : now - lastCommitAtRef.current;
+            lastCommitAtRef.current === null
+                ? null
+                : now - lastCommitAtRef.current;
 
         lastCommitAtRef.current = now;
         store.counts[component] = count;
         store.events.push({
-            commitMs: Number((now - renderStartedAt).toFixed(2)),
             component,
             count,
             details,
@@ -122,11 +123,16 @@ export function useRenderProbe(
             store.events.splice(0, store.events.length - 400);
         }
 
-        console.debug("[render-probe]", formatRenderProbeLabel(component, details), {
-            commitMs: Number((now - renderStartedAt).toFixed(2)),
-            count,
-            sinceLastMs:
-                sinceLastMs === null ? null : Number(sinceLastMs.toFixed(2)),
-        });
+        console.debug(
+            "[render-probe]",
+            formatRenderProbeLabel(component, details),
+            {
+                count,
+                sinceLastMs:
+                    sinceLastMs === null
+                        ? null
+                        : Number(sinceLastMs.toFixed(2)),
+            },
+        );
     });
 }
