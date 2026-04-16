@@ -397,6 +397,7 @@ interface AIChatComposerProps {
     readonly status: AiSessionSnapshot["status"];
     readonly runtimeName: string;
     readonly disabled?: boolean;
+    readonly requireCmdEnterToSend?: boolean;
     readonly composerFontFamily?: string;
     readonly composerFontSize?: number;
     readonly availableCommands: readonly AiAvailableCommand[];
@@ -425,6 +426,43 @@ export function shouldResetComposerForNonceChange(
     return previousResetNonce !== null && previousResetNonce !== nextResetNonce;
 }
 
+type ComposerSubmitKeyboardAction = "submit" | "stop" | null;
+
+export function getComposerSubmitKeyboardAction(input: {
+    readonly key: string;
+    readonly shiftKey: boolean;
+    readonly metaKey: boolean;
+    readonly ctrlKey: boolean;
+    readonly altKey: boolean;
+    readonly canSubmit: boolean;
+    readonly isSessionBusy: boolean;
+    readonly requireCmdEnterToSend: boolean;
+}): ComposerSubmitKeyboardAction {
+    if (input.key !== "Enter" || input.shiftKey || input.altKey) {
+        return null;
+    }
+
+    const modifierPressed = input.metaKey || input.ctrlKey;
+
+    if (input.requireCmdEnterToSend) {
+        if (!modifierPressed) {
+            return null;
+        }
+    } else if (modifierPressed) {
+        return null;
+    }
+
+    if (input.canSubmit) {
+        return "submit";
+    }
+
+    if (input.isSessionBusy) {
+        return "stop";
+    }
+
+    return null;
+}
+
 /* ─── Component ─── */
 
 export function AIChatComposer({
@@ -433,6 +471,7 @@ export function AIChatComposer({
     status,
     runtimeName,
     disabled = false,
+    requireCmdEnterToSend = false,
     composerFontFamily,
     composerFontSize = 14,
     availableCommands,
@@ -790,10 +829,24 @@ export function AIChatComposer({
                 }
             }
 
-            if (e.key === "Enter" && !e.shiftKey) {
+            const submitAction = getComposerSubmitKeyboardAction({
+                key: e.key,
+                shiftKey: e.shiftKey,
+                metaKey: e.metaKey,
+                ctrlKey: e.ctrlKey,
+                altKey: e.altKey,
+                canSubmit,
+                isSessionBusy,
+                requireCmdEnterToSend,
+            });
+
+            if (submitAction) {
                 e.preventDefault();
-                if (canSubmit) onSubmit();
-                else if (isSessionBusy) onStop();
+                if (submitAction === "submit") {
+                    onSubmit();
+                } else {
+                    onStop();
+                }
                 return;
             }
 
@@ -810,6 +863,7 @@ export function AIChatComposer({
             slashState,
             canSubmit,
             isSessionBusy,
+            requireCmdEnterToSend,
             onSubmit,
             onStop,
             handleMentionSelect,

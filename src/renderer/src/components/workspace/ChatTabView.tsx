@@ -1778,6 +1778,9 @@ export function ChatTabView({
                     <AIChatComposer
                         composerFontFamily={composerFontFamily}
                         composerFontSize={aiChatSettings.composerFontSize}
+                        requireCmdEnterToSend={
+                            aiChatSettings.requireCmdEnterToSend
+                        }
                         agentControls={
                             hasAgentControls ? (
                                 <AIChatAgentControls
