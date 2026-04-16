@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 
 import { DiffLineView } from "@renderer/components/workspace/review/DiffLineView";
 
@@ -16,17 +16,23 @@ export function GitDiffsView({
     codeFontFamily = null,
     codeFontSize = null,
     codeLineHeight = null,
+    collapsedFileIds: controlledCollapsedFileIds,
     displayMode = "single",
     emptyState,
     files,
     onScroll,
     onSelectFile,
+    onToggleFileCollapse,
     showFileSelector = true,
     surfaceVariant = "panel",
 }: GitDiffsViewProps) {
-    const [collapsedFileIds, setCollapsedFileIds] = useState<readonly string[]>(
-        [],
-    );
+    const isControlled = controlledCollapsedFileIds !== undefined;
+    const [localCollapsedFileIds, setLocalCollapsedFileIds] = useState<
+        readonly string[]
+    >([]);
+    const collapsedFileIds = isControlled
+        ? controlledCollapsedFileIds
+        : localCollapsedFileIds;
     const fileIdSet = useMemo(
         () => new Set(files.map((file) => file.id)),
         [files],
@@ -36,6 +42,21 @@ export function GitDiffsView({
         () =>
             new Set(collapsedFileIds.filter((fileId) => fileIdSet.has(fileId))),
         [collapsedFileIds, fileIdSet],
+    );
+
+    const toggleFileCollapse = useCallback(
+        (fileId: string) => {
+            if (onToggleFileCollapse) {
+                onToggleFileCollapse(fileId);
+                return;
+            }
+            setLocalCollapsedFileIds((currentIds) =>
+                currentIds.includes(fileId)
+                    ? currentIds.filter((id) => id !== fileId)
+                    : [...currentIds, fileId],
+            );
+        },
+        [onToggleFileCollapse],
     );
     const activeFile =
         files.find((file) => file.id === activeFileId) ?? files[0] ?? null;
@@ -69,25 +90,12 @@ export function GitDiffsView({
             {showFileSelector ? (
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                     {files.map((file) => (
-                        <button
-                            aria-pressed={file.id === activeFile.id}
-                            className={[
-                                "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-left text-[11px] transition-colors",
-                                file.id === activeFile.id
-                                    ? "border-[color-mix(in_srgb,var(--color-accent)_34%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-secondary))] text-text-primary"
-                                    : "border-border bg-bg-secondary text-text-secondary hover:text-text-primary",
-                            ].join(" ")}
+                        <FileSelectorButton
+                            file={file}
+                            isActive={file.id === activeFile.id}
                             key={file.id}
-                            onClick={() => onSelectFile?.(file)}
-                            type="button"
-                        >
-                            <GitBadge tone={diffTone(file.kind)}>
-                                {file.statusLabel ?? file.kind}
-                            </GitBadge>
-                            <span className="truncate font-mono">
-                                {file.path}
-                            </span>
-                        </button>
+                            onSelect={onSelectFile}
+                        />
                     ))}
                 </div>
             ) : null}
@@ -101,16 +109,9 @@ export function GitDiffsView({
                             codeLineHeight={codeLineHeight}
                             collapsed={collapsedFileIdSet.has(file.id)}
                             file={file}
+                            fileId={file.id}
                             key={file.id}
-                            onToggleCollapse={() =>
-                                setCollapsedFileIds((currentIds) =>
-                                    currentIds.includes(file.id)
-                                        ? currentIds.filter(
-                                              (fileId) => fileId !== file.id,
-                                          )
-                                        : [...currentIds, file.id],
-                                )
-                            }
+                            onToggleCollapse={toggleFileCollapse}
                             surfaceVariant={surfaceVariant}
                         />
                     ))}
@@ -128,12 +129,45 @@ export function GitDiffsView({
     );
 }
 
-function DiffFileSurface({
+const FileSelectorButton = memo(function FileSelectorButton({
+    file,
+    isActive,
+    onSelect,
+}: {
+    readonly file: GitDiffFile;
+    readonly isActive: boolean;
+    readonly onSelect?: ((file: GitDiffFile) => void) | undefined;
+}) {
+    const handleClick = useCallback(() => {
+        onSelect?.(file);
+    }, [file, onSelect]);
+    return (
+        <button
+            aria-pressed={isActive}
+            className={[
+                "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-left text-[11px] transition-colors",
+                isActive
+                    ? "border-[color-mix(in_srgb,var(--color-accent)_34%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-secondary))] text-text-primary"
+                    : "border-border bg-bg-secondary text-text-secondary hover:text-text-primary",
+            ].join(" ")}
+            onClick={handleClick}
+            type="button"
+        >
+            <GitBadge tone={diffTone(file.kind)}>
+                {file.statusLabel ?? file.kind}
+            </GitBadge>
+            <span className="truncate font-mono">{file.path}</span>
+        </button>
+    );
+});
+
+const DiffFileSurface = memo(function DiffFileSurface({
     codeFontFamily = null,
     codeFontSize = null,
     codeLineHeight = null,
     collapsed = false,
     file,
+    fileId,
     onToggleCollapse,
     surfaceVariant,
 }: {
@@ -142,10 +176,16 @@ function DiffFileSurface({
     readonly codeLineHeight?: number | null;
     readonly collapsed?: boolean;
     readonly file: GitDiffFile;
-    readonly onToggleCollapse?: (() => void) | undefined;
+    readonly fileId?: string;
+    readonly onToggleCollapse?: ((fileId: string) => void) | undefined;
     readonly surfaceVariant: "flat" | "panel";
 }) {
     const isCollapsible = typeof onToggleCollapse === "function";
+    const handleToggle = useCallback(() => {
+        if (onToggleCollapse && fileId !== undefined) {
+            onToggleCollapse(fileId);
+        }
+    }, [onToggleCollapse, fileId]);
     const headerContent = (
         <>
             <div className="min-w-0 flex-1">
@@ -213,7 +253,7 @@ function DiffFileSurface({
                             ? "border-b border-border"
                             : "",
                     ].join(" ")}
-                    onClick={() => onToggleCollapse?.()}
+                    onClick={handleToggle}
                     type="button"
                 >
                     {headerContent}
@@ -274,7 +314,7 @@ function DiffFileSurface({
             )}
         </section>
     );
-}
+});
 
 function CollapseChevron({ collapsed }: { readonly collapsed: boolean }) {
     return (
@@ -351,7 +391,7 @@ function DiffSummaryColored({ summary }: { readonly summary: string }) {
     );
 }
 
-function DiffLineRow({
+const DiffLineRow = memo(function DiffLineRow({
     codeFontFamily,
     codeFontSize,
     codeLineHeight,
@@ -364,33 +404,37 @@ function DiffLineRow({
     readonly filePath: string;
     readonly line: GitDiffLine;
 }) {
+    const viewLine = useMemo(
+        () => ({
+            exact: true as const,
+            newLineNumber: line.newLineNumber,
+            oldLineNumber: line.oldLineNumber,
+            prefix:
+                line.kind === "add"
+                    ? "+ "
+                    : line.kind === "remove"
+                      ? "- "
+                      : "  ",
+            text: line.text,
+            type:
+                line.kind === "add"
+                    ? ("add" as const)
+                    : line.kind === "remove"
+                      ? ("remove" as const)
+                      : ("context" as const),
+        }),
+        [line],
+    );
     return (
         <DiffLineView
             filePath={filePath}
             fontFamily={codeFontFamily}
             fontSize={codeFontSize}
             lineHeight={codeLineHeight}
-            line={{
-                exact: true,
-                newLineNumber: line.newLineNumber,
-                oldLineNumber: line.oldLineNumber,
-                prefix:
-                    line.kind === "add"
-                        ? "+ "
-                        : line.kind === "remove"
-                          ? "- "
-                          : "  ",
-                text: line.text,
-                type:
-                    line.kind === "add"
-                        ? "add"
-                        : line.kind === "remove"
-                          ? "remove"
-                          : "context",
-            }}
+            line={viewLine}
         />
     );
-}
+});
 
 function diffTone(kind: GitDiffFile["kind"]) {
     switch (kind) {

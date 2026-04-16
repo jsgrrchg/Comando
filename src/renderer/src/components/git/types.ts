@@ -206,11 +206,13 @@ export interface GitDiffsViewProps {
     readonly codeFontFamily?: string | null;
     readonly codeFontSize?: number | null;
     readonly codeLineHeight?: number | null;
+    readonly collapsedFileIds?: readonly string[];
     readonly displayMode?: "single" | "stack";
     readonly emptyState?: ReactNode;
     readonly files: readonly GitDiffFile[];
     readonly onScroll?: (event: React.UIEvent<HTMLDivElement>) => void;
     readonly onSelectFile?: (file: GitDiffFile) => void;
+    readonly onToggleFileCollapse?: (fileId: string) => void;
     readonly showFileSelector?: boolean;
     readonly surfaceVariant?: "flat" | "panel";
 }

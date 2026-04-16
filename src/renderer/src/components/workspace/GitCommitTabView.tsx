@@ -18,6 +18,8 @@ import {
 } from "@renderer/components/git";
 import { MarkdownContent } from "./MarkdownContent";
 
+const EMPTY_LOADING_SHAS: readonly string[] = [];
+
 function getContextKey(projectId: string, worktreeId: string | null): string {
     return `${projectId}::${worktreeId ?? "primary"}`;
 }
@@ -27,30 +29,33 @@ export function GitCommitTabView({
 }: {
     readonly tab: RuntimeWorkspaceGitCommitTab;
 }) {
-    const ensureCommitDetail = useGitStore((state) => state.ensureCommitDetail);
-    const commitDetailsByContext = useGitStore(
-        (state) => state.commitDetailsByContext,
-    );
-    const errors = useGitStore((state) => state.errors);
-    const loadingCommitShas = useGitStore((state) => state.loadingCommitShas);
-    const snapshots = useGitStore((state) => state.snapshots);
-    const openGitTab = useWorkspaceStore((state) => state.openGitTab);
-    const selectCommit = useGitStore((state) => state.selectCommit);
-
     const projectId = tab.projectId;
     const editorSettings = useResolvedEditorSettings();
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
-    const detail =
+    const commitSha = tab.commitSha;
+
+    const detail = useGitStore((state) =>
         contextKey && projectId
-            ? (commitDetailsByContext[contextKey]?.[tab.commitSha] ?? null)
-            : null;
-    const snapshot = contextKey ? (snapshots[contextKey] ?? null) : null;
-    const error = contextKey ? (errors[contextKey] ?? null) : null;
-    const isLoading =
-        contextKey != null
-            ? (loadingCommitShas[contextKey] ?? []).includes(tab.commitSha)
-            : false;
+            ? (state.commitDetailsByContext[contextKey]?.[commitSha] ?? null)
+            : null,
+    );
+    const snapshot = useGitStore((state) =>
+        contextKey ? (state.snapshots[contextKey] ?? null) : null,
+    );
+    const error = useGitStore((state) =>
+        contextKey ? (state.errors[contextKey] ?? null) : null,
+    );
+    const isLoading = useGitStore((state) =>
+        contextKey
+            ? (
+                  state.loadingCommitShas[contextKey] ?? EMPTY_LOADING_SHAS
+              ).includes(commitSha)
+            : false,
+    );
+    const ensureCommitDetail = useGitStore((state) => state.ensureCommitDetail);
+    const openGitTab = useWorkspaceStore((state) => state.openGitTab);
+    const selectCommit = useGitStore((state) => state.selectCommit);
     const diffFiles = useMemo(
         () => (detail ? convertCommitFilesToDiffFiles(detail.files) : []),
         [detail],
@@ -69,6 +74,37 @@ export function GitCommitTabView({
 
     const [isBodyCollapsed, setIsBodyCollapsed] = useState(false);
     const collapsedRef = useRef(false);
+
+    const diffFileIdsKey = useMemo(
+        () => diffFiles.map((file) => file.id).join("|"),
+        [diffFiles],
+    );
+    const [collapsedFileIds, setCollapsedFileIds] = useState<readonly string[]>(
+        [],
+    );
+
+    useEffect(() => {
+        setCollapsedFileIds(diffFiles.map((file) => file.id));
+    }, [diffFileIdsKey]);
+
+    const allCollapsed =
+        diffFiles.length > 0 && collapsedFileIds.length === diffFiles.length;
+
+    const handleToggleFileCollapse = useCallback((fileId: string) => {
+        setCollapsedFileIds((currentIds) =>
+            currentIds.includes(fileId)
+                ? currentIds.filter((id) => id !== fileId)
+                : [...currentIds, fileId],
+        );
+    }, []);
+
+    const handleToggleAllFiles = useCallback(() => {
+        setCollapsedFileIds((currentIds) =>
+            currentIds.length === diffFiles.length
+                ? []
+                : diffFiles.map((file) => file.id),
+        );
+    }, [diffFiles]);
 
     const handleDiffScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
         const shouldCollapse = e.currentTarget.scrollTop > 0;
@@ -238,6 +274,15 @@ export function GitCommitTabView({
                         </button>
                     ) : null}
                     <span className="ml-auto flex items-center gap-1.5">
+                        {diffFiles.length > 0 ? (
+                            <button
+                                className="rounded-md border border-border px-2 py-1 transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                                onClick={handleToggleAllFiles}
+                                type="button"
+                            >
+                                {allCollapsed ? "Expand all" : "Collapse all"}
+                            </button>
+                        ) : null}
                         <span>
                             {detail.changedFileCount}{" "}
                             {detail.changedFileCount === 1 ? "file" : "files"}
@@ -261,9 +306,11 @@ export function GitCommitTabView({
                     codeFontFamily={codeFontFamily}
                     codeFontSize={codeFontSize}
                     codeLineHeight={codeLineHeight}
+                    collapsedFileIds={collapsedFileIds}
                     displayMode="stack"
                     files={diffFiles}
                     onScroll={detail.body ? handleDiffScroll : undefined}
+                    onToggleFileCollapse={handleToggleFileCollapse}
                     showFileSelector={false}
                     surfaceVariant="flat"
                 />

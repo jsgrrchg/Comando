@@ -1,5 +1,5 @@
 import type { LanguageSupport } from "@codemirror/language";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useCodePathLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
@@ -85,7 +85,7 @@ export interface DiffLineViewProps {
     readonly lineWrapping?: boolean;
 }
 
-export function DiffLineView({
+export const DiffLineView = memo(function DiffLineView({
     line,
     compactLineNumbers = false,
     filePath = null,
@@ -241,4 +241,4 @@ export function DiffLineView({
             </div>
         </div>
     );
-}
+});

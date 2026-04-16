@@ -45,6 +45,7 @@ const GRAPH_COLORS = [
     "#98d686",
 ] as const;
 const EMPTY_HISTORY: readonly GitHistoryCommitSummary[] = [];
+const EMPTY_LOADING_SHAS: readonly string[] = [];
 const DEFAULT_GIT_HISTORY_COLUMN_WIDTHS = {
     author: 132,
     commit: 92,
@@ -77,18 +78,33 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     );
     const searchInputRef = useRef<HTMLInputElement | null>(null);
     const splitContainerRef = useRef<HTMLDivElement | null>(null);
-    const snapshots = useGitStore((state) => state.snapshots);
-    const historyByContext = useGitStore((state) => state.historyByContext);
-    const commitDetailsByContext = useGitStore(
-        (state) => state.commitDetailsByContext,
+
+    const projectId = tab.projectId;
+    const worktreeId = tab.worktreeId ?? null;
+    const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
+
+    const snapshot = useGitStore((state) =>
+        contextKey ? (state.snapshots[contextKey] ?? null) : null,
     );
-    const errors = useGitStore((state) => state.errors);
-    const loadingContexts = useGitStore((state) => state.loadingContexts);
-    const loadingHistoryContexts = useGitStore(
-        (state) => state.loadingHistoryContexts,
+    const history = useGitStore((state) =>
+        contextKey
+            ? (state.historyByContext[contextKey] ?? EMPTY_HISTORY)
+            : EMPTY_HISTORY,
     );
-    const loadingCommitShas = useGitStore((state) => state.loadingCommitShas);
-    const selectedCommitShas = useGitStore((state) => state.selectedCommitShas);
+    const error = useGitStore((state) =>
+        contextKey ? (state.errors[contextKey] ?? null) : null,
+    );
+    const isLoading = useGitStore((state) =>
+        contextKey ? (state.loadingContexts[contextKey] ?? false) : false,
+    );
+    const isHistoryLoading = useGitStore((state) =>
+        contextKey
+            ? (state.loadingHistoryContexts[contextKey] ?? false)
+            : false,
+    );
+    const rawSelectedCommitSha = useGitStore((state) =>
+        contextKey ? state.selectedCommitShas[contextKey] : undefined,
+    );
     const refreshProject = useGitStore((state) => state.refreshProject);
     const refreshHistory = useGitStore((state) => state.refreshHistory);
     const ensureCommitDetail = useGitStore((state) => state.ensureCommitDetail);
@@ -97,24 +113,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         (state) => state.openGitCommitTab,
     );
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
-
-    const projectId = tab.projectId;
-    const worktreeId = tab.worktreeId ?? null;
-    const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
-    const snapshot = contextKey ? (snapshots[contextKey] ?? null) : null;
-    const history = contextKey
-        ? (historyByContext[contextKey] ?? EMPTY_HISTORY)
-        : EMPTY_HISTORY;
-    const error = contextKey ? (errors[contextKey] ?? null) : null;
-    const isLoading = contextKey
-        ? (loadingContexts[contextKey] ?? false)
-        : false;
-    const isHistoryLoading = contextKey
-        ? (loadingHistoryContexts[contextKey] ?? false)
-        : false;
-    const rawSelectedCommitSha = contextKey
-        ? selectedCommitShas[contextKey]
-        : undefined;
     useEffect(() => {
         if (!projectId || snapshot) {
             return;
@@ -307,14 +305,20 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             ? (history.find((commit) => commit.sha === rawSelectedCommitSha) ??
               null)
             : null;
-    const activeCommitDetail =
-        contextKey && activeCommit
-            ? (commitDetailsByContext[contextKey]?.[activeCommit.sha] ?? null)
-            : null;
-    const activeCommitLoading =
-        contextKey && activeCommit
-            ? (loadingCommitShas[contextKey] ?? []).includes(activeCommit.sha)
-            : false;
+    const activeCommitSha = activeCommit?.sha ?? null;
+    const activeCommitDetail = useGitStore((state) =>
+        contextKey && activeCommitSha
+            ? (state.commitDetailsByContext[contextKey]?.[activeCommitSha] ??
+              null)
+            : null,
+    );
+    const activeCommitLoading = useGitStore((state) =>
+        contextKey && activeCommitSha
+            ? (
+                  state.loadingCommitShas[contextKey] ?? EMPTY_LOADING_SHAS
+              ).includes(activeCommitSha)
+            : false,
+    );
     const remoteLink = activeCommit
         ? buildGitRemoteCommitLink(snapshot?.remotes ?? [], activeCommit.sha)
         : null;
