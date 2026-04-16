@@ -5,7 +5,7 @@ import type {
 } from "@shared/ipc";
 
 export const DEFAULT_AI_DIFF_ZOOM = 0.72;
-export const DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM = 1;
+export const DEFAULT_PENDING_REVIEW_CARD_TEXT_ZOOM = 1.15;
 export const PENDING_REVIEW_CARD_TEXT_ZOOM_MIN = 0.85;
 export const PENDING_REVIEW_CARD_TEXT_ZOOM_MAX = 1.25;
 export const PENDING_REVIEW_CARD_TEXT_ZOOM_STEP = 0.05;

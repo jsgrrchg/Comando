@@ -66,7 +66,7 @@ export function EditedFilesBufferPanel({
     onRejectAll,
     onRejectHunk,
     onRejectItem,
-    pendingReviewCardTextZoom = 1,
+    pendingReviewCardTextZoom = 1.15,
     summary,
 }: EditedFilesBufferPanelProps) {
     const [collapsed, setCollapsed] = useState(defaultCollapsed);
