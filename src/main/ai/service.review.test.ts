@@ -304,4 +304,39 @@ describe("AiService tracked file review merging", () => {
             __testing.computeDiffHunks(oldText, newText, "notes/example.md"),
         );
     });
+
+    it("suppresses duplicate Codex turn item activities for user and agent messages", () => {
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: {
+                        neverwriteEventType: "status",
+                    },
+                } as never,
+                "Preparing input",
+            ),
+        ).toBe(true);
+
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: {
+                        neverwriteEventType: "status",
+                    },
+                } as never,
+                "Drafting response",
+            ),
+        ).toBe(true);
+
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: {
+                        neverwriteEventType: "status",
+                    },
+                } as never,
+                "Reasoning",
+            ),
+        ).toBe(false);
+    });
 });

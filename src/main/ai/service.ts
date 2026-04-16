@@ -111,9 +111,14 @@ import {
 
 const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
 const NEVERWRITE_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
+const NEVERWRITE_STATUS_EVENT_TYPE = "status";
 const NEVERWRITE_USER_INPUT_EVENT_TYPE = "user_input_request";
 const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX =
     "__neverwrite_user_input_response__:";
+const SUPPRESSED_NEVERWRITE_STATUS_TITLES = new Set([
+    "Preparing input",
+    "Drafting response",
+]);
 
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
@@ -3190,6 +3195,15 @@ function mapToolCallUpdate(
         snapshot.toolActivity.find(
             (candidate) => candidate.id === update.toolCallId,
         ) ?? null;
+    const nextTitle =
+        typeof update.title === "string" && update.title.trim().length > 0
+            ? update.title.trim()
+            : (existing?.title ?? null);
+
+    if (shouldSuppressToolActivityUpdate(update, nextTitle)) {
+        return snapshot;
+    }
+
     const toolKind = update.kind ?? existing?.kind ?? "unknown";
     const content = update.content ?? null;
     const pendingUserInput = parseUserInputRequest(snapshot, update, updatedAt);
@@ -3258,7 +3272,7 @@ function mapToolCallUpdate(
         status: update.status ?? existing?.status ?? "pending",
         summary:
             buildToolSummary(
-                update.title ?? existing?.title ?? "Tool call",
+                nextTitle ?? "Tool call",
                 content,
                 toolKind,
                 update.rawInput,
@@ -3267,7 +3281,7 @@ function mapToolCallUpdate(
             existing?.summary ??
             null,
         terminalOutput,
-        title: update.title ?? existing?.title ?? "Tool call",
+        title: nextTitle ?? "Tool call",
         updatedAt,
     };
 
@@ -3315,6 +3329,22 @@ function collectDiffs(
             ? [diffToAiFileDiff(entry, toolKind, normalizePath)]
             : [],
     );
+}
+
+function shouldSuppressToolActivityUpdate(
+    update: Pick<ToolCall | ToolCallUpdate, "_meta">,
+    title: string | null,
+): boolean {
+    if (
+        !title ||
+        !isRecord(update._meta) ||
+        update._meta[NEVERWRITE_STATUS_EVENT_TYPE_KEY] !==
+            NEVERWRITE_STATUS_EVENT_TYPE
+    ) {
+        return false;
+    }
+
+    return SUPPRESSED_NEVERWRITE_STATUS_TITLES.has(title);
 }
 
 function diffToAiFileDiff(
@@ -3944,5 +3974,6 @@ export const __testing = {
     diffToAiFileDiff,
     normalizeTrackedDiffPath,
     resolveTrackedFileHunks,
+    shouldSuppressToolActivityUpdate,
     upsertTrackedFile,
 };
