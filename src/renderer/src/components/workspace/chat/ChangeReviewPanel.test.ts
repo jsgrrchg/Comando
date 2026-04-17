@@ -131,7 +131,7 @@ describe("ChangeReviewPanel", () => {
         );
     });
 
-    it("renders multi-file case with independent rows", () => {
+    it("renders multi-file case as independent single-file cards", () => {
         const primaryDiff = createActivity().diffs[0];
         if (!primaryDiff) {
             throw new Error("Expected a primary diff for the test.");
@@ -175,10 +175,11 @@ describe("ChangeReviewPanel", () => {
             }),
         );
 
-        expect(markup).toContain("Edited 2 files");
-        expect(markup).toContain("src/app.ts");
-        expect(markup).toContain("src/secondary.ts");
-        expect(markup).toContain("chat-review-diff:file-1");
+        expect(markup).not.toContain("Edited 2 files");
+        expect(markup).toContain("Edited app.ts");
+        expect(markup).toContain("Edited secondary.ts");
+        expect(markup).toContain("change-review-panel:file-1");
+        expect(markup).not.toContain("change-review-panel:file-2");
     });
 
     it("keeps the open action available for absolute tracked paths when they resolve into the project", () => {

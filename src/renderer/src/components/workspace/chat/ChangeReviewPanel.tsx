@@ -13,18 +13,10 @@ import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import type { ResolvedProjectFileReference } from "../projectFileReferences";
 import { EditedFileDiffPreview } from "../review/EditedFileDiffPreview";
-import {
-    getNeutralButtonStyle,
-    getToneBorderStyle,
-} from "../review/reviewStyles";
-import {
-    formatDiffStat,
-    getCompactPath,
-    getFileNameFromPath,
-} from "../review/reviewDiff";
+import { getNeutralButtonStyle } from "../review/reviewStyles";
+import { formatDiffStat, getFileNameFromPath } from "../review/reviewDiff";
 import {
     deriveChangeReviewItems,
-    deriveChangeReviewSummary,
     type ChangeReviewItem,
 } from "./toolActivityReviewModel";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
@@ -44,69 +36,6 @@ function getFlatDiffStatStyle(color: string): CSSProperties {
         fontSize: "0.74em",
         fontWeight: 700,
     };
-}
-
-function ToolIcon({ kind }: { readonly kind: string }) {
-    const normalizedKind = kind.toLowerCase();
-    if (normalizedKind === "delete" || normalizedKind === "remove") {
-        return (
-            <svg
-                fill="none"
-                height="14"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.5"
-                viewBox="0 0 24 24"
-                width="14"
-            >
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="9" x2="15" y1="13" y2="13" />
-            </svg>
-        );
-    }
-
-    if (
-        normalizedKind === "edit" ||
-        normalizedKind === "write" ||
-        normalizedKind === "create" ||
-        normalizedKind === "move" ||
-        normalizedKind === "update"
-    ) {
-        return (
-            <svg
-                fill="none"
-                height="14"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.5"
-                viewBox="0 0 24 24"
-                width="14"
-            >
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <path d="m9 15 2 2 4-4" />
-            </svg>
-        );
-    }
-
-    return (
-        <svg
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.5"
-            viewBox="0 0 24 24"
-            width="14"
-        >
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-    );
 }
 
 function WarningIcon() {
@@ -262,271 +191,23 @@ function renderStatus(activity: AiToolActivity) {
     return null;
 }
 
-function ChangeReviewFileRow({
-    diffZoom,
-    expanded,
-    item,
-    onOpen,
-    onToggle,
-}: {
-    readonly diffZoom: number;
-    readonly expanded: boolean;
-    readonly item: ChangeReviewItem;
-    readonly onOpen: (() => void) | null;
-    readonly onToggle: () => void;
-}) {
-    return (
-        <div
-            style={{
-                ...getToneBorderStyle(item.tone.accent),
-                backgroundColor: "var(--color-bg-elevated)",
-                border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-                borderRadius: 12,
-                overflow: "hidden",
-            }}
-        >
-            <div
-                style={{
-                    alignItems: "center",
-                    borderBottom: expanded
-                        ? "1px solid color-mix(in srgb, var(--color-border) 42%, transparent)"
-                        : "1px solid transparent",
-                    display: "grid",
-                    gap: 12,
-                    gridTemplateColumns: "minmax(0, 1fr) auto",
-                    padding: "10px 12px",
-                }}
-            >
-                <button
-                    aria-label={`${expanded ? "Collapse" : "Expand"} ${item.path}`}
-                    onClick={onToggle}
-                    style={{
-                        alignItems: "center",
-                        background: "none",
-                        border: "none",
-                        color: "inherit",
-                        cursor: "pointer",
-                        display: "flex",
-                        gap: 10,
-                        minWidth: 0,
-                        padding: 0,
-                        textAlign: "left",
-                    }}
-                    type="button"
-                >
-                    <span
-                        style={{
-                            color: "var(--color-text-secondary)",
-                            flexShrink: 0,
-                        }}
-                    >
-                        <Chevron expanded={expanded} />
-                    </span>
-                    <div className="min-w-0">
-                        <div className="flex min-w-0 items-center gap-2">
-                            <span
-                                className="truncate"
-                                style={{
-                                    color: "var(--color-text-primary)",
-                                    fontSize: "0.82em",
-                                    fontWeight: 400,
-                                }}
-                            >
-                                {getFileNameFromPath(item.path)}
-                            </span>
-                            <span
-                                style={{
-                                    backgroundColor: `color-mix(in srgb, ${item.tone.accent} 10%, transparent)`,
-                                    borderRadius: 999,
-                                    color: item.tone.accent,
-                                    fontSize: "0.62em",
-                                    fontWeight: 700,
-                                    letterSpacing: "0.04em",
-                                    padding: "2px 6px",
-                                    textTransform: "uppercase",
-                                }}
-                            >
-                                {getBadgeLabel(item)}
-                            </span>
-                        </div>
-                        <div
-                            className="truncate"
-                            style={{
-                                color: "var(--color-text-secondary)",
-                                fontSize: "0.72em",
-                                marginTop: 2,
-                            }}
-                        >
-                            {getCompactPath(item.path)} · {item.summary}
-                        </div>
-                    </div>
-                </button>
-
-                <div
-                    className="flex flex-wrap items-center justify-end gap-2"
-                    style={{ minWidth: 0 }}
-                >
-                    {item.stats.additions > 0 ? (
-                        <span
-                            style={{
-                                color: "var(--diff-add)",
-                                fontSize: "0.74em",
-                                fontWeight: 700,
-                            }}
-                        >
-                            +
-                            {formatDiffStat(
-                                item.stats.additions,
-                                item.stats.approximate,
-                            )}
-                        </span>
-                    ) : null}
-                    {item.stats.deletions > 0 ? (
-                        <span
-                            style={{
-                                color: "var(--diff-remove)",
-                                fontSize: "0.74em",
-                                fontWeight: 700,
-                            }}
-                        >
-                            -
-                            {formatDiffStat(
-                                item.stats.deletions,
-                                item.stats.approximate,
-                            )}
-                        </span>
-                    ) : null}
-                    {onOpen ? (
-                        <button
-                            onClick={onOpen}
-                            style={{
-                                ...getNeutralButtonStyle(),
-                                ...TOOL_ACTION_BUTTON_STYLE,
-                            }}
-                            type="button"
-                        >
-                            Open
-                        </button>
-                    ) : null}
-                </div>
-            </div>
-
-            {expanded ? (
-                <ResizableDiffContainer accent={item.tone.accent}>
-                    <EditedFileDiffPreview
-                        compactLineNumbers
-                        diff={item.diff}
-                        diffZoom={diffZoom}
-                        expanded={expanded}
-                        file={item.file ?? undefined}
-                        testId={`chat-review-diff:${item.key}`}
-                    />
-                </ResizableDiffContainer>
-            ) : null}
-        </div>
-    );
-}
-
-export interface ChangeReviewPanelProps {
-    readonly activity: AiToolActivity;
-    readonly defaultExpanded?: boolean;
-    readonly defaultExpandedFileKeys?: readonly string[];
-    readonly onOpenFile: (
-        projectId: string,
-        relativePath: string,
-        worktreeId?: string | null,
-        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-    ) => Promise<void>;
-    readonly projectId: string | null;
-    readonly resolveFileReference?: (
-        reference: string,
-    ) => ResolvedProjectFileReference | null;
-    readonly trackedFiles?: readonly AiTrackedFile[];
-    readonly worktreeId?: string | null;
-}
-
-export const ChangeReviewPanel = memo(function ChangeReviewPanel({
+function ChangeReviewFileCard({
     activity,
     defaultExpanded = false,
-    defaultExpandedFileKeys = [],
-    onOpenFile,
-    projectId,
-    resolveFileReference,
-    trackedFiles = [],
-    worktreeId = null,
-}: ChangeReviewPanelProps) {
-    const diffZoom = DEFAULT_AI_DIFF_ZOOM;
-
-    const items = useMemo(
-        () => deriveChangeReviewItems(activity, trackedFiles),
-        [activity, trackedFiles],
-    );
-    const summary = useMemo(() => deriveChangeReviewSummary(items), [items]);
+    diffZoom,
+    item,
+    onOpen,
+}: {
+    readonly activity: AiToolActivity;
+    readonly defaultExpanded?: boolean;
+    readonly diffZoom: number;
+    readonly item: ChangeReviewItem;
+    readonly onOpen: (() => void) | null;
+}) {
     const [expanded, setExpanded] = useState(defaultExpanded);
-    const [expandedFileKeys, setExpandedFileKeys] = useState<
-        ReadonlySet<string>
-    >(() => new Set(defaultExpandedFileKeys));
-
-    const singleItem = items.length === 1 ? (items[0] ?? null) : null;
     const accent = getPanelAccent(activity);
     const actionLabel = getActivityActionLabel(activity.kind);
-    const canOpenSingleItem = singleItem
-        ? canOpenItem(singleItem, projectId, resolveFileReference)
-        : false;
-
-    useRenderProbe("ChangeReviewPanel", {
-        activityId: activity.id,
-        expanded,
-        itemCount: items.length,
-        pendingTrackedFiles: trackedFiles.filter(
-            (trackedFile) => trackedFile.reviewState === "pending",
-        ).length,
-        summaryFiles: summary.fileCount,
-    });
-
-    const openItem = useCallback(
-        (item: ChangeReviewItem) => {
-            const openPath = resolveOpenPath(item, resolveFileReference);
-            if (!projectId || !openPath) {
-                return;
-            }
-
-            void onOpenFile(
-                projectId,
-                openPath,
-                worktreeId,
-                item.file
-                    ? {
-                          path: item.file.path,
-                          sessionId: item.file.sessionId,
-                      }
-                    : null,
-            );
-        },
-        [onOpenFile, projectId, resolveFileReference, worktreeId],
-    );
-
-    const toggleExpandedFile = useCallback((key: string) => {
-        setExpandedFileKeys((current) => {
-            const next = new Set(current);
-            if (next.has(key)) {
-                next.delete(key);
-            } else {
-                next.add(key);
-            }
-            return next;
-        });
-    }, []);
-
-    if (items.length === 0) {
-        return null;
-    }
-
-    const summaryLabel = singleItem
-        ? `${actionLabel} ${getFileNameFromPath(singleItem.path)}`
-        : `${actionLabel} ${summary.fileCount} ${
-              summary.fileCount === 1 ? "file" : "files"
-          }`;
+    const summaryLabel = `${actionLabel} ${getFileNameFromPath(item.path)}`;
 
     return (
         <div
@@ -576,14 +257,12 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
                     <span className="shrink-0" style={{ color: accent }}>
                         {activity.status === "failed" ? (
                             <WarningIcon />
-                        ) : singleItem ? (
+                        ) : (
                             <FileTypeIcon
-                                fileName={singleItem.path}
+                                fileName={item.path}
                                 opacity={0.85}
                                 size={14}
                             />
-                        ) : (
-                            <ToolIcon kind={activity.kind} />
                         )}
                     </span>
                     <div className="min-w-0">
@@ -598,12 +277,12 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
                             >
                                 {summaryLabel}
                             </span>
-                            {singleItem?.tone.badge ? (
+                            {item.tone.badge ? (
                                 <span
                                     style={{
-                                        backgroundColor: `color-mix(in srgb, ${singleItem.tone.accent} 10%, transparent)`,
+                                        backgroundColor: `color-mix(in srgb, ${item.tone.accent} 10%, transparent)`,
                                         borderRadius: 999,
-                                        color: singleItem.tone.accent,
+                                        color: item.tone.accent,
                                         fontSize: "0.62em",
                                         fontWeight: 700,
                                         letterSpacing: "0.04em",
@@ -611,64 +290,40 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
                                         textTransform: "uppercase",
                                     }}
                                 >
-                                    {getBadgeLabel(singleItem)}
+                                    {getBadgeLabel(item)}
                                 </span>
                             ) : null}
                         </div>
-                        {!singleItem ? (
-                            <div
-                                className="truncate"
-                                style={{
-                                    color: "var(--color-text-secondary)",
-                                    fontSize: "0.74em",
-                                    marginTop: 2,
-                                }}
-                            >
-                                {`${summary.fileCount} files changed${
-                                    summary.partialCount > 0
-                                        ? ` · ${summary.partialCount} partial`
-                                        : ""
-                                }`}
-                            </div>
-                        ) : null}
                     </div>
                 </button>
 
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                    {summary.additions > 0 ? (
+                    {item.stats.additions > 0 ? (
                         <span style={getFlatDiffStatStyle("var(--diff-add)")}>
                             +
                             {formatDiffStat(
-                                summary.additions,
-                                summary.approximate,
+                                item.stats.additions,
+                                item.stats.approximate,
                             )}
                         </span>
                     ) : null}
-                    {summary.deletions > 0 ? (
+                    {item.stats.deletions > 0 ? (
                         <span
                             style={getFlatDiffStatStyle("var(--diff-remove)")}
                         >
                             -
                             {formatDiffStat(
-                                summary.deletions,
-                                summary.approximate,
+                                item.stats.deletions,
+                                item.stats.approximate,
                             )}
                         </span>
                     ) : null}
-                    {singleItem ? (
+                    {onOpen ? (
                         <button
-                            disabled={!canOpenSingleItem}
-                            onClick={() => {
-                                if (!canOpenSingleItem) return;
-                                openItem(singleItem);
-                            }}
+                            onClick={onOpen}
                             style={{
                                 ...getNeutralButtonStyle(),
                                 ...TOOL_ACTION_BUTTON_STYLE,
-                                cursor: canOpenSingleItem
-                                    ? "pointer"
-                                    : "not-allowed",
-                                opacity: canOpenSingleItem ? 1 : 0.45,
                             }}
                             type="button"
                         >
@@ -680,40 +335,133 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
             </div>
 
             {expanded ? (
-                singleItem ? (
-                    <ResizableDiffContainer accent={singleItem.tone.accent}>
-                        <EditedFileDiffPreview
-                            compactLineNumbers
-                            diff={singleItem.diff}
-                            diffZoom={diffZoom}
-                            expanded={expanded}
-                            file={singleItem.file ?? undefined}
-                            testId={`change-review-panel:${singleItem.key}`}
-                        />
-                    </ResizableDiffContainer>
-                ) : (
-                    <div className="space-y-2 px-2 py-2">
-                        {items.map((item) => (
-                            <ChangeReviewFileRow
-                                diffZoom={diffZoom}
-                                expanded={expandedFileKeys.has(item.key)}
-                                item={item}
-                                key={item.key}
-                                onOpen={
-                                    canOpenItem(
-                                        item,
-                                        projectId,
-                                        resolveFileReference,
-                                    )
-                                        ? () => openItem(item)
-                                        : null
-                                }
-                                onToggle={() => toggleExpandedFile(item.key)}
-                            />
-                        ))}
-                    </div>
-                )
+                <ResizableDiffContainer accent={accent}>
+                    <EditedFileDiffPreview
+                        compactLineNumbers
+                        diff={item.diff}
+                        diffZoom={diffZoom}
+                        expanded={expanded}
+                        file={item.file ?? undefined}
+                        testId={`change-review-panel:${item.key}`}
+                    />
+                </ResizableDiffContainer>
             ) : null}
+        </div>
+    );
+}
+
+export interface ChangeReviewPanelProps {
+    readonly activity: AiToolActivity;
+    readonly defaultExpanded?: boolean;
+    readonly defaultExpandedFileKeys?: readonly string[];
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void>;
+    readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly trackedFiles?: readonly AiTrackedFile[];
+    readonly worktreeId?: string | null;
+}
+
+export const ChangeReviewPanel = memo(function ChangeReviewPanel({
+    activity,
+    defaultExpanded = false,
+    defaultExpandedFileKeys = [],
+    onOpenFile,
+    projectId,
+    resolveFileReference,
+    trackedFiles = [],
+    worktreeId = null,
+}: ChangeReviewPanelProps) {
+    const diffZoom = DEFAULT_AI_DIFF_ZOOM;
+
+    const items = useMemo(
+        () => deriveChangeReviewItems(activity, trackedFiles),
+        [activity, trackedFiles],
+    );
+
+    useRenderProbe("ChangeReviewPanel", {
+        activityId: activity.id,
+        itemCount: items.length,
+        pendingTrackedFiles: trackedFiles.filter(
+            (trackedFile) => trackedFile.reviewState === "pending",
+        ).length,
+    });
+
+    const openItem = useCallback(
+        (item: ChangeReviewItem) => {
+            const openPath = resolveOpenPath(item, resolveFileReference);
+            if (!projectId || !openPath) {
+                return;
+            }
+
+            void onOpenFile(
+                projectId,
+                openPath,
+                worktreeId,
+                item.file
+                    ? {
+                          path: item.file.path,
+                          sessionId: item.file.sessionId,
+                      }
+                    : null,
+            );
+        },
+        [onOpenFile, projectId, resolveFileReference, worktreeId],
+    );
+
+    if (items.length === 0) {
+        return null;
+    }
+
+    if (items.length === 1) {
+        const [singleItem] = items;
+        if (!singleItem) {
+            return null;
+        }
+
+        return (
+            <ChangeReviewFileCard
+                activity={activity}
+                defaultExpanded={defaultExpanded}
+                diffZoom={diffZoom}
+                item={singleItem}
+                onOpen={
+                    canOpenItem(singleItem, projectId, resolveFileReference)
+                        ? () => openItem(singleItem)
+                        : null
+                }
+            />
+        );
+    }
+
+    const defaultExpandedKeys = new Set(defaultExpandedFileKeys);
+
+    return (
+        <div className="space-y-2">
+            {items.map((item) => (
+                <ChangeReviewFileCard
+                    activity={activity}
+                    defaultExpanded={
+                        defaultExpandedKeys.size > 0
+                            ? defaultExpandedKeys.has(item.key)
+                            : defaultExpanded
+                    }
+                    diffZoom={diffZoom}
+                    item={item}
+                    key={item.key}
+                    onOpen={
+                        canOpenItem(item, projectId, resolveFileReference)
+                            ? () => openItem(item)
+                            : null
+                    }
+                />
+            ))}
         </div>
     );
 }, areChangeReviewPanelPropsEqual);
