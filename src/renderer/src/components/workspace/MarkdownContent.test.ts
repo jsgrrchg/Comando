@@ -85,7 +85,7 @@ describe("MarkdownContent", () => {
         expect(markup).toContain("Luego refinar detalles");
     });
 
-    it("does not promote isolated bullet-like lines into lists", () => {
+    it("renders isolated bullet-like lines as a single-item list", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
                 content: [
@@ -96,12 +96,14 @@ describe("MarkdownContent", () => {
             }),
         );
 
-        expect(markup).not.toContain("<ul");
-        expect(markup).toContain("- O sea: las adaptaciones especiales");
+        expect(markup).toContain("<ul");
+        expect(markup).toContain(
+            "O sea: las adaptaciones especiales no viven en el vendor.",
+        );
         expect(markup).toContain("reference app Claude setup");
     });
 
-    it("does not promote isolated ordered-like lines into lists", () => {
+    it("renders isolated ordered-like lines as a single-item list", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
                 content: [
@@ -111,8 +113,8 @@ describe("MarkdownContent", () => {
             }),
         );
 
-        expect(markup).not.toContain("<ol");
-        expect(markup).toContain("1. Actualizacion conservadora primero.");
+        expect(markup).toContain("<ol");
+        expect(markup).toContain("Actualizacion conservadora primero.");
         expect(markup).toContain("Luego validas login, prompt y cierre.");
     });
 

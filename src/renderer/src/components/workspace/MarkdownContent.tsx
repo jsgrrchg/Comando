@@ -148,11 +148,6 @@ interface ParsedList {
     readonly nextIndex: number;
 }
 
-interface ListShape {
-    readonly hasNestedItems: boolean;
-    readonly hasSiblingItems: boolean;
-}
-
 function getPillVariant(label: string): ChatPillVariant {
     if (label === "@fetch") return "success";
     if (label === "/plan") return "neutral";
@@ -340,91 +335,6 @@ function buildListItemLeadLine(item: MarkdownListItem): string {
     return `[${item.taskMarker ?? " "}] ${item.content}`;
 }
 
-function inspectListShape(
-    lines: readonly string[],
-    startIndex: number,
-): ListShape | null {
-    const firstItem = parseMarkdownListItem(lines[startIndex] ?? "");
-    if (!firstItem) {
-        return null;
-    }
-
-    const ordered = firstItem.orderedNumber !== null;
-    const baseIndentWidth = getIndentWidth(firstItem.indent);
-    let cursor = startIndex + 1;
-    let hasNestedItems = false;
-    let hasSiblingItems = false;
-
-    while (cursor < lines.length) {
-        const currentLine = lines[cursor] ?? "";
-        const trimmedLine = currentLine.trim();
-
-        if (trimmedLine.length === 0) {
-            const nextNonEmptyIndex = findNextNonEmptyLineIndex(
-                lines,
-                cursor + 1,
-            );
-            if (nextNonEmptyIndex === -1) {
-                break;
-            }
-
-            const nextItem = parseMarkdownListItem(
-                lines[nextNonEmptyIndex] ?? "",
-            );
-            if (!nextItem) {
-                break;
-            }
-
-            const nextIndentWidth = getIndentWidth(nextItem.indent);
-            const nextOrdered = nextItem.orderedNumber !== null;
-            if (nextIndentWidth > baseIndentWidth) {
-                hasNestedItems = true;
-                break;
-            }
-            if (
-                nextIndentWidth === baseIndentWidth &&
-                nextOrdered === ordered
-            ) {
-                hasSiblingItems = true;
-                break;
-            }
-            break;
-        }
-
-        const nextItem = parseMarkdownListItem(currentLine);
-        if (!nextItem) {
-            cursor += 1;
-            continue;
-        }
-
-        const nextIndentWidth = getIndentWidth(nextItem.indent);
-        const nextOrdered = nextItem.orderedNumber !== null;
-        if (nextIndentWidth > baseIndentWidth) {
-            hasNestedItems = true;
-            break;
-        }
-        if (nextIndentWidth === baseIndentWidth && nextOrdered === ordered) {
-            hasSiblingItems = true;
-            break;
-        }
-        break;
-    }
-
-    return { hasNestedItems, hasSiblingItems };
-}
-
-function shouldRenderAsList(
-    lines: readonly string[],
-    startIndex: number,
-): boolean {
-    const shape = inspectListShape(lines, startIndex);
-    if (!shape) {
-        return false;
-    }
-
-    return shape.hasNestedItems || shape.hasSiblingItems;
-}
-
 function parseList(
     lines: readonly string[],
     startIndex: number,
@@ -587,16 +497,16 @@ function CopyIcon() {
     return (
         <svg
             fill="none"
-            height="14"
+            height="11"
             stroke="currentColor"
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth="1.5"
-            viewBox="0 0 24 24"
-            width="14"
+            viewBox="0 0 14 14"
+            width="11"
         >
-            <rect x="9" y="9" width="13" height="13" rx="2" />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            <rect x="5" y="3" width="6" height="8" rx="1.2" />
+            <path d="M3.5 9.5H3A1 1 0 012 8.5v-5A1.5 1.5 0 013.5 2H8" />
         </svg>
     );
 }
@@ -605,15 +515,15 @@ function CheckIcon() {
     return (
         <svg
             fill="none"
-            height="14"
+            height="11"
             stroke="currentColor"
             strokeLinecap="round"
             strokeLinejoin="round"
-            strokeWidth="2"
-            viewBox="0 0 24 24"
-            width="14"
+            strokeWidth="1.5"
+            viewBox="0 0 14 14"
+            width="11"
         >
-            <polyline points="20 6 9 17 4 12" />
+            <path d="M3 7l2.2 2.2L11 3.8" />
         </svg>
     );
 }
@@ -656,29 +566,27 @@ function CodeBlock({
             onClick={handleCopy}
             onMouseEnter={(e) => {
                 e.currentTarget.style.opacity = "1";
-                e.currentTarget.style.backgroundColor =
-                    "var(--color-bg-secondary)";
             }}
             onMouseLeave={(e) => {
                 e.currentTarget.style.opacity = "0.9";
-                e.currentTarget.style.backgroundColor = "transparent";
             }}
             title={copied ? "Copied" : "Copy"}
             style={{
                 alignItems: "center",
-                background: "transparent",
-                border: "none",
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-bg-elevated) 92%, transparent)",
+                border: "1px solid var(--color-border)",
                 borderRadius: 6,
                 color: copied
                     ? "var(--color-accent)"
                     : "var(--color-text-secondary)",
                 cursor: "pointer",
                 display: "inline-flex",
-                height: 28,
+                height: 22,
                 justifyContent: "center",
                 opacity: 0.9,
                 transition: "opacity 100ms ease, background-color 100ms ease",
-                width: 28,
+                width: 22,
             }}
             type="button"
         >
@@ -696,7 +604,7 @@ function CodeBlock({
         >
             {languageLabel ? (
                 <div
-                    className="flex items-center justify-between px-3 py-2 pr-10"
+                    className="flex items-center justify-between px-3 py-2 pr-9"
                     style={{
                         borderBottom: "1px solid var(--color-border)",
                         color: "var(--color-text-secondary)",
@@ -852,7 +760,7 @@ function TextBlock({
         const trimmed = line.trimStart();
 
         if (!trimmed) {
-            elements.push(<div key={i} style={{ height: 4 }} />);
+            elements.push(<div key={i} style={{ height: 8 }} />);
             i++;
             continue;
         }
@@ -877,8 +785,8 @@ function TextBlock({
                         color: "var(--color-text-primary)",
                         fontSize: sizes[level - 1],
                         fontWeight: weights[level - 1],
-                        marginBottom: 2,
-                        marginTop: i === 0 ? 0 : 8,
+                        marginBottom: 4,
+                        marginTop: i === 0 ? 0 : 10,
                     }}
                 >
                     {renderInline(headerMatch[2], inlineOptions)}
@@ -952,31 +860,13 @@ function TextBlock({
         }
 
         /* ─ Lists ─ */
-        if (shouldRenderAsList(lines, i)) {
+        if (parseMarkdownListItem(lines[i] ?? "")) {
             const parsedList = parseList(lines, i, inlineOptions);
             if (parsedList) {
                 elements.push(parsedList.element);
                 i = parsedList.nextIndex;
                 continue;
             }
-        }
-
-        if (/^[-*+]\s+/.test(trimmed) || /^\d+[.)]\s+/.test(trimmed)) {
-            elements.push(
-                <div
-                    key={i}
-                    style={{
-                        lineHeight: 1.6,
-                        maxWidth: "100%",
-                        overflowWrap: "anywhere",
-                        wordBreak: "break-word",
-                    }}
-                >
-                    {renderInline(trimmed, inlineOptions)}
-                </div>,
-            );
-            i++;
-            continue;
         }
 
         /* ─ Paragraph ─ */
