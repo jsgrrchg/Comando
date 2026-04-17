@@ -148,6 +148,11 @@ interface ParsedList {
     readonly nextIndex: number;
 }
 
+interface ListShape {
+    readonly hasNestedItems: boolean;
+    readonly hasSiblingItems: boolean;
+}
+
 function getPillVariant(label: string): ChatPillVariant {
     if (label === "@fetch") return "success";
     if (label === "/plan") return "neutral";
@@ -333,6 +338,91 @@ function buildListItemLeadLine(item: MarkdownListItem): string {
     }
 
     return `[${item.taskMarker ?? " "}] ${item.content}`;
+}
+
+function inspectListShape(
+    lines: readonly string[],
+    startIndex: number,
+): ListShape | null {
+    const firstItem = parseMarkdownListItem(lines[startIndex] ?? "");
+    if (!firstItem) {
+        return null;
+    }
+
+    const ordered = firstItem.orderedNumber !== null;
+    const baseIndentWidth = getIndentWidth(firstItem.indent);
+    let cursor = startIndex + 1;
+    let hasNestedItems = false;
+    let hasSiblingItems = false;
+
+    while (cursor < lines.length) {
+        const currentLine = lines[cursor] ?? "";
+        const trimmedLine = currentLine.trim();
+
+        if (trimmedLine.length === 0) {
+            const nextNonEmptyIndex = findNextNonEmptyLineIndex(
+                lines,
+                cursor + 1,
+            );
+            if (nextNonEmptyIndex === -1) {
+                break;
+            }
+
+            const nextItem = parseMarkdownListItem(
+                lines[nextNonEmptyIndex] ?? "",
+            );
+            if (!nextItem) {
+                break;
+            }
+
+            const nextIndentWidth = getIndentWidth(nextItem.indent);
+            const nextOrdered = nextItem.orderedNumber !== null;
+            if (nextIndentWidth > baseIndentWidth) {
+                hasNestedItems = true;
+                break;
+            }
+            if (
+                nextIndentWidth === baseIndentWidth &&
+                nextOrdered === ordered
+            ) {
+                hasSiblingItems = true;
+                break;
+            }
+            break;
+        }
+
+        const nextItem = parseMarkdownListItem(currentLine);
+        if (!nextItem) {
+            cursor += 1;
+            continue;
+        }
+
+        const nextIndentWidth = getIndentWidth(nextItem.indent);
+        const nextOrdered = nextItem.orderedNumber !== null;
+        if (nextIndentWidth > baseIndentWidth) {
+            hasNestedItems = true;
+            break;
+        }
+        if (nextIndentWidth === baseIndentWidth && nextOrdered === ordered) {
+            hasSiblingItems = true;
+            break;
+        }
+        break;
+    }
+
+    return { hasNestedItems, hasSiblingItems };
+}
+
+function shouldRenderAsList(
+    lines: readonly string[],
+    startIndex: number,
+): boolean {
+    const shape = inspectListShape(lines, startIndex);
+    if (!shape) {
+        return false;
+    }
+
+    return shape.hasNestedItems || shape.hasSiblingItems;
 }
 
 function parseList(
@@ -862,7 +952,7 @@ function TextBlock({
         }
 
         /* ─ Lists ─ */
-        if (parseMarkdownListItem(line)) {
+        if (shouldRenderAsList(lines, i)) {
             const parsedList = parseList(lines, i, inlineOptions);
             if (parsedList) {
                 elements.push(parsedList.element);
