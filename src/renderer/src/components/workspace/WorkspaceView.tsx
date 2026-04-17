@@ -1836,7 +1836,7 @@ function QuickCreateMenu({
                         "flex w-full items-center justify-between rounded-md px-3 py-1.5 text-left text-xs transition",
                         entry.disabled
                             ? "cursor-not-allowed text-text-secondary/50"
-                            : "text-text-primary hover:bg-bg-secondary",
+                            : "text-text-primary hover:bg-bg-tertiary",
                     ].join(" ")}
                     disabled={entry.disabled}
                     key={`${entry.label}-${index}`}
