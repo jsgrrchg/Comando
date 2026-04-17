@@ -87,6 +87,7 @@ import { appendSelectionMentionToRegisteredComposer } from "@renderer/components
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/workspace/workspaceTabActivity";
+import { syncTerminalViewport } from "@renderer/components/workspace/terminalSurface";
 import {
     getReviewHunkVisualEndLine,
     getSelectedReviewLine,
@@ -3706,6 +3707,59 @@ function TerminalTabView({
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const writtenLengthRef = useRef(0);
+    const queuedLengthRef = useRef(0);
+    const lastViewportSizeRef = useRef<{ cols: number; rows: number } | null>(
+        null,
+    );
+    const pendingViewportSyncFrameRef = useRef<number | null>(null);
+    const writeChainRef = useRef<Promise<void>>(Promise.resolve());
+
+    const cancelScheduledViewportSync = useEffectEvent(() => {
+        if (pendingViewportSyncFrameRef.current === null) {
+            return;
+        }
+
+        globalThis.cancelAnimationFrame(pendingViewportSyncFrameRef.current);
+        pendingViewportSyncFrameRef.current = null;
+    });
+
+    const syncViewport = useEffectEvent(() => {
+        const fitAddon = fitAddonRef.current;
+        const result = syncTerminalViewport({
+            container: containerRef.current,
+            fit: fitAddon ? () => fitAddon.fit() : null,
+            previousSize: lastViewportSizeRef.current,
+            terminal: terminalRef.current,
+        });
+
+        if (!result.didSync || !result.nextSize) {
+            return;
+        }
+
+        lastViewportSizeRef.current = result.nextSize;
+        if (result.sizeChanged) {
+            void onResize(tab.sessionId, result.nextSize.cols, result.nextSize.rows);
+        }
+    });
+
+    const scheduleViewportSync = useEffectEvent((deferFrames = 0) => {
+        cancelScheduledViewportSync();
+
+        const runAfterFrames = (remainingFrames: number) => {
+            pendingViewportSyncFrameRef.current =
+                globalThis.requestAnimationFrame(() => {
+                    if (remainingFrames > 0) {
+                        runAfterFrames(remainingFrames - 1);
+                        return;
+                    }
+
+                    pendingViewportSyncFrameRef.current = null;
+                    syncViewport();
+                });
+        };
+
+        runAfterFrames(deferFrames);
+    });
 
     useEffect(() => {
         if (!runtime || !containerRef.current) {
@@ -3725,8 +3779,8 @@ function TerminalTabView({
         });
         const fitAddon = new runtime.FitAddon();
         terminal.loadAddon(fitAddon);
-        terminal.open(containerRef.current);
-        fitAddon.fit();
+        const container = containerRef.current;
+        terminal.open(container);
 
         terminal.onData((data) => {
             void onSendInput(tab.sessionId, data);
@@ -3734,20 +3788,43 @@ function TerminalTabView({
 
         terminalRef.current = terminal;
         fitAddonRef.current = fitAddon;
+        scheduleViewportSync(1);
 
-        const resizeObserver = new ResizeObserver(() => {
-            fitAddon.fit();
-            void onResize(tab.sessionId, terminal.cols, terminal.rows);
-        });
-        resizeObserver.observe(containerRef.current);
-        void onResize(tab.sessionId, terminal.cols, terminal.rows);
+        const handleViewportChange = () => {
+            scheduleViewportSync();
+        };
+        const handleVisibilityChange = () => {
+            if (document.visibilityState !== "visible") {
+                return;
+            }
+
+            scheduleViewportSync(1);
+        };
+        const resizeObserver =
+            typeof ResizeObserver === "undefined"
+                ? null
+                : new ResizeObserver(handleViewportChange);
+        resizeObserver?.observe(container);
+        globalThis.addEventListener("focus", handleViewportChange);
+        globalThis.addEventListener("resize", handleViewportChange);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
 
         return () => {
-            resizeObserver.disconnect();
+            document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange,
+            );
+            globalThis.removeEventListener("resize", handleViewportChange);
+            globalThis.removeEventListener("focus", handleViewportChange);
+            resizeObserver?.disconnect();
+            cancelScheduledViewportSync();
             terminal.dispose();
             terminalRef.current = null;
             fitAddonRef.current = null;
+            lastViewportSizeRef.current = null;
+            queuedLengthRef.current = 0;
             writtenLengthRef.current = 0;
+            writeChainRef.current = Promise.resolve();
         };
     }, [onResize, onSendInput, runtime, tab.sessionId]);
 
@@ -3757,18 +3834,50 @@ function TerminalTabView({
             return;
         }
 
-        if (tab.output.length < writtenLengthRef.current) {
+        if (tab.output.length < queuedLengthRef.current) {
             terminal.reset();
+            queuedLengthRef.current = 0;
             writtenLengthRef.current = 0;
+            writeChainRef.current = Promise.resolve();
+            scheduleViewportSync(1);
         }
 
-        const nextChunk = tab.output.slice(writtenLengthRef.current);
+        const nextChunk = tab.output.slice(queuedLengthRef.current);
         if (!nextChunk) {
             return;
         }
 
-        terminal.write(nextChunk);
-        writtenLengthRef.current = tab.output.length;
+        const targetLength = tab.output.length;
+        queuedLengthRef.current = targetLength;
+
+        let cancelled = false;
+        writeChainRef.current = writeChainRef.current
+            .catch(() => undefined)
+            .then(
+                () =>
+                    new Promise<void>((resolve) => {
+                        const activeTerminal = terminalRef.current;
+                        if (!activeTerminal || cancelled) {
+                            resolve();
+                            return;
+                        }
+
+                        activeTerminal.write(nextChunk, () => {
+                            if (!cancelled) {
+                                writtenLengthRef.current = Math.max(
+                                    writtenLengthRef.current,
+                                    targetLength,
+                                );
+                                scheduleViewportSync();
+                            }
+                            resolve();
+                        });
+                    }),
+            );
+
+        return () => {
+            cancelled = true;
+        };
     }, [tab.output]);
 
     if (!runtime) {
