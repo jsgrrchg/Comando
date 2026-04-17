@@ -4038,7 +4038,7 @@ function ThinkingMessage({
                     className="mt-1 pl-5 italic"
                     style={{
                         color: "var(--color-text-secondary)",
-                        fontSize: "0.82em",
+                        fontSize: 13,
                         lineHeight: 1.6,
                         opacity: 0.7,
                     }}
@@ -4046,9 +4046,7 @@ function ThinkingMessage({
                     <MarkdownContent
                         content={content}
                         chatFontFamily={chatFontFamily}
-                        chatFontSize={
-                            chatFontSize ? chatFontSize * 0.82 : chatFontSize
-                        }
+                        chatFontSize={13}
                         onOpenFile={onOpenFile}
                         resolveFileReference={resolveFileReference}
                     />
