@@ -57,6 +57,10 @@ import {
     serializeComposerPartsForPrompt,
 } from "./chat/composerParts";
 import { registerComposerSelectionMentionHandler } from "./chat/composerSelectionBridge";
+import {
+    persistChatViewState,
+    readPersistedChatViewState,
+} from "./chat/chatViewPersistence";
 import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
 import { shouldShowPlanBanner } from "./chat/planBannerState";
@@ -106,6 +110,7 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 ];
 
 const NEAR_BOTTOM_THRESHOLD = 80;
+const SCROLL_PERSIST_DELAY_MS = 80;
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
@@ -257,6 +262,9 @@ export const ChatTabView = memo(function ChatTabView({
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
+    const scrollPersistTimerRef = useRef<number | null>(null);
+    const pendingPersistedScrollTopRef = useRef<number | null>(null);
+    const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
     const stableTimelineRef = useRef<{
         readonly model: ChatTimelineModel | null;
         readonly sessionId: string;
@@ -668,6 +676,15 @@ export const ChatTabView = memo(function ChatTabView({
         snapshot.trackedFiles,
         tab.sessionId,
     ]);
+    const persistedViewState = useMemo(
+        () =>
+            readPersistedChatViewState(
+                tab.projectId,
+                tab.worktreeId ?? null,
+                tab.sessionId,
+            ),
+        [tab.projectId, tab.sessionId, tab.worktreeId],
+    );
 
     useRenderProbe("ChatTabView", {
         composerPartCount: composerParts.length,
@@ -703,19 +720,155 @@ export const ChatTabView = memo(function ChatTabView({
         });
     }, [scrollToBottom]);
 
+    const persistCurrentViewState = useCallback(
+        (overrides?: {
+            readonly isNearBottom?: boolean;
+            readonly scrollTop?: number;
+        }) => {
+            const scrollEl = scrollRef.current;
+            const scrollTop =
+                overrides?.scrollTop ??
+                scrollEl?.scrollTop ??
+                persistedViewState?.scrollTop ??
+                0;
+            const nextIsNearBottom =
+                overrides?.isNearBottom ??
+                (scrollEl
+                    ? isNearBottom(scrollEl)
+                    : persistedViewState?.isNearBottom ?? true);
+
+            persistChatViewState(
+                tab.projectId,
+                tab.worktreeId ?? null,
+                tab.sessionId,
+                {
+                    isNearBottom: nextIsNearBottom,
+                    scrollTop,
+                },
+            );
+        },
+        [
+            isNearBottom,
+            persistedViewState?.isNearBottom,
+            persistedViewState?.scrollTop,
+            tab.projectId,
+            tab.sessionId,
+            tab.worktreeId,
+        ],
+    );
+
+    const flushScheduledScrollPersist = useCallback(() => {
+        if (scrollPersistTimerRef.current !== null) {
+            window.clearTimeout(scrollPersistTimerRef.current);
+            scrollPersistTimerRef.current = null;
+        }
+
+        if (
+            pendingPersistedScrollTopRef.current !== null ||
+            pendingPersistedNearBottomRef.current !== null
+        ) {
+            persistCurrentViewState({
+                isNearBottom:
+                    pendingPersistedNearBottomRef.current ?? undefined,
+                scrollTop: pendingPersistedScrollTopRef.current ?? undefined,
+            });
+        }
+
+        pendingPersistedNearBottomRef.current = null;
+        pendingPersistedScrollTopRef.current = null;
+    }, [persistCurrentViewState]);
+
+    const scheduleScrollPersist = useCallback(
+        (scrollTop: number, nextIsNearBottom: boolean) => {
+            pendingPersistedScrollTopRef.current = scrollTop;
+            pendingPersistedNearBottomRef.current = nextIsNearBottom;
+
+            if (scrollPersistTimerRef.current !== null) {
+                return;
+            }
+
+            scrollPersistTimerRef.current = window.setTimeout(() => {
+                scrollPersistTimerRef.current = null;
+
+                persistCurrentViewState({
+                    isNearBottom:
+                        pendingPersistedNearBottomRef.current ??
+                        nextIsNearBottom,
+                    scrollTop:
+                        pendingPersistedScrollTopRef.current ?? scrollTop,
+                });
+
+                pendingPersistedNearBottomRef.current = null;
+                pendingPersistedScrollTopRef.current = null;
+            }, SCROLL_PERSIST_DELAY_MS);
+        },
+        [persistCurrentViewState],
+    );
+
     useEffect(() => {
         return () => {
             if (pendingScrollFrameRef.current !== null) {
                 window.cancelAnimationFrame(pendingScrollFrameRef.current);
                 pendingScrollFrameRef.current = null;
             }
+            flushScheduledScrollPersist();
         };
-    }, []);
+    }, [flushScheduledScrollPersist]);
 
-    useEffect(() => {
-        shouldAutoFollowRef.current = true;
-        scheduleScrollToBottom();
-    }, [scheduleScrollToBottom, tab.sessionId]);
+    useLayoutEffect(() => {
+        const scrollEl = scrollRef.current;
+        const restoreScrollTop = persistedViewState?.scrollTop ?? 0;
+        const shouldRestoreBottom = persistedViewState?.isNearBottom ?? true;
+
+        if (!scrollEl) {
+            shouldAutoFollowRef.current = shouldRestoreBottom;
+            return undefined;
+        }
+
+        if (shouldRestoreBottom) {
+            shouldAutoFollowRef.current = true;
+            scheduleScrollToBottom();
+        } else {
+            shouldAutoFollowRef.current = false;
+            scrollEl.scrollTop = restoreScrollTop;
+        }
+
+        const restoreFrame = window.requestAnimationFrame(() => {
+            const nextScrollEl = scrollRef.current;
+            if (!nextScrollEl) {
+                return;
+            }
+
+            if (shouldRestoreBottom) {
+                scrollToBottom();
+                return;
+            }
+
+            nextScrollEl.scrollTop = restoreScrollTop;
+        });
+
+        return () => {
+            window.cancelAnimationFrame(restoreFrame);
+            flushScheduledScrollPersist();
+            persistCurrentViewState({
+                isNearBottom:
+                    pendingPersistedNearBottomRef.current ??
+                    shouldAutoFollowRef.current,
+                scrollTop:
+                    pendingPersistedScrollTopRef.current ??
+                    scrollEl.scrollTop ??
+                    restoreScrollTop,
+            });
+        };
+    }, [
+        flushScheduledScrollPersist,
+        persistCurrentViewState,
+        persistedViewState?.isNearBottom,
+        persistedViewState?.scrollTop,
+        scheduleScrollToBottom,
+        scrollToBottom,
+        tab.sessionId,
+    ]);
 
     useLayoutEffect(() => {
         if (shouldAutoFollowRef.current) {
@@ -747,8 +900,10 @@ export const ChatTabView = memo(function ChatTabView({
     const handleScroll = useCallback(() => {
         const el = scrollRef.current;
         if (!el) return;
-        shouldAutoFollowRef.current = isNearBottom(el);
-    }, [isNearBottom]);
+        const nextIsNearBottom = isNearBottom(el);
+        shouldAutoFollowRef.current = nextIsNearBottom;
+        scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
+    }, [isNearBottom, scheduleScrollPersist]);
 
     const updateDraftAttachments = useCallback(
         (attachments: readonly AiImageAttachment[]) => {
@@ -3941,4 +4096,3 @@ function formatAttachmentSize(sizeBytes: number | null): string {
 
     return formatBytes(sizeBytes);
 }
-
