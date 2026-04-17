@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { Fragment, memo, useState, type ReactNode } from "react";
 
 import type { AiImageAttachment, AiSessionSnapshot } from "@shared/ipc";
 
@@ -10,6 +10,7 @@ import { areMessagesEquivalent } from "./chatTimelineModel";
 interface ChatMessageRowProps {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
+    readonly highlightQuery?: string;
     readonly message: AiSessionSnapshot["messages"][number];
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
@@ -21,6 +22,7 @@ interface ChatMessageRowProps {
 export const ChatMessageRow = memo(function ChatMessageRow({
     chatFontFamily,
     chatFontSize,
+    highlightQuery,
     message,
     onOpenFile,
     onOpenImage,
@@ -33,6 +35,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
+                highlightQuery={highlightQuery}
                 onOpenFile={onOpenFile}
                 onOpenImage={onOpenImage}
                 resolveFileReference={resolveFileReference}
@@ -44,6 +47,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
+                highlightQuery={highlightQuery}
                 onOpenFile={onOpenFile}
                 resolveFileReference={resolveFileReference}
             />
@@ -55,6 +59,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
+                highlightQuery={highlightQuery}
                 inProgress={message.status === "streaming"}
                 onOpenFile={onOpenFile}
                 resolveFileReference={resolveFileReference}
@@ -66,6 +71,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             content={message.content}
+            highlightQuery={highlightQuery}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             resolveFileReference={resolveFileReference}
@@ -82,10 +88,130 @@ function areChatMessageRowPropsEqual(
     return (
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
+        previous.highlightQuery === next.highlightQuery &&
         previous.onOpenFile === next.onOpenFile &&
         previous.onOpenImage === next.onOpenImage &&
         previous.resolveFileReference === next.resolveFileReference &&
         areMessagesEquivalent(previous.message, next.message)
+    );
+}
+
+function HighlightedPlainText({
+    chatFontFamily,
+    chatFontSize,
+    content,
+    query,
+}: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly content: string;
+    readonly query: string;
+}) {
+    const segments = splitContentByHighlightQuery(content, query);
+    return (
+        <div
+            style={{
+                fontFamily: chatFontFamily,
+                fontSize: chatFontSize,
+                lineHeight: 1.6,
+                overflowWrap: "anywhere",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+            }}
+        >
+            {segments.map((segment, index) =>
+                segment.match ? (
+                    <mark
+                        key={index}
+                        style={{
+                            backgroundColor:
+                                "color-mix(in srgb, var(--color-accent) 35%, transparent)",
+                            borderRadius: 2,
+                            color: "inherit",
+                            padding: "0 1px",
+                        }}
+                    >
+                        {segment.text}
+                    </mark>
+                ) : (
+                    <Fragment key={index}>{segment.text}</Fragment>
+                ),
+            )}
+        </div>
+    );
+}
+
+function splitContentByHighlightQuery(
+    content: string,
+    query: string,
+): ReadonlyArray<{ readonly text: string; readonly match: boolean }> {
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+        return [{ match: false, text: content }];
+    }
+
+    const lowerContent = content.toLowerCase();
+    const lowerQuery = trimmed.toLowerCase();
+    const segments: { text: string; match: boolean }[] = [];
+    let cursor = 0;
+
+    while (cursor < content.length) {
+        const index = lowerContent.indexOf(lowerQuery, cursor);
+        if (index === -1) {
+            segments.push({ match: false, text: content.slice(cursor) });
+            break;
+        }
+
+        if (index > cursor) {
+            segments.push({
+                match: false,
+                text: content.slice(cursor, index),
+            });
+        }
+        segments.push({
+            match: true,
+            text: content.slice(index, index + trimmed.length),
+        });
+        cursor = index + trimmed.length;
+    }
+
+    if (segments.length === 0) {
+        return [{ match: false, text: content }];
+    }
+
+    return segments;
+}
+
+function renderHighlightableMarkdown(params: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly content: string;
+    readonly highlightQuery?: string;
+    readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+}): ReactNode {
+    const trimmedQuery = params.highlightQuery?.trim() ?? "";
+    if (trimmedQuery.length > 0) {
+        return (
+            <HighlightedPlainText
+                chatFontFamily={params.chatFontFamily}
+                chatFontSize={params.chatFontSize}
+                content={params.content}
+                query={trimmedQuery}
+            />
+        );
+    }
+
+    return (
+        <MarkdownContent
+            chatFontFamily={params.chatFontFamily}
+            chatFontSize={params.chatFontSize}
+            content={params.content}
+            onOpenFile={params.onOpenFile}
+            resolveFileReference={params.resolveFileReference}
+        />
     );
 }
 
@@ -94,6 +220,7 @@ function UserMessage(props: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly highlightQuery?: string;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly resolveFileReference: (
@@ -113,15 +240,16 @@ function UserMessage(props: {
                 wordBreak: "break-word",
             }}
         >
-            {props.content ? (
-                <MarkdownContent
-                    content={props.content}
-                    chatFontFamily={props.chatFontFamily}
-                    chatFontSize={props.chatFontSize}
-                    onOpenFile={props.onOpenFile}
-                    resolveFileReference={props.resolveFileReference}
-                />
-            ) : null}
+            {props.content
+                ? renderHighlightableMarkdown({
+                      chatFontFamily: props.chatFontFamily,
+                      chatFontSize: props.chatFontSize,
+                      content: props.content,
+                      highlightQuery: props.highlightQuery,
+                      onOpenFile: props.onOpenFile,
+                      resolveFileReference: props.resolveFileReference,
+                  })
+                : null}
             {props.attachments.length > 0 ? (
                 <MessageImageGrid
                     attachments={props.attachments}
@@ -137,6 +265,7 @@ function AssistantMessage(props: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly highlightQuery?: string;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly resolveFileReference: (
@@ -151,15 +280,16 @@ function AssistantMessage(props: {
                 fontSize: props.chatFontSize,
             }}
         >
-            {props.content ? (
-                <MarkdownContent
-                    content={props.content}
-                    chatFontFamily={props.chatFontFamily}
-                    chatFontSize={props.chatFontSize}
-                    onOpenFile={props.onOpenFile}
-                    resolveFileReference={props.resolveFileReference}
-                />
-            ) : null}
+            {props.content
+                ? renderHighlightableMarkdown({
+                      chatFontFamily: props.chatFontFamily,
+                      chatFontSize: props.chatFontSize,
+                      content: props.content,
+                      highlightQuery: props.highlightQuery,
+                      onOpenFile: props.onOpenFile,
+                      resolveFileReference: props.resolveFileReference,
+                  })
+                : null}
             {props.attachments.length > 0 ? (
                 <MessageImageGrid
                     attachments={props.attachments}
@@ -201,12 +331,14 @@ function UserInputRequestMessage({
     chatFontFamily,
     chatFontSize,
     content,
+    highlightQuery,
     onOpenFile,
     resolveFileReference,
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly highlightQuery?: string;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly resolveFileReference: (
         reference: string,
@@ -241,15 +373,16 @@ function UserInputRequestMessage({
                     lineHeight: 1.55,
                 }}
             >
-                <MarkdownContent
-                    content={content}
-                    chatFontFamily={chatFontFamily}
-                    chatFontSize={
-                        chatFontSize ? chatFontSize * 0.84 : chatFontSize
-                    }
-                    onOpenFile={onOpenFile}
-                    resolveFileReference={resolveFileReference}
-                />
+                {renderHighlightableMarkdown({
+                    chatFontFamily,
+                    chatFontSize: chatFontSize
+                        ? chatFontSize * 0.84
+                        : chatFontSize,
+                    content,
+                    highlightQuery,
+                    onOpenFile,
+                    resolveFileReference,
+                })}
             </div>
         </div>
     );
@@ -259,6 +392,7 @@ function ThinkingMessage({
     chatFontFamily,
     chatFontSize,
     content,
+    highlightQuery,
     inProgress,
     onOpenFile,
     resolveFileReference,
@@ -266,6 +400,7 @@ function ThinkingMessage({
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly highlightQuery?: string;
     readonly inProgress: boolean;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly resolveFileReference: (
@@ -314,13 +449,14 @@ function ThinkingMessage({
                         opacity: 0.7,
                     }}
                 >
-                    <MarkdownContent
-                        content={content}
-                        chatFontFamily={chatFontFamily}
-                        chatFontSize={13}
-                        onOpenFile={onOpenFile}
-                        resolveFileReference={resolveFileReference}
-                    />
+                    {renderHighlightableMarkdown({
+                        chatFontFamily,
+                        chatFontSize: 13,
+                        content,
+                        highlightQuery,
+                        onOpenFile,
+                        resolveFileReference,
+                    })}
                 </div>
             ) : null}
         </div>

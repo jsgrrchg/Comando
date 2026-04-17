@@ -72,7 +72,10 @@ export interface ChatHistoryTabLayoutProps {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly isSidebarCollapsed?: boolean;
+    readonly onSearchQueryChange?: (value: string) => void;
     readonly onToggleSidebar?: () => void;
+    readonly searchQuery?: string;
+    readonly totalSessionsCount?: number;
     readonly onSidebarResizePointerDown?: (
         event: ReactPointerEvent<HTMLDivElement>,
     ) => void;
@@ -247,6 +250,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
         DEFAULT_HISTORY_SIDEBAR_WIDTH,
     );
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const [searchQuery, setSearchQuery] = useState("");
     const splitContainerRef = useRef<HTMLDivElement | null>(null);
     const sidebarResizeCleanupRef = useRef<(() => void) | null>(null);
     const transcriptRequestIdsRef = useRef<Record<string, number>>({});
@@ -755,6 +759,16 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
     const isBusy = mutatingSessionId !== null;
     const selectedSnapshot = selectedSnapshotState?.snapshot ?? null;
     const selectedSnapshotStatus = selectedSnapshot?.status ?? null;
+    const filteredSessions = useMemo(() => {
+        const query = searchQuery.trim().toLowerCase();
+        if (query.length === 0) {
+            return sessions;
+        }
+
+        return sessions.filter((session) =>
+            session.title.toLowerCase().includes(query),
+        );
+    }, [searchQuery, sessions]);
 
     return (
         <ChatHistoryTabLayout
@@ -774,19 +788,22 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             loadSessionSnapshot={loadSessionSnapshot}
             loadTranscriptPage={loadTranscriptPage}
             mutatingSessionId={mutatingSessionId}
+            onSearchQueryChange={setSearchQuery}
             onSidebarResizePointerDown={handleSidebarResizePointerDown}
             onToggleSidebar={toggleSidebarCollapsed}
             resolveFileReference={resolveChatFileReference}
             scopeLabel={scopeLabel}
+            searchQuery={searchQuery}
             selectedSession={selectedSession}
             selectedSessionId={selectedSessionId}
             selectedSnapshot={selectedSnapshot}
             selectedSnapshotState={selectedSnapshotState}
             selectedSnapshotStatus={selectedSnapshotStatus}
             selectedTranscript={selectedTranscript}
-            sessions={sessions}
+            sessions={filteredSessions}
             sessionsError={sessionsError}
             setSelectedSessionId={setSelectedSessionId}
+            totalSessionsCount={sessions.length}
             sidebarWidth={sidebarWidth}
             splitContainerRef={splitContainerRef}
             tab={tab}
@@ -813,10 +830,12 @@ export function ChatHistoryTabLayout({
     loadSessionSnapshot,
     loadTranscriptPage,
     mutatingSessionId,
+    onSearchQueryChange,
     onSidebarResizePointerDown,
     onToggleSidebar,
     resolveFileReference,
     scopeLabel,
+    searchQuery,
     selectedSession,
     selectedSessionId,
     selectedSnapshot,
@@ -829,23 +848,65 @@ export function ChatHistoryTabLayout({
     sidebarWidth,
     splitContainerRef,
     tab,
+    totalSessionsCount,
     transcriptMessages,
     worktreeLabel,
 }: ChatHistoryTabLayoutProps) {
     void tab;
     void scopeLabel;
     void worktreeLabel;
+    const resolvedSearchQuery = searchQuery ?? "";
+    const hasActiveSearch = resolvedSearchQuery.trim().length > 0;
+    const resolvedTotalSessionsCount = totalSessionsCount ?? sessions.length;
     const statusLine = isLoadingSessions
         ? "Loading sessions..."
         : sessionsError
           ? sessionsError
-          : formatSessionCount(sessions.length);
+          : hasActiveSearch
+            ? `${sessions.length} of ${resolvedTotalSessionsCount}`
+            : formatSessionCount(sessions.length);
     const resolvedSidebarCollapsed = isSidebarCollapsed ?? false;
     const resolvedSidebarWidth = sidebarWidth ?? DEFAULT_HISTORY_SIDEBAR_WIDTH;
     const [renamingSessionId, setRenamingSessionId] = useState<string | null>(
         null,
     );
     const [renameDraft, setRenameDraft] = useState("");
+    const [isTranscriptSearchOpen, setIsTranscriptSearchOpen] = useState(false);
+    const [transcriptSearchQuery, setTranscriptSearchQuery] = useState("");
+
+    const openTranscriptSearch = useCallback(() => {
+        setIsTranscriptSearchOpen(true);
+    }, []);
+
+    const closeTranscriptSearch = useCallback(() => {
+        setIsTranscriptSearchOpen(false);
+        setTranscriptSearchQuery("");
+    }, []);
+
+    useEffect(() => {
+        if (!selectedSession) {
+            setIsTranscriptSearchOpen(false);
+            setTranscriptSearchQuery("");
+        }
+    }, [selectedSession]);
+
+    const normalizedTranscriptSearch = transcriptSearchQuery.trim().toLowerCase();
+    const hasActiveTranscriptSearch = normalizedTranscriptSearch.length > 0;
+    const displayedTranscriptMessages = useMemo(() => {
+        if (!hasActiveTranscriptSearch) {
+            return transcriptMessages;
+        }
+
+        return transcriptMessages.filter((message) =>
+            message.content
+                .toLowerCase()
+                .includes(normalizedTranscriptSearch),
+        );
+    }, [hasActiveTranscriptSearch, normalizedTranscriptSearch, transcriptMessages]);
+    const displayedTranscriptCount = displayedTranscriptMessages.length;
+    const displayedTranscriptTotal = hasActiveTranscriptSearch
+        ? transcriptMessages.length
+        : (selectedTranscript?.totalMessages ?? transcriptMessages.length);
 
     const startRename = useCallback(
         (session: AiHistorySessionSummary) => {
@@ -887,7 +948,7 @@ export function ChatHistoryTabLayout({
                 <IdeBarLabel>Chat History</IdeBarLabel>
                 <span
                     className={[
-                        "truncate text-[11px]",
+                        "shrink-0 truncate text-[10.5px]",
                         sessionsError
                             ? "text-[var(--diff-remove)]"
                             : "text-text-secondary",
@@ -923,6 +984,59 @@ export function ChatHistoryTabLayout({
                             width: resolvedSidebarWidth,
                         }}
                     >
+                    {onSearchQueryChange ? (
+                        <div
+                            className="shrink-0 px-2 py-1.5"
+                            style={{
+                                borderBottom:
+                                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                            }}
+                        >
+                            <div className="relative w-full">
+                                <input
+                                    aria-label="Filter chat history by name"
+                                    className="w-full min-w-0 rounded-[3px] bg-transparent pl-6 pr-6 text-[11px] text-text-primary placeholder:text-text-secondary focus:bg-[color-mix(in_srgb,var(--color-bg-primary)_70%,transparent)] focus:outline-none"
+                                    onChange={(event) =>
+                                        onSearchQueryChange(event.target.value)
+                                    }
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Escape") {
+                                            event.preventDefault();
+                                            onSearchQueryChange("");
+                                        }
+                                    }}
+                                    placeholder="Filter by name..."
+                                    style={{
+                                        border:
+                                            "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
+                                        fontFamily: "var(--font-mono)",
+                                        height: 22,
+                                        lineHeight: "20px",
+                                    }}
+                                    type="text"
+                                    value={resolvedSearchQuery}
+                                />
+                                <span
+                                    aria-hidden="true"
+                                    className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-text-secondary"
+                                >
+                                    <SearchIcon />
+                                </span>
+                                {hasActiveSearch ? (
+                                    <button
+                                        aria-label="Clear filter"
+                                        className="absolute right-1 top-1/2 -translate-y-1/2 rounded px-1 text-[10px] text-text-secondary transition-colors hover:text-text-primary"
+                                        onClick={() =>
+                                            onSearchQueryChange("")
+                                        }
+                                        type="button"
+                                    >
+                                        ×
+                                    </button>
+                                ) : null}
+                            </div>
+                        </div>
+                    ) : null}
                     <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto p-2">
                         {isLoadingSessions && sessions.length === 0 ? (
                             <HistoryPlaceholder body="Loading history..." />
@@ -931,7 +1045,13 @@ export function ChatHistoryTabLayout({
                         {!isLoadingSessions &&
                         !sessionsError &&
                         sessions.length === 0 ? (
-                            <HistoryPlaceholder body="No chat history yet. Conversations in this scope will appear here." />
+                            <HistoryPlaceholder
+                                body={
+                                    hasActiveSearch
+                                        ? `No sessions match "${resolvedSearchQuery.trim()}".`
+                                        : "No chat history yet. Conversations in this scope will appear here."
+                                }
+                            />
                         ) : null}
 
                         {sessionsError && sessions.length === 0 ? (
@@ -1206,6 +1326,59 @@ export function ChatHistoryTabLayout({
                                     ) : null}
                                 </div>
                                 <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                                    {isTranscriptSearchOpen ? (
+                                        <div className="relative min-w-0 w-[220px]">
+                                            <input
+                                                aria-label="Search inside chat"
+                                                autoFocus
+                                                className="w-full min-w-0 rounded-[3px] bg-transparent pl-6 pr-6 text-[11px] text-text-primary placeholder:text-text-secondary focus:bg-[color-mix(in_srgb,var(--color-bg-primary)_70%,transparent)] focus:outline-none"
+                                                onChange={(event) =>
+                                                    setTranscriptSearchQuery(
+                                                        event.target.value,
+                                                    )
+                                                }
+                                                onKeyDown={(event) => {
+                                                    if (event.key === "Escape") {
+                                                        event.preventDefault();
+                                                        closeTranscriptSearch();
+                                                    }
+                                                }}
+                                                placeholder="Search in chat..."
+                                                style={{
+                                                    border:
+                                                        "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
+                                                    fontFamily:
+                                                        "var(--font-mono)",
+                                                    height: 22,
+                                                    lineHeight: "20px",
+                                                }}
+                                                type="text"
+                                                value={transcriptSearchQuery}
+                                            />
+                                            <span
+                                                aria-hidden="true"
+                                                className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-text-secondary"
+                                            >
+                                                <SearchIcon />
+                                            </span>
+                                            <button
+                                                aria-label="Close search"
+                                                className="absolute right-1 top-1/2 -translate-y-1/2 rounded px-1 text-[10px] text-text-secondary transition-colors hover:text-text-primary"
+                                                onClick={closeTranscriptSearch}
+                                                type="button"
+                                            >
+                                                ×
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <IdeIconButton
+                                            aria-label="Search inside chat"
+                                            onClick={openTranscriptSearch}
+                                            title="Search in chat"
+                                        >
+                                            <SearchIcon />
+                                        </IdeIconButton>
+                                    )}
                                     <IdeActionButton
                                         onClick={() =>
                                             void Promise.all([
@@ -1280,7 +1453,17 @@ export function ChatHistoryTabLayout({
                                     <HistoryPlaceholder body="No transcript messages were persisted for this session." />
                                 ) : null}
 
-                                {transcriptMessages.length > 0 ? (
+                                {transcriptMessages.length > 0 &&
+                                hasActiveTranscriptSearch &&
+                                displayedTranscriptCount === 0 ? (
+                                    <HistoryPlaceholder
+                                        body={`No messages contain "${transcriptSearchQuery.trim()}".`}
+                                    />
+                                ) : null}
+
+                                {transcriptMessages.length > 0 &&
+                                (!hasActiveTranscriptSearch ||
+                                    displayedTranscriptCount > 0) ? (
                                     <div
                                         className="min-w-0 space-y-2"
                                         style={{ fontFamily: chatFontFamily }}
@@ -1288,6 +1471,11 @@ export function ChatHistoryTabLayout({
                                         <HistoryTranscriptTimeline
                                             chatFontFamily={chatFontFamily}
                                             chatFontSize={chatFontSize}
+                                            highlightQuery={
+                                                hasActiveTranscriptSearch
+                                                    ? transcriptSearchQuery
+                                                    : undefined
+                                            }
                                             onOpenFile={handleOpenFile}
                                             onOpenImage={handleOpenImage}
                                             onOpenResolvedFileReference={
@@ -1299,9 +1487,13 @@ export function ChatHistoryTabLayout({
                                             resolveFileReference={
                                                 resolveFileReference
                                             }
-                                            snapshot={selectedSnapshot}
+                                            snapshot={
+                                                hasActiveTranscriptSearch
+                                                    ? null
+                                                    : selectedSnapshot
+                                            }
                                             transcriptMessages={
-                                                transcriptMessages
+                                                displayedTranscriptMessages
                                             }
                                             worktreeId={
                                                 selectedSession.worktreeId ??
@@ -1315,9 +1507,12 @@ export function ChatHistoryTabLayout({
                                                     ?.isLoading &&
                                                 transcriptMessages.length > 0
                                                     ? "Loading more..."
-                                                    : `${transcriptMessages.length} of ${selectedTranscript?.totalMessages ?? transcriptMessages.length} messages`}
+                                                    : hasActiveTranscriptSearch
+                                                      ? `${displayedTranscriptCount} of ${displayedTranscriptTotal} messages match`
+                                                      : `${displayedTranscriptCount} of ${displayedTranscriptTotal} messages`}
                                             </span>
-                                            {hasMoreMessages ? (
+                                            {hasMoreMessages &&
+                                            !hasActiveTranscriptSearch ? (
                                                 <IdeActionButton
                                                     disabled={
                                                         selectedTranscript?.isLoading
@@ -1376,6 +1571,7 @@ const NOOP_RESOLVE_FILE_REFERENCE = (
 interface HistoryTimelineHandlers {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
+    readonly highlightQuery?: string;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -1393,6 +1589,7 @@ interface HistoryTimelineHandlers {
 function HistoryTranscriptTimeline({
     chatFontFamily,
     chatFontSize,
+    highlightQuery,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -1404,6 +1601,7 @@ function HistoryTranscriptTimeline({
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
+    readonly highlightQuery?: string;
     readonly onOpenFile?: (
         projectId: string,
         relativePath: string,
@@ -1439,6 +1637,7 @@ function HistoryTranscriptTimeline({
         () => ({
             chatFontFamily,
             chatFontSize,
+            highlightQuery,
             onOpenFile: onOpenFile ?? NOOP_OPEN_FILE,
             onOpenImage: onOpenImage ?? NOOP_OPEN_IMAGE,
             onOpenResolvedFileReference:
@@ -1449,6 +1648,7 @@ function HistoryTranscriptTimeline({
         [
             chatFontFamily,
             chatFontSize,
+            highlightQuery,
             onOpenFile,
             onOpenImage,
             onOpenResolvedFileReference,
@@ -1487,6 +1687,7 @@ function HistoryTimelineRow({
             <ChatMessageRow
                 chatFontFamily={handlers.chatFontFamily}
                 chatFontSize={handlers.chatFontSize}
+                highlightQuery={handlers.highlightQuery}
                 message={row.message}
                 onOpenFile={handlers.onOpenResolvedFileReference}
                 onOpenImage={handlers.onOpenImage}
@@ -1630,6 +1831,62 @@ function IdeBarDotSeparator() {
         <span aria-hidden="true" className="shrink-0 text-text-secondary">
             ·
         </span>
+    );
+}
+
+function IdeIconButton({
+    children,
+    disabled,
+    onClick,
+    title,
+    ...ariaProps
+}: {
+    readonly children: ReactNode;
+    readonly disabled?: boolean;
+    readonly onClick: () => void;
+    readonly title?: string;
+    readonly "aria-label"?: string;
+}) {
+    return (
+        <button
+            aria-label={ariaProps["aria-label"]}
+            className="review-action-btn flex items-center justify-center"
+            disabled={disabled}
+            onClick={onClick}
+            style={{
+                background: "transparent",
+                border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                borderRadius: 3,
+                color: "var(--color-text-secondary)",
+                cursor: disabled ? "not-allowed" : "pointer",
+                height: 22,
+                opacity: disabled ? 0.4 : 1,
+                padding: "0 6px",
+            }}
+            title={title}
+            type="button"
+        >
+            {children}
+        </button>
+    );
+}
+
+function SearchIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+            width="12"
+        >
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" x2="16.5" y1="21" y2="16.5" />
+        </svg>
     );
 }
 
