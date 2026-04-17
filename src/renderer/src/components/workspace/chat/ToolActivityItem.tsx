@@ -8,7 +8,11 @@ import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLang
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
 
 import { MarkdownContent } from "../MarkdownContent";
-import type { ResolvedProjectFileReference } from "../projectFileReferences";
+import {
+    isLikelyProjectFileReference,
+    parseProjectFileReference,
+    type ResolvedProjectFileReference,
+} from "../projectFileReferences";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
 
 /* ─── Tool icon SVGs ─── */
@@ -175,10 +179,6 @@ function isFileToolActivity(
     return false;
 }
 
-function looksAbsolutePath(p: string): boolean {
-    return p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p);
-}
-
 function isTurnStartedActivity(activity: AiToolActivity): boolean {
     return activity.id.startsWith("neverwrite:status:turn:");
 }
@@ -196,6 +196,93 @@ function summarizeDiff(oldText: string | null, newText: string | null): string {
     return parts.length > 0
         ? `Updates ${nl} line(s) (${parts.join(", ")}).`
         : `Updates ${nl} line(s).`;
+}
+
+function parseToolTitleReference(
+    title: string,
+): { readonly prefix: string; readonly target: string } | null {
+    const match =
+        /^(Read|Edit|Write|Create|Delete|Move|Search)\s+(.+)$/i.exec(
+            title.trim(),
+        );
+    const target = match?.[2]?.trim() ?? "";
+    if (!target || !isLikelyProjectFileReference(target)) {
+        return null;
+    }
+
+    return {
+        prefix: `${match?.[1] ?? ""} `,
+        target,
+    };
+}
+
+function canOpenToolFileReference({
+    projectId,
+    resolveFileReference,
+    target,
+}: {
+    readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly target: string;
+}) {
+    const resolvedReference = resolveFileReference?.(target) ?? null;
+    if (resolvedReference) {
+        return true;
+    }
+
+    const parsedReference = parseProjectFileReference(target);
+    return !!parsedReference && !parsedReference.isAbsolute && !!projectId;
+}
+
+function openToolFileReference({
+    onOpenFile,
+    onOpenFileReference,
+    projectId,
+    resolveFileReference,
+    target,
+    worktreeId,
+}: {
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+    ) => Promise<void>;
+    readonly onOpenFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly target: string;
+    readonly worktreeId: string | null;
+}) {
+    const resolvedReference = resolveFileReference?.(target) ?? null;
+    if (resolvedReference) {
+        if (onOpenFileReference) {
+            onOpenFileReference(resolvedReference);
+            return;
+        }
+
+        if (projectId) {
+            void onOpenFile(
+                projectId,
+                resolvedReference.relativePath,
+                worktreeId,
+            );
+        }
+        return;
+    }
+
+    const parsedReference = parseProjectFileReference(target);
+    if (!parsedReference || parsedReference.isAbsolute || !projectId) {
+        return;
+    }
+
+    void onOpenFile(projectId, parsedReference.path, worktreeId);
 }
 
 function ToolDetailCodeBlock({
@@ -352,12 +439,27 @@ function FileToolMessage({
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
     const accent = getToolAccent(activity.kind);
+    const titleReference = parseToolTitleReference(activity.title);
+    const titleIsLink =
+        titleReference !== null &&
+        canOpenToolFileReference({
+            projectId,
+            resolveFileReference,
+            target: titleReference.target,
+        });
 
     const hasDetail =
         !!activity.summary ||
         activity.locations.length > 0 ||
         activity.diffs.length > 0 ||
         pendingTrackedFiles.length > 0;
+    const toggleExpanded = () => {
+        if (!hasDetail) {
+            return;
+        }
+
+        setExpanded((value) => !value);
+    };
 
     return (
         <div
@@ -369,12 +471,24 @@ function FileToolMessage({
                 transition: "opacity 0.2s ease",
             }}
         >
-            <button
+            <div
+                aria-expanded={hasDetail ? expanded : undefined}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-                onClick={() => hasDetail && setExpanded(!expanded)}
+                onClick={toggleExpanded}
+                onKeyDown={(event) => {
+                    if (
+                        !hasDetail ||
+                        (event.key !== "Enter" && event.key !== " ")
+                    ) {
+                        return;
+                    }
+
+                    event.preventDefault();
+                    toggleExpanded();
+                }}
+                role={hasDetail ? "button" : undefined}
                 style={{
                     background: "none",
-                    border: "none",
                     borderBottom: expanded
                         ? `1px solid color-mix(in srgb, ${accent} 15%, var(--color-border))`
                         : "1px solid transparent",
@@ -382,7 +496,7 @@ function FileToolMessage({
                     cursor: hasDetail ? "pointer" : "default",
                     fontSize: "0.83em",
                 }}
-                type="button"
+                tabIndex={hasDetail ? 0 : undefined}
             >
                 <span className="shrink-0">{getToolIcon(activity.kind)}</span>
                 <span
@@ -392,7 +506,44 @@ function FileToolMessage({
                         fontWeight: 400,
                     }}
                 >
-                    {activity.title}
+                    {titleReference && titleIsLink ? (
+                        <>
+                            {titleReference.prefix}
+                            <button
+                                className="app-no-drag"
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    openToolFileReference({
+                                        onOpenFile,
+                                        onOpenFileReference,
+                                        projectId,
+                                        resolveFileReference,
+                                        target: titleReference.target,
+                                        worktreeId,
+                                    });
+                                }}
+                                style={{
+                                    background: "none",
+                                    border: "none",
+                                    color: "inherit",
+                                    cursor: "pointer",
+                                    display: "inline",
+                                    font: "inherit",
+                                    lineHeight: "inherit",
+                                    margin: 0,
+                                    padding: 0,
+                                    textDecoration: "none",
+                                    verticalAlign: "baseline",
+                                }}
+                                title={`Open ${titleReference.target}`}
+                                type="button"
+                            >
+                                {titleReference.target}
+                            </button>
+                        </>
+                    ) : (
+                        activity.title
+                    )}
                 </span>
                 {isInProgress ? (
                     <span
@@ -417,7 +568,7 @@ function FileToolMessage({
                         <Chevron expanded={expanded} />
                     </span>
                 ) : null}
-            </button>
+            </div>
 
             {expanded ? (
                 <div className="px-3 py-1.5" style={{ fontSize: "0.78em" }}>
@@ -439,15 +590,14 @@ function FileToolMessage({
                                     className="app-no-drag rounded-md px-2 py-0.5"
                                     key={loc}
                                     onClick={() => {
-                                        if (
-                                            projectId &&
-                                            !looksAbsolutePath(loc)
-                                        )
-                                            void onOpenFile(
-                                                projectId,
-                                                loc,
-                                                worktreeId,
-                                            );
+                                        openToolFileReference({
+                                            onOpenFile,
+                                            onOpenFileReference,
+                                            projectId,
+                                            resolveFileReference,
+                                            target: loc,
+                                            worktreeId,
+                                        });
                                     }}
                                     onMouseEnter={(e) => {
                                         e.currentTarget.style.backgroundColor =
@@ -465,7 +615,13 @@ function FileToolMessage({
                                             "var(--color-bg-tertiary)",
                                         border: "1px solid var(--color-border)",
                                         color: "var(--color-text-secondary)",
-                                        cursor: "pointer",
+                                        cursor: canOpenToolFileReference({
+                                            projectId,
+                                            resolveFileReference,
+                                            target: loc,
+                                        })
+                                            ? "pointer"
+                                            : "default",
                                         fontSize: "0.9em",
                                         transition:
                                             "background-color 100ms ease, filter 100ms ease",

@@ -7,6 +7,12 @@ import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
+import {
+    configureMonacoTextMateLanguages,
+    ensureMonacoTextMateProvider,
+    isTextMateLanguageSupported,
+} from "./monacoTextmate";
+
 export type ComandoMonacoTheme = "comando-light" | "comando-dark";
 
 type MonacoEnvironmentShape = {
@@ -235,15 +241,19 @@ function registerLanguageIds(
     );
 
     for (const languageId of languageIds) {
-        if (knownLanguageIds.has(languageId)) {
-            continue;
-        }
+        const shouldInstallTextMate = isTextMateLanguageSupported(languageId);
 
-        monaco.languages.register({
-            aliases: [languageId],
-            id: languageId,
-        });
-        knownLanguageIds.add(languageId);
+        if (knownLanguageIds.has(languageId)) {
+            if (!shouldInstallTextMate) {
+                continue;
+            }
+        } else {
+            monaco.languages.register({
+                aliases: [languageId],
+                id: languageId,
+            });
+            knownLanguageIds.add(languageId);
+        }
 
         let didAttachProvider = false;
         monaco.languages.onLanguage(languageId, () => {
@@ -265,6 +275,9 @@ function registerLanguageIds(
                             monarchLanguage.conf,
                         );
                     }
+                    if (shouldInstallTextMate) {
+                        void ensureMonacoTextMateProvider(monaco, languageId);
+                    }
                     return;
                 }
 
@@ -278,6 +291,9 @@ function registerLanguageIds(
                         languageId,
                         tokenizedLanguage.conf,
                     );
+                }
+                if (shouldInstallTextMate) {
+                    void ensureMonacoTextMateProvider(monaco, languageId);
                 }
             });
         });
@@ -643,6 +659,7 @@ if (!monacoGlobal.__comandoMonacoConfigured) {
     monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
     monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true);
     configureMarkdownFenceLanguages();
+    configureMonacoTextMateLanguages(monaco);
     monacoGlobal.__comandoMonacoConfigured = true;
 }
 
@@ -819,6 +836,12 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
     const tagColor = mixHexColors(editorForeground, accent, 0.8);
     const attributeColor = mixHexColors(editorForeground, accent, 0.48);
     const regexpColor = mixHexColors(editorForeground, accent, 0.52);
+    const variableColor = mixHexColors(editorForeground, accent, 0.3);
+    const propertyColor = mixHexColors(editorForeground, accent, 0.42);
+    const namespaceColor = mixHexColors(editorForeground, accent, 0.5);
+    const macroColor = mixHexColors(editorForeground, accent, 0.64);
+    const decoratorColor = mixHexColors(editorForeground, accent, 0.72);
+    const escapeColor = mixHexColors(editorForeground, accent, 0.78);
     const lineHighlight = withAlpha(editorForeground, isDark ? 0.04 : 0.035);
     const scrollbar = withAlpha(editorForeground, isDark ? 0.14 : 0.1);
     const scrollbarHover = withAlpha(editorForeground, isDark ? 0.22 : 0.16);
@@ -842,7 +865,19 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
                 token: "keyword.control",
                 foreground: themeRuleColor(keywordColor),
             },
+            { token: "keyword.other", foreground: themeRuleColor(keywordColor) },
+            { token: "keyword.operator", foreground: themeRuleColor(keywordColor) },
+            { token: "storage", foreground: themeRuleColor(keywordColor) },
+            { token: "storage.modifier", foreground: themeRuleColor(keywordColor) },
             { token: "string", foreground: themeRuleColor(stringColor) },
+            {
+                token: "punctuation.definition.string",
+                foreground: themeRuleColor(stringColor),
+            },
+            {
+                token: "constant.character.escape",
+                foreground: themeRuleColor(escapeColor),
+            },
             { token: "number", foreground: themeRuleColor(numberColor) },
             {
                 token: "constant",
@@ -850,12 +885,15 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
             },
             { token: "regexp", foreground: themeRuleColor(regexpColor) },
             { token: "type", foreground: themeRuleColor(typeColor) },
+            { token: "storage.type", foreground: themeRuleColor(typeColor) },
             {
                 token: "type.identifier",
                 foreground: themeRuleColor(typeColor),
             },
             { token: "class", foreground: themeRuleColor(typeColor) },
             { token: "interface", foreground: themeRuleColor(typeColor) },
+            { token: "support.type", foreground: themeRuleColor(typeColor) },
+            { token: "support.class", foreground: themeRuleColor(typeColor) },
             {
                 token: "entity.name.type",
                 foreground: themeRuleColor(typeColor),
@@ -869,10 +907,71 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
                 token: "entity.name.function",
                 foreground: themeRuleColor(functionColor),
             },
+            {
+                token: "support.function",
+                foreground: themeRuleColor(functionColor),
+            },
+            {
+                token: "support.function.builtin",
+                foreground: themeRuleColor(functionColor),
+            },
+            {
+                token: "entity.name.function.decorator",
+                foreground: themeRuleColor(decoratorColor),
+            },
+            {
+                token: "entity.name.function.macro",
+                foreground: themeRuleColor(macroColor),
+            },
             { token: "tag", foreground: themeRuleColor(tagColor) },
+            {
+                token: "entity.name.namespace",
+                foreground: themeRuleColor(namespaceColor),
+            },
+            {
+                token: "entity.name.module",
+                foreground: themeRuleColor(namespaceColor),
+            },
+            {
+                token: "entity.name.constant",
+                foreground: themeRuleColor(constantColor),
+            },
             {
                 token: "attribute.name",
                 foreground: themeRuleColor(attributeColor),
+            },
+            {
+                token: "entity.other.attribute-name",
+                foreground: themeRuleColor(attributeColor),
+            },
+            {
+                token: "meta.attribute",
+                foreground: themeRuleColor(decoratorColor),
+            },
+            { token: "variable", foreground: themeRuleColor(variableColor) },
+            {
+                token: "variable.other",
+                foreground: themeRuleColor(variableColor),
+            },
+            {
+                token: "variable.other.readwrite",
+                foreground: themeRuleColor(variableColor),
+            },
+            {
+                token: "variable.parameter",
+                foreground: themeRuleColor(variableColor),
+            },
+            {
+                token: "variable.language",
+                foreground: themeRuleColor(keywordColor),
+            },
+            {
+                token: "variable.other.member",
+                foreground: themeRuleColor(propertyColor),
+            },
+            {
+                token: "variable.other.constant",
+                foreground: themeRuleColor(constantColor),
             },
         ],
         colors: {

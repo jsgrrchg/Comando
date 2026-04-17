@@ -503,9 +503,11 @@ function WorkspaceSplitView({
         }
 
         const previousCursor = document.body.style.cursor;
+        const previousUserSelect = document.body.style.userSelect;
         const nextCursor =
             node.axis === "horizontal" ? "col-resize" : "row-resize";
         document.body.style.cursor = nextCursor;
+        document.body.style.userSelect = "none";
 
         window.addEventListener("pointermove", handlePointerMove);
         window.addEventListener("pointercancel", stopDragging);
@@ -513,6 +515,7 @@ function WorkspaceSplitView({
 
         return () => {
             document.body.style.cursor = previousCursor;
+            document.body.style.userSelect = previousUserSelect;
             window.removeEventListener("pointermove", handlePointerMove);
             window.removeEventListener("pointercancel", stopDragging);
             window.removeEventListener("pointerup", stopDragging);
@@ -543,7 +546,9 @@ function WorkspaceSplitView({
                     key={child.id}
                     nodeId={child.id}
                     onRequestCreateFile={onRequestCreateFile}
-                    onPointerDown={(event) =>
+                    onPointerDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
                         setDragState({
                             handleIndex: index,
                             startCoordinate:
@@ -551,8 +556,8 @@ function WorkspaceSplitView({
                                     ? event.clientX
                                     : event.clientY,
                             startSizes: node.sizes,
-                        })
-                    }
+                        });
+                    }}
                     size={sizes[index] ?? 1 / node.children.length}
                     tabDrag={tabDrag}
                 />

@@ -162,6 +162,27 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
+    it("renders read tool titles as clickable internal links when they target a project file", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "read",
+                    locations: [],
+                    summary: null,
+                    title: "Read src/components/example.cpp",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Read src/components/example.cpp");
+        expect(markup).toContain("Open src/components/example.cpp");
+        expect(markup).toContain("color:inherit");
+    });
+
     it("renders turn_started as a subtle reference app-style divider", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {

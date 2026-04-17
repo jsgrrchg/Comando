@@ -497,13 +497,13 @@ function CopyIcon() {
     return (
         <svg
             fill="none"
-            height="11"
+            height="14"
             stroke="currentColor"
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth="1.5"
             viewBox="0 0 24 24"
-            width="11"
+            width="14"
         >
             <rect x="9" y="9" width="13" height="13" rx="2" />
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
@@ -515,13 +515,13 @@ function CheckIcon() {
     return (
         <svg
             fill="none"
-            height="11"
+            height="14"
             stroke="currentColor"
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth="2"
             viewBox="0 0 24 24"
-            width="11"
+            width="14"
         >
             <polyline points="20 6 9 17 4 12" />
         </svg>
@@ -571,26 +571,24 @@ function CodeBlock({
             }}
             onMouseLeave={(e) => {
                 e.currentTarget.style.opacity = "0.9";
-                e.currentTarget.style.backgroundColor =
-                    "color-mix(in srgb, var(--color-bg-elevated) 92%, transparent)";
+                e.currentTarget.style.backgroundColor = "transparent";
             }}
             title={copied ? "Copied" : "Copy"}
             style={{
                 alignItems: "center",
-                background:
-                    "color-mix(in srgb, var(--color-bg-elevated) 92%, transparent)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 4,
+                background: "transparent",
+                border: "none",
+                borderRadius: 6,
                 color: copied
                     ? "var(--color-accent)"
                     : "var(--color-text-secondary)",
                 cursor: "pointer",
                 display: "inline-flex",
-                height: 22,
+                height: 28,
                 justifyContent: "center",
                 opacity: 0.9,
                 transition: "opacity 100ms ease, background-color 100ms ease",
-                width: 22,
+                width: 28,
             }}
             type="button"
         >
