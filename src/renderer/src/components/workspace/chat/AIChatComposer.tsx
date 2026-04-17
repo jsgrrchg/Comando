@@ -49,8 +49,8 @@ import { useTextContextMenu } from "../../context-menu/useTextContextMenu";
 
 /* ─── Constants ─── */
 
-const MIN_COMPOSER_HEIGHT = 64;
-const MAX_COMPOSER_HEIGHT = 480;
+const MIN_COMPOSER_HEIGHT = 76;
+const MAX_COMPOSER_HEIGHT = 600;
 
 /* ─── DOM pill helpers ─── */
 
