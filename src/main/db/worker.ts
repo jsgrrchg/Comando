@@ -14,6 +14,7 @@ import { SettingsService } from "../settings/service";
 import { WorkspaceService } from "../workspace/service";
 
 interface DbWorkerInitMessage {
+    readonly appWindowTitle?: string;
     readonly fileName?: string;
     readonly port: MessagePort;
     readonly dataDir: string;
@@ -100,7 +101,9 @@ function initializeWorker(message: DbWorkerInitMessage): void {
             dataDir: message.dataDir,
             fileName: message.fileName,
         });
-        persistenceService = new PersistenceService(database.connection);
+        persistenceService = new PersistenceService(database.connection, {
+            windowTitle: message.appWindowTitle,
+        });
         settingsService = new SettingsService(database.connection);
         workspaceService = new WorkspaceService(database.connection);
         aiPersistence = new AiPersistence(database.connection);

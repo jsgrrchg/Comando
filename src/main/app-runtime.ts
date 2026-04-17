@@ -27,6 +27,7 @@ export function configureMainProcessApp(): void {
         return;
     }
 
+    process.env.COMANDO_APP_CHANNEL = appChannel;
     app.setName(appIdentity.name);
 
     if (appChannel === "release") {

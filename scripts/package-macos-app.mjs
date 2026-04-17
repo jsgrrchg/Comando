@@ -183,8 +183,8 @@ function stagePackagedApplication() {
 
 function collectRuntimePackageNames() {
     const entryFiles = [
-        path.join(outDir, "main", "index.js"),
-        path.join(outDir, "preload", "index.cjs"),
+        ...listRuntimeEntryFiles(path.join(outDir, "main")),
+        ...listRuntimeEntryFiles(path.join(outDir, "preload")),
     ];
     const packageNames = new Set();
 
@@ -208,6 +208,30 @@ function collectRuntimePackageNames() {
     );
 
     return sortedPackageNames;
+}
+
+function listRuntimeEntryFiles(directoryPath) {
+    if (!fs.existsSync(directoryPath)) {
+        return [];
+    }
+
+    return fs
+        .readdirSync(directoryPath, { withFileTypes: true })
+        .flatMap((entry) => {
+            const entryPath = path.join(directoryPath, entry.name);
+            if (entry.isDirectory()) {
+                return listRuntimeEntryFiles(entryPath);
+            }
+
+            if (
+                entry.isFile() &&
+                (entry.name.endsWith(".js") || entry.name.endsWith(".cjs"))
+            ) {
+                return [entryPath];
+            }
+
+            return [];
+        });
 }
 
 function extractPackageSpecifiers(contents) {

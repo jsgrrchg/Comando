@@ -81,6 +81,7 @@ if (!hasSingleInstanceLock) {
         .then(async () => {
             mainProcessPerformance.markAppWhenReady();
             dbWorkerClient = await createDbWorkerClient({
+                appWindowTitle: appIdentity.windowTitle,
                 dataDir: app.getPath("userData"),
             });
             persistenceService = dbWorkerClient.persistence;

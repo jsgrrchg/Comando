@@ -9,7 +9,6 @@ import type {
     WindowContextSnapshot,
 } from "@shared/ipc";
 
-import { appIdentity } from "../app-runtime";
 import type { Awaitable } from "../db/awaitable";
 
 const DEFAULT_MAIN_WINDOW_HEIGHT = 960;
@@ -74,9 +73,16 @@ export interface PersistenceGateway {
 
 export class PersistenceService {
     readonly #connection: Database.Database;
+    readonly #windowTitle: string;
 
-    constructor(connection: Database.Database) {
+    constructor(
+        connection: Database.Database,
+        options: {
+            readonly windowTitle?: string;
+        } = {},
+    ) {
         this.#connection = connection;
+        this.#windowTitle = options.windowTitle ?? "Comando";
     }
 
     createMainWindowSession(
@@ -97,7 +103,7 @@ export class PersistenceService {
             isFullScreen: false,
             isMaximized: false,
             kind: "main",
-            title: appIdentity.windowTitle,
+            title: this.#windowTitle,
             width: DEFAULT_MAIN_WINDOW_WIDTH,
             x: null,
             y: null,
@@ -319,7 +325,7 @@ export class PersistenceService {
         this.#upsertWindow({
             ...state,
             kind: "main",
-            title: appIdentity.windowTitle,
+            title: this.#windowTitle,
         });
 
         const now = new Date().toISOString();

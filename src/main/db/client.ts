@@ -78,6 +78,7 @@ export interface DbWorkerClient {
 }
 
 export interface CreateDbWorkerClientOptions {
+    readonly appWindowTitle?: string;
     readonly dataDir: string;
     readonly fileName?: string;
 }
@@ -848,6 +849,7 @@ export async function createDbWorkerClient(
             const channel = new MessageChannel();
             worker.postMessage(
                 {
+                    appWindowTitle: options.appWindowTitle,
                     dataDir: options.dataDir,
                     fileName: options.fileName,
                     port: channel.port2,
