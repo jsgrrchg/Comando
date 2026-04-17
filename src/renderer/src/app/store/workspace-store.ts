@@ -7,6 +7,7 @@ import type {
     ProjectFileDocument,
     TerminalDataEvent,
     TerminalExitEvent,
+    WorkspaceChatHistoryTab,
     WorkspaceChatTab,
     WorkspaceGitCommitTab,
     WorkspaceGitTab,
@@ -50,6 +51,7 @@ import {
     updateFileDraft as applyFileDraft,
     workspaceStateFromSnapshot,
     workspaceStateToSnapshot,
+    type RuntimeWorkspaceChatHistoryTab,
     type RuntimeWorkspaceGitCommitTab,
     type MoveDirection,
     type RuntimeWorkspaceGitTab,
@@ -73,6 +75,7 @@ export type WorkspaceQuickCreateAction =
     | "codex"
     | "gemini"
     | "git"
+    | "history"
     | "kilo"
     | "file"
     | "terminal";
@@ -101,6 +104,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     ) => Promise<void>;
     openGitTab: (
         projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    openChatHistoryTab: (
+        projectId: string | null,
         worktreeId?: string | null,
     ) => Promise<void>;
     openGitCommitTab: (input: {
@@ -456,6 +463,52 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
             lastQuickCreateAction: "git",
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    openChatHistoryTab: async (projectId, worktreeId = null) => {
+        const existingTab = findExistingChatHistoryTab(
+            get(),
+            projectId,
+            worktreeId,
+        );
+        if (existingTab) {
+            const paneId = findPaneIdByTabId(get(), existingTab.id);
+            if (!paneId) {
+                return;
+            }
+
+            set((state) => ({
+                ...selectPaneTab(state, paneId, existingTab.id),
+                error: null,
+                lastQuickCreateAction: "history",
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    existingTab.id,
+                ),
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const tab: WorkspaceChatHistoryTab = {
+            createdAt: new Date().toISOString(),
+            id: crypto.randomUUID(),
+            kind: "chat_history",
+            projectId,
+            title: "History",
+            worktreeId,
+        };
+
+        set((state) => ({
+            ...attachTabToPane(state, state.activePaneId, tab),
+            error: null,
+            lastQuickCreateAction: "history",
             recentActiveTabIds: recordRecentTabActivation(
                 state.recentActiveTabIds,
                 tab.id,
@@ -1502,6 +1555,10 @@ function createHydratedRuntimeTabs(
                 return [tab.id, tab] as const;
             }
 
+            if (tab.kind === "chat_history") {
+                return [tab.id, tab] as const;
+            }
+
             if (tab.kind === "git_commit") {
                 return [tab.id, tab] as const;
             }
@@ -1586,6 +1643,10 @@ async function hydrateRuntimeTabs(
             }
 
             if (tab.kind === "git") {
+                return;
+            }
+
+            if (tab.kind === "chat_history") {
                 return;
             }
 
@@ -1984,6 +2045,22 @@ function findExistingGitTab(
         Object.values(state.tabsById).find(
             (tab): tab is RuntimeWorkspaceGitTab =>
                 tab.kind === "git" &&
+                tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId),
+        ) ?? null
+    );
+}
+
+function findExistingChatHistoryTab(
+    state: WorkspaceTreeState,
+    projectId: string | null,
+    worktreeId: string | null,
+): RuntimeWorkspaceChatHistoryTab | null {
+    return (
+        Object.values(state.tabsById).find(
+            (tab): tab is RuntimeWorkspaceChatHistoryTab =>
+                tab.kind === "chat_history" &&
                 tab.projectId === projectId &&
                 normalizeWorktreeId(tab.worktreeId) ===
                     normalizeWorktreeId(worktreeId),

@@ -862,6 +862,15 @@ export interface WorkspaceChatTab {
     readonly worktreeId?: string | null;
 }
 
+export interface WorkspaceChatHistoryTab {
+    readonly id: string;
+    readonly kind: "chat_history";
+    readonly title: string;
+    readonly projectId: string | null;
+    readonly createdAt: string;
+    readonly worktreeId?: string | null;
+}
+
 export interface WorkspaceReviewTab {
     readonly id: string;
     readonly kind: "review";
@@ -905,6 +914,7 @@ export interface WorkspaceTerminalTab {
 export type WorkspaceTab =
     | WorkspaceFileTab
     | WorkspaceChatTab
+    | WorkspaceChatHistoryTab
     | WorkspaceGitTab
     | WorkspaceGitCommitTab
     | WorkspaceReviewTab

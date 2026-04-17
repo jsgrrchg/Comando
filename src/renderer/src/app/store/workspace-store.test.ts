@@ -717,6 +717,69 @@ describe("workspace file opening", () => {
             saveError: null,
         });
     });
+
+    it("opens a singleton chat history tab per project and worktree", async () => {
+        await useWorkspaceStore
+            .getState()
+            .openChatHistoryTab("project-1", "worktree-1");
+
+        let state = useWorkspaceStore.getState();
+        const rootPane = state.rootNode.type === "pane" ? state.rootNode : null;
+
+        if (!rootPane) {
+            throw new Error("Expected the default workspace root pane.");
+        }
+
+        expect(rootPane.tabIds).toHaveLength(1);
+        expect(rootPane.activeTabId).toBe(rootPane.tabIds[0]);
+        expect(state.tabsById[rootPane.tabIds[0]]).toMatchObject({
+            kind: "chat_history",
+            projectId: "project-1",
+            title: "History",
+            worktreeId: "worktree-1",
+        });
+
+        const initialTabId = rootPane.tabIds[0];
+
+        await useWorkspaceStore
+            .getState()
+            .openChatHistoryTab("project-1", "worktree-1");
+
+        state = useWorkspaceStore.getState();
+        const paneAfterDuplicate =
+            state.rootNode.type === "pane" ? state.rootNode : null;
+
+        if (!paneAfterDuplicate) {
+            throw new Error("Expected the default workspace root pane.");
+        }
+
+        expect(paneAfterDuplicate.tabIds).toEqual([initialTabId]);
+        expect(paneAfterDuplicate.activeTabId).toBe(initialTabId);
+
+        await useWorkspaceStore
+            .getState()
+            .openChatHistoryTab("project-1", "worktree-2");
+
+        state = useWorkspaceStore.getState();
+        const paneAfterScopeChange =
+            state.rootNode.type === "pane" ? state.rootNode : null;
+
+        if (!paneAfterScopeChange) {
+            throw new Error("Expected the default workspace root pane.");
+        }
+
+        expect(paneAfterScopeChange.tabIds).toHaveLength(2);
+        expect(paneAfterScopeChange.activeTabId).toBe(
+            paneAfterScopeChange.tabIds[1],
+        );
+        expect(state.tabsById[paneAfterScopeChange.tabIds[1]]).toMatchObject({
+            kind: "chat_history",
+            projectId: "project-1",
+            worktreeId: "worktree-2",
+        });
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+    });
 });
 
 describe("workspace runtime focus helpers", () => {

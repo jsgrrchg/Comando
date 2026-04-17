@@ -74,6 +74,7 @@ import {
     findBestPendingTrackedFile,
     isInlineReviewSupported,
 } from "@renderer/app/workspace/pending-review";
+import { ChatHistoryTabView } from "@renderer/components/workspace/ChatHistoryTabView";
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
 import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabView";
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
@@ -688,6 +689,9 @@ function WorkspacePaneView({
     const createTerminalTab = useWorkspaceStore(
         (state) => state.createTerminalTab,
     );
+    const openChatHistoryTab = useWorkspaceStore(
+        (state) => state.openChatHistoryTab,
+    );
     const openGitTab = useWorkspaceStore((state) => state.openGitTab);
     const lastQuickCreateAction = useWorkspaceStore(
         (state) => state.lastQuickCreateAction,
@@ -1211,6 +1215,20 @@ function WorkspacePaneView({
                     "codex",
                 );
                 return;
+            case "history":
+                if (defaultProjectId) {
+                    void openChatHistoryTab(
+                        defaultProjectId,
+                        defaultWorktreeId ?? null,
+                    );
+                    return;
+                }
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "codex",
+                );
+                return;
             case "file":
                 if (defaultProjectId) {
                     void handleCreateFile();
@@ -1279,6 +1297,17 @@ function WorkspacePaneView({
             {
                 action: () =>
                     defaultProjectId
+                        ? void openChatHistoryTab(
+                              defaultProjectId,
+                              defaultWorktreeId ?? null,
+                          )
+                        : undefined,
+                disabled: !defaultProjectId,
+                label: "History",
+            },
+            {
+                action: () =>
+                    defaultProjectId
                         ? void openGitTab(
                               defaultProjectId,
                               defaultWorktreeId ?? null,
@@ -1307,6 +1336,7 @@ function WorkspacePaneView({
             defaultProjectId,
             defaultWorktreeId,
             handleCreateFile,
+            openChatHistoryTab,
             openGitTab,
         ],
     );
@@ -1581,6 +1611,8 @@ function WorkspacePaneView({
                             />
                         ) : activeTab.kind === "git" ? (
                             <GitTabView tab={activeTab} />
+                        ) : activeTab.kind === "chat_history" ? (
+                            <ChatHistoryTabView tab={activeTab} />
                         ) : activeTab.kind === "git_commit" ? (
                             <GitCommitTabView tab={activeTab} />
                         ) : activeTab.kind === "review" ? (
@@ -1964,6 +1996,10 @@ function getQuickCreateButtonTitle(
         case "git":
             return hasProject
                 ? "Open last item: Git"
+                : "Open last item: Codex chat";
+        case "history":
+            return hasProject
+                ? "Open last item: History"
                 : "Open last item: Codex chat";
         case "file":
             return hasProject
@@ -4071,6 +4107,7 @@ function TabIcon({
 }: {
     readonly kind:
         | "chat"
+        | "chat_history"
         | "file"
         | "git"
         | "git_commit"
@@ -4121,6 +4158,24 @@ function TabIcon({
                 />
                 <path d="M7.2 7.2 10.6 10.6" strokeWidth="1" />
                 <path d="M8.8 5.6 10.4 7.2" strokeWidth="1" />
+            </svg>
+        );
+    }
+
+    if (kind === "chat_history") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <path d="M8 3.1v4.1l2.7 1.6" strokeWidth="1.2" />
+                <circle cx="8" cy="8" r="4.9" strokeWidth="1.1" />
             </svg>
         );
     }

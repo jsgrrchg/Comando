@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 
 import type {
     PersistedChatSessionState,
+    WorkspaceChatHistoryTab,
     WorkspaceChatTab,
     WorkspaceFileTab,
     WorkspaceGitCommitTab,
@@ -59,6 +60,10 @@ type WorkspaceFilePayload = Omit<
 >;
 type WorkspaceChatPayload = Omit<
     WorkspaceChatTab,
+    "createdAt" | "id" | "title"
+>;
+type WorkspaceChatHistoryPayload = Omit<
+    WorkspaceChatHistoryTab,
     "createdAt" | "id" | "title"
 >;
 type WorkspaceGitCommitPayload = Omit<
@@ -385,6 +390,7 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
     const payload = parseJsonWithFallback<
         | WorkspaceFilePayload
         | WorkspaceChatPayload
+        | WorkspaceChatHistoryPayload
         | WorkspaceGitCommitPayload
         | WorkspaceGitPayload
         | WorkspaceReviewPayload
@@ -426,6 +432,27 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 typeof chatPayload.worktreeId === "string" ||
                 chatPayload.worktreeId === null
                     ? chatPayload.worktreeId
+                    : row.worktree_id,
+        };
+    }
+
+    if (row.kind === "chat_history") {
+        const historyPayload = payload as Partial<WorkspaceChatHistoryPayload>;
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "chat_history",
+            projectId:
+                typeof historyPayload.projectId === "string" ||
+                historyPayload.projectId === null
+                    ? historyPayload.projectId
+                    : null,
+            title: row.title,
+            worktreeId:
+                typeof historyPayload.worktreeId === "string" ||
+                historyPayload.worktreeId === null
+                    ? historyPayload.worktreeId
                     : row.worktree_id,
         };
     }
@@ -526,6 +553,7 @@ function serializeTab(
 ):
     | WorkspaceFilePayload
     | WorkspaceChatPayload
+    | WorkspaceChatHistoryPayload
     | WorkspaceGitCommitPayload
     | WorkspaceGitPayload
     | WorkspaceReviewPayload
@@ -546,6 +574,14 @@ function serializeTab(
             projectId: tab.projectId,
             runtimeId: tab.runtimeId,
             sessionId: tab.sessionId,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
+    if (tab.kind === "chat_history") {
+        return {
+            kind: tab.kind,
+            projectId: tab.projectId,
             worktreeId: tab.worktreeId ?? null,
         };
     }

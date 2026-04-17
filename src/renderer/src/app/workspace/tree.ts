@@ -1,6 +1,7 @@
 import type { editor as MonacoEditor } from "monaco-editor";
 
 import type {
+    WorkspaceChatHistoryTab,
     ProjectFileDocument,
     TerminalSession,
     WorkspaceChatTab,
@@ -40,6 +41,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
 }
 
 export type RuntimeWorkspaceChatTab = WorkspaceChatTab;
+export type RuntimeWorkspaceChatHistoryTab = WorkspaceChatHistoryTab;
 export type RuntimeWorkspaceReviewTab = WorkspaceReviewTab;
 export type RuntimeWorkspaceGitCommitTab = WorkspaceGitCommitTab;
 
@@ -57,6 +59,7 @@ export type RuntimeWorkspaceGitTab = WorkspaceGitTab;
 export type RuntimeWorkspaceTab =
     | RuntimeWorkspaceFileTab
     | RuntimeWorkspaceChatTab
+    | RuntimeWorkspaceChatHistoryTab
     | RuntimeWorkspaceGitCommitTab
     | RuntimeWorkspaceGitTab
     | RuntimeWorkspaceReviewTab
@@ -1239,6 +1242,10 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     }
 
     if (tab.kind === "review") {
+        return tab;
+    }
+
+    if (tab.kind === "chat_history") {
         return tab;
     }
 
