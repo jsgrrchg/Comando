@@ -102,6 +102,14 @@ interface WorkspaceStore extends WorkspaceTreeState {
         projectId: string | null,
         worktreeId?: string | null,
     ) => Promise<void>;
+    openChatSessionTab: (input: {
+        readonly projectId: string | null;
+        readonly runtimeId: AiRuntimeId;
+        readonly sessionId: string;
+        readonly targetPaneId?: string | null;
+        readonly title: string;
+        readonly worktreeId?: string | null;
+    }) => Promise<void>;
     openGitTab: (
         projectId: string,
         worktreeId?: string | null,
@@ -207,6 +215,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         sessionId: string,
         cols: number,
         rows: number,
+    ) => Promise<void>;
+    updateSessionTabTitles: (
+        sessionId: string,
+        title: string,
     ) => Promise<void>;
 }
 
@@ -421,6 +433,90 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         await persistWorkspaceState(get);
         await bootTerminalSession(get, set, tab.id);
+    },
+
+    openChatSessionTab: async (input) => {
+        const existingTab = findExistingChatTabBySessionId(
+            get(),
+            input.sessionId,
+        );
+        if (existingTab) {
+            const nextTab: WorkspaceChatTab = {
+                ...existingTab,
+                projectId: input.projectId,
+                runtimeId: input.runtimeId,
+                title: input.title,
+                worktreeId: input.worktreeId ?? null,
+            };
+            const paneId = findPaneIdByTabId(get(), existingTab.id);
+            if (!paneId) {
+                return;
+            }
+
+            set((state) => ({
+                ...selectPaneTab(
+                    {
+                        ...state,
+                        tabsById: {
+                            ...state.tabsById,
+                            [existingTab.id]: nextTab,
+                        },
+                    },
+                    paneId,
+                    existingTab.id,
+                ),
+                error: null,
+                lastFocusedChatTabId: existingTab.id,
+                lastFocusedRuntimeId: input.runtimeId,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    existingTab.id,
+                ),
+                recentFocusedChatTabIds: recordRecentChatFocus(
+                    state.recentFocusedChatTabIds,
+                    existingTab.id,
+                ),
+            }));
+            void useAiStore.getState().ensureSession(nextTab);
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const resolvedPaneId =
+            input.targetPaneId &&
+            collectPaneNodes(get().rootNode).some(
+                (pane) => pane.id === input.targetPaneId,
+            )
+                ? input.targetPaneId
+                : get().activePaneId;
+        const tab: WorkspaceChatTab = {
+            createdAt: new Date().toISOString(),
+            draft: "",
+            id: crypto.randomUUID(),
+            kind: "chat",
+            projectId: input.projectId,
+            runtimeId: input.runtimeId,
+            sessionId: input.sessionId,
+            title: input.title,
+            worktreeId: input.worktreeId ?? null,
+        };
+
+        set((state) => ({
+            ...attachTabToPane(state, resolvedPaneId, tab),
+            error: null,
+            lastFocusedChatTabId: tab.id,
+            lastFocusedRuntimeId: input.runtimeId,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
+            recentFocusedChatTabIds: recordRecentChatFocus(
+                state.recentFocusedChatTabIds,
+                tab.id,
+            ),
+        }));
+        void useAiStore.getState().ensureSession(tab);
+        await persistWorkspaceState(get);
     },
 
     openGitTab: async (projectId, worktreeId = null) => {
@@ -1339,6 +1435,40 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             });
         }
     },
+
+    updateSessionTabTitles: async (sessionId, title) => {
+        set((state) => ({
+            ...state,
+            tabsById: Object.fromEntries(
+                Object.entries(state.tabsById).map(([tabId, tab]) => {
+                    if (
+                        tab.kind === "chat" &&
+                        tab.sessionId === sessionId &&
+                        tab.title !== title
+                    ) {
+                        return [tabId, { ...tab, title }] as const;
+                    }
+
+                    if (
+                        tab.kind === "review" &&
+                        tab.sessionId === sessionId &&
+                        tab.title !== `Review · ${title}`
+                    ) {
+                        return [
+                            tabId,
+                            {
+                                ...tab,
+                                title: `Review · ${title}`,
+                            },
+                        ] as const;
+                    }
+
+                    return [tabId, tab] as const;
+                }),
+            ) as Record<string, RuntimeWorkspaceTab>,
+        }));
+        await persistWorkspaceState(get);
+    },
 }));
 
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
@@ -2032,6 +2162,18 @@ function findExistingReviewTab(
         Object.values(state.tabsById).find(
             (tab): tab is RuntimeWorkspaceReviewTab =>
                 tab.kind === "review" && tab.sessionId === sessionId,
+        ) ?? null
+    );
+}
+
+function findExistingChatTabBySessionId(
+    state: WorkspaceTreeState,
+    sessionId: string,
+): WorkspaceChatTab | null {
+    return (
+        Object.values(state.tabsById).find(
+            (tab): tab is WorkspaceChatTab =>
+                tab.kind === "chat" && tab.sessionId === sessionId,
         ) ?? null
     );
 }

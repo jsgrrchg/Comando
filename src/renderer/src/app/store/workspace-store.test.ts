@@ -6,6 +6,7 @@ import {
     createDefaultWorkspaceState,
     type WorkspaceTreeState,
 } from "../workspace/tree";
+import { useAiStore } from "./ai-store";
 import {
     flushWorkspacePersistenceForTests,
     getBestMatchingChatTabId,
@@ -19,6 +20,7 @@ import {
 
 const saveWorkspaceSnapshotMock = vi.fn(async () => {});
 const closeAiSessionMock = vi.fn(async () => {});
+const ensureSessionMock = vi.fn(async () => {});
 const openProjectFileMock =
     vi.fn<
         (input: {
@@ -27,12 +29,14 @@ const openProjectFileMock =
             readonly worktreeId?: string | null;
         }) => Promise<ProjectFileDocument>
     >();
+const originalEnsureSession = useAiStore.getState().ensureSession;
 
 describe("workspace file opening", () => {
     beforeEach(() => {
         resetWorkspacePersistenceForTests();
         saveWorkspaceSnapshotMock.mockClear();
         closeAiSessionMock.mockClear();
+        ensureSessionMock.mockClear();
         openProjectFileMock.mockReset();
         openProjectFileMock.mockImplementation((input) =>
             Promise.resolve({
@@ -62,6 +66,10 @@ describe("workspace file opening", () => {
             },
         });
 
+        useAiStore.setState({
+            ensureSession: ensureSessionMock,
+        });
+
         useWorkspaceStore.setState((state) => ({
             ...state,
             ...createDefaultWorkspaceState(),
@@ -77,6 +85,9 @@ describe("workspace file opening", () => {
 
     afterEach(() => {
         resetWorkspacePersistenceForTests();
+        useAiStore.setState({
+            ensureSession: originalEnsureSession,
+        });
         vi.unstubAllGlobals();
     });
 
@@ -777,6 +788,135 @@ describe("workspace file opening", () => {
             projectId: "project-1",
             worktreeId: "worktree-2",
         });
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+    });
+
+    it("reuses an existing chat tab when opening a persisted session by session id", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "chat-existing",
+                        id: "pane-left",
+                        tabIds: ["chat-existing"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "chat-existing": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "",
+                    id: "chat-existing",
+                    kind: "chat",
+                    projectId: null,
+                    runtimeId: "claude",
+                    sessionId: "session-persisted",
+                    title: "Old title",
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().openChatSessionTab({
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-persisted",
+            title: "Recovered session",
+            worktreeId: "worktree-1",
+        });
+
+        const state = useWorkspaceStore.getState();
+        const leftPane =
+            state.rootNode.type === "split" ? state.rootNode.children[0] : null;
+        const rightPane =
+            state.rootNode.type === "split" ? state.rootNode.children[1] : null;
+
+        if (leftPane?.type !== "pane" || rightPane?.type !== "pane") {
+            throw new Error("Expected a split workspace with pane children.");
+        }
+
+        expect(Object.keys(state.tabsById)).toEqual(["chat-existing"]);
+        expect(leftPane.tabIds).toEqual(["chat-existing"]);
+        expect(rightPane.tabIds).toEqual([]);
+        expect(state.activePaneId).toBe("pane-left");
+        expect(leftPane.activeTabId).toBe("chat-existing");
+        expect(state.tabsById["chat-existing"]).toMatchObject({
+            kind: "chat",
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-persisted",
+            title: "Recovered session",
+            worktreeId: "worktree-1",
+        });
+        expect(ensureSessionMock).toHaveBeenCalledTimes(1);
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                id: "chat-existing",
+                kind: "chat",
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-persisted",
+                title: "Recovered session",
+                worktreeId: "worktree-1",
+            }),
+        );
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+    });
+
+    it("creates a chat tab and hydrates it when opening a persisted session that is not open yet", async () => {
+        await useWorkspaceStore.getState().openChatSessionTab({
+            projectId: "project-1",
+            runtimeId: "gemini",
+            sessionId: "session-new-history",
+            title: "Recovered Gemini session",
+            worktreeId: "worktree-9",
+        });
+
+        const state = useWorkspaceStore.getState();
+        const rootPane = state.rootNode.type === "pane" ? state.rootNode : null;
+
+        if (!rootPane) {
+            throw new Error("Expected the default workspace root pane.");
+        }
+
+        expect(rootPane.tabIds).toHaveLength(1);
+        expect(rootPane.activeTabId).toBe(rootPane.tabIds[0]);
+        const openedTabId = rootPane.tabIds[0];
+        expect(openedTabId).toBeTruthy();
+        expect(openedTabId ? state.tabsById[openedTabId] : null).toMatchObject({
+            kind: "chat",
+            projectId: "project-1",
+            runtimeId: "gemini",
+            sessionId: "session-new-history",
+            title: "Recovered Gemini session",
+            worktreeId: "worktree-9",
+        });
+        expect(ensureSessionMock).toHaveBeenCalledTimes(1);
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: "chat",
+                projectId: "project-1",
+                runtimeId: "gemini",
+                sessionId: "session-new-history",
+                title: "Recovered Gemini session",
+                worktreeId: "worktree-9",
+            }),
+        );
         await flushWorkspacePersistenceForTests();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });

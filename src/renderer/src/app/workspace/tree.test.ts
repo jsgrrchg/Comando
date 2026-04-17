@@ -120,6 +120,37 @@ describe("workspace tree helpers", () => {
         }
     });
 
+    it("persists chat history tabs when serializing the workspace snapshot", () => {
+        const state = attachTabToPane(createDefaultWorkspaceState(), "pane-root", {
+            createdAt: "2026-04-17T00:00:00.000Z",
+            id: "history-tab-1",
+            kind: "chat_history",
+            projectId: "project-1",
+            title: "History",
+            worktreeId: "worktree-1",
+        });
+
+        expect(workspaceStateToSnapshot(state)).toEqual({
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "history-tab-1",
+                id: "pane-root",
+                tabIds: ["history-tab-1"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-04-17T00:00:00.000Z",
+                    id: "history-tab-1",
+                    kind: "chat_history",
+                    projectId: "project-1",
+                    title: "History",
+                    worktreeId: "worktree-1",
+                },
+            ],
+        });
+    });
+
     it("places the new pane before the current pane when splitting up", () => {
         const state = splitPaneInDirection(
             createDefaultWorkspaceState(),

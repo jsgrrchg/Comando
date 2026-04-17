@@ -309,6 +309,63 @@ describe("AiPersistence", () => {
         expect(sessionRow).toBeUndefined();
         expect(transcriptRow).toBeUndefined();
     });
+
+    it("keeps a renamed session visible in scoped history listings", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const baseSnapshot: AiSessionSnapshot = {
+            availableCommands: [],
+            configOptions: [],
+            lastError: null,
+            messages: [
+                {
+                    attachments: [],
+                    content: "Persisted message",
+                    createdAt: "2026-04-16T12:00:00.000Z",
+                    id: "msg-rename-1",
+                    kind: "assistant",
+                    status: "completed",
+                },
+            ],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: "project-rename",
+            runtimeId: "codex",
+            runtimeSessionId: null,
+            sessionId: "session-rename",
+            status: "idle",
+            title: "Original title",
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-rename",
+        };
+
+        persistence.saveSessionSnapshot(baseSnapshot);
+        persistence.saveSessionSnapshot({
+            ...baseSnapshot,
+            title: "Renamed title",
+            updatedAt: "2026-04-16T12:05:00.000Z",
+        });
+
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-rename",
+            worktreeId: "worktree-rename",
+        });
+
+        expect(history).toEqual([
+            expect.objectContaining({
+                sessionId: "session-rename",
+                title: "Renamed title",
+            }),
+        ]);
+    });
 });
 
 function createTestConnection() {
