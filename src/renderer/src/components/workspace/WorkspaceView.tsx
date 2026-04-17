@@ -78,6 +78,7 @@ import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
 import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabView";
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
+import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
 import {
     computeGitGutterMarkers,
     type GitGutterMarker,
@@ -918,14 +919,10 @@ function WorkspacePaneView({
     );
 
     const handleChatDraftChange = useCallback(
-        (draft: string) => {
-            if (!activeChatTab) {
-                return;
-            }
-
-            void updateChatDraft(activeChatTab.id, draft);
+        (tabId: string, draft: string) => {
+            persistChatDraftForTab(updateChatDraft, tabId, draft);
         },
-        [activeChatTab, updateChatDraft],
+        [updateChatDraft],
     );
 
     const handleOpenActiveChatReview = useCallback(() => {

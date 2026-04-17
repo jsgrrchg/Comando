@@ -82,7 +82,7 @@ import {
 /* ─── Types ─── */
 
 interface ChatTabViewProps {
-    readonly onDraftChange: (draft: string) => void;
+    readonly onDraftChange: (tabId: string, draft: string) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -294,9 +294,9 @@ export const ChatTabView = memo(function ChatTabView({
             }
 
             persistedDraftRef.current = draft;
-            onDraftChange(draft);
+            onDraftChange(tab.id, draft);
         },
-        [onDraftChange],
+        [onDraftChange, tab.id],
     );
 
     useEffect(() => {
