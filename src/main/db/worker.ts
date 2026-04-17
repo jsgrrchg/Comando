@@ -3,6 +3,8 @@ import { parentPort, type MessagePort } from "node:worker_threads";
 import type {
     AiRuntimeId,
     DatabaseStatus,
+    GetAiSessionTranscriptPageInput,
+    ListAiSessionHistoryInput,
     PersistenceSnapshot,
 } from "@shared/ipc";
 
@@ -180,6 +182,17 @@ function dispatchMethod(method: string, params: unknown): unknown {
             return buildAiBootstrapState();
         case "ai.loadSessionSnapshot":
             return aiPersistence.loadSessionSnapshot(params as string);
+        case "ai.listSessionHistory":
+            return aiPersistence.listSessionHistory(
+                params as ListAiSessionHistoryInput,
+            );
+        case "ai.loadSessionTranscriptPage":
+            return aiPersistence.loadSessionTranscriptPage(
+                params as GetAiSessionTranscriptPageInput,
+            );
+        case "ai.deleteSession":
+            aiPersistence.deleteSession(params as string);
+            return null;
         case "ai.saveRuntimeSelectionPreferences": {
             const input = params as {
                 readonly patch: Parameters<

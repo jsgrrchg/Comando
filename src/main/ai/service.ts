@@ -653,7 +653,7 @@ export class AiService {
             await this.closeSession(sessionId);
         }
 
-        this.#persistence.deleteSession(sessionId);
+        await this.#persistence.deleteSession(sessionId);
     }
 
     closeOwnedByWindow(ownerWindowId: string): void {

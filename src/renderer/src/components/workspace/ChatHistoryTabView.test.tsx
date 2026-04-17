@@ -119,7 +119,7 @@ function renderLayout(
             handleDelete: vi.fn(async () => {}),
             handleOpenInChat: vi.fn(async () => {}),
             handleRefresh: vi.fn(async () => {}),
-            handleRename: vi.fn(async () => {}),
+            handleRename: vi.fn(async (_session, _nextTitle: string) => {}),
             isBusy: false,
             isLoadingSessions: false,
             loadSessionSnapshot: vi.fn(async () => {}),
@@ -157,7 +157,7 @@ describe("ChatHistoryTabLayout", () => {
         const markup = renderLayout();
 
         expect(markup).toContain("No chat history yet");
-        expect(markup).toContain("Pick a conversation");
+        expect(markup).toContain("Select a conversation");
     });
 
     it("renders the error state", () => {
@@ -227,9 +227,7 @@ describe("ChatHistoryTabLayout", () => {
 
         expect(markup).toContain("Session One");
         expect(markup).toContain("Assistant returns a concise answer.");
-        expect(markup).toContain("Open in Chat");
-        expect(markup).toContain("Tool Activity");
-        expect(markup).toContain("Edited Files");
+        expect(markup).toContain("open in chat");
         expect(markup).toContain("Load More");
     });
 });

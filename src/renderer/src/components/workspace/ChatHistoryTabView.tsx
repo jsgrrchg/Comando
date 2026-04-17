@@ -1,35 +1,55 @@
 import {
     useCallback,
     useEffect,
+    useMemo,
     useRef,
     useState,
+    type PointerEvent as ReactPointerEvent,
     type ReactNode,
+    type RefObject,
 } from "react";
 
 import type {
     AiHistorySessionSummary,
+    AiImageAttachment,
     AiMessage,
-    AiMessageKind,
     AiSessionSnapshot,
     AiSessionStatus,
 } from "@shared/ipc";
 
+import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
+import { buildChatFontFamily } from "@renderer/app/settings/theme";
+import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceChatHistoryTab } from "@renderer/app/workspace/tree";
-import { MarkdownContent } from "@renderer/components/workspace/MarkdownContent";
 
+import { ChatMessageRow } from "./chat/ChatMessageRow";
+import { PlanMessage } from "./chat/PlanMessage";
+import { ToolActivityItem } from "./chat/ToolActivityItem";
+import {
+    reconcileChatTimelineModel,
+    type ChatTimelineRow,
+} from "./chat/chatTimelineModel";
+import {
+    collectProjectFileRoots,
+    resolveProjectFileReference,
+    type ResolvedProjectFileReference,
+} from "./projectFileReferences";
 import {
     formatHistoryMessageCount,
     formatHistoryRelativeDate,
     formatHistoryScope,
     getHistoryRuntimeLabel,
 } from "./chat-history/historyPresentation";
-import { HistorySessionArtifacts } from "./chat-history/HistorySessionArtifacts";
 import { getHistoryPreviewText } from "./chat-history/historyPreview";
 
 const HISTORY_PAGE_SIZE = 100;
 const EMPTY_MESSAGES: readonly AiMessage[] = [];
+const DEFAULT_HISTORY_SIDEBAR_WIDTH = 280;
+const MIN_HISTORY_SIDEBAR_WIDTH = 200;
+const MAX_HISTORY_SIDEBAR_WIDTH = 520;
+const MIN_HISTORY_DETAIL_PANE_WIDTH = 360;
 
 interface ChatHistoryTabViewProps {
     readonly tab: RuntimeWorkspaceChatHistoryTab;
@@ -49,6 +69,26 @@ export interface SessionSnapshotState {
 }
 
 export interface ChatHistoryTabLayoutProps {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly isSidebarCollapsed?: boolean;
+    readonly onToggleSidebar?: () => void;
+    readonly onSidebarResizePointerDown?: (
+        event: ReactPointerEvent<HTMLDivElement>,
+    ) => void;
+    readonly sidebarWidth?: number;
+    readonly splitContainerRef?: RefObject<HTMLDivElement | null>;
+    readonly handleOpenFile?: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    readonly handleOpenImage?: (
+        attachment: AiImageAttachment,
+    ) => Promise<void>;
+    readonly handleOpenResolvedFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly hasMoreMessages: boolean;
     readonly isBusy: boolean;
     readonly isLoadingSessions: boolean;
@@ -57,8 +97,14 @@ export interface ChatHistoryTabLayoutProps {
     readonly handleDelete: (session: AiHistorySessionSummary) => Promise<void>;
     readonly handleOpenInChat: (session: AiHistorySessionSummary) => Promise<void>;
     readonly handleRefresh: () => Promise<void>;
-    readonly handleRename: (session: AiHistorySessionSummary) => Promise<void>;
+    readonly handleRename: (
+        session: AiHistorySessionSummary,
+        nextTitle: string,
+    ) => Promise<void>;
     readonly mutatingSessionId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
     readonly scopeLabel: string;
     readonly selectedSession: AiHistorySessionSummary | null;
     readonly selectedSessionId: string | null;
@@ -79,12 +125,105 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
     const openChatSessionTab = useWorkspaceStore(
         (state) => state.openChatSessionTab,
     );
+    const openFileTab = useWorkspaceStore((state) => state.openFileTab);
+    const openChatImageTab = useWorkspaceStore(
+        (state) => state.openChatImageTab,
+    );
     const updateSessionTabTitles = useWorkspaceStore(
         (state) => state.updateSessionTabTitles,
     );
     const tabsById = useWorkspaceStore((state) => state.tabsById);
-    const projectName = useProjectsStore((state) =>
-        state.projects.find((project) => project.id === tab.projectId)?.name,
+    const projectSummary = useProjectsStore((state) =>
+        tab.projectId
+            ? (state.projects.find(
+                  (project) => project.id === tab.projectId,
+              ) ?? null)
+            : null,
+    );
+    const projectName = projectSummary?.name;
+    const gitSnapshot = useGitStore((state) => {
+        if (!tab.projectId) {
+            return null;
+        }
+
+        return (
+            state.snapshots[
+                `${tab.projectId}::${tab.worktreeId ?? "primary"}`
+            ] ?? null
+        );
+    });
+    const aiChatSettings = useAiChatSettings();
+    const chatFontFamily = useMemo(
+        () => buildChatFontFamily(aiChatSettings.chatFontFamily),
+        [aiChatSettings.chatFontFamily],
+    );
+    const projectFileRoots = useMemo(() => {
+        const activeWorktreeRootPath = tab.worktreeId
+            ? (gitSnapshot?.worktrees.find(
+                  (worktree) => worktree.id === tab.worktreeId,
+              )?.rootPath ?? null)
+            : (gitSnapshot?.worktrees.find((worktree) => worktree.isCurrent)
+                  ?.rootPath ??
+              gitSnapshot?.worktrees.find((worktree) => worktree.isPrimary)
+                  ?.rootPath ??
+              null);
+
+        return collectProjectFileRoots({
+            canonicalProjectRoot: projectSummary?.canonicalRootPath,
+            currentWorktreeRoot: activeWorktreeRootPath,
+            projectRoot: projectSummary?.rootPath,
+            repositoryCanonicalRoot: gitSnapshot?.canonicalRootPath,
+            repositoryRoot: gitSnapshot?.rootPath,
+        });
+    }, [
+        gitSnapshot?.canonicalRootPath,
+        gitSnapshot?.rootPath,
+        gitSnapshot?.worktrees,
+        projectSummary?.canonicalRootPath,
+        projectSummary?.rootPath,
+        tab.worktreeId,
+    ]);
+    const resolveChatFileReference = useCallback(
+        (reference: string): ResolvedProjectFileReference | null => {
+            if (!tab.projectId || projectFileRoots.length === 0) {
+                return null;
+            }
+
+            return resolveProjectFileReference(reference, {
+                projectRoots: projectFileRoots,
+            });
+        },
+        [projectFileRoots, tab.projectId],
+    );
+    const handleOpenFile = useCallback(
+        async (
+            projectId: string,
+            relativePath: string,
+            worktreeId?: string | null,
+        ) => {
+            await openFileTab(projectId, relativePath, worktreeId ?? null);
+        },
+        [openFileTab],
+    );
+    const handleOpenResolvedFileReference = useCallback(
+        (reference: ResolvedProjectFileReference) => {
+            if (!tab.projectId) {
+                return;
+            }
+
+            void openFileTab(
+                tab.projectId,
+                reference.relativePath,
+                tab.worktreeId ?? null,
+            );
+        },
+        [openFileTab, tab.projectId, tab.worktreeId],
+    );
+    const handleOpenImage = useCallback(
+        async (attachment: AiImageAttachment) => {
+            await openChatImageTab({ attachment });
+        },
+        [openChatImageTab],
     );
 
     const [sessions, setSessions] = useState<readonly AiHistorySessionSummary[]>(
@@ -104,8 +243,89 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
     const [mutatingSessionId, setMutatingSessionId] = useState<string | null>(
         null,
     );
+    const [sidebarWidth, setSidebarWidth] = useState(
+        DEFAULT_HISTORY_SIDEBAR_WIDTH,
+    );
+    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const splitContainerRef = useRef<HTMLDivElement | null>(null);
+    const sidebarResizeCleanupRef = useRef<(() => void) | null>(null);
     const transcriptRequestIdsRef = useRef<Record<string, number>>({});
     const snapshotRequestIdsRef = useRef<Record<string, number>>({});
+
+    useEffect(() => {
+        return () => {
+            sidebarResizeCleanupRef.current?.();
+        };
+    }, []);
+
+    const handleSidebarResizePointerDown = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            sidebarResizeCleanupRef.current?.();
+
+            const startX = event.clientX;
+            const startWidth = sidebarWidth;
+            const previousCursor = document.body.style.cursor;
+            const previousUserSelect = document.body.style.userSelect;
+
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+
+            const handlePointerMove = (pointerEvent: PointerEvent) => {
+                const containerWidth =
+                    splitContainerRef.current?.getBoundingClientRect().width ??
+                    0;
+                if (containerWidth <= 0) {
+                    return;
+                }
+
+                const delta = pointerEvent.clientX - startX;
+                const maxWidth = Math.min(
+                    MAX_HISTORY_SIDEBAR_WIDTH,
+                    Math.max(
+                        MIN_HISTORY_SIDEBAR_WIDTH,
+                        containerWidth - MIN_HISTORY_DETAIL_PANE_WIDTH,
+                    ),
+                );
+
+                setSidebarWidth(
+                    Math.round(
+                        clampSidebarWidth(
+                            startWidth + delta,
+                            MIN_HISTORY_SIDEBAR_WIDTH,
+                            maxWidth,
+                        ),
+                    ),
+                );
+            };
+
+            const cleanup = () => {
+                document.body.style.cursor = previousCursor;
+                document.body.style.userSelect = previousUserSelect;
+                window.removeEventListener("pointermove", handlePointerMove);
+                window.removeEventListener("pointerup", handlePointerUp);
+                window.removeEventListener("pointercancel", handlePointerUp);
+                sidebarResizeCleanupRef.current = null;
+            };
+
+            const handlePointerUp = () => {
+                cleanup();
+            };
+
+            sidebarResizeCleanupRef.current = cleanup;
+
+            window.addEventListener("pointermove", handlePointerMove);
+            window.addEventListener("pointerup", handlePointerUp);
+            window.addEventListener("pointercancel", handlePointerUp);
+        },
+        [sidebarWidth],
+    );
+
+    const toggleSidebarCollapsed = useCallback(() => {
+        setIsSidebarCollapsed((current) => !current);
+    }, []);
 
     const scopeLabel = projectName ?? tab.projectId ?? "No project";
     const worktreeLabel = formatHistoryScope(tab.worktreeId);
@@ -358,16 +578,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
     );
 
     const handleRename = useCallback(
-        async (session: AiHistorySessionSummary) => {
-            const nextTitle = window.prompt(
-                "Rename this chat session",
-                session.title,
-            );
-
-            if (nextTitle === null) {
-                return;
-            }
-
+        async (session: AiHistorySessionSummary, nextTitle: string) => {
             const trimmedTitle = nextTitle.trim();
             if (trimmedTitle.length === 0 || trimmedTitle === session.title) {
                 return;
@@ -547,16 +758,25 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 
     return (
         <ChatHistoryTabLayout
-            hasMoreMessages={hasMoreMessages}
+            chatFontFamily={chatFontFamily}
+            chatFontSize={aiChatSettings.chatFontSize}
             handleDelete={handleDelete}
+            handleOpenFile={handleOpenFile}
+            handleOpenImage={handleOpenImage}
             handleOpenInChat={handleOpenInChat}
+            handleOpenResolvedFileReference={handleOpenResolvedFileReference}
             handleRefresh={handleRefresh}
             handleRename={handleRename}
+            hasMoreMessages={hasMoreMessages}
             isBusy={isBusy}
             isLoadingSessions={isLoadingSessions}
+            isSidebarCollapsed={isSidebarCollapsed}
             loadSessionSnapshot={loadSessionSnapshot}
             loadTranscriptPage={loadTranscriptPage}
             mutatingSessionId={mutatingSessionId}
+            onSidebarResizePointerDown={handleSidebarResizePointerDown}
+            onToggleSidebar={toggleSidebarCollapsed}
+            resolveFileReference={resolveChatFileReference}
             scopeLabel={scopeLabel}
             selectedSession={selectedSession}
             selectedSessionId={selectedSessionId}
@@ -567,6 +787,8 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             sessions={sessions}
             sessionsError={sessionsError}
             setSelectedSessionId={setSelectedSessionId}
+            sidebarWidth={sidebarWidth}
+            splitContainerRef={splitContainerRef}
             tab={tab}
             transcriptMessages={transcriptMessages}
             worktreeLabel={worktreeLabel}
@@ -575,16 +797,25 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 }
 
 export function ChatHistoryTabLayout({
-    hasMoreMessages,
+    chatFontFamily,
+    chatFontSize,
     handleDelete,
+    handleOpenFile,
+    handleOpenImage,
     handleOpenInChat,
+    handleOpenResolvedFileReference,
     handleRefresh,
     handleRename,
+    hasMoreMessages,
     isBusy,
     isLoadingSessions,
+    isSidebarCollapsed,
     loadSessionSnapshot,
     loadTranscriptPage,
     mutatingSessionId,
+    onSidebarResizePointerDown,
+    onToggleSidebar,
+    resolveFileReference,
     scopeLabel,
     selectedSession,
     selectedSessionId,
@@ -595,67 +826,112 @@ export function ChatHistoryTabLayout({
     sessions,
     sessionsError,
     setSelectedSessionId,
+    sidebarWidth,
+    splitContainerRef,
     tab,
     transcriptMessages,
     worktreeLabel,
 }: ChatHistoryTabLayoutProps) {
-    return (
-        <div className="flex h-full min-h-0 flex-col bg-editor">
-            <div className="border-b border-border px-4 py-3">
-                <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                        <h2 className="text-sm font-medium text-text-primary">
-                            Chat History
-                        </h2>
-                        <p className="mt-1 text-xs text-text-secondary">
-                            Browse saved sessions for this workspace scope and
-                            reopen any conversation in a live chat tab.
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <div className="text-right text-[11px] text-text-secondary">
-                            <div>{scopeLabel}</div>
-                            <div>{worktreeLabel}</div>
-                        </div>
-                        <button
-                            className={BUTTON_CLASS_NAME}
-                            onClick={() => void handleRefresh()}
-                            type="button"
-                        >
-                            Refresh
-                        </button>
-                    </div>
-                </div>
-                <div className="mt-2 flex min-h-[18px] items-center gap-3 text-[11px] text-text-secondary">
-                    {isLoadingSessions ? <span>Loading sessions…</span> : null}
-                    {sessionsError ? (
-                        <span className="text-status-error">
-                            {sessionsError}
-                        </span>
-                    ) : null}
-                    {!isLoadingSessions && !sessionsError ? (
-                        <span>{formatSessionCount(sessions.length)}</span>
-                    ) : null}
-                </div>
-            </div>
+    void tab;
+    void scopeLabel;
+    void worktreeLabel;
+    const statusLine = isLoadingSessions
+        ? "Loading sessions..."
+        : sessionsError
+          ? sessionsError
+          : formatSessionCount(sessions.length);
+    const resolvedSidebarCollapsed = isSidebarCollapsed ?? false;
+    const resolvedSidebarWidth = sidebarWidth ?? DEFAULT_HISTORY_SIDEBAR_WIDTH;
+    const [renamingSessionId, setRenamingSessionId] = useState<string | null>(
+        null,
+    );
+    const [renameDraft, setRenameDraft] = useState("");
 
-            <div className="flex min-h-0 flex-1">
-                <aside className="flex min-h-0 w-[340px] min-w-[300px] flex-col border-r border-border bg-bg-panel/40">
-                    <div className="min-h-0 flex-1 overflow-y-auto p-3">
+    const startRename = useCallback(
+        (session: AiHistorySessionSummary) => {
+            setSelectedSessionId(session.sessionId);
+            setRenamingSessionId(session.sessionId);
+            setRenameDraft(session.title);
+        },
+        [setSelectedSessionId],
+    );
+
+    const cancelRename = useCallback(() => {
+        setRenamingSessionId(null);
+        setRenameDraft("");
+    }, []);
+
+    const commitRename = useCallback(() => {
+        if (!renamingSessionId) {
+            return;
+        }
+
+        const session = sessions.find(
+            (candidate) => candidate.sessionId === renamingSessionId,
+        );
+        const draftValue = renameDraft;
+
+        setRenamingSessionId(null);
+        setRenameDraft("");
+
+        if (!session) {
+            return;
+        }
+
+        void handleRename(session, draftValue);
+    }, [handleRename, renameDraft, renamingSessionId, sessions]);
+
+    return (
+        <div className="flex h-full min-h-0 flex-col bg-bg-primary">
+            <IdeBarHeader>
+                <IdeBarLabel>Chat History</IdeBarLabel>
+                <span
+                    className={[
+                        "truncate text-[11px]",
+                        sessionsError
+                            ? "text-[var(--diff-remove)]"
+                            : "text-text-secondary",
+                    ].join(" ")}
+                >
+                    {statusLine}
+                </span>
+                <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    {onToggleSidebar ? (
+                        <IdeActionButton
+                            onClick={onToggleSidebar}
+                            title={
+                                resolvedSidebarCollapsed
+                                    ? "Show sessions panel"
+                                    : "Hide sessions panel"
+                            }
+                        >
+                            {resolvedSidebarCollapsed ? "show list" : "hide list"}
+                        </IdeActionButton>
+                    ) : null}
+                    <IdeActionButton onClick={() => void handleRefresh()}>
+                        refresh
+                    </IdeActionButton>
+                </div>
+            </IdeBarHeader>
+
+            <div className="flex min-h-0 flex-1" ref={splitContainerRef}>
+                {resolvedSidebarCollapsed ? null : (
+                    <aside
+                        className="flex min-h-0 shrink-0 flex-col border-r border-border"
+                        style={{
+                            minWidth: MIN_HISTORY_SIDEBAR_WIDTH,
+                            width: resolvedSidebarWidth,
+                        }}
+                    >
+                    <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto p-2">
                         {isLoadingSessions && sessions.length === 0 ? (
-                            <HistoryPlaceholder
-                                body="Loading saved sessions for this scope."
-                                title="Loading history"
-                            />
+                            <HistoryPlaceholder body="Loading history..." />
                         ) : null}
 
                         {!isLoadingSessions &&
                         !sessionsError &&
                         sessions.length === 0 ? (
-                            <HistoryPlaceholder
-                                body="Start a conversation in this project and it will appear here once it has persisted."
-                                title="No chat history yet"
-                            />
+                            <HistoryPlaceholder body="No chat history yet. Conversations in this scope will appear here." />
                         ) : null}
 
                         {sessionsError && sessions.length === 0 ? (
@@ -666,7 +942,7 @@ export function ChatHistoryTabLayout({
                         ) : null}
 
                         {sessions.length > 0 ? (
-                            <div className="space-y-3">
+                            <div className="flex flex-col">
                                 {sessions.map((session) => {
                                     const isSelected =
                                         session.sessionId === selectedSessionId;
@@ -674,97 +950,187 @@ export function ChatHistoryTabLayout({
                                         mutatingSessionId ===
                                         session.sessionId;
 
+                                    const isRenaming =
+                                        renamingSessionId === session.sessionId;
+
                                     return (
                                         <div
                                             className={[
-                                                "rounded-xl border transition",
+                                                "group relative flex flex-col border-l-2 transition-colors",
                                                 isSelected
-                                                    ? "border-accent bg-bg-primary shadow-[0_0_0_1px_var(--color-accent)]"
-                                                    : "border-border bg-bg-panel hover:border-border-strong hover:bg-bg-primary/80",
+                                                    ? "border-accent bg-bg-secondary"
+                                                    : "border-transparent hover:bg-bg-secondary",
                                             ].join(" ")}
                                             key={session.sessionId}
                                         >
-                                            <button
-                                                className="flex w-full flex-col items-start gap-2 px-3 py-3 text-left"
-                                                onClick={() =>
+                                            <div
+                                                className="flex w-full cursor-pointer flex-col items-start gap-0.5 px-2.5 py-1.5 text-left"
+                                                onClick={() => {
+                                                    if (isRenaming) {
+                                                        return;
+                                                    }
                                                     setSelectedSessionId(
                                                         session.sessionId,
-                                                    )
-                                                }
-                                                type="button"
+                                                    );
+                                                }}
+                                                onKeyDown={(event) => {
+                                                    if (isRenaming) {
+                                                        return;
+                                                    }
+                                                    if (
+                                                        event.key === "Enter" ||
+                                                        event.key === " "
+                                                    ) {
+                                                        event.preventDefault();
+                                                        setSelectedSessionId(
+                                                            session.sessionId,
+                                                        );
+                                                    }
+                                                }}
+                                                role="button"
+                                                tabIndex={isRenaming ? -1 : 0}
                                             >
-                                                <div className="flex w-full items-start justify-between gap-3">
-                                                    <div className="min-w-0">
-                                                        <div className="truncate text-[13px] font-medium text-text-primary">
+                                                <div className="flex w-full min-w-0 items-center gap-2">
+                                                    {isRenaming ? (
+                                                        <input
+                                                            autoFocus
+                                                            className="min-w-0 flex-1 rounded border border-border-strong bg-bg-primary px-1.5 py-0.5 text-[11.5px] font-medium text-text-primary outline-none focus:border-accent"
+                                                            onBlur={commitRename}
+                                                            onChange={(event) =>
+                                                                setRenameDraft(
+                                                                    event.target
+                                                                        .value,
+                                                                )
+                                                            }
+                                                            onClick={(event) =>
+                                                                event.stopPropagation()
+                                                            }
+                                                            onKeyDown={(
+                                                                event,
+                                                            ) => {
+                                                                event.stopPropagation();
+                                                                if (
+                                                                    event.key ===
+                                                                    "Enter"
+                                                                ) {
+                                                                    event.preventDefault();
+                                                                    commitRename();
+                                                                } else if (
+                                                                    event.key ===
+                                                                    "Escape"
+                                                                ) {
+                                                                    event.preventDefault();
+                                                                    cancelRename();
+                                                                }
+                                                            }}
+                                                            type="text"
+                                                            value={renameDraft}
+                                                        />
+                                                    ) : (
+                                                        <span className="truncate text-[11.5px] font-medium text-text-primary">
                                                             {session.title}
-                                                        </div>
-                                                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-secondary">
-                                                            <span>
-                                                                {getHistoryRuntimeLabel(
-                                                                    session.runtimeId,
-                                                                )}
-                                                            </span>
-                                                            <span>
-                                                                {formatHistoryRelativeDate(
-                                                                    session.updatedAt,
-                                                                )}
-                                                            </span>
-                                                            <span>
-                                                                {formatHistoryMessageCount(
-                                                                    session.messageCount,
-                                                                )}
-                                                            </span>
-                                                        </div>
-                                                    </div>
+                                                        </span>
+                                                    )}
+                                                    {isRenaming ? null : (
+                                                        <span className="ml-auto shrink-0 text-[10px] text-text-secondary">
+                                                            {formatHistoryRelativeDate(
+                                                                session.updatedAt,
+                                                            )}
+                                                        </span>
+                                                    )}
                                                 </div>
-                                                <p className="line-clamp-3 text-[12px] leading-5 text-text-secondary">
+                                                <p className="line-clamp-1 w-full text-[10.5px] leading-[1.35] text-text-secondary">
                                                     {getHistoryPreviewText(
                                                         session,
                                                     )}
                                                 </p>
-                                            </button>
-                                            <div className="flex items-center gap-2 border-t border-border/70 px-3 py-2">
-                                                <button
-                                                    className={BUTTON_CLASS_NAME}
-                                                    disabled={isSessionBusy}
-                                                    onClick={() =>
-                                                        void handleOpenInChat(
-                                                            session,
-                                                        )
-                                                    }
-                                                    type="button"
-                                                >
-                                                    Open in Chat
-                                                </button>
-                                                <button
-                                                    className={
-                                                        SECONDARY_BUTTON_CLASS_NAME
-                                                    }
-                                                    disabled={isSessionBusy}
-                                                    onClick={() =>
-                                                        void handleRename(
-                                                            session,
-                                                        )
-                                                    }
-                                                    type="button"
-                                                >
-                                                    Rename
-                                                </button>
-                                                <button
-                                                    className={
-                                                        SECONDARY_BUTTON_CLASS_NAME
-                                                    }
-                                                    disabled={isSessionBusy}
-                                                    onClick={() =>
-                                                        void handleDelete(
-                                                            session,
-                                                        )
-                                                    }
-                                                    type="button"
-                                                >
-                                                    Delete
-                                                </button>
+                                                <div className="flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
+                                                    <span className="shrink-0">
+                                                        {getHistoryRuntimeLabel(
+                                                            session.runtimeId,
+                                                        )}
+                                                    </span>
+                                                    <span
+                                                        aria-hidden="true"
+                                                        className="shrink-0"
+                                                    >
+                                                        ·
+                                                    </span>
+                                                    <span className="shrink-0">
+                                                        {formatHistoryMessageCount(
+                                                            session.messageCount,
+                                                        )}
+                                                    </span>
+                                                </div>
                                             </div>
+                                            {isRenaming ? null : (
+                                                <div
+                                                    className={[
+                                                        "pointer-events-none absolute right-1.5 bottom-1 flex items-center gap-0.5 transition-opacity",
+                                                        isSelected
+                                                            ? "opacity-100"
+                                                            : "opacity-0 group-hover:opacity-100",
+                                                    ].join(" ")}
+                                                    style={{
+                                                        background: isSelected
+                                                            ? "var(--color-bg-secondary)"
+                                                            : "color-mix(in srgb, var(--color-bg-secondary) 92%, transparent)",
+                                                        borderRadius: 3,
+                                                    }}
+                                                >
+                                                    <button
+                                                        className={
+                                                            CARD_ACTION_CLASS_NAME +
+                                                            " pointer-events-auto"
+                                                        }
+                                                        disabled={
+                                                            isSessionBusy
+                                                        }
+                                                        onClick={() =>
+                                                            void handleOpenInChat(
+                                                                session,
+                                                            )
+                                                        }
+                                                        type="button"
+                                                    >
+                                                        open
+                                                    </button>
+                                                    <button
+                                                        className={
+                                                            CARD_ACTION_CLASS_NAME +
+                                                            " pointer-events-auto"
+                                                        }
+                                                        disabled={
+                                                            isSessionBusy
+                                                        }
+                                                        onClick={() =>
+                                                            startRename(
+                                                                session,
+                                                            )
+                                                        }
+                                                        type="button"
+                                                    >
+                                                        rename
+                                                    </button>
+                                                    <button
+                                                        className={
+                                                            CARD_ACTION_DANGER_CLASS_NAME +
+                                                            " pointer-events-auto"
+                                                        }
+                                                        disabled={
+                                                            isSessionBusy
+                                                        }
+                                                        onClick={() =>
+                                                            void handleDelete(
+                                                                session,
+                                                            )
+                                                        }
+                                                        type="button"
+                                                    >
+                                                        delete
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
                                     );
                                 })}
@@ -772,121 +1138,136 @@ export function ChatHistoryTabLayout({
                         ) : null}
                     </div>
                 </aside>
+                )}
+
+                {resolvedSidebarCollapsed || !onSidebarResizePointerDown ? null : (
+                    <div
+                        aria-label="Resize sessions panel"
+                        aria-orientation="vertical"
+                        className="group relative z-10 flex w-1.5 shrink-0 cursor-col-resize touch-none items-center justify-center bg-transparent"
+                        onPointerDown={onSidebarResizePointerDown}
+                        role="separator"
+                        title="Drag to resize"
+                    >
+                        <div className="workspace-divider h-full w-px bg-border transition-colors duration-100 group-hover:bg-accent" />
+                    </div>
+                )}
 
                 <section className="flex min-h-0 min-w-0 flex-1 flex-col">
                     {selectedSession ? (
                         <>
-                            <div className="border-b border-border px-5 py-4">
-                                <div className="flex items-start justify-between gap-4">
-                                    <div className="min-w-0">
-                                        <h3 className="truncate text-sm font-medium text-text-primary">
-                                            {selectedSession.title}
-                                        </h3>
-                                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-secondary">
-                                            <span>
-                                                {getHistoryRuntimeLabel(
-                                                    selectedSession.runtimeId,
+                            <IdeBarHeader>
+                                <span className="min-w-0 truncate text-[11.5px] font-medium text-text-primary">
+                                    {selectedSession.title}
+                                </span>
+                                <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-text-secondary">
+                                    <span className="shrink-0">
+                                        {getHistoryRuntimeLabel(
+                                            selectedSession.runtimeId,
+                                        )}
+                                    </span>
+                                    {selectedSnapshotStatus ? (
+                                        <>
+                                            <IdeBarDotSeparator />
+                                            <span className="shrink-0">
+                                                {formatSessionStatus(
+                                                    selectedSnapshotStatus,
                                                 )}
                                             </span>
-                                            {selectedSnapshotStatus ? (
-                                                <span>
-                                                    {formatSessionStatus(
-                                                        selectedSnapshotStatus,
-                                                    )}
-                                                </span>
-                                            ) : null}
-                                            <span>
-                                                Updated{" "}
-                                                {formatHistoryRelativeDate(
-                                                    selectedSession.updatedAt,
-                                                )}
-                                            </span>
-                                            <span>
-                                                {formatHistoryMessageCount(
-                                                    selectedSession.messageCount,
-                                                )}
-                                            </span>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            className={BUTTON_CLASS_NAME}
-                                            onClick={() =>
-                                                void handleOpenInChat(
-                                                    selectedSession,
-                                                )
-                                            }
-                                            type="button"
-                                        >
-                                            Open in Chat
-                                        </button>
-                                        <button
-                                            className={
-                                                SECONDARY_BUTTON_CLASS_NAME
-                                            }
-                                            onClick={() =>
-                                                void Promise.all([
-                                                    loadSessionSnapshot(
-                                                        selectedSession.sessionId,
-                                                        true,
-                                                    ),
-                                                    loadTranscriptPage(
-                                                        selectedSession.sessionId,
-                                                        true,
-                                                    ),
-                                                ])
-                                            }
-                                            type="button"
-                                        >
-                                            Reload Detail
-                                        </button>
-                                    </div>
-                                </div>
-                                <div className="mt-2 flex min-h-[18px] items-center gap-3 text-[11px] text-text-secondary">
+                                        </>
+                                    ) : null}
+                                    <IdeBarDotSeparator />
+                                    <span className="shrink-0">
+                                        {formatHistoryRelativeDate(
+                                            selectedSession.updatedAt,
+                                        )}
+                                    </span>
+                                    <IdeBarDotSeparator />
+                                    <span className="shrink-0">
+                                        {formatHistoryMessageCount(
+                                            selectedSession.messageCount,
+                                        )}
+                                    </span>
                                     {selectedSnapshotState?.isLoading ? (
-                                        <span>Loading session detail…</span>
+                                        <>
+                                            <IdeBarDotSeparator />
+                                            <span className="shrink-0">
+                                                Loading...
+                                            </span>
+                                        </>
                                     ) : null}
                                     {selectedSnapshotState?.error ? (
-                                        <span className="text-status-error">
-                                            {selectedSnapshotState.error}
-                                        </span>
+                                        <>
+                                            <IdeBarDotSeparator />
+                                            <span className="shrink-0 truncate text-[var(--diff-remove)]">
+                                                {selectedSnapshotState.error}
+                                            </span>
+                                        </>
                                     ) : null}
                                 </div>
-                            </div>
+                                <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                                    <IdeActionButton
+                                        onClick={() =>
+                                            void Promise.all([
+                                                loadSessionSnapshot(
+                                                    selectedSession.sessionId,
+                                                    true,
+                                                ),
+                                                loadTranscriptPage(
+                                                    selectedSession.sessionId,
+                                                    true,
+                                                ),
+                                            ])
+                                        }
+                                    >
+                                        reload
+                                    </IdeActionButton>
+                                    <IdeActionButton
+                                        onClick={() =>
+                                            void handleOpenInChat(
+                                                selectedSession,
+                                            )
+                                        }
+                                    >
+                                        open in chat
+                                    </IdeActionButton>
+                                </div>
+                            </IdeBarHeader>
 
-                            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-                                {selectedSnapshot ? (
-                                    <div className="mb-4">
-                                        <HistorySessionArtifacts
-                                            snapshot={selectedSnapshot}
-                                        />
-                                    </div>
-                                ) : null}
+                            {selectedSnapshot?.plan ? (
+                                <div
+                                    className="shrink-0 px-3 pb-1 pt-2"
+                                    style={{
+                                        borderBottom:
+                                            "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                                    }}
+                                >
+                                    <PlanMessage
+                                        plan={selectedSnapshot.plan}
+                                    />
+                                </div>
+                            ) : null}
 
+                            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3">
                                 {selectedTranscript?.isLoading &&
                                 transcriptMessages.length === 0 ? (
-                                    <HistoryPlaceholder
-                                        body="Loading the saved transcript for this session."
-                                        title="Loading transcript"
-                                    />
+                                    <HistoryPlaceholder body="Loading transcript..." />
                                 ) : null}
 
                                 {selectedTranscript?.error &&
                                 transcriptMessages.length === 0 ? (
                                     <HistoryPlaceholder
                                         action={
-                                            <button
-                                                className={BUTTON_CLASS_NAME}
+                                            <IdeActionButton
                                                 onClick={() =>
                                                     void loadTranscriptPage(
                                                         selectedSession.sessionId,
                                                         true,
                                                     )
                                                 }
-                                                type="button"
                                             >
-                                                Retry
-                                            </button>
+                                                retry
+                                            </IdeActionButton>
                                         }
                                         body={selectedTranscript.error}
                                         title="Could not load transcript"
@@ -896,76 +1277,48 @@ export function ChatHistoryTabLayout({
                                 {!selectedTranscript?.isLoading &&
                                 !selectedTranscript?.error &&
                                 transcriptMessages.length === 0 ? (
-                                    <HistoryPlaceholder
-                                        body="This session exists in history, but no transcript messages were found."
-                                        title="No transcript messages"
-                                    />
+                                    <HistoryPlaceholder body="No transcript messages were persisted for this session." />
                                 ) : null}
 
                                 {transcriptMessages.length > 0 ? (
-                                    <div className="space-y-4">
-                                        {transcriptMessages.map((message) => {
-                                            const tone =
-                                                getMessageTone(message.kind);
-                                            return (
-                                                <article
-                                                    className="rounded-xl border border-border bg-bg-panel/80 px-4 py-3"
-                                                    key={message.id}
-                                                >
-                                                    <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
-                                                        <span
-                                                            className={[
-                                                                "rounded-full px-2 py-0.5 font-medium",
-                                                                tone.badgeClassName,
-                                                            ].join(" ")}
-                                                        >
-                                                            {tone.label}
-                                                        </span>
-                                                        <span className="text-text-secondary">
-                                                            {formatHistoryRelativeDate(
-                                                                message.createdAt,
-                                                            )}
-                                                        </span>
-                                                        {message.attachments
-                                                            .length > 0 ? (
-                                                            <span className="text-text-secondary">
-                                                                {formatAttachmentCount(
-                                                                    message.attachments.length,
-                                                                )}
-                                                            </span>
-                                                        ) : null}
-                                                    </div>
-                                                    {message.content.trim()
-                                                        .length > 0 ? (
-                                                        <div className="text-[13px] leading-6 text-text-primary">
-                                                            <MarkdownContent
-                                                                content={
-                                                                    message.content
-                                                                }
-                                                            />
-                                                        </div>
-                                                    ) : (
-                                                        <p className="text-[12px] italic text-text-secondary">
-                                                            Empty message
-                                                        </p>
-                                                    )}
-                                                </article>
-                                            );
-                                        })}
+                                    <div
+                                        className="min-w-0 space-y-2"
+                                        style={{ fontFamily: chatFontFamily }}
+                                    >
+                                        <HistoryTranscriptTimeline
+                                            chatFontFamily={chatFontFamily}
+                                            chatFontSize={chatFontSize}
+                                            onOpenFile={handleOpenFile}
+                                            onOpenImage={handleOpenImage}
+                                            onOpenResolvedFileReference={
+                                                handleOpenResolvedFileReference
+                                            }
+                                            projectId={
+                                                selectedSession.projectId
+                                            }
+                                            resolveFileReference={
+                                                resolveFileReference
+                                            }
+                                            snapshot={selectedSnapshot}
+                                            transcriptMessages={
+                                                transcriptMessages
+                                            }
+                                            worktreeId={
+                                                selectedSession.worktreeId ??
+                                                null
+                                            }
+                                        />
 
-                                        <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
-                                            <div className="text-[11px] text-text-secondary">
+                                        <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-3 text-[11px] text-text-secondary">
+                                            <span>
                                                 {selectedTranscript
                                                     ?.isLoading &&
                                                 transcriptMessages.length > 0
-                                                    ? "Loading more messages…"
-                                                    : `${transcriptMessages.length} of ${selectedTranscript?.totalMessages ?? transcriptMessages.length} loaded`}
-                                            </div>
+                                                    ? "Loading more..."
+                                                    : `${transcriptMessages.length} of ${selectedTranscript?.totalMessages ?? transcriptMessages.length} messages`}
+                                            </span>
                                             {hasMoreMessages ? (
-                                                <button
-                                                    className={
-                                                        BUTTON_CLASS_NAME
-                                                    }
+                                                <IdeActionButton
                                                     disabled={
                                                         selectedTranscript?.isLoading
                                                     }
@@ -974,16 +1327,15 @@ export function ChatHistoryTabLayout({
                                                             selectedSession.sessionId,
                                                         )
                                                     }
-                                                    type="button"
                                                 >
                                                     Load More
-                                                </button>
+                                                </IdeActionButton>
                                             ) : null}
                                         </div>
 
                                         {selectedTranscript?.error &&
                                         transcriptMessages.length > 0 ? (
-                                            <p className="text-[11px] text-status-error">
+                                            <p className="text-[11px] text-[var(--diff-remove)]">
                                                 {selectedTranscript.error}
                                             </p>
                                         ) : null}
@@ -992,22 +1344,167 @@ export function ChatHistoryTabLayout({
                             </div>
                         </>
                     ) : (
-                        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-                            <HistoryPlaceholder
-                                body="Select a session on the left to inspect its transcript."
-                                title="Pick a conversation"
-                            />
+                        <div className="flex min-h-0 flex-1 items-center justify-center px-6">
+                            <HistoryPlaceholder body="Select a conversation on the left to inspect its transcript." />
                         </div>
                     )}
                 </section>
             </div>
 
             {isBusy ? (
-                <div className="border-t border-border px-4 py-2 text-[11px] text-text-secondary">
-                    Applying history changes…
+                <div className="border-t border-border px-5 py-2 text-[11px] text-text-secondary">
+                    Applying history changes...
                 </div>
             ) : null}
         </div>
+    );
+}
+
+const NOOP_OPEN_FILE = async (
+    _projectId: string,
+    _relativePath: string,
+    _worktreeId?: string | null,
+) => {};
+const NOOP_OPEN_IMAGE = async (_attachment: AiImageAttachment) => {};
+const NOOP_OPEN_FILE_REFERENCE = (_reference: ResolvedProjectFileReference) => {
+    void _reference;
+};
+const NOOP_RESOLVE_FILE_REFERENCE = (
+    _reference: string,
+): ResolvedProjectFileReference | null => null;
+
+interface HistoryTimelineHandlers {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly onOpenFile: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
+    readonly onOpenResolvedFileReference: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly resolveFileReference: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+}
+
+function HistoryTranscriptTimeline({
+    chatFontFamily,
+    chatFontSize,
+    onOpenFile,
+    onOpenImage,
+    onOpenResolvedFileReference,
+    projectId,
+    resolveFileReference,
+    snapshot,
+    transcriptMessages,
+    worktreeId,
+}: {
+    readonly chatFontFamily?: string;
+    readonly chatFontSize?: number;
+    readonly onOpenFile?: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    readonly onOpenImage?: (attachment: AiImageAttachment) => Promise<void>;
+    readonly onOpenResolvedFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly snapshot: AiSessionSnapshot | null;
+    readonly transcriptMessages: readonly AiMessage[];
+    readonly worktreeId: string | null;
+}) {
+    const timelineRows = useMemo(() => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: transcriptMessages,
+            status: "idle",
+            toolActivity: snapshot?.toolActivity ?? [],
+            trackedFiles: snapshot?.trackedFiles ?? [],
+        });
+        return model.orderedRows;
+    }, [
+        snapshot?.toolActivity,
+        snapshot?.trackedFiles,
+        transcriptMessages,
+    ]);
+
+    const handlers = useMemo<HistoryTimelineHandlers>(
+        () => ({
+            chatFontFamily,
+            chatFontSize,
+            onOpenFile: onOpenFile ?? NOOP_OPEN_FILE,
+            onOpenImage: onOpenImage ?? NOOP_OPEN_IMAGE,
+            onOpenResolvedFileReference:
+                onOpenResolvedFileReference ?? NOOP_OPEN_FILE_REFERENCE,
+            resolveFileReference:
+                resolveFileReference ?? NOOP_RESOLVE_FILE_REFERENCE,
+        }),
+        [
+            chatFontFamily,
+            chatFontSize,
+            onOpenFile,
+            onOpenImage,
+            onOpenResolvedFileReference,
+            resolveFileReference,
+        ],
+    );
+
+    return (
+        <>
+            {timelineRows.map((row) => (
+                <HistoryTimelineRow
+                    handlers={handlers}
+                    key={row.id}
+                    projectId={projectId}
+                    row={row}
+                    worktreeId={worktreeId}
+                />
+            ))}
+        </>
+    );
+}
+
+function HistoryTimelineRow({
+    handlers,
+    projectId,
+    row,
+    worktreeId,
+}: {
+    readonly handlers: HistoryTimelineHandlers;
+    readonly projectId: string | null;
+    readonly row: ChatTimelineRow;
+    readonly worktreeId: string | null;
+}) {
+    if (row.kind === "message") {
+        return (
+            <ChatMessageRow
+                chatFontFamily={handlers.chatFontFamily}
+                chatFontSize={handlers.chatFontSize}
+                message={row.message}
+                onOpenFile={handlers.onOpenResolvedFileReference}
+                onOpenImage={handlers.onOpenImage}
+                resolveFileReference={handlers.resolveFileReference}
+            />
+        );
+    }
+
+    return (
+        <ToolActivityItem
+            activity={row.reviewEntry.activity}
+            onOpenFile={handlers.onOpenFile}
+            onOpenFileReference={handlers.onOpenResolvedFileReference}
+            projectId={projectId}
+            resolveFileReference={handlers.resolveFileReference}
+            trackedFiles={row.reviewEntry.trackedFiles}
+            worktreeId={worktreeId}
+        />
     );
 }
 
@@ -1018,16 +1515,22 @@ function HistoryPlaceholder({
 }: {
     readonly action?: ReactNode;
     readonly body: string;
-    readonly title: string;
+    readonly title?: string;
 }) {
     return (
-        <div className="flex h-full min-h-[160px] items-center justify-center">
-            <div className="max-w-md rounded-xl border border-border bg-bg-panel px-4 py-5 text-center">
-                <p className="text-sm font-medium text-text-primary">{title}</p>
-                <p className="mt-2 text-xs leading-5 text-text-secondary">
+        <div className="flex h-full min-h-[120px] items-center justify-center px-6 py-10">
+            <div className="max-w-sm text-center">
+                {title ? (
+                    <p className="mb-1 text-xs font-medium text-text-primary">
+                        {title}
+                    </p>
+                ) : null}
+                <p className="text-[11px] leading-[1.6] text-text-secondary">
                     {body}
                 </p>
-                {action ? <div className="mt-4 flex justify-center">{action}</div> : null}
+                {action ? (
+                    <div className="mt-3 flex justify-center">{action}</div>
+                ) : null}
             </div>
         </div>
     );
@@ -1035,10 +1538,6 @@ function HistoryPlaceholder({
 
 function formatSessionCount(count: number): string {
     return count === 1 ? "1 session" : `${count} sessions`;
-}
-
-function formatAttachmentCount(count: number): string {
-    return count === 1 ? "1 attachment" : `${count} attachments`;
 }
 
 function mergeTranscriptMessages(
@@ -1058,39 +1557,6 @@ function mergeTranscriptMessages(
     }
 
     return nextMessages;
-}
-
-function getMessageTone(kind: AiMessageKind): {
-    readonly badgeClassName: string;
-    readonly label: string;
-} {
-    switch (kind) {
-        case "assistant":
-            return {
-                badgeClassName:
-                    "bg-accent/12 text-accent border border-accent/20",
-                label: "Assistant",
-            };
-        case "thinking":
-            return {
-                badgeClassName:
-                    "border border-border-strong bg-bg-tertiary text-text-secondary",
-                label: "Thinking",
-            };
-        case "user_input_request":
-            return {
-                badgeClassName:
-                    "border border-amber-400/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-                label: "Question",
-            };
-        case "user":
-        default:
-            return {
-                badgeClassName:
-                    "border border-border-strong bg-bg-primary text-text-primary",
-                label: "User",
-            };
-    }
 }
 
 function formatSessionStatus(status: AiSessionStatus): string {
@@ -1121,7 +1587,88 @@ function getComandoApi() {
     return window.comando;
 }
 
-const BUTTON_CLASS_NAME =
-    "app-no-drag rounded-md border border-border-strong bg-bg-primary px-2.5 py-1.5 text-[11px] font-medium text-text-primary transition hover:bg-bg-tertiary disabled:cursor-not-allowed disabled:opacity-50";
-const SECONDARY_BUTTON_CLASS_NAME =
-    "app-no-drag rounded-md px-2 py-1.5 text-[11px] text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50";
+const CARD_ACTION_CLASS_NAME =
+    "app-no-drag rounded px-1 py-0 text-[8.5px] font-medium uppercase tracking-[0.06em] leading-[14px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50";
+const CARD_ACTION_DANGER_CLASS_NAME =
+    "app-no-drag rounded px-1 py-0 text-[8.5px] font-medium uppercase tracking-[0.06em] leading-[14px] text-text-secondary transition-colors hover:bg-[color-mix(in_srgb,var(--diff-remove)_14%,transparent)] hover:text-[var(--diff-remove)] disabled:cursor-not-allowed disabled:opacity-50";
+
+function IdeBarHeader({ children }: { readonly children: ReactNode }) {
+    return (
+        <div
+            className="shrink-0 px-4 py-1.5"
+            style={{
+                backgroundColor: "var(--color-bg-secondary)",
+                borderBottom:
+                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                fontFamily: "var(--font-mono)",
+            }}
+        >
+            <div className="flex w-full items-center gap-3">{children}</div>
+        </div>
+    );
+}
+
+function IdeBarLabel({ children }: { readonly children: ReactNode }) {
+    return (
+        <span
+            className="shrink-0"
+            style={{
+                color: "var(--color-text-secondary)",
+                fontSize: "10px",
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+            }}
+        >
+            {children}
+        </span>
+    );
+}
+
+function IdeBarDotSeparator() {
+    return (
+        <span aria-hidden="true" className="shrink-0 text-text-secondary">
+            ·
+        </span>
+    );
+}
+
+function IdeActionButton({
+    children,
+    disabled,
+    onClick,
+    title,
+}: {
+    readonly children: ReactNode;
+    readonly disabled?: boolean;
+    readonly onClick: () => void;
+    readonly title?: string;
+}) {
+    return (
+        <button
+            className="review-action-btn"
+            disabled={disabled}
+            onClick={onClick}
+            style={{
+                background: "transparent",
+                border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                borderRadius: 3,
+                color: "var(--color-text-secondary)",
+                cursor: disabled ? "not-allowed" : "pointer",
+                fontSize: "10px",
+                fontWeight: 500,
+                lineHeight: "20px",
+                opacity: disabled ? 0.4 : 1,
+                padding: "0 8px",
+            }}
+            title={title}
+            type="button"
+        >
+            {children}
+        </button>
+    );
+}
+
+function clampSidebarWidth(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+}

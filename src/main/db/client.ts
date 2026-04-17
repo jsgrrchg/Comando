@@ -1,8 +1,12 @@
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 
 import type {
+    AiHistorySessionSummary,
     AiRuntimeId,
+    AiSessionTranscriptPage,
     DatabaseStatus,
+    GetAiSessionTranscriptPageInput,
+    ListAiSessionHistoryInput,
     PersistenceSnapshot,
     PersistedWindowState,
     SettingsSnapshot,
@@ -559,6 +563,42 @@ class AiPersistenceClient implements AiPersistenceGateway {
         );
         this.#sessionSnapshots.set(sessionId, snapshot);
         return snapshot;
+    }
+
+    async listSessionHistory(
+        input: ListAiSessionHistoryInput,
+    ): Promise<readonly AiHistorySessionSummary[]> {
+        return await mainProcessPerformance.measureAsync(
+            "db.ai.listSessionHistory",
+            async () =>
+                await this.#rpc.call<readonly AiHistorySessionSummary[]>(
+                    "ai.listSessionHistory",
+                    input,
+                ),
+        );
+    }
+
+    async loadSessionTranscriptPage(
+        input: GetAiSessionTranscriptPageInput,
+    ): Promise<AiSessionTranscriptPage | null> {
+        return await mainProcessPerformance.measureAsync(
+            "db.ai.loadSessionTranscriptPage",
+            async () =>
+                await this.#rpc.call<AiSessionTranscriptPage | null>(
+                    "ai.loadSessionTranscriptPage",
+                    input,
+                ),
+        );
+    }
+
+    async deleteSession(sessionId: string): Promise<void> {
+        this.#sessionSnapshots.delete(sessionId);
+        await mainProcessPerformance.measureAsync(
+            "db.ai.deleteSession",
+            async () => {
+                await this.#rpc.call("ai.deleteSession", sessionId);
+            },
+        );
     }
 
     loadLatestRuntimeCatalog(

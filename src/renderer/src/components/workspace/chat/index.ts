@@ -8,6 +8,7 @@ export {
     getMentionSuggestions,
 } from "./AIChatMentionPicker";
 export { ChatInlinePill } from "./ChatInlinePill";
+export { ChatMessageRow } from "./ChatMessageRow";
 export { PlanMessage } from "./PlanMessage";
 export { ToolActivityItem } from "./ToolActivityItem";
 export {

@@ -82,7 +82,7 @@ export type PersistedRuntimeCatalogSnapshot = Pick<
 >;
 
 export interface AiPersistenceGateway {
-    deleteSession(sessionId: string): void;
+    deleteSession(sessionId: string): Awaitable<void>;
     listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Awaitable<readonly AiHistorySessionSummary[]>;
