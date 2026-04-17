@@ -1550,6 +1550,27 @@ function WorkspacePaneView({
                 </div>
 
                 <div className="min-h-0 flex-1 bg-editor">
+                    {paneTabs
+                        .filter(
+                            (tab): tab is RuntimeWorkspaceTerminalTab =>
+                                tab.kind === "terminal",
+                        )
+                        .map((tab) => (
+                            <div
+                                key={tab.id}
+                                className={
+                                    tab.id === paneActiveTabId
+                                        ? "h-full"
+                                        : "hidden"
+                                }
+                            >
+                                <TerminalTabView
+                                    onResize={updateTerminalSize}
+                                    onSendInput={sendTerminalInput}
+                                    tab={tab}
+                                />
+                            </div>
+                        ))}
                     {activeTab ? (
                         activeTab.kind === "file" ? (
                             <FileTabView
@@ -1561,12 +1582,6 @@ function WorkspacePaneView({
                                 onSave={saveFileTab}
                                 tab={activeTab}
                             />
-                        ) : activeTab.kind === "terminal" ? (
-                            <TerminalTabView
-                                onResize={updateTerminalSize}
-                                onSendInput={sendTerminalInput}
-                                tab={activeTab}
-                            />
                         ) : activeTab.kind === "git" ? (
                             <GitTabView tab={activeTab} />
                         ) : activeTab.kind === "git_commit" ? (
@@ -1576,7 +1591,7 @@ function WorkspacePaneView({
                                 onOpenFile={handleOpenWorkspaceFile}
                                 tab={activeTab}
                             />
-                        ) : (
+                        ) : activeTab.kind === "terminal" ? null : (
                             <ChatTabView
                                 onDraftChange={handleChatDraftChange}
                                 onOpenFile={handleOpenWorkspaceFile}

@@ -1063,7 +1063,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                     fontFamily: "var(--font-mono)",
                 }}
             >
-                <div className="mx-auto flex w-full max-w-5xl items-center gap-3">
+                <div className="flex w-full items-center gap-3">
                     <span
                         className="shrink-0"
                         style={{
@@ -1161,7 +1161,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                 }
                 ref={scrollContainerRef}
             >
-                <div className="mx-auto w-full max-w-5xl">
+                <div className="w-full">
                     {currentError ? (
                         <div
                             style={{
