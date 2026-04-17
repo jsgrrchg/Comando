@@ -409,7 +409,6 @@ interface AIChatComposerProps {
     readonly onSearchProjectEntries: (
         query: string,
     ) => Promise<readonly ProjectTreeNode[]>;
-    readonly onAttachFile?: () => void;
     readonly onPasteImage?: (file: File) => void;
     readonly onSubmit: () => void;
     readonly onStop: () => void;
@@ -481,7 +480,6 @@ export function AIChatComposer({
     draftAttachments,
     onChange,
     onSearchProjectEntries,
-    onAttachFile,
     onPasteImage,
     onSubmit,
     onStop,
@@ -1290,50 +1288,6 @@ export function AIChatComposer({
                     {agentControls ? agentControls : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                    {/* Attach button (paperclip icon) */}
-                    <button
-                        className="app-no-drag flex shrink-0 items-center justify-center rounded-md"
-                        onClick={() => {
-                            if (onAttachFile) onAttachFile();
-                            else fileInputRef.current?.click();
-                        }}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.background =
-                                "var(--color-bg-tertiary)";
-                            e.currentTarget.style.color =
-                                "var(--color-text-primary)";
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.background = "transparent";
-                            e.currentTarget.style.color =
-                                "var(--color-text-secondary)";
-                        }}
-                        style={{
-                            background: "transparent",
-                            border: "none",
-                            borderRadius: 6,
-                            color: "var(--color-text-secondary)",
-                            cursor: "pointer",
-                            height: 28,
-                            transition:
-                                "background-color 100ms ease, color 100ms ease",
-                            width: 28,
-                        }}
-                        type="button"
-                    >
-                        <svg
-                            fill="none"
-                            height="15"
-                            stroke="currentColor"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1.5"
-                            viewBox="0 0 24 24"
-                            width="15"
-                        >
-                            <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                        </svg>
-                    </button>
                     <button
                         aria-label={submitLabel}
                         className="app-no-drag flex shrink-0 items-center justify-center rounded-full"

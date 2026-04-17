@@ -1908,7 +1908,6 @@ export const ChatTabView = memo(function ChatTabView({
                         draftFileContexts={draftFileContexts}
                         fileInputRef={fileInputRef}
                         onChange={handleComposerPartsChange}
-                        onAttachFile={() => fileInputRef.current?.click()}
                         onPasteImage={handlePasteImage}
                         onRemoveAttachment={removeDraftAttachment}
                         onRemoveFileContext={(contextId) =>
