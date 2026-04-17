@@ -414,7 +414,6 @@ export function EditedFileDiffPreview({
                                             border: "1px solid color-mix(in srgb, var(--color-border) 40%, transparent)",
                                             borderRadius: 8,
                                             margin: "4px 6px",
-                                            overflow: "hidden",
                                         }}
                                     >
                                         {block.decisionHunkIndexes.length >
