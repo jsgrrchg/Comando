@@ -26,6 +26,7 @@ Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
 - The vendored Claude ACP snapshot currently includes a local Comando/reference app patch that exposes model-specific thinking effort levels (`low`, `medium`, `high`, `xhigh`) as ACP session config options when the selected Claude model reports support for them.
+- The vendored Codex ACP snapshot currently includes a local Fast Mode patch ported from reference app. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Some compatibility markers still use legacy reference app-prefixed metadata names inside the session stream.
 
@@ -146,6 +147,11 @@ The embedded target cache lives under:
 ```text
 resources/ai/embedded/codex-acp/target/
 ```
+
+Current local snapshot note:
+
+- `vendor/codex-acp/` includes a local Fast Mode patch ported from reference app, adding ACP `service_tier` config handling, `/fast` command support, and session `service_tier` rehydration.
+- This local divergence should be reevaluated once the official upstream `codex-acp` ships equivalent support, so Comando can reduce vendor drift.
 
 ### Claude staging (`scripts/ai/stage-claude-runtime.mjs`)
 
