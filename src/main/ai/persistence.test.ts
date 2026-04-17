@@ -176,6 +176,139 @@ describe("AiPersistence", () => {
             }),
         );
     });
+
+    it("lists session history scoped by project and worktree with previews", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-main",
+            transcript: createTranscriptWithMessages([
+                "User asks for a summary",
+                "Assistant returns the final summary for the branch.",
+            ]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "claude",
+            sessionId: "session-other-worktree",
+            transcript: createTranscriptWithMessages([
+                "This should stay out of scope.",
+            ]),
+            updatedAt: "2026-04-16T11:00:00.000Z",
+            worktreeId: "worktree-b",
+        });
+        seedChatSession(connection, {
+            projectId: "project-2",
+            runtimeId: "gemini",
+            sessionId: "session-other-project",
+            transcript: createTranscriptWithMessages([
+                "This belongs to another project.",
+            ]),
+            updatedAt: "2026-04-16T10:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(history).toEqual([
+            expect.objectContaining({
+                messageCount: 2,
+                preview: "Assistant returns the final summary for the branch.",
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-main",
+                worktreeId: "worktree-a",
+            }),
+        ]);
+    });
+
+    it("loads a transcript page from persisted snapshot messages", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-page",
+            transcript: createTranscriptWithMessages([
+                "Message 1",
+                "Message 2",
+                "Message 3",
+                "Message 4",
+            ]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        const page = persistence.loadSessionTranscriptPage({
+            limit: 2,
+            offset: 1,
+            sessionId: "session-page",
+        });
+
+        expect(page).toEqual({
+            messages: [
+                expect.objectContaining({
+                    content: "Message 2",
+                    kind: "assistant",
+                }),
+                expect.objectContaining({
+                    content: "Message 3",
+                    kind: "assistant",
+                }),
+            ],
+            offset: 1,
+            sessionId: "session-page",
+            totalMessages: 4,
+        });
+    });
+
+    it("deletes a persisted session and cascades transcript rows", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-delete",
+            transcript: createTranscriptWithMessages(["Delete me"]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        persistence.deleteSession("session-delete");
+
+        const sessionRow = connection
+            .prepare<[string], { id: string } | undefined>(
+                `
+                SELECT id
+                FROM chat_sessions
+                WHERE id = ?
+                `,
+            )
+            .get("session-delete");
+        const transcriptRow = connection
+            .prepare<[string], { session_id: string } | undefined>(
+                `
+                SELECT session_id
+                FROM chat_transcripts
+                WHERE session_id = ?
+                `,
+            )
+            .get("session-delete");
+
+        expect(sessionRow).toBeUndefined();
+        expect(transcriptRow).toBeUndefined();
+    });
 });
 
 function createTestConnection() {
@@ -286,13 +419,46 @@ function createCatalogTranscript(input: {
     };
 }
 
+function createTranscriptWithMessages(
+    contents: readonly string[],
+): Record<string, unknown> {
+    return {
+        lastError: null,
+        messages: contents.map((content, index) => ({
+            attachments: [],
+            content,
+            createdAt: `2026-04-16T12:00:0${index}.000Z`,
+            id: `message-${index + 1}`,
+            kind: "assistant",
+            status: "completed",
+        })),
+        modeId: null,
+        modelId: null,
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: null,
+        runtimeId: "codex",
+        runtimeSessionId: null,
+        sessionId: "session",
+        status: "idle",
+        title: "Transcript",
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: "2026-04-16T12:00:00.000Z",
+        worktreeId: null,
+    };
+}
+
 function seedChatSession(
     connection: ReturnType<typeof createTestConnection>,
     input: {
+        readonly projectId?: string | null;
         readonly runtimeId: "claude" | "codex" | "gemini" | "kilo";
         readonly sessionId: string;
         readonly transcript: Record<string, unknown>;
         readonly updatedAt: string;
+        readonly worktreeId?: string | null;
     },
 ): void {
     connection
@@ -310,11 +476,13 @@ function seedChatSession(
                 updated_at,
                 last_opened_at
             )
-            VALUES (?, NULL, NULL, ?, ?, 'idle', '', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'idle', '', ?, ?, ?)
             `,
         )
         .run(
             input.sessionId,
+            input.projectId ?? null,
+            input.worktreeId ?? null,
             input.sessionId,
             input.runtimeId,
             input.updatedAt,
@@ -333,13 +501,16 @@ function seedChatSession(
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             `,
         )
         .run(
             `transcript:${input.sessionId}`,
             input.sessionId,
             JSON.stringify(input.transcript),
+            Array.isArray(input.transcript.messages)
+                ? input.transcript.messages.length
+                : 0,
             input.updatedAt,
             input.updatedAt,
         );

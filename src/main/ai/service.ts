@@ -27,6 +27,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import type {
     AiFileDiff,
+    AiHistorySessionSummary,
     AiImageAttachment,
     AiPermissionRequest,
     AiPermissionResponseInput,
@@ -45,6 +46,7 @@ import type {
     AiSessionUpdate,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
+    AiSessionTranscriptPage,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
@@ -54,7 +56,9 @@ import type {
     CodexRuntimeSettingsInput,
     CodexRuntimeSettings,
     GeminiRuntimeSettingsInput,
+    GetAiSessionTranscriptPageInput,
     KiloRuntimeSettingsInput,
+    ListAiSessionHistoryInput,
     SecretValuePatch,
     SendAiPromptInput,
 } from "@shared/ipc";
@@ -65,6 +69,7 @@ import {
     syncTrackedFile,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
+import { SessionBusyError } from "@shared/ai-errors";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -382,6 +387,23 @@ export class AiService {
         return await this.#persistence.loadSessionSnapshot(sessionId);
     }
 
+    async listSessionHistory(
+        input: ListAiSessionHistoryInput,
+    ): Promise<readonly AiHistorySessionSummary[]> {
+        return await this.#persistence.listSessionHistory(input);
+    }
+
+    async getSessionTranscriptPage(
+        input: GetAiSessionTranscriptPageInput,
+    ): Promise<AiSessionTranscriptPage> {
+        const page = await this.#persistence.loadSessionTranscriptPage(input);
+        if (!page) {
+            throw new Error("The session could not be found.");
+        }
+
+        return page;
+    }
+
     async prepareSession(
         input: PrepareAiSessionInput,
         ownerWindowId: string,
@@ -420,7 +442,7 @@ export class AiService {
             liveSession.snapshot.status === "waiting_permission" ||
             liveSession.snapshot.status === "waiting_user_input"
         ) {
-            throw new Error("The session is still busy.");
+            throw new SessionBusyError();
         }
 
         const now = new Date().toISOString();
@@ -618,6 +640,20 @@ export class AiService {
 
         liveSession.child.kill();
         this.#sessions.delete(sessionId);
+    }
+
+    async deleteSession(sessionId: string): Promise<void> {
+        if (this.#sessions.has(sessionId)) {
+            try {
+                await this.cancelSession(sessionId);
+            } catch {
+                // Closing and deleting the local session state is still safe.
+            }
+
+            await this.closeSession(sessionId);
+        }
+
+        this.#persistence.deleteSession(sessionId);
     }
 
     closeOwnedByWindow(ownerWindowId: string): void {

@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 
 import type {
     AiAvailableCommand,
+    AiHistorySessionSummary,
     AiDiffHunk,
     AiImageAttachment,
     AiMessage,
@@ -11,9 +12,12 @@ import type {
     AiSessionMode,
     AiSessionModel,
     AiSessionSnapshot,
+    AiSessionTranscriptPage,
     AiToolActivity,
     AiTrackedFile,
     AiUserInputRequest,
+    GetAiSessionTranscriptPageInput,
+    ListAiSessionHistoryInput,
 } from "@shared/ipc";
 import { syncTrackedFile } from "@shared/ai-tracked-file";
 
@@ -29,6 +33,23 @@ interface PersistedAiSessionRow {
     readonly transcript_json: string | null;
     readonly updated_at: string;
     readonly worktree_id: string | null;
+}
+
+interface PersistedAiHistorySessionRow {
+    readonly created_at: string;
+    readonly message_count: number | null;
+    readonly project_id: string | null;
+    readonly runtime: string;
+    readonly session_id: string;
+    readonly title: string;
+    readonly transcript_json: string | null;
+    readonly updated_at: string;
+    readonly worktree_id: string | null;
+}
+
+interface PersistedAiTranscriptRow {
+    readonly message_count: number | null;
+    readonly transcript_json: string | null;
 }
 
 interface ExistingDraftRow {
@@ -61,7 +82,14 @@ export type PersistedRuntimeCatalogSnapshot = Pick<
 >;
 
 export interface AiPersistenceGateway {
+    deleteSession(sessionId: string): void;
+    listSessionHistory(
+        input: ListAiSessionHistoryInput,
+    ): Awaitable<readonly AiHistorySessionSummary[]>;
     loadSessionSnapshot(sessionId: string): Awaitable<AiSessionSnapshot | null>;
+    loadSessionTranscriptPage(
+        input: GetAiSessionTranscriptPageInput,
+    ): Awaitable<AiSessionTranscriptPage | null>;
     loadLatestRuntimeCatalog(
         runtimeId: AiSessionSnapshot["runtimeId"],
     ): PersistedRuntimeCatalogSnapshot | null;
@@ -125,13 +153,7 @@ export class AiPersistence {
 
                 const fallback = createEmptyAiSessionSnapshot({
                     projectId: row.project_id,
-                    runtimeId:
-                        row.runtime === "claude" ||
-                        row.runtime === "codex" ||
-                        row.runtime === "gemini" ||
-                        row.runtime === "kilo"
-                            ? row.runtime
-                            : "codex",
+                    runtimeId: normalizeRuntimeId(row.runtime),
                     sessionId,
                     status: normalizeSessionStatus(row.status),
                     title: row.title,
@@ -173,13 +195,7 @@ export class AiPersistence {
                     ),
                     plan: normalizePlan(raw.plan),
                     projectId: row.project_id,
-                    runtimeId:
-                        raw.runtimeId === "claude" ||
-                        raw.runtimeId === "codex" ||
-                        raw.runtimeId === "gemini" ||
-                        raw.runtimeId === "kilo"
-                            ? raw.runtimeId
-                            : fallback.runtimeId,
+                    runtimeId: normalizeRuntimeId(raw.runtimeId),
                     runtimeSessionId:
                         typeof raw.runtimeSessionId === "string"
                             ? raw.runtimeSessionId
@@ -210,6 +226,121 @@ export class AiPersistence {
                     snapshot,
                     this.loadLatestRuntimeCatalog(snapshot.runtimeId),
                 );
+            },
+        );
+    }
+
+    listSessionHistory(
+        input: ListAiSessionHistoryInput,
+    ): readonly AiHistorySessionSummary[] {
+        return mainProcessPerformance.measureSync(
+            "db.ai.listSessionHistory",
+            () => {
+                const rows = this.#connection
+                    .prepare<
+                        [
+                            string | null,
+                            string | null,
+                            string | null,
+                            string | null,
+                            number,
+                        ],
+                        PersistedAiHistorySessionRow
+                    >(
+                        `
+                        SELECT
+                            chat_sessions.id AS session_id,
+                            chat_sessions.project_id,
+                            chat_sessions.worktree_id,
+                            chat_sessions.title,
+                            chat_sessions.runtime,
+                            chat_sessions.created_at,
+                            chat_sessions.updated_at,
+                            chat_transcripts.transcript_json,
+                            chat_transcripts.message_count
+                        FROM chat_sessions
+                        LEFT JOIN chat_transcripts
+                            ON chat_transcripts.session_id = chat_sessions.id
+                        WHERE
+                            (
+                                (? IS NULL AND chat_sessions.project_id IS NULL)
+                                OR chat_sessions.project_id = ?
+                            )
+                            AND (
+                                (? IS NULL AND chat_sessions.worktree_id IS NULL)
+                                OR chat_sessions.worktree_id = ?
+                            )
+                        ORDER BY chat_sessions.updated_at DESC
+                        LIMIT ?
+                        `,
+                    )
+                    .all(
+                        input.projectId,
+                        input.projectId,
+                        input.worktreeId ?? null,
+                        input.worktreeId ?? null,
+                        normalizeHistoryLimit(input.limit),
+                    );
+
+                return rows.map((row) => {
+                    const messages = extractPersistedMessages(
+                        row.transcript_json,
+                    );
+                    return {
+                        createdAt: row.created_at,
+                        messageCount: Math.max(0, row.message_count ?? 0),
+                        preview: deriveSessionPreview(messages),
+                        projectId: row.project_id,
+                        runtimeId: normalizeRuntimeId(row.runtime),
+                        sessionId: row.session_id,
+                        title: row.title,
+                        updatedAt: row.updated_at,
+                        worktreeId: row.worktree_id,
+                    };
+                });
+            },
+        );
+    }
+
+    loadSessionTranscriptPage(
+        input: GetAiSessionTranscriptPageInput,
+    ): AiSessionTranscriptPage | null {
+        return mainProcessPerformance.measureSync(
+            "db.ai.loadSessionTranscriptPage",
+            () => {
+                const row = this.#connection
+                    .prepare<[string], PersistedAiTranscriptRow | undefined>(
+                        `
+                        SELECT
+                            chat_transcripts.transcript_json,
+                            chat_transcripts.message_count
+                        FROM chat_sessions
+                        LEFT JOIN chat_transcripts
+                            ON chat_transcripts.session_id = chat_sessions.id
+                        WHERE chat_sessions.id = ?
+                        LIMIT 1
+                        `,
+                    )
+                    .get(input.sessionId);
+
+                if (!row) {
+                    return null;
+                }
+
+                const offset = normalizeHistoryOffset(input.offset);
+                const limit = normalizeTranscriptPageLimit(input.limit);
+                const messages = extractPersistedMessages(row.transcript_json);
+                const totalMessages = Math.max(
+                    messages.length,
+                    row.message_count ?? 0,
+                );
+
+                return {
+                    messages: messages.slice(offset, offset + limit),
+                    offset,
+                    sessionId: input.sessionId,
+                    totalMessages,
+                };
             },
         );
     }
@@ -479,6 +610,19 @@ export class AiPersistence {
                     now,
                     now,
                 );
+        });
+    }
+
+    deleteSession(sessionId: string): void {
+        mainProcessPerformance.measureSync("db.ai.deleteSession", () => {
+            this.#connection
+                .prepare<[string], void>(
+                    `
+                    DELETE FROM chat_sessions
+                    WHERE id = ?
+                    `,
+                )
+                .run(sessionId);
         });
     }
 
@@ -1441,6 +1585,78 @@ function normalizeDiffHunks(value: unknown): readonly AiDiffHunk[] {
             } satisfies AiDiffHunk,
         ];
     });
+}
+
+function normalizeRuntimeId(
+    value: unknown,
+): AiSessionSnapshot["runtimeId"] {
+    return value === "claude" ||
+        value === "codex" ||
+        value === "gemini" ||
+        value === "kilo"
+        ? value
+        : "codex";
+}
+
+function normalizeHistoryLimit(value: number | undefined): number {
+    if (!Number.isFinite(value)) {
+        return 100;
+    }
+
+    return Math.max(1, Math.min(200, Math.trunc(value)));
+}
+
+function normalizeHistoryOffset(value: number): number {
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+
+    return Math.max(0, Math.trunc(value));
+}
+
+function normalizeTranscriptPageLimit(value: number): number {
+    if (!Number.isFinite(value)) {
+        return 50;
+    }
+
+    return Math.max(1, Math.min(200, Math.trunc(value)));
+}
+
+function extractPersistedMessages(
+    transcriptJson: string | null,
+): readonly AiMessage[] {
+    const raw = parseJsonWithFallback<Record<string, unknown> | null>(
+        transcriptJson,
+        null,
+    );
+
+    if (!raw) {
+        return [];
+    }
+
+    return normalizeMessages(raw.messages);
+}
+
+function deriveSessionPreview(messages: readonly AiMessage[]): string | null {
+    const message =
+        [...messages]
+            .reverse()
+            .find((entry) => normalizePreviewText(entry.content).length > 0) ??
+        messages.find(
+            (entry) => normalizePreviewText(entry.content).length > 0,
+        ) ??
+        null;
+
+    if (!message) {
+        return null;
+    }
+
+    const preview = normalizePreviewText(message.content);
+    return preview.length > 280 ? `${preview.slice(0, 277)}...` : preview;
+}
+
+function normalizePreviewText(value: string): string {
+    return value.replace(/\s+/g, " ").trim();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

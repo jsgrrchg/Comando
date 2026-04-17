@@ -6,6 +6,7 @@ import {
     IPC_CHANNELS,
     IPC_EVENTS,
     type AppBootstrapSnapshot,
+    type AiHistorySessionSummary,
     type AiSessionUpdate,
     type AiPermissionResponseInput,
     type AiRuntimeAuthLaunchInput,
@@ -16,6 +17,7 @@ import {
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
     type AiSessionRenameMutationInput,
+    type AiSessionTranscriptPage,
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
@@ -25,6 +27,8 @@ import {
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
+    type GetAiSessionTranscriptPageInput,
+    type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
     type OpenProjectWindowInput,
     type OpenProjectFileInput,
@@ -471,8 +475,18 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.prepareAiSession, input),
     refreshAiProjectScopes: (projectId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.refreshAiProjectScopes, projectId),
+    listAiSessionHistory: (input: ListAiSessionHistoryInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.listAiSessionHistory,
+            input,
+        ) as Promise<readonly AiHistorySessionSummary[]>,
     getAiSessionSnapshot: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.getAiSessionSnapshot, sessionId),
+    getAiSessionTranscriptPage: (input: GetAiSessionTranscriptPageInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.getAiSessionTranscriptPage,
+            input,
+        ) as Promise<AiSessionTranscriptPage>,
     sendAiPrompt: (input: SendAiPromptInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.sendAiPrompt, input),
     setAiSessionMode: (input: AiSessionModeMutationInput) =>
@@ -483,6 +497,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.setAiSessionConfigOption, input),
     renameAiSession: (input: AiSessionRenameMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.renameAiSession, input),
+    deleteAiSession: (sessionId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.deleteAiSession, sessionId),
     cancelAiSession: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.cancelAiSession, sessionId),
     closeAiSession: (sessionId: string) =>

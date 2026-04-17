@@ -63,12 +63,15 @@ export const IPC_CHANNELS = {
     getAiRuntimeStatus: "ai:get-runtime-status",
     prepareAiSession: "ai:prepare-session",
     refreshAiProjectScopes: "ai:refresh-project-scopes",
+    listAiSessionHistory: "ai:list-session-history",
     getAiSessionSnapshot: "ai:get-session-snapshot",
+    getAiSessionTranscriptPage: "ai:get-session-transcript-page",
     sendAiPrompt: "ai:send-prompt",
     setAiSessionMode: "ai:set-session-mode",
     setAiSessionModel: "ai:set-session-model",
     setAiSessionConfigOption: "ai:set-session-config-option",
     renameAiSession: "ai:rename-session",
+    deleteAiSession: "ai:delete-session",
     cancelAiSession: "ai:cancel-session",
     closeAiSession: "ai:close-session",
     launchAiRuntimeAuth: "ai:launch-runtime-auth",
@@ -1278,6 +1281,37 @@ export interface AiSessionRenameMutationInput {
     readonly title: string;
 }
 
+export interface ListAiSessionHistoryInput {
+    readonly limit?: number;
+    readonly projectId: string | null;
+    readonly worktreeId?: string | null;
+}
+
+export interface AiHistorySessionSummary {
+    readonly createdAt: string;
+    readonly messageCount: number;
+    readonly preview: string | null;
+    readonly projectId: string | null;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
+    readonly title: string;
+    readonly updatedAt: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface GetAiSessionTranscriptPageInput {
+    readonly limit: number;
+    readonly offset: number;
+    readonly sessionId: string;
+}
+
+export interface AiSessionTranscriptPage {
+    readonly messages: readonly AiMessage[];
+    readonly offset: number;
+    readonly sessionId: string;
+    readonly totalMessages: number;
+}
+
 export interface AiPermissionResponseInput {
     readonly optionId: string | null;
     readonly requestId: string;
@@ -1418,9 +1452,15 @@ export interface ComandoApi {
         input: PrepareAiSessionInput,
     ) => Promise<AiSessionSnapshot>;
     refreshAiProjectScopes: (projectId: string) => Promise<void>;
+    listAiSessionHistory: (
+        input: ListAiSessionHistoryInput,
+    ) => Promise<readonly AiHistorySessionSummary[]>;
     getAiSessionSnapshot: (
         sessionId: string,
     ) => Promise<AiSessionSnapshot | null>;
+    getAiSessionTranscriptPage: (
+        input: GetAiSessionTranscriptPageInput,
+    ) => Promise<AiSessionTranscriptPage>;
     sendAiPrompt: (input: SendAiPromptInput) => Promise<AiPromptResult>;
     setAiSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
     setAiSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
@@ -1428,6 +1468,7 @@ export interface ComandoApi {
         input: AiSessionConfigOptionMutationInput,
     ) => Promise<void>;
     renameAiSession: (input: AiSessionRenameMutationInput) => Promise<void>;
+    deleteAiSession: (sessionId: string) => Promise<void>;
     cancelAiSession: (sessionId: string) => Promise<void>;
     closeAiSession: (sessionId: string) => Promise<void>;
     respondAiPermission: (input: AiPermissionResponseInput) => Promise<void>;

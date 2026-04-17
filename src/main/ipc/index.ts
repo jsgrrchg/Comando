@@ -10,6 +10,7 @@ import {
     type AiRuntimeAuthLogoutInput,
     type AiRuntimeId,
     type AiSessionConfigOptionMutationInput,
+    type GetAiSessionTranscriptPageInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
     type AiSessionRenameMutationInput,
@@ -50,6 +51,7 @@ import {
     type GitUnstagePathsInput,
     type GitWorktreeListInput,
     type GitWorktreeSummary as SharedGitWorktreeSummary,
+    type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
     type OpenProjectFileInput,
     type OpenProjectWindowInput,
@@ -163,12 +165,15 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.closeTerminalSession);
     ipcMain.removeHandler(IPC_CHANNELS.getAiRuntimeStatus);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiSessionTranscriptPage);
     ipcMain.removeHandler(IPC_CHANNELS.sendAiPrompt);
     ipcMain.removeHandler(IPC_CHANNELS.refreshAiProjectScopes);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionMode);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionModel);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionConfigOption);
     ipcMain.removeHandler(IPC_CHANNELS.renameAiSession);
+    ipcMain.removeHandler(IPC_CHANNELS.deleteAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.cancelAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.closeAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.respondAiPermission);
@@ -803,9 +808,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             options.aiService.refreshProjectScopes(projectId),
     );
     ipcMain.handle(
+        IPC_CHANNELS.listAiSessionHistory,
+        (_event, input: ListAiSessionHistoryInput) =>
+            options.aiService.listSessionHistory(input),
+    );
+    ipcMain.handle(
         IPC_CHANNELS.getAiSessionSnapshot,
         (_event, sessionId: string) =>
             options.aiService.getSessionSnapshot(sessionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getAiSessionTranscriptPage,
+        (_event, input: GetAiSessionTranscriptPageInput) =>
+            options.aiService.getSessionTranscriptPage(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.sendAiPrompt,
@@ -833,6 +848,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.renameAiSession,
         (_event, input: AiSessionRenameMutationInput) =>
             options.aiService.renameSession(input),
+    );
+    ipcMain.handle(IPC_CHANNELS.deleteAiSession, (_event, sessionId: string) =>
+        options.aiService.deleteSession(sessionId),
     );
     ipcMain.handle(IPC_CHANNELS.cancelAiSession, (_event, sessionId: string) =>
         options.aiService.cancelSession(sessionId),
