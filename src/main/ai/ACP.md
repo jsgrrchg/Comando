@@ -25,6 +25,7 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
+- The vendored Claude ACP snapshot currently includes a local Comando/reference app patch that exposes model-specific thinking effort levels (`low`, `medium`, `high`, `xhigh`) as ACP session config options when the selected Claude model reports support for them.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Some compatibility markers still use legacy reference app-prefixed metadata names inside the session stream.
 
@@ -157,6 +158,12 @@ resources/ai/embedded/codex-acp/target/
 5. Validates that `package.json`, `dist/index.js` and `node_modules/` exist in the staged embedded runtime
 
 This means Claude is staged as an embedded project, not as a freshly built standalone sidecar.
+
+Current local snapshot note:
+
+- `vendor/Claude-agent-acp-upstream/` has been patched to support Claude thinking effort selection through ACP config options.
+- The patch derives the visible `effort_level` values from each model's `supportedEffortLevels`, preserves the current effort when possible during model switches, and falls back to a sensible default when the previous effort is not supported.
+- This local divergence should be reevaluated once Zed ships equivalent support in the official upstream `claude-agent-acp`, so Comando can prefer the upstream behavior and reduce vendor drift.
 
 ### macOS packaging (`scripts/package-macos-app.mjs`)
 
