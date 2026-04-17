@@ -30,6 +30,7 @@ import type {
     SecretValuePatch,
 } from "@shared/ipc";
 import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
+import { isSessionBusyErrorMessage } from "@shared/ai-errors";
 
 import {
     appendSelectionMentionDraftPart,
@@ -1230,7 +1231,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             );
 
             if (result === "sent") {
-                await drainQueueIfNeeded(sessionId, get, set);
+                // Let the snapshot-patch pipeline trigger the next drain when
+                // the session returns to idle; draining now would race the
+                // "starting" patch from the backend.
                 return;
             }
 
@@ -1350,9 +1353,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
         clearEditingQueuedPromptState(tab.sessionId, set);
 
-        if (dispatchResult === "sent") {
-            await drainQueueIfNeeded(tab.sessionId, get, set);
-        } else {
+        if (dispatchResult !== "sent") {
             enqueuePrompt(
                 tab.sessionId,
                 {
@@ -1364,6 +1365,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 buildSessionMeta(tab),
             );
         }
+        // On "sent" the subsequent starting → idle snapshot patches drive the
+        // drain, so no explicit drain is needed here.
     },
 }));
 
@@ -1742,7 +1745,12 @@ async function drainQueueIfNeeded(
         );
 
         if (result === "sent") {
-            await drainQueueIfNeeded(sessionId, get, set);
+            // The backend is now busy handling this prompt. Don't drain the
+            // next queued item here — it would race the "starting" patch and
+            // get rejected as busy. The patch pipeline (applySessionPatch /
+            // applySessionSnapshot) calls drainQueueIfNeeded whenever the
+            // session transitions back to idle, which is the only moment the
+            // next prompt can be dispatched safely.
             return;
         }
 
@@ -2298,9 +2306,10 @@ function isBusySession(snapshot: AiSessionSnapshot): boolean {
 }
 
 function isSessionBusyError(error: unknown): boolean {
-    return (
-        error instanceof Error && error.message === "The session is still busy."
-    );
+    // Match by a sentinel embedded in the error message so detection survives
+    // Electron's IPC wrapping, which prefixes the original message and drops
+    // custom Error subclasses and extra properties.
+    return error instanceof Error && isSessionBusyErrorMessage(error.message);
 }
 
 function getComandoApi() {

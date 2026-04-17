@@ -8,8 +8,19 @@ import type {
     WorkspaceChatTab,
 } from "@shared/ipc";
 
+import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
+
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
 import { useAiStore } from "./ai-store";
+
+// Electron's ipcRenderer.invoke wraps handler errors with a prefix before
+// they reach the renderer. Tests build busy errors via this helper so they
+// exercise the same shape production code sees.
+function createIpcBusyError(): Error {
+    return new Error(
+        `Error invoking remote method 'ai:send-prompt': Error: ${AI_SESSION_BUSY_MESSAGE}`,
+    );
+}
 
 const TAB: WorkspaceChatTab = {
     createdAt: "2026-04-14T00:00:00.000Z",
@@ -117,7 +128,7 @@ describe("ai-store queue", () => {
     it("requeues the prompt when main still reports the session as busy", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("The session is still busy."))
+            .mockRejectedValueOnce(createIpcBusyError())
             .mockResolvedValueOnce(undefined);
 
         Object.defineProperty(globalThis, "window", {
@@ -287,7 +298,7 @@ describe("ai-store queue", () => {
         const deferredDispatch = createDeferred<void>();
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("The session is still busy."))
+            .mockRejectedValueOnce(createIpcBusyError())
             .mockImplementationOnce(() => deferredDispatch.promise);
 
         Object.defineProperty(globalThis, "window", {
@@ -334,7 +345,7 @@ describe("ai-store queue", () => {
     it("stores complete composer snapshots in queue and allows restoring them", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("The session is still busy."));
+            .mockRejectedValueOnce(createIpcBusyError());
 
         Object.defineProperty(globalThis, "window", {
             configurable: true,
@@ -388,7 +399,7 @@ describe("ai-store queue", () => {
     it("restores previous draft when canceling a queued prompt edit", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("The session is still busy."));
+            .mockRejectedValueOnce(createIpcBusyError());
 
         Object.defineProperty(globalThis, "window", {
             configurable: true,
@@ -507,7 +518,7 @@ describe("ai-store queue", () => {
     it("allows clearing the full queue even if a message is being edited", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("The session is still busy."));
+            .mockRejectedValueOnce(createIpcBusyError());
 
         Object.defineProperty(globalThis, "window", {
             configurable: true,
@@ -540,7 +551,7 @@ describe("ai-store queue", () => {
     it("marks queued prompts as failed when automatic dispatch fails", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("The session is still busy."))
+            .mockRejectedValueOnce(createIpcBusyError())
             .mockRejectedValueOnce(new Error("Boom"));
 
         Object.defineProperty(globalThis, "window", {
@@ -613,6 +624,15 @@ describe("ai-store queue", () => {
         firstDispatch.resolve(undefined);
         await firstSendPromise;
 
+        // The agent finishes the first turn; the idle snapshot drives the
+        // queue drain so the next prompt can dispatch.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
         await vi.waitFor(() => {
             expect(sendAiPrompt).toHaveBeenCalledTimes(2);
         });
@@ -634,7 +654,7 @@ describe("ai-store queue", () => {
     it("allows retrying a failed queued prompt with sendQueuedPromptNow", async () => {
         const sendAiPrompt = vi
             .fn()
-            .mockRejectedValueOnce(new Error("The session is still busy."))
+            .mockRejectedValueOnce(createIpcBusyError())
             .mockRejectedValueOnce(new Error("Boom"))
             .mockResolvedValueOnce(undefined);
 
@@ -919,14 +939,29 @@ describe("ai-store queue", () => {
         manualDispatch.resolve(undefined);
         await resumePromise;
 
-        // The drain kicked off by sendPrompt after dispatch picks up the
-        // paused prompts in order. They resolve instantly via the default
-        // mock so both run back to back.
+        // The paused prompts drain one per idle snapshot (the backend only
+        // reports idle when it is actually ready for the next dispatch).
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
         await vi.waitFor(() => {
-            expect(sendAiPrompt).toHaveBeenCalledTimes(3);
+            expect(sendAiPrompt).toHaveBeenCalledTimes(2);
         });
         expect(sendAiPrompt.mock.calls[1][0]).toMatchObject({
             prompt: "queued-one",
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:03.000Z",
+            }),
+        );
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(3);
         });
         expect(sendAiPrompt.mock.calls[2][0]).toMatchObject({
             prompt: "queued-two",
@@ -976,11 +1011,27 @@ describe("ai-store queue", () => {
             .sendQueuedPromptNow(TAB.sessionId, betaPromptId);
 
         await vi.waitFor(() => {
-            expect(sendAiPrompt).toHaveBeenCalledTimes(2);
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
         });
+        expect(sendAiPrompt.mock.calls[0][0]).toMatchObject({ prompt: "beta" });
         expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
             false,
         );
+
+        // When the beta turn finishes and the session reports idle, the
+        // remaining prompt (alpha) drains.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(2);
+        });
+        expect(sendAiPrompt.mock.calls[1][0]).toMatchObject({
+            prompt: "alpha",
+        });
     });
 
     it("clearQueuedPrompts resets the paused flag", async () => {
@@ -1058,5 +1109,95 @@ describe("ai-store queue", () => {
         expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
             false,
         );
+    });
+
+    it("drains multiple queued prompts one per idle snapshot without marking them failed", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        // Two prompts enqueue while the agent is busy.
+        await useAiStore.getState().sendPrompt(TAB, "first");
+        await useAiStore.getState().sendPrompt(TAB, "second");
+
+        const busyQueue =
+            useAiStore.getState().sessions[TAB.sessionId]?.queue ?? [];
+        expect(busyQueue.map((item) => item.prompt)).toEqual([
+            "first",
+            "second",
+        ]);
+        expect(busyQueue.every((item) => item.status === "queued")).toBe(true);
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+
+        // Agent becomes idle → the first queued prompt drains.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        expect(sendAiPrompt).toHaveBeenLastCalledWith(
+            expect.objectContaining({ prompt: "first" }),
+        );
+
+        // After the first dispatch resolves the second prompt must stay
+        // queued — it cannot be marked "failed" and it cannot be eagerly
+        // re-dispatched while the backend is still processing the first one.
+        await vi.waitFor(() => {
+            const midDrainQueue =
+                useAiStore.getState().sessions[TAB.sessionId]?.queue ?? [];
+            expect(midDrainQueue.map((item) => item.prompt)).toEqual([
+                "second",
+            ]);
+            expect(midDrainQueue[0]?.status).toBe("queued");
+        });
+        expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+
+        // Backend confirms busy for the first prompt; no drain should fire.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "streaming",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+        expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+
+        // Idle again → the second prompt drains.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:03.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(2);
+        });
+        expect(sendAiPrompt).toHaveBeenLastCalledWith(
+            expect.objectContaining({ prompt: "second" }),
+        );
+        await vi.waitFor(() => {
+            const finalSession =
+                useAiStore.getState().sessions[TAB.sessionId];
+            expect(finalSession?.queue).toEqual([]);
+            expect(finalSession?.localError).toBeNull();
+        });
     });
 });
