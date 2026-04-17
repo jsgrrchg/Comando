@@ -3602,22 +3602,127 @@ function FileSyncNotice({
     );
 }
 
+const IMAGE_ZOOM_MIN = 0.1;
+const IMAGE_ZOOM_MAX = 10;
+const IMAGE_ZOOM_SENSITIVITY = 0.005;
+
 function ImageFileView({
     document,
 }: {
     readonly document: ProjectFileDocument;
 }) {
     const imageSrc = buildImageDataUrl(document);
+    const [scale, setScale] = useState(1);
+    const [translate, setTranslate] = useState({ x: 0, y: 0 });
+    const isDragging = useRef(false);
+    const lastPointer = useRef({ x: 0, y: 0 });
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    const isZoomed = scale !== 1;
+
+    const resetView = useCallback(() => {
+        setScale(1);
+        setTranslate({ x: 0, y: 0 });
+    }, []);
+
+    // Reset view when document changes
+    useEffect(() => {
+        resetView();
+    }, [document.absolutePath, resetView]);
+
+    // Attach a non-passive wheel listener so preventDefault() works.
+    // React's onWheel is passive and cannot cancel the native zoom.
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const onWheel = (event: WheelEvent) => {
+            // Pinch-to-zoom on trackpad fires wheel events with ctrlKey.
+            // Ctrl+mouse-wheel also sets ctrlKey. Handle both the same way.
+            if (!event.ctrlKey) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const rect = container.getBoundingClientRect();
+            // Cursor position relative to the container center
+            const cursorX = event.clientX - rect.left - rect.width / 2;
+            const cursorY = event.clientY - rect.top - rect.height / 2;
+
+            setScale((prev) => {
+                const delta = -event.deltaY * IMAGE_ZOOM_SENSITIVITY;
+                const next = Math.min(
+                    IMAGE_ZOOM_MAX,
+                    Math.max(IMAGE_ZOOM_MIN, prev * (1 + delta)),
+                );
+                // Adjust translation so the zoom is anchored to the cursor
+                const ratio = next / prev;
+                setTranslate((t) => ({
+                    x: cursorX - ratio * (cursorX - t.x),
+                    y: cursorY - ratio * (cursorY - t.y),
+                }));
+                return next;
+            });
+        };
+
+        container.addEventListener("wheel", onWheel, { passive: false });
+        return () => container.removeEventListener("wheel", onWheel);
+    }, []);
+
+    const handlePointerDown = useCallback(
+        (event: React.PointerEvent<HTMLDivElement>) => {
+            if (!isZoomed) return;
+            isDragging.current = true;
+            lastPointer.current = { x: event.clientX, y: event.clientY };
+            (event.currentTarget as HTMLElement).setPointerCapture(
+                event.pointerId,
+            );
+        },
+        [isZoomed],
+    );
+
+    const handlePointerMove = useCallback(
+        (event: React.PointerEvent<HTMLDivElement>) => {
+            if (!isDragging.current) return;
+            const dx = event.clientX - lastPointer.current.x;
+            const dy = event.clientY - lastPointer.current.y;
+            lastPointer.current = { x: event.clientX, y: event.clientY };
+            setTranslate((t) => ({ x: t.x + dx, y: t.y + dy }));
+        },
+        [],
+    );
+
+    const handlePointerUp = useCallback(() => {
+        isDragging.current = false;
+    }, []);
 
     return (
         <div className="flex h-full min-h-0 flex-col">
             <FilePathBar path={document.absolutePath} />
-            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-bg-primary px-6 py-6">
+            <div
+                ref={containerRef}
+                className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-bg-primary px-6 py-6"
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                style={{ cursor: isZoomed ? "grab" : undefined }}
+            >
                 {imageSrc ? (
                     <img
                         alt={document.name}
-                        className="max-h-full max-w-full rounded-xl border border-border bg-white/40 object-contain shadow-[0_12px_40px_rgba(15,23,42,0.12)]"
+                        className="rounded-xl border border-border bg-white/40 object-contain shadow-[0_12px_40px_rgba(15,23,42,0.12)]"
+                        draggable={false}
+                        onDoubleClick={resetView}
                         src={imageSrc}
+                        style={{
+                            maxHeight: scale === 1 ? "100%" : undefined,
+                            maxWidth: scale === 1 ? "100%" : undefined,
+                            transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
+                            transformOrigin: "center center",
+                            transition: isDragging.current
+                                ? undefined
+                                : "transform 0.1s ease-out",
+                        }}
                     />
                 ) : (
                     <div className="max-w-lg text-center">
@@ -3627,6 +3732,20 @@ function ImageFileView({
                         <p className="mt-2 text-sm leading-6 text-text-secondary">
                             {document.content}
                         </p>
+                    </div>
+                )}
+                {isZoomed && (
+                    <div
+                        className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md px-2 py-0.5 text-[10px] font-medium tabular-nums text-text-secondary"
+                        style={{
+                            backdropFilter: "blur(6px)",
+                            backgroundColor:
+                                "color-mix(in srgb, var(--color-bg-primary) 72%, transparent)",
+                            border: "1px solid var(--color-border)",
+                            pointerEvents: "none",
+                        }}
+                    >
+                        {Math.round(scale * 100)}% — double-click to reset
                     </div>
                 )}
             </div>
