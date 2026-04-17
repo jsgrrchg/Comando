@@ -1,13 +1,54 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BrowserWindow } from "electron";
+import { BrowserWindow, screen } from "electron";
 
 import type { PersistedWindowState } from "@shared/ipc";
 
 import { appIdentity } from "./app-runtime";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
+const MIN_VISIBLE_RESTORE_OVERLAP = 80;
+
+function normalizeRestoredState(
+    restoredState: PersistedWindowState | null | undefined,
+): PersistedWindowState | null | undefined {
+    if (
+        !restoredState ||
+        restoredState.x === null ||
+        restoredState.y === null
+    ) {
+        return restoredState;
+    }
+
+    const right = restoredState.x + restoredState.width;
+    const bottom = restoredState.y + restoredState.height;
+
+    const hasVisibleOverlap = screen.getAllDisplays().some((display) => {
+        const area = display.workArea;
+        const overlapWidth =
+            Math.min(right, area.x + area.width) -
+            Math.max(restoredState.x ?? area.x, area.x);
+        const overlapHeight =
+            Math.min(bottom, area.y + area.height) -
+            Math.max(restoredState.y ?? area.y, area.y);
+
+        return (
+            overlapWidth >= MIN_VISIBLE_RESTORE_OVERLAP &&
+            overlapHeight >= MIN_VISIBLE_RESTORE_OVERLAP
+        );
+    });
+
+    if (hasVisibleOverlap) {
+        return restoredState;
+    }
+
+    return {
+        ...restoredState,
+        x: null,
+        y: null,
+    };
+}
 
 function createBaseWindow(options: {
     readonly backgroundColor: string;
@@ -21,13 +62,14 @@ function createBaseWindow(options: {
 }): BrowserWindow {
     const isMac = process.platform === "darwin";
     const isWindows = process.platform === "win32";
+    const restoredState = normalizeRestoredState(options.restoredState);
 
     const window = new BrowserWindow({
         title: options.title,
-        width: options.restoredState?.width ?? options.width,
-        height: options.restoredState?.height ?? options.height,
-        x: options.restoredState?.x ?? undefined,
-        y: options.restoredState?.y ?? undefined,
+        width: restoredState?.width ?? options.width,
+        height: restoredState?.height ?? options.height,
+        x: restoredState?.x ?? undefined,
+        y: restoredState?.y ?? undefined,
         minWidth: options.minWidth,
         minHeight: options.minHeight,
         backgroundColor: isMac ? "#00000000" : options.backgroundColor,
@@ -63,11 +105,11 @@ function createBaseWindow(options: {
         window.setTitle(options.title);
     });
 
-    if (options.restoredState?.isMaximized) {
+    if (restoredState?.isMaximized) {
         window.maximize();
     }
 
-    if (options.restoredState?.isFullScreen) {
+    if (restoredState?.isFullScreen) {
         window.setFullScreen(true);
     }
 

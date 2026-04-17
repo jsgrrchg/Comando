@@ -8,7 +8,7 @@
     "main": "out/main/index.js",
     "scripts": {
         "predev": "pnpm run stage:ai",
-        "dev": "electron-vite dev",
+        "dev": "COMANDO_APP_CHANNEL=dev electron-vite dev",
         "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
         "package:mac": "node scripts/package-macos-app.mjs",

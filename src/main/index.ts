@@ -21,7 +21,7 @@ import {
     type WindowContextSnapshot,
 } from "@shared/ipc";
 
-import { appIdentity, configureMainProcessApp } from "./app-runtime";
+import { appChannel, appIdentity, configureMainProcessApp } from "./app-runtime";
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
@@ -58,23 +58,28 @@ const aiSessionStreamPorts = new Map<string, MessagePortMain>();
 
 configureMainProcessApp();
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const shouldUseSingleInstanceLock = appChannel === "release";
+const hasSingleInstanceLock = shouldUseSingleInstanceLock
+    ? app.requestSingleInstanceLock()
+    : true;
 
 if (!hasSingleInstanceLock) {
     app.quit();
 } else {
-    app.on("second-instance", () => {
-        const mainWindow =
-            windowRegistry.getFocusedMainWindow() ??
-            windowRegistry.getMostRecentMainWindow();
+    if (shouldUseSingleInstanceLock) {
+        app.on("second-instance", () => {
+            const mainWindow =
+                windowRegistry.getFocusedMainWindow() ??
+                windowRegistry.getMostRecentMainWindow();
 
-        if (mainWindow) {
-            focusExistingWindow(mainWindow);
-            return;
-        }
+            if (mainWindow) {
+                focusExistingWindow(mainWindow);
+                return;
+            }
 
-        void openNewMainWindow(null);
-    });
+            void openNewMainWindow(null);
+        });
+    }
 
     void app
         .whenReady()
