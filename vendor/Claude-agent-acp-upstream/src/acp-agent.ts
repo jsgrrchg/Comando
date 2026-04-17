@@ -122,8 +122,11 @@ const ZERO_USAGE = Object.freeze({
 });
 
 const DEFAULT_CONTEXT_WINDOW = 200000;
-const SUPPORTED_EFFORT_LEVELS = ["low", "medium", "high", "xhigh"] as const;
+const SUPPORTED_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 type SupportedEffortLevel = (typeof SUPPORTED_EFFORT_LEVELS)[number];
+type SdkEffortLevel = NonNullable<
+  Parameters<Query["applyFlagSettings"]>[0]["effortLevel"]
+>;
 
 type Session = {
   query: Query;
@@ -1150,7 +1153,11 @@ export class ClaudeAcpAgent implements Agent {
         session.effortLevel,
       );
       if (nextEffort && nextEffort !== session.effortLevel) {
-        await session.query.applyFlagSettings({ effortLevel: nextEffort });
+        await session.query.applyFlagSettings({
+          // The vendored SDK type still stops at xhigh, but newer Claude Code
+          // builds can report and accept max for compatible models.
+          effortLevel: nextEffort as unknown as SdkEffortLevel,
+        });
         session.effortLevel = nextEffort;
       }
       session.configOptions = buildConfigOptions(
@@ -1161,7 +1168,9 @@ export class ClaudeAcpAgent implements Agent {
       );
     } else if (params.configId === "effort_level") {
       await session.query.applyFlagSettings({
-        effortLevel: resolvedValue as SupportedEffortLevel,
+        // Keep the runtime payload aligned with the model-reported effort
+        // levels even when the vendored SDK declaration lags behind.
+        effortLevel: resolvedValue as unknown as SdkEffortLevel,
       });
       session.effortLevel = resolvedValue as SupportedEffortLevel;
     }
