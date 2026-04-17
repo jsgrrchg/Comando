@@ -2,7 +2,9 @@ import type { editor as MonacoEditor } from "monaco-editor";
 import { create } from "zustand";
 
 import type {
+    AiImageAttachment,
     AiRuntimeId,
+    ProjectFileDocument,
     TerminalDataEvent,
     TerminalExitEvent,
     WorkspaceChatTab,
@@ -125,6 +127,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
     ) => Promise<void>;
+    openChatImageTab: (input: {
+        readonly attachment: AiImageAttachment;
+        readonly targetPaneId?: string | null;
+    }) => Promise<void>;
     openReviewTab: (input: {
         readonly projectId: string | null;
         readonly runtimeId: AiRuntimeId;
@@ -796,6 +802,93 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                         : "Could not open the selected file in the workspace.",
             });
         }
+    },
+
+    openChatImageTab: async ({ attachment, targetPaneId }) => {
+        const resolvedPaneId =
+            targetPaneId &&
+            collectPaneNodes(get().rootNode).some((pane) => pane.id === targetPaneId)
+                ? targetPaneId
+                : get().activePaneId;
+        const chatImageTab = buildChatImageTab(attachment);
+        const existingTabs = findExistingFileTabs(
+            get(),
+            chatImageTab.projectId,
+            chatImageTab.relativePath,
+            chatImageTab.worktreeId ?? null,
+        );
+        const existingTabInResolvedPane =
+            existingTabs.find((tab) => {
+                const paneId = findPaneIdByTabId(get(), tab.id);
+                return paneId === resolvedPaneId;
+            }) ?? null;
+
+        if (existingTabInResolvedPane) {
+            const paneId = findPaneIdByTabId(get(), existingTabInResolvedPane.id);
+            if (!paneId) {
+                return;
+            }
+
+            set((state) => ({
+                ...(paneId === resolvedPaneId
+                    ? selectPaneTab(state, paneId, existingTabInResolvedPane.id)
+                    : moveTabToPaneAtIndex(
+                          state,
+                          existingTabInResolvedPane.id,
+                          paneId,
+                          resolvedPaneId,
+                          Number.POSITIVE_INFINITY,
+                      )),
+                error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    existingTabInResolvedPane.id,
+                ),
+                tabsById: {
+                    ...state.tabsById,
+                    [existingTabInResolvedPane.id]: {
+                        ...existingTabInResolvedPane,
+                        ...chatImageTab,
+                        createdAt: existingTabInResolvedPane.createdAt,
+                        id: existingTabInResolvedPane.id,
+                    },
+                },
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const sourceTab = existingTabs[0] ?? null;
+        if (sourceTab) {
+            const duplicatedTab: RuntimeWorkspaceFileTab = {
+                ...sourceTab,
+                ...chatImageTab,
+                createdAt: new Date().toISOString(),
+                id: crypto.randomUUID(),
+                viewState: null,
+            };
+
+            set((state) => ({
+                ...attachTabToPane(state, resolvedPaneId, duplicatedTab),
+                error: null,
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    duplicatedTab.id,
+                ),
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        set((state) => ({
+            ...attachTabToPane(state, resolvedPaneId, chatImageTab),
+            error: null,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                chatImageTab.id,
+            ),
+        }));
+        await persistWorkspaceState(get);
     },
 
     openReviewTab: async (input) => {
@@ -1623,7 +1716,7 @@ async function loadFileTabDocument(
     tabId: string,
 ): Promise<void> {
     const tab = get().tabsById[tabId];
-    if (!tab || tab.kind !== "file") {
+    if (!tab || tab.kind !== "file" || tab.isTransient) {
         return;
     }
 
@@ -1747,6 +1840,107 @@ function countRuntimeChatTabs(
 
 function getFileTitle(relativePath: string): string {
     return relativePath.split("/").at(-1) ?? relativePath;
+}
+
+const CHAT_IMAGE_PROJECT_ID = "__comando_chat_images__";
+const CHAT_IMAGE_PATH_PREFIX = ".comando/chat-images";
+
+function buildChatImageTab(
+    attachment: AiImageAttachment,
+): RuntimeWorkspaceFileTab {
+    const title = getChatImageTitle(attachment);
+    const relativePath = buildChatImageRelativePath(attachment, title);
+    const document = buildChatImageDocument(attachment, relativePath, title);
+
+    return {
+        createdAt: new Date().toISOString(),
+        document,
+        draftContent: document.content,
+        hasExternalChange: false,
+        id: crypto.randomUUID(),
+        isDirty: false,
+        isLoading: false,
+        isSaving: false,
+        isTransient: true,
+        kind: "file",
+        loadError: null,
+        projectId: CHAT_IMAGE_PROJECT_ID,
+        relativePath,
+        reviewContext: null,
+        savedContent: document.content,
+        saveError: null,
+        title,
+        viewState: null,
+        worktreeId: null,
+    };
+}
+
+function buildChatImageDocument(
+    attachment: AiImageAttachment,
+    relativePath: string,
+    title: string,
+): ProjectFileDocument {
+    return {
+        absolutePath: `comando://chat-attachments/${relativePath}`,
+        content: "",
+        imageDataBase64: attachment.dataBase64,
+        isBinary: true,
+        isTooLarge: false,
+        kind: "image",
+        languageId: "image",
+        languageLabel: "Image",
+        mimeType: attachment.mimeType,
+        modifiedAtMs: Date.now(),
+        name: title,
+        projectId: CHAT_IMAGE_PROJECT_ID,
+        relativePath,
+        sizeBytes: attachment.sizeBytes ?? estimateBase64Size(attachment.dataBase64),
+    };
+}
+
+function buildChatImageRelativePath(
+    attachment: AiImageAttachment,
+    title: string,
+): string {
+    const safeId = attachment.id.replace(/[^a-zA-Z0-9._-]+/g, "-");
+    const safeTitle = title.replace(/[^a-zA-Z0-9._-]+/g, "-");
+    return `${CHAT_IMAGE_PATH_PREFIX}/${safeId}-${safeTitle}`;
+}
+
+function getChatImageTitle(attachment: AiImageAttachment): string {
+    const normalizedName = attachment.name?.trim();
+    if (normalizedName) {
+        return normalizedName;
+    }
+
+    const extension = getChatImageExtension(attachment.mimeType);
+    return extension ? `Screenshot.${extension}` : "Screenshot";
+}
+
+function getChatImageExtension(mimeType: string): string | null {
+    const normalizedMimeType = mimeType.trim().toLowerCase();
+    const extension =
+        normalizedMimeType.split("/")[1]?.split(";")[0]?.split("+")[0] ?? "";
+
+    if (!extension) {
+        return null;
+    }
+
+    if (extension === "jpeg") {
+        return "jpg";
+    }
+
+    return extension;
+}
+
+function estimateBase64Size(dataBase64: string): number {
+    const padding = dataBase64.endsWith("==")
+        ? 2
+        : dataBase64.endsWith("=")
+          ? 1
+          : 0;
+
+    return Math.max(0, Math.floor((dataBase64.length * 3) / 4) - padding);
 }
 
 function isProjectFileConflictMessage(message: string): boolean {

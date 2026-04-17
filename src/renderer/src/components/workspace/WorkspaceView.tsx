@@ -21,6 +21,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import type {
     AiFileContextAttachment,
+    AiImageAttachment,
     AiTrackedFile,
     GitFileDiff,
     ProjectFileDocument,
@@ -46,6 +47,7 @@ import {
     indentMarkdownListItems,
     outdentMarkdownListItems,
 } from "@renderer/app/editor/markdownLists";
+import { resolveMonacoLanguageId } from "@renderer/app/editor/monacoLanguage";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import {
     loadAppEditorSettings,
@@ -695,6 +697,7 @@ function WorkspacePaneView({
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
     ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
+    const openChatImageTab = useWorkspaceStore((state) => state.openChatImageTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
     const paneCount = useWorkspaceStore(
         (state) => collectPaneNodes(state.rootNode).length,
@@ -933,6 +936,16 @@ function WorkspacePaneView({
             worktreeId: activeChatTab.worktreeId ?? null,
         });
     }, [activeChatTab, openReviewTab]);
+
+    const handleOpenChatImage = useCallback(
+        async (attachment: AiImageAttachment) => {
+            await openChatImageTab({
+                attachment,
+                targetPaneId: paneNodeId,
+            });
+        },
+        [openChatImageTab, paneNodeId],
+    );
 
     const canAcceptPaneProjectFileDrag = useCallback(
         (event: ReactDragEvent<HTMLElement>) => {
@@ -1562,6 +1575,7 @@ function WorkspacePaneView({
                             <ChatTabView
                                 onDraftChange={handleChatDraftChange}
                                 onOpenFile={handleOpenWorkspaceFile}
+                                onOpenImage={handleOpenChatImage}
                                 onOpenReview={handleOpenActiveChatReview}
                                 tab={activeTab}
                             />
@@ -2267,6 +2281,10 @@ function FileTabView({
         runtime,
     } = useMonacoSurfaceRuntime(canEdit);
     const editorTheme = useMonacoTheme(runtime);
+    const monacoLanguageId = useMemo(
+        () => resolveMonacoLanguageId(document?.languageId ?? ""),
+        [document?.languageId],
+    );
     const editorSettings = useResolvedEditorSettings();
     const trackedFileSignature = useAiStore(
         useCallback(
@@ -2938,6 +2956,7 @@ function FileTabView({
                 enabled: editorSettings.minimapEnabled,
             },
             quickSuggestions: areSuggestionsEnabled,
+            "semanticHighlighting.enabled": true,
             snippetSuggestions: areSuggestionsEnabled ? "inline" : "none",
             suggest: {
                 showColors: areSuggestionsEnabled,
@@ -2980,6 +2999,7 @@ function FileTabView({
             minimap: {
                 enabled: editorSettings.minimapEnabled,
             },
+            "semanticHighlighting.enabled": true,
         } as const;
 
         diffEditor.updateOptions(diffOptions);
@@ -3129,7 +3149,7 @@ function FileTabView({
                             beforeMount={handleEditorBeforeMount}
                             keepCurrentModifiedModel
                             keepCurrentOriginalModel
-                            language={document.languageId}
+                            language={monacoLanguageId}
                             modified={inlineReviewTrackedFile.newText ?? ""}
                             modifiedModelPath={buildWorkspaceEditorModelPath(
                                 document.absolutePath,
@@ -3231,7 +3251,7 @@ function FileTabView({
                 ) : (
                     <EditorComponent
                         beforeMount={handleEditorBeforeMount}
-                        language={document.languageId}
+                        language={monacoLanguageId}
                         onChange={(value: string | undefined) =>
                             onDraftChange(tab.id, value ?? "")
                         }
@@ -3309,6 +3329,7 @@ function FileTabView({
                             padding: { top: 16, bottom: 16 },
                             quickSuggestions: areSuggestionsEnabled,
                             scrollBeyondLastLine: false,
+                            "semanticHighlighting.enabled": true,
                             snippetSuggestions: areSuggestionsEnabled
                                 ? "inline"
                                 : "none",

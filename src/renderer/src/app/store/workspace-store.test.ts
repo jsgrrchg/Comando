@@ -278,6 +278,59 @@ describe("workspace file opening", () => {
         });
     });
 
+    it("opens chat images in a transient file tab and omits them from persisted snapshots", async () => {
+        await useWorkspaceStore.getState().openChatImageTab({
+            attachment: {
+                dataBase64: "aGVsbG8=",
+                id: "message-1:image:1",
+                mimeType: "image/png",
+                name: "Example capture.png",
+                sizeBytes: 5,
+            },
+        });
+
+        const state = useWorkspaceStore.getState();
+        const rootPane = state.rootNode.type === "pane" ? state.rootNode : null;
+        if (!rootPane) {
+            throw new Error("Expected the default workspace root pane.");
+        }
+
+        expect(rootPane.tabIds).toHaveLength(1);
+        const openedTabId = rootPane.tabIds[0];
+        expect(openedTabId).toBeTruthy();
+        expect(openedTabId ? state.tabsById[openedTabId] : null).toMatchObject({
+            document: {
+                absolutePath:
+                    "comando://chat-attachments/.comando/chat-images/message-1-image-1-Example-capture.png",
+                kind: "image",
+                mimeType: "image/png",
+                name: "Example capture.png",
+            },
+            isDirty: false,
+            isLoading: false,
+            isTransient: true,
+            kind: "file",
+            projectId: "__comando_chat_images__",
+            relativePath:
+                ".comando/chat-images/message-1-image-1-Example-capture.png",
+            title: "Example capture.png",
+            worktreeId: null,
+        });
+
+        await flushWorkspacePersistenceForTests();
+
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledWith({
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: null,
+                id: "pane-root",
+                tabIds: [],
+                type: "pane",
+            },
+            tabs: [],
+        });
+    });
+
     it("buffers multiple workspace mutations into a single snapshot save", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,

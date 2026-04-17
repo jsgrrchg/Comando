@@ -281,6 +281,43 @@ describe("workspace tree helpers", () => {
         expect(selected.activePaneId).toBe("pane-root");
     });
 
+    it("omits transient file tabs from the persisted snapshot", () => {
+        const state = attachTabToPane(
+            attachTabToPane(
+                createDefaultWorkspaceState(),
+                "pane-root",
+                makeChatTab("chat-1"),
+            ),
+            "pane-root",
+            {
+                ...makeFileTab("image-1", ".comando/chat-images/shot.png"),
+                isTransient: true,
+                title: "shot.png",
+            },
+        );
+
+        const snapshot = workspaceStateToSnapshot(state);
+
+        expect(snapshot.tabs).toEqual([
+            {
+                createdAt: "2026-04-12T00:00:00.000Z",
+                draft: "",
+                id: "chat-1",
+                kind: "chat",
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-chat-1",
+                title: "Chat chat-1",
+            },
+        ]);
+        expect(snapshot.rootNode).toEqual({
+            activeTabId: "chat-1",
+            id: "pane-root",
+            tabIds: ["chat-1"],
+            type: "pane",
+        });
+    });
+
     it("syncs shared file draft and save state across duplicate tabs", () => {
         const sourceTab = makeFileTab("file-1", "src/app.ts");
         const duplicateTab: RuntimeWorkspaceFileTab = {

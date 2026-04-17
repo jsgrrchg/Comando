@@ -627,6 +627,21 @@ if (!monacoGlobal.__comandoMonacoConfigured) {
     };
 
     loader.config({ monaco });
+    monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+        ...monaco.languages.typescript.typescriptDefaults.getCompilerOptions(),
+        allowNonTsExtensions: true,
+        jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+        target: monaco.languages.typescript.ScriptTarget.Latest,
+    });
+    monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+        ...monaco.languages.typescript.javascriptDefaults.getCompilerOptions(),
+        allowJs: true,
+        allowNonTsExtensions: true,
+        jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+        target: monaco.languages.typescript.ScriptTarget.Latest,
+    });
+    monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
+    monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true);
     configureMarkdownFenceLanguages();
     monacoGlobal.__comandoMonacoConfigured = true;
 }

@@ -88,6 +88,7 @@ interface ChatTabViewProps {
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenReview: () => Promise<void>;
     readonly tab: RuntimeWorkspaceChatTab;
 }
@@ -151,6 +152,7 @@ type AiRuntimeCatalog = Pick<
 export const ChatTabView = memo(function ChatTabView({
     onDraftChange,
     onOpenFile,
+    onOpenImage,
     onOpenReview,
     tab,
 }: ChatTabViewProps) {
@@ -1789,6 +1791,7 @@ export const ChatTabView = memo(function ChatTabView({
                     isStreaming={isStreaming}
                     liveTailRow={timelineModel.liveTailRow}
                     onOpenFile={onOpenFile}
+                    onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={
                         handleOpenResolvedFileReference
                     }
@@ -2893,6 +2896,7 @@ const ChatTimeline = memo(function ChatTimeline({
     isStreaming,
     liveTailRow,
     onOpenFile,
+    onOpenImage,
     onOpenResolvedFileReference,
     onScroll,
     projectId,
@@ -2913,6 +2917,7 @@ const ChatTimeline = memo(function ChatTimeline({
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -2947,6 +2952,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     chatFontSize={chatFontSize}
                     historyRows={historyRows}
                     onOpenFile={onOpenFile}
+                    onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={onOpenResolvedFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
@@ -2956,6 +2962,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     chatFontFamily={chatFontFamily}
                     chatFontSize={chatFontSize}
                     onOpenFile={onOpenFile}
+                    onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={onOpenResolvedFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
@@ -2975,6 +2982,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontSize,
     historyRows,
     onOpenFile,
+    onOpenImage,
     onOpenResolvedFileReference,
     projectId,
     resolveFileReference,
@@ -2989,6 +2997,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3004,6 +3013,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontSize={chatFontSize}
             key={row.id}
             onOpenFile={onOpenFile}
+            onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
@@ -3019,6 +3029,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     chatFontFamily,
     chatFontSize,
     onOpenFile,
+    onOpenImage,
     onOpenResolvedFileReference,
     projectId,
     resolveFileReference,
@@ -3033,6 +3044,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3052,6 +3064,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             onOpenFile={onOpenFile}
+            onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
@@ -3067,6 +3080,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     chatFontFamily,
     chatFontSize,
     onOpenFile,
+    onOpenImage,
     onOpenResolvedFileReference,
     projectId,
     resolveFileReference,
@@ -3081,6 +3095,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
     ) => Promise<void>;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3098,6 +3113,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                 chatFontSize={chatFontSize}
                 message={row.message}
                 onOpenFile={onOpenResolvedFileReference}
+                onOpenImage={onOpenImage}
                 resolveFileReference={resolveFileReference}
             />
         );
@@ -3132,6 +3148,7 @@ function areChatTimelinePropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3157,6 +3174,7 @@ function areChatTimelinePropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3177,6 +3195,7 @@ function areChatTimelinePropsEqual(
         previous.historyRows === next.historyRows &&
         previous.isStreaming === next.isStreaming &&
         previous.liveTailRow === next.liveTailRow &&
+        previous.onOpenImage === next.onOpenImage &&
         previous.projectId === next.projectId &&
         previous.scrollRef === next.scrollRef &&
         previous.timelineContentRef === next.timelineContentRef &&
@@ -3195,6 +3214,7 @@ function areChatTimelineHistoryPropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3214,6 +3234,7 @@ function areChatTimelineHistoryPropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3229,6 +3250,7 @@ function areChatTimelineHistoryPropsEqual(
         previous.chatFontSize === next.chatFontSize &&
         previous.historyRows === next.historyRows &&
         previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
         previous.projectId === next.projectId &&
@@ -3247,6 +3269,7 @@ function areChatTimelineLiveTailPropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3266,6 +3289,7 @@ function areChatTimelineLiveTailPropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3281,6 +3305,7 @@ function areChatTimelineLiveTailPropsEqual(
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
         previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
         previous.projectId === next.projectId &&
@@ -3300,6 +3325,7 @@ function areChatTimelineRowViewPropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3319,6 +3345,7 @@ function areChatTimelineRowViewPropsEqual(
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         ) => Promise<void>;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
@@ -3334,6 +3361,7 @@ function areChatTimelineRowViewPropsEqual(
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
         previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
         previous.projectId === next.projectId &&
@@ -3350,6 +3378,7 @@ function areChatTabViewPropsEqual(
     return (
         previous.onDraftChange === next.onDraftChange &&
         previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenImage === next.onOpenImage &&
         previous.onOpenReview === next.onOpenReview &&
         previous.tab === next.tab
     );
@@ -3696,12 +3725,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
     chatFontSize,
     message,
     onOpenFile,
+    onOpenImage,
     resolveFileReference,
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly message: AiSessionSnapshot["messages"][number];
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -3714,6 +3745,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
                 chatFontSize={chatFontSize}
                 content={message.content}
                 onOpenFile={onOpenFile}
+                onOpenImage={onOpenImage}
                 resolveFileReference={resolveFileReference}
             />
         );
@@ -3746,6 +3778,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             chatFontSize={chatFontSize}
             content={message.content}
             onOpenFile={onOpenFile}
+            onOpenImage={onOpenImage}
             resolveFileReference={resolveFileReference}
         />
     );
@@ -3759,6 +3792,7 @@ function areChatMessageRowPropsEqual(
         readonly chatFontSize?: number;
         readonly message: AiSessionSnapshot["messages"][number];
         readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
@@ -3768,6 +3802,7 @@ function areChatMessageRowPropsEqual(
         readonly chatFontSize?: number;
         readonly message: AiSessionSnapshot["messages"][number];
         readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
@@ -3777,6 +3812,7 @@ function areChatMessageRowPropsEqual(
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
         previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenImage === next.onOpenImage &&
         previous.resolveFileReference === next.resolveFileReference &&
         areMessagesEquivalent(previous.message, next.message)
     );
@@ -3788,6 +3824,7 @@ function UserMessage(props: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -3815,7 +3852,10 @@ function UserMessage(props: {
                 />
             ) : null}
             {props.attachments.length > 0 ? (
-                <MessageImageGrid attachments={props.attachments} />
+                <MessageImageGrid
+                    attachments={props.attachments}
+                    onOpenImage={props.onOpenImage}
+                />
             ) : null}
         </div>
     );
@@ -3827,6 +3867,7 @@ function AssistantMessage(props: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -3849,7 +3890,10 @@ function AssistantMessage(props: {
                 />
             ) : null}
             {props.attachments.length > 0 ? (
-                <MessageImageGrid attachments={props.attachments} />
+                <MessageImageGrid
+                    attachments={props.attachments}
+                    onOpenImage={props.onOpenImage}
+                />
             ) : null}
         </div>
     );
@@ -3857,23 +3901,26 @@ function AssistantMessage(props: {
 
 function MessageImageGrid(props: {
     readonly attachments: readonly AiImageAttachment[];
+    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
 }) {
     return (
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
             {props.attachments.map((attachment) => (
-                <a
-                    className="overflow-hidden rounded-xl border border-border bg-bg-panel"
-                    href={toAttachmentDataUrl(attachment)}
+                <button
+                    className="block w-full appearance-none overflow-hidden rounded-xl border border-border bg-bg-panel p-0 text-left transition hover:brightness-105"
                     key={attachment.id}
-                    rel="noreferrer"
-                    target="_blank"
+                    onClick={() => {
+                        void props.onOpenImage(attachment);
+                    }}
+                    style={{ cursor: "zoom-in" }}
+                    type="button"
                 >
                     <img
                         alt={attachment.name ?? "Chat image"}
                         className="h-48 w-full object-cover"
                         src={toAttachmentDataUrl(attachment)}
                     />
-                </a>
+                </button>
             ))}
         </div>
     );

@@ -73,6 +73,7 @@ export function buildInlineReviewDiffEditorOptions({
             verticalScrollbarSize: 6,
         },
         scrollBeyondLastLine: false,
+        "semanticHighlighting.enabled": true,
         smoothScrolling: true,
         wordWrap,
     };

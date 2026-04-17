@@ -161,7 +161,7 @@ export function PlanMessage({
                                         entry.status === "completed"
                                             ? "var(--color-text-secondary)"
                                             : "var(--color-text-primary)",
-                                    fontSize: "0.875rem",
+                                    fontSize: "12px",
                                     lineHeight: 1.45,
                                     opacity:
                                         entry.status === "completed" ? 0.74 : 1,

@@ -296,7 +296,7 @@ function ChangeReviewFileRow({
                     alignItems: "center",
                     borderBottom: expanded
                         ? "1px solid color-mix(in srgb, var(--color-border) 42%, transparent)"
-                        : "none",
+                        : "1px solid transparent",
                     display: "grid",
                     gap: 12,
                     gridTemplateColumns: "minmax(0, 1fr) auto",
@@ -556,11 +556,11 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
                     alignItems: "center",
                     borderBottom: expanded
                         ? `1px solid color-mix(in srgb, ${accent} 14%, var(--color-border))`
-                        : "none",
+                        : "1px solid transparent",
                     display: "grid",
                     gap: 12,
                     gridTemplateColumns: "minmax(0, 1fr) auto",
-                    padding: expanded ? "10px 12px" : "7px 12px",
+                    padding: "7px 12px",
                 }}
             >
                 <button

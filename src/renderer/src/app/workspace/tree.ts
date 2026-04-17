@@ -28,6 +28,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
     readonly hasExternalChange: boolean;
+    readonly isTransient?: boolean;
     readonly isDirty: boolean;
     readonly isLoading: boolean;
     readonly isSaving: boolean;
@@ -94,13 +95,22 @@ export function workspaceStateFromSnapshot(
 export function workspaceStateToSnapshot(
     state: WorkspaceTreeState,
 ): WorkspaceSnapshot {
-    const orderedTabIds = collectPaneNodes(state.rootNode).flatMap(
+    const persistedTabIds = new Set(
+        Object.values(state.tabsById)
+            .filter((tab) => !isTransientWorkspaceTab(tab))
+            .map((tab) => tab.id),
+    );
+    const sanitizedRootNode = sanitizeNodeForSnapshot(
+        state.rootNode,
+        persistedTabIds,
+    );
+    const orderedTabIds = collectPaneNodes(sanitizedRootNode).flatMap(
         (pane) => pane.tabIds,
     );
 
     return {
         activePaneId: state.activePaneId,
-        rootNode: state.rootNode,
+        rootNode: sanitizedRootNode,
         tabs: orderedTabIds
             .map((tabId) => state.tabsById[tabId])
             .filter((tab): tab is RuntimeWorkspaceTab => Boolean(tab))
@@ -1243,6 +1253,32 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     return tab;
 }
 
+function sanitizeNodeForSnapshot(
+    node: WorkspaceNode,
+    persistedTabIds: ReadonlySet<string>,
+): WorkspaceNode {
+    if (node.type === "pane") {
+        const nextTabIds = node.tabIds.filter((tabId) => persistedTabIds.has(tabId));
+        const nextActiveTabId =
+            node.activeTabId && persistedTabIds.has(node.activeTabId)
+                ? node.activeTabId
+                : (nextTabIds.at(-1) ?? null);
+
+        return {
+            ...node,
+            activeTabId: nextActiveTabId,
+            tabIds: nextTabIds,
+        };
+    }
+
+    return {
+        ...node,
+        children: node.children.map((child) =>
+            sanitizeNodeForSnapshot(child, persistedTabIds),
+        ),
+    };
+}
+
 function omitTabFromMap(
     tabsById: Record<string, RuntimeWorkspaceTab>,
     tabId: string,
@@ -1325,4 +1361,8 @@ function rebaseAbsolutePath(
 
 function getFileTitle(relativePath: string): string {
     return relativePath.split("/").at(-1) ?? relativePath;
+}
+
+function isTransientWorkspaceTab(tab: RuntimeWorkspaceTab): boolean {
+    return tab.kind === "file" && tab.isTransient === true;
 }
