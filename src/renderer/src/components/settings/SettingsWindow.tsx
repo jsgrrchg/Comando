@@ -544,20 +544,6 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
             />
             <SectionLabel>Review</SectionLabel>
             <Row
-                label="Review diff zoom"
-                description="Default zoom for pending-review diffs. Workspace adjustments override this per session."
-                control={
-                    <NumberStepper
-                        value={state.reviewDiffZoomPercent}
-                        min={64}
-                        max={96}
-                        onChange={(v) =>
-                            state.onReviewDiffZoomPercentChange?.(v)
-                        }
-                    />
-                }
-            />
-            <Row
                 label="Chat history retention"
                 description="How long saved chat histories stay on disk before automatic deletion."
                 control={

@@ -25,6 +25,7 @@ import type {
 
 import { useShallow } from "zustand/react/shallow";
 
+import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -221,7 +222,6 @@ export const ChatTabView = memo(function ChatTabView({
             }
 
             return {
-                diffZoom: session.diffZoom,
                 dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
                 draftAttachments: session.draftAttachments,
                 draftComposerParts: session.draftComposerParts,
@@ -612,7 +612,7 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [onOpenFile, tab.projectId, tab.worktreeId],
     );
-    const diffZoom = sessionState?.diffZoom ?? aiChatSettings.reviewDiffZoom;
+    const diffZoom = DEFAULT_AI_DIFF_ZOOM;
     const hasComposerContext =
         pendingPermission !== null ||
         pendingUserInput !== null ||

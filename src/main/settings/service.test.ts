@@ -359,7 +359,7 @@ function createDefaultAiChatSettings() {
         chatFontSize: 14,
         composerFontFamily: "system",
         composerFontSize: 14,
-        reviewDiffZoom: 0.72,
+        reviewDiffZoom: 0.96,
         requireCmdEnterToSend: false,
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,

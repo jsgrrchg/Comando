@@ -88,7 +88,6 @@ export interface SettingsAiChatState {
     readonly composerFontFamilies: readonly ChatFontFamilyOption[];
     readonly composerFontSize: number;
     readonly requireCmdEnterToSend: boolean;
-    readonly reviewDiffZoomPercent: number;
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
     readonly onChatFontFamilyChange?: (id: string) => void;
@@ -96,7 +95,6 @@ export interface SettingsAiChatState {
     readonly onComposerFontFamilyChange?: (id: string) => void;
     readonly onComposerFontSizeChange?: (size: number) => void;
     readonly onRequireCmdEnterChange?: (value: boolean) => void;
-    readonly onReviewDiffZoomPercentChange?: (percent: number) => void;
     readonly onScreenshotRetentionChange?: (seconds: number) => void;
     readonly onHistoryRetentionChange?: (days: number) => void;
 }

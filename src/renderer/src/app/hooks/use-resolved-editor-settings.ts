@@ -1,57 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import type { AppEditorSettings } from "@shared/ipc";
 
 import {
-    getCachedAppEditorSettings,
-    loadAppEditorSettings,
-    setCachedAppEditorSettings,
-} from "../settings/client";
-import {
-    getDefaultAppEditorSettings,
     resolveEditorSettings,
 } from "../settings/theme";
+import { useSettingsStore } from "../store/settings-store";
 
 export function useResolvedEditorSettings(): AppEditorSettings {
-    const [appEditor, setAppEditor] = useState<AppEditorSettings>(
-        () => getCachedAppEditorSettings() ?? getDefaultAppEditorSettings(),
-    );
-
-    const loadAppEditor = useCallback(async () => {
-        if (!window.comando) {
-            return;
-        }
-
-        const nextEditor = await loadAppEditorSettings();
-        setAppEditor(nextEditor);
-    }, []);
+    const hydrate = useSettingsStore((state) => state.hydrate);
+    const appEditor = useSettingsStore((state) => state.editor);
 
     useEffect(() => {
-        const timeout = window.setTimeout(() => {
-            void loadAppEditor();
-        }, 0);
-
-        return () => {
-            window.clearTimeout(timeout);
-        };
-    }, [loadAppEditor]);
-
-    useEffect(() => {
-        if (!window.comando) {
-            return;
-        }
-
-        const unsubscribeSettings = window.comando.onSettingsUpdated(
-            (payload) => {
-                setCachedAppEditorSettings(payload.editor);
-                setAppEditor(payload.editor ?? getDefaultAppEditorSettings());
-            },
-        );
-
-        return () => {
-            unsubscribeSettings();
-        };
-    }, []);
+        void hydrate();
+    }, [hydrate]);
 
     return resolveEditorSettings(appEditor);
 }

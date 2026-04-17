@@ -4,7 +4,7 @@ import type {
     AiImageAttachment,
 } from "@shared/ipc";
 
-export const DEFAULT_AI_DIFF_ZOOM = 0.72;
+export const DEFAULT_AI_DIFF_ZOOM = 0.96;
 export const FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM = 1.25;
 
 // Fase 0 / Ruta B: el undo de reject queda fuera del alcance inicial.

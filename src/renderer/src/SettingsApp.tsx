@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
     AiRuntimeId,
@@ -16,11 +16,7 @@ import {
     type RuntimeActionOption,
     type RuntimeCardOption,
 } from "./components/settings";
-import { DEFAULT_AI_DIFF_ZOOM } from "./app/ai/sessionReviewContracts";
 import {
-    loadAiChatSettings,
-    loadAppEditorSettings,
-    loadAppAppearanceSettings,
     saveAiChatSettings,
     saveAppEditorSettings,
     saveAppAppearanceSettings,
@@ -38,6 +34,7 @@ import {
     THEME_PRESET_OPTIONS,
 } from "./app/settings/theme";
 import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
+import { useSettingsStore } from "./app/store/settings-store";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
 
 export function SettingsApp() {
@@ -63,23 +60,14 @@ export function SettingsApp() {
         kilo: null,
     });
     const availableFontFamilyIds = useAvailableFontFamilyIds();
+    const hydrateSettings = useSettingsStore((state) => state.hydrate);
+    const settingsRevision = useSettingsStore((state) => state.revision);
+    const storeAiChat = useSettingsStore((state) => state.aiChat);
+    const storeAppAppearance = useSettingsStore((state) => state.appearance);
+    const storeAppEditor = useSettingsStore((state) => state.editor);
+    const latestSettingsRevisionRef = useRef(0);
 
     useResolvedAppearance();
-
-    const loadAppAiChat = useCallback(async () => {
-        const next = await loadAiChatSettings();
-        setAiChat(next);
-    }, []);
-
-    const loadAppAppearance = useCallback(async () => {
-        const nextAppearance = await loadAppAppearanceSettings();
-        setAppAppearance(nextAppearance);
-    }, []);
-
-    const loadAppEditor = useCallback(async () => {
-        const nextEditor = await loadAppEditorSettings();
-        setAppEditor(nextEditor);
-    }, []);
 
     const loadRuntimeStatuses = useCallback(async () => {
         if (!window.comando) {
@@ -103,35 +91,43 @@ export function SettingsApp() {
 
     useEffect(() => {
         const timeout = window.setTimeout(() => {
-            void Promise.all([
-                loadAppAiChat(),
-                loadAppAppearance(),
-                loadAppEditor(),
-                loadRuntimeStatuses(),
-            ]);
+            void Promise.all([hydrateSettings(), loadRuntimeStatuses()]);
         }, 0);
 
         return () => {
             window.clearTimeout(timeout);
         };
-    }, [loadAppAiChat, loadAppAppearance, loadAppEditor, loadRuntimeStatuses]);
+    }, [hydrateSettings, loadRuntimeStatuses]);
 
     useEffect(() => {
-        if (!window.comando) {
+        setAiChat(storeAiChat);
+    }, [storeAiChat]);
+
+    useEffect(() => {
+        setAppAppearance(storeAppAppearance);
+    }, [storeAppAppearance]);
+
+    useEffect(() => {
+        setAppEditor(storeAppEditor);
+    }, [storeAppEditor]);
+
+    useEffect(() => {
+        if (settingsRevision <= 0) {
             return;
         }
 
-        const unsubscribeSettings = window.comando.onSettingsUpdated(() => {
-            void loadAppAiChat();
-            void loadAppAppearance();
-            void loadAppEditor();
-            void loadRuntimeStatuses();
-        });
+        if (latestSettingsRevisionRef.current === 0) {
+            latestSettingsRevisionRef.current = settingsRevision;
+            return;
+        }
 
-        return () => {
-            unsubscribeSettings();
-        };
-    }, [loadAppAiChat, loadAppAppearance, loadAppEditor, loadRuntimeStatuses]);
+        if (latestSettingsRevisionRef.current === settingsRevision) {
+            return;
+        }
+
+        latestSettingsRevisionRef.current = settingsRevision;
+        void loadRuntimeStatuses();
+    }, [loadRuntimeStatuses, settingsRevision]);
 
     const handleAppThemeModeChange = (themeMode: ThemeMode) => {
         const nextAppearance = {
@@ -297,9 +293,6 @@ export function SettingsApp() {
                 composerFontFamilies: composerFontFamilies,
                 composerFontSize: aiChat.composerFontSize,
                 requireCmdEnterToSend: aiChat.requireCmdEnterToSend,
-                reviewDiffZoomPercent: Math.round(
-                    (aiChat.reviewDiffZoom ?? DEFAULT_AI_DIFF_ZOOM) * 100,
-                ),
                 screenshotRetentionSeconds: aiChat.screenshotRetentionSeconds,
                 historyRetentionDays: aiChat.historyRetentionDays,
                 onChatFontFamilyChange: (id) =>
@@ -316,13 +309,6 @@ export function SettingsApp() {
                     updateAiChat({ composerFontSize: size }),
                 onRequireCmdEnterChange: (value) =>
                     updateAiChat({ requireCmdEnterToSend: value }),
-                onReviewDiffZoomPercentChange: (percent) =>
-                    updateAiChat({
-                        reviewDiffZoom: Math.min(
-                            0.96,
-                            Math.max(0.64, percent / 100),
-                        ),
-                    }),
                 onScreenshotRetentionChange: (seconds) =>
                     updateAiChat({ screenshotRetentionSeconds: seconds }),
                 onHistoryRetentionChange: (days) =>

@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
 
-import { AI_REVIEW_UNDO_ENABLED } from "@renderer/app/ai/sessionReviewContracts";
-import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
+import {
+    AI_REVIEW_UNDO_ENABLED,
+    DEFAULT_AI_DIFF_ZOOM,
+} from "@renderer/app/ai/sessionReviewContracts";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
@@ -25,13 +27,7 @@ import {
     type ReviewFileItem,
 } from "./review/editedFilesPresentationModel";
 import { DiffStatBar, ReviewFileRow } from "./review/ReviewFileRow";
-import {
-    DIFF_ZOOM_MAX,
-    DIFF_ZOOM_MIN,
-    DIFF_ZOOM_STEP,
-    formatDiffStat,
-    stepDiffZoom,
-} from "./review/reviewDiff";
+import { formatDiffStat } from "./review/reviewDiff";
 import {
     createPersistedReviewAnchor,
     getReviewViewStorageKey,
@@ -458,7 +454,6 @@ export function ReviewTabView(props: ReviewTabViewProps) {
 }
 
 function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
-    const aiChatSettings = useAiChatSettings();
     const ensureSession = useAiStore((state) => state.ensureSession);
     const keepAllTrackedFiles = useAiStore(
         (state) => state.keepAllTrackedFiles,
@@ -474,7 +469,6 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     const rejectTrackedFileHunks = useAiStore(
         (state) => state.rejectTrackedFileHunks,
     );
-    const setSessionDiffZoom = useAiStore((state) => state.setSessionDiffZoom);
     const sessionState = useAiStore((state) => state.sessions[tab.sessionId]);
 
     const sessionTab = useMemo(
@@ -592,9 +586,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         () => items.filter((item) => item.canReject).length,
         [items],
     );
-    const diffZoom = sessionState?.diffZoom ?? aiChatSettings.reviewDiffZoom;
-    const canDecreaseZoom = diffZoom > DIFF_ZOOM_MIN;
-    const canIncreaseZoom = diffZoom < DIFF_ZOOM_MAX;
+    const diffZoom = DEFAULT_AI_DIFF_ZOOM;
     const shouldVirtualizeItems =
         !currentError && items.length >= REVIEW_VIRTUALIZATION_THRESHOLD;
 
@@ -1086,65 +1078,6 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                     </span>
                     <ReviewStatChips summary={summary} />
                     <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                        <div
-                            style={{
-                                backgroundColor:
-                                    "color-mix(in srgb, var(--color-bg-primary) 48%, transparent)",
-                                border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                                borderRadius: 4,
-                                display: "flex",
-                                overflow: "hidden",
-                            }}
-                        >
-                            <button
-                                aria-label="Decrease diff zoom"
-                                disabled={!canDecreaseZoom}
-                                onClick={() =>
-                                    setSessionDiffZoom(
-                                        tab.sessionId,
-                                        stepDiffZoom(diffZoom, -DIFF_ZOOM_STEP),
-                                    )
-                                }
-                                style={{
-                                    borderRight:
-                                        "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                                    color: canDecreaseZoom
-                                        ? "var(--color-text-primary)"
-                                        : "var(--color-text-secondary)",
-                                    cursor: canDecreaseZoom
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    opacity: canDecreaseZoom ? 1 : 0.45,
-                                    padding: "4px 10px",
-                                }}
-                                type="button"
-                            >
-                                -
-                            </button>
-                            <button
-                                aria-label="Increase diff zoom"
-                                disabled={!canIncreaseZoom}
-                                onClick={() =>
-                                    setSessionDiffZoom(
-                                        tab.sessionId,
-                                        stepDiffZoom(diffZoom, DIFF_ZOOM_STEP),
-                                    )
-                                }
-                                style={{
-                                    color: canIncreaseZoom
-                                        ? "var(--color-text-primary)"
-                                        : "var(--color-text-secondary)",
-                                    cursor: canIncreaseZoom
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    opacity: canIncreaseZoom ? 1 : 0.45,
-                                    padding: "4px 10px",
-                                }}
-                                type="button"
-                            >
-                                +
-                            </button>
-                        </div>
                         <button
                             className="review-action-btn"
                             onClick={

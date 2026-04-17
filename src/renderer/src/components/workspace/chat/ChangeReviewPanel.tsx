@@ -11,8 +11,6 @@ import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
-import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
-import { useAiStore } from "@renderer/app/store/ai-store";
 import type { ResolvedProjectFileReference } from "../projectFileReferences";
 import { EditedFileDiffPreview } from "../review/EditedFileDiffPreview";
 import {
@@ -20,13 +18,9 @@ import {
     getToneBorderStyle,
 } from "../review/reviewStyles";
 import {
-    DIFF_ZOOM_MAX,
-    DIFF_ZOOM_MIN,
-    DIFF_ZOOM_STEP,
     formatDiffStat,
     getCompactPath,
     getFileNameFromPath,
-    stepDiffZoom,
 } from "../review/reviewDiff";
 import {
     deriveChangeReviewItems,
@@ -461,14 +455,7 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
     trackedFiles = [],
     worktreeId = null,
 }: ChangeReviewPanelProps) {
-    const aiChatSettings = useAiChatSettings();
-    const setSessionDiffZoom = useAiStore((state) => state.setSessionDiffZoom);
-    const diffZoom = useAiStore(
-        (state) =>
-            state.sessions[activity.sessionId]?.diffZoom ??
-            aiChatSettings.reviewDiffZoom ??
-            DEFAULT_AI_DIFF_ZOOM,
-    );
+    const diffZoom = DEFAULT_AI_DIFF_ZOOM;
 
     const items = useMemo(
         () => deriveChangeReviewItems(activity, trackedFiles),
@@ -483,8 +470,6 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
     const singleItem = items.length === 1 ? (items[0] ?? null) : null;
     const accent = getPanelAccent(activity);
     const actionLabel = getActivityActionLabel(activity.kind);
-    const canDecreaseZoom = diffZoom > DIFF_ZOOM_MIN;
-    const canIncreaseZoom = diffZoom < DIFF_ZOOM_MAX;
     const canOpenSingleItem = singleItem
         ? canOpenItem(singleItem, projectId, resolveFileReference)
         : false;
@@ -670,79 +655,6 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
                             )}
                         </span>
                     ) : null}
-                    <div
-                        style={{
-                            alignItems: "stretch",
-                            backgroundColor:
-                                "color-mix(in srgb, var(--color-bg-primary) 56%, transparent)",
-                            border: `1px solid color-mix(in srgb, ${accent} 22%, var(--color-border))`,
-                            borderRadius: 8,
-                            display: "flex",
-                            height: 24,
-                            overflow: "hidden",
-                        }}
-                    >
-                        <button
-                            aria-label="Decrease diff zoom"
-                            disabled={!canDecreaseZoom}
-                            onClick={() =>
-                                setSessionDiffZoom(
-                                    activity.sessionId,
-                                    stepDiffZoom(diffZoom, -DIFF_ZOOM_STEP),
-                                )
-                            }
-                            style={{
-                                alignItems: "center",
-                                background: "none",
-                                border: "none",
-                                color: canDecreaseZoom
-                                    ? accent
-                                    : "var(--color-text-secondary)",
-                                cursor: canDecreaseZoom
-                                    ? "pointer"
-                                    : "not-allowed",
-                                display: "inline-flex",
-                                fontSize: "0.76em",
-                                justifyContent: "center",
-                                opacity: canDecreaseZoom ? 1 : 0.45,
-                                minWidth: 28,
-                                padding: "0 8px",
-                            }}
-                            type="button"
-                        >
-                            -
-                        </button>
-                        <button
-                            aria-label="Increase diff zoom"
-                            disabled={!canIncreaseZoom}
-                            onClick={() =>
-                                setSessionDiffZoom(
-                                    activity.sessionId,
-                                    stepDiffZoom(diffZoom, DIFF_ZOOM_STEP),
-                                )
-                            }
-                            style={{
-                                alignItems: "center",
-                                background: "none",
-                                border: "none",
-                                color: canIncreaseZoom
-                                    ? accent
-                                    : "var(--color-text-secondary)",
-                                cursor: canIncreaseZoom
-                                    ? "pointer"
-                                    : "not-allowed",
-                                display: "inline-flex",
-                                fontSize: "0.76em",
-                                justifyContent: "center",
-                                opacity: canIncreaseZoom ? 1 : 0.45,
-                                minWidth: 28,
-                                padding: "0 8px",
-                            }}
-                            type="button"
-                        >
-                            +
-                        </button>
-                    </div>
                     {singleItem ? (
                         <button
                             disabled={!canOpenSingleItem}
