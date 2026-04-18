@@ -75,4 +75,34 @@ export default tseslint.config(
             "react-hooks/set-state-in-effect": "off",
         },
     },
+    {
+        files: [
+            "src/renderer/src/App.tsx",
+            "src/renderer/src/components/workspace/**/*.ts",
+            "src/renderer/src/components/workspace/**/*.tsx",
+        ],
+        rules: {
+            "react-hooks/refs": "warn",
+            "react-hooks/set-state-in-effect": "warn",
+        },
+    },
+    {
+        files: [
+            "src/main/ai/**/*.ts",
+            "src/main/db/**/*.ts",
+            "src/main/git/**/*.ts",
+            "src/main/persistence/**/*.ts",
+            "src/main/projects/**/*.ts",
+            "src/main/workspace/**/*.ts",
+        ],
+        ignores: ["**/*.test.ts"],
+        rules: {
+            "@typescript-eslint/no-confusing-void-expression": "warn",
+            "@typescript-eslint/no-meaningless-void-operator": "warn",
+            "@typescript-eslint/no-unnecessary-condition": "warn",
+            "@typescript-eslint/switch-exhaustiveness-check": "warn",
+            "@typescript-eslint/use-unknown-in-catch-callback-variable":
+                "warn",
+        },
+    },
 );
