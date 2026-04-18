@@ -2021,6 +2021,7 @@ export const ChatTabView = memo(function ChatTabView({
                     }}
                 >
                     <AIChatComposer
+                        autoFocusKey={tab.id}
                         composerFontFamily={composerFontFamily}
                         composerFontSize={aiChatSettings.composerFontSize}
                         requireCmdEnterToSend={

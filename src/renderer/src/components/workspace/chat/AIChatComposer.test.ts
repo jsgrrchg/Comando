@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
     getComposerSubmitKeyboardAction,
+    shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
 } from "./AIChatComposer";
 
@@ -14,6 +15,18 @@ describe("AIChatComposer", () => {
     it("resets only when the nonce actually changes", () => {
         expect(shouldResetComposerForNonceChange(0, 0)).toBe(false);
         expect(shouldResetComposerForNonceChange(0, 1)).toBe(true);
+    });
+
+    it("auto-focuses only when switching to a different chat tab after initialization", () => {
+        expect(
+            shouldAutoFocusComposerForKeyChange(null, "chat-tab-1"),
+        ).toBe(false);
+        expect(
+            shouldAutoFocusComposerForKeyChange("chat-tab-1", "chat-tab-1"),
+        ).toBe(false);
+        expect(
+            shouldAutoFocusComposerForKeyChange("chat-tab-1", "chat-tab-2"),
+        ).toBe(true);
     });
 
     it("submits with plain Enter when modifier is not required", () => {

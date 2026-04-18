@@ -394,6 +394,7 @@ function getInlineTriggerMatch(
 
 interface AIChatComposerProps {
     readonly parts: readonly AIComposerPart[];
+    readonly autoFocusKey?: string;
     readonly resetNonce?: number;
     readonly status: AiSessionSnapshot["status"];
     readonly runtimeName: string;
@@ -424,6 +425,15 @@ export function shouldResetComposerForNonceChange(
     nextResetNonce: number,
 ): boolean {
     return previousResetNonce !== null && previousResetNonce !== nextResetNonce;
+}
+
+export function shouldAutoFocusComposerForKeyChange(
+    previousAutoFocusKey: string | null,
+    nextAutoFocusKey: string,
+): boolean {
+    return (
+        previousAutoFocusKey !== null && previousAutoFocusKey !== nextAutoFocusKey
+    );
 }
 
 type ComposerSubmitKeyboardAction = "submit" | "stop" | null;
@@ -467,6 +477,7 @@ export function getComposerSubmitKeyboardAction(input: {
 
 export function AIChatComposer({
     parts,
+    autoFocusKey,
     resetNonce = 0,
     status,
     runtimeName,
@@ -514,6 +525,7 @@ export function AIChatComposer({
     }>({ open: false, query: "", items: [], selectedIndex: 0 });
 
     const lastSyncedParts = useRef<string>("");
+    const lastAutoFocusKeyRef = useRef<string | null>(null);
     const lastResetNonceRef = useRef<number | null>(null);
     const mentionSearchRequestRef = useRef(0);
 
@@ -584,6 +596,33 @@ export function AIChatComposer({
         syncComposerDom(root, emptyParts, metrics);
         setCaretAtEnd(root);
     }, [metrics, resetNonce]);
+
+    useEffect(() => {
+        if (!autoFocusKey || disabled) {
+            return;
+        }
+
+        const root = composerRef.current;
+        if (!root) {
+            return;
+        }
+
+        const previousAutoFocusKey = lastAutoFocusKeyRef.current;
+        lastAutoFocusKeyRef.current = autoFocusKey;
+
+        if (
+            previousAutoFocusKey !== null &&
+            !shouldAutoFocusComposerForKeyChange(
+                previousAutoFocusKey,
+                autoFocusKey,
+            )
+        ) {
+            return;
+        }
+
+        root.focus();
+        setCaretAtEnd(root);
+    }, [autoFocusKey, disabled]);
 
     /* ─ Read DOM → parts on input ─ */
     const syncFromDom = useCallback(() => {
