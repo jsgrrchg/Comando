@@ -54,6 +54,18 @@ function createTrackedFile(
     };
 }
 
+function createClaudeEditUpdateContext(toolCallId = "tool-1") {
+    return {
+        meta: {
+            claudeCode: {
+                toolName: "Edit",
+            },
+        },
+        sessionUpdate: "tool_call_update" as const,
+        toolCallId,
+    };
+}
+
 describe("AiService tracked file review merging", () => {
     it("accumulates consecutive updates for the same file", () => {
         const firstTrackedFile = createTrackedFile({
@@ -560,14 +572,70 @@ describe("resolveDiffToFullTexts", () => {
                 path: "foo.ts",
                 oldText: hunkOld,
                 newText: hunkNew,
-            } as never,
+                } as never,
             existing,
             liveSession,
             "foo.ts",
+            createClaudeEditUpdateContext(),
         );
 
         expect(resolved.oldText).toBe(originalFile);
         expect(resolved.newText).toBe(afterEdit);
+    });
+
+    it("treats Claude's single-line post-hook re-emission as a no-op", () => {
+        const originalFile = "alpha\nbeta\ngamma\n";
+        const afterEdit = "alpha\nBETA\ngamma\n";
+        const existing = createTrackedFile({
+            path: "foo.ts",
+            oldText: originalFile,
+            newText: afterEdit,
+            currentText: afterEdit,
+            diffBase: originalFile,
+        });
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "beta",
+                newText: "BETA",
+            } as never,
+            existing,
+            liveSession,
+            "foo.ts",
+            createClaudeEditUpdateContext(),
+        );
+
+        expect(resolved.oldText).toBe(originalFile);
+        expect(resolved.newText).toBe(afterEdit);
+    });
+
+    it("does not collapse unmatched diffs when the toolCallId does not match", () => {
+        const existing = createTrackedFile({
+            path: "foo.ts",
+            oldText: "alpha\nbeta\ngamma\n",
+            newText: "alpha\nBETA\ngamma\n",
+            currentText: "alpha\nBETA\ngamma\n",
+            diffBase: "alpha\nbeta\ngamma\n",
+            toolCallId: "tool-1",
+        });
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "beta",
+                newText: "BETA",
+            } as never,
+            existing,
+            liveSession,
+            "foo.ts",
+            createClaudeEditUpdateContext("tool-2"),
+        );
+
+        expect(resolved.oldText).toBe("beta");
+        expect(resolved.newText).toBe("BETA");
     });
 
     it("preserves the diff untouched for create (oldText null)", () => {

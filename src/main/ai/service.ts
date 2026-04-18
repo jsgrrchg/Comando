@@ -1509,6 +1509,7 @@ export class AiService {
                     liveSession,
                     nextSnapshot,
                     update,
+                    "tool_call",
                     now,
                 );
                 break;
@@ -1517,6 +1518,7 @@ export class AiService {
                     liveSession,
                     nextSnapshot,
                     update,
+                    "tool_call_update",
                     now,
                 );
                 break;
@@ -3268,6 +3270,7 @@ function mapToolCallUpdate(
     liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
+    updateKind: DiffResolutionContext["sessionUpdate"],
     updatedAt: string,
 ): AiSessionSnapshot {
     const existing =
@@ -3389,6 +3392,11 @@ function mapToolCallUpdate(
                       existing,
                       liveSession,
                       normalizedPath,
+                      {
+                          meta: update._meta,
+                          sessionUpdate: updateKind,
+                          toolCallId: update.toolCallId,
+                      },
                   );
                   return upsertTrackedFile(
                       acc,
@@ -4112,11 +4120,54 @@ function tryReadFileAsText(absolutePath: string): string | null {
  * resolve a base (missing file, binary, oversized) or when the snippet is
  * ambiguous inside the base.
  */
+interface DiffResolutionContext {
+    readonly meta: unknown;
+    readonly sessionUpdate: "tool_call" | "tool_call_update";
+    readonly toolCallId: string;
+}
+
+function isClaudeEditReEmission(
+    diff: Pick<Diff, "newText" | "oldText">,
+    existing: AiTrackedFile | undefined,
+    base: string,
+    context: DiffResolutionContext | undefined,
+): boolean {
+    if (!existing || !context || context.sessionUpdate !== "tool_call_update") {
+        return false;
+    }
+
+    if (!existing.toolCallId || existing.toolCallId !== context.toolCallId) {
+        return false;
+    }
+
+    if (!isRecord(context.meta) || !isRecord(context.meta.claudeCode)) {
+        return false;
+    }
+
+    const toolName = context.meta.claudeCode.toolName;
+    if (toolName !== "Edit") {
+        return false;
+    }
+
+    const oldSnippet = diff.oldText ?? "";
+    const newSnippet = diff.newText ?? "";
+    if (oldSnippet.length === 0 && newSnippet.length === 0) {
+        return false;
+    }
+
+    if (oldSnippet.length > 0 && base.includes(oldSnippet)) {
+        return false;
+    }
+
+    return newSnippet.length === 0 || base.includes(newSnippet);
+}
+
 function resolveDiffToFullTexts(
     diff: Diff,
     existing: AiTrackedFile | undefined,
     liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
     normalizedPath: string,
+    context?: DiffResolutionContext,
 ): Diff {
     // Nothing to splice for creates/deletes — the incoming texts already
     // describe the whole before/after state of the file.
@@ -4158,18 +4209,7 @@ function resolveDiffToFullTexts(
 
     const first = base.indexOf(oldSnippet);
     if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
-        // Claude's PostToolUseHook re-emits the same edit as hunks from the
-        // structuredPatch after the tool has already run. By that point the
-        // file (and our cumulative text) already reflect the change, so the
-        // old snippet is gone but the new one is present. Treating this
-        // re-emission as a fresh edit corrupts the tracked file; instead,
-        // collapse it into a no-op that preserves the existing state.
-        if (
-            existing &&
-            newSnippet.includes("\n") &&
-            base.includes(newSnippet) &&
-            !base.includes(oldSnippet)
-        ) {
+        if (existing && isClaudeEditReEmission(diff, existing, base, context)) {
             return {
                 ...diff,
                 oldText: getTrackedFileDiffBase(existing),
