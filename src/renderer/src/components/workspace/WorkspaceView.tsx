@@ -3409,8 +3409,11 @@ function FileTabView({
 
                             editor.onDidDispose(() => {
                                 clearScheduledEditorViewStateRestore();
-                                pendingEditorViewStateRef.current =
-                                    editor.saveViewState();
+                                // Do not call editor.saveViewState() here.
+                                // @monaco-editor/react disposes the model
+                                // before disposing the editor, so saveViewState
+                                // would return null and overwrite the valid
+                                // view state captured during unmount cleanup.
                                 flushScheduledEditorViewStatePersist();
                                 editorRef.current = null;
                                 gitGutterDecorationsRef.current = null;
