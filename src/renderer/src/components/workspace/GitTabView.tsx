@@ -35,6 +35,15 @@ import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitTab } from "@renderer/app/workspace/tree";
 import { GitAuthorAvatar, GitEmptyState } from "@renderer/components/git";
 
+import {
+    IdeActionButton,
+    IdeBarDotSeparator,
+    IdeBarHeader,
+    IdeBarLabel,
+    IdeBarSearchIcon,
+    IdeIconButton,
+} from "./ide-bar";
+
 const GRAPH_COLORS = [
     "var(--color-accent)",
     "#8db7ff",
@@ -389,6 +398,13 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         setSearchQuery(searchDraft);
     }, [searchDraft]);
 
+    const handleRefreshHistory = useCallback(() => {
+        if (!projectId) {
+            return;
+        }
+        void refreshHistory(projectId, worktreeId);
+    }, [projectId, refreshHistory, worktreeId]);
+
     const selectRelativeCommit = useCallback(
         (direction: "next" | "previous") => {
             if (history.length === 0) {
@@ -576,95 +592,126 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                 </div>
             ) : null}
 
-            <div className="border-b border-border px-4 py-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-1 items-center gap-2">
-                        <div
-                            className={[
-                                "project-switcher-search mb-0 flex-1",
-                                searchHasNoMatches
-                                    ? "border-[color-mix(in_srgb,var(--diff-remove)_45%,transparent)]"
-                                    : "",
-                            ].join(" ")}
+            <IdeBarHeader>
+                <IdeBarLabel>Git</IdeBarLabel>
+                <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-text-secondary">
+                    <span className="shrink-0">
+                        {history.length === 1
+                            ? "1 commit"
+                            : `${history.length} commits`}
+                    </span>
+                    {isHistoryLoading ? (
+                        <>
+                            <IdeBarDotSeparator />
+                            <span className="shrink-0">Loading...</span>
+                        </>
+                    ) : null}
+                </div>
+                <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    <IdeActionButton
+                        disabled={isHistoryLoading}
+                        onClick={handleRefreshHistory}
+                        title="Refresh history"
+                    >
+                        refresh
+                    </IdeActionButton>
+                </div>
+            </IdeBarHeader>
+
+            <div
+                className="shrink-0 px-2 py-1.5"
+                style={{
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                }}
+            >
+                <div className="flex w-full items-center gap-1.5">
+                    <div className="relative min-w-0 flex-1">
+                        <input
+                            aria-label="Search commits"
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            className="w-full min-w-0 rounded-[3px] bg-transparent pl-6 pr-6 text-[11px] text-text-primary placeholder:text-text-secondary focus:bg-[color-mix(in_srgb,var(--color-bg-primary)_70%,transparent)] focus:outline-none"
+                            onChange={(event) =>
+                                setSearchDraft(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    confirmSearch();
+                                }
+                            }}
+                            placeholder="Search commits..."
+                            ref={searchInputRef}
+                            spellCheck={false}
+                            style={{
+                                border: searchHasNoMatches
+                                    ? "1px solid color-mix(in srgb, var(--diff-remove) 45%, transparent)"
+                                    : "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
+                                fontFamily: "var(--font-mono)",
+                                height: 22,
+                                lineHeight: "20px",
+                            }}
+                            type="text"
+                            value={searchDraft}
+                        />
+                        <span
+                            aria-hidden="true"
+                            className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-text-secondary"
                         >
-                            <svg
-                                fill="none"
-                                height="12"
-                                style={{ opacity: 0.4, flexShrink: 0 }}
-                                viewBox="0 0 16 16"
-                                width="12"
-                            >
-                                <circle
-                                    cx="7"
-                                    cy="7"
-                                    r="5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                />
-                                <path
-                                    d="m13 13-2.5-2.5"
-                                    stroke="currentColor"
-                                    strokeLinecap="round"
-                                    strokeWidth="1.5"
-                                />
-                            </svg>
-                            <input
-                                autoCapitalize="off"
-                                autoCorrect="off"
-                                className="project-switcher-search-input"
-                                onChange={(event) =>
-                                    setSearchDraft(event.target.value)
-                                }
-                                onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                        event.preventDefault();
-                                        confirmSearch();
-                                    }
-                                }}
-                                placeholder="Search commits..."
-                                ref={searchInputRef}
-                                spellCheck={false}
-                                value={searchDraft}
-                            />
+                            <IdeBarSearchIcon />
+                        </span>
+                        {searchDraft.length > 0 ? (
                             <button
-                                className={[
-                                    "rounded px-1.5 py-0.5 text-[11px] transition-colors",
-                                    isCaseSensitive
-                                        ? "bg-[color-mix(in_srgb,var(--color-accent)_12%,var(--color-bg-elevated))] text-text-primary"
-                                        : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary",
-                                ].join(" ")}
-                                onClick={() =>
-                                    setIsCaseSensitive((current) => !current)
-                                }
+                                aria-label="Clear search"
+                                className="absolute right-1 top-1/2 -translate-y-1/2 rounded px-1 text-[10px] text-text-secondary transition-colors hover:text-text-primary"
+                                onClick={() => {
+                                    setSearchDraft("");
+                                    setSearchQuery("");
+                                }}
                                 type="button"
                             >
-                                Aa
+                                ×
                             </button>
-                        </div>
-
-                        <button
-                            className="ide-button px-2 py-1"
-                            disabled={matchedCommitShas.length === 0}
-                            onClick={() => selectSearchMatch("previous")}
-                            type="button"
-                        >
-                            {"<"}
-                        </button>
-                        <button
-                            className="ide-button px-2 py-1"
-                            disabled={matchedCommitShas.length === 0}
-                            onClick={() => selectSearchMatch("next")}
-                            type="button"
-                        >
-                            {">"}
-                        </button>
-                        <span className="min-w-12 text-right font-mono text-[11px] text-text-secondary">
-                            {selectedMatchIndex >= 0 &&
-                            matchedCommitShas.length > 0
-                                ? `${selectedMatchIndex + 1}/${matchedCommitShas.length}`
-                                : `0/${matchedCommitShas.length}`}
-                        </span>
+                        ) : null}
                     </div>
+                    <IdeActionButton
+                        active={isCaseSensitive}
+                        onClick={() =>
+                            setIsCaseSensitive((current) => !current)
+                        }
+                        title="Match case"
+                    >
+                        Aa
+                    </IdeActionButton>
+                    <IdeIconButton
+                        aria-label="Previous match"
+                        disabled={matchedCommitShas.length === 0}
+                        onClick={() => selectSearchMatch("previous")}
+                        title="Previous match"
+                    >
+                        {"<"}
+                    </IdeIconButton>
+                    <IdeIconButton
+                        aria-label="Next match"
+                        disabled={matchedCommitShas.length === 0}
+                        onClick={() => selectSearchMatch("next")}
+                        title="Next match"
+                    >
+                        {">"}
+                    </IdeIconButton>
+                    <span
+                        className="shrink-0 text-right text-[10.5px] text-text-secondary"
+                        style={{
+                            fontFamily: "var(--font-mono)",
+                            minWidth: 36,
+                        }}
+                    >
+                        {selectedMatchIndex >= 0 &&
+                        matchedCommitShas.length > 0
+                            ? `${selectedMatchIndex + 1}/${matchedCommitShas.length}`
+                            : `0/${matchedCommitShas.length}`}
+                    </span>
                 </div>
             </div>
 
@@ -672,8 +719,12 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                 <section className="min-h-0 min-w-0 flex-1 overflow-hidden">
                     <div className="shell-scrollbar h-full overflow-auto">
                         <div
-                            className="sticky top-0 z-10 grid border-b border-border bg-bg-primary px-3 py-2 text-[11px] text-text-secondary"
+                            className="sticky top-0 z-10 grid px-3 py-1.5"
                             style={{
+                                backgroundColor: "var(--color-bg-secondary)",
+                                borderBottom:
+                                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                                fontFamily: "var(--font-mono)",
                                 gridTemplateColumns: gitHistoryGridTemplate,
                                 minWidth: gitHistoryTableMinWidth,
                             }}
@@ -975,13 +1026,13 @@ function GitCommitDetailSidebar({
                         </div>
                     </div>
 
-                    <button
-                        className="rounded p-1 text-text-secondary transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                    <IdeIconButton
+                        aria-label="Clear selection"
                         onClick={onClearSelection}
-                        type="button"
+                        title="Close"
                     >
-                        x
-                    </button>
+                        ×
+                    </IdeIconButton>
                 </div>
 
                 <div className="space-y-2 text-[11px]">
@@ -1035,8 +1086,16 @@ function GitCommitDetailSidebar({
                 ) : null}
             </div>
 
-            <div className="border-b border-border px-5 py-3">
-                <div className="flex items-center justify-between gap-3 text-[11px] text-text-secondary">
+            <div
+                className="px-5 py-1.5"
+                style={{
+                    backgroundColor: "var(--color-bg-secondary)",
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    fontFamily: "var(--font-mono)",
+                }}
+            >
+                <div className="flex items-center justify-between gap-3 text-[10.5px] text-text-secondary">
                     {activeDetail ? (
                         <span className="flex items-center gap-1.5 truncate">
                             <span>
@@ -1058,7 +1117,7 @@ function GitCommitDetailSidebar({
                         </span>
                     ) : null}
                     <CopyableHash
-                        className="shrink-0 cursor-pointer rounded px-1 py-0.5 font-mono transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                        className="shrink-0 cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-bg-secondary hover:text-text-primary"
                         display={commit.shortSha}
                         sha={commit.sha}
                     />
@@ -1072,13 +1131,17 @@ function GitCommitDetailSidebar({
                     <>
                         {changedFiles.length > 0 ? (
                             <div className="mb-4 space-y-1">
-                                <div className="mb-2 flex items-center gap-2 text-[11px] text-text-secondary">
-                                    <span>
+                                <div
+                                    className="mb-2 flex items-center gap-2"
+                                    style={{ fontFamily: "var(--font-mono)" }}
+                                >
+                                    <IdeBarLabel>
                                         {changedFiles.length} Changed Files
-                                    </span>
+                                    </IdeBarLabel>
                                     {activeDetail &&
                                     activeDetail.insertions > 0 ? (
                                         <span
+                                            className="text-[10px]"
                                             style={{ color: "var(--diff-add)" }}
                                         >
                                             +{activeDetail.insertions}
@@ -1087,6 +1150,7 @@ function GitCommitDetailSidebar({
                                     {activeDetail &&
                                     activeDetail.deletions > 0 ? (
                                         <span
+                                            className="text-[10px]"
                                             style={{
                                                 color: "var(--diff-remove)",
                                             }}
@@ -1173,13 +1237,27 @@ function GitCommitDetailSidebar({
                             </div>
                         ) : null}
 
-                        <button
-                            className="ide-button w-full"
-                            onClick={onOpenCommit}
-                            type="button"
-                        >
-                            View Commit
-                        </button>
+                        <div className="flex justify-center">
+                            <button
+                                className="review-action-btn"
+                                onClick={onOpenCommit}
+                                style={{
+                                    background: "transparent",
+                                    border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                                    borderRadius: 3,
+                                    color: "var(--color-text-secondary)",
+                                    cursor: "pointer",
+                                    fontSize: "12px",
+                                    fontWeight: 500,
+                                    lineHeight: "24px",
+                                    padding: "0 10px",
+                                }}
+                                title="Open this commit in a new tab"
+                                type="button"
+                            >
+                                view commit
+                            </button>
+                        </div>
                     </>
                 )}
             </div>
@@ -1198,7 +1276,18 @@ function GitHistoryHeaderCell({
 }) {
     return (
         <div className="relative min-w-0 pr-3">
-            <span className="block truncate">{label}</span>
+            <span
+                className="block truncate"
+                style={{
+                    color: "var(--color-text-secondary)",
+                    fontSize: "10px",
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                }}
+            >
+                {label}
+            </span>
             {onResizePointerDown ? (
                 <div
                     aria-label={`Resize ${label} column`}

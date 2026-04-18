@@ -28,6 +28,14 @@ import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceChatHistoryTab } from "@renderer/app/workspace/tree";
 
+import {
+    IdeActionButton,
+    IdeBarDotSeparator,
+    IdeBarHeader,
+    IdeBarLabel,
+    IdeBarSearchIcon as SearchIcon,
+    IdeIconButton,
+} from "./ide-bar";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { PlanMessage } from "./chat/PlanMessage";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
@@ -1812,139 +1820,6 @@ const CARD_ACTION_CLASS_NAME =
     "app-no-drag rounded px-1 py-0 text-[8.5px] font-medium uppercase tracking-[0.06em] leading-[14px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50";
 const CARD_ACTION_DANGER_CLASS_NAME =
     "app-no-drag rounded px-1 py-0 text-[8.5px] font-medium uppercase tracking-[0.06em] leading-[14px] text-text-secondary transition-colors hover:bg-[color-mix(in_srgb,var(--diff-remove)_14%,transparent)] hover:text-[var(--diff-remove)] disabled:cursor-not-allowed disabled:opacity-50";
-
-function IdeBarHeader({ children }: { readonly children: ReactNode }) {
-    return (
-        <div
-            className="shrink-0 px-4 py-1.5"
-            style={{
-                backgroundColor: "var(--color-bg-secondary)",
-                borderBottom:
-                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                fontFamily: "var(--font-mono)",
-            }}
-        >
-            <div className="flex w-full items-center gap-3">{children}</div>
-        </div>
-    );
-}
-
-function IdeBarLabel({ children }: { readonly children: ReactNode }) {
-    return (
-        <span
-            className="shrink-0"
-            style={{
-                color: "var(--color-text-secondary)",
-                fontSize: "10px",
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-            }}
-        >
-            {children}
-        </span>
-    );
-}
-
-function IdeBarDotSeparator() {
-    return (
-        <span aria-hidden="true" className="shrink-0 text-text-secondary">
-            ·
-        </span>
-    );
-}
-
-function IdeIconButton({
-    children,
-    disabled,
-    onClick,
-    title,
-    ...ariaProps
-}: {
-    readonly children: ReactNode;
-    readonly disabled?: boolean;
-    readonly onClick: () => void;
-    readonly title?: string;
-    readonly "aria-label"?: string;
-}) {
-    return (
-        <button
-            aria-label={ariaProps["aria-label"]}
-            className="review-action-btn flex items-center justify-center"
-            disabled={disabled}
-            onClick={onClick}
-            style={{
-                background: "transparent",
-                border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                borderRadius: 3,
-                color: "var(--color-text-secondary)",
-                cursor: disabled ? "not-allowed" : "pointer",
-                height: 22,
-                opacity: disabled ? 0.4 : 1,
-                padding: "0 6px",
-            }}
-            title={title}
-            type="button"
-        >
-            {children}
-        </button>
-    );
-}
-
-function SearchIcon() {
-    return (
-        <svg
-            aria-hidden="true"
-            fill="none"
-            height="12"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
-            viewBox="0 0 24 24"
-            width="12"
-        >
-            <circle cx="11" cy="11" r="7" />
-            <line x1="21" x2="16.5" y1="21" y2="16.5" />
-        </svg>
-    );
-}
-
-function IdeActionButton({
-    children,
-    disabled,
-    onClick,
-    title,
-}: {
-    readonly children: ReactNode;
-    readonly disabled?: boolean;
-    readonly onClick: () => void;
-    readonly title?: string;
-}) {
-    return (
-        <button
-            className="review-action-btn"
-            disabled={disabled}
-            onClick={onClick}
-            style={{
-                background: "transparent",
-                border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                borderRadius: 3,
-                color: "var(--color-text-secondary)",
-                cursor: disabled ? "not-allowed" : "pointer",
-                fontSize: "10px",
-                fontWeight: 500,
-                lineHeight: "20px",
-                opacity: disabled ? 0.4 : 1,
-                padding: "0 8px",
-            }}
-            title={title}
-            type="button"
-        >
-            {children}
-        </button>
-    );
-}
 
 function clampSidebarWidth(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);

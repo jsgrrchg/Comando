@@ -17,6 +17,7 @@ import {
     GitEmptyState,
 } from "@renderer/components/git";
 import { MarkdownContent } from "./MarkdownContent";
+import { IdeActionButton } from "./ide-bar";
 
 const EMPTY_LOADING_SHAS: readonly string[] = [];
 
@@ -157,7 +158,7 @@ export function GitCommitTabView({
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-bg-primary">
-            <header className="border-b border-border px-5 py-4">
+            <header className="px-5 py-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2.5">
                         <GitAuthorAvatar
@@ -205,8 +206,7 @@ export function GitCommitTabView({
                         ) : null}
                     </div>
 
-                    <button
-                        className="ide-button shrink-0 px-2.5 py-1"
+                    <IdeActionButton
                         onClick={() => {
                             void openGitTab(projectId, worktreeId);
                             void selectCommit(
@@ -215,10 +215,10 @@ export function GitCommitTabView({
                                 worktreeId,
                             );
                         }}
-                        type="button"
+                        title="Show this commit in the Git graph"
                     >
-                        Show in Git Graph
-                    </button>
+                        show in git graph
+                    </IdeActionButton>
                 </div>
 
                 <div
@@ -252,17 +252,27 @@ export function GitCommitTabView({
                     </div>
                 ) : null}
 
-                <div
-                    className="mt-3 flex flex-wrap items-center gap-2 text-text-secondary"
-                    style={{ fontSize: metadataFontSize }}
-                >
+            </header>
+
+            <div
+                className="px-5 py-1.5"
+                style={{
+                    backgroundColor: "var(--color-bg-secondary)",
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    borderTop:
+                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    fontFamily: "var(--font-mono)",
+                }}
+            >
+                <div className="flex w-full flex-wrap items-center gap-3 text-[10.5px] text-text-secondary">
                     <CopyableHash
-                        className="rounded-md border border-border px-2 py-1 font-mono transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                        className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
                         display={detail.sha.slice(0, 8)}
                         sha={detail.sha}
                     />
                     <button
-                        className="rounded-md border border-border px-2 py-1 transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                        className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
                         onClick={() => void copyToClipboard(detail.authorEmail)}
                         type="button"
                     >
@@ -270,7 +280,7 @@ export function GitCommitTabView({
                     </button>
                     {remoteLink ? (
                         <button
-                            className="rounded-md border border-border px-2 py-1 transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                            className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
                             onClick={() =>
                                 window.open(remoteLink.url, "_blank")
                             }
@@ -279,33 +289,42 @@ export function GitCommitTabView({
                             {remoteLink.label}
                         </button>
                     ) : null}
-                    <span className="ml-auto flex items-center gap-1.5">
+                    <div className="ml-auto flex items-center gap-3">
                         {diffFiles.length > 0 ? (
-                            <button
-                                className="rounded-md border border-border px-2 py-1 transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                            <IdeActionButton
                                 onClick={handleToggleAllFiles}
-                                type="button"
+                                title={
+                                    allCollapsed
+                                        ? "Expand all files"
+                                        : "Collapse all files"
+                                }
                             >
-                                {allCollapsed ? "Expand all" : "Collapse all"}
-                            </button>
+                                {allCollapsed ? "expand all" : "collapse all"}
+                            </IdeActionButton>
                         ) : null}
-                        <span>
+                        <span className="shrink-0">
                             {detail.changedFileCount}{" "}
                             {detail.changedFileCount === 1 ? "file" : "files"}
                         </span>
                         {detail.insertions > 0 ? (
-                            <span style={{ color: "var(--diff-add)" }}>
+                            <span
+                                className="shrink-0"
+                                style={{ color: "var(--diff-add)" }}
+                            >
                                 +{detail.insertions}
                             </span>
                         ) : null}
                         {detail.deletions > 0 ? (
-                            <span style={{ color: "var(--diff-remove)" }}>
+                            <span
+                                className="shrink-0"
+                                style={{ color: "var(--diff-remove)" }}
+                            >
                                 -{detail.deletions}
                             </span>
                         ) : null}
-                    </span>
+                    </div>
                 </div>
-            </header>
+            </div>
 
             <section className="flex min-h-0 flex-1 px-3 py-3">
                 <GitDiffsView

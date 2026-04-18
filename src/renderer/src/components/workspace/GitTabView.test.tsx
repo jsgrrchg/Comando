@@ -155,7 +155,7 @@ describe("GitTabView", () => {
 
         expect(markup).not.toContain("Select a commit to inspect it.");
         expect(markup).not.toContain("Resize commit details sidebar");
-        expect(markup).not.toContain("View Commit");
+        expect(markup).not.toContain("view commit");
     });
 
     it("shows the detail panel when an active commit exists", () => {
@@ -171,7 +171,7 @@ describe("GitTabView", () => {
 
         expect(markup).toContain("Resize commit details sidebar");
         expect(markup).toContain("Add Ctrl+Tab pane tab navigation");
-        expect(markup).toContain("View Commit");
+        expect(markup).toContain("view commit");
     });
 
     it("marks commit files that can be opened as clickable", () => {
