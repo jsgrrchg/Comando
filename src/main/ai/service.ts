@@ -86,6 +86,7 @@ import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
 } from "./persistence";
+import { buildRuntimeSpawnEnv } from "./runtime-env";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     applyCodexAuthEnv,
@@ -2487,10 +2488,13 @@ export class AiService {
             return {
                 args: resolved.args,
                 command: resolved.command,
-                env: applyGeminiAuthEnv(
-                    process.env,
-                    settings,
-                    this.#secretStore,
+                env: buildRuntimeSpawnEnv(
+                    applyGeminiAuthEnv(
+                        process.env,
+                        settings,
+                        this.#secretStore,
+                    ),
+                    resolved.program,
                 ),
                 executable: resolved.program,
                 status: resolved.status,
@@ -2504,7 +2508,7 @@ export class AiService {
             return {
                 args: resolved.args,
                 command: resolved.command,
-                env: process.env,
+                env: buildRuntimeSpawnEnv(process.env, resolved.program),
                 executable: resolved.program,
                 status: resolved.status,
             };
