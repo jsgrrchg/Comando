@@ -183,8 +183,14 @@ type XtermSurfaceRuntime = {
 };
 
 type ComandoMonacoTheme = "comando-dark" | "comando-light";
+type SemanticHighlightingEditorOptions = {
+    readonly "semanticHighlighting.enabled": true | false | "configuredByTheme";
+};
 
 const EMPTY_TAB_IDS: readonly string[] = [];
+const semanticHighlightingEditorOptions: SemanticHighlightingEditorOptions = {
+    "semanticHighlighting.enabled": true,
+};
 
 function createReviewTabHandleKey(reviewTab: WorkspaceReviewTabHandle): string {
     return JSON.stringify([reviewTab.id, reviewTab.sessionId]);
@@ -3069,7 +3075,6 @@ function FileTabView({
                 enabled: editorSettings.minimapEnabled,
             },
             quickSuggestions: areSuggestionsEnabled,
-            "semanticHighlighting.enabled": true,
             snippetSuggestions: areSuggestionsEnabled ? "inline" : "none",
             suggest: {
                 showColors: areSuggestionsEnabled,
@@ -3080,6 +3085,7 @@ function FileTabView({
                 showWords: areSuggestionsEnabled,
             },
             suggestOnTriggerCharacters: areSuggestionsEnabled,
+            ...semanticHighlightingEditorOptions,
             wordBasedSuggestions: areSuggestionsEnabled
                 ? "matchingDocuments"
                 : "off",
@@ -3112,7 +3118,7 @@ function FileTabView({
             minimap: {
                 enabled: editorSettings.minimapEnabled,
             },
-            "semanticHighlighting.enabled": true,
+            ...semanticHighlightingEditorOptions,
         } as const;
 
         diffEditor.updateOptions(diffOptions);
@@ -3448,7 +3454,6 @@ function FileTabView({
                             padding: { top: 16, bottom: 16 },
                             quickSuggestions: areSuggestionsEnabled,
                             scrollBeyondLastLine: false,
-                            "semanticHighlighting.enabled": true,
                             snippetSuggestions: areSuggestionsEnabled
                                 ? "inline"
                                 : "none",
@@ -3462,6 +3467,7 @@ function FileTabView({
                                 showWords: areSuggestionsEnabled,
                             },
                             suggestOnTriggerCharacters: areSuggestionsEnabled,
+                            ...semanticHighlightingEditorOptions,
                             wordBasedSuggestions: areSuggestionsEnabled
                                 ? "matchingDocuments"
                                 : "off",

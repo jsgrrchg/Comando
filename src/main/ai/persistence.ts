@@ -1599,15 +1599,15 @@ function normalizeRuntimeId(
 }
 
 function normalizeHistoryLimit(value: number | undefined): number {
-    if (!Number.isFinite(value)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
         return 100;
     }
 
     return Math.max(1, Math.min(200, Math.trunc(value)));
 }
 
-function normalizeHistoryOffset(value: number): number {
-    if (!Number.isFinite(value)) {
+function normalizeHistoryOffset(value: number | undefined): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
         return 0;
     }
 

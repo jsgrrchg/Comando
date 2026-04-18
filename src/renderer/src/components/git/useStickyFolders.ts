@@ -59,7 +59,6 @@ export function useStickyFolders({
 
         readScale();
         // DOM measurement on mount — feeds sticky-folder Y offsets in a useMemo.
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setPaddingTop(parseFloat(getComputedStyle(container).paddingTop) || 0);
 
         const onScroll = () => {

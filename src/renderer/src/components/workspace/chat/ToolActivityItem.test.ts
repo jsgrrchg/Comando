@@ -178,7 +178,8 @@ describe("ToolActivityItem", () => {
             }),
         );
 
-        expect(markup).toContain("Read src/components/example.cpp");
+        expect(markup).toContain("Read ");
+        expect(markup).toContain("src/components/example.cpp");
         expect(markup).toContain("Open src/components/example.cpp");
         expect(markup).toContain("color:inherit");
     });

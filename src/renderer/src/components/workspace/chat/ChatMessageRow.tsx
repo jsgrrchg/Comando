@@ -2,7 +2,7 @@ import { Fragment, memo, useState, type ReactNode } from "react";
 
 import type { AiImageAttachment, AiSessionSnapshot } from "@shared/ipc";
 
-import type { ResolvedProjectFileReference } from "@renderer/app/workspace/tree";
+import type { ResolvedProjectFileReference } from "../projectFileReferences";
 
 import { MarkdownContent } from "../MarkdownContent";
 import { areMessagesEquivalent } from "./chatTimelineModel";

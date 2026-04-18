@@ -262,11 +262,6 @@ export function AIChatMentionPicker({
                         label = "@fetch";
                         color = "#10b981";
                         break;
-                    case "plan":
-                        icon = <PlanIcon />;
-                        label = "/plan";
-                        color = "var(--color-accent)";
-                        break;
                     case "file":
                         icon = (
                             <FileTypeIcon

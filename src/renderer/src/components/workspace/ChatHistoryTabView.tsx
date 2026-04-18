@@ -1568,18 +1568,25 @@ export function ChatHistoryTabLayout({
     );
 }
 
-const NOOP_OPEN_FILE = async (
-    _projectId: string,
-    _relativePath: string,
-    _worktreeId?: string | null,
-) => {};
-const NOOP_OPEN_IMAGE = async (_attachment: AiImageAttachment) => {};
-const NOOP_OPEN_FILE_REFERENCE = (_reference: ResolvedProjectFileReference) => {
-    void _reference;
+const NOOP_OPEN_FILE = (...args: [string, string, (string | null | undefined)?]) => {
+    void args;
+    return Promise.resolve();
+};
+const NOOP_OPEN_IMAGE = (...args: [AiImageAttachment]) => {
+    void args;
+    return Promise.resolve();
+};
+const NOOP_OPEN_FILE_REFERENCE = (
+    ...args: [ResolvedProjectFileReference]
+) => {
+    void args;
 };
 const NOOP_RESOLVE_FILE_REFERENCE = (
-    _reference: string,
-): ResolvedProjectFileReference | null => null;
+    ...args: [string]
+): ResolvedProjectFileReference | null => {
+    void args;
+    return null;
+};
 
 interface HistoryTimelineHandlers {
     readonly chatFontFamily?: string;

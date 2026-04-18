@@ -17,6 +17,9 @@ export const PERFORMANCE_BASELINE_THRESHOLDS = {
     },
     eventLoopLagMs: DEFAULT_EVENT_LOOP_WARN_MS,
     operations: {
+        "db.ai.deleteSession": 20,
+        "db.ai.listSessionHistory": 20,
+        "db.ai.loadSessionTranscriptPage": 20,
         "db.ai.loadSessionSnapshot": 20,
         "db.ai.saveSessionSnapshot": 25,
         "db.projects.listProjects": 20,

@@ -2578,6 +2578,9 @@ export class AiService {
             throw new Error(
                 stderrText ||
                     `Failed to complete ${getRuntimeDisplayName(runtimeId)} authentication.`,
+                {
+                    cause: error,
+                },
             );
         } finally {
             child.kill();

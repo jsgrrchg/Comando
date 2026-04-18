@@ -11,7 +11,7 @@ const mockGitStoreState = vi.hoisted(() => ({
             string,
             Record<string, unknown> | undefined
         >,
-        ensureCommitDetail: vi.fn(async () => null),
+        ensureCommitDetail: vi.fn(() => Promise.resolve(null)),
         errors: {} as Record<string, string | null | undefined>,
         historyByContext: {} as Record<
             string,
@@ -20,9 +20,9 @@ const mockGitStoreState = vi.hoisted(() => ({
         loadingCommitShas: {} as Record<string, readonly string[] | undefined>,
         loadingContexts: {} as Record<string, boolean | undefined>,
         loadingHistoryContexts: {} as Record<string, boolean | undefined>,
-        refreshHistory: vi.fn(async () => []),
-        refreshProject: vi.fn(async () => null),
-        selectCommit: vi.fn(async () => null),
+        refreshHistory: vi.fn(() => Promise.resolve([])),
+        refreshProject: vi.fn(() => Promise.resolve(null)),
+        selectCommit: vi.fn(() => Promise.resolve(null)),
         selectedCommitShas: {} as Record<string, string | null | undefined>,
         snapshots: {} as Record<string, unknown>,
     },

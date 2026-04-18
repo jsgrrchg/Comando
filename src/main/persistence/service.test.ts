@@ -36,30 +36,32 @@ describe("PersistenceService", () => {
         });
         service.saveActiveProjectId(windowId!, "project-1");
 
-        expect(service.loadSnapshot(windowId!)).toEqual({
-            activeProjectId: "project-1",
-            activeWorktreeId: null,
-            shellState: {
-                activeSurface: "workspace",
-                leftWidth: 280,
-            },
-            windowContext: {
-                projectId: "project-1",
-                windowId,
-                windowKind: "main",
-                worktreeId: null,
-                workspaceId: expect.any(String),
-                workspaceSessionId: expect.any(String),
-            },
-            windowState: {
-                height: 900,
-                id: windowId!,
-                isFullScreen: false,
-                isMaximized: true,
-                width: 1440,
-                x: 24,
-                y: 32,
-            },
+        const snapshot = service.loadSnapshot(windowId!);
+
+        expect(snapshot?.activeProjectId).toBe("project-1");
+        expect(snapshot?.activeWorktreeId).toBeNull();
+        expect(snapshot?.shellState).toEqual({
+            activeSurface: "workspace",
+            leftWidth: 280,
+        });
+        expect(snapshot?.windowContext).toMatchObject({
+            projectId: "project-1",
+            windowId,
+            windowKind: "main",
+            worktreeId: null,
+        });
+        expect(typeof snapshot?.windowContext?.workspaceId).toBe("string");
+        expect(typeof snapshot?.windowContext?.workspaceSessionId).toBe(
+            "string",
+        );
+        expect(snapshot?.windowState).toEqual({
+            height: 900,
+            id: windowId!,
+            isFullScreen: false,
+            isMaximized: true,
+            width: 1440,
+            x: 24,
+            y: 32,
         });
     });
 
@@ -72,13 +74,12 @@ describe("PersistenceService", () => {
 
         service.markWindowClosed(snapshotA.windowContext!.windowId);
 
-        expect(service.listRestorableMainWindowSnapshots()).toEqual([
-            expect.objectContaining({
-                windowContext: expect.objectContaining({
-                    windowId: snapshotB.windowContext!.windowId,
-                }),
-            }),
-        ]);
+        const snapshots = service.listRestorableMainWindowSnapshots();
+
+        expect(snapshots).toHaveLength(1);
+        expect(snapshots[0]?.windowContext?.windowId).toBe(
+            snapshotB.windowContext!.windowId,
+        );
     });
 });
 

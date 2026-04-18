@@ -608,7 +608,7 @@ function buildProjectSearchIndex(
             break;
         }
 
-        let entries: fs.Dirent[] = [];
+        let entries: fs.Dirent[];
         try {
             entries = fs.readdirSync(currentDirectory, {
                 withFileTypes: true,

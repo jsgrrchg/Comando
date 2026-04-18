@@ -765,7 +765,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
         [],
     );
 
-    const scheduleRestoreAttempt = useCallback(() => {
+    const scheduleRestoreAttempt = useCallback(function scheduleRestoreAttempt() {
         if (restoreAttemptFrameRef.current != null) {
             return;
         }

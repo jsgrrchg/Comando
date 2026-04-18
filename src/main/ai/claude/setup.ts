@@ -484,7 +484,9 @@ function validatedGatewayUrl(settings: ClaudeRuntimeSettings): string | null {
             throw error;
         }
 
-        throw new Error(INVALID_GATEWAY_URL_MESSAGE);
+        throw new Error(INVALID_GATEWAY_URL_MESSAGE, {
+            cause: error,
+        });
     }
 }
 

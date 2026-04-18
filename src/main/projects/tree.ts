@@ -100,7 +100,7 @@ export async function readProjectFile(options: {
         probeContent: isBinary ? "" : binaryProbe.toString("utf8"),
     });
 
-    let content = "";
+    let content: string;
     let imageDataBase64: string | null = null;
     let kind: ProjectFileDocument["kind"] = "text";
 

@@ -13,7 +13,7 @@ import onigWasmUrl from "vscode-oniguruma/release/onig.wasm?url";
 type MonacoNamespace = typeof import("monaco-editor");
 
 type TextMateGrammarModule = {
-    readonly default: readonly IRawGrammar[];
+    readonly default: readonly unknown[];
 };
 
 const TEXT_MATE_LANGUAGE_IDS = [
@@ -267,7 +267,7 @@ async function loadTextMateGrammarModule(
         const definition = TEXT_MATE_LANGUAGE_DEFINITIONS[languageId];
         const grammarModule = await definition.loadModule();
 
-        for (const grammar of grammarModule.default) {
+        for (const grammar of grammarModule.default as readonly IRawGrammar[]) {
             rawGrammarCache.set(grammar.scopeName, grammar);
         }
 

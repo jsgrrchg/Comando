@@ -119,7 +119,7 @@ function renderLayout(
             handleDelete: vi.fn(async () => {}),
             handleOpenInChat: vi.fn(async () => {}),
             handleRefresh: vi.fn(async () => {}),
-            handleRename: vi.fn(async (_session, _nextTitle: string) => {}),
+            handleRename: vi.fn(() => Promise.resolve()),
             isBusy: false,
             isLoadingSessions: false,
             loadSessionSnapshot: vi.fn(async () => {}),

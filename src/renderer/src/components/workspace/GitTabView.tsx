@@ -205,7 +205,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         }
         // DOM measurement: positions feed the SVG graph lines. Bail out when
         // unchanged so this doesn't cause cascading renders.
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setRowPositions((prev) => {
             if (prev.size === next.size) {
                 let same = true;

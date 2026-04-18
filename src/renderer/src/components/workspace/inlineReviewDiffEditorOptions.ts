@@ -10,6 +10,14 @@ interface BuildInlineReviewDiffEditorOptionsInput {
     readonly wordWrap: "off" | "on";
 }
 
+type SemanticHighlightingEditorOptions = {
+    readonly "semanticHighlighting.enabled": true | false | "configuredByTheme";
+};
+
+const semanticHighlightingOptions: SemanticHighlightingEditorOptions = {
+    "semanticHighlighting.enabled": true,
+};
+
 function getLineNumberDigits(lineCount: number): number {
     return Math.max(1, String(Math.max(1, lineCount)).length);
 }
@@ -73,7 +81,7 @@ export function buildInlineReviewDiffEditorOptions({
             verticalScrollbarSize: 6,
         },
         scrollBeyondLastLine: false,
-        "semanticHighlighting.enabled": true,
+        ...semanticHighlightingOptions,
         smoothScrolling: true,
         wordWrap,
     };

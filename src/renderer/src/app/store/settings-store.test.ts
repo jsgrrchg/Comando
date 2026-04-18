@@ -154,7 +154,10 @@ describe("settings-store", () => {
             throw new Error("Expected the settings listener to be registered.");
         }
 
-        settingsListener({
+        const registeredSettingsListener = settingsListener as (
+            payload: SettingsUpdatedEvent,
+        ) => void;
+        registeredSettingsListener({
             appearance: nextAppearance,
             editor: nextEditor,
         });

@@ -31,6 +31,25 @@ type MonarchLanguageModule = {
     readonly language: monaco.languages.IMonarchLanguage;
 };
 
+type MonacoTypeScriptApi = {
+    readonly javascriptDefaults: {
+        getCompilerOptions(): Record<string, unknown>;
+        setCompilerOptions(options: Record<string, unknown>): void;
+        setEagerModelSync(value: boolean): void;
+    };
+    readonly typescriptDefaults: {
+        getCompilerOptions(): Record<string, unknown>;
+        setCompilerOptions(options: Record<string, unknown>): void;
+        setEagerModelSync(value: boolean): void;
+    };
+    readonly JsxEmit: {
+        readonly ReactJSX: number;
+    };
+    readonly ScriptTarget: {
+        readonly Latest: number;
+    };
+};
+
 type TokenizedLanguageModule = {
     readonly conf?: monaco.languages.LanguageConfiguration;
     readonly tokensProvider: monaco.languages.TokensProvider;
@@ -643,21 +662,24 @@ if (!monacoGlobal.__comandoMonacoConfigured) {
     };
 
     loader.config({ monaco });
-    monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-        ...monaco.languages.typescript.typescriptDefaults.getCompilerOptions(),
+    const monacoTypeScript = monaco.languages
+        .typescript as unknown as MonacoTypeScriptApi;
+
+    monacoTypeScript.typescriptDefaults.setCompilerOptions({
+        ...monacoTypeScript.typescriptDefaults.getCompilerOptions(),
         allowNonTsExtensions: true,
-        jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
-        target: monaco.languages.typescript.ScriptTarget.Latest,
+        jsx: monacoTypeScript.JsxEmit.ReactJSX,
+        target: monacoTypeScript.ScriptTarget.Latest,
     });
-    monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
-        ...monaco.languages.typescript.javascriptDefaults.getCompilerOptions(),
+    monacoTypeScript.javascriptDefaults.setCompilerOptions({
+        ...monacoTypeScript.javascriptDefaults.getCompilerOptions(),
         allowJs: true,
         allowNonTsExtensions: true,
-        jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
-        target: monaco.languages.typescript.ScriptTarget.Latest,
+        jsx: monacoTypeScript.JsxEmit.ReactJSX,
+        target: monacoTypeScript.ScriptTarget.Latest,
     });
-    monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
-    monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true);
+    monacoTypeScript.typescriptDefaults.setEagerModelSync(true);
+    monacoTypeScript.javascriptDefaults.setEagerModelSync(true);
     configureMarkdownFenceLanguages();
     configureMonacoTextMateLanguages(monaco);
     monacoGlobal.__comandoMonacoConfigured = true;

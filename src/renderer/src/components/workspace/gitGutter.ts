@@ -35,14 +35,12 @@ function computeHunkMarkers(
     const markers: GitGutterMarker[] = [];
     const { lines } = hunk;
     let index = 0;
-    let nextOldLineNumber = hunk.oldStart;
     let nextNewLineNumber = hunk.newStart;
 
     while (index < lines.length) {
         const currentLine = lines[index];
 
         if (currentLine.type === "context") {
-            nextOldLineNumber += 1;
             nextNewLineNumber += 1;
             index += 1;
             continue;
@@ -62,7 +60,6 @@ function computeHunkMarkers(
 
         const removedStartIndex = index;
         while (index < lines.length && lines[index]?.type === "remove") {
-            nextOldLineNumber += 1;
             index += 1;
         }
         const removedCount = index - removedStartIndex;

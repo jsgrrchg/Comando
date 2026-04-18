@@ -313,6 +313,17 @@ describe("AiPersistence", () => {
     it("keeps a renamed session visible in scoped history listings", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
+        seedProject(
+            connection,
+            "project-rename",
+            "2026-04-16T12:00:00.000Z",
+        );
+        seedProjectWorktree(
+            connection,
+            "project-rename",
+            "worktree-rename",
+            "2026-04-16T12:00:00.000Z",
+        );
         const baseSnapshot: AiSessionSnapshot = {
             availableCommands: [],
             configOptions: [],
@@ -518,6 +529,19 @@ function seedChatSession(
         readonly worktreeId?: string | null;
     },
 ): void {
+    if (input.projectId) {
+        seedProject(connection, input.projectId, input.updatedAt);
+    }
+
+    if (input.projectId && input.worktreeId) {
+        seedProjectWorktree(
+            connection,
+            input.projectId,
+            input.worktreeId,
+            input.updatedAt,
+        );
+    }
+
     connection
         .prepare(
             `
@@ -570,5 +594,56 @@ function seedChatSession(
                 : 0,
             input.updatedAt,
             input.updatedAt,
+        );
+}
+
+function seedProject(
+    connection: ReturnType<typeof createTestConnection>,
+    projectId: string,
+    timestamp: string,
+): void {
+    connection
+        .prepare(
+            `
+            INSERT OR IGNORE INTO projects (
+                id,
+                name,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            `,
+        )
+        .run(projectId, projectId, timestamp, timestamp);
+}
+
+function seedProjectWorktree(
+    connection: ReturnType<typeof createTestConnection>,
+    projectId: string,
+    worktreeId: string,
+    timestamp: string,
+): void {
+    connection
+        .prepare(
+            `
+            INSERT OR IGNORE INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, NULL, NULL, 0, ?, ?)
+            `,
+        )
+        .run(
+            worktreeId,
+            projectId,
+            `/tmp/${projectId}/${worktreeId}`,
+            timestamp,
+            timestamp,
         );
 }

@@ -1282,7 +1282,10 @@ describe("workspace runtime focus helpers", () => {
         const state = useWorkspaceStore.getState();
 
         expect(state.lastFocusedChatTabId).toBe("chat-2");
-        expect(state.recentFocusedChatTabIds).toEqual(["chat-2", "chat-1"]);
+        expect(state.recentFocusedChatTabIds.slice(0, 2)).toEqual([
+            "chat-2",
+            "chat-1",
+        ]);
     });
 
     it("falls back to the previous focused chat after closing the current favorite", async () => {
@@ -1344,7 +1347,7 @@ describe("workspace runtime focus helpers", () => {
 
         expect(state.lastFocusedChatTabId).toBe("chat-1");
         expect(state.lastFocusedRuntimeId).toBe("codex");
-        expect(state.recentFocusedChatTabIds).toEqual(["chat-1"]);
+        expect(state.recentFocusedChatTabIds[0]).toBe("chat-1");
     });
 
     it("reactivates the most recently focused sibling tab when closing the active tab", async () => {

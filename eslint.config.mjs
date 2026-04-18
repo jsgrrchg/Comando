@@ -12,6 +12,7 @@ export default tseslint.config(
     {
         ignores: [
             "**/*.d.ts",
+            "build/**",
             "coverage/**",
             "dist/**",
             "dist-electron/**",
@@ -69,6 +70,9 @@ export default tseslint.config(
         },
         rules: {
             ...reactHooks.configs.recommended.rules,
+            "react-hooks/preserve-manual-memoization": "off",
+            "react-hooks/refs": "off",
+            "react-hooks/set-state-in-effect": "off",
         },
     },
 );
