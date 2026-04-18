@@ -532,6 +532,44 @@ describe("resolveDiffToFullTexts", () => {
         }
     });
 
+    it("treats Claude's post-hook re-emission of an already-applied edit as a no-op", () => {
+        // Simulates the Claude PostToolUseHook emitting a structuredPatch
+        // hunk AFTER the streaming tool_call already tracked the edit. By
+        // that point the existing tracked file already reflects the change,
+        // so the old snippet is no longer present in currentText but the new
+        // one is.
+        const originalFile =
+            "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\n";
+        const afterEdit =
+            "alpha\nbeta\ngamma\nepsilon\nzeta\neta\n";
+        const existing = createTrackedFile({
+            path: "foo.ts",
+            oldText: originalFile,
+            newText: afterEdit,
+            currentText: afterEdit,
+            diffBase: originalFile,
+        });
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        // Structured-patch style hunk with context lines, as Claude emits.
+        const hunkOld = "beta\ngamma\ndelta\nepsilon\nzeta\n";
+        const hunkNew = "beta\ngamma\nepsilon\nzeta\n";
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: hunkOld,
+                newText: hunkNew,
+            } as never,
+            existing,
+            liveSession,
+            "foo.ts",
+        );
+
+        expect(resolved.oldText).toBe(originalFile);
+        expect(resolved.newText).toBe(afterEdit);
+    });
+
     it("preserves the diff untouched for create (oldText null)", () => {
         const liveSession = { cwd: tempDir, projectRoot: tempDir };
 

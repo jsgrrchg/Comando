@@ -65,6 +65,7 @@ import type {
 import {
     computeDiffHunks,
     getTrackedFileCurrentText,
+    getTrackedFileDiffBase,
     replaceTrackedFile,
     resolveTrackedFileHunks,
     syncTrackedFile,
@@ -4157,6 +4158,24 @@ function resolveDiffToFullTexts(
 
     const first = base.indexOf(oldSnippet);
     if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
+        // Claude's PostToolUseHook re-emits the same edit as hunks from the
+        // structuredPatch after the tool has already run. By that point the
+        // file (and our cumulative text) already reflect the change, so the
+        // old snippet is gone but the new one is present. Treating this
+        // re-emission as a fresh edit corrupts the tracked file; instead,
+        // collapse it into a no-op that preserves the existing state.
+        if (
+            existing &&
+            newSnippet.includes("\n") &&
+            base.includes(newSnippet) &&
+            !base.includes(oldSnippet)
+        ) {
+            return {
+                ...diff,
+                oldText: getTrackedFileDiffBase(existing),
+                newText: getTrackedFileCurrentText(existing),
+            };
+        }
         return diff;
     }
 
