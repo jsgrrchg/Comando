@@ -74,6 +74,7 @@ function createBaseWindow(options: {
     readonly restoredState?: PersistedWindowState | null;
     readonly search?: string;
     readonly title: string;
+    readonly trafficLightPosition?: { x: number; y: number };
     readonly width: number;
 }): BrowserWindow {
     const isMac = process.platform === "darwin";
@@ -107,7 +108,9 @@ function createBaseWindow(options: {
         backgroundMaterial: isAcrylicMain ? "acrylic" : undefined,
         titleBarOverlay,
         titleBarStyle: isMac ? "hiddenInset" : isWindows ? "hidden" : "default",
-        trafficLightPosition: isMac ? { x: 18, y: 18 } : undefined,
+        trafficLightPosition: isMac
+            ? (options.trafficLightPosition ?? { x: 18, y: 18 })
+            : undefined,
         vibrancy: isMac ? "sidebar" : undefined,
         visualEffectState: isMac ? "active" : undefined,
         webPreferences: {
@@ -180,6 +183,7 @@ export function createSettingsWindow(
         minWidth: 780,
         search: `?${searchParams.toString()}`,
         title: `${appIdentity.name} Settings`,
+        trafficLightPosition: { x: 14, y: 14 },
         width: 980,
     });
 }

@@ -101,22 +101,19 @@ export function SegmentedControl<T extends string | number>({
                             }
                         }}
                         style={{
-                            padding: "3px 10px",
-                            borderRadius: 5,
-                            border: "none",
-                            cursor: "pointer",
-                            fontSize: 12,
-                            fontFamily: "inherit",
                             backgroundColor: active
-                                ? "var(--color-bg-secondary)"
+                                ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
                                 : "transparent",
+                            border: "none",
+                            borderRadius: 5,
                             color: active
                                 ? "var(--color-text-primary)"
                                 : "var(--color-text-secondary)",
-                            boxShadow: active
-                                ? "0 1px 3px rgba(0,0,0,0.1)"
-                                : "none",
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                            fontSize: 12,
                             fontWeight: active ? 500 : 400,
+                            padding: "3px 10px",
                             transition: "all 100ms",
                         }}
                     >
@@ -660,13 +657,14 @@ export function Row({
     return (
         <div
             style={{
-                display: "flex",
                 alignItems: "center",
-                justifyContent: "space-between",
-                padding: "11px 0",
-                borderBottom: "1px solid var(--color-border)",
-                opacity: disabled ? 0.45 : 1,
+                borderBottom:
+                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                display: "flex",
                 gap: 24,
+                justifyContent: "space-between",
+                opacity: disabled ? 0.45 : 1,
+                padding: "11px 0",
             }}
         >
             <div style={{ minWidth: 0 }}>
@@ -702,13 +700,14 @@ export function SectionLabel({ children }: { children: string }) {
     return (
         <div
             style={{
+                color: "var(--color-text-secondary)",
+                fontFamily: "var(--font-mono)",
                 fontSize: 10,
                 fontWeight: 600,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color: "var(--color-text-secondary)",
-                paddingTop: 20,
+                letterSpacing: "0.06em",
                 paddingBottom: 4,
+                paddingTop: 20,
+                textTransform: "uppercase",
             }}
         >
             {children}

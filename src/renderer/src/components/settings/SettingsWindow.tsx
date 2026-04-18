@@ -25,6 +25,14 @@ import {
 } from "@shared/typography";
 
 import {
+    IdeActionButton,
+    IdeBarDotSeparator,
+    IdeBarHeader,
+    IdeBarLabel,
+    IdeBarSearchIcon,
+} from "@renderer/components/workspace/ide-bar";
+
+import {
     NumberStepper,
     Row,
     SectionLabel,
@@ -94,32 +102,36 @@ export function SettingsWindow({
             <div
                 className="app-drag"
                 style={{
-                    display: "flex",
                     alignItems: "center",
-                    position: "relative",
-                    padding: "0 20px",
-                    height: 52,
-                    borderBottom: "1px solid var(--color-border)",
-                    flexShrink: 0,
                     backgroundColor: "var(--color-bg-secondary)",
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    display: "flex",
+                    flexShrink: 0,
+                    fontFamily: "var(--font-mono)",
+                    height: 42,
+                    padding: "0 20px",
+                    position: "relative",
                 }}
-                >
-                    <div style={{ width: 70, flexShrink: 0 }} />
-                    <span
-                        style={{
-                        position: "absolute",
-                        left: "50%",
-                        transform: "translateX(-50%)",
-                        fontSize: 13,
+            >
+                <div style={{ width: 70, flexShrink: 0 }} />
+                <span
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: 10,
                         fontWeight: 600,
-                        color: "var(--color-text-primary)",
+                        left: "50%",
+                        letterSpacing: "0.06em",
                         pointerEvents: "none",
+                        position: "absolute",
+                        textTransform: "uppercase",
+                        transform: "translateX(-50%)",
                         whiteSpace: "nowrap",
                     }}
-                    >
-                        Settings
-                    </span>
-                </div>
+                >
+                    Settings
+                </span>
+            </div>
 
             {/* Body */}
             <div
@@ -133,66 +145,84 @@ export function SettingsWindow({
                 {/* Sidebar */}
                 <div
                     style={{
-                        width: 220,
-                        flexShrink: 0,
-                        borderRight: "1px solid var(--color-border)",
+                        backgroundColor: "var(--color-bg-secondary)",
+                        borderRight:
+                            "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                         display: "flex",
                         flexDirection: "column",
-                        backgroundColor: "var(--color-bg-secondary)",
+                        flexShrink: 0,
                         overflow: "hidden",
+                        width: 220,
                     }}
                 >
                     <div style={{ padding: "10px 10px 6px" }}>
                         <div
-                            style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 6,
-                                backgroundColor: "var(--color-bg-primary)",
-                                border: "1px solid var(--color-border)",
-                                borderRadius: 7,
-                                padding: "5px 10px",
-                            }}
+                            className="app-no-drag"
+                            style={{ position: "relative", width: "100%" }}
                         >
-                            <svg
-                                width="12"
-                                height="12"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                style={{ opacity: 0.4, flexShrink: 0 }}
-                            >
-                                <circle
-                                    cx="7"
-                                    cy="7"
-                                    r="5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                />
-                                <path
-                                    d="m13 13-2.5-2.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                />
-                            </svg>
                             <input
+                                aria-label="Search settings"
                                 autoCapitalize="off"
                                 autoCorrect="off"
-                                value={search}
                                 onChange={(e) => setSearch(e.target.value)}
-                                placeholder="Search settings…"
-                                className="app-no-drag"
+                                onKeyDown={(e) => {
+                                    if (e.key === "Escape") {
+                                        e.preventDefault();
+                                        setSearch("");
+                                    }
+                                }}
+                                placeholder="Search settings..."
                                 spellCheck={false}
                                 style={{
-                                    flex: 1,
-                                    border: "none",
-                                    background: "transparent",
-                                    fontSize: 12,
+                                    backgroundColor: "transparent",
+                                    border: "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
+                                    borderRadius: 3,
                                     color: "var(--color-text-primary)",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: 11,
+                                    height: 22,
+                                    lineHeight: "20px",
                                     outline: "none",
-                                    fontFamily: "inherit",
+                                    padding: "0 22px 0 22px",
+                                    width: "100%",
                                 }}
+                                type="text"
+                                value={search}
                             />
+                            <span
+                                aria-hidden="true"
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    left: 6,
+                                    pointerEvents: "none",
+                                    position: "absolute",
+                                    top: "50%",
+                                    transform: "translateY(-50%)",
+                                }}
+                            >
+                                <IdeBarSearchIcon />
+                            </span>
+                            {search.length > 0 ? (
+                                <button
+                                    aria-label="Clear search"
+                                    onClick={() => setSearch("")}
+                                    style={{
+                                        background: "transparent",
+                                        border: "none",
+                                        color: "var(--color-text-secondary)",
+                                        cursor: "pointer",
+                                        fontSize: 10,
+                                        padding: "0 4px",
+                                        position: "absolute",
+                                        right: 2,
+                                        top: "50%",
+                                        transform: "translateY(-50%)",
+                                    }}
+                                    type="button"
+                                >
+                                    ×
+                                </button>
+                            ) : null}
                         </div>
                     </div>
 
@@ -207,39 +237,42 @@ export function SettingsWindow({
                             const isActive = cat.id === active;
                             return (
                                 <button
+                                    className="app-no-drag"
                                     key={cat.id}
                                     onClick={() => setActive(cat.id)}
-                                    className="app-no-drag"
-                                    style={{
-                                        width: "100%",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: 8,
-                                        padding: "6px 10px",
-                                        borderRadius: 6,
-                                        border: "none",
-                                        cursor: "pointer",
-                                        fontSize: 13,
-                                        fontFamily: "inherit",
-                                        textAlign: "left",
-                                        backgroundColor: isActive
-                                            ? "color-mix(in srgb, var(--color-accent) 14%, transparent)"
-                                            : "transparent",
-                                        color: isActive
-                                            ? "var(--color-accent)"
-                                            : "var(--color-text-secondary)",
-                                        fontWeight: isActive ? 500 : 400,
-                                        marginBottom: 1,
-                                    }}
                                     onMouseEnter={(e) => {
                                         if (!isActive)
                                             e.currentTarget.style.backgroundColor =
-                                                "var(--color-bg-tertiary)";
+                                                "color-mix(in srgb, var(--color-border) 25%, transparent)";
                                     }}
                                     onMouseLeave={(e) => {
                                         if (!isActive)
                                             e.currentTarget.style.backgroundColor =
                                                 "transparent";
+                                    }}
+                                    style={{
+                                        alignItems: "center",
+                                        backgroundColor: isActive
+                                            ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
+                                            : "transparent",
+                                        border: isActive
+                                            ? "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)"
+                                            : "1px solid transparent",
+                                        borderRadius: 3,
+                                        color: isActive
+                                            ? "var(--color-text-primary)"
+                                            : "var(--color-text-secondary)",
+                                        cursor: "pointer",
+                                        display: "flex",
+                                        fontFamily: "var(--font-mono)",
+                                        fontSize: 11,
+                                        fontWeight: 500,
+                                        gap: 8,
+                                        marginBottom: 2,
+                                        padding: "4px 8px",
+                                        textAlign: "left",
+                                        textTransform: "lowercase",
+                                        width: "100%",
                                     }}
                                 >
                                     {cat.label}
@@ -251,59 +284,60 @@ export function SettingsWindow({
 
                 {/* Content */}
                 <div
-                    className="shell-scrollbar"
                     style={{
+                        display: "flex",
                         flex: 1,
-                        overflowY: "auto",
-                        padding: "0 48px 48px",
+                        flexDirection: "column",
+                        minHeight: 0,
+                        minWidth: 0,
                     }}
                 >
-                    <div style={{ maxWidth: 600 }}>
-                        <div
+                    <IdeBarHeader>
+                        <IdeBarLabel>{activeInfo.label}</IdeBarLabel>
+                        <IdeBarDotSeparator />
+                        <span
                             style={{
-                                padding: "24px 0 12px",
-                                marginBottom: 4,
+                                color: "var(--color-text-secondary)",
+                                fontSize: "10.5px",
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
                             }}
                         >
-                            <h2
-                                style={{
-                                    fontSize: 18,
-                                    fontWeight: 600,
-                                    color: "var(--color-text-primary)",
-                                    margin: 0,
-                                    lineHeight: 1.2,
-                                }}
-                            >
-                                {activeInfo.label}
-                            </h2>
-                            <p
-                                style={{
-                                    fontSize: 12,
-                                    color: "var(--color-text-secondary)",
-                                    margin: "4px 0 0",
-                                    fontFamily: "monospace",
-                                }}
-                            >
-                                {CATEGORY_DESCRIPTIONS[active]}
-                            </p>
-                        </div>
+                            {CATEGORY_DESCRIPTIONS[active]}
+                        </span>
+                    </IdeBarHeader>
 
-                        {active === "appearance" && (
-                            <AppearanceContent state={appAppearance} />
-                        )}
-                        {active === "editor" && (
-                            <EditorContent state={appEditor} />
-                        )}
-                        {active === "ai" && <AiChatContent state={aiChat} />}
-                        {active === "shortcuts" && (
-                            <ShortcutsContent shortcuts={shortcuts} />
-                        )}
-                        {active === "runtimes" && (
-                            <RuntimesContent
-                                runtimes={runtimes}
-                                onAction={onRuntimeAction}
-                            />
-                        )}
+                    <div
+                        className="shell-scrollbar"
+                        style={{
+                            flex: 1,
+                            minHeight: 0,
+                            overflowY: "auto",
+                            padding: "8px 48px 48px",
+                        }}
+                    >
+                        <div style={{ maxWidth: 600 }}>
+                            {active === "appearance" && (
+                                <AppearanceContent state={appAppearance} />
+                            )}
+                            {active === "editor" && (
+                                <EditorContent state={appEditor} />
+                            )}
+                            {active === "ai" && (
+                                <AiChatContent state={aiChat} />
+                            )}
+                            {active === "shortcuts" && (
+                                <ShortcutsContent shortcuts={shortcuts} />
+                            )}
+                            {active === "runtimes" && (
+                                <RuntimesContent
+                                    runtimes={runtimes}
+                                    onAction={onRuntimeAction}
+                                />
+                            )}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -620,16 +654,16 @@ function ShortcutsContent({
                             control={
                                 <kbd
                                     style={{
-                                        display: "inline-block",
-                                        padding: "3px 8px",
-                                        fontSize: 11,
-                                        fontFamily: "inherit",
-                                        fontWeight: 500,
-                                        borderRadius: 6,
-                                        border: "1px solid var(--color-border)",
                                         backgroundColor:
                                             "var(--color-bg-secondary)",
+                                        border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                                        borderRadius: 3,
                                         color: "var(--color-text-primary)",
+                                        display: "inline-block",
+                                        fontFamily: "var(--font-mono)",
+                                        fontSize: 11,
+                                        fontWeight: 500,
+                                        padding: "2px 8px",
                                         whiteSpace: "nowrap",
                                     }}
                                 >
@@ -692,31 +726,32 @@ function RuntimeCard({
     return (
         <div
             style={{
+                borderBottom:
+                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                 padding: "14px 0",
-                borderBottom: "1px solid var(--color-border)",
             }}
         >
             <div
                 style={{
-                    display: "flex",
                     alignItems: "center",
-                    justifyContent: "space-between",
+                    display: "flex",
                     gap: 12,
+                    justifyContent: "space-between",
                 }}
             >
                 <div style={{ minWidth: 0 }}>
                     <div
                         style={{
-                            display: "flex",
                             alignItems: "center",
+                            display: "flex",
                             gap: 8,
                         }}
                     >
                         <span
                             style={{
+                                color: "var(--color-text-primary)",
                                 fontSize: 13,
                                 fontWeight: 500,
-                                color: "var(--color-text-primary)",
                             }}
                         >
                             {runtime.name}
@@ -724,15 +759,16 @@ function RuntimeCard({
                         {runtime.status && (
                             <span
                                 style={{
-                                    fontSize: 10,
-                                    fontWeight: 600,
-                                    letterSpacing: "0.04em",
-                                    textTransform: "uppercase",
-                                    padding: "2px 6px",
-                                    borderRadius: 4,
                                     backgroundColor:
                                         "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+                                    borderRadius: 4,
                                     color: "var(--color-accent)",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    letterSpacing: "0.06em",
+                                    padding: "2px 6px",
+                                    textTransform: "uppercase",
                                 }}
                             >
                                 {runtime.status}
@@ -742,10 +778,10 @@ function RuntimeCard({
                     {runtime.description && (
                         <div
                             style={{
-                                fontSize: 11,
                                 color: "var(--color-text-secondary)",
-                                marginTop: 2,
+                                fontSize: 11,
                                 lineHeight: 1.4,
+                                marginTop: 2,
                             }}
                         >
                             {runtime.description}
@@ -757,14 +793,14 @@ function RuntimeCard({
                     <div
                         style={{
                             display: "flex",
-                            gap: 6,
                             flexShrink: 0,
+                            gap: 6,
                         }}
                     >
                         {runtime.actions.map((action) => (
                             <RuntimeActionBtn
-                                key={action.id}
                                 action={action}
+                                key={action.id}
                                 onClick={() =>
                                     onAction?.(runtime.id, action.id)
                                 }
@@ -777,15 +813,15 @@ function RuntimeCard({
             {runtime.details && (
                 <div
                     style={{
-                        fontSize: 11,
-                        color: "var(--color-text-secondary)",
-                        marginTop: 6,
-                        fontFamily: "monospace",
-                        lineHeight: 1.5,
-                        padding: "6px 8px",
                         backgroundColor: "var(--color-bg-secondary)",
+                        border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                         borderRadius: 6,
-                        border: "1px solid var(--color-border)",
+                        color: "var(--color-text-secondary)",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 11,
+                        lineHeight: 1.5,
+                        marginTop: 6,
+                        padding: "6px 8px",
                     }}
                 >
                     {runtime.details}
@@ -805,38 +841,39 @@ function RuntimeActionBtn({
     const isPrimary = action.tone === "primary";
     const isDanger = action.tone === "danger";
 
+    if (isDanger) {
+        return (
+            <button
+                disabled={action.disabled}
+                onClick={onClick}
+                style={{
+                    background: "transparent",
+                    border: "1px solid color-mix(in srgb, var(--diff-remove) 60%, transparent)",
+                    borderRadius: 3,
+                    color: "var(--diff-remove)",
+                    cursor: action.disabled ? "not-allowed" : "pointer",
+                    fontSize: 10,
+                    fontWeight: 500,
+                    lineHeight: "20px",
+                    opacity: action.disabled ? 0.4 : 1,
+                    padding: "0 8px",
+                }}
+                title={action.hint}
+                type="button"
+            >
+                {action.label.toLowerCase()}
+            </button>
+        );
+    }
+
     return (
-        <button
-            type="button"
+        <IdeActionButton
+            active={isPrimary}
             disabled={action.disabled}
             onClick={onClick}
             title={action.hint}
-            style={{
-                borderRadius: 6,
-                border: isPrimary
-                    ? "none"
-                    : isDanger
-                      ? "1px solid color-mix(in srgb, var(--color-danger, #e5484d) 35%, var(--color-border))"
-                      : "1px solid var(--color-border)",
-                backgroundColor: isPrimary
-                    ? "var(--color-accent)"
-                    : isDanger
-                      ? "color-mix(in srgb, var(--color-danger, #e5484d) 12%, transparent)"
-                      : "var(--color-bg-tertiary)",
-                color: isPrimary
-                    ? "#fff"
-                    : isDanger
-                      ? "var(--color-danger, #e5484d)"
-                      : "var(--color-text-primary)",
-                padding: "4px 10px",
-                fontSize: 12,
-                fontFamily: "inherit",
-                cursor: action.disabled ? "not-allowed" : "pointer",
-                opacity: action.disabled ? 0.5 : 1,
-                fontWeight: isPrimary ? 500 : isDanger ? 500 : 400,
-            }}
         >
-            {action.label}
-        </button>
+            {action.label.toLowerCase()}
+        </IdeActionButton>
     );
 }
