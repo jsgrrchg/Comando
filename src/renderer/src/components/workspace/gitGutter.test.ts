@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { GitDiffHunk, GitFileDiff } from "@shared/ipc";
 
-import { computeGitGutterMarkers } from "./gitGutter";
+import {
+    buildGitGutterDecorations,
+    computeGitGutterMarkers,
+    getGitGutterLineNumbersMinChars,
+} from "./gitGutter";
 
 function createDiff(
     hunks: readonly GitDiffHunk[],
@@ -151,5 +155,52 @@ describe("computeGitGutterMarkers", () => {
         expect(computeGitGutterMarkers(diff, 13)).toEqual([
             { lineNumber: 13, tone: "delete-bottom" },
         ]);
+    });
+});
+
+describe("buildGitGutterDecorations", () => {
+    it("renders git markers in the dedicated line decorations lane", () => {
+        expect(
+            buildGitGutterDecorations([
+                { lineNumber: 8, tone: "modify" },
+                { lineNumber: 13, tone: "delete-bottom" },
+            ]),
+        ).toEqual([
+            {
+                options: {
+                    isWholeLine: true,
+                    lineNumberClassName:
+                        "git-gutter-line-number git-gutter-line-number--modify",
+                },
+                range: {
+                    endColumn: 1,
+                    endLineNumber: 8,
+                    startColumn: 1,
+                    startLineNumber: 8,
+                },
+            },
+            {
+                options: {
+                    isWholeLine: true,
+                    lineNumberClassName:
+                        "git-gutter-line-number git-gutter-line-number--delete-bottom",
+                },
+                range: {
+                    endColumn: 1,
+                    endLineNumber: 13,
+                    startColumn: 1,
+                    startLineNumber: 13,
+                },
+            },
+        ]);
+    });
+});
+
+describe("getGitGutterLineNumbersMinChars", () => {
+    it("reserves one extra digit worth of space for the git marker gap", () => {
+        expect(getGitGutterLineNumbersMinChars(9)).toBe(3);
+        expect(getGitGutterLineNumbersMinChars(87)).toBe(3);
+        expect(getGitGutterLineNumbersMinChars(120)).toBe(4);
+        expect(getGitGutterLineNumbersMinChars(2048)).toBe(5);
     });
 });

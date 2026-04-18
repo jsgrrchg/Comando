@@ -1,3 +1,5 @@
+import type { editor as MonacoEditor } from "monaco-editor";
+
 import type { GitDiffHunk, GitFileDiff } from "@shared/ipc";
 
 export type GitGutterMarkerTone =
@@ -26,6 +28,32 @@ export function computeGitGutterMarkers(
     }
 
     return dedupeMarkers(markers);
+}
+
+export function getGitGutterLineNumbersMinChars(lineCount: number): number {
+    const digits = String(Math.max(1, lineCount)).length;
+
+    return Math.max(3, digits + 1);
+}
+
+export function buildGitGutterDecorations(
+    markers: readonly GitGutterMarker[],
+): MonacoEditor.IModelDeltaDecoration[] {
+    return markers.map((marker) => ({
+        options: {
+            isWholeLine: true,
+            lineNumberClassName: [
+                "git-gutter-line-number",
+                `git-gutter-line-number--${marker.tone}`,
+            ].join(" "),
+        },
+        range: {
+            endColumn: 1,
+            endLineNumber: marker.lineNumber,
+            startColumn: 1,
+            startLineNumber: marker.lineNumber,
+        },
+    }));
 }
 
 function computeHunkMarkers(

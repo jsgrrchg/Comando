@@ -86,8 +86,9 @@ import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
 import {
+    buildGitGutterDecorations,
     computeGitGutterMarkers,
-    type GitGutterMarker,
+    getGitGutterLineNumbersMinChars,
 } from "@renderer/components/workspace/gitGutter";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
@@ -2442,6 +2443,10 @@ function FileTabView({
     const [gitGutterDiff, setGitGutterDiff] = useState<GitFileDiff | null>(
         null,
     );
+    const gitGutterLineNumbersMinChars = useMemo(
+        () => getGitGutterLineNumbersMinChars(countTextLines(tab.draftContent)),
+        [tab.draftContent],
+    );
     const canShowInlineReview = isInlineReviewSupported(trackedFile);
     const reviewSignature = trackedFile
         ? `${trackedFile.identityKey}:${trackedFile.hunks.map((hunk) => hunk.id).join(",")}`
@@ -3445,7 +3450,9 @@ function FileTabView({
                             glyphMargin: false,
                             lineHeight: editorLineHeightPx,
                             lineDecorationsWidth: 0,
-                            lineNumbersMinChars: 3,
+                            lineNumbersMinChars: gitGutterDiff
+                                ? gitGutterLineNumbersMinChars
+                                : 3,
                             minimap: {
                                 enabled: editorSettings.minimapEnabled,
                             },
@@ -3695,23 +3702,6 @@ function FilePathBar({
             ) : null}
         </div>
     );
-}
-
-function buildGitGutterDecorations(
-    markers: readonly GitGutterMarker[],
-): MonacoEditor.IModelDeltaDecoration[] {
-    return markers.map((marker) => ({
-        options: {
-            isWholeLine: true,
-            lineNumberClassName: `git-gutter-line-number git-gutter-line-number--${marker.tone}`,
-        },
-        range: {
-            endColumn: 1,
-            endLineNumber: marker.lineNumber,
-            startColumn: 1,
-            startLineNumber: marker.lineNumber,
-        },
-    }));
 }
 
 function FileSyncNotice({
