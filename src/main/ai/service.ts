@@ -184,6 +184,7 @@ interface LiveAcpSession {
     snapshot: AiSessionSnapshot;
     lastBroadcastSnapshot: AiSessionSnapshot | null;
     stderrChunks: string[];
+    stderrHandler: ((chunk: Buffer | string) => void) | null;
 }
 
 interface ResolvedAcpRuntime {
@@ -1304,16 +1305,19 @@ export class AiService {
                 worktreeId: input.worktreeId ?? null,
             },
             stderrChunks: [],
+            stderrHandler: null,
         } satisfies LiveAcpSession);
 
-        child.stderr.on("data", (chunk: Buffer | string) => {
+        const stderrHandler = (chunk: Buffer | string) => {
             const text =
                 typeof chunk === "string" ? chunk : chunk.toString("utf8");
             liveSession.stderrChunks.push(text);
             if (liveSession.stderrChunks.length > 20) {
                 liveSession.stderrChunks.shift();
             }
-        });
+        };
+        liveSession.stderrHandler = stderrHandler;
+        child.stderr.on("data", stderrHandler);
         child.on("exit", (code, signal) => {
             this.#handleProcessExit(input.sessionId, code, signal);
         });
@@ -1732,6 +1736,7 @@ export class AiService {
             runtimeId: snapshot.runtimeId,
             snapshot,
             stderrChunks: [],
+            stderrHandler: null,
         };
     }
 
@@ -2379,6 +2384,7 @@ export class AiService {
         }
 
         this.#sessions.delete(sessionId);
+        this.#detachChildStreams(liveSession);
         if (liveSession.closing) {
             return;
         }
@@ -2409,8 +2415,20 @@ export class AiService {
             broadcast: false,
         });
         this.#resolvePendingPermission(liveSession, null);
+        this.#detachChildStreams(liveSession);
         liveSession.child.kill();
+        liveSession.child.stdin?.destroy();
+        liveSession.child.stdout?.destroy();
+        liveSession.child.stderr?.destroy();
         terminalOutputBuffers.clear();
+    }
+
+    #detachChildStreams(liveSession: LiveAcpSession): void {
+        const handler = liveSession.stderrHandler;
+        if (handler) {
+            liveSession.child.stderr?.off("data", handler);
+            liveSession.stderrHandler = null;
+        }
     }
 
     #resolveRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
@@ -2556,14 +2574,15 @@ export class AiService {
             },
         );
         const stderrChunks: string[] = [];
-        child.stderr.on("data", (chunk: Buffer | string) => {
+        const stderrHandler = (chunk: Buffer | string) => {
             const text =
                 typeof chunk === "string" ? chunk : chunk.toString("utf8");
             stderrChunks.push(text);
             if (stderrChunks.length > 20) {
                 stderrChunks.shift();
             }
-        });
+        };
+        child.stderr.on("data", stderrHandler);
 
         const client: Client = {
             readTextFile: () => {
@@ -2602,7 +2621,11 @@ export class AiService {
                 },
             );
         } finally {
+            child.stderr?.off("data", stderrHandler);
             child.kill();
+            child.stdin?.destroy();
+            child.stdout?.destroy();
+            child.stderr?.destroy();
         }
     }
 

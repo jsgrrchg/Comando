@@ -403,7 +403,7 @@ export const ChatTabView = memo(function ChatTabView({
         useState(false);
     const [shouldClearGoogleApiKey, setShouldClearGoogleApiKey] =
         useState(false);
-    const [streamStartTime, setStreamStartTime] = useState<number | null>(null);
+    const streamStartTimeRef = useRef<number | null>(null);
     const [elapsed, setElapsed] = useState("");
     const [composerError, setComposerError] = useState<string | null>(null);
     const sessionTab = useMemo(
@@ -630,25 +630,26 @@ export const ChatTabView = memo(function ChatTabView({
         pendingReviewCount > 0;
 
     useEffect(() => {
-        if (isStreaming) {
-            if (streamStartTime === null) setStreamStartTime(Date.now());
-            const interval = window.setInterval(() => {
-                const ms = Date.now() - (streamStartTime ?? Date.now());
-                const totalSec = Math.floor(ms / 1000);
-                const min = Math.floor(totalSec / 60);
-                const sec = totalSec % 60;
-                setElapsed(
-                    min > 0
-                        ? `${min}m ${String(sec).padStart(2, "0")}s`
-                        : `${sec}s`,
-                );
-            }, 500);
-            return () => window.clearInterval(interval);
+        if (!isStreaming) {
+            streamStartTimeRef.current = null;
+            setElapsed("");
+            return undefined;
         }
-        setStreamStartTime(null);
-        setElapsed("");
-        return undefined;
-    }, [isStreaming, streamStartTime]);
+        streamStartTimeRef.current = Date.now();
+        const interval = window.setInterval(() => {
+            const startedAt = streamStartTimeRef.current;
+            if (startedAt === null) return;
+            const totalSec = Math.floor((Date.now() - startedAt) / 1000);
+            const min = Math.floor(totalSec / 60);
+            const sec = totalSec % 60;
+            setElapsed(
+                min > 0
+                    ? `${min}m ${String(sec).padStart(2, "0")}s`
+                    : `${sec}s`,
+            );
+        }, 500);
+        return () => window.clearInterval(interval);
+    }, [isStreaming]);
 
     const timelineModel = useMemo(() => {
         const previousTimelineModel =
@@ -1211,6 +1212,7 @@ export const ChatTabView = memo(function ChatTabView({
     const pendingProjectSearchResolversRef = useRef<
         Array<(entries: readonly ProjectTreeNode[]) => void>
     >([]);
+    const projectSearchAbortRef = useRef<AbortController | null>(null);
 
     useEffect(() => {
         return () => {
@@ -1218,6 +1220,9 @@ export const ChatTabView = memo(function ChatTabView({
                 window.clearTimeout(projectSearchTimeoutRef.current);
                 projectSearchTimeoutRef.current = null;
             }
+
+            projectSearchAbortRef.current?.abort();
+            projectSearchAbortRef.current = null;
 
             const pendingResolversRef = pendingProjectSearchResolversRef;
             const pendingResolvers = pendingResolversRef.current.splice(0);
@@ -1247,6 +1252,8 @@ export const ChatTabView = memo(function ChatTabView({
                     const pendingResolvers =
                         pendingProjectSearchResolversRef.current.splice(0);
                     const searchQuery = pendingProjectSearchQueryRef.current;
+                    const controller = new AbortController();
+                    projectSearchAbortRef.current = controller;
 
                     void window.comando
                         .searchProjectEntries({
@@ -1255,11 +1262,20 @@ export const ChatTabView = memo(function ChatTabView({
                             query: searchQuery,
                         })
                         .then((entries) => {
+                            if (projectSearchAbortRef.current === controller) {
+                                projectSearchAbortRef.current = null;
+                            }
+                            const resolved = controller.signal.aborted
+                                ? []
+                                : entries;
                             pendingResolvers.forEach((callback) =>
-                                callback(entries),
+                                callback(resolved),
                             );
                         })
                         .catch(() => {
+                            if (projectSearchAbortRef.current === controller) {
+                                projectSearchAbortRef.current = null;
+                            }
                             pendingResolvers.forEach((callback) =>
                                 callback([]),
                             );

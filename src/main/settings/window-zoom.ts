@@ -8,6 +8,8 @@ import {
     type SettingsUpdatedEvent,
 } from "@shared/ipc";
 
+import { forEachLiveWindow } from "../window";
+
 export function applyAppZoomToWindow(
     window: BrowserWindow,
     zoomFactor: number,
@@ -16,9 +18,9 @@ export function applyAppZoomToWindow(
 }
 
 export function applyAppZoomToAllWindows(zoomFactor: number): void {
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         applyAppZoomToWindow(window, zoomFactor);
-    }
+    });
 }
 
 export function broadcastSettingsUpdated(
@@ -27,7 +29,7 @@ export function broadcastSettingsUpdated(
 ): void {
     const payload: SettingsUpdatedEvent = { appearance, editor };
 
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.settingsUpdated, payload);
-    }
+    });
 }

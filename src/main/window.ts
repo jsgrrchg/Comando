@@ -195,13 +195,25 @@ export function refreshWindowsTitleBarOverlays(): void {
 
     const overlay = resolveWindowsTitleBarOverlay();
 
-    for (const window of BrowserWindow.getAllWindows()) {
-        if (window.isDestroyed()) continue;
-        if (!acrylicWindows.has(window)) continue;
+    forEachLiveWindow((window) => {
+        if (!acrylicWindows.has(window)) return;
         try {
             window.setTitleBarOverlay(overlay);
         } catch {
             // Older Windows builds may reject overlay updates. Ignore.
         }
+    });
+}
+
+// Snapshot windows before iterating so that a window destroyed mid-iteration
+// cannot leave us indexing into a mutated live array, and skip destroyed
+// entries so callers never invoke `webContents` on a torn-down window.
+export function forEachLiveWindow(
+    callback: (window: BrowserWindow) => void,
+): void {
+    const windows = [...BrowserWindow.getAllWindows()];
+    for (const window of windows) {
+        if (window.isDestroyed()) continue;
+        callback(window);
     }
 }

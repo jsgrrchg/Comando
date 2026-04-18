@@ -88,10 +88,73 @@ window.addEventListener("DOMContentLoaded", () => {
     document.documentElement?.setAttribute("data-comando-preload", "ready");
 });
 
+// Envelope validation policy for IPC responses.
+//
+// The full structural validation of every snapshot would require duplicating
+// hundreds of lines of schema that risk drifting from the TS types. Instead,
+// the high-risk bootstrap handlers below go through `assertIpcObject` /
+// `assertIpcObjectOrNull` so a broken main handler returning something that is
+// not an object (e.g. `undefined`, string, number, boolean) fails loudly at
+// the boundary rather than corrupting the renderer state silently.
+function assertIpcObject<T>(channel: string, value: unknown): T {
+    if (typeof value !== "object" || value === null) {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected object, got ${typeof value}.`,
+        );
+    }
+    return value as T;
+}
+
+function assertIpcObjectOrNull<T>(channel: string, value: unknown): T | null {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value !== "object") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected object or null, got ${typeof value}.`,
+        );
+    }
+    return value as T;
+}
+
 const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
 let aiSessionSnapshotPort: MessagePort | null = null;
 
-function notifyAiSessionSnapshotListeners(update: AiSessionUpdate): void {
+// Narrow runtime guard for the IPC envelope. Does not validate the full
+// `AiSessionSnapshot` shape (deliberately: avoids duplicating the whole schema
+// across the IPC boundary) — it only ensures the discriminant is valid and
+// the referenced payload is a non-null object, which prevents catastrophic
+// mismatches if main and renderer schemas ever drift.
+function isAiSessionUpdate(value: unknown): value is AiSessionUpdate {
+    if (typeof value !== "object" || value === null) {
+        return false;
+    }
+    const candidate = value as {
+        readonly kind?: unknown;
+        readonly patch?: unknown;
+        readonly snapshot?: unknown;
+    };
+    if (candidate.kind === "patch") {
+        return (
+            typeof candidate.patch === "object" && candidate.patch !== null
+        );
+    }
+    if (candidate.kind === "snapshot") {
+        return (
+            typeof candidate.snapshot === "object" &&
+            candidate.snapshot !== null
+        );
+    }
+    return false;
+}
+
+function notifyAiSessionSnapshotListeners(update: unknown): void {
+    if (!isAiSessionUpdate(update)) {
+        console.warn(
+            "[comando] Dropped AiSessionUpdate with unexpected shape.",
+        );
+        return;
+    }
     for (const listener of aiSessionSnapshotListeners) {
         listener(update);
     }
@@ -101,14 +164,14 @@ function bindAiSessionSnapshotPort(port: MessagePort): void {
     aiSessionSnapshotPort?.close();
     aiSessionSnapshotPort = port;
     aiSessionSnapshotPort.onmessage = (event) => {
-        notifyAiSessionSnapshotListeners(event.data as AiSessionUpdate);
+        notifyAiSessionSnapshotListeners(event.data);
     };
     aiSessionSnapshotPort.start();
 }
 
 function handleAiSessionSnapshotFallback(
     _event: Electron.IpcRendererEvent,
-    update: AiSessionUpdate,
+    update: unknown,
 ): void {
     notifyAiSessionSnapshotListeners(update);
 }
@@ -128,18 +191,21 @@ window.addEventListener("beforeunload", () => {
 });
 
 const comandoApi: ComandoApi = {
-    getBootstrapSnapshot: () =>
-        ipcRenderer.invoke(
+    getBootstrapSnapshot: async () =>
+        assertIpcObject<AppBootstrapSnapshot>(
             IPC_CHANNELS.getBootstrapSnapshot,
-        ) as Promise<AppBootstrapSnapshot>,
-    getPersistenceSnapshot: () =>
-        ipcRenderer.invoke(
+            await ipcRenderer.invoke(IPC_CHANNELS.getBootstrapSnapshot),
+        ),
+    getPersistenceSnapshot: async () =>
+        assertIpcObject<PersistenceSnapshot>(
             IPC_CHANNELS.getPersistenceSnapshot,
-        ) as Promise<PersistenceSnapshot>,
-    getWindowContext: () =>
-        ipcRenderer.invoke(
+            await ipcRenderer.invoke(IPC_CHANNELS.getPersistenceSnapshot),
+        ),
+    getWindowContext: async () =>
+        assertIpcObjectOrNull<WindowContextSnapshot>(
             IPC_CHANNELS.getWindowContext,
-        ) as Promise<WindowContextSnapshot | null>,
+            await ipcRenderer.invoke(IPC_CHANNELS.getWindowContext),
+        ),
     readClipboardText: () => Promise.resolve(clipboard.readText()),
     resolveDroppedFilePath: (file) => {
         if (!file) {
@@ -159,21 +225,29 @@ const comandoApi: ComandoApi = {
     },
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
-    getSettingsSnapshot: () =>
-        ipcRenderer.invoke(
+    getSettingsSnapshot: async () =>
+        assertIpcObject<SettingsSnapshot>(
             IPC_CHANNELS.getSettingsSnapshot,
-        ) as Promise<SettingsSnapshot>,
-    getProjectSettings: (projectId: string) =>
-        ipcRenderer.invoke(
+            await ipcRenderer.invoke(IPC_CHANNELS.getSettingsSnapshot),
+        ),
+    getProjectSettings: async (projectId: string) =>
+        assertIpcObjectOrNull<ProjectSettingsSnapshot>(
             IPC_CHANNELS.getProjectSettings,
-            projectId,
-        ) as Promise<ProjectSettingsSnapshot | null>,
-    getSystemTheme: () =>
-        ipcRenderer.invoke(IPC_CHANNELS.getSystemTheme) as Promise<SystemTheme>,
-    getWorkspaceSnapshot: () =>
-        ipcRenderer.invoke(
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getProjectSettings,
+                projectId,
+            ),
+        ),
+    getSystemTheme: async () =>
+        assertIpcObject<SystemTheme>(
+            IPC_CHANNELS.getSystemTheme,
+            await ipcRenderer.invoke(IPC_CHANNELS.getSystemTheme),
+        ),
+    getWorkspaceSnapshot: async () =>
+        assertIpcObject<WorkspaceSnapshot>(
             IPC_CHANNELS.getWorkspaceSnapshot,
-        ) as Promise<WorkspaceSnapshot>,
+            await ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceSnapshot),
+        ),
     createTerminalSession: (input: CreateTerminalSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.createTerminalSession, input),
     addProjectPaths: (paths: string[]) =>

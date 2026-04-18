@@ -39,7 +39,7 @@ import {
 } from "./settings/window-zoom";
 import { openSettingsWindow } from "./settings/window";
 import { TerminalService } from "./terminals/service";
-import { createMainWindow } from "./window";
+import { createMainWindow, forEachLiveWindow } from "./window";
 import { windowRegistry } from "./windows/registry";
 import type { WorkspaceGateway } from "./workspace/service";
 
@@ -418,9 +418,9 @@ function persistAppAppearanceSettings(): void {
     const snapshot = settingsService.loadSnapshot();
     const appearance = snapshot.appearance;
     if (appearance) {
-        for (const window of BrowserWindow.getAllWindows()) {
+        forEachLiveWindow((window) => {
             applyAppZoomToWindow(window, appearance.zoomFactor);
-        }
+        });
     }
 
     broadcastSettingsUpdated(appearance ?? null, snapshot.editor ?? null);
@@ -548,9 +548,9 @@ function focusExistingWindow(window: BrowserWindow): void {
 function broadcastProjectTreeInvalidation(
     payload: ProjectTreeInvalidation,
 ): void {
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.projectTreeInvalidated, payload);
-    }
+    });
 }
 
 function broadcastProjectGitInvalidation(
@@ -597,34 +597,34 @@ function broadcastProjectGitInvalidation(
 function broadcastGitRepositoryInvalidated(
     payload: GitRepositoryInvalidation,
 ): void {
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.gitRepositoryInvalidated, payload);
-    }
+    });
 }
 
 export function broadcastGitRepositorySnapshotUpdated(
     payload: GitRepositorySnapshot,
 ): void {
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(
             IPC_EVENTS.gitRepositorySnapshotUpdated,
             payload,
         );
-    }
+    });
 }
 
 export function broadcastGitWorktreesUpdated(
     payload: GitRepositoryInvalidation,
 ): void {
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.gitWorktreesUpdated, payload);
-    }
+    });
 }
 
 function broadcastAiRuntimeStatus(payload: AiRuntimeStatus): void {
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.aiRuntimeStatus, payload);
-    }
+    });
 }
 
 function broadcastAiSessionSnapshot(
@@ -634,9 +634,9 @@ function broadcastAiSessionSnapshot(
     mainProcessPerformance.recordAiSessionUpdate(payload);
 
     if (!ownerWindowId) {
-        for (const window of BrowserWindow.getAllWindows()) {
+        forEachLiveWindow((window) => {
             dispatchAiSessionSnapshot(window, payload);
-        }
+        });
         return;
     }
 
@@ -657,6 +657,14 @@ function attachAiSessionStream(window: BrowserWindow, windowId: string): void {
     const channel = new MessageChannelMain();
 
     try {
+        // Re-check `isDestroyed` atomically next to the `postMessage` call so
+        // a teardown that lands between the outer guard and this line cannot
+        // leak the transferred port into a dead renderer.
+        if (window.isDestroyed()) {
+            channel.port1.close();
+            channel.port2.close();
+            return;
+        }
         window.webContents.postMessage(IPC_EVENTS.aiSessionStreamPort, null, [
             channel.port2,
         ]);

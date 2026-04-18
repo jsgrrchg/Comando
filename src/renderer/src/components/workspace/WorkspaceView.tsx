@@ -1361,12 +1361,35 @@ function WorkspacePaneView({
         Boolean(defaultProjectId),
     );
 
+    // Keep the latest handler references in a ref so the keydown listener can
+    // be registered a single time per active pane, instead of being torn down
+    // and re-attached on every render where any of these callbacks change.
+    const paneShortcutHandlersRef = useRef({
+        createTerminalTab,
+        defaultProjectId,
+        defaultWorktreeId,
+        handleCreateAgentFromFocusedProvider,
+        handleCreateFile,
+        paneNodeId,
+        selectAdjacentTab,
+    });
+    paneShortcutHandlersRef.current = {
+        createTerminalTab,
+        defaultProjectId,
+        defaultWorktreeId,
+        handleCreateAgentFromFocusedProvider,
+        handleCreateFile,
+        paneNodeId,
+        selectAdjacentTab,
+    };
+
     useEffect(() => {
         if (!isActivePane) {
             return;
         }
 
         const handleKeyDown = (event: KeyboardEvent) => {
+            const handlers = paneShortcutHandlersRef.current;
             if (
                 event.ctrlKey &&
                 !event.metaKey &&
@@ -1375,8 +1398,8 @@ function WorkspacePaneView({
             ) {
                 event.preventDefault();
                 event.stopPropagation();
-                void selectAdjacentTab(
-                    paneNodeId,
+                void handlers.selectAdjacentTab(
+                    handlers.paneNodeId,
                     event.shiftKey ? "previous" : "next",
                 );
                 return;
@@ -1393,20 +1416,20 @@ function WorkspacePaneView({
                 event.stopPropagation();
 
                 if (event.shiftKey) {
-                    handleCreateAgentFromFocusedProvider();
+                    handlers.handleCreateAgentFromFocusedProvider();
                     return;
                 }
 
-                void handleCreateFile();
+                void handlers.handleCreateFile();
                 return;
             }
 
             if (key === "r" && !event.shiftKey) {
                 event.preventDefault();
                 event.stopPropagation();
-                void createTerminalTab(
-                    defaultProjectId,
-                    defaultWorktreeId ?? null,
+                void handlers.createTerminalTab(
+                    handlers.defaultProjectId,
+                    handlers.defaultWorktreeId ?? null,
                 );
             }
         };
@@ -1419,16 +1442,7 @@ function WorkspacePaneView({
                 capture: true,
             });
         };
-    }, [
-        createTerminalTab,
-        defaultProjectId,
-        defaultWorktreeId,
-        handleCreateAgentFromFocusedProvider,
-        handleCreateFile,
-        isActivePane,
-        paneNodeId,
-        selectAdjacentTab,
-    ]);
+    }, [isActivePane]);
 
     if (!node) {
         return null;
@@ -2890,7 +2904,7 @@ function FileTabView({
             return;
         }
 
-        let isDisposed = false;
+        const controller = new AbortController();
         setGitGutterDiff(null);
 
         const loadGitDiff = async () => {
@@ -2906,11 +2920,11 @@ function FileTabView({
                     worktreeId: tab.worktreeId ?? null,
                 });
 
-                if (!isDisposed) {
+                if (!controller.signal.aborted) {
                     setGitGutterDiff(diff);
                 }
             } catch {
-                if (!isDisposed) {
+                if (!controller.signal.aborted) {
                     setGitGutterDiff(null);
                 }
             }
@@ -2919,7 +2933,7 @@ function FileTabView({
         void loadGitDiff();
 
         return () => {
-            isDisposed = true;
+            controller.abort();
         };
     }, [
         activeGitChange,

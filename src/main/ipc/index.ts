@@ -87,7 +87,7 @@ import {
     type OpenDialogOptions,
 } from "electron";
 
-import { refreshWindowsTitleBarOverlays } from "@main/window";
+import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
 
 import type { AiService } from "@main/ai/service";
 import {
@@ -681,9 +681,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
         refreshWindowsTitleBarOverlays();
 
-        for (const window of BrowserWindow.getAllWindows()) {
+        forEachLiveWindow((window) => {
             window.webContents.send(IPC_EVENTS.themeUpdated, theme);
-        }
+        });
     });
     ipcMain.handle(IPC_CHANNELS.listProjects, () =>
         options.projectService.listProjects(),
@@ -973,9 +973,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 function broadcastProjectSettingsUpdated(
     payload: ProjectSettingsUpdatedEvent,
 ): void {
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.projectSettingsUpdated, payload);
-    }
+    });
 }
 
 function requireWindowContext(
@@ -1228,7 +1228,7 @@ function notifyGitSnapshot(
         worktreeId: snapshot.currentWorktreeId,
     };
 
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(
             IPC_EVENTS.gitRepositorySnapshotUpdated,
             snapshot,
@@ -1243,7 +1243,7 @@ function notifyGitSnapshot(
                 invalidation,
             );
         }
-    }
+    });
 }
 
 function buildSharedGitStatusSummary(
@@ -1984,7 +1984,7 @@ function notifyGitSnapshot(
         worktreeId: snapshot.currentWorktreeId,
     };
 
-    for (const window of BrowserWindow.getAllWindows()) {
+    forEachLiveWindow((window) => {
         window.webContents.send(
             IPC_EVENTS.gitRepositoryInvalidated,
             invalidation,
@@ -1999,7 +1999,7 @@ function notifyGitSnapshot(
                 invalidation,
             );
         }
-    }
+    });
 }
 
 function derivePrimaryScope(
