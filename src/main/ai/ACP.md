@@ -74,6 +74,7 @@ pnpm run stage:ai
 1. `COMANDO_GEMINI_ACP_BIN`
 2. Custom path from settings
 3. `gemini` in PATH
+4. On macOS, common Homebrew installs such as `/opt/homebrew/bin/gemini` and `/usr/local/bin/gemini`
 
 When spawned, Comando appends:
 
@@ -92,6 +93,7 @@ gemini --acp
 1. `COMANDO_KILO_ACP_BIN`
 2. Custom path from settings
 3. `kilo` in PATH
+4. On macOS, common Homebrew installs such as `/opt/homebrew/bin/kilo` and `/usr/local/bin/kilo`
 
 When spawned, Comando appends:
 

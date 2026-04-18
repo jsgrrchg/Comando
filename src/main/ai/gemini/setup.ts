@@ -15,6 +15,10 @@ import type { SecretStoreGateway } from "@main/ai/secret-store";
 const GEMINI_PROGRAM_NAME = "gemini";
 const GEMINI_ACP_FLAG = "--acp";
 const GEMINI_ENV_BIN = "COMANDO_GEMINI_ACP_BIN";
+const GEMINI_MACOS_FALLBACK_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+] as const;
 const GEMINI_AUTH_SETTINGS_RELATIVE_PATH = path.join(
     ".gemini",
     "settings.json",
@@ -312,6 +316,11 @@ function resolveGeminiBinary(
         return commandFromExistingPath(pathResolved, "path");
     }
 
+    const macOsResolved = resolveFromMacOsFallbackDirs(GEMINI_PROGRAM_NAME);
+    if (macOsResolved) {
+        return commandFromExistingPath(macOsResolved, "path");
+    }
+
     return {
         args: [],
         command: null,
@@ -495,6 +504,21 @@ function resolveFromPath(command: string): string | null {
             if (isExecutableFile(candidate)) {
                 return candidate;
             }
+        }
+    }
+
+    return null;
+}
+
+function resolveFromMacOsFallbackDirs(command: string): string | null {
+    if (process.platform !== "darwin") {
+        return null;
+    }
+
+    for (const entry of GEMINI_MACOS_FALLBACK_DIRS) {
+        const candidate = path.join(entry, command);
+        if (isExecutableFile(candidate)) {
+            return candidate;
         }
     }
 

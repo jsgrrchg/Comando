@@ -16,6 +16,10 @@ const KILO_ACP_SUBCOMMAND = "acp";
 const KILO_AUTH_LOGIN_SUBCOMMAND = ["auth", "login"] as const;
 const KILO_ENV_BIN = "COMANDO_KILO_ACP_BIN";
 const KILO_LOGIN_METHOD_ID: KiloAuthMethodId = "kilo-login";
+const KILO_MACOS_FALLBACK_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+] as const;
 
 interface ResolvedKiloBinary {
     readonly args: readonly string[];
@@ -207,6 +211,11 @@ function resolveKiloBinary(settings: KiloRuntimeSettings): ResolvedKiloBinary {
     const pathResolved = resolveFromPath(KILO_PROGRAM_NAME);
     if (pathResolved) {
         return commandFromExistingPath(pathResolved, "path");
+    }
+
+    const macOsResolved = resolveFromMacOsFallbackDirs(KILO_PROGRAM_NAME);
+    if (macOsResolved) {
+        return commandFromExistingPath(macOsResolved, "path");
     }
 
     return {
@@ -646,6 +655,21 @@ function resolveFromPath(command: string): string | null {
             if (isExecutableFile(candidate)) {
                 return candidate;
             }
+        }
+    }
+
+    return null;
+}
+
+function resolveFromMacOsFallbackDirs(command: string): string | null {
+    if (process.platform !== "darwin") {
+        return null;
+    }
+
+    for (const entry of KILO_MACOS_FALLBACK_DIRS) {
+        const candidate = path.join(entry, command);
+        if (isExecutableFile(candidate)) {
+            return candidate;
         }
     }
 

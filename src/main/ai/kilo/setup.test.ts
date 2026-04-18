@@ -110,6 +110,18 @@ describe("Kilo setup", () => {
         }
     });
 
+    it.runIf(process.platform === "darwin")(
+        "falls back to common macOS Homebrew paths when PATH is missing",
+        () => {
+            process.env.PATH = "";
+
+            const resolved = resolveKiloRuntime(createEmptyKiloSettings());
+
+            expect(resolved.program).toBe("/opt/homebrew/bin/kilo");
+            expect(resolved.status.source).toBe("path");
+        },
+    );
+
     it("detects auth from auth.json using HOME/.local/share fallback", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-kilo-auth-json-"),

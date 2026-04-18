@@ -112,6 +112,21 @@ describe("Gemini setup", () => {
         }
     });
 
+    it.runIf(process.platform === "darwin")(
+        "falls back to common macOS Homebrew paths when PATH is missing",
+        () => {
+            process.env.PATH = "";
+
+            const resolved = resolveGeminiRuntime(
+                createEmptyGeminiSettings(),
+                createFakeSecretStore() as unknown as SecretStoreService,
+            );
+
+            expect(resolved.program).toBe("/opt/homebrew/bin/gemini");
+            expect(resolved.status.source).toBe("path");
+        },
+    );
+
     it("detects use_gemini auth from stored secrets", () => {
         const secretStore = createFakeSecretStore({
             "ai.gemini:gemini_api_key": "gem-key-123",
