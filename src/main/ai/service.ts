@@ -172,6 +172,12 @@ interface LiveAcpSession {
     } | null;
     pendingAdditionalRoots: readonly string[] | null;
     pendingPersistTimer: ReturnType<typeof setTimeout> | null;
+    // Tracks which `(toolCallId -> normalizedPath)` combinations have already
+    // produced a tracked file within this session. Claude Code emits every
+    // Edit twice against the same toolCallId (streaming tool_call + post-hook
+    // tool_call_update from the structuredPatch), so without dedup the second
+    // emission re-applies the edit on top of the cumulative text.
+    processedDiffPaths: Map<string, Set<string>>;
     projectRoot: string | null;
     runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
@@ -1280,6 +1286,7 @@ export class AiService {
             pendingPermission: null,
             pendingAdditionalRoots: null,
             pendingPersistTimer: null,
+            processedDiffPaths: new Map(),
             projectRoot,
             runtimeId: input.runtimeId,
             snapshot: {
@@ -1713,6 +1720,7 @@ export class AiService {
             pendingPermission: null,
             pendingAdditionalRoots: null,
             pendingPersistTimer: null,
+            processedDiffPaths: new Map(),
             projectRoot:
                 snapshot.projectId !== null
                     ? this.#projectService.getProjectRootPath(
@@ -3271,7 +3279,10 @@ const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
 const terminalOutputBuffers = new Map<string, string>();
 
 function mapToolCallUpdate(
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: Pick<
+        LiveAcpSession,
+        "cwd" | "projectRoot" | "processedDiffPaths"
+    >,
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
     updateKind: DiffResolutionContext["sessionUpdate"],
@@ -3371,6 +3382,68 @@ function mapToolCallUpdate(
         updatedAt,
     };
 
+    const terminalStatus =
+        update.status === "completed" || update.status === "failed";
+
+    const nextTrackedFiles = content
+        ? content.reduce((acc, entry) => {
+              if (entry.type !== "diff") return acc;
+              const normalizedPath = normalizeDiffPath(entry.path);
+              // Claude emits every Edit twice against the same toolCallId
+              // (streaming tool_call + PostToolUseHook tool_call_update from
+              // the structuredPatch). Skip the second emission for a path we
+              // already ingested — the streaming round already produced the
+              // right tracked state, and replaying the structuredPatch hunks
+              // can double-apply edits when oldText is still present in the
+              // spliced text (e.g. insertions after an anchor).
+              const processedPaths =
+                  liveSession.processedDiffPaths.get(update.toolCallId);
+              if (processedPaths?.has(normalizedPath)) {
+                  return acc;
+              }
+              if (processedPaths) {
+                  processedPaths.add(normalizedPath);
+              } else {
+                  liveSession.processedDiffPaths.set(
+                      update.toolCallId,
+                      new Set([normalizedPath]),
+                  );
+              }
+
+              const existing = acc.find(
+                  (candidate) =>
+                      candidate.path === normalizedPath ||
+                      candidate.previousPath === normalizedPath,
+              );
+              const resolvedDiff = resolveDiffToFullTexts(
+                  entry,
+                  existing,
+                  liveSession,
+                  normalizedPath,
+                  {
+                      meta: update._meta,
+                      sessionUpdate: updateKind,
+                      toolCallId: update.toolCallId,
+                  },
+              );
+              return upsertTrackedFile(
+                  acc,
+                  diffToTrackedFile(
+                      snapshot,
+                      resolvedDiff,
+                      toolKind,
+                      update.toolCallId,
+                      updatedAt,
+                      normalizeDiffPath,
+                  ),
+              );
+          }, snapshot.trackedFiles)
+        : snapshot.trackedFiles;
+
+    if (terminalStatus) {
+        liveSession.processedDiffPaths.delete(update.toolCallId);
+    }
+
     return {
         ...snapshot,
         pendingPermission: pendingUserInput ? null : snapshot.pendingPermission,
@@ -3382,39 +3455,7 @@ function mapToolCallUpdate(
             ),
             nextActivity,
         ],
-        trackedFiles: content
-            ? content.reduce((acc, entry) => {
-                  if (entry.type !== "diff") return acc;
-                  const normalizedPath = normalizeDiffPath(entry.path);
-                  const existing = acc.find(
-                      (candidate) =>
-                          candidate.path === normalizedPath ||
-                          candidate.previousPath === normalizedPath,
-                  );
-                  const resolvedDiff = resolveDiffToFullTexts(
-                      entry,
-                      existing,
-                      liveSession,
-                      normalizedPath,
-                      {
-                          meta: update._meta,
-                          sessionUpdate: updateKind,
-                          toolCallId: update.toolCallId,
-                      },
-                  );
-                  return upsertTrackedFile(
-                      acc,
-                      diffToTrackedFile(
-                          snapshot,
-                          resolvedDiff,
-                          toolKind,
-                          update.toolCallId,
-                          updatedAt,
-                          normalizeDiffPath,
-                      ),
-                  );
-              }, snapshot.trackedFiles)
-            : snapshot.trackedFiles,
+        trackedFiles: nextTrackedFiles,
     };
 }
 
@@ -4249,6 +4290,7 @@ function resolveDiffToFullTexts(
 export const __testing = {
     computeDiffHunks,
     diffToAiFileDiff,
+    mapToolCallUpdate,
     normalizeTrackedDiffPath,
     resolveDiffToFullTexts,
     resolveTrackedFileHunks,

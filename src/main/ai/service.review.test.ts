@@ -656,3 +656,121 @@ describe("resolveDiffToFullTexts", () => {
         expect(resolved.newText).toBe("hello\n");
     });
 });
+
+describe("mapToolCallUpdate dedup by toolCallId", () => {
+    let tempDir: string;
+
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-dedup-"));
+    });
+
+    afterEach(() => {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    function makeLiveSession() {
+        return {
+            cwd: tempDir,
+            projectRoot: tempDir,
+            processedDiffPaths: new Map<string, Set<string>>(),
+        };
+    }
+
+    function makeSnapshot(): import("@shared/ipc").AiSessionSnapshot {
+        return {
+            availableCommands: [],
+            configOptions: [],
+            createdAt: "2026-04-20T12:00:00.000Z",
+            draft: "",
+            id: "session-1",
+            kind: "chat",
+            lastError: null,
+            messages: [],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "claude",
+            runtimeSessionId: null,
+            sessionId: "session-1",
+            status: "idle",
+            title: "Test",
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-20T12:00:00.000Z",
+            worktreeId: null,
+        };
+    }
+
+    it("ignores a PostToolUseHook re-emission for a path already processed under the same toolCallId", () => {
+        const absolutePath = path.join(tempDir, "foo.ts");
+        const originalFile = "alpha\nbeta\ngamma\ndelta\n";
+        fs.writeFileSync(absolutePath, originalFile, "utf8");
+        const liveSession = makeLiveSession();
+
+        // Round 1: streaming tool_call with old_string / new_string of an
+        // insertion-after-anchor edit.
+        const afterStreaming = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                toolCallId: "edit-1",
+                kind: "edit",
+                status: "in_progress",
+                title: "Edit foo.ts",
+                content: [
+                    {
+                        type: "diff",
+                        path: "foo.ts",
+                        oldText: "beta",
+                        newText: "beta\nINSERTED",
+                    },
+                ],
+                _meta: { claudeCode: { toolName: "Edit" } },
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:01.000Z",
+        );
+
+        expect(afterStreaming.trackedFiles).toHaveLength(1);
+        expect(afterStreaming.trackedFiles[0]?.newText).toBe(
+            "alpha\nbeta\nINSERTED\ngamma\ndelta\n",
+        );
+
+        // Round 2: PostToolUseHook re-emits the structuredPatch hunk. The
+        // classic bug: "beta" is still present in the spliced text, so a
+        // naive second splice would double-apply the insertion. Dedup
+        // skips the diff entirely.
+        const afterPostHook = __testing.mapToolCallUpdate(
+            liveSession,
+            afterStreaming,
+            {
+                toolCallId: "edit-1",
+                kind: "edit",
+                status: "completed",
+                content: [
+                    {
+                        type: "diff",
+                        path: "foo.ts",
+                        oldText: "beta",
+                        newText: "beta\nINSERTED",
+                    },
+                ],
+                _meta: { claudeCode: { toolName: "Edit" } },
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:02.000Z",
+        );
+
+        expect(afterPostHook.trackedFiles).toHaveLength(1);
+        expect(afterPostHook.trackedFiles[0]?.newText).toBe(
+            "alpha\nbeta\nINSERTED\ngamma\ndelta\n",
+        );
+        // The terminal status should have cleared the dedup entry.
+        expect(liveSession.processedDiffPaths.has("edit-1")).toBe(false);
+    });
+});
