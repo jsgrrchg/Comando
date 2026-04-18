@@ -88,6 +88,8 @@ import {
 } from "electron";
 
 import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
+import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
+import { debugBenignError } from "@main/observability/logging";
 
 import type { AiService } from "@main/ai/service";
 import {
@@ -207,18 +209,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.getPersistenceSnapshot,
-        (event): PersistenceSnapshot => {
+        (event): PersistenceSnapshot | null => {
             const context = windowRegistry.getContextByWebContents(
                 event.sender,
             );
-            return context
-                ? options.persistenceService.loadSnapshot(context.windowId)
-                : {
-                      activeProjectId: null,
-                      shellState: null,
-                      windowContext: null,
-                      windowState: null,
-                  };
+            if (!context) {
+                return null;
+            }
+            return options.persistenceService.loadSnapshot(context.windowId);
         },
     );
     ipcMain.handle(
@@ -711,42 +709,80 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(IPC_CHANNELS.addProjectPaths, (_event, paths: string[]) =>
         options.projectService.addProjectPaths(paths),
     );
-    ipcMain.handle(IPC_CHANNELS.removeProject, (_event, projectId: string) => {
-        options.projectService.removeProject(projectId);
-    });
+    ipcMain.handle(IPC_CHANNELS.removeProject, (_event, projectId: string) =>
+        options.projectService.removeProject(projectId),
+    );
     ipcMain.handle(IPC_CHANNELS.touchProject, (_event, projectId: string) => {
         options.projectService.touchProject(projectId);
     });
+    // Cap concurrent requests on filesystem-fanout handlers so a buggy
+    // renderer loop cannot swamp the projects worker / event loop. Limits are
+    // generous for read paths and tighter for mutations.
+    const listProjectTreeLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.listProjectTree,
+        12,
+    );
+    const openProjectFileLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.openProjectFile,
+        8,
+    );
+    const saveProjectFileLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.saveProjectFile,
+        4,
+    );
+    const createProjectEntryLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.createProjectEntry,
+        4,
+    );
+    const renameProjectEntryLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.renameProjectEntry,
+        4,
+    );
+    const deleteProjectEntryLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.deleteProjectEntry,
+        4,
+    );
     ipcMain.handle(
         IPC_CHANNELS.listProjectTree,
         (_event, input: ListProjectTreeInput) =>
-            options.projectService.listProjectTreeChildren(input),
+            listProjectTreeLimiter(() =>
+                options.projectService.listProjectTreeChildren(input),
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.openProjectFile,
         (_event, input: OpenProjectFileInput) =>
-            options.projectService.openProjectFile(input),
+            openProjectFileLimiter(() =>
+                options.projectService.openProjectFile(input),
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.saveProjectFile,
         (_event, input: SaveProjectFileInput) =>
-            options.projectService.saveProjectFile(input),
+            saveProjectFileLimiter(() =>
+                options.projectService.saveProjectFile(input),
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.createProjectEntry,
         (_event, input: CreateProjectEntryInput) =>
-            options.projectService.createProjectEntry(input),
+            createProjectEntryLimiter(() =>
+                options.projectService.createProjectEntry(input),
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.renameProjectEntry,
         (_event, input: RenameProjectEntryInput) =>
-            options.projectService.renameProjectEntry(input),
+            renameProjectEntryLimiter(() =>
+                options.projectService.renameProjectEntry(input),
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.deleteProjectEntry,
-        (_event, input: DeleteProjectEntryInput) => {
-            return options.projectService.deleteProjectEntry(input);
-        },
+        (_event, input: DeleteProjectEntryInput) =>
+            deleteProjectEntryLimiter(() =>
+                options.projectService.deleteProjectEntry(input),
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.revealProjectEntry,
@@ -759,10 +795,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             shell.showItemInFolder(absolutePath);
         },
     );
+    // Project search fans out to the projects worker and is the handler most
+    // likely to pile up if a renderer loop fires rapidly; cap concurrent
+    // in-flight requests to protect the worker pool and the main event loop.
+    const searchProjectEntriesLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.searchProjectEntries,
+        8,
+    );
     ipcMain.handle(
         IPC_CHANNELS.searchProjectEntries,
         (_event, input: SearchProjectEntriesInput) =>
-            options.projectService.searchProjectEntries(input),
+            searchProjectEntriesLimiter(() =>
+                options.projectService.searchProjectEntries(input),
+            ),
     );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
         const context = requireWindowContext(event.sender, "main");
@@ -1005,7 +1050,8 @@ function buildMainWindowTitle(
         const projectName =
             rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? projectId;
         return `Comando · ${projectName}`;
-    } catch {
+    } catch (error) {
+        debugBenignError("ipc.resolveWindowTitle", error);
         return "Comando";
     }
 }
@@ -1381,8 +1427,9 @@ async function getGitDiffStats(rootPath: string): Promise<DiffStatMap> {
 
         parseNumstat(unstaged, "unstaged", stats);
         parseNumstat(staged, "staged", stats);
-    } catch {
-        // ignore — stats are best-effort
+    } catch (error) {
+        // Diff stats are best-effort; log for visibility but keep going.
+        debugBenignError("ipc.getGitDiffStats", error);
     }
 
     return stats;
@@ -1498,7 +1545,8 @@ async function loadGitRemotes(
             refName:
                 remote.name === selectedRemoteName ? trackingBranchName : null,
         }));
-    } catch {
+    } catch (error) {
+        debugBenignError("ipc.loadGitRemotes", error);
         return [];
     }
 }

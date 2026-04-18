@@ -22,6 +22,7 @@ import type {
 import { syncTrackedFile } from "@shared/ai-tracked-file";
 
 import type { Awaitable } from "../db/awaitable";
+import { debugBenignError } from "../observability/logging";
 import { mainProcessPerformance } from "../observability/performance";
 
 interface PersistedAiSessionRow {
@@ -1065,7 +1066,8 @@ function parseJsonWithFallback<T>(value: string | null, fallback: T): T {
 
     try {
         return JSON.parse(value) as T;
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.persistence.parseJson", error);
         return fallback;
     }
 }

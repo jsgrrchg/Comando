@@ -1373,7 +1373,7 @@ export interface AiTrackedFileHunkMutationInput {
 
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
-    getPersistenceSnapshot: () => Promise<PersistenceSnapshot>;
+    getPersistenceSnapshot: () => Promise<PersistenceSnapshot | null>;
     getWindowContext: () => Promise<WindowContextSnapshot | null>;
     readClipboardText: () => Promise<string>;
     resolveDroppedFilePath: (file: File | null) => string | null;

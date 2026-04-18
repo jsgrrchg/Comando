@@ -6,6 +6,7 @@ import { BrowserWindow, nativeTheme, screen } from "electron";
 import type { PersistedWindowState } from "@shared/ipc";
 
 import { appIdentity } from "./app-runtime";
+import { debugBenignError } from "./observability/logging";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const MIN_VISIBLE_RESTORE_OVERLAP = 80;
@@ -198,9 +199,12 @@ export function refreshWindowsTitleBarOverlays(): void {
     forEachLiveWindow((window) => {
         if (!acrylicWindows.has(window)) return;
         try {
+            if (window.isDestroyed()) return;
             window.setTitleBarOverlay(overlay);
-        } catch {
-            // Older Windows builds may reject overlay updates. Ignore.
+        } catch (error) {
+            // Older Windows builds may reject overlay updates, and the window
+            // may also be torn down between the re-check and the native call.
+            debugBenignError("window.setTitleBarOverlay", error);
         }
     });
 }

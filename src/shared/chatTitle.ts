@@ -21,7 +21,9 @@ export function truncateChatTitle(title: string, maxChars: number): string {
     }
 
     const budget = Math.max(1, maxChars - 1);
-    const head = trimmed.slice(0, budget);
+    // Slice by grapheme cluster so emoji / surrogate pairs / combining marks
+    // are never split in half (which would render as U+FFFD or broken glyphs).
+    const head = segmentChatTitle(trimmed).slice(0, budget).join("");
     const lastSpace = head.lastIndexOf(" ");
     // Only snap to the last whitespace when it leaves at least a short word
     // behind — otherwise we'd render "A…" for long single tokens.
@@ -29,6 +31,22 @@ export function truncateChatTitle(title: string, maxChars: number): string {
         return head.slice(0, lastSpace).trimEnd() + ELLIPSIS;
     }
     return head + ELLIPSIS;
+}
+
+function segmentChatTitle(text: string): string[] {
+    const globalIntl =
+        typeof Intl !== "undefined"
+            ? (Intl as typeof Intl & { Segmenter?: typeof Intl.Segmenter })
+            : undefined;
+    if (globalIntl?.Segmenter) {
+        const segmenter = new globalIntl.Segmenter(undefined, {
+            granularity: "grapheme",
+        });
+        return Array.from(segmenter.segment(text), (s) => s.segment);
+    }
+    // Fallback: iterate by Unicode code points (still guards surrogate pairs,
+    // though it will split ZWJ emoji sequences and combining marks).
+    return Array.from(text);
 }
 
 export function inferChatTitleFromPrompt(serializedContent: string): string {

@@ -17,6 +17,7 @@ import type {
 import { normalizeProjectSearchQuery } from "@shared/project-search";
 
 import { mainProcessPerformance } from "../observability/performance";
+import { debugBenignError } from "../observability/logging";
 import { logWorkerClientCallFailure } from "../workers/supervisor";
 import type { ProjectStore, ProjectStoreWorktreeRecord } from "./store";
 import {
@@ -95,7 +96,7 @@ export class ProjectService {
         return [...result.projects];
     }
 
-    removeProject(projectId: string): void {
+    async removeProject(projectId: string): Promise<void> {
         const rootPaths = this.listProjectWorktrees(projectId).map(
             (worktree) => worktree.rootPath,
         );
@@ -105,10 +106,13 @@ export class ProjectService {
         }
 
         this.#markWorkerRegistryDirty();
-        void this.#worker.removeProject(projectId).catch((error) => {
+        try {
+            await this.#worker.removeProject(projectId);
+        } catch (error) {
             logProjectWorkerError("removeProject", error);
-        });
-        void this.#store.removeProject(projectId);
+            throw error;
+        }
+        this.#store.removeProject(projectId);
     }
 
     touchProject(projectId: string): void {
@@ -367,8 +371,9 @@ export class ProjectService {
                 payload.worktreeId ?? null,
             );
             this.#indexedRoots.delete(normalizeRootPath(project.rootPath));
-        } catch {
-            // Ignore invalidations for projects removed while the worker was flushing.
+        } catch (error) {
+            // Invalidation for a project removed while the worker was flushing.
+            debugBenignError("projects.handleTreeInvalidation", error);
         }
 
         this.#onProjectTreeInvalidated(payload);

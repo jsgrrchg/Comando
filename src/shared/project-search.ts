@@ -47,10 +47,18 @@ export function scoreProjectSearchCandidate(
     );
 }
 
+const MAX_PROJECT_SEARCH_TOKEN_LENGTH = 200;
+
 function scoreProjectSearchToken(
     candidate: ProjectSearchCandidate,
     token: string,
 ): number {
+    // Pathological queries (e.g. a pasted file dump) must not degrade ranking
+    // with O(token * path) substring scans across thousands of candidates.
+    if (token.length > MAX_PROJECT_SEARCH_TOKEN_LENGTH) {
+        return -1;
+    }
+
     let score = 0;
     const compactToken = compactProjectSearchValue(token);
 

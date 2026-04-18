@@ -197,9 +197,23 @@ function createReviewTabHandleKey(reviewTab: WorkspaceReviewTabHandle): string {
     return JSON.stringify([reviewTab.id, reviewTab.sessionId]);
 }
 
-function parseReviewTabHandleKey(key: string): WorkspaceReviewTabHandle {
-    const [id, sessionId] = JSON.parse(key) as [string, string];
-    return { id, sessionId };
+function parseReviewTabHandleKey(
+    key: string,
+): WorkspaceReviewTabHandle | null {
+    try {
+        const parsed: unknown = JSON.parse(key);
+        if (
+            Array.isArray(parsed) &&
+            typeof parsed[0] === "string" &&
+            typeof parsed[1] === "string"
+        ) {
+            return { id: parsed[0], sessionId: parsed[1] };
+        }
+    } catch {
+        // Corrupted persisted key; drop the review tab silently rather than
+        // crashing the workspace render.
+    }
+    return null;
 }
 
 function selectWorkspaceReviewTabHandleKeys(
@@ -311,7 +325,13 @@ export function WorkspaceView({
     );
     const autoClosingReviewTabIdsRef = useRef<Set<string>>(new Set());
     const reviewTabs = useMemo(
-        () => reviewTabKeys.map((key) => parseReviewTabHandleKey(key)),
+        () =>
+            reviewTabKeys
+                .map((key) => parseReviewTabHandleKey(key))
+                .filter(
+                    (handle): handle is WorkspaceReviewTabHandle =>
+                        handle !== null,
+                ),
         [reviewTabKeys],
     );
     const reviewTabAutoCloseCandidateKeys = useAiStore(
@@ -505,6 +525,7 @@ function WorkspaceSplitView({
             node &&
             dragState &&
             previewSizes &&
+            previewSizes.length > 0 &&
             !areSplitSizesEqual(previewSizes, dragState.startSizes)
         ) {
             void resizeSplit(node.id, previewSizes);

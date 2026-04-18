@@ -231,6 +231,58 @@ describe("resolveEditorLanguage", () => {
             label: "Plain Text",
         });
     });
+
+    it("falls back to the shorter suffix for composite extensions", () => {
+        // `foo.test.ts` must still resolve to TypeScript even though the
+        // full suffix `test.ts` is not registered as its own language.
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/src/foo.test.ts",
+            }),
+        ).toEqual({
+            id: "typescript",
+            label: "TypeScript",
+        });
+
+        // `next.config.js` must still resolve to JavaScript.
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/next.config.js",
+            }).id,
+        ).toBe("javascript");
+    });
+
+    it("resolves composite filenames via the first segment", () => {
+        // `Dockerfile.dev`, `Dockerfile.prod` must highlight as Dockerfile.
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/ops/Dockerfile.dev",
+            }),
+        ).toEqual({
+            id: "dockerfile",
+            label: "Dockerfile",
+        });
+    });
+
+    it("handles dotfile variants like .env.local", () => {
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/.env",
+            }).id,
+        ).toBe("shell");
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/.env.local",
+            }).id,
+        ).toBe("shell");
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/.env.production",
+            }).id,
+        ).toBe("shell");
+    });
 });
 
 describe("shouldWrapEditorLanguage", () => {

@@ -12,6 +12,7 @@ import type {
 } from "@shared/ipc";
 
 import type { SecretStoreGateway } from "@main/ai/secret-store";
+import { debugBenignError } from "@main/observability/logging";
 
 const CLAUDE_LOGIN_METHOD_ID = "claude-login";
 const CLAUDE_AI_LOGIN_METHOD_ID = "claude-ai-login";
@@ -566,7 +567,8 @@ function getClaudeAuthFilePath(): string | null {
 function getFileModifiedAtMs(filePath: string): number | null {
     try {
         return fs.statSync(filePath).mtimeMs;
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.claude.getFileModifiedAtMs", error);
         return null;
     }
 }
@@ -939,7 +941,8 @@ function isExecutableFile(candidatePath: string): boolean {
     try {
         fs.accessSync(candidatePath, fs.constants.X_OK);
         return fs.statSync(candidatePath).isFile();
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.claude.isExecutableFile", error);
         return false;
     }
 }
@@ -947,7 +950,8 @@ function isExecutableFile(candidatePath: string): boolean {
 function isFile(candidatePath: string): boolean {
     try {
         return fs.statSync(candidatePath).isFile();
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.claude.isFile", error);
         return false;
     }
 }

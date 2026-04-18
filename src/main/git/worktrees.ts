@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { simpleGit } from "simple-git";
 
+import { debugBenignError } from "@main/observability/logging";
+
 import type {
     GitBranchSummary,
     GitListBranchesOptions,
@@ -296,7 +298,8 @@ async function isBareRepository(baseDir: string): Promise<boolean> {
         const git = simpleGit(baseDir);
         const result = await git.raw(["rev-parse", "--is-bare-repository"]);
         return result.trim() === "true";
-    } catch {
+    } catch (error) {
+        debugBenignError("git.worktrees.isBareRepository", error);
         return false;
     }
 }
@@ -304,7 +307,8 @@ async function isBareRepository(baseDir: string): Promise<boolean> {
 function pathExists(targetPath: string): boolean {
     try {
         return fs.statSync(targetPath).isDirectory();
-    } catch {
+    } catch (error) {
+        debugBenignError("git.worktrees.pathExists", error);
         return false;
     }
 }

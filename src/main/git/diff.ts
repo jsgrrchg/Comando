@@ -2,6 +2,8 @@ import path from "node:path";
 
 import { simpleGit } from "simple-git";
 
+import { debugBenignError } from "@main/observability/logging";
+
 import type {
     GitChangeKind,
     GitFileDiff,
@@ -222,7 +224,8 @@ async function detectGitChangeKind(
         }
 
         return null;
-    } catch {
+    } catch (error) {
+        debugBenignError("git.diff.detectChangeKind", error);
         return null;
     }
 }

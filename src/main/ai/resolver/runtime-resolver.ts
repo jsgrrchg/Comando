@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import type { AiRuntimeStatus, CodexRuntimeSettings } from "@shared/ipc";
 
+import { debugBenignError } from "@main/observability/logging";
+
 export interface RuntimeCommandSpec {
     readonly args: readonly string[];
     readonly command: string;
@@ -428,7 +430,8 @@ function isExecutableFile(candidate: string): boolean {
     try {
         fs.accessSync(candidate, fs.constants.X_OK);
         return fs.statSync(candidate).isFile();
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.runtimeResolver.isExecutableFile", error);
         return false;
     }
 }

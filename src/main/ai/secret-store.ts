@@ -2,6 +2,8 @@ import { safeStorage } from "electron";
 
 import type Database from "better-sqlite3";
 
+import { debugBenignError } from "@main/observability/logging";
+
 export interface SecretStoreGateway {
     loadSecret(namespace: string, secretId: string): string | null;
     saveSecret(namespace: string, secretId: string, value: string | null): void;
@@ -93,7 +95,8 @@ export function deserializeStoredSecretValue(
         }
 
         return stored.value.trim() ? stored.value : null;
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.secretStore.decrypt", error);
         return null;
     }
 }

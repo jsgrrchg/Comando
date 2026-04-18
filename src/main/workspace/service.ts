@@ -17,6 +17,7 @@ import type {
 } from "@shared/ipc";
 
 import type { Awaitable } from "../db/awaitable";
+import { debugBenignError } from "../observability/logging";
 import { mainProcessPerformance } from "../observability/performance";
 
 interface WorkspaceLayoutRow {
@@ -847,7 +848,8 @@ function parseJsonWithFallback<T>(
 
     try {
         return JSON.parse(value) as T;
-    } catch {
+    } catch (error) {
+        debugBenignError("workspace.parseJson", error);
         return fallback;
     }
 }

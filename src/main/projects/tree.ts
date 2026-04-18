@@ -10,6 +10,7 @@ import type {
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 
+import { debugBenignError } from "../observability/logging";
 import { shouldIgnoreEntry } from "./ignore";
 
 const DEFAULT_INLINE_EDITOR_MAX_BYTES = 4 * 1024 * 1024;
@@ -190,7 +191,11 @@ export async function createProjectEntry(options: {
         await fs.promises.mkdir(absolutePath);
     } else {
         const handle = await fs.promises.open(absolutePath, "wx");
-        await handle.close();
+        try {
+            // File is created by `open(wx)`; nothing else to write.
+        } finally {
+            await handle.close();
+        }
     }
 
     return {
@@ -313,7 +318,8 @@ function directoryHasVisibleChildren(directoryPath: string): boolean {
         return entries.some(
             (entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()),
         );
-    } catch {
+    } catch (error) {
+        debugBenignError("projects.directoryHasVisibleChildren", error);
         return false;
     }
 }

@@ -262,6 +262,7 @@ export const ChatTabView = memo(function ChatTabView({
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
+    const restoreScrollFrameRef = useRef<number | null>(null);
     const scrollPersistTimerRef = useRef<number | null>(null);
     const pendingPersistedScrollTopRef = useRef<number | null>(null);
     const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
@@ -656,20 +657,12 @@ export const ChatTabView = memo(function ChatTabView({
             stableTimelineRef.current.sessionId === tab.sessionId
                 ? stableTimelineRef.current.model
                 : null;
-        const nextTimelineModel = reconcileChatTimelineModel(
-            previousTimelineModel,
-            {
-                messages: snapshot.messages,
-                status: snapshot.status,
-                toolActivity: snapshot.toolActivity,
-                trackedFiles: snapshot.trackedFiles,
-            },
-        );
-        stableTimelineRef.current = {
-            model: nextTimelineModel,
-            sessionId: tab.sessionId,
-        };
-        return nextTimelineModel;
+        return reconcileChatTimelineModel(previousTimelineModel, {
+            messages: snapshot.messages,
+            status: snapshot.status,
+            toolActivity: snapshot.toolActivity,
+            trackedFiles: snapshot.trackedFiles,
+        });
     }, [
         snapshot.messages,
         snapshot.status,
@@ -677,6 +670,14 @@ export const ChatTabView = memo(function ChatTabView({
         snapshot.trackedFiles,
         tab.sessionId,
     ]);
+    // Commit the reconciled timeline to the ref after render so StrictMode's
+    // double-render cannot leave a stale/discarded model written during memo.
+    useEffect(() => {
+        stableTimelineRef.current = {
+            model: timelineModel,
+            sessionId: tab.sessionId,
+        };
+    }, [timelineModel, tab.sessionId]);
     const persistedViewState = useMemo(
         () =>
             readPersistedChatViewState(
@@ -812,6 +813,10 @@ export const ChatTabView = memo(function ChatTabView({
                 window.cancelAnimationFrame(pendingScrollFrameRef.current);
                 pendingScrollFrameRef.current = null;
             }
+            if (restoreScrollFrameRef.current !== null) {
+                window.cancelAnimationFrame(restoreScrollFrameRef.current);
+                restoreScrollFrameRef.current = null;
+            }
             flushScheduledScrollPersist();
         };
     }, [flushScheduledScrollPersist]);
@@ -834,7 +839,11 @@ export const ChatTabView = memo(function ChatTabView({
             scrollEl.scrollTop = restoreScrollTop;
         }
 
-        const restoreFrame = window.requestAnimationFrame(() => {
+        if (restoreScrollFrameRef.current !== null) {
+            window.cancelAnimationFrame(restoreScrollFrameRef.current);
+        }
+        restoreScrollFrameRef.current = window.requestAnimationFrame(() => {
+            restoreScrollFrameRef.current = null;
             const nextScrollEl = scrollRef.current;
             if (!nextScrollEl) {
                 return;
@@ -849,7 +858,10 @@ export const ChatTabView = memo(function ChatTabView({
         });
 
         return () => {
-            window.cancelAnimationFrame(restoreFrame);
+            if (restoreScrollFrameRef.current !== null) {
+                window.cancelAnimationFrame(restoreScrollFrameRef.current);
+                restoreScrollFrameRef.current = null;
+            }
             flushScheduledScrollPersist();
             persistCurrentViewState({
                 isNearBottom:

@@ -81,6 +81,7 @@ import { readOpenFileBuffer } from "./openFileBuffers";
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
 import type { SecretStoreGateway } from "@main/ai/secret-store";
+import { debugBenignError } from "@main/observability/logging";
 
 import {
     createEmptyAiSessionSnapshot,
@@ -440,9 +441,21 @@ export class AiService {
                 ([, liveSession]) =>
                     liveSession.snapshot.projectId === projectId,
             )
-            .map(([sessionId, liveSession]) =>
-                this.#refreshLiveSessionScopes(sessionId, liveSession),
-            );
+            .map(async ([sessionId, liveSession]) => {
+                try {
+                    await this.#refreshLiveSessionScopes(
+                        sessionId,
+                        liveSession,
+                    );
+                } catch (error) {
+                    // A single session failing must not abort refreshes for
+                    // other live sessions of the same project.
+                    console.error(
+                        `[ai] refreshProjectScopes failed for session ${sessionId}`,
+                        error,
+                    );
+                }
+            });
 
         await Promise.all(refreshTasks);
     }
@@ -660,8 +673,9 @@ export class AiService {
                     sessionId: liveSession.snapshot.runtimeSessionId,
                 });
             }
-        } catch {
-            // El proceso igual se cierra abajo.
+        } catch (error) {
+            // The process is killed below regardless.
+            debugBenignError("ai.service.unstableCloseSession", error);
         }
 
         liveSession.child.kill();
@@ -672,8 +686,9 @@ export class AiService {
         if (this.#sessions.has(sessionId)) {
             try {
                 await this.cancelSession(sessionId);
-            } catch {
+            } catch (error) {
                 // Closing and deleting the local session state is still safe.
+                debugBenignError("ai.service.deleteSession.cancel", error);
             }
 
             await this.closeSession(sessionId);
@@ -1408,8 +1423,9 @@ export class AiService {
                     modes: response.modes ?? null,
                     runtimeSessionId: liveSession.snapshot.runtimeSessionId,
                 };
-            } catch {
+            } catch (error) {
                 // If the session cannot be resumed, start a new one.
+                debugBenignError("ai.service.loadSession.resume", error);
             } finally {
                 liveSession.isRestoring = false;
             }
@@ -2005,7 +2021,11 @@ export class AiService {
                 projectId,
                 worktreeId,
             );
-        } catch {
+        } catch (error) {
+            debugBenignError(
+                "ai.service.resolveProjectRootPathSafe",
+                error,
+            );
             return null;
         }
     }
@@ -3847,7 +3867,8 @@ function stringifyJson(value: unknown): string | null {
 
     try {
         return JSON.stringify(value, null, 2);
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.service.stringifyJson", error);
         return null;
     }
 }
@@ -3915,7 +3936,8 @@ function buildToolSummary(
             try {
                 const parsed = new URL(url);
                 return parsed.hostname + parsed.pathname;
-            } catch {
+            } catch (error) {
+                debugBenignError("ai.service.toolSummary.parseUrl", error);
                 return url.length > 60 ? url.slice(0, 57) + "…" : url;
             }
         }
@@ -4192,7 +4214,8 @@ function tryReadFileAsText(absolutePath: string): string | null {
             return null;
         }
         return fs.readFileSync(absolutePath, "utf8");
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.service.tryReadFileAsText", error);
         return null;
     }
 }

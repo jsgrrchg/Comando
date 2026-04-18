@@ -89,7 +89,7 @@ describe("ProjectService", () => {
 
         workspaceService.saveSnapshot("workspace-1", snapshot);
 
-        projectService.removeProject(firstProject.id);
+        await projectService.removeProject(firstProject.id);
         expect(projectService.listProjects()).toEqual([]);
 
         const hiddenProjectRow = connection

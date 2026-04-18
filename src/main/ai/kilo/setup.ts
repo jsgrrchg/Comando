@@ -11,6 +11,8 @@ import type {
     KiloRuntimeSettings,
 } from "@shared/ipc";
 
+import { debugBenignError } from "../../observability/logging.ts";
+
 const KILO_PROGRAM_NAME = "kilo";
 const KILO_ACP_SUBCOMMAND = "acp";
 const KILO_AUTH_LOGIN_SUBCOMMAND = ["auth", "login"] as const;
@@ -332,7 +334,8 @@ function getKiloLegacyAuthStoreStatus(): KiloAuthStoreStatus | null {
             hasActiveAuth,
             modifiedAtMs: getFileModifiedAtMs(authPath),
         };
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.readLegacyAuthStore", error);
         return null;
     }
 }
@@ -365,7 +368,8 @@ export function readKiloSqliteAuthStoreStatus(
             hasActiveAuth,
             modifiedAtMs: getFileModifiedAtMs(databasePath),
         };
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.readSqliteAuthStore", error);
         return null;
     } finally {
         database?.close();
@@ -455,7 +459,8 @@ function hasActiveAccountRow(database: DatabaseSync, nowMs: number): boolean {
             row?.token_expiry ?? null,
             nowMs,
         );
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.hasActiveAccountRow", error);
         return false;
     }
 }
@@ -492,7 +497,8 @@ function hasActiveControlAccountRow(
             row?.token_expiry ?? null,
             nowMs,
         );
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.hasActiveControlAccountRow", error);
         return false;
     }
 }
@@ -529,7 +535,8 @@ function hasAnyAuthenticatedAccountRow(
             row?.token_expiry ?? null,
             nowMs,
         );
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.hasAnyAuthenticatedAccountRow", error);
         return false;
     }
 }
@@ -562,7 +569,8 @@ function hasTable(database: DatabaseSync, tableName: string): boolean {
             .get(tableName) as { name: string } | undefined;
 
         return Boolean(row?.name);
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.hasTable", error);
         return false;
     }
 }
@@ -627,7 +635,8 @@ function getKiloDataDir(): string | null {
 function getFileModifiedAtMs(filePath: string): number | null {
     try {
         return fs.statSync(filePath).mtimeMs;
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.getFileModifiedAtMs", error);
         return null;
     }
 }
@@ -680,7 +689,8 @@ function isExecutableFile(candidatePath: string): boolean {
     try {
         fs.accessSync(candidatePath, fs.constants.X_OK);
         return fs.statSync(candidatePath).isFile();
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.isExecutableFile", error);
         return false;
     }
 }
@@ -688,7 +698,8 @@ function isExecutableFile(candidatePath: string): boolean {
 function isFile(candidatePath: string): boolean {
     try {
         return fs.statSync(candidatePath).isFile();
-    } catch {
+    } catch (error) {
+        debugBenignError("ai.kilo.isFile", error);
         return false;
     }
 }

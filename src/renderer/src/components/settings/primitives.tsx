@@ -1,5 +1,36 @@
-import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import {
+    useState,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    type CSSProperties,
+} from "react";
 import { createPortal } from "react-dom";
+
+// Static style fragments hoisted out of render so memoized children and
+// DevTools-based reference equality checks don't churn on every parent render.
+const TOGGLE_TRACK_BASE: CSSProperties = {
+    width: 36,
+    height: 20,
+    borderRadius: 10,
+    border: "none",
+    position: "relative",
+    flexShrink: 0,
+    transition:
+        "background-color 150ms, filter 100ms ease, box-shadow 100ms ease",
+};
+
+const TOGGLE_THUMB_BASE: CSSProperties = {
+    position: "absolute",
+    top: 2,
+    width: 16,
+    height: 16,
+    borderRadius: "50%",
+    backgroundColor: "#fff",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+    transition: "left 150ms",
+};
 
 export function Toggle({
     value,
@@ -10,6 +41,21 @@ export function Toggle({
     onChange: (v: boolean) => void;
     disabled?: boolean;
 }) {
+    const trackStyle = useMemo<CSSProperties>(
+        () => ({
+            ...TOGGLE_TRACK_BASE,
+            cursor: disabled ? "not-allowed" : "pointer",
+            backgroundColor: value
+                ? "var(--color-accent)"
+                : "var(--color-bg-tertiary)",
+            opacity: disabled ? 0.4 : 1,
+        }),
+        [value, disabled],
+    );
+    const thumbStyle = useMemo<CSSProperties>(
+        () => ({ ...TOGGLE_THUMB_BASE, left: value ? 18 : 2 }),
+        [value],
+    );
     return (
         <button
             role="switch"
@@ -26,35 +72,9 @@ export function Toggle({
                 e.currentTarget.style.filter = "brightness(1)";
                 e.currentTarget.style.boxShadow = "none";
             }}
-            style={{
-                width: 36,
-                height: 20,
-                borderRadius: 10,
-                border: "none",
-                cursor: disabled ? "not-allowed" : "pointer",
-                backgroundColor: value
-                    ? "var(--color-accent)"
-                    : "var(--color-bg-tertiary)",
-                position: "relative",
-                flexShrink: 0,
-                transition:
-                    "background-color 150ms, filter 100ms ease, box-shadow 100ms ease",
-                opacity: disabled ? 0.4 : 1,
-            }}
+            style={trackStyle}
         >
-            <span
-                style={{
-                    position: "absolute",
-                    top: 2,
-                    left: value ? 18 : 2,
-                    width: 16,
-                    height: 16,
-                    borderRadius: "50%",
-                    backgroundColor: "#fff",
-                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-                    transition: "left 150ms",
-                }}
-            />
+            <span style={thumbStyle} />
         </button>
     );
 }
@@ -173,29 +193,39 @@ export function SelectField<T extends string | number | null>({
         const menu = menuRef.current;
         if (!anchor || !menu) return;
 
-        const gap = 4;
-        const anchorRect = anchor.getBoundingClientRect();
-        const menuRect = menu.getBoundingClientRect();
-        const shouldOpenAbove =
-            anchorRect.bottom + gap + menuRect.height >
-                window.innerHeight - 8 &&
-            anchorRect.top - gap - menuRect.height >= 8;
-        const rawY = shouldOpenAbove
-            ? anchorRect.top - gap - menuRect.height
-            : anchorRect.bottom + gap;
-        const safe = getViewportSafePosition(
-            anchorRect.right - menuRect.width,
-            rawY,
-            menuRect.width,
-            menuRect.height,
-        );
+        const computePosition = () => {
+            const gap = 4;
+            const anchorRect = anchor.getBoundingClientRect();
+            const menuRect = menu.getBoundingClientRect();
+            const shouldOpenAbove =
+                anchorRect.bottom + gap + menuRect.height >
+                    window.innerHeight - 8 &&
+                anchorRect.top - gap - menuRect.height >= 8;
+            const rawY = shouldOpenAbove
+                ? anchorRect.top - gap - menuRect.height
+                : anchorRect.bottom + gap;
+            const safe = getViewportSafePosition(
+                anchorRect.right - menuRect.width,
+                rawY,
+                menuRect.width,
+                menuRect.height,
+            );
 
-        setMenuPosition({
-            x: safe.x,
-            y: safe.y,
-            minWidth: anchorRect.width,
-        });
-    }, [open, options.length]);
+            setMenuPosition({
+                x: safe.x,
+                y: safe.y,
+                minWidth: anchorRect.width,
+            });
+        };
+
+        computePosition();
+
+        // Recompute when the menu itself resizes (font loading, dynamic labels,
+        // etc.); `options.length` was a fragile proxy that missed these cases.
+        const observer = new ResizeObserver(computePosition);
+        observer.observe(menu);
+        return () => observer.disconnect();
+    }, [open]);
 
     useEffect(() => {
         if (!open) return;

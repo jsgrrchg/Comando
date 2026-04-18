@@ -86,10 +86,11 @@ const EDITOR_LANGUAGES: readonly EditorLanguageDefinition[] = [
         label: "YAML",
     },
     {
-        extensions: ["sh", "bash", "zsh", "ksh"],
+        extensions: ["sh", "bash", "zsh", "ksh", "env"],
         filenames: [
             ".bash_profile",
             ".bashrc",
+            ".env",
             ".envrc",
             ".profile",
             ".zprofile",
@@ -359,11 +360,25 @@ export function resolveEditorLanguage(options: {
         return toResolvedLanguage(byFilename);
     }
 
-    const extension = getExtension(fileName);
-    const byExtension = extension ? extensionIndex.get(extension) : undefined;
+    // Composite filenames like `Dockerfile.dev` / `Makefile.common`: probe the
+    // first non-empty segment against the filename index before falling back
+    // to extension matching.
+    const firstNonEmptySegment = getFirstNonEmptySegment(fileName);
+    if (firstNonEmptySegment && firstNonEmptySegment !== fileName) {
+        const byPrefix = filenameIndex.get(firstNonEmptySegment);
+        if (byPrefix) {
+            return toResolvedLanguage(byPrefix);
+        }
+    }
 
-    if (byExtension) {
-        return toResolvedLanguage(byExtension);
+    // Try progressively shorter suffixes so composite extensions like
+    // `schema.prisma`, `.env.local` or `foo.test.ts` can match entries
+    // registered for either the long or the short suffix.
+    for (const candidate of getExtensionCandidates(fileName)) {
+        const byExtension = extensionIndex.get(candidate);
+        if (byExtension) {
+            return toResolvedLanguage(byExtension);
+        }
     }
 
     const interpreter = extractInterpreter(options.probeContent ?? "");
@@ -395,14 +410,39 @@ function getFileName(filePath: string): string {
     return normalizedPath.split("/").at(-1) ?? filePath;
 }
 
-function getExtension(fileName: string): string {
-    const extension = fileName.split(".").at(-1);
-
-    if (!extension || extension === fileName) {
-        return "";
+function getExtensionCandidates(fileName: string): string[] {
+    const parts = fileName.split(".");
+    if (parts.length < 2) {
+        return [];
     }
+    const candidates: string[] = [];
+    // Longest-first: `file.test.ts` → ["test.ts", "ts"].
+    for (let i = 1; i < parts.length; i += 1) {
+        const suffix = parts.slice(i).join(".").toLowerCase();
+        if (suffix) {
+            candidates.push(suffix);
+        }
+    }
+    // Dotfiles like `.env.local`: also probe the first non-empty segment
+    // (`env`) so language tables that only register the short name still
+    // match. Appended last so a more specific suffix wins if ever registered.
+    if (parts[0] === "" && parts[1]) {
+        const firstSegment = parts[1].toLowerCase();
+        if (firstSegment && !candidates.includes(firstSegment)) {
+            candidates.push(firstSegment);
+        }
+    }
+    return candidates;
+}
 
-    return extension.toLowerCase();
+function getFirstNonEmptySegment(fileName: string): string {
+    for (const segment of fileName.split(".")) {
+        const trimmed = segment.toLowerCase();
+        if (trimmed) {
+            return trimmed;
+        }
+    }
+    return "";
 }
 
 function extractInterpreter(probeContent: string): string | null {

@@ -1,5 +1,6 @@
 import type { MessagePort, Worker } from "node:worker_threads";
 
+import { debugBenignError } from "../observability/logging";
 import {
     mainProcessPerformance,
     type PerformanceOperationName,
@@ -157,8 +158,12 @@ export class RpcWorkerSupervisor<TReady> {
                 undefined,
                 `${this.#domain}-shutdown`,
             );
-        } catch {
+        } catch (error) {
             // Ignore graceful shutdown failures during app exit.
+            debugBenignError(
+                `workers.${this.#domain}.gracefulShutdown`,
+                error,
+            );
         }
 
         this.#disposeConnection(connection);
@@ -167,8 +172,9 @@ export class RpcWorkerSupervisor<TReady> {
 
         try {
             connection.port.close();
-        } catch {
+        } catch (error) {
             // Ignore repeated port shutdown attempts.
+            debugBenignError(`workers.${this.#domain}.portClose`, error);
         }
 
         await connection.worker.terminate();
@@ -388,8 +394,12 @@ export class RpcWorkerSupervisor<TReady> {
             this.#rejectPending(createClosedWorkerError(this.#domain));
             try {
                 connection.port.close();
-            } catch {
+            } catch (error) {
                 // Ignore repeated port shutdown attempts.
+                debugBenignError(
+                    `workers.${this.#domain}.portClose`,
+                    error,
+                );
             }
             return;
         }
@@ -413,8 +423,9 @@ export class RpcWorkerSupervisor<TReady> {
 
         try {
             connection.port.close();
-        } catch {
+        } catch (error) {
             // Ignore repeated port shutdown attempts.
+            debugBenignError(`workers.${this.#domain}.portClose`, error);
         }
 
         if (reason !== "exit") {

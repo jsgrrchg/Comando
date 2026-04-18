@@ -10,6 +10,7 @@ import type {
 } from "@shared/ipc";
 
 import type { Awaitable } from "../db/awaitable";
+import { debugBenignError } from "../observability/logging";
 
 const DEFAULT_MAIN_WINDOW_HEIGHT = 960;
 const DEFAULT_MAIN_WINDOW_WIDTH = 1480;
@@ -389,7 +390,8 @@ export class PersistenceService {
         try {
             const parsed = JSON.parse(row.value) as PersistedShellState;
             return parsed;
-        } catch {
+        } catch (error) {
+            debugBenignError("persistence.loadLegacyShellState", error);
             return null;
         }
     }
@@ -431,7 +433,8 @@ export class PersistenceService {
     #parseShellState(json: string): PersistedShellState | null {
         try {
             return JSON.parse(json) as PersistedShellState;
-        } catch {
+        } catch (error) {
+            debugBenignError("persistence.parseShellState", error);
             return null;
         }
     }

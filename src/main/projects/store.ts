@@ -8,6 +8,7 @@ import type Database from "better-sqlite3";
 import type { ProjectSummary } from "@shared/ipc";
 
 import type { Awaitable } from "../db/awaitable";
+import { debugBenignError } from "../observability/logging";
 
 interface PersistedProjectRow {
     readonly is_hidden?: number;
@@ -717,7 +718,8 @@ function runGitPathCommand(
         }).trim();
 
         return output.length > 0 ? output : null;
-    } catch {
+    } catch (error) {
+        debugBenignError("projects.store.runGit", error);
         return null;
     }
 }
@@ -725,7 +727,8 @@ function runGitPathCommand(
 function isDirectoryPath(projectPath: string): boolean {
     try {
         return fs.statSync(projectPath).isDirectory();
-    } catch {
+    } catch (error) {
+        debugBenignError("projects.store.isDirectoryPath", error);
         return false;
     }
 }

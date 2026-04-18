@@ -34,10 +34,12 @@ import {
     type OpenProjectWindowInput,
     type OpenProjectFileInput,
     type OpenSettingsWindowInput,
+    type AiSessionSnapshot,
     type PersistenceSnapshot,
     type PrepareAiSessionInput,
     type ProjectSettingsSnapshot,
     type ProjectSettingsUpdatedEvent,
+    type ProjectSummary,
     type ProjectTreeInvalidation,
     type ThemeMode,
     type WindowContextSnapshot,
@@ -115,6 +117,15 @@ function assertIpcObjectOrNull<T>(channel: string, value: unknown): T | null {
         );
     }
     return value as T;
+}
+
+function assertIpcArray<T>(channel: string, value: unknown): T[] {
+    if (!Array.isArray(value)) {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected array, got ${typeof value}.`,
+        );
+    }
+    return value as T[];
 }
 
 const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
@@ -197,7 +208,7 @@ const comandoApi: ComandoApi = {
             await ipcRenderer.invoke(IPC_CHANNELS.getBootstrapSnapshot),
         ),
     getPersistenceSnapshot: async () =>
-        assertIpcObject<PersistenceSnapshot>(
+        assertIpcObjectOrNull<PersistenceSnapshot>(
             IPC_CHANNELS.getPersistenceSnapshot,
             await ipcRenderer.invoke(IPC_CHANNELS.getPersistenceSnapshot),
         ),
@@ -252,7 +263,11 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.createTerminalSession, input),
     addProjectPaths: (paths: string[]) =>
         ipcRenderer.invoke(IPC_CHANNELS.addProjectPaths, paths),
-    listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.listProjects),
+    listProjects: async () =>
+        assertIpcArray<ProjectSummary>(
+            IPC_CHANNELS.listProjects,
+            await ipcRenderer.invoke(IPC_CHANNELS.listProjects),
+        ),
     onProjectTreeInvalidated: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -468,27 +483,34 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
     setNativeAppearance: (mode: ThemeMode) =>
         ipcRenderer.invoke(IPC_CHANNELS.setNativeAppearance, mode),
-    getGitRepositorySnapshot: (input: GitRepositoryScopeInput) =>
-        ipcRenderer.invoke(
+    getGitRepositorySnapshot: async (input: GitRepositoryScopeInput) =>
+        assertIpcObjectOrNull<GitRepositorySnapshot>(
             IPC_CHANNELS.getGitRepositorySnapshot,
-            input,
-        ) as Promise<GitRepositorySnapshot | null>,
-    listGitBranches: (input: GitBranchListInput) =>
-        ipcRenderer.invoke(IPC_CHANNELS.listGitBranches, input) as Promise<
-            readonly GitBranchSummary[]
-        >,
-    listGitWorktrees: (input: GitWorktreeListInput) =>
-        ipcRenderer.invoke(IPC_CHANNELS.listGitWorktrees, input) as Promise<
-            readonly GitWorktreeSummary[]
-        >,
-    listGitChanges: (input: GitChangesListInput) =>
-        ipcRenderer.invoke(IPC_CHANNELS.listGitChanges, input) as Promise<
-            readonly GitChangeEntry[]
-        >,
-    listGitHistory: (input: GitHistoryListInput) =>
-        ipcRenderer.invoke(IPC_CHANNELS.listGitHistory, input) as Promise<
-            readonly GitHistoryCommitSummary[]
-        >,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getGitRepositorySnapshot,
+                input,
+            ),
+        ),
+    listGitBranches: async (input: GitBranchListInput) =>
+        assertIpcArray<GitBranchSummary>(
+            IPC_CHANNELS.listGitBranches,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitBranches, input),
+        ),
+    listGitWorktrees: async (input: GitWorktreeListInput) =>
+        assertIpcArray<GitWorktreeSummary>(
+            IPC_CHANNELS.listGitWorktrees,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitWorktrees, input),
+        ),
+    listGitChanges: async (input: GitChangesListInput) =>
+        assertIpcArray<GitChangeEntry>(
+            IPC_CHANNELS.listGitChanges,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitChanges, input),
+        ),
+    listGitHistory: async (input: GitHistoryListInput) =>
+        assertIpcArray<GitHistoryCommitSummary>(
+            IPC_CHANNELS.listGitHistory,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitHistory, input),
+        ),
     getGitDiff: (input: GitDiffInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getGitDiff,
@@ -563,19 +585,31 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.notifyFileBuffer, input),
     getChatSessionState: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.getChatSessionState, sessionId),
-    getAiRuntimeStatus: (runtimeId: AiRuntimeId) =>
-        ipcRenderer.invoke(IPC_CHANNELS.getAiRuntimeStatus, runtimeId),
+    getAiRuntimeStatus: async (runtimeId: AiRuntimeId) =>
+        assertIpcObject<AiRuntimeStatus>(
+            IPC_CHANNELS.getAiRuntimeStatus,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getAiRuntimeStatus,
+                runtimeId,
+            ),
+        ),
     prepareAiSession: (input: PrepareAiSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.prepareAiSession, input),
     refreshAiProjectScopes: (projectId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.refreshAiProjectScopes, projectId),
-    listAiSessionHistory: (input: ListAiSessionHistoryInput) =>
-        ipcRenderer.invoke(
+    listAiSessionHistory: async (input: ListAiSessionHistoryInput) =>
+        assertIpcArray<AiHistorySessionSummary>(
             IPC_CHANNELS.listAiSessionHistory,
-            input,
-        ) as Promise<readonly AiHistorySessionSummary[]>,
-    getAiSessionSnapshot: (sessionId: string) =>
-        ipcRenderer.invoke(IPC_CHANNELS.getAiSessionSnapshot, sessionId),
+            await ipcRenderer.invoke(IPC_CHANNELS.listAiSessionHistory, input),
+        ),
+    getAiSessionSnapshot: async (sessionId: string) =>
+        assertIpcObjectOrNull<AiSessionSnapshot>(
+            IPC_CHANNELS.getAiSessionSnapshot,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getAiSessionSnapshot,
+                sessionId,
+            ),
+        ),
     getAiSessionTranscriptPage: (input: GetAiSessionTranscriptPageInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getAiSessionTranscriptPage,

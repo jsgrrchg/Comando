@@ -38,6 +38,7 @@ export function useStickyFolders({
     const [scale, setScale] = useState(1);
     const [paddingTop, setPaddingTop] = useState(0);
     const rafRef = useRef(0);
+    const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
     useEffect(() => {
         const container = scrollContainerRef.current;
@@ -45,8 +46,8 @@ export function useStickyFolders({
             return;
         }
 
-        function readScale(): void {
-            const raw = getComputedStyle(container!).getPropertyValue(
+        const readScale = (): void => {
+            const raw = getComputedStyle(container).getPropertyValue(
                 "--file-tree-scale",
             );
             const parsed = parseFloat(raw);
@@ -55,7 +56,7 @@ export function useStickyFolders({
             } else {
                 setScale(1);
             }
-        }
+        };
 
         readScale();
         // DOM measurement on mount — feeds sticky-folder Y offsets in a useMemo.
@@ -69,9 +70,13 @@ export function useStickyFolders({
             });
         };
 
+        // Disconnect any leftover observer from a prior effect run (StrictMode,
+        // container swap) before wiring a new one.
+        resizeObserverRef.current?.disconnect();
         const resizeObserver = new ResizeObserver(() => {
             readScale();
         });
+        resizeObserverRef.current = resizeObserver;
 
         container.addEventListener("scroll", onScroll, { passive: true });
         resizeObserver.observe(container);
@@ -80,6 +85,9 @@ export function useStickyFolders({
             cancelAnimationFrame(rafRef.current);
             container.removeEventListener("scroll", onScroll);
             resizeObserver.disconnect();
+            if (resizeObserverRef.current === resizeObserver) {
+                resizeObserverRef.current = null;
+            }
         };
     }, [scrollContainerRef]);
 
@@ -104,7 +112,9 @@ export function useStickyFolders({
 
             for (let i = 0; i < flatRows.length; i++) {
                 const row = flatRows[i];
-                if (row.kind !== "directory" || row.depth !== depth) {
+                // Defensive: future `noUncheckedIndexedAccess` would widen
+                // `row` to `FlatRowEntry | undefined`; bail early in any case.
+                if (!row || row.kind !== "directory" || row.depth !== depth) {
                     continue;
                 }
 

@@ -54,6 +54,14 @@ describe("truncateChatTitle", () => {
             "one two\u2026",
         );
     });
+
+    it("does not split emoji surrogate pairs at the cut boundary", () => {
+        // "A😀B😀C😀D" — each emoji occupies 2 UTF-16 code units. Budget 6
+        // under the old impl would slice mid-surrogate (U+FFFD).
+        const result = truncateChatTitle("A\u{1F600}B\u{1F600}C\u{1F600}D", 6);
+        expect(result).not.toContain("\uFFFD");
+        expect(result.endsWith("\u2026")).toBe(true);
+    });
 });
 
 describe("inferChatTitleFromPrompt", () => {

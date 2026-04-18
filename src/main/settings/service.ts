@@ -42,6 +42,8 @@ import {
     EDITOR_FONT_SIZE_MIN,
 } from "@shared/typography";
 
+import { debugBenignError } from "@main/observability/logging";
+
 const CLAUDE_AUTH_INVALIDATED_AT_KEY = "ai.claude.auth_invalidated_at_ms";
 const CLAUDE_AUTH_METHOD_KEY = "ai.claude.auth_method";
 const CODEX_AUTH_METHOD_KEY = "ai.codex.auth_method";
@@ -577,7 +579,8 @@ export class SettingsService {
 
         try {
             return JSON.parse(row.value) as T;
-        } catch {
+        } catch (error) {
+            debugBenignError("settings.loadJsonSetting", error);
             return null;
         }
     }

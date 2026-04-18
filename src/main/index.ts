@@ -27,6 +27,7 @@ import { AiService } from "./ai/service";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
 import { createGitWorkerClient, type GitWorkerClient } from "./git";
 import { installApplicationMenu } from "./menu";
+import { debugBenignError } from "./observability/logging";
 import { mainProcessPerformance } from "./observability/performance";
 import type { PersistenceGateway } from "./persistence/service";
 import { createProjectWorkerClient } from "./projects/client";
@@ -111,8 +112,12 @@ if (!hasSingleInstanceLock) {
                         ? (projectPath) => {
                               try {
                                   app.addRecentDocument(projectPath);
-                              } catch {
-                                  // Ignore non-critical operating system errors.
+                              } catch (error) {
+                                  // Non-critical OS call; log at debug level.
+                                  debugBenignError(
+                                      "app.addRecentDocument",
+                                      error,
+                                  );
                               }
                           }
                         : undefined,
@@ -532,7 +537,8 @@ function updateMainWindowTitle(
         const projectName =
             rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? projectId;
         window.setTitle(`${appIdentity.windowTitle} · ${projectName}`);
-    } catch {
+    } catch (error) {
+        debugBenignError("applyProjectWindowTitle", error);
         window.setTitle(appIdentity.windowTitle);
     }
 }
@@ -669,7 +675,8 @@ function attachAiSessionStream(window: BrowserWindow, windowId: string): void {
             channel.port2,
         ]);
         aiSessionStreamPorts.set(windowId, channel.port1);
-    } catch {
+    } catch (error) {
+        debugBenignError("attachAiSessionStream", error);
         channel.port1.close();
         channel.port2.close();
     }
@@ -701,7 +708,11 @@ function dispatchAiSessionSnapshot(
             try {
                 port.postMessage(payload);
                 return;
-            } catch {
+            } catch (error) {
+                debugBenignError(
+                    "aiSessionStreamPort.postMessage",
+                    error,
+                );
                 detachAiSessionStream(stableWindowId);
             }
         }

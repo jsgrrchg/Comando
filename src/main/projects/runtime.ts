@@ -19,6 +19,7 @@ import {
     type ProjectSearchCandidate,
 } from "@shared/project-search";
 
+import { debugBenignError } from "../observability/logging";
 import { shouldIgnoreEntry } from "./ignore";
 import {
     createProjectEntry,
@@ -416,7 +417,8 @@ export class ProjectRuntime {
 
             this.#gitSnapshots.set(normalizedRootPath, snapshot);
             return snapshot;
-        } catch {
+        } catch (error) {
+            debugBenignError("projects.runtime.computeGitSnapshot", error);
             const emptySnapshot = {
                 changedPaths: [],
                 exactBadges: new Map<string, GitStatusBadge>(),
@@ -463,9 +465,10 @@ export class ProjectRuntime {
             );
 
             this.#watchers.set(rootKey, watcher);
-        } catch {
+        } catch (error) {
             // Some file systems do not support recursive watching. The tree still
             // works, only live refresh is reduced until a stronger watcher lands.
+            debugBenignError("projects.runtime.ensureWatcher", error);
         }
     }
 
@@ -498,6 +501,7 @@ export class ProjectRuntime {
                 worktreeId,
             });
         }, 140);
+        timeout.unref?.();
 
         this.#pendingInvalidations.set(invalidationKey, {
             relativePaths: mergedRelativePaths,
@@ -613,7 +617,8 @@ function buildProjectSearchIndex(
             entries = fs.readdirSync(currentDirectory, {
                 withFileTypes: true,
             });
-        } catch {
+        } catch (error) {
+            debugBenignError("projects.runtime.search.readdir", error);
             continue;
         }
 

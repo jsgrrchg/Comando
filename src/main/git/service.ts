@@ -20,6 +20,7 @@ import type {
     GitWorktreeSummary,
 } from "./types";
 
+import { debugBenignError } from "../observability/logging";
 import { mainProcessPerformance } from "../observability/performance";
 import { buildGitStatusSnapshot, createEmptyGitScopeCounts } from "./status";
 import {
@@ -351,7 +352,8 @@ export class GitService implements GitGateway {
                         ? trackingBranchName
                         : null,
             }));
-        } catch {
+        } catch (error) {
+            debugBenignError("git.service.listRemotes", error);
             return [];
         }
     }
@@ -375,8 +377,9 @@ export class GitService implements GitGateway {
 
             collectNumstatRecords(unstaged, "unstaged", stats);
             collectNumstatRecords(staged, "staged", stats);
-        } catch {
+        } catch (error) {
             // Diff stats are best-effort metadata for the UI.
+            debugBenignError("git.service.getDiffStats", error);
         }
 
         return stats;
@@ -755,7 +758,8 @@ async function hydrateGitSyncStatus(
             ...sync,
             commit: commit || null,
         };
-    } catch {
+    } catch (error) {
+        debugBenignError("git.service.readHeadCommit", error);
         return sync;
     }
 }
@@ -767,7 +771,8 @@ async function readGitConfig(
     try {
         const value = (await git.raw(["config", "--get", key])).trim();
         return value.length > 0 ? value : null;
-    } catch {
+    } catch (error) {
+        debugBenignError("git.service.readGitConfig", error);
         return null;
     }
 }
