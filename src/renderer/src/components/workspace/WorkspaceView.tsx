@@ -3668,11 +3668,31 @@ function FilePathBar({
     readonly statusLabel?: string;
 }) {
     return (
-        <div className="flex h-6 items-center justify-between gap-3 border-b border-border bg-bg-secondary px-3 text-[10px] leading-none text-text-secondary">
+        <div
+            className="flex h-6 items-center justify-between gap-3 px-3 text-[10.5px] leading-none text-text-secondary"
+            style={{
+                backgroundColor: "var(--color-bg-secondary)",
+                borderBottom:
+                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                fontFamily: "var(--font-mono)",
+            }}
+        >
             <div className="min-w-0 truncate" title={path}>
                 {path}
             </div>
-            {statusLabel ? <div className="shrink-0">{statusLabel}</div> : null}
+            {statusLabel ? (
+                <div
+                    className="shrink-0"
+                    style={{
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                    }}
+                >
+                    {statusLabel}
+                </div>
+            ) : null}
         </div>
     );
 }

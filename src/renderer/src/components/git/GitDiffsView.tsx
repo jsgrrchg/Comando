@@ -20,6 +20,7 @@ export function GitDiffsView({
     displayMode = "single",
     emptyState,
     files,
+    lineWrapping = true,
     onScroll,
     onSelectFile,
     onToggleFileCollapse,
@@ -111,6 +112,7 @@ export function GitDiffsView({
                             file={file}
                             fileId={file.id}
                             key={file.id}
+                            lineWrapping={lineWrapping}
                             onToggleCollapse={toggleFileCollapse}
                             surfaceVariant={surfaceVariant}
                         />
@@ -122,6 +124,7 @@ export function GitDiffsView({
                     codeFontSize={codeFontSize}
                     codeLineHeight={codeLineHeight}
                     file={activeFile}
+                    lineWrapping={lineWrapping}
                     surfaceVariant={surfaceVariant}
                 />
             )}
@@ -171,6 +174,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
     collapsed = false,
     file,
     fileId,
+    lineWrapping = true,
     onToggleCollapse,
     surfaceVariant,
 }: {
@@ -180,6 +184,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
     readonly collapsed?: boolean;
     readonly file: GitDiffFile;
     readonly fileId?: string;
+    readonly lineWrapping?: boolean;
     readonly onToggleCollapse?: ((fileId: string) => void) | undefined;
     readonly surfaceVariant: "flat" | "panel";
 }) {
@@ -296,6 +301,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
                                             filePath={file.path}
                                             key={line.id}
                                             line={line}
+                                            lineWrapping={lineWrapping}
                                         />
                                     ))}
                                 </div>
@@ -383,12 +389,14 @@ const DiffLineRow = memo(function DiffLineRow({
     codeLineHeight,
     filePath,
     line,
+    lineWrapping = true,
 }: {
     readonly codeFontFamily?: string | null;
     readonly codeFontSize?: number | null;
     readonly codeLineHeight?: number | null;
     readonly filePath: string;
     readonly line: GitDiffLine;
+    readonly lineWrapping?: boolean;
 }) {
     const viewLine = useMemo(
         () => ({
@@ -418,6 +426,7 @@ const DiffLineRow = memo(function DiffLineRow({
             fontSize={codeFontSize}
             lineHeight={codeLineHeight}
             line={viewLine}
+            lineWrapping={lineWrapping}
         />
     );
 });

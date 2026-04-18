@@ -1283,24 +1283,27 @@ export const ChatTabView = memo(function ChatTabView({
         >
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <div
-                    className="flex items-center gap-2 px-3 py-0.5 text-xs shrink-0"
+                    className="flex h-6 shrink-0 items-center gap-2 px-3 text-[10.5px] leading-none text-text-secondary"
                     style={{
-                        height: 28,
+                        backgroundColor: "var(--color-bg-secondary)",
+                        borderBottom:
+                            "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                         boxSizing: "border-box",
-                        borderBottom: "1px solid var(--color-border)",
-                        color: "var(--color-text-secondary)",
+                        fontFamily: "var(--font-mono)",
                     }}
                 >
                     {isEditingTitle ? (
                         <input
                             ref={titleInputRef}
-                            className="min-w-0 flex-1 rounded bg-transparent font-medium text-xs outline-none"
+                            className="min-w-0 flex-1 rounded bg-transparent outline-none"
                             style={{
-                                color: "var(--color-text-primary)",
                                 border: "none",
-                                padding: 0,
                                 borderBottom:
                                     "1px solid var(--color-accent, var(--color-text-secondary))",
+                                color: "var(--color-text-primary)",
+                                fontFamily: "var(--font-mono)",
+                                fontSize: "10.5px",
+                                padding: 0,
                             }}
                             value={titleDraft}
                             onChange={(e) => setTitleDraft(e.target.value)}
@@ -1316,7 +1319,7 @@ export const ChatTabView = memo(function ChatTabView({
                         />
                     ) : (
                         <span
-                            className="flex-1 cursor-default truncate font-medium"
+                            className="flex-1 cursor-default truncate"
                             style={{
                                 color: "var(--color-text-primary)",
                             }}

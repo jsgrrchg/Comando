@@ -334,6 +334,7 @@ export function GitCommitTabView({
                     collapsedFileIds={collapsedFileIds}
                     displayMode="stack"
                     files={diffFiles}
+                    lineWrapping={false}
                     onScroll={detail.body ? handleDiffScroll : undefined}
                     onToggleFileCollapse={handleToggleFileCollapse}
                     showFileSelector={false}
