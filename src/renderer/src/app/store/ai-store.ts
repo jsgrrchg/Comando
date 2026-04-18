@@ -424,6 +424,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
+        let syncedTitle: string | null = null;
         set((state) => {
             const session =
                 state.sessions[update.patch.sessionId] ?? createSessionState();
@@ -455,6 +456,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const nextCatalog = hasCatalogChanges(update.patch.changes)
                 ? extractRuntimeCatalog(nextSnapshot)
                 : null;
+            const nextMeta = session.meta
+                ? session.meta.title === nextSnapshot.title
+                    ? session.meta
+                    : { ...session.meta, title: nextSnapshot.title }
+                : session.meta;
+            if (nextMeta !== session.meta) {
+                syncedTitle = nextSnapshot.title;
+            }
 
             return {
                 runtimeCatalogById:
@@ -472,11 +481,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         isDispatching: false,
                         isHydrating: false,
                         localError: nextSnapshot.lastError,
+                        meta: nextMeta,
                         snapshot: nextSnapshot,
                     },
                 },
             };
         });
+
+        if (syncedTitle !== null) {
+            void useWorkspaceStore
+                .getState()
+                .updateSessionTabTitles(update.patch.sessionId, syncedTitle);
+        }
 
         void drainQueueIfNeeded(update.patch.sessionId, get, set);
     },
