@@ -313,6 +313,17 @@
     --diff-update: #60a5fa;
 }
 
+:root[data-platform="win32"],
+:root.dark[data-platform="win32"] {
+    --vibrancy-opacity: 0%;
+    --windows-titlebar-height: 40px;
+    background: transparent;
+}
+
+:root[data-platform="win32"] body {
+    background: transparent;
+}
+
 * {
     box-sizing: border-box;
 }

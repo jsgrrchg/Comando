@@ -86,6 +86,8 @@ import {
     type OpenDialogOptions,
 } from "electron";
 
+import { refreshWindowsTitleBarOverlays } from "@main/window";
+
 import type { AiService } from "@main/ai/service";
 import {
     forgetOpenFileBuffer,
@@ -661,6 +663,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         const theme: SystemTheme = {
             isDark: nativeTheme.shouldUseDarkColors,
         };
+
+        refreshWindowsTitleBarOverlays();
 
         for (const window of BrowserWindow.getAllWindows()) {
             window.webContents.send(IPC_EVENTS.themeUpdated, theme);

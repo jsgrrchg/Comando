@@ -61,6 +61,7 @@ import {
     createWorkspaceQuickFile,
 } from "./components/workspace/quick-create";
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
+import { WindowsTopBar } from "./components/WindowsTopBar";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 
 type DragState = {
@@ -803,6 +804,7 @@ export function App() {
             : null;
     const activeGitError = gitErrors[activeGitContextKey] ?? null;
     const isMac = bootstrap?.platform === "darwin";
+    const isWindows = bootstrap?.platform === "win32";
     const topStatus = [
         bootstrapError,
         projectsError,
@@ -1683,6 +1685,15 @@ export function App() {
         void window.comando?.setTrafficLightVisibility(visible);
     }, [isMac, leftCollapsed, sidebarOverlayVisible]);
 
+    useEffect(() => {
+        const platform = bootstrap?.platform;
+        if (!platform) return;
+        document.documentElement.setAttribute("data-platform", platform);
+        return () => {
+            document.documentElement.removeAttribute("data-platform");
+        };
+    }, [bootstrap?.platform]);
+
     const sidebarContent = (
         <>
             <div
@@ -2113,9 +2124,13 @@ export function App() {
     );
 
     return (
-        <div className="min-h-screen text-text-primary">
+        <div
+            className="min-h-screen text-text-primary"
+            data-platform={bootstrap?.platform ?? undefined}
+        >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
+                    {isWindows && <WindowsTopBar title="Comando" />}
                     <div
                         className="grid min-h-0 flex-1"
                         style={{
