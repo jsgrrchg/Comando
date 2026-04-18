@@ -2399,6 +2399,7 @@ function FileTabView({
         useRef<MonacoEditor.ICodeEditorViewState | null>(tab.viewState ?? null);
     const pendingEditorViewStateTabIdRef = useRef(tab.id);
     const viewStatePersistTimerRef = useRef<number | null>(null);
+    const viewStateRestoreFrameRef = useRef<number | null>(null);
     const [editorMountVersion, setEditorMountVersion] = useState(0);
     const [diffEditorMountVersion, setDiffEditorMountVersion] = useState(0);
     const [
@@ -2515,6 +2516,40 @@ function FileTabView({
         );
     }, [persistEditorViewState]);
 
+    const clearScheduledEditorViewStateRestore = useCallback(() => {
+        if (viewStateRestoreFrameRef.current != null) {
+            window.cancelAnimationFrame(viewStateRestoreFrameRef.current);
+            viewStateRestoreFrameRef.current = null;
+        }
+    }, []);
+
+    const restoreEditorViewState = useCallback(
+        (
+            editor: MonacoEditor.IStandaloneCodeEditor,
+            viewState: MonacoEditor.ICodeEditorViewState,
+        ) => {
+            clearScheduledEditorViewStateRestore();
+            editor.restoreViewState(viewState);
+            editor.layout();
+
+            // Re-apply after the first paint because Monaco can recompute
+            // layout/model state right after mount and override the scroll.
+            viewStateRestoreFrameRef.current = window.requestAnimationFrame(
+                () => {
+                    viewStateRestoreFrameRef.current = null;
+
+                    if (editorRef.current !== editor) {
+                        return;
+                    }
+
+                    editor.restoreViewState(viewState);
+                    editor.layout();
+                },
+            );
+        },
+        [clearScheduledEditorViewStateRestore],
+    );
+
     const scheduleEditorViewStatePersist = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor) => {
             const tabId = fileTabIdRef.current;
@@ -2551,9 +2586,13 @@ function FileTabView({
                     editorRef.current.saveViewState();
             }
 
+            clearScheduledEditorViewStateRestore();
             flushScheduledEditorViewStatePersist();
         };
-    }, [flushScheduledEditorViewStatePersist]);
+    }, [
+        clearScheduledEditorViewStateRestore,
+        flushScheduledEditorViewStatePersist,
+    ]);
 
     useEffect(() => {
         if (
@@ -3325,10 +3364,12 @@ function FileTabView({
                                 tab.viewState ??
                                 pendingEditorViewStateRef.current;
                             if (persistedViewState) {
-                                editor.restoreViewState(persistedViewState);
+                                restoreEditorViewState(
+                                    editor,
+                                    persistedViewState,
+                                );
                                 pendingEditorViewStateRef.current =
                                     persistedViewState;
-                                editor.layout();
                             }
                             const cleanupAttachShortcut =
                                 bindAttachSelectionShortcut({
@@ -3361,6 +3402,7 @@ function FileTabView({
                             setEditorMountVersion((previous) => previous + 1);
 
                             editor.onDidDispose(() => {
+                                clearScheduledEditorViewStateRestore();
                                 pendingEditorViewStateRef.current =
                                     editor.saveViewState();
                                 flushScheduledEditorViewStatePersist();
@@ -3414,6 +3456,7 @@ function FileTabView({
                                 ? "on"
                                 : "off",
                         }}
+                        saveViewState
                         path={buildWorkspaceEditorModelPath(
                             document.absolutePath,
                             tab.id,
