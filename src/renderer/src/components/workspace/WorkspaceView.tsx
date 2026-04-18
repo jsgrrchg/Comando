@@ -1639,6 +1639,7 @@ function WorkspacePaneView({
                             />
                         ) : activeTab.kind === "terminal" ? null : (
                             <ChatTabView
+                                key={activeTab.id}
                                 onDraftChange={handleChatDraftChange}
                                 onOpenFile={handleOpenWorkspaceFile}
                                 onOpenImage={handleOpenChatImage}
