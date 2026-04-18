@@ -184,11 +184,11 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain("color:inherit");
     });
 
-    it("renders turn_started as a subtle reference app-style divider", () => {
+    it("renders turn_started as a subtle Codex ACP-style divider", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
-                    id: "neverwrite:status:turn:turn-1",
+                    id: "codex-acp:status:turn:turn-1",
                     kind: "other",
                     summary: "Context window: 128000",
                     title: "New turn",

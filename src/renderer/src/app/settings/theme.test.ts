@@ -8,7 +8,7 @@ import {
 } from "./theme";
 
 describe("theme font families", () => {
-    it("exposes reference app font families in editor, chat, and composer", () => {
+    it("exposes the bundled font families in editor, chat, and composer", () => {
         expect(
             EDITOR_FONT_FAMILY_OPTIONS.map((option) => option.id),
         ).toEqual(

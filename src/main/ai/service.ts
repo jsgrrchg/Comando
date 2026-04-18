@@ -121,15 +121,19 @@ import {
     resolveKiloRuntime,
 } from "./kilo/setup";
 
-const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
-const NEVERWRITE_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
-const NEVERWRITE_STATUS_EVENT_TYPE = "status";
-const NEVERWRITE_STATUS_EVENT_ID_PREFIX = "neverwrite:status:";
-const NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX = "neverwrite:status:turn:";
-const NEVERWRITE_USER_INPUT_EVENT_TYPE = "user_input_request";
-const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX =
-    "__neverwrite_user_input_response__:";
-const SUPPRESSED_NEVERWRITE_STATUS_TITLES = new Set([
+const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY = "codexAcpPreviousPath";
+const LEGACY_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
+const CODEX_ACP_STATUS_EVENT_TYPE_KEY = "codexAcpEventType";
+const LEGACY_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
+const CODEX_ACP_STATUS_EVENT_TYPE = "status";
+const CODEX_ACP_STATUS_EVENT_ID_PREFIX = "codex-acp:status:";
+const LEGACY_STATUS_EVENT_ID_PREFIX = "neverwrite:status:";
+const CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX = "codex-acp:status:turn:";
+const LEGACY_STATUS_TURN_EVENT_ID_PREFIX = "neverwrite:status:turn:";
+const CODEX_ACP_USER_INPUT_EVENT_TYPE = "user_input_request";
+const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX =
+    "__codex_acp_user_input_response__:";
+const SUPPRESSED_STATUS_TITLES = new Set([
     "Preparing input",
     "Drafting response",
 ]);
@@ -3431,11 +3435,11 @@ function shouldSuppressToolActivityUpdate(
     update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
     title: string | null,
 ): boolean {
-    if (!title || !SUPPRESSED_NEVERWRITE_STATUS_TITLES.has(title)) {
+    if (!title || !SUPPRESSED_STATUS_TITLES.has(title)) {
         return false;
     }
 
-    // codex-acp tags the initial tool_call with meta.neverwriteEventType =
+    // codex-acp tags the initial tool_call with meta.codexAcpEventType =
     // "status", but the follow-up tool_call_update that completes the item
     // is emitted without meta (see vendor/codex-acp/src/thread.rs ~1030,
     // send_status_tool_call_update). Without a second signal the completion
@@ -3444,17 +3448,25 @@ function shouldSuppressToolActivityUpdate(
     // stable across both events, so we use it as the authoritative marker.
     // `turn:` ids are kept because the UI renders them as a timeline
     // divider (see ToolActivityItem.isTurnStartedActivity).
+    const isStatusActivity =
+        update.toolCallId.startsWith(CODEX_ACP_STATUS_EVENT_ID_PREFIX) ||
+        update.toolCallId.startsWith(LEGACY_STATUS_EVENT_ID_PREFIX);
+    const isTurnActivity =
+        update.toolCallId.startsWith(CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX) ||
+        update.toolCallId.startsWith(LEGACY_STATUS_TURN_EVENT_ID_PREFIX);
     if (
-        update.toolCallId.startsWith(NEVERWRITE_STATUS_EVENT_ID_PREFIX) &&
-        !update.toolCallId.startsWith(NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX)
+        isStatusActivity &&
+        !isTurnActivity
     ) {
         return true;
     }
 
     if (
-        isRecord(update._meta) &&
-        update._meta[NEVERWRITE_STATUS_EVENT_TYPE_KEY] ===
-            NEVERWRITE_STATUS_EVENT_TYPE
+        readDiffMetaString(
+            update._meta,
+            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+            LEGACY_STATUS_EVENT_TYPE_KEY,
+        ) === CODEX_ACP_STATUS_EVENT_TYPE
     ) {
         return true;
     }
@@ -3470,7 +3482,8 @@ function diffToAiFileDiff(
 ): AiFileDiff {
     const previousPathValue = readDiffMetaString(
         diff._meta,
-        NEVERWRITE_DIFF_PREVIOUS_PATH_KEY,
+        CODEX_ACP_DIFF_PREVIOUS_PATH_KEY,
+        LEGACY_DIFF_PREVIOUS_PATH_KEY,
     );
     const path = normalizePath(diff.path);
     const previousPath = previousPathValue
@@ -3598,9 +3611,11 @@ function parseUserInputRequest(
     updatedAt: string,
 ): AiUserInputRequest | null {
     if (
-        !isRecord(update._meta) ||
-        update._meta[NEVERWRITE_STATUS_EVENT_TYPE_KEY] !==
-            NEVERWRITE_USER_INPUT_EVENT_TYPE ||
+        readDiffMetaString(
+            update._meta,
+            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+            LEGACY_STATUS_EVENT_TYPE_KEY,
+        ) !== CODEX_ACP_USER_INPUT_EVENT_TYPE ||
         !isRecord(update.rawInput)
     ) {
         return null;
@@ -3715,7 +3730,7 @@ function buildUserInputResponsePrompt(
         turn_id: turnId ?? "",
     };
 
-    return `${NEVERWRITE_USER_INPUT_RESPONSE_PREFIX}${JSON.stringify(payload)}`;
+    return `${CODEX_ACP_USER_INPUT_RESPONSE_PREFIX}${JSON.stringify(payload)}`;
 }
 
 function summarizeUserInputAnswers(
@@ -3738,13 +3753,19 @@ function summarizeUserInputAnswers(
         .join("\n");
 }
 
-function readDiffMetaString(meta: unknown, key: string): string | null {
+function readDiffMetaString(meta: unknown, ...keys: readonly string[]): string | null {
     if (!isRecord(meta)) {
         return null;
     }
 
-    const value = meta[key];
-    return typeof value === "string" && value.trim().length > 0 ? value : null;
+    for (const key of keys) {
+        const value = meta[key];
+        if (typeof value === "string" && value.trim().length > 0) {
+            return value;
+        }
+    }
+
+    return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

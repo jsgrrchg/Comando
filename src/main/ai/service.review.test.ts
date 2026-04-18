@@ -264,7 +264,7 @@ describe("AiService tracked file review merging", () => {
             __testing.diffToAiFileDiff(
                 {
                     _meta: {
-                        neverwritePreviousPath:
+                        codexAcpPreviousPath:
                             "/workspace/comando/src/previous.ts",
                     },
                     newText: "export const value = 2;\n",
@@ -295,7 +295,7 @@ describe("AiService tracked file review merging", () => {
             __testing.diffToAiFileDiff(
                 {
                     _meta: {
-                        neverwriteHunks: [
+                        codexAcpHunks: [
                             {
                                 lines: [
                                     { text: "alpha", type: "remove" },
@@ -330,9 +330,9 @@ describe("AiService tracked file review merging", () => {
             __testing.shouldSuppressToolActivityUpdate(
                 {
                     _meta: {
-                        neverwriteEventType: "status",
+                        codexAcpEventType: "status",
                     },
-                    toolCallId: "neverwrite:status:item:msg-1",
+                    toolCallId: "codex-acp:status:item:msg-1",
                 } as never,
                 "Preparing input",
             ),
@@ -342,9 +342,9 @@ describe("AiService tracked file review merging", () => {
             __testing.shouldSuppressToolActivityUpdate(
                 {
                     _meta: {
-                        neverwriteEventType: "status",
+                        codexAcpEventType: "status",
                     },
-                    toolCallId: "neverwrite:status:item:msg-2",
+                    toolCallId: "codex-acp:status:item:msg-2",
                 } as never,
                 "Drafting response",
             ),
@@ -354,9 +354,9 @@ describe("AiService tracked file review merging", () => {
             __testing.shouldSuppressToolActivityUpdate(
                 {
                     _meta: {
-                        neverwriteEventType: "status",
+                        codexAcpEventType: "status",
                     },
-                    toolCallId: "neverwrite:status:item:msg-3",
+                    toolCallId: "codex-acp:status:item:msg-3",
                 } as never,
                 "Reasoning",
             ),
@@ -371,7 +371,7 @@ describe("AiService tracked file review merging", () => {
             __testing.shouldSuppressToolActivityUpdate(
                 {
                     _meta: null,
-                    toolCallId: "neverwrite:status:item:agent-msg-42",
+                    toolCallId: "codex-acp:status:item:agent-msg-42",
                 } as never,
                 "Drafting response",
             ),
@@ -381,7 +381,7 @@ describe("AiService tracked file review merging", () => {
             __testing.shouldSuppressToolActivityUpdate(
                 {
                     _meta: null,
-                    toolCallId: "neverwrite:status:item:user-msg-7",
+                    toolCallId: "codex-acp:status:item:user-msg-7",
                 } as never,
                 "Preparing input",
             ),
@@ -393,9 +393,9 @@ describe("AiService tracked file review merging", () => {
             __testing.shouldSuppressToolActivityUpdate(
                 {
                     _meta: {
-                        neverwriteEventType: "status",
+                        codexAcpEventType: "status",
                     },
-                    toolCallId: "neverwrite:status:turn:turn-1",
+                    toolCallId: "codex-acp:status:turn:turn-1",
                 } as never,
                 "New turn",
             ),

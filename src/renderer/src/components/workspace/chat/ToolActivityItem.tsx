@@ -180,7 +180,10 @@ function isFileToolActivity(
 }
 
 function isTurnStartedActivity(activity: AiToolActivity): boolean {
-    return activity.id.startsWith("neverwrite:status:turn:");
+    return (
+        activity.id.startsWith("codex-acp:status:turn:") ||
+        activity.id.startsWith("neverwrite:status:turn:")
+    );
 }
 
 function summarizeDiff(oldText: string | null, newText: string | null): string {

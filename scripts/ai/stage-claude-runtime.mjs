@@ -61,7 +61,7 @@ function resolveNodeBinary() {
 function ensureClaudeVendorExists() {
     if (!fs.existsSync(claudeVendorDir)) {
         throw new Error(
-            "vendor/Claude-agent-acp-upstream is missing. Import the vendor from reference app before staging Claude.",
+            "vendor/Claude-agent-acp-upstream is missing. Import the vendor into Comando before staging Claude.",
         );
     }
 

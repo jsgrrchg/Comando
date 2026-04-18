@@ -25,10 +25,10 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
-- The vendored Claude ACP snapshot currently includes a local Comando/reference app patch that exposes model-specific thinking effort levels (`low`, `medium`, `high`, `xhigh`, `max`) as ACP session config options when the selected Claude model reports support for them.
-- The vendored Codex ACP snapshot currently includes a local Fast Mode patch ported from reference app. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
+- The vendored Claude ACP snapshot currently includes a local Comando patch that exposes model-specific thinking effort levels (`low`, `medium`, `high`, `xhigh`, `max`) as ACP session config options when the selected Claude model reports support for them.
+- The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
-- Some compatibility markers still use legacy reference app-prefixed metadata names inside the session stream.
+- Some compatibility markers still use legacy ACP metadata names inside the session stream.
 
 ---
 
@@ -150,7 +150,7 @@ resources/ai/embedded/codex-acp/target/
 
 Current local snapshot note:
 
-- `vendor/codex-acp/` includes a local Fast Mode patch ported from reference app, adding ACP `service_tier` config handling, `/fast` command support, and session `service_tier` rehydration.
+- `vendor/codex-acp/` includes a local Fast Mode patch carried over into Comando, adding ACP `service_tier` config handling, `/fast` command support, and session `service_tier` rehydration.
 - This local divergence should be reevaluated once the official upstream `codex-acp` ships equivalent support, so Comando can reduce vendor drift.
 
 ### Claude staging (`scripts/ai/stage-claude-runtime.mjs`)
@@ -221,7 +221,7 @@ The packaging entrypoints are:
 
 ### Storage model
 
-Unlike reference app, Comando does not keep AI setup in standalone JSON files.
+Unlike the previous codebase, Comando does not keep AI setup in standalone JSON files.
 
 - Runtime settings are stored in the app SQLite database via `SettingsService`
 - Secrets are stored in the same `app_settings` table but encrypted through Electron `safeStorage`
@@ -421,16 +421,16 @@ Comando does **not** currently use:
 Comando also handles runtime-specific user-input requests by parsing tool-call metadata and then answering through a synthesized follow-up prompt payload. The current response prefix is:
 
 ```text
-__neverwrite_user_input_response__:
+__codex_acp_user_input_response__:
 ```
 
-Comando also still recognizes reference app-style status metadata keys such as:
+Comando also still recognizes legacy status metadata keys such as:
 
 ```text
-neverwriteEventType
+codexAcpEventType
 ```
 
-These are compatibility shims carried over from the original integration lineage. The current vendored Codex runtime still emits those reference app-prefixed metadata fields and status tool-call IDs while also supporting newer upstream behaviors such as MCP approval elicitation routing and guardian-assessment tool activity.
+These are compatibility shims carried over from the original integration lineage. The current vendored Codex runtime emits codexAcp-prefixed metadata fields and codex-acp status tool-call IDs, while Comando keeps legacy fallbacks for older snapshots during the transition.
 
 ### Protocol version
 
@@ -446,7 +446,7 @@ from `@agentclientprotocol/sdk`, not a hardcoded numeric literal.
 
 ## Frontend Transport
 
-Comando is an Electron app, so it does not use the Tauri event layer from reference app.
+Comando is an Electron app, so it does not use the Tauri event layer from the previous codebase.
 
 Instead:
 
@@ -582,6 +582,6 @@ On Linux and Windows, the Kilo paths vary through `XDG_DATA_HOME` and `LOCALAPPD
 - **Gemini** and **Kilo** are integrated end-to-end in the app layer, but the user must provide those CLIs on the machine.
 - Claude runtime resolution still keeps a legacy standalone `claude-agent-acp` binary fallback even though the normal path prefers embedded Node + vendored JS.
 - Codex PATH fallback explicitly rejects plain `codex` because Comando still targets ACP, not the App Server / MCP surface.
-- The current vendored Codex runtime includes newer upstream support for MCP approval elicitation, `RequestUserInput`, guardian-assessment activity and cleaner shutdown handling, but some stream metadata and user-input plumbing still use reference app-prefixed compatibility markers.
+- The current vendored Codex runtime includes newer upstream support for MCP approval elicitation, `RequestUserInput`, guardian-assessment activity and cleaner shutdown handling, while Comando keeps legacy metadata fallbacks so older sessions can still be replayed safely.
 - Secret persistence depends on Electron `safeStorage`; if the OS secure storage is unavailable, API-key and gateway-secret writes will fail.
 - This document should be kept aligned with `src/main/ai/`, `scripts/ai/`, `resources/ai/` and related packaging logic whenever runtime behavior changes.

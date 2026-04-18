@@ -90,8 +90,8 @@ describe("MarkdownContent", () => {
             createElement(MarkdownContent, {
                 content: [
                     "- O sea: las adaptaciones especiales no viven en el vendor.",
-                    "reference app Claude setup",
-                    "reference app Claude process",
+                    "Comando Claude setup",
+                    "Comando Claude process",
                 ].join("\n"),
             }),
         );
@@ -100,7 +100,7 @@ describe("MarkdownContent", () => {
         expect(markup).toContain(
             "O sea: las adaptaciones especiales no viven en el vendor.",
         );
-        expect(markup).toContain("reference app Claude setup");
+        expect(markup).toContain("Comando Claude setup");
     });
 
     it("renders isolated ordered-like lines as a single-item list", () => {

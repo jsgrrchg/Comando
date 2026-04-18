@@ -676,7 +676,7 @@ const THEME_PALETTES: Record<ThemePreset, ThemePalette> = {
 };
 
 const THEME_DESCRIPTIONS: Record<ThemePreset, string> = {
-    default: "The neutral baseline palette shared with reference app.",
+    default: "The neutral baseline palette shared across Comando.",
     ocean: "Cool blues with a crisp shell and calmer contrast.",
     forest: "Muted greens built for long sessions and softer chrome.",
     rose: "Dusty pink-red accents with gentle contrast.",
@@ -696,7 +696,7 @@ const THEME_DESCRIPTIONS: Record<ThemePreset, string> = {
     everforest: "Everforest greens and parchment backgrounds.",
     synthwave84: "Retro magenta neon without going full glowstick.",
     claude: "Warm sandstone palette inspired by Claude's product feel.",
-    codex: "The Codex green-on-neutral palette from reference app.",
+    codex: "The Codex green-on-neutral palette used in Comando.",
 };
 
 export const THEME_PRESET_OPTIONS: readonly ThemePresetOption[] =

@@ -226,7 +226,7 @@ describe("SettingsService", () => {
         expect(service.loadProjectSettings("project-a")).toEqual(null);
     });
 
-    it("accepts presets imported from reference app", () => {
+    it("accepts presets imported from the previous codebase", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
@@ -280,7 +280,7 @@ describe("SettingsService", () => {
         });
     });
 
-    it("stores and reloads new reference app fonts for AI", () => {
+    it("stores and reloads the new AI fonts for Comando", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
             connection as unknown as Database.Database,
