@@ -196,6 +196,25 @@ The macOS packaging flow builds a packaged AI payload under `build/package-resou
 
 Gemini and Kilo are still expected to come from the user's machine at runtime.
 
+### Windows packaging (`scripts/package-windows-app.mjs`)
+
+The Windows packaging flow builds a packaged AI payload under `build/package-resources/ai/`:
+
+- **Claude**
+  - stages the embedded Claude project from `resources/ai/embedded/claude-agent-acp/` or the vendor tree as fallback
+- **Codex**
+  - stages the current Windows ACP binary under `build/package-resources/ai/binaries/codex-acp.exe`
+- **Embedded Node**
+  - stages the current Windows embedded Node binary under `build/package-resources/ai/embedded/node/bin/node.exe`
+
+The packaging entrypoints are:
+
+- `pnpm run package:win`
+- `pnpm run package:win:x64`
+- `pnpm run package:win:arm64`
+
+`package:win` defaults to the current machine architecture. For cross-architecture packaging, seed the staged runtimes for the target architecture before invoking the matching script.
+
 ---
 
 ## Authentication

@@ -68,7 +68,6 @@ export function SettingsWindow({
     aiChat,
     appAppearance,
     appEditor,
-    onClose,
     onRuntimeAction,
     shortcuts = [],
     runtimes = [],
@@ -104,10 +103,10 @@ export function SettingsWindow({
                     flexShrink: 0,
                     backgroundColor: "var(--color-bg-secondary)",
                 }}
-            >
-                <div style={{ width: 70, flexShrink: 0 }} />
-                <span
-                    style={{
+                >
+                    <div style={{ width: 70, flexShrink: 0 }} />
+                    <span
+                        style={{
                         position: "absolute",
                         left: "50%",
                         transform: "translateX(-50%)",
@@ -117,44 +116,10 @@ export function SettingsWindow({
                         pointerEvents: "none",
                         whiteSpace: "nowrap",
                     }}
-                >
-                    Settings
-                </span>
-                {onClose && (
-                    <button
-                        onClick={onClose}
-                        title="Close settings (Esc)"
-                        className="app-no-drag"
-                        style={{
-                            width: 24,
-                            height: 24,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            borderRadius: 5,
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            fontSize: 16,
-                            color: "var(--color-text-secondary)",
-                            opacity: 0.6,
-                            marginLeft: "auto",
-                        }}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.opacity = "1";
-                            e.currentTarget.style.backgroundColor =
-                                "var(--color-bg-tertiary)";
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.opacity = "0.6";
-                            e.currentTarget.style.backgroundColor =
-                                "transparent";
-                        }}
                     >
-                        ✕
-                    </button>
-                )}
-            </div>
+                        Settings
+                    </span>
+                </div>
 
             {/* Body */}
             <div

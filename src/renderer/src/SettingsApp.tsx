@@ -353,7 +353,6 @@ export function SettingsApp() {
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
             }}
-            onClose={() => window.close()}
             onRuntimeAction={(runtimeId, actionId) =>
                 void handleRuntimeAction({
                     actionId,

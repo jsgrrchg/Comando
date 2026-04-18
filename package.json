@@ -12,6 +12,9 @@
         "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
         "package:mac": "node scripts/package-macos-app.mjs",
+        "package:win": "node scripts/package-windows-app.mjs",
+        "package:win:arm64": "node scripts/package-windows-app.mjs --arm64",
+        "package:win:x64": "node scripts/package-windows-app.mjs --x64",
         "lint": "eslint .",
         "postinstall": "pnpm run rebuild:native",
         "rebuild:native": "electron-rebuild -f -w better-sqlite3,node-pty",
@@ -127,6 +130,19 @@
             ],
             "minimumSystemVersion": "15.0",
             "artifactName": "${productName}-${version}-${arch}.${ext}"
+        },
+        "win": {
+            "icon": "resources/icons/windows-placeholder.ico",
+            "target": [
+                {
+                    "target": "nsis",
+                    "arch": [
+                        "x64",
+                        "arm64"
+                    ]
+                }
+            ],
+            "artifactName": "${productName}-${version}-win-${arch}.${ext}"
         }
     }
 }

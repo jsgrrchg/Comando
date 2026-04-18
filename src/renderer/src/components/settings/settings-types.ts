@@ -100,7 +100,6 @@ export interface SettingsAiChatState {
 }
 
 export interface SettingsWindowProps {
-    readonly onClose?: () => void;
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly aiChat: SettingsAiChatState;
