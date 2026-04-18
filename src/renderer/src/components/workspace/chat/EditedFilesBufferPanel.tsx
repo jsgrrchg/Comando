@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 
@@ -9,7 +9,7 @@ import type {
 } from "../review/editedFilesPresentationModel";
 import { formatDiffStat } from "../review/reviewDiff";
 
-const COMPACT_MAX_LIST_HEIGHT = "208px";
+const COMPACT_MAX_VISIBLE_ROWS = 8;
 const BASE_TEXT_SIZE_PX = 16;
 
 function toEm(value: number): string {
@@ -65,11 +65,38 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
     const [expandedKeys, setExpandedKeys] = useState<ReadonlySet<string>>(
         () => new Set<string>(),
     );
+    const listRef = useRef<HTMLDivElement | null>(null);
+    const [listMaxHeight, setListMaxHeight] = useState<string | undefined>(
+        undefined,
+    );
 
     const rejectableCount = useMemo(
         () => items.filter((item) => item.canReject).length,
         [items],
     );
+
+    const shouldCapHeight = items.length > COMPACT_MAX_VISIBLE_ROWS;
+
+    useLayoutEffect(() => {
+        if (!shouldCapHeight || collapsed) {
+            setListMaxHeight(undefined);
+            return;
+        }
+        const list = listRef.current;
+        if (!list) {
+            return;
+        }
+        const firstRow = list.firstElementChild as HTMLElement | null;
+        if (!firstRow) {
+            return;
+        }
+        const rowHeight = firstRow.getBoundingClientRect().height;
+        if (rowHeight > 0) {
+            setListMaxHeight(
+                `${Math.floor(rowHeight * COMPACT_MAX_VISIBLE_ROWS)}px`,
+            );
+        }
+    }, [collapsed, shouldCapHeight, items.length, diffZoom]);
 
     if (items.length === 0) {
         return null;
@@ -257,9 +284,10 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                     className="flex flex-col"
                     data-scrollbar-active="true"
                     data-testid="edited-files-buffer-list"
+                    ref={listRef}
                     style={{
-                        maxHeight: COMPACT_MAX_LIST_HEIGHT,
-                        overflowY: "auto",
+                        maxHeight: listMaxHeight,
+                        overflowY: shouldCapHeight ? "auto" : "visible",
                     }}
                 >
                     {items.map((item) => (
