@@ -248,9 +248,22 @@ function mergePendingTrackedFile(
         syncedExistingTrackedFile.previousPath ??
         syncedNextTrackedFile.previousPath;
     const diffBase = getTrackedFileDiffBase(syncedExistingTrackedFile);
-    const currentText = getTrackedFileCurrentText(syncedNextTrackedFile);
+    const existingCurrent = getTrackedFileCurrentText(syncedExistingTrackedFile);
+    const currentText = reconcileCurrentText({
+        diffBase,
+        existingCurrent,
+        nextOldText: syncedNextTrackedFile.oldText ?? "",
+        nextCurrent: getTrackedFileCurrentText(syncedNextTrackedFile),
+    });
     const oldText = syncedExistingTrackedFile.oldText;
-    const newText = syncedNextTrackedFile.newText;
+    // When we successfully spliced the next snippet onto the existing full
+    // file, promote that reconciled text as the tracked newText so downstream
+    // consumers (review tab, inline review) see the cumulative result instead
+    // of only the last snippet.
+    const newText =
+        currentText !== getTrackedFileCurrentText(syncedNextTrackedFile)
+            ? currentText
+            : syncedNextTrackedFile.newText;
     const kind = inferTrackedFileKindFromTexts(previousPath, oldText, newText);
     const isNetNeutralMove =
         previousPath !== null && previousPath === syncedNextTrackedFile.path;
@@ -270,6 +283,42 @@ function mergePendingTrackedFile(
         version:
             normalizeTrackedFileVersion(syncedExistingTrackedFile.version) + 1,
     });
+}
+
+/**
+ * Reconcile an agent's second (or Nth) snippet edit onto the full file we
+ * already have in memory. Without this, the backend would drop the existing
+ * cumulative text and keep only the latest snippet, making the review show a
+ * broken diff against the original file and losing the previous edit.
+ *
+ * Falls back to the raw next-text when the snippet is ambiguous, missing, or
+ * when the next text is already a full-file replacement — no worse than the
+ * old behavior.
+ */
+function reconcileCurrentText(params: {
+    readonly diffBase: string;
+    readonly existingCurrent: string;
+    readonly nextOldText: string;
+    readonly nextCurrent: string;
+}): string {
+    const { diffBase, existingCurrent, nextOldText, nextCurrent } = params;
+
+    // Full-file replacements — trust the next text as the authoritative state.
+    if (nextOldText === existingCurrent) return nextCurrent;
+    if (nextOldText === diffBase) return nextCurrent;
+    if (nextCurrent === existingCurrent) return nextCurrent;
+    if (nextOldText.length === 0) return nextCurrent;
+
+    const first = existingCurrent.indexOf(nextOldText);
+    if (first === -1 || first !== existingCurrent.lastIndexOf(nextOldText)) {
+        return nextCurrent;
+    }
+
+    return (
+        existingCurrent.slice(0, first) +
+        nextCurrent +
+        existingCurrent.slice(first + nextOldText.length)
+    );
 }
 
 export function replaceTrackedFile(
