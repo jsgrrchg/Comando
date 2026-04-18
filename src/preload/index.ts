@@ -39,6 +39,7 @@ import {
     type ProjectSettingsSnapshot,
     type ProjectSettingsUpdatedEvent,
     type ProjectTreeInvalidation,
+    type ThemeMode,
     type WindowContextSnapshot,
     type GeminiRuntimeSettingsInput,
     type GitBranchListInput,
@@ -391,6 +392,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveShellState, snapshot),
     setTrafficLightVisibility: (visible: boolean) =>
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
+    setNativeAppearance: (mode: ThemeMode) =>
+        ipcRenderer.invoke(IPC_CHANNELS.setNativeAppearance, mode),
     getGitRepositorySnapshot: (input: GitRepositoryScopeInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getGitRepositorySnapshot,

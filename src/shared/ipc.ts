@@ -23,6 +23,7 @@ export const IPC_CHANNELS = {
     saveActiveWorktreeId: "app:save-active-worktree-id",
     saveShellState: "app:save-shell-state",
     setTrafficLightVisibility: "app:set-traffic-light-visibility",
+    setNativeAppearance: "app:set-native-appearance",
     getGitRepositorySnapshot: "git:get-repository-snapshot",
     listGitBranches: "git:list-branches",
     listGitWorktrees: "git:list-worktrees",
@@ -1390,6 +1391,7 @@ export interface ComandoApi {
     saveActiveWorktreeId: (worktreeId: string | null) => Promise<void>;
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
+    setNativeAppearance: (mode: ThemeMode) => Promise<void>;
     getGitRepositorySnapshot: (
         input: GitRepositoryScopeInput,
     ) => Promise<GitRepositorySnapshot | null>;

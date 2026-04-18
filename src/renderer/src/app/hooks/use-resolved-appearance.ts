@@ -16,6 +16,10 @@ export function useResolvedAppearance(): void {
     }, [hydrate]);
 
     useEffect(() => {
-        applyAppearance(resolveAppearance(appAppearance), systemIsDark);
+        const resolved = resolveAppearance(appAppearance);
+        applyAppearance(resolved, systemIsDark);
+        // Sync the OS appearance so DWM tints the Windows acrylic to match
+        // the in-app light/dark mode. The main process no-ops on macOS.
+        void window.comando?.setNativeAppearance(resolved.themeMode);
     }, [appAppearance, systemIsDark]);
 }

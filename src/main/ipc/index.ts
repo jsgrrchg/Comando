@@ -72,6 +72,7 @@ import {
     type SendAiPromptInput,
     type SettingsSnapshot,
     type SystemTheme,
+    type ThemeMode,
     type WindowContextSnapshot,
     type WriteTerminalInput,
     type WorkspaceSnapshot,
@@ -133,6 +134,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveWorktreeId);
     ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
     ipcMain.removeHandler(IPC_CHANNELS.setTrafficLightVisibility);
+    ipcMain.removeHandler(IPC_CHANNELS.setNativeAppearance);
     ipcMain.removeHandler(IPC_CHANNELS.getGitRepositorySnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.listGitBranches);
     ipcMain.removeHandler(IPC_CHANNELS.listGitWorktrees);
@@ -338,6 +340,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     visible ? { x: 18, y: 18 } : { x: -80, y: -80 },
                 );
             }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setNativeAppearance,
+        (_event, mode: ThemeMode) => {
+            // Only Windows needs themeSource sync so the DWM acrylic
+            // tints with the in-app light/dark mode. macOS keeps using
+            // the system appearance to avoid touching native vibrancy.
+            if (process.platform !== "win32") return;
+            if (mode !== "system" && mode !== "light" && mode !== "dark") {
+                return;
+            }
+            nativeTheme.themeSource = mode;
         },
     );
     ipcMain.handle(

@@ -2141,7 +2141,7 @@ export function App() {
                         }}
                     >
                         <aside
-                            className="flex min-h-0 flex-col"
+                            className="app-sidebar flex min-h-0 flex-col"
                             style={
                                 leftCollapsed
                                     ? { overflow: "hidden" }
