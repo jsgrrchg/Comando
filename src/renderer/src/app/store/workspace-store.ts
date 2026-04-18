@@ -291,6 +291,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         if (tab?.kind === "chat") {
             await safeCloseAiSession(tab.sessionId);
         }
+        if (tab?.kind === "file" && tab.document) {
+            void getComandoApi().notifyFileBuffer({
+                absolutePath: tab.document.absolutePath,
+                content: null,
+            });
+        }
 
         set((state) => {
             const paneId = findPaneIdByTabId(state, tabId);
@@ -1235,6 +1241,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ...replaceFileDocument(state, tabId, document),
                 error: null,
             }));
+            void getComandoApi().notifyFileBuffer({
+                absolutePath: document.absolutePath,
+                content: null,
+            });
         } catch (error) {
             const message =
                 error instanceof Error
@@ -1411,6 +1421,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...applyFileDraft(state, tabId, draft),
             error: null,
         }));
+        const tab = get().tabsById[tabId];
+        if (tab?.kind === "file" && tab.document) {
+            void getComandoApi().notifyFileBuffer({
+                absolutePath: tab.document.absolutePath,
+                content: draft,
+            });
+        }
     },
 
     updateFileViewState: (tabId, viewState) => {

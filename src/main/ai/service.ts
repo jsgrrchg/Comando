@@ -64,6 +64,7 @@ import type {
 } from "@shared/ipc";
 import {
     computeDiffHunks,
+    getTrackedFileCurrentText,
     replaceTrackedFile,
     resolveTrackedFileHunks,
     syncTrackedFile,
@@ -74,6 +75,7 @@ import {
     inferChatTitleFromPrompt,
     isDefaultChatTitle,
 } from "@shared/chatTitle";
+import { readOpenFileBuffer } from "./openFileBuffers";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -3370,23 +3372,32 @@ function mapToolCallUpdate(
             nextActivity,
         ],
         trackedFiles: content
-            ? content.reduce(
-                  (trackedFiles, entry) =>
-                      entry.type === "diff"
-                          ? upsertTrackedFile(
-                                trackedFiles,
-                                diffToTrackedFile(
-                                    snapshot,
-                                    entry,
-                                    toolKind,
-                                    update.toolCallId,
-                                    updatedAt,
-                                    normalizeDiffPath,
-                                ),
-                            )
-                          : trackedFiles,
-                  snapshot.trackedFiles,
-              )
+            ? content.reduce((acc, entry) => {
+                  if (entry.type !== "diff") return acc;
+                  const normalizedPath = normalizeDiffPath(entry.path);
+                  const existing = acc.find(
+                      (candidate) =>
+                          candidate.path === normalizedPath ||
+                          candidate.previousPath === normalizedPath,
+                  );
+                  const resolvedDiff = resolveDiffToFullTexts(
+                      entry,
+                      existing,
+                      liveSession,
+                      normalizedPath,
+                  );
+                  return upsertTrackedFile(
+                      acc,
+                      diffToTrackedFile(
+                          snapshot,
+                          resolvedDiff,
+                          toolKind,
+                          update.toolCallId,
+                          updatedAt,
+                          normalizeDiffPath,
+                      ),
+                  );
+              }, snapshot.trackedFiles)
             : snapshot.trackedFiles,
     };
 }
@@ -4061,10 +4072,102 @@ function normalizeTrackedDiffPath(
         : toPosixPath(candidatePath);
 }
 
+const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
+
+function resolveTrackedDiffAbsolutePath(
+    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    trackedPath: string,
+): string {
+    const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
+    return path.isAbsolute(trackedPath)
+        ? path.resolve(trackedPath)
+        : path.resolve(scopeRoot, trackedPath);
+}
+
+function tryReadFileAsText(absolutePath: string): string | null {
+    try {
+        const stats = fs.statSync(absolutePath);
+        if (!stats.isFile() || stats.size > TRACKED_DIFF_MAX_READ_BYTES) {
+            return null;
+        }
+        return fs.readFileSync(absolutePath, "utf8");
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Agents that use tool-level string replaces (edit_text_file and friends)
+ * deliver diff.oldText/newText as snippets, not whole files. Keeping snippets
+ * as the tracked representation made the review pipeline render only the
+ * changed lines and miscount additions/deletions.
+ *
+ * Splice the snippet onto the cumulative text we already have (from a previous
+ * edit in this session or from disk for the first edit), so downstream
+ * consumers see whole-file texts. Falls back to the raw diff when we cannot
+ * resolve a base (missing file, binary, oversized) or when the snippet is
+ * ambiguous inside the base.
+ */
+function resolveDiffToFullTexts(
+    diff: Diff,
+    existing: AiTrackedFile | undefined,
+    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    normalizedPath: string,
+): Diff {
+    // Nothing to splice for creates/deletes — the incoming texts already
+    // describe the whole before/after state of the file.
+    if (diff.oldText == null || diff.newText == null) {
+        return diff;
+    }
+
+    const oldSnippet = diff.oldText;
+    const newSnippet = diff.newText;
+    const absolutePath = resolveTrackedDiffAbsolutePath(
+        liveSession,
+        normalizedPath,
+    );
+    // Prefer the in-editor buffer (what the user actually sees) over the disk
+    // when the file is open with unsaved changes. Falls back to disk for files
+    // that aren't open in a tab, and to the raw diff if neither source works.
+    const base = existing
+        ? getTrackedFileCurrentText(existing)
+        : (readOpenFileBuffer(absolutePath) ?? tryReadFileAsText(absolutePath));
+    if (base === null) {
+        return diff;
+    }
+
+    // The canonical oldText we want to keep across edits is the file before
+    // the agent started touching it. For the first tracked edit that is the
+    // on-disk content; for subsequent edits it's the diffBase captured when
+    // the first edit landed.
+    const canonicalOldText = existing
+        ? (existing.oldText ?? base)
+        : base;
+
+    if (oldSnippet === base) {
+        return { ...diff, oldText: canonicalOldText, newText: newSnippet };
+    }
+
+    if (oldSnippet.length === 0) {
+        return diff;
+    }
+
+    const first = base.indexOf(oldSnippet);
+    if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
+        return diff;
+    }
+
+    const spliced =
+        base.slice(0, first) + newSnippet + base.slice(first + oldSnippet.length);
+
+    return { ...diff, oldText: canonicalOldText, newText: spliced };
+}
+
 export const __testing = {
     computeDiffHunks,
     diffToAiFileDiff,
     normalizeTrackedDiffPath,
+    resolveDiffToFullTexts,
     resolveTrackedFileHunks,
     shouldSuppressToolActivityUpdate,
     upsertTrackedFile,

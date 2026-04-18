@@ -55,6 +55,7 @@ export const IPC_CHANNELS = {
     searchProjectEntries: "projects:search-entries",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
+    notifyFileBuffer: "workspace:notify-file-buffer",
     getChatSessionState: "workspace:get-chat-session-state",
     createTerminalSession: "terminals:create-session",
     writeTerminalInput: "terminals:write-input",
@@ -737,6 +738,13 @@ export interface SaveProjectFileInput {
     readonly content: string;
     readonly expectedModifiedAtMs?: number | null;
     readonly worktreeId?: string | null;
+}
+
+export interface FileBufferNotificationInput {
+    readonly absolutePath: string;
+    // null signals the buffer should be forgotten (tab closed, file saved
+    // so the disk is authoritative again, etc.).
+    readonly content: string | null;
 }
 
 export interface CreateProjectEntryInput {
@@ -1454,6 +1462,7 @@ export interface ComandoApi {
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
     getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
     saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) => Promise<void>;
+    notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,
     ) => Promise<PersistedChatSessionState | null>;

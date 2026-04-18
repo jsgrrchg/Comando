@@ -27,6 +27,7 @@ import {
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
+    type FileBufferNotificationInput,
     type GetAiSessionTranscriptPageInput,
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
@@ -467,6 +468,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.resizeTerminalSession, input),
     saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveWorkspaceSnapshot, snapshot),
+    notifyFileBuffer: (input: FileBufferNotificationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.notifyFileBuffer, input),
     getChatSessionState: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.getChatSessionState, sessionId),
     getAiRuntimeStatus: (runtimeId: AiRuntimeId) =>

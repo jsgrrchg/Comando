@@ -22,6 +22,7 @@ import {
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
+    type FileBufferNotificationInput,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
     type GitChangeEntry as SharedGitChangeEntry,
@@ -86,6 +87,10 @@ import {
 } from "electron";
 
 import type { AiService } from "@main/ai/service";
+import {
+    forgetOpenFileBuffer,
+    recordOpenFileBuffer,
+} from "@main/ai/openFileBuffers";
 import type { GitGateway } from "@main/git/service";
 import type { ProjectService } from "@main/projects/service";
 import type { PersistenceGateway } from "@main/persistence/service";
@@ -158,6 +163,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
     ipcMain.removeHandler(IPC_CHANNELS.createTerminalSession);
     ipcMain.removeHandler(IPC_CHANNELS.writeTerminalInput);
@@ -751,6 +757,16 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 context.workspaceId!,
                 snapshot,
             );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.notifyFileBuffer,
+        (_event, input: FileBufferNotificationInput) => {
+            if (input.content === null) {
+                forgetOpenFileBuffer(input.absolutePath);
+            } else {
+                recordOpenFileBuffer(input.absolutePath, input.content);
+            }
         },
     );
     ipcMain.handle(

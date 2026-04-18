@@ -1,7 +1,15 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { AiTrackedFile } from "@shared/ipc";
 
+import {
+    forgetOpenFileBuffer,
+    recordOpenFileBuffer,
+} from "./openFileBuffers";
 import { __testing } from "./service";
 
 function createTrackedFile(
@@ -394,5 +402,151 @@ describe("AiService tracked file review merging", () => {
                 "Drafting response",
             ),
         ).toBe(false);
+    });
+});
+
+describe("resolveDiffToFullTexts", () => {
+    let tempDir: string;
+
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-diff-"));
+    });
+
+    afterEach(() => {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it("expands a first-edit snippet by reading the file from disk", () => {
+        const fileContent = "alpha\nbeta\ngamma\ndelta\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, fileContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "beta\ngamma",
+                newText: "BETA\nGAMMA",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+        );
+
+        expect(resolved.oldText).toBe(fileContent);
+        expect(resolved.newText).toBe("alpha\nBETA\nGAMMA\ndelta\n");
+    });
+
+    it("splices a subsequent edit onto the cumulative text from the existing tracked file", () => {
+        const existing = createTrackedFile({
+            path: "foo.ts",
+            oldText: "alpha\nbeta\ngamma\n",
+            newText: "alpha\nBETA\ngamma\n",
+            currentText: "alpha\nBETA\ngamma\n",
+            diffBase: "alpha\nbeta\ngamma\n",
+        });
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "gamma",
+                newText: "GAMMA",
+            } as never,
+            existing,
+            liveSession,
+            "foo.ts",
+        );
+
+        expect(resolved.oldText).toBe("alpha\nbeta\ngamma\n");
+        expect(resolved.newText).toBe("alpha\nBETA\nGAMMA\n");
+    });
+
+    it("falls back to the raw diff when the snippet is ambiguous", () => {
+        const existing = createTrackedFile({
+            path: "foo.ts",
+            oldText: "dup\ndup\n",
+            newText: "dup\ndup\n",
+            currentText: "dup\ndup\n",
+            diffBase: "dup\ndup\n",
+        });
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "dup",
+                newText: "DUP",
+            } as never,
+            existing,
+            liveSession,
+            "foo.ts",
+        );
+
+        expect(resolved.oldText).toBe("dup");
+        expect(resolved.newText).toBe("DUP");
+    });
+
+    it("falls back when the file cannot be read from disk", () => {
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "missing.ts",
+                oldText: "orig",
+                newText: "new",
+            } as never,
+            undefined,
+            liveSession,
+            "missing.ts",
+        );
+
+        expect(resolved.oldText).toBe("orig");
+        expect(resolved.newText).toBe("new");
+    });
+
+    it("prefers the in-editor buffer over the disk when the file is open with unsaved changes", () => {
+        const diskContent = "alpha\nbeta\ngamma\n";
+        const bufferContent = "alpha\nbeta-WIP\ngamma\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, diskContent, "utf8");
+        recordOpenFileBuffer(absolutePath, bufferContent);
+
+        try {
+            const liveSession = { cwd: tempDir, projectRoot: tempDir };
+            const resolved = __testing.resolveDiffToFullTexts(
+                {
+                    path: "foo.ts",
+                    oldText: "beta-WIP",
+                    newText: "beta-DONE",
+                } as never,
+                undefined,
+                liveSession,
+                "foo.ts",
+            );
+
+            expect(resolved.oldText).toBe(bufferContent);
+            expect(resolved.newText).toBe("alpha\nbeta-DONE\ngamma\n");
+        } finally {
+            forgetOpenFileBuffer(absolutePath);
+        }
+    });
+
+    it("preserves the diff untouched for create (oldText null)", () => {
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "new-file.ts",
+                oldText: null,
+                newText: "hello\n",
+            } as never,
+            undefined,
+            liveSession,
+            "new-file.ts",
+        );
+
+        expect(resolved.oldText).toBeNull();
+        expect(resolved.newText).toBe("hello\n");
     });
 });

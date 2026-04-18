@@ -91,7 +91,6 @@ import {
 } from "@renderer/components/workspace/gitGutter";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
-import { buildInlineReviewTexts } from "@renderer/components/workspace/inlineReviewTexts";
 import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
@@ -2438,28 +2437,13 @@ function FileTabView({
         ? `${trackedFile.identityKey}:${trackedFile.hunks.map((hunk) => hunk.id).join(",")}`
         : null;
     const showInlineReview = canShowInlineReview;
-    const candidateTrackedFile =
+    const inlineReviewTrackedFile =
         showInlineReview &&
         canShowInlineReview &&
         trackedFile?.oldText !== null &&
         trackedFile?.newText !== null
             ? trackedFile
             : null;
-    const inlineReviewTexts = useMemo(
-        () =>
-            candidateTrackedFile
-                ? buildInlineReviewTexts(
-                      candidateTrackedFile,
-                      document?.kind === "text"
-                          ? (document.content ?? null)
-                          : null,
-                  )
-                : null,
-        [candidateTrackedFile, document],
-    );
-    const inlineReviewTrackedFile = inlineReviewTexts
-        ? candidateTrackedFile
-        : null;
     const reviewDiff = useMemo(
         () =>
             inlineReviewTrackedFile
@@ -2470,7 +2454,6 @@ function FileTabView({
     const inlineReviewHunkActionsEnabled = Boolean(
         inlineReviewTrackedFile &&
         reviewDiff &&
-        !inlineReviewTexts?.wasReconstructed &&
         canResolveFileHunks(inlineReviewTrackedFile, reviewDiff),
     );
     const areSuggestionsEnabled = areMonacoSuggestionsEnabledForLanguage(
@@ -3040,14 +3023,7 @@ function FileTabView({
         }
 
         const model = modifiedEditor.getModel();
-        // Skip decorations when we had to splice a snippet into the full file:
-        // the backend hunks reference the snippet's line numbers, not the
-        // document's, so they would highlight the wrong rows.
-        if (
-            !model ||
-            !inlineReviewTrackedFile ||
-            inlineReviewTexts?.wasReconstructed
-        ) {
+        if (!model || !inlineReviewTrackedFile) {
             inlineReviewDecorationsRef.current?.clear();
             return;
         }
@@ -3069,12 +3045,7 @@ function FileTabView({
                 inlineReviewDecorationsRef.current = null;
             }
         };
-    }, [
-        diffEditorMountVersion,
-        inlineReviewTrackedFile,
-        inlineReviewTexts?.wasReconstructed,
-        reviewSignature,
-    ]);
+    }, [diffEditorMountVersion, inlineReviewTrackedFile, reviewSignature]);
 
     useEffect(() => {
         if (!document || document.kind === "image" || !canEdit) {
@@ -3288,11 +3259,7 @@ function FileTabView({
                             keepCurrentModifiedModel
                             keepCurrentOriginalModel
                             language={monacoLanguageId}
-                            modified={
-                                inlineReviewTexts?.modified ??
-                                inlineReviewTrackedFile.newText ??
-                                ""
-                            }
+                            modified={inlineReviewTrackedFile.newText ?? ""}
                             modifiedModelPath={buildWorkspaceEditorModelPath(
                                 document.absolutePath,
                                 tab.id,
@@ -3349,11 +3316,7 @@ function FileTabView({
                                 );
                             }}
                             options={inlineReviewDiffEditorOptions}
-                            original={
-                                inlineReviewTexts?.original ??
-                                inlineReviewTrackedFile.oldText ??
-                                ""
-                            }
+                            original={inlineReviewTrackedFile.oldText ?? ""}
                             originalModelPath={buildWorkspaceEditorModelPath(
                                 document.absolutePath,
                                 tab.id,
