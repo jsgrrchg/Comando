@@ -46,10 +46,15 @@ export function SidebarGitScopePicker({
     const [isBusy, setIsBusy] = useState(false);
     const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
     const [query, setQuery] = useState("");
+    const [focusIndex, setFocusIndex] = useState(-1);
+    const [collapsedSections, setCollapsedSections] = useState<
+        Record<string, boolean>
+    >({});
     const buttonRef = useRef<HTMLButtonElement | null>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
     const searchRef = useRef<HTMLInputElement | null>(null);
+    const listRef = useRef<HTMLDivElement | null>(null);
 
     const project = useProjectsStore((state) =>
         projectId
@@ -114,6 +119,15 @@ export function SidebarGitScopePicker({
         });
     }, [branches, query, snapshot?.worktrees]);
 
+    const localBranches = useMemo(
+        () => filteredBranches.filter((b) => !b.isRemote),
+        [filteredBranches],
+    );
+    const remoteBranches = useMemo(
+        () => filteredBranches.filter((b) => b.isRemote),
+        [filteredBranches],
+    );
+
     const filteredWorktrees = useMemo(() => {
         const worktrees = snapshot?.worktrees ?? EMPTY_WORKTREES;
         const normalizedQuery = query.trim().toLowerCase();
@@ -133,6 +147,40 @@ export function SidebarGitScopePicker({
                 .includes(normalizedQuery),
         );
     }, [query, snapshot?.worktrees]);
+
+    const flatItems = useMemo(() => {
+        if (activeTab === "worktrees") {
+            return filteredWorktrees.map((entry) => ({
+                kind: "worktree" as const,
+                worktree: entry,
+            }));
+        }
+
+        const items: Array<
+            | { kind: "branch"; branch: GitBranchSummary }
+            | { kind: "worktree"; worktree: GitWorktreeSummary }
+        > = [];
+
+        if (!collapsedSections.local) {
+            for (const branch of localBranches) {
+                items.push({ kind: "branch", branch });
+            }
+        }
+
+        if (!collapsedSections.remote) {
+            for (const branch of remoteBranches) {
+                items.push({ kind: "branch", branch });
+            }
+        }
+
+        return items;
+    }, [
+        activeTab,
+        collapsedSections,
+        filteredWorktrees,
+        localBranches,
+        remoteBranches,
+    ]);
 
     const updateMenuPosition = useCallback(() => {
         const button = buttonRef.current;
@@ -187,6 +235,8 @@ export function SidebarGitScopePicker({
         setIsOpen(false);
         setActiveTab("branches");
         setIsBusy(false);
+        setFocusIndex(-1);
+        setCollapsedSections({});
     }, [projectId]);
 
     useEffect(() => {
@@ -208,6 +258,7 @@ export function SidebarGitScopePicker({
                 setIsOpen(false);
                 setQuery("");
                 setActionError(null);
+                setFocusIndex(-1);
             }
         };
 
@@ -252,7 +303,12 @@ export function SidebarGitScopePicker({
 
         searchRef.current?.focus();
         searchRef.current?.select();
+        setFocusIndex(-1);
     }, [activeTab, isOpen]);
+
+    useEffect(() => {
+        setFocusIndex(-1);
+    }, [query]);
 
     const handleSelectWorktree = useCallback(
         async (nextWorktreeId: string | null) => {
@@ -320,7 +376,7 @@ export function SidebarGitScopePicker({
 
             if (branch.isRemote) {
                 setActionError(
-                    "Remote branches are read-only here for now. Switch from a local branch or create a worktree first.",
+                    "Remote branches are read-only. Switch from a local branch or create a worktree first.",
                 );
                 return;
             }
@@ -370,6 +426,51 @@ export function SidebarGitScopePicker({
         ],
     );
 
+    const handleSelectFocused = useCallback(() => {
+        const item = flatItems[focusIndex];
+        if (!item) return;
+
+        if (item.kind === "branch") {
+            void handleSelectBranch(item.branch);
+        } else {
+            void handleSelectWorktree(item.worktree.id);
+        }
+    }, [flatItems, focusIndex, handleSelectBranch, handleSelectWorktree]);
+
+    const handleListKeyDown = useCallback(
+        (event: React.KeyboardEvent) => {
+            const total = flatItems.length;
+            if (total === 0) return;
+
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setFocusIndex((prev) => (prev + 1) % total);
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setFocusIndex((prev) => (prev <= 0 ? total - 1 : prev - 1));
+            } else if (event.key === "Enter" && focusIndex >= 0) {
+                event.preventDefault();
+                handleSelectFocused();
+            }
+        },
+        [flatItems.length, focusIndex, handleSelectFocused],
+    );
+
+    useEffect(() => {
+        if (focusIndex < 0 || !listRef.current) return;
+
+        const rows = listRef.current.querySelectorAll("[data-row-index]");
+        const row = rows[focusIndex] as HTMLElement | undefined;
+        row?.scrollIntoView({ block: "nearest" });
+    }, [focusIndex]);
+
+    const toggleSection = useCallback((section: string) => {
+        setCollapsedSections((prev) => ({
+            ...prev,
+            [section]: !prev[section],
+        }));
+    }, []);
+
     const branchTabLabel = `Branches (${availableBranches})`;
     const worktreeTabLabel = `Worktrees (${availableWorktrees})`;
     const searchPlaceholder =
@@ -378,6 +479,8 @@ export function SidebarGitScopePicker({
         activeTab === "branches"
             ? "No branches match your search."
             : "No worktrees match your search.";
+
+    let rowIndex = 0;
 
     return (
         <div className="relative app-no-drag" ref={containerRef}>
@@ -412,30 +515,9 @@ export function SidebarGitScopePicker({
                     <BranchGlyph />
                 </div>
 
-                <div className="min-w-0 flex-1">
-                    <div className="sidebar-git-scope-trigger__title">
-                        <span className="truncate">
-                            {projectId ? activeBranchName : "Git scope"}
-                        </span>
-                        <span className="sidebar-git-scope-trigger__badge">
-                            {projectId ? activeWorktreeLabel : "Inactive"}
-                        </span>
-                    </div>
-                    <div
-                        className="sidebar-git-scope-trigger__subtitle"
-                        title={
-                            projectId
-                                ? (activeRootPath ?? project?.rootPath)
-                                : undefined
-                        }
-                    >
-                        {projectId
-                            ? (activeRootPath ??
-                              project?.rootPath ??
-                              "No path available")
-                            : "Open a project to select a branch or worktree."}
-                    </div>
-                </div>
+                <span className="min-w-0 flex-1 truncate sidebar-git-scope-trigger__title">
+                    {projectId ? activeBranchName : "Git scope"}
+                </span>
 
                 <ChevronIcon open={isOpen} />
             </button>
@@ -444,6 +526,7 @@ export function SidebarGitScopePicker({
                 ? createPortal(
                       <div
                           className="sidebar-git-scope-menu"
+                          onKeyDown={handleListKeyDown}
                           ref={menuRef}
                           style={{
                               left: menuPosition?.x ?? 8,
@@ -455,11 +538,6 @@ export function SidebarGitScopePicker({
                               <div className="sidebar-git-scope-menu__title">
                                   <span className="truncate">
                                       {project?.name ?? "Project"}
-                                  </span>
-                                  <span className="sidebar-git-scope-menu__path">
-                                      {activeRootPath ??
-                                          project?.rootPath ??
-                                          ""}
                                   </span>
                               </div>
                               <div className="sidebar-git-scope-menu__tabs">
@@ -475,6 +553,7 @@ export function SidebarGitScopePicker({
                                   />
                               </div>
                               <div className="sidebar-git-scope-menu__search">
+                                  <SearchIcon />
                                   <input
                                       autoCapitalize="off"
                                       autoCorrect="off"
@@ -482,9 +561,16 @@ export function SidebarGitScopePicker({
                                       onChange={(event) =>
                                           setQuery(event.target.value)
                                       }
-                                      onKeyDown={(event) =>
-                                          event.stopPropagation()
-                                      }
+                                      onKeyDown={(event) => {
+                                          if (
+                                              event.key === "ArrowDown" ||
+                                              event.key === "ArrowUp" ||
+                                              event.key === "Enter"
+                                          ) {
+                                              return;
+                                          }
+                                          event.stopPropagation();
+                                      }}
                                       placeholder={searchPlaceholder}
                                       ref={searchRef}
                                       spellCheck={false}
@@ -493,80 +579,219 @@ export function SidebarGitScopePicker({
                               </div>
                           </div>
 
-                          <div className="shell-scrollbar sidebar-git-scope-menu__list">
+                          <div
+                              className="shell-scrollbar sidebar-git-scope-menu__list"
+                              ref={listRef}
+                          >
                               {activeTab === "branches" ? (
                                   filteredBranches.length > 0 ? (
-                                      filteredBranches.map((branch) => {
-                                          const branchWorktree =
-                                              snapshot?.worktrees.find(
-                                                  (entry) =>
-                                                      entry.branchName ===
-                                                      branch.name,
-                                              ) ?? null;
-                                          const badges = getBranchBadges(
-                                              branch,
-                                              branchWorktree,
-                                              worktreeId,
-                                          );
+                                      <>
+                                          {localBranches.length > 0 ? (
+                                              <>
+                                                  <SectionHeader
+                                                      collapsed={
+                                                          !!collapsedSections.local
+                                                      }
+                                                      count={
+                                                          localBranches.length
+                                                      }
+                                                      label="Local"
+                                                      onToggle={() =>
+                                                          toggleSection("local")
+                                                      }
+                                                  />
+                                                  {!collapsedSections.local
+                                                      ? localBranches.map(
+                                                            (branch) => {
+                                                                const idx =
+                                                                    rowIndex++;
+                                                                const branchWorktree =
+                                                                    snapshot?.worktrees.find(
+                                                                        (
+                                                                            entry,
+                                                                        ) =>
+                                                                            entry.branchName ===
+                                                                            branch.name,
+                                                                    ) ?? null;
+                                                                const badges =
+                                                                    getBranchBadges(
+                                                                        branch,
+                                                                        branchWorktree,
+                                                                        worktreeId,
+                                                                    );
 
-                                          return (
-                                              <SidebarNodeRow
-                                                  badges={badges}
-                                                  className={
-                                                      branch.isRemote
-                                                          ? "opacity-80"
-                                                          : undefined
-                                                  }
-                                                  description={getBranchDescription(
-                                                      branch,
-                                                      branchWorktree,
-                                                  )}
-                                                  isActive={
-                                                      !branch.isRemote &&
-                                                      branch.name ===
-                                                          snapshot?.branch?.name
-                                                  }
-                                                  key={branch.name}
-                                                  leading={<BranchGlyph />}
-                                                  onClick={
-                                                      isBusy || branch.isRemote
-                                                          ? undefined
-                                                          : () =>
-                                                                void handleSelectBranch(
-                                                                    branch,
-                                                                )
-                                                  }
-                                                  title={branch.name}
-                                              />
-                                          );
-                                      })
+                                                                return (
+                                                                    <div
+                                                                        data-row-index={
+                                                                            idx
+                                                                        }
+                                                                        key={
+                                                                            branch.name
+                                                                        }
+                                                                    >
+                                                                        <SidebarNodeRow
+                                                                            badges={
+                                                                                badges
+                                                                            }
+                                                                            description={getBranchDescription(
+                                                                                branch,
+                                                                                branchWorktree,
+                                                                            )}
+                                                                            isActive={
+                                                                                branch.name ===
+                                                                                snapshot
+                                                                                    ?.branch
+                                                                                    ?.name
+                                                                            }
+                                                                            isSelected={
+                                                                                idx ===
+                                                                                focusIndex
+                                                                            }
+                                                                            leading={
+                                                                                <BranchGlyph />
+                                                                            }
+                                                                            onClick={
+                                                                                isBusy
+                                                                                    ? undefined
+                                                                                    : () =>
+                                                                                          void handleSelectBranch(
+                                                                                              branch,
+                                                                                          )
+                                                                            }
+                                                                            title={
+                                                                                branch.name
+                                                                            }
+                                                                        />
+                                                                    </div>
+                                                                );
+                                                            },
+                                                        )
+                                                      : null}
+                                              </>
+                                          ) : null}
+
+                                          {remoteBranches.length > 0 ? (
+                                              <>
+                                                  <SectionHeader
+                                                      collapsed={
+                                                          !!collapsedSections.remote
+                                                      }
+                                                      count={
+                                                          remoteBranches.length
+                                                      }
+                                                      label="Remote"
+                                                      onToggle={() =>
+                                                          toggleSection(
+                                                              "remote",
+                                                          )
+                                                      }
+                                                  />
+                                                  {!collapsedSections.remote
+                                                      ? remoteBranches.map(
+                                                            (branch) => {
+                                                                const idx =
+                                                                    rowIndex++;
+                                                                const branchWorktree =
+                                                                    snapshot?.worktrees.find(
+                                                                        (
+                                                                            entry,
+                                                                        ) =>
+                                                                            entry.branchName ===
+                                                                            branch.name,
+                                                                    ) ?? null;
+                                                                const badges =
+                                                                    getRemoteBranchBadges(
+                                                                        branchWorktree,
+                                                                        worktreeId,
+                                                                    );
+
+                                                                return (
+                                                                    <div
+                                                                        data-row-index={
+                                                                            idx
+                                                                        }
+                                                                        key={
+                                                                            branch.name
+                                                                        }
+                                                                    >
+                                                                        <SidebarNodeRow
+                                                                            badges={
+                                                                                badges
+                                                                            }
+                                                                            className="opacity-70"
+                                                                            description={getBranchDescription(
+                                                                                branch,
+                                                                                branchWorktree,
+                                                                            )}
+                                                                            isSelected={
+                                                                                idx ===
+                                                                                focusIndex
+                                                                            }
+                                                                            leading={
+                                                                                <BranchGlyph />
+                                                                            }
+                                                                            onClick={
+                                                                                isBusy
+                                                                                    ? undefined
+                                                                                    : () =>
+                                                                                          void handleSelectBranch(
+                                                                                              branch,
+                                                                                          )
+                                                                            }
+                                                                            title={
+                                                                                branch.name
+                                                                            }
+                                                                        />
+                                                                    </div>
+                                                                );
+                                                            },
+                                                        )
+                                                      : null}
+                                              </>
+                                          ) : null}
+                                      </>
                                   ) : (
                                       <EmptyState label={emptyLabel} />
                                   )
                               ) : filteredWorktrees.length > 0 ? (
-                                  filteredWorktrees.map((entry) => (
-                                      <SidebarNodeRow
-                                          badges={getWorktreeBadges(entry)}
-                                          description={entry.rootPath}
-                                          isActive={
-                                              entry.id === (worktreeId ?? null)
-                                          }
-                                          key={entry.id}
-                                          leading={<WorktreeGlyph />}
-                                          onClick={
-                                              isBusy
-                                                  ? undefined
-                                                  : () =>
-                                                        void handleSelectWorktree(
-                                                            entry.id,
-                                                        )
-                                          }
-                                          title={
-                                              entry.branchName ??
-                                              getDetachedWorktreeLabel(entry)
-                                          }
-                                      />
-                                  ))
+                                  filteredWorktrees.map((entry) => {
+                                      const idx = rowIndex++;
+                                      return (
+                                          <div
+                                              data-row-index={idx}
+                                              key={entry.id}
+                                          >
+                                              <SidebarNodeRow
+                                                  badges={getWorktreeBadges(
+                                                      entry,
+                                                  )}
+                                                  description={entry.rootPath}
+                                                  isActive={
+                                                      entry.id ===
+                                                      (worktreeId ?? null)
+                                                  }
+                                                  isSelected={
+                                                      idx === focusIndex
+                                                  }
+                                                  leading={<WorktreeGlyph />}
+                                                  onClick={
+                                                      isBusy
+                                                          ? undefined
+                                                          : () =>
+                                                                void handleSelectWorktree(
+                                                                    entry.id,
+                                                                )
+                                                  }
+                                                  title={
+                                                      entry.branchName ??
+                                                      getDetachedWorktreeLabel(
+                                                          entry,
+                                                      )
+                                                  }
+                                              />
+                                          </div>
+                                      );
+                                  })
                               ) : (
                                   <EmptyState label={emptyLabel} />
                               )}
@@ -581,12 +806,6 @@ export function SidebarGitScopePicker({
                           {isBusy ? (
                               <div className="sidebar-git-scope-menu__status">
                                   Updating git scope…
-                              </div>
-                          ) : activeTab === "branches" &&
-                            branches.some((branch) => branch.isRemote) ? (
-                              <div className="sidebar-git-scope-menu__status">
-                                  Remote branches are visible, but checkout
-                                  stays local in this first pass.
                               </div>
                           ) : null}
                       </div>,
@@ -622,8 +841,74 @@ function TabButton({
     );
 }
 
+function SectionHeader({
+    collapsed,
+    count,
+    label,
+    onToggle,
+}: {
+    readonly collapsed: boolean;
+    readonly count: number;
+    readonly label: string;
+    readonly onToggle: () => void;
+}) {
+    return (
+        <div
+            className="sidebar-git-scope-menu__section-header"
+            onClick={onToggle}
+        >
+            <svg
+                aria-hidden="true"
+                className={[
+                    "sidebar-git-scope-menu__section-chevron",
+                    collapsed
+                        ? "sidebar-git-scope-menu__section-chevron--collapsed"
+                        : "",
+                ]
+                    .filter(Boolean)
+                    .join(" ")}
+                fill="none"
+                viewBox="0 0 16 16"
+            >
+                <path
+                    d="M4.5 6.5 8 10l3.5-3.5"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="1.4"
+                />
+            </svg>
+            <span className="sidebar-git-scope-menu__section-label">
+                {label}
+            </span>
+            <span className="sidebar-git-scope-menu__section-count">
+                {count}
+            </span>
+        </div>
+    );
+}
+
 function EmptyState({ label }: { readonly label: string }) {
     return <div className="sidebar-git-scope-menu__empty">{label}</div>;
+}
+
+function SearchIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            className="sidebar-git-scope-menu__search-icon"
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <path
+                d="M11.25 11.25 14 14M6.5 11a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Z"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.3"
+            />
+        </svg>
+    );
 }
 
 function getBranchBadges(
@@ -641,8 +926,17 @@ function getBranchBadges(
         badges.push({ label: "Worktree", tone: "success" });
     }
 
-    if (branch.isRemote) {
-        badges.push({ label: "Remote", tone: "neutral" });
+    return badges;
+}
+
+function getRemoteBranchBadges(
+    branchWorktree: GitWorktreeSummary | null,
+    activeWorktreeId: string | null,
+): readonly SidebarBadge[] {
+    const badges: SidebarBadge[] = [];
+
+    if (branchWorktree && branchWorktree.id !== activeWorktreeId) {
+        badges.push({ label: "Worktree", tone: "success" });
     }
 
     return badges;

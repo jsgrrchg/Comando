@@ -742,37 +742,9 @@ button {
 }
 
 .sidebar-git-scope-trigger__title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-}
-
-.sidebar-git-scope-trigger__title > span:first-child {
-    min-width: 0;
     font-size: 13px;
     font-weight: 600;
     color: var(--color-text-primary);
-}
-
-.sidebar-git-scope-trigger__badge {
-    flex-shrink: 0;
-    border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--color-bg-secondary) 86%, transparent);
-    padding: 1px 6px;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-}
-
-.sidebar-git-scope-trigger__subtitle {
-    overflow: hidden;
-    color: var(--color-text-secondary);
-    font-size: 11px;
-    line-height: 1.25;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .sidebar-git-scope-menu {
@@ -793,64 +765,113 @@ button {
 
 .sidebar-git-scope-menu__title {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    align-items: center;
+    gap: 6px;
     min-width: 0;
     padding: 10px 12px 8px;
 }
 
 .sidebar-git-scope-menu__title > span:first-child {
     min-width: 0;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-text-primary);
-}
-
-.sidebar-git-scope-menu__path {
-    overflow: hidden;
-    color: var(--color-text-secondary);
     font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-weight: 600;
+    color: var(--color-text-secondary);
 }
 
 .sidebar-git-scope-menu__tabs {
     display: flex;
-    gap: 6px;
-    padding: 0 12px 10px;
+    gap: 2px;
+    margin: 0 12px 10px;
+    padding: 3px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
 }
 
 .sidebar-git-scope-menu__tab {
-    border: 1px solid transparent;
-    border-radius: 999px;
+    position: relative;
+    flex: 1;
+    border: none;
+    border-radius: 6px;
     background: transparent;
     padding: 5px 10px;
     font-size: 11px;
     font-weight: 600;
     color: var(--color-text-secondary);
     transition:
-        border-color 120ms ease,
         background-color 120ms ease,
-        color 120ms ease;
+        color 120ms ease,
+        box-shadow 120ms ease;
 }
 
-.sidebar-git-scope-menu__tab:hover {
-    background: var(--color-bg-tertiary);
+.sidebar-git-scope-menu__tab:hover:not(.sidebar-git-scope-menu__tab--active) {
     color: var(--color-text-primary);
 }
 
 .sidebar-git-scope-menu__tab--active {
-    border-color: color-mix(
-        in srgb,
-        var(--color-accent) 26%,
-        var(--color-border)
-    );
-    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    background: var(--color-bg-elevated);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     color: var(--color-text-primary);
 }
 
 .sidebar-git-scope-menu__search {
-    padding: 0 12px 12px;
+    position: relative;
+    padding: 0 12px 10px;
+}
+
+.sidebar-git-scope-menu__search-icon {
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 13px;
+    height: 13px;
+    color: var(--color-text-secondary);
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+.sidebar-git-scope-menu__search .ide-input {
+    padding-left: 28px;
+}
+
+.sidebar-git-scope-menu__section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 4px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 4px;
+    transition: background-color 100ms ease;
+}
+
+.sidebar-git-scope-menu__section-header:hover {
+    background: color-mix(in srgb, var(--color-bg-tertiary) 50%, transparent);
+}
+
+.sidebar-git-scope-menu__section-chevron {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
+    transition: transform 150ms ease;
+}
+
+.sidebar-git-scope-menu__section-chevron--collapsed {
+    transform: rotate(-90deg);
+}
+
+.sidebar-git-scope-menu__section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    letter-spacing: 0.02em;
+}
+
+.sidebar-git-scope-menu__section-count {
+    font-size: 10px;
+    color: var(--color-text-secondary);
+    opacity: 0.7;
 }
 
 .sidebar-git-scope-menu__list {
@@ -875,6 +896,23 @@ button {
 .sidebar-git-scope-menu__status--error {
     background: color-mix(in srgb, var(--diff-remove) 9%, transparent);
     color: var(--diff-remove);
+}
+
+.sidebar-git-scope-menu__kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 50%, transparent);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    line-height: 1;
 }
 
 .sidebar-search-toggle {
