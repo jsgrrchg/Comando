@@ -153,10 +153,13 @@ const FileSelectorButton = memo(function FileSelectorButton({
             onClick={handleClick}
             type="button"
         >
-            <GitBadge tone={diffTone(file.kind)}>
-                {file.statusLabel ?? file.kind}
-            </GitBadge>
-            <span className="truncate font-mono">{file.path}</span>
+            <span
+                className="truncate font-mono"
+                style={{ color: diffKindColor(file.kind) }}
+                title={file.statusLabel ?? file.kind}
+            >
+                {file.path}
+            </span>
         </button>
     );
 });
@@ -193,22 +196,22 @@ const DiffFileSurface = memo(function DiffFileSurface({
                     {isCollapsible ? (
                         <CollapseChevron collapsed={collapsed} />
                     ) : null}
-                    <span className="truncate font-mono text-[14px] font-medium">
+                    <span
+                        className="truncate font-mono text-[14px] font-medium"
+                        title={file.statusLabel ?? file.kind}
+                    >
                         <span className="text-text-secondary">
                             {file.path.substring(
                                 0,
                                 file.path.lastIndexOf("/") + 1,
                             )}
                         </span>
-                        <span className="text-text-primary">
+                        <span style={{ color: diffKindColor(file.kind) }}>
                             {file.path.substring(
                                 file.path.lastIndexOf("/") + 1,
                             )}
                         </span>
                     </span>
-                    <GitBadge tone={diffTone(file.kind)}>
-                        {file.statusLabel ?? file.kind}
-                    </GitBadge>
                     {file.reversible ? (
                         <GitBadge tone="neutral">reversible</GitBadge>
                     ) : null}
@@ -419,16 +422,16 @@ const DiffLineRow = memo(function DiffLineRow({
     );
 });
 
-function diffTone(kind: GitDiffFile["kind"]) {
+function diffKindColor(kind: GitDiffFile["kind"]): string {
     switch (kind) {
         case "create":
-            return "success";
+            return "var(--diff-add)";
         case "delete":
-            return "danger";
+            return "var(--diff-remove)";
         case "move":
-            return "accent";
+            return "var(--color-accent)";
         case "update":
         default:
-            return "warning";
+            return "var(--diff-warn)";
     }
 }
