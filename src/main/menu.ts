@@ -14,6 +14,7 @@ interface InstallApplicationMenuOptions {
     readonly openNewMainWindow: (
         projectId?: string | null,
     ) => Promise<void> | void;
+    readonly reopenLastClosedTab: () => void;
     readonly openSettingsWindow: (
         projectId: string | null,
     ) => Promise<void> | void;
@@ -89,6 +90,13 @@ function buildMenuTemplate(
                 label: "Settings",
             },
             { type: "separator" },
+            {
+                accelerator: "CmdOrCtrl+Shift+T",
+                click: () => {
+                    options.reopenLastClosedTab();
+                },
+                label: "Reopen Closed Tab",
+            },
             isMac
                 ? {
                       accelerator: "CmdOrCtrl+W",

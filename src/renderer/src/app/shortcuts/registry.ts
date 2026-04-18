@@ -9,6 +9,7 @@ export interface ShortcutDefinition {
         | "open_file_picker"
         | "open_settings"
         | "previous_pane_tab"
+        | "reopen_closed_tab"
         | "save_file"
         | "toggle_sidebar"
         | "increase_editor_font_size"
@@ -83,6 +84,16 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Cmd+,",
             windows: "Ctrl+,",
+        },
+        section: "General",
+    },
+    {
+        id: "reopen_closed_tab",
+        label: "Reopen closed tab",
+        description: "Restore the most recently closed workspace tab.",
+        keys: {
+            mac: "Cmd+Shift+T",
+            windows: "Ctrl+Shift+T",
         },
         section: "General",
     },

@@ -208,6 +208,12 @@ if (!hasSingleInstanceLock) {
                 openNewMainWindow: (projectId) => {
                     void openNewMainWindow(projectId ?? null);
                 },
+                reopenLastClosedTab: () => {
+                    const focusedWindow = windowRegistry.getFocusedMainWindow();
+                    focusedWindow?.webContents.send(
+                        IPC_EVENTS.workspaceReopenLastClosedTab,
+                    );
+                },
                 openSettingsWindow: (projectId) =>
                     openSettingsWindow(
                         { projectId },

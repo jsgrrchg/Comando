@@ -154,7 +154,12 @@ interface AiStore {
         promptId: string,
         currentComposerParts?: readonly AiComposerDraftPart[],
     ) => readonly AiComposerDraftPart[] | null;
-    ensureSession: (tab: RuntimeAiSessionTab) => Promise<void>;
+    ensureSession: (
+        tab: RuntimeAiSessionTab,
+        options?: {
+            readonly force?: boolean;
+        },
+    ) => Promise<void>;
     hydrateSettings: (settings: AiSettingsSnapshot | null | undefined) => void;
     keepAllTrackedFiles: (sessionId: string) => Promise<void>;
     keepTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
@@ -566,11 +571,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
         });
     },
 
-    ensureSession: async (tab) => {
+    ensureSession: async (tab, options) => {
         get().registerSessionTab(tab);
         const currentSession = get().sessions[tab.sessionId];
 
-        if (currentSession?.hydrated || currentSession?.isHydrating) {
+        if (
+            !options?.force &&
+            (currentSession?.hydrated || currentSession?.isHydrating)
+        ) {
             return;
         }
 

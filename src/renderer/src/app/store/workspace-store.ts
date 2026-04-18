@@ -18,20 +18,18 @@ import type {
 import {
     activatePane,
     appendTerminalOutput,
+    attachTabToPaneAtIndex,
     attachTabToPane,
     collectPaneNodes,
-    closeOtherWorkspaceTabs,
     closeWorkspacePane,
     closeWorkspaceTab,
-    closeWorkspaceTabsForProjectPath,
-    closeWorkspaceTabsToRight,
     createDefaultWorkspaceState,
+    findPaneById,
     markTerminalExited,
     moveActiveTabBetweenPanes,
     moveTabToPaneAtIndex,
     moveTabToSplit,
     moveWorkspaceTabBetweenPanes,
-    removeProjectTabs,
     reorderTabInPane,
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
@@ -88,6 +86,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     readonly lastFocusedRuntimeId: AiRuntimeId;
     readonly lastQuickCreateAction: WorkspaceQuickCreateAction;
     readonly recentActiveTabIds: readonly string[];
+    readonly recentClosedTabs: readonly ClosedWorkspaceTabEntry[];
     readonly recentFocusedChatTabIds: readonly string[];
     appendTerminalOutput: (event: TerminalDataEvent) => void;
     closePane: (paneId: string) => Promise<void>;
@@ -159,6 +158,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         worktreeId?: string | null,
         invalidatedRelativePaths?: readonly string[] | null,
     ) => Promise<void>;
+    reopenLastClosedTab: () => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
     reorderTab: (
         paneId: string,
@@ -224,6 +224,12 @@ interface WorkspaceStore extends WorkspaceTreeState {
 
 type GetWorkspaceState = () => WorkspaceStore;
 
+interface ClosedWorkspaceTabEntry {
+    readonly paneId: string;
+    readonly tab: RuntimeWorkspaceTab;
+    readonly tabIndex: number;
+}
+
 export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ...createDefaultWorkspaceState(),
     error: null,
@@ -232,6 +238,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     lastFocusedRuntimeId: "codex",
     lastQuickCreateAction: "codex",
     recentActiveTabIds: [],
+    recentClosedTabs: [],
     recentFocusedChatTabIds: [],
 
     appendTerminalOutput: (event) => {
@@ -241,11 +248,20 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     closeOtherTabs: async (tabId) => {
-        set((state) => ({
-            ...closeOtherWorkspaceTabs(state, tabId),
-            error: null,
-        }));
-        await persistWorkspaceState(get);
+        const paneId = findPaneIdByTabId(get(), tabId);
+        if (!paneId) {
+            return;
+        }
+
+        const pane = findPaneById(get().rootNode, paneId);
+        if (!pane) {
+            return;
+        }
+
+        const tabIdsToClose = pane.tabIds.filter(
+            (currentTabId) => currentTabId !== tabId,
+        );
+        await closeTabsWithSideEffects(get, set, tabIdsToClose);
     },
 
     closePane: async (paneId) => {
@@ -262,108 +278,58 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         relativePath: string,
         kind: "directory" | "file",
     ) => {
-        set((state) => ({
-            ...closeWorkspaceTabsForProjectPath(
-                state,
-                projectId,
-                worktreeId,
-                relativePath,
-                kind,
-            ),
-            error: null,
-        }));
-        await persistWorkspaceState(get);
+        const workspaceState = get();
+        const workspaceTabs = Object.keys(workspaceState.tabsById).map(
+            (tabId) => workspaceState.tabsById[tabId],
+        );
+        const fileTabsToClose: RuntimeWorkspaceFileTab[] = [];
+
+        for (const tab of workspaceTabs) {
+            if (tab.kind !== "file") {
+                continue;
+            }
+
+            const matchesRelativePath =
+                kind === "file"
+                    ? tab.relativePath === relativePath
+                    : tab.relativePath === relativePath ||
+                      tab.relativePath.startsWith(`${relativePath}/`);
+
+            if (
+                tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId) &&
+                matchesRelativePath
+            ) {
+                fileTabsToClose.push(tab);
+            }
+        }
+
+        const tabIdsToClose = fileTabsToClose.map((tab) => tab.id);
+        await closeTabsWithSideEffects(get, set, tabIdsToClose);
     },
 
     closeTabsToRight: async (tabId) => {
-        set((state) => ({
-            ...closeWorkspaceTabsToRight(state, tabId),
-            error: null,
-        }));
-        await persistWorkspaceState(get);
+        const paneId = findPaneIdByTabId(get(), tabId);
+        if (!paneId) {
+            return;
+        }
+
+        const pane = findPaneById(get().rootNode, paneId);
+        if (!pane) {
+            return;
+        }
+
+        const tabIndex = pane.tabIds.indexOf(tabId);
+        if (tabIndex === -1 || tabIndex === pane.tabIds.length - 1) {
+            return;
+        }
+
+        await closeTabsWithSideEffects(get, set, pane.tabIds.slice(tabIndex + 1));
     },
 
     closeTab: async (tabId) => {
-        const tab = get().tabsById[tabId];
-        if (tab?.kind === "terminal") {
-            await safeCloseTerminal(tab.sessionId);
-        }
-        if (tab?.kind === "chat") {
-            await safeCloseAiSession(tab.sessionId);
-        }
-        if (tab?.kind === "file" && tab.document) {
-            void getComandoApi().notifyFileBuffer({
-                absolutePath: tab.document.absolutePath,
-                content: null,
-            });
-        }
-
-        set((state) => {
-            const paneId = findPaneIdByTabId(state, tabId);
-            const activeTabId = paneId
-                ? getPaneActiveTabId(state, paneId)
-                : null;
-            const fallbackTabId =
-                paneId && activeTabId === tabId
-                    ? findMostRecentFocusedTabIdInPane(
-                          state,
-                          paneId,
-                          state.recentActiveTabIds,
-                          tabId,
-                      )
-                    : null;
-            const closedState = closeWorkspaceTab(state, tabId);
-            const nextState =
-                paneId &&
-                fallbackTabId &&
-                findPaneIdByTabId(closedState, fallbackTabId) === paneId
-                    ? {
-                          ...selectPaneTab(closedState, paneId, fallbackTabId),
-                          activePaneId: closedState.activePaneId,
-                      }
-                    : closedState;
-            const recentFocusedChatTabIds = removeRecentChatFocus(
-                state.recentFocusedChatTabIds,
-                tabId,
-            );
-            const recentActiveTabIds = fallbackTabId
-                ? recordRecentTabActivation(
-                      removeRecentTabActivation(
-                          state.recentActiveTabIds,
-                          tabId,
-                      ),
-                      fallbackTabId,
-                  )
-                : removeRecentTabActivation(state.recentActiveTabIds, tabId);
-            const fallbackFocusedChatTabId =
-                findMostRecentExistingChatTabId(
-                    nextState.tabsById,
-                    recentFocusedChatTabIds,
-                ) ?? getPaneChatTabId(nextState, nextState.activePaneId);
-            const fallbackFocusedRuntimeId =
-                getWorkspaceTabRuntimeId(
-                    fallbackFocusedChatTabId
-                        ? nextState.tabsById[fallbackFocusedChatTabId]
-                        : null,
-                ) ??
-                getPaneRuntimeId(nextState, nextState.activePaneId) ??
-                state.lastFocusedRuntimeId;
-            return {
-                ...nextState,
-                error: null,
-                lastFocusedChatTabId:
-                    state.lastFocusedChatTabId === tabId
-                        ? fallbackFocusedChatTabId
-                        : state.lastFocusedChatTabId,
-                lastFocusedRuntimeId:
-                    state.lastFocusedChatTabId === tabId
-                        ? fallbackFocusedRuntimeId
-                        : state.lastFocusedRuntimeId,
-                recentActiveTabIds,
-                recentFocusedChatTabIds,
-            };
-        });
-        await persistWorkspaceState(get);
+        await closeTabsWithSideEffects(get, set, [tabId]);
     },
 
     createChatTab: async (
@@ -1128,23 +1094,24 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         );
     },
 
-    removeProjectTabs: async (projectId) => {
-        const terminalSessionIds = Object.values(get().tabsById)
-            .filter(
-                (tab): tab is RuntimeWorkspaceTerminalTab =>
-                    tab.kind === "terminal" && tab.projectId === projectId,
-            )
-            .map((tab) => tab.sessionId);
+    reopenLastClosedTab: async () => {
+        const closedEntry = get().recentClosedTabs[0] ?? null;
+        if (!closedEntry) {
+            return;
+        }
 
-        await Promise.all(
-            terminalSessionIds.map((sessionId) => safeCloseTerminal(sessionId)),
-        );
+        const restoredTab = createRestoredTab(closedEntry.tab);
 
-        set((state) => ({
-            ...removeProjectTabs(state, projectId),
-            error: null,
-        }));
+        set((state) => restoreClosedTabInStore(state, closedEntry, restoredTab));
         await persistWorkspaceState(get);
+        await restoreTabSideEffects(restoredTab, get, set);
+    },
+
+    removeProjectTabs: async (projectId) => {
+        const tabIdsToClose = Object.values(get().tabsById)
+            .filter((tab) => tab.projectId === projectId)
+            .map((tab) => tab.id);
+        await closeTabsWithSideEffects(get, set, tabIdsToClose);
     },
 
     reorderTab: async (paneId, tabId, targetIndex) => {
@@ -1491,6 +1458,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
 
 const WORKSPACE_PERSIST_DEBOUNCE_MS = 180;
+const MAX_RECENTLY_CLOSED_TABS = 20;
 
 let pendingWorkspacePersistTimer: ReturnType<typeof setTimeout> | null = null;
 let workspacePersistDirty = false;
@@ -1610,6 +1578,39 @@ export function getBestMatchingChatTabId(
     );
 }
 
+async function closeTabsWithSideEffects(
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    tabIds: readonly string[],
+): Promise<void> {
+    const state = get();
+    const normalizedTabIds = [...new Set(tabIds)].filter(
+        (tabId) => state.tabsById[tabId],
+    );
+    if (normalizedTabIds.length === 0) {
+        return;
+    }
+
+    await Promise.all(
+        normalizedTabIds.map(async (tabId) => {
+            const tab = state.tabsById[tabId];
+            if (!tab) {
+                return;
+            }
+
+            await closeTabSideEffects(tab);
+        }),
+    );
+
+    set((currentState) =>
+        normalizedTabIds.reduce(
+            (nextState, tabId) => closeTabInStore(nextState, tabId),
+            currentState,
+        ),
+    );
+    await persistWorkspaceState(get);
+}
+
 function recordRecentChatFocus(
     recentFocusedChatTabIds: readonly string[],
     chatTabId: string | null,
@@ -1687,6 +1688,165 @@ function findMostRecentExistingChatTabId(
             (recentChatTabId) => tabsById[recentChatTabId]?.kind === "chat",
         ) ?? null
     );
+}
+
+function closeTabInStore(
+    state: WorkspaceStore,
+    tabId: string,
+): WorkspaceStore {
+    const closedEntry = buildClosedWorkspaceTabEntry(state, tabId);
+    if (!closedEntry) {
+        return state;
+    }
+
+    const paneId = closedEntry.paneId;
+    const activeTabId = getPaneActiveTabId(state, paneId);
+    const fallbackTabId =
+        activeTabId === tabId
+            ? findMostRecentFocusedTabIdInPane(
+                  state,
+                  paneId,
+                  state.recentActiveTabIds,
+                  tabId,
+              )
+            : null;
+    const closedState = closeWorkspaceTab(state, tabId);
+    const nextState =
+        fallbackTabId &&
+        findPaneIdByTabId(closedState, fallbackTabId) === paneId
+            ? {
+                  ...selectPaneTab(closedState, paneId, fallbackTabId),
+                  activePaneId: closedState.activePaneId,
+              }
+            : closedState;
+    const recentFocusedChatTabIds = removeRecentChatFocus(
+        state.recentFocusedChatTabIds,
+        tabId,
+    );
+    const recentActiveTabIds = fallbackTabId
+        ? recordRecentTabActivation(
+              removeRecentTabActivation(state.recentActiveTabIds, tabId),
+              fallbackTabId,
+          )
+        : removeRecentTabActivation(state.recentActiveTabIds, tabId);
+    const fallbackFocusedChatTabId =
+        findMostRecentExistingChatTabId(
+            nextState.tabsById,
+            recentFocusedChatTabIds,
+        ) ?? getPaneChatTabId(nextState, nextState.activePaneId);
+    const fallbackFocusedRuntimeId =
+        getWorkspaceTabRuntimeId(
+            fallbackFocusedChatTabId
+                ? nextState.tabsById[fallbackFocusedChatTabId]
+                : null,
+        ) ??
+        getPaneRuntimeId(nextState, nextState.activePaneId) ??
+        state.lastFocusedRuntimeId;
+
+    return {
+        ...state,
+        ...nextState,
+        error: null,
+        lastFocusedChatTabId:
+            state.lastFocusedChatTabId === tabId
+                ? fallbackFocusedChatTabId
+                : state.lastFocusedChatTabId,
+        lastFocusedRuntimeId:
+            state.lastFocusedChatTabId === tabId
+                ? fallbackFocusedRuntimeId
+                : state.lastFocusedRuntimeId,
+        recentActiveTabIds,
+        recentClosedTabs: recordRecentlyClosedTab(
+            state.recentClosedTabs,
+            closedEntry,
+        ),
+        recentFocusedChatTabIds,
+    };
+}
+
+function restoreClosedTabInStore(
+    state: WorkspaceStore,
+    closedEntry: ClosedWorkspaceTabEntry,
+    restoredTab: RuntimeWorkspaceTab,
+): WorkspaceStore {
+    const targetPaneId = collectPaneNodes(state.rootNode).some(
+        (pane) => pane.id === closedEntry.paneId,
+    )
+        ? closedEntry.paneId
+        : state.activePaneId;
+    const targetPane = findPaneById(state.rootNode, targetPaneId);
+    if (!targetPane) {
+        return {
+            ...state,
+            recentClosedTabs: state.recentClosedTabs.filter(
+                (entry) => entry.tab.id !== closedEntry.tab.id,
+            ),
+        };
+    }
+
+    const nextState = attachTabToPaneAtIndex(
+        state,
+        targetPaneId,
+        restoredTab,
+        targetPaneId === closedEntry.paneId
+            ? closedEntry.tabIndex
+            : targetPane.tabIds.length,
+    );
+    const chatTabId = getWorkspaceChatTabId(restoredTab);
+    const runtimeId = getWorkspaceTabRuntimeId(restoredTab);
+
+    return {
+        ...state,
+        ...nextState,
+        error: null,
+        lastFocusedChatTabId: chatTabId ?? state.lastFocusedChatTabId,
+        lastFocusedRuntimeId: runtimeId ?? state.lastFocusedRuntimeId,
+        recentActiveTabIds: recordRecentTabActivation(
+            state.recentActiveTabIds,
+            restoredTab.id,
+        ),
+        recentClosedTabs: state.recentClosedTabs.filter(
+            (entry) => entry.tab.id !== closedEntry.tab.id,
+        ),
+        recentFocusedChatTabIds: recordRecentChatFocus(
+            state.recentFocusedChatTabIds,
+            chatTabId,
+        ),
+    };
+}
+
+function buildClosedWorkspaceTabEntry(
+    state: WorkspaceStore,
+    tabId: string,
+): ClosedWorkspaceTabEntry | null {
+    const tab = state.tabsById[tabId];
+    const paneId = findPaneIdByTabId(state, tabId);
+    if (!tab || !paneId) {
+        return null;
+    }
+
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane) {
+        return null;
+    }
+
+    return {
+        paneId,
+        tab,
+        tabIndex: Math.max(pane.tabIds.indexOf(tabId), 0),
+    };
+}
+
+function recordRecentlyClosedTab(
+    recentClosedTabs: readonly ClosedWorkspaceTabEntry[],
+    closedEntry: ClosedWorkspaceTabEntry,
+): readonly ClosedWorkspaceTabEntry[] {
+    return [
+        closedEntry,
+        ...recentClosedTabs.filter(
+            (entry) => entry.tab.id !== closedEntry.tab.id,
+        ),
+    ].slice(0, MAX_RECENTLY_CLOSED_TABS);
 }
 
 function createHydratedRuntimeTabs(
@@ -2029,6 +2189,72 @@ async function safeCloseAiSession(sessionId: string): Promise<void> {
     }
 }
 
+async function closeTabSideEffects(tab: RuntimeWorkspaceTab): Promise<void> {
+    if (tab.kind === "terminal") {
+        await safeCloseTerminal(tab.sessionId);
+        return;
+    }
+
+    if (tab.kind === "chat") {
+        await safeCloseAiSession(tab.sessionId);
+        return;
+    }
+
+    if (tab.kind === "file" && tab.document) {
+        await getComandoApi().notifyFileBuffer({
+            absolutePath: tab.document.absolutePath,
+            content: null,
+        });
+    }
+}
+
+async function restoreTabSideEffects(
+    tab: RuntimeWorkspaceTab,
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+): Promise<void> {
+    if (tab.kind === "terminal") {
+        await bootTerminalSession(get, set, tab.id);
+        return;
+    }
+
+    if (tab.kind === "chat" || tab.kind === "review") {
+        await useAiStore.getState().ensureSession(tab, {
+            force: true,
+        });
+        return;
+    }
+
+    if (tab.kind === "file") {
+        if (!tab.document && !tab.isDirty) {
+            await loadFileTabDocument(get, set, tab.id);
+            return;
+        }
+
+        if (tab.document && tab.isDirty) {
+            await getComandoApi().notifyFileBuffer({
+                absolutePath: tab.document.absolutePath,
+                content: tab.draftContent,
+            });
+        }
+    }
+}
+
+function createRestoredTab(tab: RuntimeWorkspaceTab): RuntimeWorkspaceTab {
+    if (tab.kind !== "terminal") {
+        return tab;
+    }
+
+    return {
+        ...tab,
+        exitCode: null,
+        isReady: false,
+        launchError: null,
+        session: null,
+        signalCode: null,
+    };
+}
+
 function countTabs(
     get: GetWorkspaceState,
     kind: RuntimeWorkspaceTab["kind"],
@@ -2271,13 +2497,14 @@ function findPaneIdByTabId(
 }
 
 function getComandoApi() {
-    if (!window.comando) {
+    const comandoWindow = globalThis.window;
+    if (!comandoWindow?.comando) {
         throw new Error(
             "The desktop bridge is not available yet. Restart the Electron app and try again.",
         );
     }
 
-    return window.comando;
+    return comandoWindow.comando;
 }
 
 function normalizeWorktreeId(

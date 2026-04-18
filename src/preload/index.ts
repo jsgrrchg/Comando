@@ -322,6 +322,20 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceReopenLastClosedTab: (listener) => {
+        const handleEvent = () => {
+            listener();
+        };
+
+        ipcRenderer.on(IPC_EVENTS.workspaceReopenLastClosedTab, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceReopenLastClosedTab,
+                handleEvent,
+            );
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,

@@ -94,6 +94,7 @@ export const IPC_EVENTS = {
     settingsUpdated: "settings:updated",
     projectSettingsUpdated: "settings:project-updated",
     workspaceCloseActiveTab: "workspace:close-active-tab",
+    workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -1547,6 +1548,7 @@ export interface ComandoApi {
         listener: (payload: ProjectSettingsUpdatedEvent) => void,
     ) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
+    onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;

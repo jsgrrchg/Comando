@@ -236,6 +236,70 @@ export function attachTabToPane(
     };
 }
 
+export function attachTabToPaneAtIndex(
+    state: WorkspaceTreeState,
+    paneId: string,
+    tab: RuntimeWorkspaceTab,
+    targetIndex: number,
+): WorkspaceTreeState {
+    const existingPaneId = findPaneIdForTab(state.rootNode, tab.id);
+    const targetPane = findPaneById(state.rootNode, paneId);
+    if (!targetPane) {
+        return state;
+    }
+
+    if (existingPaneId !== null) {
+        const reorderedState = moveTabToPaneAtIndex(
+            state,
+            tab.id,
+            existingPaneId,
+            paneId,
+            targetIndex,
+            {
+                preserveEmptySourcePane: existingPaneId === paneId,
+            },
+        );
+
+        return {
+            ...reorderedState,
+            activePaneId: paneId,
+            tabsById: {
+                ...reorderedState.tabsById,
+                [tab.id]: tab,
+            },
+        };
+    }
+
+    return {
+        activePaneId: paneId,
+        rootNode: replaceNode(state.rootNode, paneId, (node) => {
+            if (node.type !== "pane") {
+                return node;
+            }
+
+            const nextIndex = normalizeTabInsertionIndex(
+                targetIndex,
+                node.tabIds.length,
+            );
+            const nextTabIds = [
+                ...node.tabIds.slice(0, nextIndex),
+                tab.id,
+                ...node.tabIds.slice(nextIndex),
+            ];
+
+            return {
+                ...node,
+                activeTabId: tab.id,
+                tabIds: nextTabIds,
+            };
+        }),
+        tabsById: {
+            ...state.tabsById,
+            [tab.id]: tab,
+        },
+    };
+}
+
 export function selectPaneTab(
     state: WorkspaceTreeState,
     paneId: string,

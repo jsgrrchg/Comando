@@ -167,6 +167,9 @@ export function App() {
     const refreshProjectTabs = useWorkspaceStore(
         (state) => state.refreshProjectTabs,
     );
+    const reopenLastClosedTab = useWorkspaceStore(
+        (state) => state.reopenLastClosedTab,
+    );
     const renameTabsForProjectPath = useWorkspaceStore(
         (state) => state.renameTabsForProjectPath,
     );
@@ -487,6 +490,21 @@ export function App() {
             unsubscribe();
         };
     }, [closeWorkspaceTab]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        const unsubscribe = comandoApi.onWorkspaceReopenLastClosedTab(() => {
+            void reopenLastClosedTab();
+        });
+
+        return () => {
+            unsubscribe();
+        };
+    }, [reopenLastClosedTab]);
 
     useEffect(() => {
         syncViewport(window.innerWidth);

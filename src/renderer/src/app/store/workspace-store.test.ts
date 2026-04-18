@@ -20,7 +20,9 @@ import {
 
 const saveWorkspaceSnapshotMock = vi.fn(async () => {});
 const closeAiSessionMock = vi.fn(async () => {});
+const closeTerminalSessionMock = vi.fn(async () => {});
 const ensureSessionMock = vi.fn(async () => {});
+const notifyFileBufferMock = vi.fn(async () => {});
 const openProjectFileMock =
     vi.fn<
         (input: {
@@ -36,7 +38,9 @@ describe("workspace file opening", () => {
         resetWorkspacePersistenceForTests();
         saveWorkspaceSnapshotMock.mockClear();
         closeAiSessionMock.mockClear();
+        closeTerminalSessionMock.mockClear();
         ensureSessionMock.mockClear();
+        notifyFileBufferMock.mockClear();
         openProjectFileMock.mockReset();
         openProjectFileMock.mockImplementation((input) =>
             Promise.resolve({
@@ -58,15 +62,40 @@ describe("workspace file opening", () => {
             }),
         );
 
-        vi.stubGlobal("window", {
-            comando: {
-                closeAiSession: closeAiSessionMock,
-                openProjectFile: openProjectFileMock,
-                saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    closeAiSession: closeAiSessionMock,
+                    closeTerminalSession: closeTerminalSessionMock,
+                    notifyFileBuffer: notifyFileBufferMock,
+                    openProjectFile: openProjectFileMock,
+                    saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
+                },
             },
+            writable: true,
+        });
+        Object.defineProperty(globalThis, "localStorage", {
+            configurable: true,
+            value: {
+                getItem: vi.fn(() => null),
+                removeItem: vi.fn(),
+                setItem: vi.fn(),
+            },
+            writable: true,
         });
 
-        useAiStore.setState({
+        useAiStore.setState(
+            (state) => ({
+                ...state,
+                ensureSession: ensureSessionMock,
+                runtimeCatalogById: {},
+                runtimeStatusById: {},
+                sessions: {},
+            }),
+            true,
+        );
+        Object.assign(useAiStore.getState(), {
             ensureSession: ensureSessionMock,
         });
 
@@ -79,15 +108,23 @@ describe("workspace file opening", () => {
             lastFocusedRuntimeId: "codex",
             lastQuickCreateAction: "codex",
             recentActiveTabIds: [],
+            recentClosedTabs: [],
             recentFocusedChatTabIds: [],
-        }));
+        }), true);
     });
 
     afterEach(() => {
         resetWorkspacePersistenceForTests();
-        useAiStore.setState({
-            ensureSession: originalEnsureSession,
-        });
+        useAiStore.setState(
+            (state) => ({
+                ...state,
+                ensureSession: originalEnsureSession,
+                runtimeCatalogById: {},
+                runtimeStatusById: {},
+                sessions: {},
+            }),
+            true,
+        );
         vi.unstubAllGlobals();
     });
 
@@ -1432,5 +1469,194 @@ describe("workspace runtime focus helpers", () => {
         expect(state.rootNode.tabIds).toEqual(["file-1", "file-2"]);
         expect(state.rootNode.activeTabId).toBe("file-1");
         expect(state.recentActiveTabIds).toEqual(["file-1", "file-2"]);
+    });
+
+    it("reopens the most recently closed tab in its original pane position", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                activeTabId: "file-3",
+                id: "pane-a",
+                tabIds: ["file-1", "file-2", "file-3"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-1",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "a.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "a.ts",
+                    worktreeId: null,
+                },
+                "file-2": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-2",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "b.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "b.ts",
+                    worktreeId: null,
+                },
+                "file-3": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: null,
+                    draftContent: "",
+                    hasExternalChange: false,
+                    id: "file-3",
+                    isDirty: false,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "c.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "",
+                    title: "c.ts",
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().closeTab("file-2");
+        await useWorkspaceStore.getState().reopenLastClosedTab();
+
+        const state = useWorkspaceStore.getState();
+        if (state.rootNode.type !== "pane") {
+            throw new Error("Expected a single pane workspace.");
+        }
+
+        expect(state.rootNode.tabIds).toEqual(["file-1", "file-2", "file-3"]);
+        expect(state.rootNode.activeTabId).toBe("file-2");
+        expect(
+            state.recentClosedTabs.some((entry) => entry.tab.id === "file-2"),
+        ).toBe(false);
+    });
+
+    it("restores unsaved file buffers when reopening a closed dirty tab", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-a",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    document: {
+                        absolutePath: "/tmp/a.ts",
+                        content: "export const value = 1;\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "typescript",
+                        languageLabel: "TypeScript",
+                        mimeType: "text/typescript",
+                        modifiedAtMs: 1,
+                        name: "a.ts",
+                        projectId: "project-1",
+                        relativePath: "a.ts",
+                        sizeBytes: 24,
+                    },
+                    draftContent: "export const value = 2;\n",
+                    hasExternalChange: false,
+                    id: "file-1",
+                    isDirty: true,
+                    isLoading: false,
+                    isSaving: false,
+                    kind: "file",
+                    loadError: null,
+                    projectId: "project-1",
+                    relativePath: "a.ts",
+                    reviewContext: null,
+                    saveError: null,
+                    savedContent: "export const value = 1;\n",
+                    title: "a.ts",
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().closeTab("file-1");
+        await useWorkspaceStore.getState().reopenLastClosedTab();
+
+        expect(notifyFileBufferMock).toHaveBeenNthCalledWith(1, {
+            absolutePath: "/tmp/a.ts",
+            content: null,
+        });
+        expect(notifyFileBufferMock).toHaveBeenNthCalledWith(2, {
+            absolutePath: "/tmp/a.ts",
+            content: "export const value = 2;\n",
+        });
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            draftContent: "export const value = 2;\n",
+            isDirty: true,
+        });
+    });
+
+    it("reopens a closed chat tab after closing its live session", async () => {
+        closeAiSessionMock.mockClear();
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                activeTabId: "chat-1",
+                id: "pane-a",
+                tabIds: ["chat-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "chat-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    draft: "Hello again",
+                    id: "chat-1",
+                    kind: "chat",
+                    projectId: "project-1",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Codex 1",
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().closeTab("chat-1");
+        await useWorkspaceStore.getState().reopenLastClosedTab();
+
+        expect(closeAiSessionMock).toHaveBeenCalledWith("session-1");
+        expect(useWorkspaceStore.getState().tabsById["chat-1"]).toMatchObject({
+            id: "chat-1",
+            sessionId: "session-1",
+            title: "Codex 1",
+        });
     });
 });
