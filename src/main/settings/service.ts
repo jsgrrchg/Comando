@@ -31,8 +31,9 @@ import {
     AI_COMPOSER_FONT_SIZE_MAX,
     AI_COMPOSER_FONT_SIZE_MIN,
     clampRoundedInt,
-    DEFAULT_AI_FONT_FAMILY,
+    DEFAULT_AI_CHAT_FONT_FAMILY,
     DEFAULT_AI_CHAT_FONT_SIZE,
+    DEFAULT_AI_COMPOSER_FONT_FAMILY,
     DEFAULT_AI_COMPOSER_FONT_SIZE,
     DEFAULT_EDITOR_FONT_FAMILY,
     DEFAULT_EDITOR_FONT_SIZE,
@@ -88,8 +89,10 @@ const AI_REQUIRE_CMD_ENTER_KEY = "ai.composer.require_cmd_enter";
 const AI_SCREENSHOT_RETENTION_KEY = "ai.composer.screenshot_retention_seconds";
 const AI_HISTORY_RETENTION_KEY = "ai.chat.history_retention_days";
 
-const DEFAULT_CHAT_FONT_FAMILY: ChatFontFamily = DEFAULT_AI_FONT_FAMILY;
+const DEFAULT_CHAT_FONT_FAMILY: ChatFontFamily = DEFAULT_AI_CHAT_FONT_FAMILY;
 const DEFAULT_CHAT_FONT_SIZE = DEFAULT_AI_CHAT_FONT_SIZE;
+const DEFAULT_COMPOSER_FONT_FAMILY: ChatFontFamily =
+    DEFAULT_AI_COMPOSER_FONT_FAMILY;
 const DEFAULT_COMPOSER_FONT_SIZE = DEFAULT_AI_COMPOSER_FONT_SIZE;
 const DEFAULT_REVIEW_DIFF_ZOOM = 0.96;
 const DEFAULT_REQUIRE_CMD_ENTER = false;
@@ -332,7 +335,7 @@ export class SettingsService {
             chatFontSize: this.#normalizeChatFontSize(
                 this.#loadNumberSetting(AI_CHAT_FONT_SIZE_KEY),
             ),
-            composerFontFamily: this.#normalizeChatFontFamily(
+            composerFontFamily: this.#normalizeComposerFontFamily(
                 this.#loadStringSetting(AI_COMPOSER_FONT_FAMILY_KEY),
             ),
             composerFontSize: this.#normalizeComposerFontSize(
@@ -368,7 +371,7 @@ export class SettingsService {
         );
         this.#saveSetting(
             AI_COMPOSER_FONT_FAMILY_KEY,
-            this.#normalizeChatFontFamily(settings.composerFontFamily),
+            this.#normalizeComposerFontFamily(settings.composerFontFamily),
         );
         this.#saveSetting(
             AI_COMPOSER_FONT_SIZE_KEY,
@@ -770,6 +773,15 @@ export class SettingsService {
         return VALID_CHAT_FONT_FAMILIES.has(normalizedValue as ChatFontFamily)
             ? (normalizedValue as ChatFontFamily)
             : DEFAULT_CHAT_FONT_FAMILY;
+    }
+
+    #normalizeComposerFontFamily(
+        value: string | null | undefined,
+    ): ChatFontFamily {
+        const normalizedValue = normalizeFontFamilyAlias(value);
+        return VALID_CHAT_FONT_FAMILIES.has(normalizedValue as ChatFontFamily)
+            ? (normalizedValue as ChatFontFamily)
+            : DEFAULT_COMPOSER_FONT_FAMILY;
     }
 
     #normalizeChatFontSize(value: number | null | undefined): number {

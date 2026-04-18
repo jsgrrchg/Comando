@@ -5,6 +5,8 @@ import {
     buildEditorFontFamily,
     CHAT_FONT_FAMILY_OPTIONS,
     EDITOR_FONT_FAMILY_OPTIONS,
+    getDefaultAiChatSettings,
+    getDefaultAppEditorSettings,
 } from "./theme";
 
 describe("theme font families", () => {
@@ -48,5 +50,13 @@ describe("theme font families", () => {
         expect(buildChatFontFamily("jetbrains-mono")).toContain(
             '"JetBrains Mono"',
         );
+    });
+
+    it("uses the configured defaults for new editor and AI surfaces", () => {
+        expect(getDefaultAppEditorSettings().fontFamily).toBe("ibm-plex-mono");
+        expect(getDefaultAiChatSettings()).toMatchObject({
+            chatFontFamily: "andale",
+            composerFontFamily: "ibm-plex-mono",
+        });
     });
 });

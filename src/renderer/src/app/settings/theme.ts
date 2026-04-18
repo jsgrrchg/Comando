@@ -18,8 +18,11 @@ import type {
 } from "@shared/ipc";
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import {
+    DEFAULT_AI_CHAT_FONT_FAMILY,
     DEFAULT_AI_CHAT_FONT_SIZE,
+    DEFAULT_AI_COMPOSER_FONT_FAMILY,
     DEFAULT_AI_COMPOSER_FONT_SIZE,
+    DEFAULT_EDITOR_FONT_FAMILY,
     DEFAULT_EDITOR_FONT_SIZE,
 } from "@shared/typography";
 
@@ -1002,7 +1005,7 @@ export function getDefaultAppAppearance(): AppAppearanceSettings {
 export function getDefaultAppEditorSettings(): AppEditorSettings {
     return {
         autoSaveDelayMs: EDITOR_AUTOSAVE_DELAY_MS_DEFAULT,
-        fontFamily: "sf-mono",
+        fontFamily: DEFAULT_EDITOR_FONT_FAMILY,
         fontSize: DEFAULT_EDITOR_FONT_SIZE,
         lineHeight: 1.55,
         minimapEnabled: true,
@@ -1012,9 +1015,9 @@ export function getDefaultAppEditorSettings(): AppEditorSettings {
 
 export function getDefaultAiChatSettings(): AppAiChatSettings {
     return {
-        chatFontFamily: "system",
+        chatFontFamily: DEFAULT_AI_CHAT_FONT_FAMILY,
         chatFontSize: DEFAULT_AI_CHAT_FONT_SIZE,
-        composerFontFamily: "system",
+        composerFontFamily: DEFAULT_AI_COMPOSER_FONT_FAMILY,
         composerFontSize: DEFAULT_AI_COMPOSER_FONT_SIZE,
         reviewDiffZoom: DEFAULT_AI_DIFF_ZOOM,
         requireCmdEnterToSend: false,

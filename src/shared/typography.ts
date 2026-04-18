@@ -33,8 +33,10 @@ export const EDITOR_FONT_FAMILY_IDS = [
 export type EditorFontFamily = (typeof EDITOR_FONT_FAMILY_IDS)[number];
 export type ChatFontFamily = EditorFontFamily;
 
-export const DEFAULT_EDITOR_FONT_FAMILY: EditorFontFamily = "sf-mono";
-export const DEFAULT_AI_FONT_FAMILY: ChatFontFamily = "system";
+export const DEFAULT_EDITOR_FONT_FAMILY: EditorFontFamily = "ibm-plex-mono";
+export const DEFAULT_AI_CHAT_FONT_FAMILY: ChatFontFamily = "andale";
+export const DEFAULT_AI_COMPOSER_FONT_FAMILY: ChatFontFamily =
+    "ibm-plex-mono";
 
 export const AI_CHAT_FONT_SIZE_MIN = 12;
 export const AI_CHAT_FONT_SIZE_MAX = 28;

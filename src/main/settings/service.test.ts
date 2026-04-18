@@ -97,7 +97,7 @@ describe("SettingsService", () => {
             },
             editor: {
                 autoSaveDelayMs: 900,
-                fontFamily: "sf-mono",
+                fontFamily: "ibm-plex-mono",
                 fontSize: 14,
                 lineHeight: 1.55,
                 minimapEnabled: true,
@@ -355,9 +355,9 @@ function createEmptyAiSettings() {
 
 function createDefaultAiChatSettings() {
     return {
-        chatFontFamily: "system",
+        chatFontFamily: "andale",
         chatFontSize: 14,
-        composerFontFamily: "system",
+        composerFontFamily: "ibm-plex-mono",
         composerFontSize: 14,
         reviewDiffZoom: 0.96,
         requireCmdEnterToSend: false,
