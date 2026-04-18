@@ -1,6 +1,37 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { syncTerminalViewport } from "./terminalSurface";
+import {
+    createTerminalSurfaceOptions,
+    syncTerminalViewport,
+} from "./terminalSurface";
+
+describe("createTerminalSurfaceOptions", () => {
+    it("keeps carriage-return redraws intact for shell prompts", () => {
+        const options = createTerminalSurfaceOptions({
+            background: "#111111",
+            cursor: "#ffffff",
+            foreground: "#eeeeee",
+            selectionBackground: "#333333",
+        });
+
+        expect(options).toMatchObject({
+            allowTransparency: false,
+            convertEol: false,
+            cursorBlink: true,
+            fontFamily:
+                '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
+            fontSize: 12.5,
+            lineHeight: 1.35,
+            scrollback: 5000,
+        });
+        expect(options.theme).toEqual({
+            background: "#111111",
+            cursor: "#ffffff",
+            foreground: "#eeeeee",
+            selectionBackground: "#333333",
+        });
+    });
+});
 
 describe("syncTerminalViewport", () => {
     it("skips syncing while the container has no visible size", () => {

@@ -96,7 +96,10 @@ import { appendSelectionMentionToRegisteredComposer } from "@renderer/components
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/workspace/workspaceTabActivity";
-import { syncTerminalViewport } from "@renderer/components/workspace/terminalSurface";
+import {
+    createTerminalSurfaceOptions,
+    syncTerminalViewport,
+} from "@renderer/components/workspace/terminalSurface";
 import {
     getReviewHunkVisualEndLine,
     getSelectedReviewLine,
@@ -4023,17 +4026,9 @@ function TerminalTabView({
             return;
         }
 
-        const terminal = new runtime.Terminal({
-            allowTransparency: false,
-            convertEol: true,
-            cursorBlink: true,
-            fontFamily:
-                '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
-            fontSize: 12.5,
-            lineHeight: 1.35,
-            scrollback: 5000,
-            theme: getTerminalTheme(),
-        });
+        const terminal = new runtime.Terminal(
+            createTerminalSurfaceOptions(getTerminalTheme()),
+        );
         const fitAddon = new runtime.FitAddon();
         terminal.loadAddon(fitAddon);
         const container = containerRef.current;

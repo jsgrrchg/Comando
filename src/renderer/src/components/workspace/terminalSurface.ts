@@ -3,6 +3,24 @@ export interface TerminalViewportSize {
     readonly rows: number;
 }
 
+export interface TerminalSurfaceTheme {
+    readonly background: string;
+    readonly cursor: string;
+    readonly foreground: string;
+    readonly selectionBackground: string;
+}
+
+export interface TerminalSurfaceOptions {
+    readonly allowTransparency: boolean;
+    readonly convertEol: boolean;
+    readonly cursorBlink: boolean;
+    readonly fontFamily: string;
+    readonly fontSize: number;
+    readonly lineHeight: number;
+    readonly scrollback: number;
+    readonly theme: TerminalSurfaceTheme;
+}
+
 interface TerminalViewportContainer {
     readonly clientHeight: number;
     readonly clientWidth: number;
@@ -12,6 +30,23 @@ interface TerminalViewportRuntime {
     readonly cols: number;
     readonly rows: number;
     refresh: (start: number, end: number) => void;
+}
+
+export function createTerminalSurfaceOptions(
+    theme: TerminalSurfaceTheme,
+): TerminalSurfaceOptions {
+    return {
+        allowTransparency: false,
+        // Keep carriage returns intact so interactive shells can redraw prompts
+        // without leaving visual artifacts after reconnects or resizes.
+        convertEol: false,
+        cursorBlink: true,
+        fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Code", monospace',
+        fontSize: 12.5,
+        lineHeight: 1.35,
+        scrollback: 5000,
+        theme,
+    };
 }
 
 export function syncTerminalViewport({
