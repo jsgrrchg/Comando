@@ -213,4 +213,39 @@ describe("EditedFilesBufferPanel", () => {
 
         expect(markup).toBe("");
     });
+
+    it("caps tall lists with an internal scrollbar", () => {
+        const items = Array.from({ length: 9 }, (_, index) =>
+            createItem({
+                file: {
+                    ...createItem().file,
+                    identityKey: `file-${index + 1}`,
+                    path: `src/file-${index + 1}.ts`,
+                    updatedAt: `2026-04-14T12:00:${String(index).padStart(2, "0")}.000Z`,
+                },
+            }),
+        );
+
+        const markup = renderToStaticMarkup(
+            createElement(EditedFilesBufferPanel, {
+                diffZoom: 0.72,
+                items,
+                onKeepAll: () => {},
+                onKeepItem: () => {},
+                onOpenItem: () => {},
+                onOpenReview: () => {},
+                onRejectAll: () => {},
+                onRejectItem: () => {},
+                summary: createSummary({
+                    additions: 9,
+                    deletions: 9,
+                    fileCount: 9,
+                }),
+            }),
+        );
+
+        expect(markup).toContain("shell-scrollbar");
+        expect(markup).toContain("max-height:min(32vh, 256px)");
+        expect(markup).toContain("overflow-y:auto");
+    });
 });
