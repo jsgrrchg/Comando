@@ -22,6 +22,7 @@ import { useShallow } from "zustand/react/shallow";
 import type {
     AiFileContextAttachment,
     AiImageAttachment,
+    AiRuntimeId,
     AiTrackedFile,
     GitFileDiff,
     ProjectFileDocument,
@@ -90,6 +91,7 @@ import {
 } from "@renderer/components/workspace/gitGutter";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
+import { buildInlineReviewTexts } from "@renderer/components/workspace/inlineReviewTexts";
 import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
@@ -1517,6 +1519,11 @@ function WorkspacePaneView({
                                     >
                                         <TabIcon
                                             kind={tab.kind}
+                                            runtimeId={
+                                                tab.kind === "chat"
+                                                    ? tab.runtimeId
+                                                    : undefined
+                                            }
                                             title={tabDisplayTitle}
                                         />
                                         <span
@@ -2431,13 +2438,28 @@ function FileTabView({
         ? `${trackedFile.identityKey}:${trackedFile.hunks.map((hunk) => hunk.id).join(",")}`
         : null;
     const showInlineReview = canShowInlineReview;
-    const inlineReviewTrackedFile =
+    const candidateTrackedFile =
         showInlineReview &&
         canShowInlineReview &&
         trackedFile?.oldText !== null &&
         trackedFile?.newText !== null
             ? trackedFile
             : null;
+    const inlineReviewTexts = useMemo(
+        () =>
+            candidateTrackedFile
+                ? buildInlineReviewTexts(
+                      candidateTrackedFile,
+                      document?.kind === "text"
+                          ? (document.content ?? null)
+                          : null,
+                  )
+                : null,
+        [candidateTrackedFile, document],
+    );
+    const inlineReviewTrackedFile = inlineReviewTexts
+        ? candidateTrackedFile
+        : null;
     const reviewDiff = useMemo(
         () =>
             inlineReviewTrackedFile
@@ -2448,6 +2470,7 @@ function FileTabView({
     const inlineReviewHunkActionsEnabled = Boolean(
         inlineReviewTrackedFile &&
         reviewDiff &&
+        !inlineReviewTexts?.wasReconstructed &&
         canResolveFileHunks(inlineReviewTrackedFile, reviewDiff),
     );
     const areSuggestionsEnabled = areMonacoSuggestionsEnabledForLanguage(
@@ -3017,7 +3040,14 @@ function FileTabView({
         }
 
         const model = modifiedEditor.getModel();
-        if (!model || !inlineReviewTrackedFile) {
+        // Skip decorations when we had to splice a snippet into the full file:
+        // the backend hunks reference the snippet's line numbers, not the
+        // document's, so they would highlight the wrong rows.
+        if (
+            !model ||
+            !inlineReviewTrackedFile ||
+            inlineReviewTexts?.wasReconstructed
+        ) {
             inlineReviewDecorationsRef.current?.clear();
             return;
         }
@@ -3039,7 +3069,12 @@ function FileTabView({
                 inlineReviewDecorationsRef.current = null;
             }
         };
-    }, [diffEditorMountVersion, inlineReviewTrackedFile, reviewSignature]);
+    }, [
+        diffEditorMountVersion,
+        inlineReviewTrackedFile,
+        inlineReviewTexts?.wasReconstructed,
+        reviewSignature,
+    ]);
 
     useEffect(() => {
         if (!document || document.kind === "image" || !canEdit) {
@@ -3253,7 +3288,11 @@ function FileTabView({
                             keepCurrentModifiedModel
                             keepCurrentOriginalModel
                             language={monacoLanguageId}
-                            modified={inlineReviewTrackedFile.newText ?? ""}
+                            modified={
+                                inlineReviewTexts?.modified ??
+                                inlineReviewTrackedFile.newText ??
+                                ""
+                            }
                             modifiedModelPath={buildWorkspaceEditorModelPath(
                                 document.absolutePath,
                                 tab.id,
@@ -3310,7 +3349,11 @@ function FileTabView({
                                 );
                             }}
                             options={inlineReviewDiffEditorOptions}
-                            original={inlineReviewTrackedFile.oldText ?? ""}
+                            original={
+                                inlineReviewTexts?.original ??
+                                inlineReviewTrackedFile.oldText ??
+                                ""
+                            }
                             originalModelPath={buildWorkspaceEditorModelPath(
                                 document.absolutePath,
                                 tab.id,
@@ -4157,6 +4200,7 @@ function TerminalTabView({
 
 function TabIcon({
     kind,
+    runtimeId,
     title,
 }: {
     readonly kind:
@@ -4167,6 +4211,7 @@ function TabIcon({
         | "git_commit"
         | "review"
         | "terminal";
+    readonly runtimeId?: AiRuntimeId;
     readonly title?: string;
 }) {
     if (kind === "terminal") {
@@ -4257,6 +4302,10 @@ function TabIcon({
     }
 
     if (kind === "chat") {
+        if (runtimeId) {
+            return <ChatProviderIcon runtimeId={runtimeId} />;
+        }
+
         return (
             <svg
                 className="shrink-0 opacity-55"
@@ -4325,6 +4374,82 @@ function TabIcon({
             />
             <path d="M9.5 2.5V5a.5.5 0 0 0 .5.5h2.5" strokeWidth="0.8" />
             <path d="M6 8.5h4M6 10.5h2.5" strokeWidth="0.8" />
+        </svg>
+    );
+}
+
+function ChatProviderIcon({ runtimeId }: { readonly runtimeId: AiRuntimeId }) {
+    if (runtimeId === "claude") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <line strokeWidth="1.35" x1="8" x2="8" y1="2" y2="14" />
+                <line strokeWidth="1.35" x1="2" x2="14" y1="8" y2="8" />
+                <line strokeWidth="1.35" x1="3.75" x2="12.25" y1="3.75" y2="12.25" />
+                <line strokeWidth="1.35" x1="12.25" x2="3.75" y1="3.75" y2="12.25" />
+            </svg>
+        );
+    }
+
+    if (runtimeId === "codex") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <polygon
+                    points="8,2.3 13.4,5.4 13.4,10.6 8,13.7 2.6,10.6 2.6,5.4"
+                    strokeWidth="1.1"
+                />
+                <line strokeWidth="1" x1="8" x2="8" y1="2.3" y2="13.7" />
+                <line strokeWidth="1" x1="2.6" x2="13.4" y1="5.4" y2="10.6" />
+                <line strokeWidth="1" x1="13.4" x2="2.6" y1="5.4" y2="10.6" />
+            </svg>
+        );
+    }
+
+    if (runtimeId === "gemini") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="currentColor"
+                height={12}
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <path d="M8 1.2c.25 3.55 1.6 5.35 6.8 6.8-5.2 1.45-6.55 3.25-6.8 6.8-.25-3.55-1.6-5.35-6.8-6.8C6.4 6.55 7.75 4.75 8 1.2Z" />
+            </svg>
+        );
+    }
+
+    // kilo
+    return (
+        <svg
+            className="shrink-0 opacity-55"
+            fill="none"
+            height={12}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            viewBox="0 0 16 16"
+            width={12}
+        >
+            <line strokeWidth="1.5" x1="4.75" x2="4.75" y1="2.75" y2="13.25" />
+            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="2.75" />
+            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="13.25" />
         </svg>
     );
 }
