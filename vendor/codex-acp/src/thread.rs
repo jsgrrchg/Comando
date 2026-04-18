@@ -83,15 +83,15 @@ use crate::{
 
 static APPROVAL_PRESETS: LazyLock<Vec<ApprovalPreset>> = LazyLock::new(builtin_approval_presets);
 const INIT_COMMAND_PROMPT: &str = include_str!("./prompt_for_init_command.md");
-const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX: &str = "__neverwrite_user_input_response__:";
-const NEVERWRITE_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
-const NEVERWRITE_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
-const NEVERWRITE_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
-const NEVERWRITE_PLAN_TITLE_KEY: &str = "neverwritePlanTitle";
-const NEVERWRITE_PLAN_DETAIL_KEY: &str = "neverwritePlanDetail";
-const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY: &str = "neverwritePreviousPath";
-const NEVERWRITE_DIFF_HUNKS_KEY: &str = "neverwriteHunks";
-const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
+const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX: &str = "__codex_acp_user_input_response__:";
+const CODEX_ACP_STATUS_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+const CODEX_ACP_STATUS_KIND_KEY: &str = "codexAcpStatusKind";
+const CODEX_ACP_STATUS_EMPHASIS_KEY: &str = "codexAcpStatusEmphasis";
+const CODEX_ACP_PLAN_TITLE_KEY: &str = "codexAcpPlanTitle";
+const CODEX_ACP_PLAN_DETAIL_KEY: &str = "codexAcpPlanDetail";
+const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY: &str = "codexAcpPreviousPath";
+const CODEX_ACP_DIFF_HUNKS_KEY: &str = "codexAcpHunks";
+const CODEX_ACP_STATUS_EVENT_ID_PREFIX: &str = "codex-acp:status:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 
 fn approval_preset_matches_config(
@@ -141,16 +141,16 @@ fn approval_preset_matches_config(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct reference appDiffHunk {
+struct CodexAcpDiffHunk {
     old_start: usize,
     old_count: usize,
     new_start: usize,
     new_count: usize,
-    lines: Vec<reference appDiffHunkLine>,
+    lines: Vec<CodexAcpDiffHunkLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct reference appDiffHunkLine {
+struct CodexAcpDiffHunkLine {
     r#type: String,
     text: String,
 }
@@ -823,37 +823,37 @@ struct PromptState {
     seen_reasoning_deltas: bool,
 }
 #[derive(Debug, serde::Deserialize)]
-struct reference appUserInputAnswerPayload {
+struct CodexAcpUserInputAnswerPayload {
     turn_id: String,
     response: codex_protocol::request_user_input::RequestUserInputResponse,
 }
 
-fn neverwrite_status_meta(kind: &str, emphasis: &str) -> Meta {
+fn codex_acp_status_meta(kind: &str, emphasis: &str) -> Meta {
     let mut meta = Meta::new();
     meta.insert(
-        NEVERWRITE_STATUS_EVENT_TYPE_KEY.to_string(),
+        CODEX_ACP_STATUS_EVENT_TYPE_KEY.to_string(),
         json!("status"),
     );
-    meta.insert(NEVERWRITE_STATUS_KIND_KEY.to_string(), json!(kind));
-    meta.insert(NEVERWRITE_STATUS_EMPHASIS_KEY.to_string(), json!(emphasis));
+    meta.insert(CODEX_ACP_STATUS_KIND_KEY.to_string(), json!(kind));
+    meta.insert(CODEX_ACP_STATUS_EMPHASIS_KEY.to_string(), json!(emphasis));
     meta
 }
-fn neverwrite_user_input_meta() -> Meta {
+fn codex_acp_user_input_meta() -> Meta {
     let mut meta = Meta::new();
     meta.insert(
-        NEVERWRITE_STATUS_EVENT_TYPE_KEY.to_string(),
+        CODEX_ACP_STATUS_EVENT_TYPE_KEY.to_string(),
         json!("user_input_request"),
     );
     meta
 }
 
-fn neverwrite_plan_meta(title: Option<&str>, detail: Option<&str>) -> Option<Meta> {
+fn codex_acp_plan_meta(title: Option<&str>, detail: Option<&str>) -> Option<Meta> {
     let mut meta = Meta::new();
     if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
-        meta.insert(NEVERWRITE_PLAN_TITLE_KEY.to_string(), json!(title));
+        meta.insert(CODEX_ACP_PLAN_TITLE_KEY.to_string(), json!(title));
     }
     if let Some(detail) = detail.filter(|value| !value.trim().is_empty()) {
-        meta.insert(NEVERWRITE_PLAN_DETAIL_KEY.to_string(), json!(detail));
+        meta.insert(CODEX_ACP_PLAN_DETAIL_KEY.to_string(), json!(detail));
     }
     (!meta.is_empty()).then_some(meta)
 }
@@ -1155,19 +1155,19 @@ fn parse_plan_text(text: &str, streaming: bool) -> ParsedPlanText {
 
 fn extract_user_input_answer_payload(
     prompt: &[ContentBlock],
-) -> Result<Option<reference appUserInputAnswerPayload>, Error> {
+) -> Result<Option<CodexAcpUserInputAnswerPayload>, Error> {
     let Some(ContentBlock::Text(text)) = prompt.first() else {
         return Ok(None);
     };
 
     let raw_payload = text
         .text
-        .strip_prefix(NEVERWRITE_USER_INPUT_RESPONSE_PREFIX);
+        .strip_prefix(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX);
     let Some(raw_payload) = raw_payload else {
         return Ok(None);
     };
 
-    serde_json::from_str::<reference appUserInputAnswerPayload>(raw_payload)
+    serde_json::from_str::<CodexAcpUserInputAnswerPayload>(raw_payload)
         .map(Some)
         .map_err(|err| Error::invalid_params().data(err.to_string()))
 }
@@ -1385,7 +1385,7 @@ impl PromptState {
         let mut tool_call = ToolCall::new(call_id, title)
             .kind(ToolKind::Other)
             .status(status)
-            .meta(neverwrite_status_meta(kind, emphasis));
+            .meta(codex_acp_status_meta(kind, emphasis));
 
         if let Some(detail) = detail {
             tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
@@ -1423,7 +1423,7 @@ impl PromptState {
         client
             .update_plan_with_meta(
                 parsed.entries,
-                neverwrite_plan_meta(parsed.title.as_deref(), parsed.detail.as_deref()),
+                codex_acp_plan_meta(parsed.title.as_deref(), parsed.detail.as_deref()),
             )
             .await;
     }
@@ -1470,7 +1470,7 @@ impl PromptState {
                 let detail = model_context_window.map(|size| format!("Context window: {size}"));
                 self.send_status_tool_call(
                     client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}turn:{turn_id}"),
+                    format!("{CODEX_ACP_STATUS_EVENT_ID_PREFIX}turn:{turn_id}"),
                     "turn_started",
                     "New turn",
                     detail,
@@ -1496,7 +1496,7 @@ impl PromptState {
                 let (title, detail) = describe_turn_item(&item);
                 self.send_status_tool_call(
                     client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}", turn_item_id(&item)),
+                    format!("{CODEX_ACP_STATUS_EVENT_ID_PREFIX}item:{}", turn_item_id(&item)),
                     "item_activity",
                     title,
                     detail,
@@ -1584,7 +1584,7 @@ impl PromptState {
                 client
                     .update_plan_with_meta(
                         plan,
-                        neverwrite_plan_meta(None, explanation.as_deref()),
+                        codex_acp_plan_meta(None, explanation.as_deref()),
                     )
                     .await;
             }
@@ -1744,7 +1744,7 @@ impl PromptState {
                 let (title, detail) = describe_turn_item(&item);
                 self.send_status_tool_call_update(
                     client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}", turn_item_id(&item)),
+                    format!("{CODEX_ACP_STATUS_EVENT_ID_PREFIX}item:{}", turn_item_id(&item)),
                     title,
                     detail,
                     ToolCallStatus::Completed,
@@ -1796,7 +1796,7 @@ impl PromptState {
                     .unwrap_or_else(|| message.clone());
                 self.send_status_tool_call(
                     client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}stream_error:{}", self.event_count),
+                    format!("{CODEX_ACP_STATUS_EVENT_ID_PREFIX}stream_error:{}", self.event_count),
                     "stream_error",
                     "Streaming interrupted",
                     Some(detail),
@@ -1851,7 +1851,7 @@ impl PromptState {
                 info!("Review begin: request={review_request:?}");
                 self.send_status_tool_call(
                     client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}review:{}", self.event_count),
+                    format!("{CODEX_ACP_STATUS_EVENT_ID_PREFIX}review:{}", self.event_count),
                     "review_mode",
                     "Review mode active",
                     Some(format_review_target(&review_request.target)),
@@ -1911,7 +1911,7 @@ impl PromptState {
                     .or_else(|| Some(format!("{from_model} -> {to_model}")));
                 self.send_status_tool_call(
                     client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}model_reroute:{}", self.event_count),
+                    format!("{CODEX_ACP_STATUS_EVENT_ID_PREFIX}model_reroute:{}", self.event_count),
                     "model_reroute",
                     format!("Switched to {to_model}"),
                     detail,
@@ -1950,7 +1950,7 @@ impl PromptState {
                                 "turn_id": event.turn_id,
                                 "questions": event.questions,
                             }))
-                            .meta(neverwrite_user_input_meta()),
+                            .meta(codex_acp_user_input_meta()),
                     )
                     .await;
             }
@@ -4359,7 +4359,7 @@ impl<A: Auth> ThreadActor<A> {
                     file_names.push(path.display().to_string());
                     locations.push(ToolCallLocation::new(full_path.clone()));
                     // New file: no old_text, new_text is the contents
-                    content.push(ToolCallContent::Diff(with_neverwrite_diff_meta(
+                    content.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
                         Diff::new(full_path.clone(), contents.clone()),
                         None,
                         build_single_hunk(None, Some(contents.as_str())),
@@ -4376,7 +4376,7 @@ impl<A: Auth> ThreadActor<A> {
                     } else {
                         build_single_hunk(Some(old_text.as_str()), None)
                     };
-                    content.push(ToolCallContent::Diff(with_neverwrite_diff_meta(
+                    content.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
                         Diff::new(full_path, "").old_text(old_text),
                         None,
                         hunks,
@@ -4431,7 +4431,7 @@ impl<A: Auth> ThreadActor<A> {
                         compute_update_file_hunks(snapshot, &projected_chunks)
                     });
 
-                    content.push(ToolCallContent::Diff(with_neverwrite_diff_meta(
+                    content.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
                         Diff::new(dest_path, new_text).old_text(old_text),
                         previous_path,
                         hunks,
@@ -4746,7 +4746,7 @@ fn collect_exec_file_diffs(
             // File didn't exist before but now exists → add
             (None, Some(new_text)) => {
                 if !new_text.is_empty() {
-                    diffs.push(ToolCallContent::Diff(with_neverwrite_diff_meta(
+                    diffs.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
                         Diff::new(path.clone(), new_text.clone()),
                         None,
                         build_single_hunk(None, Some(new_text.as_str())),
@@ -4755,7 +4755,7 @@ fn collect_exec_file_diffs(
             }
             // File existed before but now doesn't → delete
             (Some(old_text), None) => {
-                diffs.push(ToolCallContent::Diff(with_neverwrite_diff_meta(
+                diffs.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
                     Diff::new(path.clone(), String::new()).old_text(old_text.clone()),
                     None,
                     build_single_hunk(Some(old_text.as_str()), None),
@@ -4764,7 +4764,7 @@ fn collect_exec_file_diffs(
             // File existed before and still exists → check if content changed
             (Some(old_text), Some(new_text)) => {
                 if old_text != new_text {
-                    diffs.push(ToolCallContent::Diff(with_neverwrite_diff_meta(
+                    diffs.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
                         Diff::new(path.clone(), new_text.clone()).old_text(old_text.clone()),
                         None,
                         build_single_hunk(Some(old_text.as_str()), Some(new_text.as_str())),
@@ -4835,7 +4835,7 @@ fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) 
     None
 }
 
-fn diff_hunk_lines(old_lines: &[String], new_lines: &[String]) -> Vec<reference appDiffHunkLine> {
+fn diff_hunk_lines(old_lines: &[String], new_lines: &[String]) -> Vec<CodexAcpDiffHunkLine> {
     let m = old_lines.len();
     let n = new_lines.len();
     let dp: Vec<Vec<usize>> = (0..=m).map(|_| vec![0; n + 1]).collect();
@@ -4855,20 +4855,20 @@ fn diff_hunk_lines(old_lines: &[String], new_lines: &[String]) -> Vec<reference 
     let (mut i, mut j) = (m, n);
     while i > 0 || j > 0 {
         if i > 0 && j > 0 && old_lines[i - 1] == new_lines[j - 1] {
-            stack.push(reference appDiffHunkLine {
+            stack.push(CodexAcpDiffHunkLine {
                 r#type: "context".to_string(),
                 text: old_lines[i - 1].clone(),
             });
             i -= 1;
             j -= 1;
         } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
-            stack.push(reference appDiffHunkLine {
+            stack.push(CodexAcpDiffHunkLine {
                 r#type: "add".to_string(),
                 text: new_lines[j - 1].clone(),
             });
             j -= 1;
         } else {
-            stack.push(reference appDiffHunkLine {
+            stack.push(CodexAcpDiffHunkLine {
                 r#type: "remove".to_string(),
                 text: old_lines[i - 1].clone(),
             });
@@ -4955,7 +4955,7 @@ fn resolve_update_file_chunks(
 fn compute_update_file_hunks(
     original_text: &str,
     chunks: &[ProjectedUpdateFileChunk],
-) -> Option<Vec<reference appDiffHunk>> {
+) -> Option<Vec<CodexAcpDiffHunk>> {
     let resolved = resolve_update_file_chunks(original_text, chunks)?;
     let mut hunks = Vec::with_capacity(resolved.len());
     let mut cumulative_delta = 0isize;
@@ -4963,7 +4963,7 @@ fn compute_update_file_hunks(
     for chunk in resolved {
         let old_count = chunk.old_lines.len();
         let new_count = chunk.new_lines.len();
-        hunks.push(reference appDiffHunk {
+        hunks.push(CodexAcpDiffHunk {
             old_start: chunk.start_idx + 1,
             old_count,
             new_start: (chunk.start_idx as isize + cumulative_delta + 1).max(1) as usize,
@@ -4979,7 +4979,7 @@ fn compute_update_file_hunks(
 fn build_single_hunk(
     old_text: Option<&str>,
     new_text: Option<&str>,
-) -> Option<Vec<reference appDiffHunk>> {
+) -> Option<Vec<CodexAcpDiffHunk>> {
     let old_lines = old_text.map(split_snapshot_lines).unwrap_or_default();
     let new_lines = new_text.map(split_snapshot_lines).unwrap_or_default();
 
@@ -4987,7 +4987,7 @@ fn build_single_hunk(
         return None;
     }
 
-    Some(vec![reference appDiffHunk {
+    Some(vec![CodexAcpDiffHunk {
         old_start: 1,
         old_count: old_lines.len(),
         new_start: 1,
@@ -5004,9 +5004,9 @@ fn parse_unified_diff_range(segment: &str) -> Option<(usize, usize)> {
     Some((start.parse().ok()?, count.parse().ok()?))
 }
 
-fn parse_unified_diff_hunks(unified_diff: &str) -> Vec<reference appDiffHunk> {
+fn parse_unified_diff_hunks(unified_diff: &str) -> Vec<CodexAcpDiffHunk> {
     let mut hunks = Vec::new();
-    let mut current: Option<reference appDiffHunk> = None;
+    let mut current: Option<CodexAcpDiffHunk> = None;
 
     for line in unified_diff.lines() {
         if let Some(header) = line.strip_prefix("@@ -") {
@@ -5027,7 +5027,7 @@ fn parse_unified_diff_hunks(unified_diff: &str) -> Vec<reference appDiffHunk> {
                 continue;
             };
 
-            current = Some(reference appDiffHunk {
+            current = Some(CodexAcpDiffHunk {
                 old_start,
                 old_count,
                 new_start,
@@ -5054,7 +5054,7 @@ fn parse_unified_diff_hunks(unified_diff: &str) -> Vec<reference appDiffHunk> {
             continue;
         };
 
-        hunk.lines.push(reference appDiffHunkLine {
+        hunk.lines.push(CodexAcpDiffHunkLine {
             r#type: marker.to_string(),
             text: text.to_string(),
         });
@@ -5105,22 +5105,22 @@ fn fallback_texts_from_unified_diff(unified_diff: &str) -> Option<(String, Strin
     Some((old_text, new_text))
 }
 
-fn with_neverwrite_diff_meta(
+fn with_codex_acp_diff_meta(
     mut diff: Diff,
     previous_path: Option<&Path>,
-    hunks: Option<Vec<reference appDiffHunk>>,
+    hunks: Option<Vec<CodexAcpDiffHunk>>,
 ) -> Diff {
     let mut meta = diff.meta.take().unwrap_or_default();
 
     if let Some(path) = previous_path {
         meta.insert(
-            NEVERWRITE_DIFF_PREVIOUS_PATH_KEY.to_string(),
+            CODEX_ACP_DIFF_PREVIOUS_PATH_KEY.to_string(),
             json!(path.display().to_string()),
         );
     }
 
     if let Some(hunks) = hunks.filter(|hunks| !hunks.is_empty()) {
-        meta.insert(NEVERWRITE_DIFF_HUNKS_KEY.to_string(), json!(hunks));
+        meta.insert(CODEX_ACP_DIFF_HUNKS_KEY.to_string(), json!(hunks));
     }
 
     if !meta.is_empty() {
@@ -5181,12 +5181,12 @@ fn extract_tool_call_content_from_change(
     change: FileChange,
 ) -> Vec<ToolCallContent> {
     match change {
-        FileChange::Add { content } => vec![ToolCallContent::Diff(with_neverwrite_diff_meta(
+        FileChange::Add { content } => vec![ToolCallContent::Diff(with_codex_acp_diff_meta(
             Diff::new(path, content.clone()),
             None,
             build_single_hunk(None, Some(content.as_str())),
         ))],
-        FileChange::Delete { content } => vec![ToolCallContent::Diff(with_neverwrite_diff_meta(
+        FileChange::Delete { content } => vec![ToolCallContent::Diff(with_codex_acp_diff_meta(
             Diff::new(path, String::new()).old_text(content.clone()),
             None,
             build_single_hunk(Some(content.as_str()), None),
@@ -5213,7 +5213,7 @@ fn extract_tool_call_content_from_unified_diff(
         .or_else(|| fallback_texts_from_unified_diff(&unified_diff));
 
     if let Some((old_text, new_text)) = texts {
-        vec![ToolCallContent::Diff(with_neverwrite_diff_meta(
+        vec![ToolCallContent::Diff(with_codex_acp_diff_meta(
             Diff::new(resolved_path, new_text).old_text(old_text),
             previous_path,
             hunks,
@@ -6257,7 +6257,7 @@ mod tests {
             plan_updates[0]
                 .meta
                 .as_ref()
-                .and_then(|meta| meta.get(NEVERWRITE_PLAN_TITLE_KEY))
+                .and_then(|meta| meta.get(CODEX_ACP_PLAN_TITLE_KEY))
                 .and_then(|value| value.as_str()),
             Some("Final plan")
         );
@@ -6265,7 +6265,7 @@ mod tests {
             plan_updates[0]
                 .meta
                 .as_ref()
-                .and_then(|meta| meta.get(NEVERWRITE_PLAN_DETAIL_KEY))
+                .and_then(|meta| meta.get(CODEX_ACP_PLAN_DETAIL_KEY))
                 .and_then(|value| value.as_str()),
             Some("Summary paragraph")
         );

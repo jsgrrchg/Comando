@@ -3,7 +3,7 @@ Vendored runtimes live here on purpose.
 Current scope in Comando:
 
 - `codex-acp/`
-  - vendored from the user's reference app baseline
+  - vendored from the user's previous product baseline
   - used as the local source of truth for staging the bundled ACP runtime
 
 Why this is committed:
