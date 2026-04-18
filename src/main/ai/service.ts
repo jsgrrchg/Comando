@@ -70,6 +70,10 @@ import {
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
 import { SessionBusyError } from "@shared/ai-errors";
+import {
+    inferChatTitleFromPrompt,
+    isDefaultChatTitle,
+} from "@shared/chatTitle";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -473,7 +477,14 @@ export class AiService {
             pendingUserInput: null,
             projectId: input.projectId,
             status: "starting",
-            title: input.title,
+            title: resolveSessionTitleOnPrompt({
+                currentTitle: liveSession.snapshot.title,
+                fallbackTitle: input.title,
+                displayContent,
+                hasPriorUserMessage: liveSession.snapshot.messages.some(
+                    (message) => message.kind === "user",
+                ),
+            }),
             updatedAt: now,
             worktreeId: input.worktreeId ?? null,
         });
@@ -1269,7 +1280,11 @@ export class AiService {
                 projectId: input.projectId,
                 runtimeId: input.runtimeId,
                 status: getPreparedSessionStatus(persistedSnapshot),
-                title: input.title,
+                title:
+                    persistedSnapshot.title &&
+                    !isDefaultChatTitle(persistedSnapshot.title)
+                        ? persistedSnapshot.title
+                        : input.title,
                 updatedAt: new Date().toISOString(),
                 worktreeId: input.worktreeId ?? null,
             },
@@ -3050,6 +3065,26 @@ function setTitleOnSnapshot(
         title,
         updatedAt,
     };
+}
+
+function resolveSessionTitleOnPrompt(params: {
+    readonly currentTitle: string;
+    readonly fallbackTitle: string;
+    readonly displayContent: string;
+    readonly hasPriorUserMessage: boolean;
+}): string {
+    const { currentTitle, fallbackTitle, displayContent, hasPriorUserMessage } =
+        params;
+    // Once the user renames the chat, preserve it — the client's input.title
+    // can lag behind a rename and would otherwise overwrite it on every prompt.
+    if (currentTitle && !isDefaultChatTitle(currentTitle)) {
+        return currentTitle;
+    }
+    if (!hasPriorUserMessage) {
+        const inferred = inferChatTitleFromPrompt(displayContent);
+        if (inferred) return inferred;
+    }
+    return fallbackTitle || currentTitle;
 }
 
 function setConfigOptionOnSnapshot(

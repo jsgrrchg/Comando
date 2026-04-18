@@ -16,6 +16,10 @@ import type {
     AiSessionSnapshot,
     AiSessionStatus,
 } from "@shared/ipc";
+import {
+    CHAT_TITLE_HISTORY_MAX_CHARS,
+    truncateChatTitle,
+} from "@shared/chatTitle";
 
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
@@ -1147,8 +1151,14 @@ export function ChatHistoryTabLayout({
                                                             value={renameDraft}
                                                         />
                                                     ) : (
-                                                        <span className="truncate text-[11.5px] font-medium text-text-primary">
-                                                            {session.title}
+                                                        <span
+                                                            className="truncate text-[11.5px] font-medium text-text-primary"
+                                                            title={session.title}
+                                                        >
+                                                            {truncateChatTitle(
+                                                                session.title,
+                                                                CHAT_TITLE_HISTORY_MAX_CHARS,
+                                                            )}
                                                         </span>
                                                     )}
                                                     {isRenaming ? null : (
@@ -1277,7 +1287,10 @@ export function ChatHistoryTabLayout({
                     {selectedSession ? (
                         <>
                             <IdeBarHeader>
-                                <span className="min-w-0 truncate text-[11.5px] font-medium text-text-primary">
+                                <span
+                                    className="min-w-0 truncate text-[11.5px] font-medium text-text-primary"
+                                    title={selectedSession.title}
+                                >
                                     {selectedSession.title}
                                 </span>
                                 <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-text-secondary">

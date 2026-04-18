@@ -52,6 +52,7 @@ import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
 } from "../workspace/tree";
+import { useWorkspaceStore } from "./workspace-store";
 
 type RuntimeAiSessionTab = RuntimeWorkspaceChatTab | RuntimeWorkspaceReviewTab;
 
@@ -481,9 +482,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionSnapshot: (snapshot) => {
+        let titleChanged = false;
         set((state) => {
             const session =
                 state.sessions[snapshot.sessionId] ?? createSessionState();
+            const nextMeta = session.meta
+                ? session.meta.title === snapshot.title
+                    ? session.meta
+                    : { ...session.meta, title: snapshot.title }
+                : session.meta;
+            titleChanged = nextMeta !== session.meta;
 
             return {
                 runtimeCatalogById: {
@@ -498,11 +506,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         isDispatching: false,
                         isHydrating: false,
                         localError: snapshot.lastError,
+                        meta: nextMeta,
                         snapshot,
                     },
                 },
             };
         });
+
+        if (titleChanged) {
+            void useWorkspaceStore
+                .getState()
+                .updateSessionTabTitles(snapshot.sessionId, snapshot.title);
+        }
 
         void drainQueueIfNeeded(snapshot.sessionId, get, set);
     },
@@ -1160,6 +1175,24 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     renameSession: async (input) => {
+        set((state) => {
+            const session = state.sessions[input.sessionId];
+            if (!session?.meta || session.meta.title === input.title) {
+                return state;
+            }
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [input.sessionId]: {
+                        ...session,
+                        meta: { ...session.meta, title: input.title },
+                    },
+                },
+            };
+        });
+        void useWorkspaceStore
+            .getState()
+            .updateSessionTabTitles(input.sessionId, input.title);
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (snapshot) => ({

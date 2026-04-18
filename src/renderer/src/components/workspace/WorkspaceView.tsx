@@ -41,6 +41,10 @@ import {
     EDITOR_FONT_SIZE_MAX,
     EDITOR_FONT_SIZE_MIN,
 } from "@shared/typography";
+import {
+    CHAT_TITLE_TAB_MAX_CHARS,
+    truncateChatTitle,
+} from "@shared/chatTitle";
 
 import {
     continueMarkdownList,
@@ -1515,7 +1519,14 @@ function WorkspacePaneView({
                                             kind={tab.kind}
                                             title={tabDisplayTitle}
                                         />
-                                        <span className="truncate">
+                                        <span
+                                            className="truncate"
+                                            title={
+                                                "title" in tab
+                                                    ? tab.title
+                                                    : tabDisplayTitle
+                                            }
+                                        >
                                             {tabDisplayTitle}
                                         </span>
                                         <WorkspaceTabActivityIndicator
@@ -4324,6 +4335,10 @@ function WorkspaceTabActivityIndicator({
 function getWorkspaceTabDisplayTitle(tab: RuntimeWorkspaceTab): string {
     if (tab.kind === "git_commit") {
         return tab.commitSha.slice(0, 7);
+    }
+
+    if (tab.kind === "chat" || tab.kind === "review") {
+        return truncateChatTitle(tab.title, CHAT_TITLE_TAB_MAX_CHARS);
     }
 
     return tab.title;
