@@ -199,7 +199,7 @@ export interface PersistedShellState {
     readonly activeSurface: PersistedShellSurface;
     readonly leftCollapsed?: boolean;
     readonly leftWidth: number;
-    readonly sidebarView?: "files" | "git";
+    readonly sidebarView?: "files" | "git" | "agents";
 }
 
 export type AiRuntimeId = "claude" | "codex" | "gemini" | "kilo";

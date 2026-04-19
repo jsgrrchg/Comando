@@ -54,7 +54,11 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "./components/context-menu/ContextMenu";
-import { SidebarGitPanel, SidebarGitScopePicker } from "./components/sidebar";
+import {
+    SidebarAgentsPanel,
+    SidebarGitPanel,
+    SidebarGitScopePicker,
+} from "./components/sidebar";
 import { SplitHandle } from "./components/SplitHandle";
 import {
     createWorkspaceQuickDirectory,
@@ -194,7 +198,6 @@ export function App() {
     const toggleLeftCollapsed = useShellStore(
         (state) => state.toggleLeftCollapsed,
     );
-    const toggleSidebarView = useShellStore((state) => state.toggleSidebarView);
     const applyAiRuntimeStatus = useAiStore(
         (state) => state.applyRuntimeStatus,
     );
@@ -229,7 +232,8 @@ export function App() {
         useState<FileTreeInlineEditorState | null>(null);
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
-    const [sidebarSearchVisible, setSidebarSearchVisible] = useState(false);
+    const [gitChangesFilter, setGitChangesFilter] = useState("");
+    const [agentsFilter, setAgentsFilter] = useState("");
     const [fileTreeRevealSignal, setFileTreeRevealSignal] = useState<
         number | null
     >(null);
@@ -1436,7 +1440,6 @@ export function App() {
         setLeftCollapsed(false);
         setSidebarView("files");
         setSidebarOverlayVisible(false);
-        setSidebarSearchVisible(false);
         setFileTreeFilter("");
         setProjectRootExpandedByContext((currentState) => ({
             ...currentState,
@@ -1760,9 +1763,7 @@ export function App() {
                             .join(" ")}
                         onClick={() => {
                             if (sidebarView !== "files") {
-                                toggleSidebarView();
-                                setSidebarSearchVisible(false);
-                                setFileTreeFilter("");
+                                setSidebarView("files");
                             }
                         }}
                         type="button"
@@ -1795,9 +1796,7 @@ export function App() {
                         onClick={() => {
                             if (!activeProjectId) return;
                             if (sidebarView !== "git") {
-                                toggleSidebarView();
-                                setSidebarSearchVisible(false);
-                                setFileTreeFilter("");
+                                setSidebarView("git");
                             }
                         }}
                         type="button"
@@ -1834,58 +1833,154 @@ export function App() {
                         <span>Git</span>
                     </button>
 
-                    {sidebarView === "files" && (
-                        <button
-                            className="sidebar-search-toggle app-no-drag"
-                            onClick={() => {
-                                setSidebarSearchVisible((v) => !v);
-                                if (sidebarSearchVisible) setFileTreeFilter("");
-                            }}
-                            title="Filter files"
-                            type="button"
+                    <button
+                        className={[
+                            "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
+                            sidebarView === "agents"
+                                ? "sidebar-action-row--active"
+                                : "",
+                        ]
+                            .filter(Boolean)
+                            .join(" ")}
+                        onClick={() => {
+                            if (sidebarView !== "agents") {
+                                setSidebarView("agents");
+                            }
+                        }}
+                        type="button"
+                    >
+                        <svg
+                            aria-hidden="true"
+                            className="h-4 w-4 shrink-0"
+                            fill="none"
+                            viewBox="0 0 16 16"
                         >
-                            <svg
-                                aria-hidden="true"
-                                fill="none"
-                                height="13"
-                                viewBox="0 0 16 16"
-                                width="13"
-                            >
-                                <circle
-                                    cx="7"
-                                    cy="7"
-                                    r="4.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.3"
-                                />
-                                <path
-                                    d="M10.5 10.5L14 14"
-                                    stroke="currentColor"
-                                    strokeLinecap="round"
-                                    strokeWidth="1.3"
-                                />
-                            </svg>
-                        </button>
-                    )}
+                            <path
+                                d="M3 4.25A1.25 1.25 0 0 1 4.25 3h7.5A1.25 1.25 0 0 1 13 4.25v5.5A1.25 1.25 0 0 1 11.75 11H8.6l-2.2 2.05A.5.5 0 0 1 5.6 12.7V11H4.25A1.25 1.25 0 0 1 3 9.75v-5.5Z"
+                                stroke="currentColor"
+                                strokeWidth="1.1"
+                                fill="currentColor"
+                                fillOpacity="0.18"
+                            />
+                            <circle
+                                cx="6"
+                                cy="7"
+                                r="0.85"
+                                fill="currentColor"
+                            />
+                            <circle
+                                cx="10"
+                                cy="7"
+                                r="0.85"
+                                fill="currentColor"
+                            />
+                        </svg>
+                        <span>Agents</span>
+                    </button>
+
                 </div>
 
-                {sidebarView === "files" && sidebarSearchVisible ? (
-                    <div className="sidebar-search app-no-drag mt-1">
-                        <input
-                            autoCapitalize="off"
-                            autoCorrect="off"
-                            autoFocus
-                            className="sidebar-search-input"
-                            onChange={(event) =>
-                                setFileTreeFilter(event.target.value)
+                <div className="sidebar-search app-no-drag mt-1">
+                    <span
+                        aria-hidden="true"
+                        className="sidebar-search-icon"
+                    >
+                        <svg
+                            fill="none"
+                            height="12"
+                            viewBox="0 0 16 16"
+                            width="12"
+                        >
+                            <circle
+                                cx="7"
+                                cy="7"
+                                r="4.5"
+                                stroke="currentColor"
+                                strokeWidth="1.3"
+                            />
+                            <path
+                                d="M10.5 10.5L14 14"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeWidth="1.3"
+                            />
+                        </svg>
+                    </span>
+                    <input
+                        aria-label={
+                            sidebarView === "files"
+                                ? "Filter files"
+                                : sidebarView === "git"
+                                  ? "Filter changes"
+                                  : "Filter threads"
+                        }
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        className="sidebar-search-input"
+                        onChange={(event) => {
+                            const value = event.target.value;
+                            if (sidebarView === "files") {
+                                setFileTreeFilter(value);
+                            } else if (sidebarView === "git") {
+                                setGitChangesFilter(value);
+                            } else {
+                                setAgentsFilter(value);
                             }
-                            placeholder="Filter files..."
-                            spellCheck={false}
-                            type="text"
-                            value={fileTreeFilter}
-                        />
-                    </div>
-                ) : null}
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                                event.preventDefault();
+                                if (sidebarView === "files") {
+                                    setFileTreeFilter("");
+                                } else if (sidebarView === "git") {
+                                    setGitChangesFilter("");
+                                } else {
+                                    setAgentsFilter("");
+                                }
+                            }
+                        }}
+                        placeholder={
+                            sidebarView === "files"
+                                ? "Filter files..."
+                                : sidebarView === "git"
+                                  ? "Filter changes..."
+                                  : "Filter threads..."
+                        }
+                        spellCheck={false}
+                        type="text"
+                        value={
+                            sidebarView === "files"
+                                ? fileTreeFilter
+                                : sidebarView === "git"
+                                  ? gitChangesFilter
+                                  : agentsFilter
+                        }
+                    />
+                    {(sidebarView === "files"
+                        ? fileTreeFilter
+                        : sidebarView === "git"
+                          ? gitChangesFilter
+                          : agentsFilter
+                    ).length > 0 ? (
+                        <button
+                            aria-label="Clear filter"
+                            className="sidebar-search-clear"
+                            onClick={() => {
+                                if (sidebarView === "files") {
+                                    setFileTreeFilter("");
+                                } else if (sidebarView === "git") {
+                                    setGitChangesFilter("");
+                                } else {
+                                    setAgentsFilter("");
+                                }
+                            }}
+                            title="Clear filter"
+                            type="button"
+                        >
+                            ×
+                        </button>
+                    ) : null}
+                </div>
 
                 {projectsError ? (
                     <div className="mt-2 rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-600">
@@ -1896,6 +1991,13 @@ export function App() {
 
             {sidebarView === "git" && activeProjectId ? (
                 <SidebarGitPanel
+                    filter={gitChangesFilter}
+                    projectId={activeProjectId}
+                    worktreeId={activeWorktreeId}
+                />
+            ) : sidebarView === "agents" ? (
+                <SidebarAgentsPanel
+                    filter={agentsFilter}
                     projectId={activeProjectId}
                     worktreeId={activeWorktreeId}
                 />

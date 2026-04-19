@@ -14,7 +14,7 @@ import {
 
 const initialLayout = createDefaultShellLayout();
 
-type SidebarView = "files" | "git";
+type SidebarView = "files" | "git" | "agents";
 
 interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
@@ -46,7 +46,13 @@ function normalizeActiveSurface(
 function normalizeSidebarView(
     view: LegacyShellSnapshot["sidebarView"],
 ): SidebarView {
-    return view === "git" ? "git" : "files";
+    if (view === "git") {
+        return "git";
+    }
+    if (view === "agents") {
+        return "agents";
+    }
+    return "files";
 }
 
 export const useShellStore = create<ShellStore>((set) => ({

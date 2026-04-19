@@ -627,9 +627,27 @@ button {
     display: flex;
     align-items: center;
     gap: 6px;
-    background: var(--color-bg-tertiary);
+    background: color-mix(in srgb, var(--color-bg-tertiary) 65%, transparent);
+    border: 1px solid
+        color-mix(in srgb, var(--color-border) 45%, transparent);
     border-radius: 6px;
-    padding: 5px 8px;
+    padding: 4px 8px;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease;
+}
+
+.sidebar-search:focus-within {
+    background: color-mix(in srgb, var(--color-bg-tertiary) 90%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.sidebar-search-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
 }
 
 .sidebar-search-input {
@@ -640,10 +658,32 @@ button {
     outline: none;
     color: var(--color-text-primary);
     font-size: 12px;
+    line-height: 18px;
 }
 
 .sidebar-search-input::placeholder {
     color: var(--color-text-secondary);
+}
+
+.sidebar-search-clear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--color-text-secondary);
+    transition:
+        background-color 120ms ease,
+        color 120ms ease;
+}
+
+.sidebar-search-clear:hover {
+    background: color-mix(in srgb, var(--color-bg-elevated) 80%, transparent);
+    color: var(--color-text-primary);
 }
 
 .sidebar-tool-button {
@@ -703,6 +743,32 @@ button {
 
 .sidebar-action-row--active:hover {
     background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.sidebar-agents-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: flex-start;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border-left: 2px solid transparent;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease;
+}
+
+.sidebar-agents-row:hover {
+    background: color-mix(in srgb, var(--color-bg-tertiary) 65%, transparent);
+    border-left-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
+.sidebar-agents-row:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+    outline-offset: 1px;
 }
 
 .sidebar-git-scope-trigger {
@@ -942,25 +1008,6 @@ button {
     font-weight: 500;
     color: var(--color-text-secondary);
     line-height: 1;
-}
-
-.sidebar-search-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    flex-shrink: 0;
-    border-radius: 8px;
-    color: var(--color-text-secondary);
-    transition:
-        background-color 120ms ease,
-        color 120ms ease;
-}
-
-.sidebar-search-toggle:hover {
-    background: var(--color-bg-tertiary);
-    color: var(--color-text-primary);
 }
 
 .sidebar-collapse-toggle {

@@ -21,9 +21,11 @@ function getContextKey(projectId: string, worktreeId: string | null): string {
 }
 
 export function SidebarGitPanel({
+    filter,
     projectId,
     worktreeId,
 }: {
+    readonly filter?: string;
     readonly projectId: string;
     readonly worktreeId: string | null;
 }) {
@@ -92,8 +94,23 @@ export function SidebarGitPanel({
         [project, snapshot],
     );
 
-    const changes = useMemo(() => snapshot?.changes ?? [], [snapshot?.changes]);
-    const totalChanges = changes.length;
+    const allChanges = useMemo(
+        () => snapshot?.changes ?? [],
+        [snapshot?.changes],
+    );
+    const normalizedFilter = (filter ?? "").trim().toLowerCase();
+    const hasFilter = normalizedFilter.length > 0;
+    const changes = useMemo(() => {
+        if (!hasFilter) {
+            return allChanges;
+        }
+
+        return allChanges.filter((change) =>
+            change.path.toLowerCase().includes(normalizedFilter),
+        );
+    }, [allChanges, hasFilter, normalizedFilter]);
+    const totalChanges = allChanges.length;
+    const filteredChangesCount = changes.length;
 
     const { totalAdded, totalDeleted } = useMemo(() => {
         let added = 0;
@@ -239,8 +256,9 @@ export function SidebarGitPanel({
             <div className="flex items-center justify-between px-2 py-1.5">
                 <div className="flex items-center gap-1.5 text-[11px] font-medium text-text-secondary">
                     <span>
-                        {totalChanges}{" "}
-                        {totalChanges === 1 ? "Change" : "Changes"}
+                        {hasFilter
+                            ? `${filteredChangesCount} of ${totalChanges}`
+                            : `${totalChanges} ${totalChanges === 1 ? "Change" : "Changes"}`}
                     </span>
                     {(totalAdded > 0 || totalDeleted > 0) && (
                         <span className="font-mono text-[10px]">
