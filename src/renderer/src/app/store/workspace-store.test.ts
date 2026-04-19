@@ -33,6 +33,46 @@ const openProjectFileMock =
     >();
 const originalEnsureSession = useAiStore.getState().ensureSession;
 
+function createWorkspaceFileTab(id: string, relativePath: string) {
+    return {
+        createdAt: "2026-04-14T00:00:00.000Z",
+        document: null,
+        draftContent: "",
+        hasExternalChange: false,
+        id,
+        isDirty: false,
+        isLoading: false,
+        isSaving: false,
+        kind: "file" as const,
+        loadError: null,
+        projectId: "project-1",
+        relativePath,
+        reviewContext: null,
+        saveError: null,
+        savedContent: "",
+        title: relativePath,
+        worktreeId: null,
+    };
+}
+
+function findWorkspacePane(
+    node: WorkspaceTreeState["rootNode"],
+    paneId: string,
+) {
+    if (node.type === "pane") {
+        return node.id === paneId ? node : null;
+    }
+
+    for (const child of node.children) {
+        const pane = findWorkspacePane(child, paneId);
+        if (pane) {
+            return pane;
+        }
+    }
+
+    return null;
+}
+
 describe("workspace file opening", () => {
     beforeEach(() => {
         resetWorkspacePersistenceForTests();
@@ -1469,6 +1509,104 @@ describe("workspace runtime focus helpers", () => {
         expect(state.rootNode.tabIds).toEqual(["file-1", "file-2"]);
         expect(state.rootNode.activeTabId).toBe("file-1");
         expect(state.recentActiveTabIds).toEqual(["file-1", "file-2"]);
+    });
+
+    it("reactivates the most recently focused sibling tab when moving an active tab to another pane", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-b",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "file-3",
+                        id: "pane-a",
+                        tabIds: ["file-1", "file-2", "file-3"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: "file-4",
+                        id: "pane-b",
+                        tabIds: ["file-4"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "file-1": createWorkspaceFileTab("file-1", "a.ts"),
+                "file-2": createWorkspaceFileTab("file-2", "b.ts"),
+                "file-3": createWorkspaceFileTab("file-3", "c.ts"),
+                "file-4": createWorkspaceFileTab("file-4", "d.ts"),
+            },
+            recentActiveTabIds: ["file-3", "file-1", "file-2", "file-4"],
+        }));
+
+        await useWorkspaceStore.getState().moveTabToPane(
+            "file-3",
+            "pane-a",
+            "pane-b",
+            0,
+        );
+
+        const state = useWorkspaceStore.getState();
+        const sourcePane = findWorkspacePane(state.rootNode, "pane-a");
+        const targetPane = findWorkspacePane(state.rootNode, "pane-b");
+
+        expect(sourcePane?.tabIds).toEqual(["file-1", "file-2"]);
+        expect(sourcePane?.activeTabId).toBe("file-1");
+        expect(targetPane?.tabIds).toEqual(["file-3", "file-4"]);
+        expect(targetPane?.activeTabId).toBe("file-3");
+        expect(state.activePaneId).toBe("pane-b");
+    });
+
+    it("falls back to the left sibling when moving an active tab without pane history", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-b",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "file-2",
+                        id: "pane-a",
+                        tabIds: ["file-1", "file-2", "file-3"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: "file-4",
+                        id: "pane-b",
+                        tabIds: ["file-4"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "file-1": createWorkspaceFileTab("file-1", "a.ts"),
+                "file-2": createWorkspaceFileTab("file-2", "b.ts"),
+                "file-3": createWorkspaceFileTab("file-3", "c.ts"),
+                "file-4": createWorkspaceFileTab("file-4", "d.ts"),
+            },
+            recentActiveTabIds: ["file-2", "file-4"],
+        }));
+
+        await useWorkspaceStore.getState().moveTabToPane(
+            "file-2",
+            "pane-a",
+            "pane-b",
+            0,
+        );
+
+        const state = useWorkspaceStore.getState();
+        const sourcePane = findWorkspacePane(state.rootNode, "pane-a");
+
+        expect(sourcePane?.tabIds).toEqual(["file-1", "file-3"]);
+        expect(sourcePane?.activeTabId).toBe("file-1");
     });
 
     it("reopens the most recently closed tab in its original pane position", async () => {

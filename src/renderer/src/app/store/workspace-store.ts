@@ -685,10 +685,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
     moveActiveTab: async (paneId, direction) => {
         set((state) => {
-            const nextState = moveActiveTabBetweenPanes(
+            const movedTabId = getPaneActiveTabId(state, paneId);
+            const sourcePaneFallbackTabId = movedTabId
+                ? getSourcePaneFallbackTabIdAfterMove(state, paneId, movedTabId)
+                : null;
+            const movedState = moveActiveTabBetweenPanes(
                 state,
                 paneId,
                 direction,
+            );
+            const nextState = restoreSourcePaneActiveTabAfterMove(
+                movedState,
+                paneId,
+                sourcePaneFallbackTabId,
             );
             return {
                 ...nextState,
@@ -722,11 +731,27 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
     moveTab: async (tabId, direction) => {
         set((state) => {
-            const nextState = moveWorkspaceTabBetweenPanes(
+            const sourcePaneId = findPaneIdByTabId(state, tabId);
+            const sourcePaneFallbackTabId = sourcePaneId
+                ? getSourcePaneFallbackTabIdAfterMove(
+                      state,
+                      sourcePaneId,
+                      tabId,
+                  )
+                : null;
+            const movedState = moveWorkspaceTabBetweenPanes(
                 state,
                 tabId,
                 direction,
             );
+            const nextState =
+                sourcePaneId === null
+                    ? movedState
+                    : restoreSourcePaneActiveTabAfterMove(
+                          movedState,
+                          sourcePaneId,
+                          sourcePaneFallbackTabId,
+                      );
             return {
                 ...nextState,
                 error: null,
@@ -741,12 +766,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
     moveTabToPane: async (tabId, sourcePaneId, targetPaneId, targetIndex) => {
         set((state) => {
-            const nextState = moveTabToPaneAtIndex(
+            const sourcePaneFallbackTabId = getSourcePaneFallbackTabIdAfterMove(
+                state,
+                sourcePaneId,
+                tabId,
+            );
+            const movedState = moveTabToPaneAtIndex(
                 state,
                 tabId,
                 sourcePaneId,
                 targetPaneId,
                 targetIndex,
+            );
+            const nextState = restoreSourcePaneActiveTabAfterMove(
+                movedState,
+                sourcePaneId,
+                sourcePaneFallbackTabId,
             );
             return {
                 ...nextState,
@@ -815,12 +850,20 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                                   paneId,
                                   existingTabInResolvedPane.id,
                               )
-                            : moveTabToPaneAtIndex(
-                                  state,
-                                  existingTabInResolvedPane.id,
+                            : restoreSourcePaneActiveTabAfterMove(
+                                  moveTabToPaneAtIndex(
+                                      state,
+                                      existingTabInResolvedPane.id,
+                                      paneId,
+                                      resolvedPaneId,
+                                      Number.POSITIVE_INFINITY,
+                                  ),
                                   paneId,
-                                  resolvedPaneId,
-                                  Number.POSITIVE_INFINITY,
+                                  getSourcePaneFallbackTabIdAfterMove(
+                                      state,
+                                      paneId,
+                                      existingTabInResolvedPane.id,
+                                  ),
                               ),
                         existingTabInResolvedPane.id,
                         nextReviewContext,
@@ -953,12 +996,20 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             set((state) => ({
                 ...(paneId === resolvedPaneId
                     ? selectPaneTab(state, paneId, existingTabInResolvedPane.id)
-                    : moveTabToPaneAtIndex(
-                          state,
-                          existingTabInResolvedPane.id,
+                    : restoreSourcePaneActiveTabAfterMove(
+                          moveTabToPaneAtIndex(
+                              state,
+                              existingTabInResolvedPane.id,
+                              paneId,
+                              resolvedPaneId,
+                              Number.POSITIVE_INFINITY,
+                          ),
                           paneId,
-                          resolvedPaneId,
-                          Number.POSITIVE_INFINITY,
+                          getSourcePaneFallbackTabIdAfterMove(
+                              state,
+                              paneId,
+                              existingTabInResolvedPane.id,
+                          ),
                       )),
                 error: null,
                 recentActiveTabIds: recordRecentTabActivation(
@@ -1341,7 +1392,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
     dropTabToSplit: async (tabId, sourcePaneId, targetPaneId, direction) => {
         set((state) => {
-            const nextState = moveTabToSplit(
+            const sourcePaneFallbackTabId = getSourcePaneFallbackTabIdAfterMove(
+                state,
+                sourcePaneId,
+                tabId,
+            );
+            const movedState = moveTabToSplit(
                 state,
                 tabId,
                 sourcePaneId,
@@ -1351,6 +1407,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     paneId: crypto.randomUUID(),
                     splitId: crypto.randomUUID(),
                 },
+            );
+            const nextState = restoreSourcePaneActiveTabAfterMove(
+                movedState,
+                sourcePaneId,
+                sourcePaneFallbackTabId,
             );
             return {
                 ...nextState,
@@ -1668,6 +1729,58 @@ function findMostRecentFocusedTabIdInPane(
                 pane.tabIds.includes(recentTabId),
         ) ?? null
     );
+}
+
+function getSourcePaneFallbackTabIdAfterMove(
+    state: Pick<WorkspaceStore, "recentActiveTabIds" | "rootNode">,
+    paneId: string,
+    movedTabId: string,
+): string | null {
+    const pane = collectPaneNodes(state.rootNode).find(
+        (candidate) => candidate.id === paneId,
+    );
+    if (!pane || pane.activeTabId !== movedTabId) {
+        return null;
+    }
+
+    const recentTabId = findMostRecentFocusedTabIdInPane(
+        state,
+        paneId,
+        state.recentActiveTabIds,
+        movedTabId,
+    );
+    if (recentTabId) {
+        return recentTabId;
+    }
+
+    const movedTabIndex = pane.tabIds.indexOf(movedTabId);
+    if (movedTabIndex === -1) {
+        return null;
+    }
+
+    return (
+        pane.tabIds[movedTabIndex - 1] ??
+        pane.tabIds[movedTabIndex + 1] ??
+        null
+    );
+}
+
+function restoreSourcePaneActiveTabAfterMove(
+    state: WorkspaceTreeState,
+    sourcePaneId: string,
+    fallbackTabId: string | null,
+): WorkspaceTreeState {
+    if (
+        !fallbackTabId ||
+        findPaneIdByTabId(state, fallbackTabId) !== sourcePaneId
+    ) {
+        return state;
+    }
+
+    return {
+        ...selectPaneTab(state, sourcePaneId, fallbackTabId),
+        activePaneId: state.activePaneId,
+    };
 }
 
 function removeRecentChatFocus(
