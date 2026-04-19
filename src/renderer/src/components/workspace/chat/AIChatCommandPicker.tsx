@@ -83,7 +83,7 @@ export function AIChatCommandPicker({
         );
         const estimatedHeight = Math.min(
             CHAT_COMPOSER_PICKER_MAX_HEIGHT,
-            items.length * 52 + 12,
+            items.length * 26 + 8,
         );
         const measuredHeight = Math.ceil(menuRect?.height ?? estimatedHeight);
         const openAbove =
@@ -158,18 +158,19 @@ export function AIChatCommandPicker({
     return createPortal(
         <div
             ref={listRef}
+            className="shell-scrollbar overflow-y-auto border py-1"
             style={{
-                backgroundColor: "var(--color-bg-elevated)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 10,
-                boxShadow: "var(--shadow-soft)",
+                background: "var(--color-bg-elevated)",
+                borderColor:
+                    "color-mix(in srgb, var(--color-border) 80%, transparent)",
+                borderRadius: 8,
+                boxShadow:
+                    "0 12px 32px rgba(0, 0, 0, 0.18), 0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent)",
                 left: position?.x ?? 8,
                 maxHeight:
                     position?.maxHeight ?? CHAT_COMPOSER_PICKER_MAX_HEIGHT,
                 maxWidth: CHAT_COMPOSER_PICKER_MAX_WIDTH,
                 minWidth: CHAT_COMPOSER_PICKER_MIN_WIDTH,
-                overflowY: "auto",
-                padding: 6,
                 position: "fixed",
                 top: position?.y ?? 8,
                 zIndex: 10010,
@@ -185,43 +186,27 @@ export function AIChatCommandPicker({
                             e.preventDefault();
                             onSelect(cmd);
                         }}
-                        onMouseEnter={(e) => {
-                            onHoverIndex(i);
-                            if (!isActive) {
-                                e.currentTarget.style.background =
-                                    "var(--color-bg-secondary)";
-                            }
-                        }}
-                        onMouseLeave={(e) => {
-                            if (!isActive) {
-                                e.currentTarget.style.background =
-                                    "transparent";
-                            }
-                        }}
+                        onMouseEnter={() => onHoverIndex(i)}
+                        className="flex w-full items-baseline gap-2.5 px-3 py-1 text-left"
                         style={{
                             background: isActive
-                                ? "var(--color-bg-tertiary)"
+                                ? "color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-primary))"
                                 : "transparent",
                             border: "none",
-                            borderRadius: 8,
-                            color: "var(--color-text-primary)",
                             cursor: "pointer",
-                            display: "flex",
-                            flexDirection: "column",
-                            fontSize: "0.9em",
-                            gap: 4,
-                            padding: "8px 12px",
-                            textAlign: "left",
-                            transition: "background-color 100ms ease",
-                            width: "100%",
                         }}
                         type="button"
                     >
-                        <span style={{ fontWeight: 500 }}>{cmd.label}</span>
                         <span
+                            className="shrink-0 font-mono text-[12.5px]"
+                            style={{ color: "var(--color-text-primary)" }}
+                        >
+                            {cmd.label}
+                        </span>
+                        <span
+                            className="min-w-0 truncate text-[11.5px]"
                             style={{
-                                color: "var(--color-text-secondary)",
-                                fontSize: "0.9em",
+                                color: "color-mix(in srgb, var(--color-text-secondary) 75%, transparent)",
                             }}
                         >
                             {cmd.description}

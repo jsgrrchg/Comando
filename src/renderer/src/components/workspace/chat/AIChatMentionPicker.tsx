@@ -83,19 +83,25 @@ export function getMentionSuggestions(
     return results.slice(0, limit);
 }
 
+function getParentDirectoryLabel(relativePath: string): string {
+    const lastSlashIndex = relativePath.lastIndexOf("/");
+    if (lastSlashIndex < 0) return "";
+    return relativePath.slice(0, lastSlashIndex);
+}
+
 /* ─── Icon components ─── */
 
 function FetchIcon() {
     return (
         <svg
             fill="none"
-            height="12"
-            stroke="#10b981"
+            height="14"
+            stroke="currentColor"
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth="1.5"
             viewBox="0 0 24 24"
-            width="12"
+            width="14"
         >
             <circle cx="12" cy="12" r="10" />
             <line x1="2" x2="22" y1="12" y2="12" />
@@ -108,13 +114,13 @@ function FolderIcon() {
     return (
         <svg
             fill="none"
-            height="12"
+            height="14"
             stroke="currentColor"
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth="1.5"
             viewBox="0 0 24 24"
-            width="12"
+            width="14"
         >
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
@@ -157,7 +163,7 @@ export function AIChatMentionPicker({
         );
         const estimatedHeight = Math.min(
             CHAT_COMPOSER_PICKER_MAX_HEIGHT,
-            items.length * 42 + 12,
+            items.length * 26 + 8,
         );
         const measuredHeight = Math.ceil(menuRect?.height ?? estimatedHeight);
         const openAbove =
@@ -232,18 +238,19 @@ export function AIChatMentionPicker({
     return createPortal(
         <div
             ref={listRef}
+            className="shell-scrollbar overflow-y-auto border py-1"
             style={{
-                backgroundColor: "var(--color-bg-elevated)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 10,
-                boxShadow: "var(--shadow-soft)",
+                background: "var(--color-bg-elevated)",
+                borderColor:
+                    "color-mix(in srgb, var(--color-border) 80%, transparent)",
+                borderRadius: 8,
+                boxShadow:
+                    "0 12px 32px rgba(0, 0, 0, 0.18), 0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent)",
                 left: position?.x ?? 8,
                 maxHeight:
                     position?.maxHeight ?? CHAT_COMPOSER_PICKER_MAX_HEIGHT,
                 maxWidth: CHAT_COMPOSER_PICKER_MAX_WIDTH,
                 minWidth: CHAT_COMPOSER_PICKER_MIN_WIDTH,
-                overflowY: "auto",
-                padding: 6,
                 position: "fixed",
                 top: position?.y ?? 8,
                 zIndex: 10010,
@@ -254,29 +261,33 @@ export function AIChatMentionPicker({
 
                 let icon: React.ReactNode;
                 let label: string;
-                let color: string;
+                let secondary = "";
 
                 switch (item.kind) {
                     case "fetch":
                         icon = <FetchIcon />;
                         label = "@fetch";
-                        color = "#10b981";
+                        secondary = "Fetch URL";
                         break;
                     case "file":
                         icon = (
                             <FileTypeIcon
                                 fileName={item.entry.name}
-                                opacity={0.58}
-                                size={12}
+                                opacity={isActive ? 0.92 : 0.6}
+                                size={14}
                             />
                         );
                         label = item.label;
-                        color = "var(--color-accent)";
+                        secondary = getParentDirectoryLabel(
+                            item.entry.relativePath,
+                        );
                         break;
                     case "folder":
                         icon = <FolderIcon />;
                         label = item.label;
-                        color = "var(--color-text-secondary)";
+                        secondary = getParentDirectoryLabel(
+                            item.entry.relativePath,
+                        );
                         break;
                 }
 
@@ -288,49 +299,45 @@ export function AIChatMentionPicker({
                             e.preventDefault();
                             onSelect(item);
                         }}
-                        onMouseEnter={(e) => {
-                            onHoverIndex(i);
-                            if (!isActive) {
-                                e.currentTarget.style.background =
-                                    "var(--color-bg-secondary)";
-                            }
-                        }}
-                        onMouseLeave={(e) => {
-                            if (!isActive) {
-                                e.currentTarget.style.background =
-                                    "transparent";
-                            }
-                        }}
+                        onMouseEnter={() => onHoverIndex(i)}
+                        className="flex w-full items-center gap-2 px-3 py-1 text-left"
                         style={{
-                            alignItems: "center",
                             background: isActive
-                                ? "var(--color-bg-tertiary)"
+                                ? "color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-primary))"
                                 : "transparent",
                             border: "none",
-                            borderRadius: 8,
-                            color: "var(--color-text-primary)",
                             cursor: "pointer",
-                            display: "flex",
-                            fontSize: "0.9em",
-                            gap: 10,
-                            padding: "8px 12px",
-                            textAlign: "left",
-                            transition: "background-color 100ms ease",
-                            width: "100%",
                         }}
                         type="button"
                     >
-                        <span style={{ color, flexShrink: 0 }}>{icon}</span>
                         <span
+                            className="flex shrink-0 items-center justify-center"
                             style={{
-                                minWidth: 0,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
+                                color: isActive
+                                    ? "var(--color-text-primary)"
+                                    : "var(--color-text-secondary)",
+                                height: 14,
+                                width: 14,
                             }}
+                        >
+                            {icon}
+                        </span>
+                        <span
+                            className="truncate text-[13px]"
+                            style={{ color: "var(--color-text-primary)" }}
                         >
                             {label}
                         </span>
+                        {secondary ? (
+                            <span
+                                className="min-w-0 truncate font-mono text-[11px]"
+                                style={{
+                                    color: "color-mix(in srgb, var(--color-text-secondary) 75%, transparent)",
+                                }}
+                            >
+                                {secondary}
+                            </span>
+                        ) : null}
                     </button>
                 );
             })}
