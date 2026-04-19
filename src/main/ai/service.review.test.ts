@@ -673,6 +673,7 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
             cwd: tempDir,
             projectRoot: tempDir,
             processedDiffPaths: new Map<string, Set<string>>(),
+            terminalOutputBuffers: new Map<string, string>(),
         };
     }
 

@@ -185,6 +185,7 @@ interface LiveAcpSession {
     projectRoot: string | null;
     runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
+    terminalOutputBuffers: Map<string, string>;
     lastBroadcastSnapshot: AiSessionSnapshot | null;
     stderrChunks: string[];
     stderrHandler: ((chunk: Buffer | string) => void) | null;
@@ -1321,6 +1322,7 @@ export class AiService {
                 updatedAt: new Date().toISOString(),
                 worktreeId: input.worktreeId ?? null,
             },
+            terminalOutputBuffers: new Map(),
             stderrChunks: [],
             stderrHandler: null,
         } satisfies LiveAcpSession);
@@ -1753,6 +1755,7 @@ export class AiService {
                     : null,
             runtimeId: snapshot.runtimeId,
             snapshot,
+            terminalOutputBuffers: new Map(),
             stderrChunks: [],
             stderrHandler: null,
         };
@@ -2442,7 +2445,7 @@ export class AiService {
         liveSession.child.stdin?.destroy();
         liveSession.child.stdout?.destroy();
         liveSession.child.stderr?.destroy();
-        terminalOutputBuffers.clear();
+        liveSession.terminalOutputBuffers.clear();
     }
 
     #detachChildStreams(liveSession: LiveAcpSession): void {
@@ -3347,12 +3350,11 @@ function finalizeStreamingMessages(
 }
 
 const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
-const terminalOutputBuffers = new Map<string, string>();
 
 function mapToolCallUpdate(
     liveSession: Pick<
         LiveAcpSession,
-        "cwd" | "projectRoot" | "processedDiffPaths"
+        "cwd" | "projectRoot" | "processedDiffPaths" | "terminalOutputBuffers"
     >,
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
@@ -3387,12 +3389,13 @@ function mapToolCallUpdate(
                 const terminalId = (
                     update._meta.terminal_output as { terminal_id: string }
                 ).terminal_id;
-                const prev = terminalOutputBuffers.get(terminalId) ?? "";
+                const prev =
+                    liveSession.terminalOutputBuffers.get(terminalId) ?? "";
                 let next = prev + data;
                 if (next.length > TERMINAL_OUTPUT_MAX_LENGTH) {
                     next = next.slice(-TERMINAL_OUTPUT_MAX_LENGTH);
                 }
-                terminalOutputBuffers.set(terminalId, next);
+                liveSession.terminalOutputBuffers.set(terminalId, next);
                 terminalOutput = next;
             }
         }
@@ -3406,10 +3409,12 @@ function mapToolCallUpdate(
             if (typeof termExit.exit_code === "number") {
                 exitCode = termExit.exit_code;
             }
-            const finalOutput = terminalOutputBuffers.get(termExit.terminal_id);
+            const finalOutput = liveSession.terminalOutputBuffers.get(
+                termExit.terminal_id,
+            );
             if (finalOutput !== undefined) {
                 terminalOutput = finalOutput;
-                terminalOutputBuffers.delete(termExit.terminal_id);
+                liveSession.terminalOutputBuffers.delete(termExit.terminal_id);
             }
         }
     }
