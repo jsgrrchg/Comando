@@ -143,6 +143,17 @@ function createCommitDetail(
 }
 
 describe("GitTabView", () => {
+    it("keeps the detail panel hidden before any commit is selected", () => {
+        resetStoreState();
+
+        const markup = renderToStaticMarkup(
+            createElement(GitTabView, { tab: TAB }),
+        );
+
+        expect(markup).not.toContain("Resize commit details sidebar");
+        expect(markup).not.toContain("view commit");
+    });
+
     it("hides the detail panel when no commit is selected", () => {
         resetStoreState();
         mockGitStoreState.current.selectedCommitShas = {

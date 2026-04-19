@@ -434,33 +434,36 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 worktreeId,
             });
 
-            set((state) => ({
-                errors: {
-                    ...state.errors,
-                    [contextKey]: null,
-                },
-                historyByContext: {
-                    ...state.historyByContext,
-                    [contextKey]: history,
-                },
-                loadingHistoryContexts: {
-                    ...state.loadingHistoryContexts,
-                    [contextKey]: false,
-                },
-                selectedCommitShas: {
-                    ...state.selectedCommitShas,
-                    [contextKey]: history.some(
-                        (commit) =>
-                            commit.sha ===
-                            (state.selectedCommitShas[contextKey] ?? null),
-                    )
-                        ? (state.selectedCommitShas[contextKey] ?? null)
-                        : (history[0]?.sha ?? null),
-                },
-            }));
+            set((state) => {
+                const previousSelectedSha =
+                    state.selectedCommitShas[contextKey] ?? null;
+                const nextSelectedSha =
+                    previousSelectedSha &&
+                    history.some((commit) => commit.sha === previousSelectedSha)
+                        ? previousSelectedSha
+                        : null;
 
-            const nextSelectedSha =
-                get().selectedCommitShas[contextKey] ?? history[0]?.sha ?? null;
+                return {
+                    errors: {
+                        ...state.errors,
+                        [contextKey]: null,
+                    },
+                    historyByContext: {
+                        ...state.historyByContext,
+                        [contextKey]: history,
+                    },
+                    loadingHistoryContexts: {
+                        ...state.loadingHistoryContexts,
+                        [contextKey]: false,
+                    },
+                    selectedCommitShas: {
+                        ...state.selectedCommitShas,
+                        [contextKey]: nextSelectedSha,
+                    },
+                };
+            });
+
+            const nextSelectedSha = get().selectedCommitShas[contextKey] ?? null;
             if (nextSelectedSha) {
                 void get().ensureCommitDetail(
                     projectId,

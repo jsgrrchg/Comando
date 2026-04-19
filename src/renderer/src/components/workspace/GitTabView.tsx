@@ -144,18 +144,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         worktreeId,
     ]);
 
-    useEffect(() => {
-        if (
-            !projectId ||
-            history.length === 0 ||
-            rawSelectedCommitSha !== undefined
-        ) {
-            return;
-        }
-
-        void selectCommit(projectId, history[0]?.sha ?? null, worktreeId);
-    }, [history, projectId, rawSelectedCommitSha, selectCommit, worktreeId]);
-
     const graphRows = useMemo(
         () => buildGitHistoryGraphRows(history),
         [history],
