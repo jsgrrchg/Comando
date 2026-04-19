@@ -6,6 +6,7 @@ export type { ChatFontFamily, EditorFontFamily } from "./typography";
 export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
     getAppUpdateState: "app:get-update-state",
+    getAppChangelog: "app:get-changelog",
     checkForAppUpdates: "app:check-for-updates",
     installAppUpdateAndRestart: "app:install-update-and-restart",
     getPersistenceSnapshot: "app:get-persistence-snapshot",
@@ -405,6 +406,12 @@ export interface AppUpdateState {
     readonly message: string;
     readonly progressPercent: number | null;
     readonly status: AppUpdateStatus;
+}
+
+export interface AppChangelogRelease {
+    readonly date: string | null;
+    readonly highlights: readonly string[];
+    readonly version: string;
 }
 
 export interface ProjectSettingsUpdatedEvent {
@@ -1415,6 +1422,7 @@ export interface AiTrackedFileHunkMutationInput {
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getAppUpdateState: () => Promise<AppUpdateState>;
+    getAppChangelog: () => Promise<readonly AppChangelogRelease[]>;
     checkForAppUpdates: () => Promise<AppUpdateState>;
     installAppUpdateAndRestart: () => Promise<void>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot | null>;

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
     AiRuntimeId,
     AiRuntimeStatus,
+    AppChangelogRelease,
     AppAiChatSettings,
     AppAppearanceSettings,
     AppUpdateState,
@@ -72,6 +73,9 @@ export function SettingsApp() {
         progressPercent: null,
         status: "unsupported",
     });
+    const [appChangelog, setAppChangelog] = useState<
+        readonly AppChangelogRelease[]
+    >([]);
     const availableFontFamilyIds = useAvailableFontFamilyIds();
     const hydrateSettings = useSettingsStore((state) => state.hydrate);
     const settingsRevision = useSettingsStore((state) => state.revision);
@@ -111,19 +115,34 @@ export function SettingsApp() {
         setAppUpdateState(nextState);
     }, []);
 
+    const loadAppChangelog = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        const releases = await window.comando.getAppChangelog();
+        setAppChangelog(releases);
+    }, []);
+
     useEffect(() => {
         const timeout = window.setTimeout(() => {
             void Promise.all([
                 hydrateSettings(),
                 loadRuntimeStatuses(),
                 loadAppUpdateState(),
+                loadAppChangelog(),
             ]);
         }, 0);
 
         return () => {
             window.clearTimeout(timeout);
         };
-    }, [hydrateSettings, loadAppUpdateState, loadRuntimeStatuses]);
+    }, [
+        hydrateSettings,
+        loadAppChangelog,
+        loadAppUpdateState,
+        loadRuntimeStatuses,
+    ]);
 
     useEffect(() => {
         if (!window.comando) {
@@ -404,6 +423,7 @@ export function SettingsApp() {
             shortcuts={shortcuts}
             runtimes={runtimes}
             updates={{
+                changelog: appChangelog,
                 onCheckForUpdates: () => {
                     if (!window.comando) {
                         return;

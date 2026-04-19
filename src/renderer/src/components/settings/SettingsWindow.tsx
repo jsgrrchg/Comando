@@ -350,6 +350,7 @@ export function SettingsWindow({
                             )}
                             {active === "updates" && (
                                 <UpdatesContent
+                                    changelog={updates.changelog}
                                     onCheckForUpdates={
                                         updates.onCheckForUpdates
                                     }
@@ -910,33 +911,8 @@ function RuntimeActionBtn({
     );
 }
 
-type ChangelogEntry = {
-    version: string;
-    date: string;
-    highlights: readonly string[];
-};
-
-const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
-    {
-        version: "0.1.0",
-        date: "2026-04-19",
-        highlights: [
-            "Added multi-select drag from the file tree to the composer.",
-            "Tightened edited files buffer row sizing for review.",
-            "Fixed live AI session renames being overwritten.",
-        ],
-    },
-    {
-        version: "0.0.9",
-        date: "2026-04-05",
-        highlights: [
-            "Improved sidebar agent updates and history query indexing.",
-            "Added production app icons for macOS and Windows.",
-        ],
-    },
-];
-
 function UpdatesContent({
+    changelog,
     onCheckForUpdates,
     onInstallUpdate,
     state,
@@ -1053,13 +1029,26 @@ function UpdatesContent({
 
             <SectionLabel>Changelog</SectionLabel>
             <div style={{ paddingTop: 4 }}>
-                {CHANGELOG_ENTRIES.map((entry) => (
-                    <ChangelogItem
-                        entry={entry}
-                        isLatest={entry.version === state.currentVersion}
-                        key={entry.version}
-                    />
-                ))}
+                {changelog.length > 0 ? (
+                    changelog.map((entry) => (
+                        <ChangelogItem
+                            entry={entry}
+                            isLatest={entry.version === state.currentVersion}
+                            key={entry.version}
+                        />
+                    ))
+                ) : (
+                    <div
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 11,
+                            padding: "8px 0",
+                        }}
+                    >
+                        No changelog entries found in CHANGELOG.md.
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -1093,7 +1082,11 @@ function ChangelogItem({
     entry,
     isLatest,
 }: {
-    entry: ChangelogEntry;
+    entry: {
+        readonly date: string | null;
+        readonly highlights: readonly string[];
+        readonly version: string;
+    };
     isLatest: boolean;
 }) {
     return (
@@ -1148,7 +1141,7 @@ function ChangelogItem({
                         marginLeft: "auto",
                     }}
                 >
-                    {entry.date}
+                    {entry.date ?? "No date"}
                 </span>
             </div>
             <ul

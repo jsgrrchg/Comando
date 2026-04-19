@@ -1,4 +1,4 @@
-import type { AppUpdateState } from "@shared/ipc";
+import type { AppChangelogRelease, AppUpdateState } from "@shared/ipc";
 
 export type ThemeMode = "system" | "light" | "dark";
 
@@ -114,6 +114,7 @@ export interface SettingsWindowProps {
 }
 
 export interface SettingsUpdatesState {
+    readonly changelog: readonly AppChangelogRelease[];
     readonly state: AppUpdateState;
     readonly onCheckForUpdates?: () => void;
     readonly onInstallUpdate?: () => void;

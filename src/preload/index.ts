@@ -5,6 +5,7 @@ import { clipboard, contextBridge, ipcRenderer, webUtils } from "electron";
 import {
     IPC_CHANNELS,
     IPC_EVENTS,
+    type AppChangelogRelease,
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
@@ -212,6 +213,11 @@ const comandoApi: ComandoApi = {
         assertIpcObject<AppUpdateState>(
             IPC_CHANNELS.getAppUpdateState,
             await ipcRenderer.invoke(IPC_CHANNELS.getAppUpdateState),
+        ),
+    getAppChangelog: async () =>
+        assertIpcArray<AppChangelogRelease>(
+            IPC_CHANNELS.getAppChangelog,
+            await ipcRenderer.invoke(IPC_CHANNELS.getAppChangelog),
         ),
     checkForAppUpdates: async () =>
         assertIpcObject<AppUpdateState>(
