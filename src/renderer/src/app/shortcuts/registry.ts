@@ -238,10 +238,10 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         id: "close_focused_surface",
         label: "Close focused surface",
         description:
-            "Close the currently focused surface or window. On Windows the app menu quits instead.",
+            "Close the currently focused surface or window.",
         keys: {
             mac: "Cmd+W",
-            windows: "Not available",
+            windows: "Ctrl+W",
         },
         section: "Window",
     },

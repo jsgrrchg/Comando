@@ -744,7 +744,7 @@ export interface ProjectSummary {
 }
 
 export interface ProjectAddResult {
-    readonly activatedProjectId: string | null;
+    readonly projectIdsToOpen: readonly string[];
     readonly projects: readonly ProjectSummary[];
 }
 

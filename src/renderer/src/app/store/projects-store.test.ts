@@ -48,33 +48,39 @@ describe("resolveNextActiveProjectId", () => {
         },
     ] as const;
 
-    it("prioritizes the newly added project when it is present", () => {
+    it("keeps the current project instead of switching to the newly added one", () => {
         expect(
             resolveNextActiveProjectId({
-                activatedProjectId: "project-b",
-                currentActiveProjectId: "project-a",
-                projects,
-            }),
-        ).toBe("project-b");
-    });
-
-    it("keeps the current project when no new project was activated", () => {
-        expect(
-            resolveNextActiveProjectId({
-                activatedProjectId: null,
                 currentActiveProjectId: "project-a",
                 projects,
             }),
         ).toBe("project-a");
     });
 
-    it("falls back to the first project when nothing is active", () => {
+    it("keeps the current project when it is still present", () => {
         expect(
             resolveNextActiveProjectId({
-                activatedProjectId: null,
+                currentActiveProjectId: "project-a",
+                projects,
+            }),
+        ).toBe("project-a");
+    });
+
+    it("leaves the current window without active project when none was active", () => {
+        expect(
+            resolveNextActiveProjectId({
                 currentActiveProjectId: null,
                 projects,
             }),
-        ).toBe("project-a");
+        ).toBeNull();
+    });
+
+    it("clears the active project if it no longer exists", () => {
+        expect(
+            resolveNextActiveProjectId({
+                currentActiveProjectId: "missing-project",
+                projects,
+            }),
+        ).toBeNull();
     });
 });

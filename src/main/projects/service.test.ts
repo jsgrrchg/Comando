@@ -63,7 +63,9 @@ describe("ProjectService", () => {
         ]);
         const [firstProject] = firstAddResult.projects;
         expect(firstProject).toBeDefined();
-        expect(firstAddResult.activatedProjectId).toBe(firstProject?.id ?? null);
+        expect(firstAddResult.projectIdsToOpen).toEqual([
+            firstProject?.id ?? null,
+        ]);
         if (!firstProject) {
             throw new Error("Expected the first project to be created.");
         }
@@ -113,9 +115,9 @@ describe("ProjectService", () => {
         ]);
         const [reopenedProject] = reopenedAddResult.projects;
         expect(reopenedProject?.id).toBe(firstProject.id);
-        expect(reopenedAddResult.activatedProjectId).toBe(
+        expect(reopenedAddResult.projectIdsToOpen).toEqual([
             reopenedProject?.id ?? null,
-        );
+        ]);
         if (!reopenedProject) {
             throw new Error("Expected the project to be re-added.");
         }

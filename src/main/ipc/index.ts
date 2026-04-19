@@ -746,7 +746,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
         if (result.canceled || result.filePaths.length === 0) {
             return {
-                activatedProjectId: null,
+                projectIdsToOpen: [],
                 projects: options.projectService.listProjects(),
             };
         }

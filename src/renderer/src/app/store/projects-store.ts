@@ -72,7 +72,6 @@ interface ProjectsState {
 }
 
 interface ResolveNextActiveProjectIdInput {
-    readonly activatedProjectId: string | null;
     readonly currentActiveProjectId: string | null;
     readonly projects: readonly ProjectSummary[];
 }
@@ -103,13 +102,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
 
         try {
-            const { activatedProjectId, projects } =
+            const { projectIdsToOpen, projects } =
                 await getComandoApi().addProjectPaths([
                     normalizedPath,
                 ]);
             const currentActiveProjectId = get().activeProjectId;
             const nextActiveProjectId = resolveNextActiveProjectId({
-                activatedProjectId,
                 currentActiveProjectId,
                 projects,
             });
@@ -123,6 +121,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
             if (nextActiveProjectId) {
                 await loadDirectory(nextActiveProjectId, null, set, get);
             }
+
+            await openProjectsInWindows(projectIdsToOpen);
         } catch (error) {
             set({
                 error:
@@ -135,11 +135,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
     addProjects: async () => {
         try {
-            const { activatedProjectId, projects } =
+            const { projectIdsToOpen, projects } =
                 await getComandoApi().openProjects();
             const currentActiveProjectId = get().activeProjectId;
             const nextActiveProjectId = resolveNextActiveProjectId({
-                activatedProjectId,
                 currentActiveProjectId,
                 projects,
             });
@@ -153,6 +152,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
             if (nextActiveProjectId) {
                 await loadDirectory(nextActiveProjectId, null, set, get);
             }
+
+            await openProjectsInWindows(projectIdsToOpen);
         } catch (error) {
             set({
                 error:
@@ -549,17 +550,9 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 }));
 
 export function resolveNextActiveProjectId({
-    activatedProjectId,
     currentActiveProjectId,
     projects,
 }: ResolveNextActiveProjectIdInput): string | null {
-    if (
-        activatedProjectId &&
-        projects.some((project) => project.id === activatedProjectId)
-    ) {
-        return activatedProjectId;
-    }
-
     if (
         currentActiveProjectId &&
         projects.some((project) => project.id === currentActiveProjectId)
@@ -567,7 +560,20 @@ export function resolveNextActiveProjectId({
         return currentActiveProjectId;
     }
 
-    return currentActiveProjectId ?? projects[0]?.id ?? null;
+    return null;
+}
+
+async function openProjectsInWindows(
+    projectIdsToOpen: readonly string[],
+): Promise<void> {
+    const comandoApi = getComandoApi();
+    if (!comandoApi || projectIdsToOpen.length === 0) {
+        return;
+    }
+
+    for (const projectId of projectIdsToOpen) {
+        await comandoApi.openProjectWindow({ projectId });
+    }
 }
 
 function getParentKey(parentRelativePath: string | null): ParentKey {

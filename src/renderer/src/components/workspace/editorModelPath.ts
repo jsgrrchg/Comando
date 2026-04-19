@@ -44,6 +44,7 @@ export function buildWorkspaceEditorModelPath(
     absolutePath: string,
     tabId: string,
     variant: WorkspaceEditorModelVariant,
+    revisionToken?: string | null,
 ): string {
     const { extension, stem } = splitPathExtension(absolutePath);
     const modelSuffix = [
@@ -51,6 +52,9 @@ export function buildWorkspaceEditorModelPath(
         sanitizeModelSegment(tabId),
         "__",
         sanitizeModelSegment(variant),
+        revisionToken
+            ? `__${sanitizeModelSegment(revisionToken)}`
+            : "",
     ].join("");
 
     return extension

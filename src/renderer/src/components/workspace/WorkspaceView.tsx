@@ -97,6 +97,7 @@ import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/ed
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
+import { closeWorkspaceTabsWithConfirmation } from "@renderer/components/workspace/workspaceCloseGuard";
 import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/workspace/workspaceTabActivity";
 import {
     createTerminalSurfaceOptions,
@@ -188,6 +189,7 @@ type ComandoMonacoTheme = "comando-dark" | "comando-light";
 type SemanticHighlightingEditorOptions = {
     readonly "semanticHighlighting.enabled": true | false | "configuredByTheme";
 };
+type MonacoNamespace = typeof import("monaco-editor");
 
 const EMPTY_TAB_IDS: readonly string[] = [];
 const semanticHighlightingEditorOptions: SemanticHighlightingEditorOptions = {
@@ -325,6 +327,61 @@ function getInlineReviewSignature(file: AiTrackedFile | null): string | null {
             hunk.lines.length,
         ]),
     ]);
+}
+
+function getInlineReviewModelRevision(file: AiTrackedFile | null): string | null {
+    if (!file) {
+        return null;
+    }
+
+    return JSON.stringify([
+        file.identityKey,
+        file.version ?? 1,
+        file.updatedAt,
+    ]);
+}
+
+function captureDiffEditorScrollState(
+    editor: MonacoEditor.IStandaloneDiffEditor | null,
+): {
+    readonly modifiedScrollLeft: number;
+    readonly modifiedScrollTop: number;
+    readonly originalScrollLeft: number;
+    readonly originalScrollTop: number;
+} {
+    const originalEditor = editor?.getOriginalEditor() ?? null;
+    const modifiedEditor = editor?.getModifiedEditor() ?? null;
+
+    return {
+        modifiedScrollLeft: modifiedEditor?.getScrollLeft() ?? 0,
+        modifiedScrollTop: modifiedEditor?.getScrollTop() ?? 0,
+        originalScrollLeft: originalEditor?.getScrollLeft() ?? 0,
+        originalScrollTop: originalEditor?.getScrollTop() ?? 0,
+    };
+}
+
+function getOrCreateMonacoTextModel(input: {
+    readonly language: string;
+    readonly modelPath: string;
+    readonly monaco: MonacoNamespace;
+    readonly value: string;
+}): MonacoEditor.ITextModel {
+    const uri = input.monaco.Uri.parse(input.modelPath);
+    const existingModel = input.monaco.editor.getModel(uri);
+
+    if (existingModel) {
+        if (existingModel.getValue() !== input.value) {
+            existingModel.setValue(input.value);
+        }
+        input.monaco.editor.setModelLanguage(existingModel, input.language);
+        return existingModel;
+    }
+
+    return input.monaco.editor.createModel(
+        input.value,
+        input.language,
+        uri,
+    );
 }
 
 function isQuickCreateMenuSeparator(
@@ -748,40 +805,7 @@ function WorkspacePaneView({
         async (
             tabIdsToClose: readonly string[],
             closeAction: () => Promise<void>,
-        ) => {
-            const { tabsById } = useWorkspaceStore.getState();
-            const { sessions } = useAiStore.getState();
-            let workingCount = 0;
-            for (const candidateTabId of tabIdsToClose) {
-                const candidateTab = tabsById[candidateTabId];
-                if (candidateTab?.kind !== "chat") {
-                    continue;
-                }
-                const entry = sessions[candidateTab.sessionId];
-                if (!entry) {
-                    continue;
-                }
-                const indicator = resolveWorkspaceChatTabActivityIndicator({
-                    localError: entry.localError ?? null,
-                    snapshot: entry.snapshot
-                        ? { status: entry.snapshot.status }
-                        : null,
-                });
-                if (indicator?.tone === "working") {
-                    workingCount += 1;
-                }
-            }
-            if (workingCount > 0) {
-                const message =
-                    workingCount === 1
-                        ? "This thread is working. Stop the agent and close anyway?"
-                        : `${workingCount} threads are working. Stop the agents and close anyway?`;
-                if (!window.confirm(message)) {
-                    return;
-                }
-            }
-            await closeAction();
-        },
+        ) => closeWorkspaceTabsWithConfirmation(tabIdsToClose, closeAction),
         [],
     );
     const collectPaneTabIds = useCallback(
@@ -2579,6 +2603,20 @@ function FileTabView({
     const inlineReviewHoverHideTimerRef = useRef<number | null>(null);
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+    const inlineReviewMonacoRef = useRef<MonacoNamespace | null>(null);
+    const inlineReviewCurrentModelsRef = useRef<{
+        readonly modified: MonacoEditor.ITextModel | null;
+        readonly original: MonacoEditor.ITextModel | null;
+        readonly revision: string | null;
+    }>({
+        modified: null,
+        original: null,
+        revision: null,
+    });
+    const inlineReviewScrollRestoreFrameRef = useRef<number | null>(null);
+    const inlineReviewScrollStateRef = useRef<
+        ReturnType<typeof captureDiffEditorScrollState>
+    >(captureDiffEditorScrollState(null));
     const fileTabIdRef = useRef(tab.id);
     const gitGutterDecorationsRef =
         useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
@@ -2633,6 +2671,33 @@ function FileTabView({
         () => getInlineReviewSignature(inlineReviewTrackedFile),
         [inlineReviewTrackedFile],
     );
+    const inlineReviewModelRevision = useMemo(
+        () => getInlineReviewModelRevision(inlineReviewTrackedFile),
+        [inlineReviewTrackedFile],
+    );
+    const inlineReviewShellModelPaths = useMemo(() => {
+        if (!document) {
+            return null;
+        }
+
+        return {
+            modified: buildWorkspaceEditorModelPath(
+                document.absolutePath,
+                tab.id,
+                "review-modified",
+                "shell",
+            ),
+            original: buildWorkspaceEditorModelPath(
+                document.absolutePath,
+                tab.id,
+                "review-original",
+                "shell",
+            ),
+        };
+    }, [
+        document?.absolutePath,
+        tab.id,
+    ]);
     const reviewDiff = useMemo(
         () =>
             inlineReviewTrackedFile
@@ -3052,6 +3117,131 @@ function FileTabView({
         runtime?.applyMonacoThemeFromDom();
     }, [runtime]);
 
+    const clearInlineReviewScrollRestore = useCallback(() => {
+        if (inlineReviewScrollRestoreFrameRef.current == null) {
+            return;
+        }
+
+        window.cancelAnimationFrame(inlineReviewScrollRestoreFrameRef.current);
+        inlineReviewScrollRestoreFrameRef.current = null;
+    }, []);
+
+    const restoreInlineReviewScrollState = useCallback(
+        (
+            diffEditor: MonacoEditor.IStandaloneDiffEditor,
+            scrollState: ReturnType<typeof captureDiffEditorScrollState>,
+        ) => {
+            clearInlineReviewScrollRestore();
+
+            const applyScrollState = () => {
+                const originalEditor = diffEditor.getOriginalEditor();
+                const modifiedEditor = diffEditor.getModifiedEditor();
+
+                diffEditor.layout();
+                originalEditor.setScrollLeft(scrollState.originalScrollLeft);
+                originalEditor.setScrollTop(scrollState.originalScrollTop);
+                modifiedEditor.setScrollLeft(scrollState.modifiedScrollLeft);
+                modifiedEditor.setScrollTop(scrollState.modifiedScrollTop);
+                inlineReviewScrollStateRef.current =
+                    captureDiffEditorScrollState(diffEditor);
+            };
+
+            applyScrollState();
+            inlineReviewScrollRestoreFrameRef.current =
+                window.requestAnimationFrame(() => {
+                    inlineReviewScrollRestoreFrameRef.current = null;
+
+                    if (diffEditorRef.current !== diffEditor) {
+                        return;
+                    }
+
+                    applyScrollState();
+                });
+        },
+        [clearInlineReviewScrollRestore],
+    );
+
+    const applyInlineReviewModels = useCallback(
+        (trackedFile: AiTrackedFile | null) => {
+            if (
+                !document ||
+                !trackedFile ||
+                !inlineReviewModelRevision ||
+                !diffEditorRef.current ||
+                !inlineReviewMonacoRef.current
+            ) {
+                return;
+            }
+
+            if (
+                inlineReviewCurrentModelsRef.current.revision ===
+                inlineReviewModelRevision
+            ) {
+                return;
+            }
+
+            const diffEditor = diffEditorRef.current;
+            const monaco = inlineReviewMonacoRef.current;
+            const previousModels = diffEditor.getModel();
+            const scrollState = inlineReviewScrollStateRef.current;
+            const nextOriginalModel = getOrCreateMonacoTextModel({
+                language: monacoLanguageId,
+                modelPath: buildWorkspaceEditorModelPath(
+                    document.absolutePath,
+                    tab.id,
+                    "review-original",
+                    inlineReviewModelRevision,
+                ),
+                monaco,
+                value: trackedFile.oldText ?? "",
+            });
+            const nextModifiedModel = getOrCreateMonacoTextModel({
+                language: monacoLanguageId,
+                modelPath: buildWorkspaceEditorModelPath(
+                    document.absolutePath,
+                    tab.id,
+                    "review-modified",
+                    inlineReviewModelRevision,
+                ),
+                monaco,
+                value: trackedFile.newText ?? "",
+            });
+
+            inlineReviewDecorationsRef.current?.clear();
+            diffEditor.setModel({
+                modified: nextModifiedModel,
+                original: nextOriginalModel,
+            });
+            inlineReviewCurrentModelsRef.current = {
+                modified: nextModifiedModel,
+                original: nextOriginalModel,
+                revision: inlineReviewModelRevision,
+            };
+            restoreInlineReviewScrollState(diffEditor, scrollState);
+
+            if (
+                previousModels?.original &&
+                previousModels.original !== nextOriginalModel
+            ) {
+                previousModels.original.dispose();
+            }
+
+            if (
+                previousModels?.modified &&
+                previousModels.modified !== nextModifiedModel
+            ) {
+                previousModels.modified.dispose();
+            }
+        },
+        [
+            document,
+            inlineReviewModelRevision,
+            monacoLanguageId,
+            restoreInlineReviewScrollState,
+            tab.id,
+        ],
+    );
+
     useEffect(() => {
         if (
             !document ||
@@ -3310,6 +3500,23 @@ function FileTabView({
         editorSettings.minimapEnabled,
     ]);
 
+    useLayoutEffect(() => {
+        applyInlineReviewModels(inlineReviewTrackedFile);
+    }, [applyInlineReviewModels, inlineReviewTrackedFile]);
+
+    useEffect(() => {
+        if (inlineReviewTrackedFile) {
+            return;
+        }
+
+        clearInlineReviewScrollRestore();
+        inlineReviewCurrentModelsRef.current = {
+            modified: null,
+            original: null,
+            revision: null,
+        };
+    }, [clearInlineReviewScrollRestore, inlineReviewTrackedFile]);
+
     if (!document) {
         return (
             <div className="flex h-full items-center justify-center px-6 text-center">
@@ -3442,20 +3649,22 @@ function FileTabView({
                     >
                         <DiffEditorComponent
                             beforeMount={handleEditorBeforeMount}
-                            keepCurrentModifiedModel
-                            keepCurrentOriginalModel
                             language={monacoLanguageId}
-                            modified={inlineReviewTrackedFile.newText ?? ""}
-                            modifiedModelPath={buildWorkspaceEditorModelPath(
-                                document.absolutePath,
-                                tab.id,
-                                "review-modified",
-                            )}
-                            onMount={(editor) => {
+                            modified=""
+                            modifiedModelPath={
+                                inlineReviewShellModelPaths?.modified ?? undefined
+                            }
+                            onMount={(editor, monaco) => {
                                 diffEditorRef.current = editor;
-                                const mountedModels = editor.getModel();
+                                inlineReviewMonacoRef.current = monaco;
+                                const originalEditor =
+                                    editor.getOriginalEditor();
                                 const modifiedEditor =
                                     editor.getModifiedEditor();
+                                const syncInlineReviewScrollState = () => {
+                                    inlineReviewScrollStateRef.current =
+                                        captureDiffEditorScrollState(editor);
+                                };
                                 const cleanupAttachShortcut =
                                     bindAttachSelectionShortcut({
                                         documentLanguageId: document.languageId,
@@ -3484,17 +3693,34 @@ function FileTabView({
                                         .onFindReplaceStateChange?.(
                                             syncFindWidgetVisibility,
                                         ) ?? null;
+                                const modifiedScrollListener =
+                                    modifiedEditor.onDidScrollChange(
+                                        syncInlineReviewScrollState,
+                                    );
+                                const originalScrollListener =
+                                    originalEditor.onDidScrollChange(
+                                        syncInlineReviewScrollState,
+                                    );
 
+                                syncInlineReviewScrollState();
                                 syncFindWidgetVisibility();
+                                applyInlineReviewModels(inlineReviewTrackedFile);
 
                                 editor.onDidDispose(() => {
-                                    mountedModels?.original?.dispose();
-                                    mountedModels?.modified?.dispose();
                                     cleanupAttachShortcut?.();
                                     cleanupFindWidgetEscape?.();
                                     findStateListener?.dispose();
+                                    modifiedScrollListener.dispose();
+                                    originalScrollListener.dispose();
+                                    clearInlineReviewScrollRestore();
                                     diffEditorRef.current = null;
+                                    inlineReviewMonacoRef.current = null;
                                     inlineReviewDecorationsRef.current = null;
+                                    inlineReviewCurrentModelsRef.current = {
+                                        modified: null,
+                                        original: null,
+                                        revision: null,
+                                    };
                                     setIsInlineReviewFindWidgetVisible(false);
                                 });
                                 setDiffEditorMountVersion(
@@ -3502,12 +3728,10 @@ function FileTabView({
                                 );
                             }}
                             options={inlineReviewDiffEditorOptions}
-                            original={inlineReviewTrackedFile.oldText ?? ""}
-                            originalModelPath={buildWorkspaceEditorModelPath(
-                                document.absolutePath,
-                                tab.id,
-                                "review-original",
-                            )}
+                            original=""
+                            originalModelPath={
+                                inlineReviewShellModelPaths?.original ?? undefined
+                            }
                             theme={editorTheme}
                         />
                         {inlineReviewHunkActionsEnabled &&

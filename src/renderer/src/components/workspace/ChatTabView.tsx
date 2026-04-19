@@ -3258,6 +3258,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
         <ChatTimelineRowView
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
+            key={row.id}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}

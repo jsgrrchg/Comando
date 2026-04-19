@@ -99,9 +99,7 @@ export class ProjectService {
         }
 
         return {
-            activatedProjectId:
-                result.touchedProjectIds[result.touchedProjectIds.length - 1] ??
-                null,
+            projectIdsToOpen: [...result.touchedProjectIds],
             projects: [...result.projects],
         };
     }

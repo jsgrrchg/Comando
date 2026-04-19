@@ -76,6 +76,7 @@ import {
     createWorkspaceQuickFile,
 } from "./components/workspace/quick-create";
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
+import { closeWorkspaceTabsWithConfirmation } from "./components/workspace/workspaceCloseGuard";
 import { WindowsTopBar } from "./components/WindowsTopBar";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 
@@ -174,6 +175,26 @@ export function App() {
         (state) => state.closeTabsForProjectPath,
     );
     const closeWorkspaceTab = useWorkspaceStore((state) => state.closeTab);
+    const requestCloseWorkspaceTab = useCallback(
+        (tabId: string) =>
+            closeWorkspaceTabsWithConfirmation([tabId], () =>
+                closeWorkspaceTab(tabId),
+            ),
+        [closeWorkspaceTab],
+    );
+    const requestCloseActiveWorkspaceTab = useEffectEvent(() => {
+        const workspaceState = useWorkspaceStore.getState();
+        const activePane = findPaneById(
+            workspaceState.rootNode,
+            workspaceState.activePaneId,
+        );
+        const activeTabId = activePane?.activeTabId ?? null;
+        if (!activeTabId) {
+            return;
+        }
+
+        void requestCloseWorkspaceTab(activeTabId);
+    });
     const lastFocusedRuntimeId = useWorkspaceStore(
         (state) => state.lastFocusedRuntimeId,
     );
@@ -495,22 +516,13 @@ export function App() {
         }
 
         const unsubscribe = comandoApi.onWorkspaceCloseActiveTab(() => {
-            const activePane = findPaneById(
-                useWorkspaceStore.getState().rootNode,
-                useWorkspaceStore.getState().activePaneId,
-            );
-            const activeTabId = activePane?.activeTabId ?? null;
-            if (!activeTabId) {
-                return;
-            }
-
-            void closeWorkspaceTab(activeTabId);
+            requestCloseActiveWorkspaceTab();
         });
 
         return () => {
             unsubscribe();
         };
-    }, [closeWorkspaceTab]);
+    }, []);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -1802,6 +1814,34 @@ export function App() {
             window.removeEventListener("keydown", handleKeyDown, true);
         };
     }, []);
+
+    useEffect(() => {
+        if (isMac) {
+            return;
+        }
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented) {
+                return;
+            }
+
+            if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+                return;
+            }
+
+            if (event.shiftKey || event.key.toLowerCase() !== "w") {
+                return;
+            }
+
+            event.preventDefault();
+            requestCloseActiveWorkspaceTab();
+        };
+
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown, true);
+        };
+    }, [isMac]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
