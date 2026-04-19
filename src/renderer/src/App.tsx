@@ -27,6 +27,10 @@ import {
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
 import {
+    reconcileFileTreeSelection,
+    resolveActiveFileTreePath,
+} from "./app/projects/file-tree-selection";
+import {
     searchProjectQuickOpenEntries,
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
@@ -816,10 +820,15 @@ export function App() {
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
     void closeTabsForProjectPath;
     void renameTabsForProjectPath;
-    const activeFilePath =
-        activeWorkspaceTab?.kind === "file"
-            ? activeWorkspaceTab.relativePath
-            : null;
+    const activeFilePath = useMemo(
+        () =>
+            resolveActiveFileTreePath({
+                activeProjectId,
+                activeWorkspaceTab,
+                activeWorktreeId,
+            }),
+        [activeProjectId, activeWorkspaceTab, activeWorktreeId],
+    );
     const activeGitError = gitErrors[activeGitContextKey] ?? null;
     const isMac = bootstrap?.platform === "darwin";
     const isWindows = bootstrap?.platform === "win32";
@@ -1447,9 +1456,22 @@ export function App() {
         () => new Set(visibleSidebarNodePaths),
         [visibleSidebarNodePaths],
     );
+    const effectiveFileTreeSelection = useMemo(
+        () =>
+            reconcileFileTreeSelection({
+                activeFileTreePath: activeFilePath,
+                anchorPath: fileTreeSelectionAnchorPath,
+                selectedPaths: fileTreeSelectedPaths,
+            }),
+        [activeFilePath, fileTreeSelectionAnchorPath, fileTreeSelectedPaths],
+    );
+    const effectiveFileTreeSelectedPaths =
+        effectiveFileTreeSelection.selectedPaths;
+    const effectiveFileTreeSelectionAnchorPath =
+        effectiveFileTreeSelection.anchorPath;
     const selectedFileTreePathSet = useMemo(
-        () => new Set(fileTreeSelectedPaths),
-        [fileTreeSelectedPaths],
+        () => new Set(effectiveFileTreeSelectedPaths),
+        [effectiveFileTreeSelectedPaths],
     );
     const visibleSidebarNodesByPath = useMemo(
         () => new Map(visibleSidebarNodes.map((node) => [node.path, node])),
@@ -1478,7 +1500,8 @@ export function App() {
             const isToggleSelection = event.metaKey || event.ctrlKey;
 
             if (isRangeSelection) {
-                const anchorPath = fileTreeSelectionAnchorPath ?? node.path;
+                const anchorPath =
+                    effectiveFileTreeSelectionAnchorPath ?? node.path;
                 setFileTreeSelectedPaths(
                     selectGitTreeRange(
                         visibleSidebarNodePaths,
@@ -1510,7 +1533,7 @@ export function App() {
         [
             activeProjectId,
             activeWorktreeId,
-            fileTreeSelectionAnchorPath,
+            effectiveFileTreeSelectionAnchorPath,
             openFileTab,
             visibleSidebarNodePaths,
         ],
@@ -1524,7 +1547,7 @@ export function App() {
 
             const dragPaths = resolveGitTreeDragPaths(
                 node.path,
-                fileTreeSelectedPaths,
+                effectiveFileTreeSelectedPaths,
                 visibleSidebarNodePaths,
             );
             const dragNodes = dragPaths
@@ -1570,7 +1593,7 @@ export function App() {
             );
         },
         [
-            fileTreeSelectedPaths,
+            effectiveFileTreeSelectedPaths,
             visibleSidebarNodePaths,
             visibleSidebarNodesByPath,
         ],
