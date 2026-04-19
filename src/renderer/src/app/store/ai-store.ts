@@ -715,7 +715,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     [tab.sessionId]: {
                         ...(state.sessions[tab.sessionId] ??
                             createSessionState()),
-                        hydrated: true,
+                        // Keep `hydrated: false` so a subsequent ensureSession
+                        // call (tab re-focus, window restore) can retry instead
+                        // of landing on the early-return that treats hydrated
+                        // as "done forever".
+                        hydrated: false,
                         isHydrating: false,
                         localError:
                             error instanceof Error

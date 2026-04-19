@@ -2073,8 +2073,13 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
         await getComandoApi().saveWorkspaceSnapshot(
             workspaceStateToSnapshot(state),
         );
-    } catch {
-        return;
+    } catch (error) {
+        // Workspace persistence failure silently loses layout/tabs on restart;
+        // surface it at error level so diagnostics don't start from scratch.
+        console.error(
+            "[workspace-store] saveWorkspaceSnapshot failed",
+            error,
+        );
     }
 }
 

@@ -1272,6 +1272,7 @@ export const ChatTabView = memo(function ChatTabView({
                             limit: 12,
                             projectId,
                             query: searchQuery,
+                            worktreeId: tab.worktreeId ?? null,
                         })
                         .then((entries) => {
                             if (projectSearchAbortRef.current === controller) {
@@ -1295,7 +1296,7 @@ export const ChatTabView = memo(function ChatTabView({
                 }, 120);
             });
         },
-        [tab.projectId],
+        [tab.projectId, tab.worktreeId],
     );
 
     const handleChatFocus = useCallback(() => {

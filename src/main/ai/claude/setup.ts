@@ -304,6 +304,19 @@ export function markClaudeAuthInvalidated(
     };
 }
 
+export function isClaudeAuthenticationError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return (
+        normalized.includes("auth_required") ||
+        normalized.includes("authentication required") ||
+        normalized.includes("login required") ||
+        normalized.includes("please run `claude login`") ||
+        normalized.includes("invalid api key") ||
+        normalized.includes("401") ||
+        normalized.includes("unauthorized")
+    );
+}
+
 export function launchClaudeLogin(
     resolved: ResolvedClaudeRuntimeCommand,
     methodId: string,

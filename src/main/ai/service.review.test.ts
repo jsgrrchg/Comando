@@ -680,10 +680,6 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         return {
             availableCommands: [],
             configOptions: [],
-            createdAt: "2026-04-20T12:00:00.000Z",
-            draft: "",
-            id: "session-1",
-            kind: "chat",
             lastError: null,
             messages: [],
             modeId: null,

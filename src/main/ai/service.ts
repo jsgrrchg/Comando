@@ -101,6 +101,7 @@ import {
 import {
     applyClaudeAuthEnv,
     getClaudeRuntimeStatus,
+    isClaudeAuthenticationError,
     launchClaudeLogin,
     loadClaudeSecretBundle,
     markClaudeAuthInvalidated,
@@ -110,6 +111,7 @@ import {
 import {
     applyGeminiAuthEnv,
     getGeminiRuntimeStatus,
+    isGeminiAuthenticationError,
     launchGeminiLogin,
     markGeminiAuthInvalidated,
     resolveGeminiRuntime,
@@ -2666,6 +2668,28 @@ export class AiService {
                     nextSettings,
                     loadCodexSecretBundle(this.#secretStore),
                 ),
+            );
+            return;
+        }
+
+        if (runtimeId === "claude" && isClaudeAuthenticationError(message)) {
+            const nextSettings = markClaudeAuthInvalidated(
+                this.#settingsService.loadClaudeRuntimeSettings(),
+            );
+            this.#settingsService.saveClaudeRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                getClaudeRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            return;
+        }
+
+        if (runtimeId === "gemini" && isGeminiAuthenticationError(message)) {
+            const nextSettings = markGeminiAuthInvalidated(
+                this.#settingsService.loadGeminiRuntimeSettings(),
+            );
+            this.#settingsService.saveGeminiRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                getGeminiRuntimeStatus(nextSettings, this.#secretStore),
             );
             return;
         }

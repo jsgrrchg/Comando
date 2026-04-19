@@ -243,6 +243,20 @@ export function markGeminiAuthInvalidated(
     };
 }
 
+export function isGeminiAuthenticationError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return (
+        normalized.includes("auth_required") ||
+        normalized.includes("authentication required") ||
+        normalized.includes("login required") ||
+        normalized.includes("invalid api key") ||
+        normalized.includes("401") ||
+        normalized.includes("unauthorized") ||
+        normalized.includes("re-authenticate") ||
+        normalized.includes("please run `gemini auth`")
+    );
+}
+
 export function launchGeminiLogin(
     settings: GeminiRuntimeSettings,
     cwd?: string | null,
