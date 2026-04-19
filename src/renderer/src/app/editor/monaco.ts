@@ -12,6 +12,10 @@ import {
     ensureMonacoTextMateProvider,
     isTextMateLanguageSupported,
 } from "./monacoTextmate";
+import {
+    shellLanguageConfiguration,
+    shellMonarchDefinition,
+} from "./monacoShell";
 
 export type ComandoMonacoTheme = "comando-light" | "comando-dark";
 
@@ -541,9 +545,7 @@ function configureMarkdownFenceLanguages() {
     );
     registerLanguageIds(
         ["shell", "sh", "bash", "zsh", "fish", "shellscript"],
-        basicLanguage(
-            () => import("monaco-editor/esm/vs/basic-languages/shell/shell.js"),
-        ),
+        monarchLanguage(shellMonarchDefinition, shellLanguageConfiguration),
     );
     registerLanguageIds(
         ["sql"],
