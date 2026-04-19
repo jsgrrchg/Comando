@@ -22,6 +22,11 @@ import type {
     ProjectTreeNode,
     SecretValuePatch,
 } from "@shared/ipc";
+import {
+    getImageAttachmentLimitMessage,
+    MAX_IMAGE_ATTACHMENTS,
+    MAX_IMAGE_ATTACHMENT_BYTES,
+} from "@shared/ai-attachments";
 
 import { useShallow } from "zustand/react/shallow";
 
@@ -112,8 +117,6 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 
 const NEAR_BOTTOM_THRESHOLD = 80;
 const SCROLL_PERSIST_DELAY_MS = 80;
-const MAX_IMAGE_ATTACHMENTS = 4;
-const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
@@ -936,9 +939,7 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
             if (draftAttachments.length >= MAX_IMAGE_ATTACHMENTS) {
-                setComposerError(
-                    `You can attach up to ${MAX_IMAGE_ATTACHMENTS} images per message.`,
-                );
+                setComposerError(getImageAttachmentLimitMessage());
                 return;
             }
             const availableSlots =

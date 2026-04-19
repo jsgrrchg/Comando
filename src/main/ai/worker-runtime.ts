@@ -22,6 +22,10 @@ import type {
     AiTrackedFile,
 } from "@shared/ipc";
 import {
+    getImageAttachmentLimitMessage,
+    MAX_IMAGE_ATTACHMENTS,
+} from "@shared/ai-attachments";
+import {
     computeDiffHunks,
     replaceTrackedFile,
     resolveTrackedFileHunks,
@@ -254,6 +258,9 @@ export class AiWorkerRuntime {
 
         const now = new Date().toISOString();
         const promptText = params.input.prompt.trim();
+        if (params.input.attachments.length > MAX_IMAGE_ATTACHMENTS) {
+            throw new Error(getImageAttachmentLimitMessage());
+        }
         const displayContent = serializeComposerPartsForDisplay(
             params.input.composerParts,
             promptText,

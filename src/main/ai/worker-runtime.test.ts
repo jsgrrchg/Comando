@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { MAX_IMAGE_ATTACHMENTS } from "@shared/ai-attachments";
 import type { AiRuntimeStatus, AiSessionSnapshot, AiTrackedFile } from "@shared/ipc";
 import { computeDiffHunks } from "@shared/ai-tracked-file";
 
@@ -287,6 +288,45 @@ describe("AiWorkerRuntime prepareSession", () => {
                 (event) => event.payload.update.kind === "patch",
             ),
         ).toBe(true);
+    });
+
+    it("rejects prompts that exceed the image attachment limit", async () => {
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: process.cwd(),
+            projectRoot: process.cwd(),
+            title: "Attachment limit test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        await expect(
+            runtime.dispatchMethod("ai.sendPrompt", {
+                input: {
+                    attachments: Array.from(
+                        { length: MAX_IMAGE_ATTACHMENTS + 1 },
+                        (_, index) => ({
+                            dataBase64: "ZmFrZQ==",
+                            id: `attachment-${index}`,
+                            mimeType: "image/png",
+                            name: `attachment-${index}.png`,
+                            sizeBytes: 4,
+                        }),
+                    ),
+                    projectId: null,
+                    prompt: "hello",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Attachment limit test",
+                    worktreeId: null,
+                },
+                launch,
+            }),
+        ).rejects.toThrow("You can attach up to 12 images per message.");
+        expect(promptMock).not.toHaveBeenCalled();
     });
 
     it("reads unsaved buffer content before hitting disk", async () => {
