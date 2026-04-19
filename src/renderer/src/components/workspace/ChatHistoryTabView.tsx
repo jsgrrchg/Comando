@@ -361,7 +361,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 
         try {
             const nextSessions = await getComandoApi().listAiSessionHistory({
-                limit: 250,
+                limit: null,
                 projectId: tab.projectId,
                 worktreeId: tab.worktreeId ?? null,
             });

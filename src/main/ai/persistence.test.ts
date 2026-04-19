@@ -309,6 +309,32 @@ describe("AiPersistence", () => {
         ]);
     });
 
+    it("returns the full scoped history when the limit is null", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        for (let index = 0; index < 105; index += 1) {
+            seedChatSession(connection, {
+                projectId: "project-unbounded",
+                runtimeId: "codex",
+                sessionId: `session-${index}`,
+                transcript: createTranscriptWithMessages([
+                    `Message ${index}`,
+                ]),
+                updatedAt: `2026-04-16T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
+                worktreeId: "worktree-unbounded",
+            });
+        }
+
+        const history = persistence.listSessionHistory({
+            limit: null,
+            projectId: "project-unbounded",
+            worktreeId: "worktree-unbounded",
+        });
+
+        expect(history).toHaveLength(105);
+    });
+
     it("loads a transcript page from persisted snapshot messages", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);

@@ -1600,12 +1600,16 @@ function normalizeRuntimeId(
         : "codex";
 }
 
-function normalizeHistoryLimit(value: number | undefined): number {
+function normalizeHistoryLimit(value: number | null | undefined): number | null {
+    if (value === null) {
+        return null;
+    }
+
     if (typeof value !== "number" || !Number.isFinite(value)) {
         return 100;
     }
 
-    return Math.max(1, Math.min(200, Math.trunc(value)));
+    return Math.max(1, Math.min(250, Math.trunc(value)));
 }
 
 function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
@@ -1615,6 +1619,7 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
     const whereClauses: string[] = [];
     const params: Array<number | string> = [];
     const worktreeId = input.worktreeId ?? null;
+    const limit = normalizeHistoryLimit(input.limit);
 
     if (input.projectId === null) {
         whereClauses.push("chat_sessions.project_id IS NULL");
@@ -1630,7 +1635,9 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
         params.push(worktreeId);
     }
 
-    params.push(normalizeHistoryLimit(input.limit));
+    if (limit !== null) {
+        params.push(limit);
+    }
 
     return {
         params,
@@ -1651,7 +1658,7 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
                 ON chat_transcripts.session_id = chat_sessions.id
             WHERE ${whereClauses.join(" AND ")}
             ORDER BY chat_sessions.updated_at DESC
-            LIMIT ?
+            ${limit === null ? "" : "LIMIT ?"}
         `,
     };
 }

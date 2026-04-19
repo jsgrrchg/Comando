@@ -743,6 +743,11 @@ export interface ProjectSummary {
     readonly lastOpenedAt: string | null;
 }
 
+export interface ProjectAddResult {
+    readonly activatedProjectId: string | null;
+    readonly projects: readonly ProjectSummary[];
+}
+
 export interface ProjectTreeNode {
     readonly id: string;
     readonly name: string;
@@ -1373,7 +1378,7 @@ export interface AiSessionPinnedMutationInput {
 }
 
 export interface ListAiSessionHistoryInput {
-    readonly limit?: number;
+    readonly limit?: number | null;
     readonly projectId: string | null;
     readonly worktreeId?: string | null;
 }
@@ -1514,8 +1519,8 @@ export interface ComandoApi {
     pullGitRepository: (input: GitPullInput) => Promise<GitRepositorySnapshot>;
     pushGitRepository: (input: GitPushInput) => Promise<GitRepositorySnapshot>;
     listProjects: () => Promise<ProjectSummary[]>;
-    openProjects: () => Promise<ProjectSummary[]>;
-    addProjectPaths: (paths: string[]) => Promise<ProjectSummary[]>;
+    openProjects: () => Promise<ProjectAddResult>;
+    addProjectPaths: (paths: string[]) => Promise<ProjectAddResult>;
     removeProject: (projectId: string) => Promise<void>;
     touchProject: (projectId: string) => Promise<void>;
     onProjectWindowRequested: (

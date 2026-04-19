@@ -26,7 +26,7 @@ export interface SidebarAgentsHistoryUnknownSessionSeed {
     readonly worktreeId?: string | null;
 }
 
-export const SIDEBAR_AGENTS_HISTORY_LIMIT = 200;
+export const SIDEBAR_AGENTS_HISTORY_LIMIT = 250;
 
 export function applySessionUpdateToSidebarHistory({
     limit,
