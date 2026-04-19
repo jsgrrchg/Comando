@@ -19,6 +19,7 @@ export interface SidebarAgentsHistoryUpdateResult {
 
 export interface SidebarAgentsHistoryUnknownSessionSeed {
     readonly messages?: readonly AiMessage[] | null;
+    readonly pinnedAt?: string | null;
     readonly projectId: string | null;
     readonly title: string;
     readonly updatedAt?: string | null;
@@ -183,6 +184,7 @@ function createHistorySummaryFromSnapshot(
     return {
         createdAt: existing?.createdAt ?? snapshot.updatedAt,
         messageCount: snapshot.messages.length,
+        pinnedAt: existing?.pinnedAt ?? null,
         preview: deriveSessionPreview(snapshot.messages),
         projectId: snapshot.projectId,
         runtimeId: snapshot.runtimeId,
@@ -206,6 +208,7 @@ function applyPatchToHistorySummary(
             nextMessages?.length !== undefined
                 ? nextMessages.length
                 : existing.messageCount,
+        pinnedAt: existing.pinnedAt ?? null,
         preview:
             nextMessages !== null
                 ? deriveSessionPreview(nextMessages)
@@ -268,6 +271,7 @@ function createHistorySummaryFromUnknownPatch(
     return {
         createdAt,
         messageCount: nextMessages.length,
+        pinnedAt: seed?.pinnedAt ?? null,
         preview: deriveSessionPreview(nextMessages),
         projectId,
         runtimeId: patch.runtimeId,
@@ -361,6 +365,7 @@ function areHistorySummariesEqual(
     return (
         left.createdAt === right.createdAt &&
         left.messageCount === right.messageCount &&
+        (left.pinnedAt ?? null) === (right.pinnedAt ?? null) &&
         left.preview === right.preview &&
         left.projectId === right.projectId &&
         left.runtimeId === right.runtimeId &&

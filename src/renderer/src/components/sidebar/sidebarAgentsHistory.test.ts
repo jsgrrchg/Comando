@@ -82,6 +82,7 @@ describe("applySessionUpdateToSidebarHistory", () => {
     it("applies a patch locally for a known session without forcing reload", () => {
         const sessions = [
             createSummary({
+                pinnedAt: "2026-04-19T09:30:00.000Z",
                 sessionId: "session-1",
                 title: "Old Title",
                 updatedAt: "2026-04-19T10:00:00.000Z",
@@ -121,6 +122,7 @@ describe("applySessionUpdateToSidebarHistory", () => {
         expect(result.sessions).toHaveLength(2);
         expect(result.sessions[0]).toMatchObject({
             messageCount: 1,
+            pinnedAt: "2026-04-19T09:30:00.000Z",
             preview: "Updated preview from latest assistant turn.",
             sessionId: "session-1",
             title: "New Title",
@@ -167,6 +169,43 @@ describe("applySessionUpdateToSidebarHistory", () => {
             createdAt: "2026-04-19T12:00:00.000Z",
             preview: "Fresh snapshot preview.",
             sessionId: "session-3",
+        });
+    });
+
+    it("preserves pinned metadata when a snapshot refreshes a known session", () => {
+        const sessions = [
+            createSummary({
+                pinnedAt: "2026-04-19T09:45:00.000Z",
+                sessionId: "session-1",
+            }),
+        ] as const;
+        const update: AiSessionUpdate = {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                messages: [
+                    createMessage({
+                        content: "Snapshot update should not clear the pin.",
+                        id: "message-4",
+                    }),
+                ],
+                sessionId: "session-1",
+                updatedAt: "2026-04-19T12:30:00.000Z",
+            }),
+        };
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions,
+            update,
+        });
+
+        expect(result.needsReload).toBe(false);
+        expect(result.sessions[0]).toMatchObject({
+            pinnedAt: "2026-04-19T09:45:00.000Z",
+            preview: "Snapshot update should not clear the pin.",
+            sessionId: "session-1",
+            updatedAt: "2026-04-19T12:30:00.000Z",
         });
     });
 

@@ -22,6 +22,7 @@ export const PERFORMANCE_BASELINE_THRESHOLDS = {
         "db.ai.loadSessionTranscriptPage": 20,
         "db.ai.loadSessionSnapshot": 20,
         "db.ai.saveSessionSnapshot": 25,
+        "db.ai.setSessionPinned": 20,
         "db.projects.listProjects": 20,
         "db.workspace.loadSnapshot": 20,
         "db.workspace.saveSnapshot": 25,

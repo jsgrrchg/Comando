@@ -238,6 +238,18 @@ function dispatchMethod(method: string, params: unknown): unknown {
         case "ai.deleteSession":
             aiPersistence.deleteSession(params as string);
             return null;
+        case "ai.setSessionPinned": {
+            const input = params as {
+                readonly pinned: Parameters<
+                    AiPersistence["setSessionPinned"]
+                >[1];
+                readonly sessionId: Parameters<
+                    AiPersistence["setSessionPinned"]
+                >[0];
+            };
+            aiPersistence.setSessionPinned(input.sessionId, input.pinned);
+            return null;
+        }
         case "ai.saveRuntimeSelectionPreferences": {
             const input = params as {
                 readonly patch: Parameters<

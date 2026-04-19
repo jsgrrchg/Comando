@@ -340,4 +340,14 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ON chat_sessions(runtime, updated_at DESC);
     `,
     },
+    {
+        id: "0010-ai-pinned-sessions",
+        sql: `
+      ALTER TABLE chat_sessions
+        ADD COLUMN pinned_at TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_worktree_pinned_at
+        ON chat_sessions(project_id, worktree_id, pinned_at DESC, updated_at DESC);
+    `,
+    },
 ];

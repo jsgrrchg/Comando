@@ -333,6 +333,52 @@ export function SidebarAgentsPanel({
         [closeTab, sessions],
     );
 
+    const handleTogglePinned = useCallback(
+        async (session: AiHistorySessionSummary) => {
+            const api = getComandoApi();
+            if (!api) {
+                return;
+            }
+
+            const previousPinnedAt = session.pinnedAt ?? null;
+            const nextPinned = previousPinnedAt === null;
+            const optimisticPinnedAt = nextPinned
+                ? new Date().toISOString()
+                : null;
+
+            setSessions((current) =>
+                current.map((candidate) =>
+                    candidate.sessionId === session.sessionId
+                        ? { ...candidate, pinnedAt: optimisticPinnedAt }
+                        : candidate,
+                ),
+            );
+
+            try {
+                await api.setAiSessionPinned({
+                    pinned: nextPinned,
+                    sessionId: session.sessionId,
+                });
+            } catch (err) {
+                setSessions((current) =>
+                    current.map((candidate) =>
+                        candidate.sessionId === session.sessionId
+                            ? { ...candidate, pinnedAt: previousPinnedAt }
+                            : candidate,
+                    ),
+                );
+                setError(
+                    err instanceof Error
+                        ? err.message
+                        : nextPinned
+                          ? "Could not pin this thread."
+                          : "Could not unpin this thread.",
+                );
+            }
+        },
+        [],
+    );
+
     const contextMenuEntries = useMemo<readonly ContextMenuEntry[]>(() => {
         if (!contextMenu) {
             return [];
@@ -348,6 +394,12 @@ export function SidebarAgentsPanel({
 
         return [
             {
+                label: isSessionPinned(session)
+                    ? "Unpin from Sidebar"
+                    : "Pin to Sidebar",
+                action: () => void handleTogglePinned(session),
+            },
+            {
                 label: "Rename",
                 action: () => startRename(session),
             },
@@ -357,7 +409,7 @@ export function SidebarAgentsPanel({
                 action: () => void handleDelete(session),
             },
         ];
-    }, [contextMenu, handleDelete, sessions, startRename]);
+    }, [contextMenu, handleDelete, handleTogglePinned, sessions, startRename]);
 
     const filteredSessions = useMemo(() => {
         if (!hasQuery) {
@@ -373,6 +425,14 @@ export function SidebarAgentsPanel({
         });
     }, [hasQuery, normalizedFilter, sessions]);
 
+    const pinnedSessions = useMemo(
+        () =>
+            [...filteredSessions.filter((session) => isSessionPinned(session))].sort(
+                comparePinnedSessions,
+            ),
+        [filteredSessions],
+    );
+
     const openSessionIds = useMemo(() => {
         const ids = new Set<string>();
         for (const tab of Object.values(tabsById)) {
@@ -384,8 +444,12 @@ export function SidebarAgentsPanel({
     }, [tabsById]);
 
     const aiSessions = useAiStore((state) => state.sessions);
+    const unpinnedSessions = useMemo(
+        () => filteredSessions.filter((session) => !isSessionPinned(session)),
+        [filteredSessions],
+    );
     const openSessions = useMemo(() => {
-        const list = filteredSessions.filter((session) =>
+        const list = unpinnedSessions.filter((session) =>
             openSessionIds.has(session.sessionId),
         );
         return [...list].sort((a, b) => {
@@ -396,16 +460,17 @@ export function SidebarAgentsPanel({
             }
             return aWorking ? -1 : 1;
         });
-    }, [aiSessions, filteredSessions, openSessionIds]);
+    }, [aiSessions, openSessionIds, unpinnedSessions]);
     const otherSessions = useMemo(
         () =>
-            filteredSessions.filter(
+            unpinnedSessions.filter(
                 (session) => !openSessionIds.has(session.sessionId),
             ),
-        [filteredSessions, openSessionIds],
+        [openSessionIds, unpinnedSessions],
     );
-    const showSectionHeaders =
-        openSessions.length > 0 && otherSessions.length > 0;
+    const showUnpinnedSectionHeaders =
+        pinnedSessions.length > 0 ||
+        (openSessions.length > 0 && otherSessions.length > 0);
 
     const statusLine = isLoading
         ? "Loading..."
@@ -458,6 +523,21 @@ export function SidebarAgentsPanel({
                     />
                 ) : null}
 
+                {pinnedSessions.length > 0 ? (
+                    <SidebarAgentsSection
+                        cancelRename={cancelRename}
+                        commitRename={() => void commitRename()}
+                        onContextMenu={handleContextMenu}
+                        onOpen={handleOpenSession}
+                        onRenameDraftChange={setRenameDraft}
+                        onTogglePinned={handleTogglePinned}
+                        renameDraft={renameDraft}
+                        renamingSessionId={renamingSessionId}
+                        sessions={pinnedSessions}
+                        title="Pinned"
+                    />
+                ) : null}
+
                 {openSessions.length > 0 ? (
                     <SidebarAgentsSection
                         cancelRename={cancelRename}
@@ -465,10 +545,11 @@ export function SidebarAgentsPanel({
                         onContextMenu={handleContextMenu}
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
+                        onTogglePinned={handleTogglePinned}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         sessions={openSessions}
-                        title={showSectionHeaders ? "Open" : null}
+                        title={showUnpinnedSectionHeaders ? "Open" : null}
                     />
                 ) : null}
 
@@ -479,10 +560,11 @@ export function SidebarAgentsPanel({
                         onContextMenu={handleContextMenu}
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
+                        onTogglePinned={handleTogglePinned}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         sessions={otherSessions}
-                        title={showSectionHeaders ? "All" : null}
+                        title={showUnpinnedSectionHeaders ? "All" : null}
                     />
                 ) : null}
             </div>
@@ -505,6 +587,7 @@ function SidebarAgentsSection({
     onContextMenu,
     onOpen,
     onRenameDraftChange,
+    onTogglePinned,
     renameDraft,
     renamingSessionId,
     sessions,
@@ -518,6 +601,7 @@ function SidebarAgentsSection({
     ) => void;
     readonly onOpen: (session: AiHistorySessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
+    readonly onTogglePinned: (session: AiHistorySessionSummary) => void;
     readonly renameDraft: string;
     readonly renamingSessionId: string | null;
     readonly sessions: readonly AiHistorySessionSummary[];
@@ -543,6 +627,7 @@ function SidebarAgentsSection({
                             onContextMenu={onContextMenu}
                             onOpen={onOpen}
                             onRenameDraftChange={onRenameDraftChange}
+                            onTogglePinned={onTogglePinned}
                             renameDraft={renameDraft}
                             session={session}
                         />
@@ -560,6 +645,7 @@ function SidebarAgentsItem({
     onContextMenu,
     onOpen,
     onRenameDraftChange,
+    onTogglePinned,
     renameDraft,
     session,
 }: {
@@ -572,11 +658,13 @@ function SidebarAgentsItem({
     ) => void;
     readonly onOpen: (session: AiHistorySessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
+    readonly onTogglePinned: (session: AiHistorySessionSummary) => void;
     readonly renameDraft: string;
     readonly session: AiHistorySessionSummary;
 }) {
     const preview = getHistoryPreviewText(session);
     const title = truncateChatTitle(session.title, SIDEBAR_AGENTS_TITLE_MAX_CHARS);
+    const isPinned = isSessionPinned(session);
     const activity = useAgentActivityIndicator(session.sessionId);
     const timestampLabel = activity
         ? activity.tone === "danger"
@@ -636,6 +724,37 @@ function SidebarAgentsItem({
                     <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text-primary">
                         {title}
                     </span>
+                )}
+                {isRenaming ? null : (
+                    <button
+                        aria-label={
+                            isPinned
+                                ? "Unpin thread from sidebar"
+                                : "Pin thread to sidebar"
+                        }
+                        aria-pressed={isPinned}
+                        className={[
+                            "flex h-5 w-5 shrink-0 items-center justify-center rounded border text-text-secondary transition-colors",
+                            isPinned
+                                ? "border-border bg-bg-elevated text-text-primary"
+                                : "border-transparent hover:border-border hover:bg-bg-elevated hover:text-text-primary",
+                        ].join(" ")}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            void onTogglePinned(session);
+                        }}
+                        onKeyDown={(event) => {
+                            event.stopPropagation();
+                        }}
+                        title={
+                            isPinned
+                                ? "Unpin from sidebar"
+                                : "Pin to sidebar"
+                        }
+                        type="button"
+                    >
+                        <PinIcon active={isPinned} />
+                    </button>
                 )}
                 {isRenaming ? null : (
                     <span
@@ -718,6 +837,25 @@ function SidebarAgentsPlaceholder({ body }: { readonly body: string }) {
     );
 }
 
+function PinIcon({ active }: { readonly active: boolean }) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill={active ? "currentColor" : "none"}
+            height="11"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 24 24"
+            width="11"
+        >
+            <path d="M9 3h6l-1 6 4 4v2H6v-2l4-4-1-6Z" />
+            <path d="M12 15v6" />
+        </svg>
+    );
+}
+
 function isSessionWorking(
     entry: ReturnType<typeof useAiStore.getState>["sessions"][string] | undefined,
 ): boolean {
@@ -745,11 +883,30 @@ function buildUnknownSessionSeed(
 
     return {
         messages: entry.snapshot?.messages ?? null,
+        pinnedAt: null,
         projectId: entry.snapshot?.projectId ?? entry.meta?.projectId ?? null,
         title,
         updatedAt: entry.snapshot?.updatedAt ?? null,
         worktreeId: entry.snapshot?.worktreeId ?? entry.meta?.worktreeId ?? null,
     };
+}
+
+function isSessionPinned(session: AiHistorySessionSummary): boolean {
+    return (session.pinnedAt ?? null) !== null;
+}
+
+function comparePinnedSessions(
+    left: AiHistorySessionSummary,
+    right: AiHistorySessionSummary,
+): number {
+    const pinnedComparison = (right.pinnedAt ?? "").localeCompare(
+        left.pinnedAt ?? "",
+    );
+    if (pinnedComparison !== 0) {
+        return pinnedComparison;
+    }
+
+    return right.updatedAt.localeCompare(left.updatedAt);
 }
 
 function formatSessionCount(count: number): string {

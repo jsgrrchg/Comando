@@ -79,6 +79,7 @@ export const IPC_CHANNELS = {
     setAiSessionMode: "ai:set-session-mode",
     setAiSessionModel: "ai:set-session-model",
     setAiSessionConfigOption: "ai:set-session-config-option",
+    setAiSessionPinned: "ai:set-session-pinned",
     renameAiSession: "ai:rename-session",
     deleteAiSession: "ai:delete-session",
     cancelAiSession: "ai:cancel-session",
@@ -1366,6 +1367,11 @@ export interface AiSessionRenameMutationInput {
     readonly title: string;
 }
 
+export interface AiSessionPinnedMutationInput {
+    readonly pinned: boolean;
+    readonly sessionId: string;
+}
+
 export interface ListAiSessionHistoryInput {
     readonly limit?: number;
     readonly projectId: string | null;
@@ -1375,6 +1381,7 @@ export interface ListAiSessionHistoryInput {
 export interface AiHistorySessionSummary {
     readonly createdAt: string;
     readonly messageCount: number;
+    readonly pinnedAt?: string | null;
     readonly preview: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
@@ -1560,6 +1567,7 @@ export interface ComandoApi {
     setAiSessionConfigOption: (
         input: AiSessionConfigOptionMutationInput,
     ) => Promise<void>;
+    setAiSessionPinned: (input: AiSessionPinnedMutationInput) => Promise<void>;
     renameAiSession: (input: AiSessionRenameMutationInput) => Promise<void>;
     deleteAiSession: (sessionId: string) => Promise<void>;
     cancelAiSession: (sessionId: string) => Promise<void>;

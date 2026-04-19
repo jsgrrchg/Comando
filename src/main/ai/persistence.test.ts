@@ -388,6 +388,51 @@ describe("AiPersistence", () => {
         expect(transcriptRow).toBeUndefined();
     });
 
+    it("persists pinned sessions without affecting the history scope", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            pinnedAt: null,
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-pin",
+            transcript: createTranscriptWithMessages(["Pin me"]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        persistence.setSessionPinned("session-pin", true);
+
+        let history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(history).toEqual([
+            expect.objectContaining({
+                pinnedAt: expect.any(String),
+                sessionId: "session-pin",
+            }),
+        ]);
+
+        persistence.setSessionPinned("session-pin", false);
+
+        history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(history).toEqual([
+            expect.objectContaining({
+                pinnedAt: null,
+                sessionId: "session-pin",
+            }),
+        ]);
+    });
+
     it("keeps a renamed session visible in scoped history listings", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
@@ -600,6 +645,7 @@ function createTranscriptWithMessages(
 function seedChatSession(
     connection: ReturnType<typeof createTestConnection>,
     input: {
+        readonly pinnedAt?: string | null;
         readonly projectId?: string | null;
         readonly runtimeId: "claude" | "codex" | "gemini" | "kilo";
         readonly sessionId: string;
@@ -628,6 +674,7 @@ function seedChatSession(
                 id,
                 project_id,
                 worktree_id,
+                pinned_at,
                 title,
                 runtime,
                 status,
@@ -636,13 +683,14 @@ function seedChatSession(
                 updated_at,
                 last_opened_at
             )
-            VALUES (?, ?, ?, ?, ?, 'idle', '', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'idle', '', ?, ?, ?)
             `,
         )
         .run(
             input.sessionId,
             input.projectId ?? null,
             input.worktreeId ?? null,
+            input.pinnedAt ?? null,
             input.sessionId,
             input.runtimeId,
             input.updatedAt,

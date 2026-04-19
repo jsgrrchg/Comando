@@ -607,6 +607,18 @@ class AiPersistenceClient implements AiPersistenceGateway {
         );
     }
 
+    async setSessionPinned(sessionId: string, pinned: boolean): Promise<void> {
+        await mainProcessPerformance.measureAsync(
+            "db.ai.setSessionPinned",
+            async () => {
+                await this.#rpc.call("ai.setSessionPinned", {
+                    pinned,
+                    sessionId,
+                });
+            },
+        );
+    }
+
     loadLatestRuntimeCatalog(
         runtimeId: AiRuntimeId,
     ): PersistedRuntimeCatalogSnapshot | null {

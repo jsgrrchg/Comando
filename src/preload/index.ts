@@ -19,6 +19,7 @@ import {
     type AiSessionConfigOptionMutationInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
+    type AiSessionPinnedMutationInput,
     type AiSessionRenameMutationInput,
     type AiSessionTranscriptPage,
     type AiTrackedFileHunkMutationInput,
@@ -681,6 +682,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.setAiSessionModel, input),
     setAiSessionConfigOption: (input: AiSessionConfigOptionMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.setAiSessionConfigOption, input),
+    setAiSessionPinned: (input: AiSessionPinnedMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.setAiSessionPinned, input),
     renameAiSession: (input: AiSessionRenameMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.renameAiSession, input),
     deleteAiSession: (sessionId: string) =>

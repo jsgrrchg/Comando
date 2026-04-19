@@ -205,6 +205,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionMode);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionModel);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionConfigOption);
+    ipcMain.removeHandler(IPC_CHANNELS.setAiSessionPinned);
     ipcMain.removeHandler(IPC_CHANNELS.renameAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.deleteAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.cancelAiSession);
@@ -971,6 +972,16 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.setAiSessionConfigOption,
         (_event, input: AiSessionConfigOptionMutationInput) =>
             options.aiService.setSessionConfigOption(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setAiSessionPinned,
+        (
+            _event,
+            input: {
+                readonly pinned: boolean;
+                readonly sessionId: string;
+            },
+        ) => options.aiService.setSessionPinned(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.renameAiSession,

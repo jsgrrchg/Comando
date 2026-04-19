@@ -89,12 +89,27 @@ describe("AiService history", () => {
 
         expect(deleteSession).toHaveBeenCalledWith("session-1");
     });
+
+    it("delegates pinning mutations to persistence", async () => {
+        const setSessionPinned = vi.fn();
+        const service = createService({
+            setSessionPinned,
+        });
+
+        await service.setSessionPinned({
+            pinned: true,
+            sessionId: "session-1",
+        });
+
+        expect(setSessionPinned).toHaveBeenCalledWith("session-1", true);
+    });
 });
 
 function createService(overrides: {
     readonly deleteSession?: ReturnType<typeof vi.fn>;
     readonly listSessionHistory?: ReturnType<typeof vi.fn>;
     readonly loadSessionTranscriptPage?: ReturnType<typeof vi.fn>;
+    readonly setSessionPinned?: ReturnType<typeof vi.fn>;
 }) {
     return new AiService({
         onRuntimeStatus: vi.fn(),
@@ -115,6 +130,7 @@ function createService(overrides: {
             saveRuntimeModePreference: vi.fn(),
             saveRuntimeModelPreference: vi.fn(),
             saveSessionSnapshot: vi.fn(),
+            setSessionPinned: overrides.setSessionPinned ?? vi.fn(),
         } as never,
         projectService: {
             getProjectRootPath: vi.fn(() => process.cwd()),

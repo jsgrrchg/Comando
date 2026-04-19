@@ -20,6 +20,7 @@ import type {
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionPinnedMutationInput,
     AiSessionUpdate,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
@@ -412,6 +413,15 @@ export class AiService {
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]> {
         return await this.#persistence.listSessionHistory(input);
+    }
+
+    async setSessionPinned(
+        input: AiSessionPinnedMutationInput,
+    ): Promise<void> {
+        await this.#persistence.setSessionPinned(
+            input.sessionId,
+            input.pinned,
+        );
     }
 
     async getSessionTranscriptPage(

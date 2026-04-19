@@ -40,6 +40,7 @@ interface PersistedAiSessionRow {
 interface PersistedAiHistorySessionRow {
     readonly created_at: string;
     readonly message_count: number | null;
+    readonly pinned_at: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
     readonly session_id: string;
@@ -134,6 +135,7 @@ export interface AiPersistenceGateway {
         runtimeId: AiSessionSnapshot["runtimeId"],
         modelId: string,
     ): void;
+    setSessionPinned(sessionId: string, pinned: boolean): Awaitable<void>;
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void;
 }
 
@@ -574,6 +576,20 @@ export class AiPersistence {
                     `,
                 )
                 .run(sessionId);
+        });
+    }
+
+    setSessionPinned(sessionId: string, pinned: boolean): void {
+        mainProcessPerformance.measureSync("db.ai.setSessionPinned", () => {
+            this.#connection
+                .prepare<[string | null, string], void>(
+                    `
+                    UPDATE chat_sessions
+                    SET pinned_at = ?
+                    WHERE id = ?
+                    `,
+                )
+                .run(pinned ? new Date().toISOString() : null, sessionId);
         });
     }
 
@@ -1626,6 +1642,7 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
                 chat_sessions.title,
                 chat_sessions.runtime,
                 chat_sessions.created_at,
+                chat_sessions.pinned_at,
                 chat_sessions.updated_at,
                 chat_transcripts.transcript_json,
                 chat_transcripts.message_count
@@ -1701,6 +1718,7 @@ function createHistorySessionSummary(
     return {
         createdAt: row.created_at,
         messageCount,
+        pinnedAt: row.pinned_at,
         preview: deriveSessionPreview(messages),
         projectId: row.project_id,
         runtimeId: normalizeRuntimeId(row.runtime),
