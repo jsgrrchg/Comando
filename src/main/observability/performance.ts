@@ -29,6 +29,7 @@ export const PERFORMANCE_BASELINE_THRESHOLDS = {
         "git.getRepositorySnapshot": 120,
         "projects.buildSearchIndex": 180,
         "projects.listProjectTreeChildren": 75,
+        "workers.ai.rpc": 10_000,
         "workers.db.rpc": 80,
         "workers.git.rpc": 750,
         "workers.projects.rpc": 220,

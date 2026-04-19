@@ -91,6 +91,7 @@ import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window"
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
 import { debugBenignError } from "@main/observability/logging";
 
+import type { AiWorkerClient } from "@main/ai/client";
 import type { AiService } from "@main/ai/service";
 import {
     forgetOpenFileBuffer,
@@ -111,6 +112,7 @@ import { windowRegistry } from "@main/windows/registry";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
+    readonly aiWorker: Pick<AiWorkerClient, "notifyFileBuffer"> | null;
     readonly gitService: GitGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
     readonly openProjectWindow: (input: OpenProjectWindowInput) => void;
@@ -831,6 +833,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             } else {
                 recordOpenFileBuffer(input.absolutePath, input.content);
             }
+
+            const notifyPromise = options.aiWorker?.notifyFileBuffer(input);
+            void notifyPromise?.catch((error) => {
+                debugBenignError("ai.worker.notifyFileBuffer", error);
+            });
         },
     );
     ipcMain.handle(

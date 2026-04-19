@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { MessagePort } from "node:worker_threads";
 
 import type {
     ClientSideConnection,
@@ -7,11 +8,16 @@ import type {
     RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import type {
+    AiPermissionResponseInput,
+    AiPromptResult,
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionSnapshot,
     AiSessionUpdate,
+    AiUserInputResponseInput,
+    FileBufferNotificationInput,
     PrepareAiSessionInput,
+    SendAiPromptInput,
 } from "@shared/ipc";
 
 import type { ProjectService } from "@main/projects/service";
@@ -99,3 +105,127 @@ export type SessionDescriptor = Pick<
 > & {
     readonly additionalRoots?: readonly string[];
 };
+
+export interface AiWorkerBootstrapState {
+    readonly capabilities: {
+        readonly fileBufferMirroring: boolean;
+        readonly runtimeSessions: boolean;
+    };
+    readonly protocolVersion: 1;
+    readonly startedAt: string;
+}
+
+export interface AiWorkerLogEventPayload {
+    readonly context?: Record<
+        string,
+        boolean | number | string | null | undefined
+    >;
+    readonly level: "debug" | "error" | "info" | "warn";
+    readonly message: string;
+}
+
+export interface AiWorkerSessionClosedEventPayload {
+    readonly ownerWindowId: string;
+    readonly sessionId: string;
+}
+
+export interface AiWorkerSnapshotUpdatedEventPayload {
+    readonly ownerWindowId: string;
+    readonly update: AiSessionUpdate;
+}
+
+export interface AiWorkerRuntimeStatusEventPayload {
+    readonly status: AiRuntimeStatus;
+}
+
+export type AiWorkerEventPayloadByName = {
+    "ai.log": AiWorkerLogEventPayload;
+    "ai.runtime.status": AiWorkerRuntimeStatusEventPayload;
+    "ai.session.closed": AiWorkerSessionClosedEventPayload;
+    "ai.snapshot.updated": AiWorkerSnapshotUpdatedEventPayload;
+};
+
+export type AiWorkerEventName = keyof AiWorkerEventPayloadByName;
+
+export type AiWorkerEventMessage = {
+    [TEvent in AiWorkerEventName]: {
+        readonly event: TEvent;
+        readonly payload: AiWorkerEventPayloadByName[TEvent];
+        readonly type: "event";
+    };
+}[AiWorkerEventName];
+
+export interface AiWorkerFatalMessage {
+    readonly error: {
+        readonly message: string;
+        readonly name: string;
+        readonly stack?: string;
+    };
+    readonly type: "fatal";
+}
+
+export interface AiWorkerInitMessage {
+    readonly port: MessagePort;
+}
+
+export interface AiWorkerPrepareSessionRpcInput {
+    readonly input: PrepareAiSessionInput;
+    readonly ownerWindowId: string;
+}
+
+export interface AiWorkerReadyMessage {
+    readonly bootstrap: AiWorkerBootstrapState;
+    readonly type: "ready";
+}
+
+export interface AiWorkerRespondPermissionRpcInput {
+    readonly input: AiPermissionResponseInput;
+}
+
+export interface AiWorkerRespondUserInputRpcInput {
+    readonly input: AiUserInputResponseInput;
+}
+
+export interface AiWorkerSendPromptRpcInput {
+    readonly input: SendAiPromptInput;
+    readonly ownerWindowId: string;
+}
+
+export interface AiWorkerRpcMethodMap {
+    readonly "ai.cancelSession": {
+        readonly params: string;
+        readonly result: void;
+    };
+    readonly "ai.closeOwnedByWindow": {
+        readonly params: string;
+        readonly result: void;
+    };
+    readonly "ai.closeSession": {
+        readonly params: string;
+        readonly result: void;
+    };
+    readonly "ai.notifyFileBuffer": {
+        readonly params: FileBufferNotificationInput;
+        readonly result: void;
+    };
+    readonly "ai.prepareSession": {
+        readonly params: AiWorkerPrepareSessionRpcInput;
+        readonly result: AiSessionSnapshot;
+    };
+    readonly "ai.refreshProjectScopes": {
+        readonly params: string;
+        readonly result: void;
+    };
+    readonly "ai.respondPermission": {
+        readonly params: AiWorkerRespondPermissionRpcInput;
+        readonly result: void;
+    };
+    readonly "ai.respondUserInput": {
+        readonly params: AiWorkerRespondUserInputRpcInput;
+        readonly result: void;
+    };
+    readonly "ai.sendPrompt": {
+        readonly params: AiWorkerSendPromptRpcInput;
+        readonly result: AiPromptResult;
+    };
+}
