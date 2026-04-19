@@ -1391,6 +1391,8 @@ function WorkspacePaneView({
         defaultWorktreeId,
         handleCreateAgentFromFocusedProvider,
         handleCreateFile,
+        openChatHistoryTab,
+        openGitTab,
         paneNodeId,
         selectAdjacentTab,
     });
@@ -1400,6 +1402,8 @@ function WorkspacePaneView({
         defaultWorktreeId,
         handleCreateAgentFromFocusedProvider,
         handleCreateFile,
+        openChatHistoryTab,
+        openGitTab,
         paneNodeId,
         selectAdjacentTab,
     };
@@ -1442,6 +1446,34 @@ function WorkspacePaneView({
                 }
 
                 void handlers.handleCreateFile();
+                return;
+            }
+
+            if (event.shiftKey && key === "h") {
+                if (!handlers.defaultProjectId) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                void handlers.openChatHistoryTab(
+                    handlers.defaultProjectId,
+                    handlers.defaultWorktreeId ?? null,
+                );
+                return;
+            }
+
+            if (event.shiftKey && key === "g") {
+                if (!handlers.defaultProjectId) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                void handlers.openGitTab(
+                    handlers.defaultProjectId,
+                    handlers.defaultWorktreeId ?? null,
+                );
                 return;
             }
 

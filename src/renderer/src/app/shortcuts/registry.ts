@@ -11,6 +11,8 @@ export interface ShortcutDefinition {
         | "new_agent_from_focused_provider"
         | "new_file"
         | "new_terminal"
+        | "open_chat_history"
+        | "open_git_history"
         | "new_window"
         | "next_pane_tab"
         | "open_current_project_in_new_window"
@@ -139,6 +141,17 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         section: "General",
     },
     {
+        id: "open_chat_history",
+        label: "Open chat history",
+        description:
+            "Open the singleton chat history tab for the active project.",
+        keys: {
+            mac: "Cmd+Shift+H",
+            windows: "Ctrl+Shift+H",
+        },
+        section: "General",
+    },
+    {
         id: "next_pane_tab",
         label: "Next pane tab",
         description: "Switch to the next tab in the active pane.",
@@ -208,6 +221,16 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Cmd+F",
             windows: "Ctrl+F",
+        },
+        section: "Git",
+    },
+    {
+        id: "open_git_history",
+        label: "Open git history",
+        description: "Open the Git history tab for the active project.",
+        keys: {
+            mac: "Cmd+Shift+G",
+            windows: "Ctrl+Shift+G",
         },
         section: "Git",
     },
