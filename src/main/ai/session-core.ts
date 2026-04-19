@@ -92,6 +92,7 @@ function createAiSessionPatchChanges(
         "runtimeSessionId",
         "status",
         "title",
+        "tokenUsage",
         "toolActivity",
         "trackedFiles",
         "updatedAt",
