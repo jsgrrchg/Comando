@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiRuntimeStatus, AiSessionSnapshot, AiTrackedFile } from "@shared/ipc";
+import { computeDiffHunks } from "@shared/ai-tracked-file";
 
 import type { AiWorkerEventMessage, AiWorkerSessionLaunchInput } from "./contracts";
 
@@ -350,6 +351,40 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).resolves.toBe("worker-write");
     });
 
+    it("writes directly to additional roots inside the allowed scope", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const additionalRoot = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-extra-"),
+        );
+        const targetPath = path.join(additionalRoot, "nested/output.txt");
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            additionalRoots: [additionalRoot],
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Additional root write test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await expect(
+            client!.writeTextFile({
+                content: "worker-extra-write",
+                path: targetPath,
+            }),
+        ).resolves.toEqual({});
+        await expect(fs.readFile(targetPath, "utf8")).resolves.toBe(
+            "worker-extra-write",
+        );
+    });
+
     it("keeps the out-of-project path error semantics", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -427,6 +462,137 @@ describe("AiWorkerRuntime prepareSession", () => {
             ownerWindowId: "",
             snapshot: expect.objectContaining({
                 trackedFiles: [],
+            }),
+        });
+    });
+
+    it("rejects tracked files inside additional roots", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const additionalRoot = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-extra-"),
+        );
+        const filePath = path.join(additionalRoot, "notes.md");
+        await fs.writeFile(filePath, "after\n", "utf8");
+        const runtime = createRuntime();
+        const trackedFile: AiTrackedFile = {
+            hunks: [],
+            identityKey: filePath,
+            isText: true,
+            kind: "update",
+            newText: "after\n",
+            oldText: "before\n",
+            path: filePath,
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            additionalRoots: [additionalRoot],
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Additional root review test",
+        }).persistedSnapshot;
+
+        const result = await runtime.dispatchMethod("ai.rejectTrackedFile", {
+            context: {
+                additionalRoots: [additionalRoot],
+                cwd: tempDir,
+                ownerWindowId: "",
+                projectRoot: tempDir,
+                snapshot: {
+                    ...snapshot,
+                    trackedFiles: [trackedFile],
+                },
+            },
+            input: {
+                path: filePath,
+                sessionId: "session-1",
+            },
+        });
+
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("before\n");
+        expect(result).toEqual({
+            ownerWindowId: "",
+            snapshot: expect.objectContaining({
+                trackedFiles: [],
+            }),
+        });
+    });
+
+    it("applies partial hunk rejections inside additional roots", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const additionalRoot = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-extra-"),
+        );
+        const filePath = path.join(additionalRoot, "notes.md");
+        const oldText = "one\ntwo\nthree\n";
+        const newText = "ONE\ntwo\nTHREE\n";
+        const hunks = computeDiffHunks(oldText, newText, filePath);
+        await fs.writeFile(filePath, newText, "utf8");
+        const runtime = createRuntime();
+        const trackedFile: AiTrackedFile = {
+            hunks,
+            identityKey: filePath,
+            isText: true,
+            kind: "update",
+            newText,
+            oldText,
+            path: filePath,
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            additionalRoots: [additionalRoot],
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Additional root hunk review test",
+        }).persistedSnapshot;
+
+        expect(hunks).toHaveLength(2);
+
+        const result = await runtime.dispatchMethod("ai.rejectTrackedFileHunks", {
+            context: {
+                additionalRoots: [additionalRoot],
+                cwd: tempDir,
+                ownerWindowId: "",
+                projectRoot: tempDir,
+                snapshot: {
+                    ...snapshot,
+                    trackedFiles: [trackedFile],
+                },
+            },
+            input: {
+                hunkIds: [hunks[0]!.id],
+                path: filePath,
+                sessionId: "session-1",
+            },
+        });
+
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe(
+            "one\ntwo\nTHREE\n",
+        );
+        expect(result).toEqual({
+            ownerWindowId: "",
+            snapshot: expect.objectContaining({
+                trackedFiles: [
+                    expect.objectContaining({
+                        newText: "one\ntwo\nTHREE\n",
+                        path: filePath,
+                    }),
+                ],
             }),
         });
     });
