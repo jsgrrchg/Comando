@@ -1,6 +1,6 @@
 import type { editor as MonacoEditor } from "monaco-editor";
 
-import type { GitDiffHunk, GitFileDiff } from "@shared/ipc";
+import type { GitChangeEntry, GitDiffHunk, GitFileDiff } from "@shared/ipc";
 
 export type GitGutterMarkerTone =
     | "add"
@@ -11,6 +11,12 @@ export type GitGutterMarkerTone =
 export interface GitGutterMarker {
     readonly lineNumber: number;
     readonly tone: GitGutterMarkerTone;
+}
+
+export function hasRenderableGitGutterChange(
+    change: Pick<GitChangeEntry, "isBinary"> | null | undefined,
+): boolean {
+    return Boolean(change && !change.isBinary);
 }
 
 export function computeGitGutterMarkers(

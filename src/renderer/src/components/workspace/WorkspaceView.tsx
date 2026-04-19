@@ -89,6 +89,7 @@ import {
     buildGitGutterDecorations,
     computeGitGutterMarkers,
     getGitGutterLineNumbersMinChars,
+    hasRenderableGitGutterChange,
 } from "@renderer/components/workspace/gitGutter";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
@@ -2594,6 +2595,7 @@ function FileTabView({
     const [gitGutterDiff, setGitGutterDiff] = useState<GitFileDiff | null>(
         null,
     );
+    const shouldShowGitGutter = hasRenderableGitGutterChange(activeGitChange);
     const gitGutterLineNumbersMinChars = useMemo(
         () => getGitGutterLineNumbersMinChars(countTextLines(tab.draftContent)),
         [tab.draftContent],
@@ -3034,15 +3036,13 @@ function FileTabView({
             !document ||
             document.kind === "image" ||
             !canEdit ||
-            !activeGitChange ||
-            activeGitChange.isBinary
+            !shouldShowGitGutter
         ) {
             setGitGutterDiff(null);
             return;
         }
 
         const controller = new AbortController();
-        setGitGutterDiff(null);
 
         const loadGitDiff = async () => {
             try {
@@ -3076,6 +3076,7 @@ function FileTabView({
         activeGitChange,
         canEdit,
         document,
+        shouldShowGitGutter,
         tab.projectId,
         tab.relativePath,
         tab.worktreeId,
@@ -3090,29 +3091,27 @@ function FileTabView({
         }
 
         const model = editor.getModel();
-        if (!model || !gitGutterDiff) {
+        if (!model) {
             gitGutterDecorationsRef.current?.clear();
+            gitGutterDecorationsRef.current = null;
             return;
         }
 
-        const markers = computeGitGutterMarkers(
-            gitGutterDiff,
-            model.getLineCount(),
-        );
-        const decorations = buildGitGutterDecorations(markers);
         const collection =
             gitGutterDecorationsRef.current ??
             editor.createDecorationsCollection();
 
-        collection.set(decorations);
+        collection.set(
+            gitGutterDiff
+                ? buildGitGutterDecorations(
+                      computeGitGutterMarkers(
+                          gitGutterDiff,
+                          model.getLineCount(),
+                      ),
+                  )
+                : [],
+        );
         gitGutterDecorationsRef.current = collection;
-
-        return () => {
-            collection.clear();
-            if (gitGutterDecorationsRef.current === collection) {
-                gitGutterDecorationsRef.current = null;
-            }
-        };
     }, [editorMountVersion, gitGutterDiff]);
 
     useEffect(() => {
@@ -3601,7 +3600,7 @@ function FileTabView({
                             glyphMargin: false,
                             lineHeight: editorLineHeightPx,
                             lineDecorationsWidth: 0,
-                            lineNumbersMinChars: gitGutterDiff
+                            lineNumbersMinChars: shouldShowGitGutter
                                 ? gitGutterLineNumbersMinChars
                                 : 3,
                             minimap: {

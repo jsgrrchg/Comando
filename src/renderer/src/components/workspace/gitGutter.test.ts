@@ -6,6 +6,7 @@ import {
     buildGitGutterDecorations,
     computeGitGutterMarkers,
     getGitGutterLineNumbersMinChars,
+    hasRenderableGitGutterChange,
 } from "./gitGutter";
 
 function createDiff(
@@ -202,5 +203,16 @@ describe("getGitGutterLineNumbersMinChars", () => {
         expect(getGitGutterLineNumbersMinChars(87)).toBe(3);
         expect(getGitGutterLineNumbersMinChars(120)).toBe(4);
         expect(getGitGutterLineNumbersMinChars(2048)).toBe(5);
+    });
+});
+
+describe("hasRenderableGitGutterChange", () => {
+    it("keeps the gutter visible for text changes", () => {
+        expect(hasRenderableGitGutterChange({ isBinary: false })).toBe(true);
+    });
+
+    it("hides the gutter when the change is binary or missing", () => {
+        expect(hasRenderableGitGutterChange({ isBinary: true })).toBe(false);
+        expect(hasRenderableGitGutterChange(null)).toBe(false);
     });
 });
