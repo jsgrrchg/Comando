@@ -3,6 +3,7 @@ import path from "node:path";
 import {
     IPC_CHANNELS,
     IPC_EVENTS,
+    type AppUpdateState,
     type AppBootstrapSnapshot,
     type AppWindowKind,
     type AiPermissionResponseInput,
@@ -107,6 +108,11 @@ import {
 } from "@main/settings/window-zoom";
 import { openSettingsWindow } from "@main/settings/window";
 import type { TerminalService } from "@main/terminals/service";
+import {
+    checkForAppUpdates,
+    getAppUpdateState,
+    installAppUpdateAndRestart,
+} from "@main/updater";
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 
@@ -125,6 +131,9 @@ interface RegisterIpcHandlersOptions {
 
 export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getBootstrapSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.getAppUpdateState);
+    ipcMain.removeHandler(IPC_CHANNELS.checkForAppUpdates);
+    ipcMain.removeHandler(IPC_CHANNELS.installAppUpdateAndRestart);
     ipcMain.removeHandler(IPC_CHANNELS.getPersistenceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getWindowContext);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
@@ -209,6 +218,17 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(IPC_CHANNELS.getBootstrapSnapshot, () =>
         options.getSnapshot(),
     );
+    ipcMain.handle(
+        IPC_CHANNELS.getAppUpdateState,
+        (): AppUpdateState => getAppUpdateState(),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.checkForAppUpdates,
+        (): Promise<AppUpdateState> => checkForAppUpdates(),
+    );
+    ipcMain.handle(IPC_CHANNELS.installAppUpdateAndRestart, () => {
+        installAppUpdateAndRestart();
+    });
     ipcMain.handle(
         IPC_CHANNELS.getPersistenceSnapshot,
         (event): PersistenceSnapshot | null => {

@@ -7,7 +7,7 @@ interface AppIconPaths {
 }
 
 export interface AppIdentity {
-    readonly bundleIdPlaceholder: string;
+    readonly bundleId: string;
     readonly channel: AppChannel;
     readonly iconPaths: AppIconPaths;
     readonly id: string;
@@ -24,19 +24,19 @@ const iconPaths = {
 
 const APP_IDENTITIES = {
     dev: {
-        bundleIdPlaceholder: "com.placeholder.comando",
+        bundleId: "io.github.jsgrrchg.comando.dev",
         channel: "dev",
         iconPaths,
-        id: "comando-dev",
+        id: "io.github.jsgrrchg.comando.dev",
         name: "Comando Dev",
         productName: "Comando Dev",
         windowTitle: "Comando Dev",
     },
     release: {
-        bundleIdPlaceholder: "com.placeholder.comando",
+        bundleId: "io.github.jsgrrchg.comando",
         channel: "release",
         iconPaths,
-        id: "comando",
+        id: "io.github.jsgrrchg.comando",
         name: "Comando",
         productName: "Comando",
         windowTitle: "Comando",

@@ -5,6 +5,7 @@ import type {
     AiRuntimeStatus,
     AppAiChatSettings,
     AppAppearanceSettings,
+    AppUpdateState,
     AppEditorSettings,
     ChatFontFamily,
     ThemeMode,
@@ -59,6 +60,18 @@ export function SettingsApp() {
         gemini: null,
         kilo: null,
     });
+    const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({
+        autoUpdatesEnabled: false,
+        availableVersion: null,
+        canCheckForUpdates: false,
+        canInstallUpdate: false,
+        currentVersion: "",
+        downloadedVersion: null,
+        lastCheckedAt: null,
+        message: "Loading update status...",
+        progressPercent: null,
+        status: "unsupported",
+    });
     const availableFontFamilyIds = useAvailableFontFamilyIds();
     const hydrateSettings = useSettingsStore((state) => state.hydrate);
     const settingsRevision = useSettingsStore((state) => state.revision);
@@ -89,15 +102,38 @@ export function SettingsApp() {
         });
     }, []);
 
+    const loadAppUpdateState = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        const nextState = await window.comando.getAppUpdateState();
+        setAppUpdateState(nextState);
+    }, []);
+
     useEffect(() => {
         const timeout = window.setTimeout(() => {
-            void Promise.all([hydrateSettings(), loadRuntimeStatuses()]);
+            void Promise.all([
+                hydrateSettings(),
+                loadRuntimeStatuses(),
+                loadAppUpdateState(),
+            ]);
         }, 0);
 
         return () => {
             window.clearTimeout(timeout);
         };
-    }, [hydrateSettings, loadRuntimeStatuses]);
+    }, [hydrateSettings, loadAppUpdateState, loadRuntimeStatuses]);
+
+    useEffect(() => {
+        if (!window.comando) {
+            return undefined;
+        }
+
+        return window.comando.onAppUpdateState((nextState) => {
+            setAppUpdateState(nextState);
+        });
+    }, []);
 
     useEffect(() => {
         setAiChat(storeAiChat);
@@ -367,6 +403,23 @@ export function SettingsApp() {
             }
             shortcuts={shortcuts}
             runtimes={runtimes}
+            updates={{
+                onCheckForUpdates: () => {
+                    if (!window.comando) {
+                        return;
+                    }
+
+                    void window.comando.checkForAppUpdates();
+                },
+                onInstallUpdate: () => {
+                    if (!window.comando) {
+                        return;
+                    }
+
+                    void window.comando.installAppUpdateAndRestart();
+                },
+                state: appUpdateState,
+            }}
         />
     );
 }

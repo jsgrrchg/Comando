@@ -5,6 +5,9 @@ export type { ChatFontFamily, EditorFontFamily } from "./typography";
 
 export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
+    getAppUpdateState: "app:get-update-state",
+    checkForAppUpdates: "app:check-for-updates",
+    installAppUpdateAndRestart: "app:install-update-and-restart",
     getPersistenceSnapshot: "app:get-persistence-snapshot",
     getWindowContext: "app:get-window-context",
     openProjectWindow: "app:open-project-window",
@@ -89,6 +92,7 @@ export const IPC_CHANNELS = {
 } as const;
 
 export const IPC_EVENTS = {
+    appUpdateState: "app:update-state",
     projectTreeInvalidated: "projects:tree-invalidated",
     projectWindowRequested: "app:project-window-requested",
     themeUpdated: "app:theme-updated",
@@ -378,6 +382,29 @@ export interface ProjectSettingsSnapshot {
 export interface SettingsUpdatedEvent {
     readonly appearance: AppAppearanceSettings | null;
     readonly editor: AppEditorSettings | null;
+}
+
+export type AppUpdateStatus =
+    | "unsupported"
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "not-available"
+    | "error";
+
+export interface AppUpdateState {
+    readonly autoUpdatesEnabled: boolean;
+    readonly availableVersion: string | null;
+    readonly canCheckForUpdates: boolean;
+    readonly canInstallUpdate: boolean;
+    readonly currentVersion: string;
+    readonly downloadedVersion: string | null;
+    readonly lastCheckedAt: string | null;
+    readonly message: string;
+    readonly progressPercent: number | null;
+    readonly status: AppUpdateStatus;
 }
 
 export interface ProjectSettingsUpdatedEvent {
@@ -1387,6 +1414,9 @@ export interface AiTrackedFileHunkMutationInput {
 
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
+    getAppUpdateState: () => Promise<AppUpdateState>;
+    checkForAppUpdates: () => Promise<AppUpdateState>;
+    installAppUpdateAndRestart: () => Promise<void>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot | null>;
     getWindowContext: () => Promise<WindowContextSnapshot | null>;
     readClipboardText: () => Promise<string>;
@@ -1547,6 +1577,7 @@ export interface ComandoApi {
     onProjectTreeInvalidated: (
         listener: (payload: ProjectTreeInvalidation) => void,
     ) => () => void;
+    onAppUpdateState: (listener: (payload: AppUpdateState) => void) => () => void;
     onGitRepositoryInvalidated: (
         listener: (payload: GitRepositoryInvalidation) => void,
     ) => () => void;

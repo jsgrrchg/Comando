@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
     hasPackagedUpdateConfig,
     resolvePackagedUpdateConfigPath,
+    resolveAutoUpdateSupportState,
     shouldEnableAutoUpdates,
 } from "./updater-config";
 
@@ -92,5 +93,60 @@ describe("hasPackagedUpdateConfig", () => {
         );
 
         expect(hasPackagedUpdateConfig(resourcesPath)).toBe(true);
+    });
+});
+
+describe("resolveAutoUpdateSupportState", () => {
+    it("describes why development builds cannot auto-update", () => {
+        expect(
+            resolveAutoUpdateSupportState({
+                appChannel: "dev",
+                isPackaged: false,
+                platform: "darwin",
+            }),
+        ).toEqual({
+            enabled: false,
+            message:
+                "Auto-updates are only available in packaged release builds.",
+        });
+    });
+
+    it("requires packaged updater metadata when resourcesPath is provided", () => {
+        const resourcesPath = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-updater-support-test-"),
+        );
+        temporaryDirectories.add(resourcesPath);
+
+        expect(
+            resolveAutoUpdateSupportState({
+                appChannel: "release",
+                isPackaged: true,
+                platform: "darwin",
+                resourcesPath,
+            }),
+        ).toEqual({
+            enabled: false,
+            message:
+                "This packaged build does not include updater metadata yet.",
+        });
+
+        fs.writeFileSync(
+            resolvePackagedUpdateConfigPath(resourcesPath),
+            "provider: github\n",
+            "utf8",
+        );
+
+        expect(
+            resolveAutoUpdateSupportState({
+                appChannel: "release",
+                isPackaged: true,
+                platform: "darwin",
+                resourcesPath,
+            }),
+        ).toEqual({
+            enabled: true,
+            message:
+                "Automatic updates are enabled for this packaged release build.",
+        });
     });
 });

@@ -30,7 +30,7 @@ describe("databaseMigrations", () => {
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
         );
-        expect(foundationMigration?.sql).toContain("app.bundle_id_placeholder");
+        expect(foundationMigration?.sql).toContain("app.bundle_id");
         expect(projectsMigration?.id).toBe("0002-projects");
         expect(projectsMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS projects",

@@ -1,3 +1,4 @@
+import type { AppUpdateState } from "@shared/ipc";
 import { useState } from "react";
 import {
     APP_ZOOM_FACTOR_MAX,
@@ -49,6 +50,7 @@ import type {
     SettingsAiChatState,
     SettingsEditorControlState,
     SettingsThemeControlState,
+    SettingsUpdatesState,
     SettingsWindowProps,
     ShortcutEntryOption,
     ThemeMode,
@@ -87,6 +89,7 @@ export function SettingsWindow({
     onRuntimeAction,
     shortcuts = [],
     runtimes = [],
+    updates,
 }: SettingsWindowProps) {
     const [active, setActive] = useState<Category>("appearance");
     const [search, setSearch] = useState("");
@@ -345,7 +348,15 @@ export function SettingsWindow({
                                     onAction={onRuntimeAction}
                                 />
                             )}
-                            {active === "updates" && <UpdatesContent />}
+                            {active === "updates" && (
+                                <UpdatesContent
+                                    onCheckForUpdates={
+                                        updates.onCheckForUpdates
+                                    }
+                                    onInstallUpdate={updates.onInstallUpdate}
+                                    state={updates.state}
+                                />
+                            )}
                         </div>
                     </div>
                 </div>
@@ -899,9 +910,6 @@ function RuntimeActionBtn({
     );
 }
 
-const CURRENT_VERSION = "0.1.0";
-const LAST_CHECKED_LABEL = "Just now";
-
 type ChangelogEntry = {
     version: string;
     date: string;
@@ -928,13 +936,32 @@ const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
     },
 ];
 
-function UpdatesContent() {
+function UpdatesContent({
+    onCheckForUpdates,
+    onInstallUpdate,
+    state,
+}: SettingsUpdatesState) {
+    const currentVersionLabel = formatVersionPillLabel(state.currentVersion);
+    const lastCheckedLabel = formatLastCheckedLabel(state.lastCheckedAt);
+    const primaryAction =
+        state.canInstallUpdate && onInstallUpdate
+            ? {
+                  disabled: false,
+                  label: "restart and install",
+                  onClick: onInstallUpdate,
+              }
+            : {
+                  disabled: !state.canCheckForUpdates || !onCheckForUpdates,
+                  label: getCheckForUpdatesLabel(state),
+                  onClick: onCheckForUpdates ?? (() => {}),
+              };
+
     return (
         <div>
             <SectionLabel>Version</SectionLabel>
             <Row
                 label="Current version"
-                description={`You're on ${CURRENT_VERSION}. Last checked ${LAST_CHECKED_LABEL.toLowerCase()}.`}
+                description={`You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`}
                 control={
                     <div
                         style={{
@@ -957,31 +984,108 @@ function UpdatesContent() {
                                 textTransform: "uppercase",
                             }}
                         >
-                            {`v${CURRENT_VERSION}`}
+                            {currentVersionLabel}
                         </span>
-                        <IdeActionButton active onClick={() => {}}>
-                            check for updates
+                        <IdeActionButton
+                            active={state.canInstallUpdate}
+                            disabled={primaryAction.disabled}
+                            onClick={primaryAction.onClick}
+                        >
+                            {primaryAction.label}
                         </IdeActionButton>
                     </div>
                 }
             />
             <Row
                 label="Automatic updates"
-                description="Install updates in the background and apply them on next launch."
-                control={<Toggle value={true} onChange={() => {}} />}
+                description={
+                    state.autoUpdatesEnabled
+                        ? "Enabled for packaged release builds. Updates download in the background and apply after restart."
+                        : "Unavailable on this build, channel, or packaging configuration."
+                }
+                control={
+                    <Toggle
+                        disabled
+                        onChange={() => {}}
+                        value={state.autoUpdatesEnabled}
+                    />
+                }
+            />
+            <Row
+                label="Update status"
+                description={state.message}
+                control={
+                    <div
+                        style={{
+                            alignItems: "center",
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 8,
+                            justifyContent: "flex-end",
+                        }}
+                    >
+                        <UpdateStatusBadge state={state} />
+                        {state.availableVersion ? (
+                            <span
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: 10,
+                                }}
+                            >
+                                {`target ${formatVersionPillLabel(state.availableVersion)}`}
+                            </span>
+                        ) : null}
+                        {state.progressPercent !== null ? (
+                            <span
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: 10,
+                                }}
+                            >
+                                {`${Math.round(state.progressPercent)}%`}
+                            </span>
+                        ) : null}
+                    </div>
+                }
             />
 
             <SectionLabel>Changelog</SectionLabel>
             <div style={{ paddingTop: 4 }}>
-                {CHANGELOG_ENTRIES.map((entry, index) => (
+                {CHANGELOG_ENTRIES.map((entry) => (
                     <ChangelogItem
                         entry={entry}
-                        isLatest={index === 0}
+                        isLatest={entry.version === state.currentVersion}
                         key={entry.version}
                     />
                 ))}
             </div>
         </div>
+    );
+}
+
+function UpdateStatusBadge({ state }: { state: AppUpdateState }) {
+    const { backgroundColor, color, label } = getUpdateStatusPresentation(
+        state.status,
+    );
+
+    return (
+        <span
+            style={{
+                backgroundColor,
+                borderRadius: 4,
+                color,
+                fontFamily: "var(--font-mono)",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                padding: "2px 6px",
+                textTransform: "uppercase",
+            }}
+        >
+            {label}
+        </span>
     );
 }
 
@@ -1065,4 +1169,120 @@ function ChangelogItem({
             </ul>
         </div>
     );
+}
+
+function getCheckForUpdatesLabel(state: AppUpdateState): string {
+    switch (state.status) {
+        case "checking":
+            return "checking...";
+        case "available":
+        case "downloading":
+            return "downloading...";
+        default:
+            return "check for updates";
+    }
+}
+
+function formatVersionPillLabel(version: string): string {
+    const normalizedVersion = version.trim();
+    return normalizedVersion.length > 0
+        ? `v${normalizedVersion}`
+        : "unknown";
+}
+
+function formatLastCheckedLabel(lastCheckedAt: string | null): string {
+    if (!lastCheckedAt) {
+        return "never";
+    }
+
+    const checkedAtMs = Date.parse(lastCheckedAt);
+    if (!Number.isFinite(checkedAtMs)) {
+        return "recently";
+    }
+
+    const diffMs = Date.now() - checkedAtMs;
+    if (diffMs < 60_000) {
+        return "just now";
+    }
+
+    const diffMinutes = Math.floor(diffMs / 60_000);
+    if (diffMinutes < 60) {
+        return `${diffMinutes} min ago`;
+    }
+
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) {
+        return `${diffHours} hr ago`;
+    }
+
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays < 7) {
+        return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+    }).format(new Date(checkedAtMs));
+}
+
+function getUpdateStatusPresentation(status: AppUpdateState["status"]): {
+    readonly backgroundColor: string;
+    readonly color: string;
+    readonly label: string;
+} {
+    switch (status) {
+        case "checking":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+                color: "var(--color-accent)",
+                label: "Checking",
+            };
+        case "available":
+        case "downloading":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+                color: "var(--color-accent)",
+                label: status === "available" ? "Available" : "Downloading",
+            };
+        case "downloaded":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--diff-add) 18%, transparent)",
+                color: "var(--diff-add)",
+                label: "Ready",
+            };
+        case "not-available":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
+                color: "var(--color-text-secondary)",
+                label: "Up to date",
+            };
+        case "error":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--diff-remove) 14%, transparent)",
+                color: "var(--diff-remove)",
+                label: "Error",
+            };
+        case "idle":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+                color: "var(--color-accent)",
+                label: "Ready",
+            };
+        case "unsupported":
+        default:
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
+                color: "var(--color-text-secondary)",
+                label: "Unavailable",
+            };
+    }
 }

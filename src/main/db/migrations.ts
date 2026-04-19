@@ -16,7 +16,7 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
       INSERT OR IGNORE INTO app_settings (key, value, updated_at)
       VALUES
         ('app.name', 'Comando', CURRENT_TIMESTAMP),
-        ('app.bundle_id_placeholder', 'com.placeholder.comando', CURRENT_TIMESTAMP);
+        ('app.bundle_id', 'io.github.jsgrrchg.comando', CURRENT_TIMESTAMP);
     `,
     },
     {

@@ -1,3 +1,5 @@
+import type { AppUpdateState } from "@shared/ipc";
+
 export type ThemeMode = "system" | "light" | "dark";
 
 export interface EditorFontFamilyOption {
@@ -105,7 +107,14 @@ export interface SettingsWindowProps {
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly aiChat: SettingsAiChatState;
+    readonly updates: SettingsUpdatesState;
     readonly shortcuts?: readonly ShortcutEntryOption[];
     readonly runtimes?: readonly RuntimeCardOption[];
     readonly onRuntimeAction?: (runtimeId: string, actionId: string) => void;
+}
+
+export interface SettingsUpdatesState {
+    readonly state: AppUpdateState;
+    readonly onCheckForUpdates?: () => void;
+    readonly onInstallUpdate?: () => void;
 }

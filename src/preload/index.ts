@@ -5,6 +5,7 @@ import { clipboard, contextBridge, ipcRenderer, webUtils } from "electron";
 import {
     IPC_CHANNELS,
     IPC_EVENTS,
+    type AppUpdateState,
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
     type AiSessionUpdate,
@@ -207,6 +208,18 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getBootstrapSnapshot,
             await ipcRenderer.invoke(IPC_CHANNELS.getBootstrapSnapshot),
         ),
+    getAppUpdateState: async () =>
+        assertIpcObject<AppUpdateState>(
+            IPC_CHANNELS.getAppUpdateState,
+            await ipcRenderer.invoke(IPC_CHANNELS.getAppUpdateState),
+        ),
+    checkForAppUpdates: async () =>
+        assertIpcObject<AppUpdateState>(
+            IPC_CHANNELS.checkForAppUpdates,
+            await ipcRenderer.invoke(IPC_CHANNELS.checkForAppUpdates),
+        ),
+    installAppUpdateAndRestart: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.installAppUpdateAndRestart),
     getPersistenceSnapshot: async () =>
         assertIpcObjectOrNull<PersistenceSnapshot>(
             IPC_CHANNELS.getPersistenceSnapshot,
@@ -283,6 +296,20 @@ const comandoApi: ComandoApi = {
                 IPC_EVENTS.projectTreeInvalidated,
                 handleEvent,
             );
+        };
+    },
+    onAppUpdateState: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            payload: AppUpdateState,
+        ) => {
+            listener(payload);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.appUpdateState, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(IPC_EVENTS.appUpdateState, handleEvent);
         };
     },
     onProjectWindowRequested: (listener) => {

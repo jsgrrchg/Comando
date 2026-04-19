@@ -48,8 +48,9 @@ describe("resolveAppChannel", () => {
 describe("resolveAppIdentity", () => {
     it("returns a dedicated identity for the development channel", () => {
         expect(resolveAppIdentity("dev")).toMatchObject({
+            bundleId: "io.github.jsgrrchg.comando.dev",
             channel: "dev",
-            id: "comando-dev",
+            id: "io.github.jsgrrchg.comando.dev",
             name: "Comando Dev",
             windowTitle: "Comando Dev",
         });
@@ -57,8 +58,9 @@ describe("resolveAppIdentity", () => {
 
     it("keeps the release identity unchanged", () => {
         expect(resolveAppIdentity("release")).toMatchObject({
+            bundleId: "io.github.jsgrrchg.comando",
             channel: "release",
-            id: "comando",
+            id: "io.github.jsgrrchg.comando",
             name: "Comando",
             windowTitle: "Comando",
         });
