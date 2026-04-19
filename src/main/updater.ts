@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog } from "electron";
-import { autoUpdater } from "electron-updater";
+import electronUpdater from "electron-updater";
 import type { AppChannel } from "@shared/app-identity";
 import { IPC_EVENTS, type AppUpdateState } from "@shared/ipc";
 
@@ -8,6 +8,8 @@ import { debugBenignError } from "./observability/logging";
 import { resolveAutoUpdateSupportState } from "./updater-config";
 import { forEachLiveWindow } from "./window";
 import { windowRegistry } from "./windows/registry";
+
+const { autoUpdater } = electronUpdater;
 
 let hasRegisteredAutoUpdateHandlers = false;
 let hasPromptedForDownloadedUpdate = false;
