@@ -1,5 +1,7 @@
 export const COMPOSER_PROJECT_ENTRY_MIME =
     "application/x-comando-composer-project-entry";
+export const COMPOSER_PROJECT_ENTRY_LIST_MIME =
+    "application/x-comando-composer-project-entry-list";
 export const WORKSPACE_TAB_COMPOSER_DRAG_EVENT =
     "comando:workspace-tab-composer-drag";
 
@@ -33,6 +35,10 @@ export interface ComposerProjectEntryDragData {
     readonly kind: "directory" | "file";
     readonly name: string;
     readonly relativePath: string;
+}
+
+export interface ComposerProjectEntryListDragData {
+    readonly entries: readonly ComposerProjectEntryDragData[];
 }
 
 export type ExternalComposerDropItem =
@@ -69,6 +75,12 @@ export function serializeComposerProjectEntryDragData(
     return JSON.stringify(data);
 }
 
+export function serializeComposerProjectEntryListDragData(
+    data: ComposerProjectEntryListDragData,
+): string {
+    return JSON.stringify(data);
+}
+
 export function parseComposerProjectEntryDragData(
     value: string,
 ): ComposerProjectEntryDragData | null {
@@ -98,6 +110,38 @@ export function parseComposerProjectEntryDragData(
     }
 
     return null;
+}
+
+export function parseComposerProjectEntryListDragData(
+    value: string,
+): ComposerProjectEntryListDragData | null {
+    if (!value) {
+        return null;
+    }
+
+    try {
+        const parsed = JSON.parse(value) as Partial<ComposerProjectEntryListDragData>;
+        if (!Array.isArray(parsed.entries) || parsed.entries.length === 0) {
+            return null;
+        }
+
+        const entries = parsed.entries
+            .map((entry) =>
+                parseComposerProjectEntryDragData(JSON.stringify(entry)),
+            )
+            .filter(
+                (entry): entry is ComposerProjectEntryDragData =>
+                    entry !== null,
+            );
+
+        if (entries.length !== parsed.entries.length) {
+            return null;
+        }
+
+        return { entries };
+    } catch {
+        return null;
+    }
 }
 
 export function emitWorkspaceTabComposerDrag(

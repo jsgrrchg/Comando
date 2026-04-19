@@ -3,6 +3,7 @@ import {
     useRef,
     useState,
     type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
     type ReactNode,
 } from "react";
 
@@ -69,6 +70,7 @@ export function GitTreeView({
     onToggleDirectory,
     renderNodeMeta,
     scrollToActivePathSignal,
+    selectedPaths,
     showStatusIndicator = true,
     stickyFolderPaths,
 }: GitTreeViewProps) {
@@ -181,6 +183,7 @@ export function GitTreeView({
                     scheduleHoverExpand={scheduleHoverExpand}
                     onToggleDirectory={onToggleDirectory}
                     renderNodeMeta={renderNodeMeta}
+                    selectedPaths={selectedPaths}
                     setActiveDragData={setActiveDragData}
                     clearHoverExpand={clearHoverExpand}
                     setDropTargetPath={setDropTargetPath}
@@ -214,6 +217,7 @@ function GitTreeNodeRow({
     scheduleHoverExpand,
     onToggleDirectory,
     renderNodeMeta,
+    selectedPaths,
     setActiveDragData,
     clearHoverExpand,
     setDropTargetPath,
@@ -241,7 +245,10 @@ function GitTreeNodeRow({
             readonly y: number;
         },
     ) => void;
-    readonly onNodeClick?: (node: GitTreeNode) => void;
+    readonly onNodeClick?: (
+        node: GitTreeNode,
+        event: ReactMouseEvent<HTMLDivElement>,
+    ) => void;
     readonly onNodeDrop?: (
         dragData: GitTreeDragData,
         node: GitTreeNode,
@@ -257,6 +264,7 @@ function GitTreeNodeRow({
     ) => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
+    readonly selectedPaths?: ReadonlySet<string>;
     readonly setActiveDragData: (dragData: GitTreeDragData | null) => void;
     readonly clearHoverExpand: () => void;
     readonly setDropTargetPath: (path: string | null) => void;
@@ -274,6 +282,7 @@ function GitTreeNodeRow({
             : false;
     const isEditing = editingPath === node.path;
     const isActive = activePath === node.path;
+    const isSelected = selectedPaths?.has(node.path) === true;
     const canOpen = !isEditing && Boolean(onNodeClick && node.kind === "file");
     const canToggle = !isEditing && Boolean(isDirectory && onToggleDirectory);
     const isDraggable =
@@ -293,6 +302,26 @@ function GitTreeNodeRow({
     const isStickyHidden =
         isDirectory && stickyFolderPaths?.has(node.path) === true;
 
+    const handleRowClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+        const hasSelectionModifier =
+            event.metaKey || event.ctrlKey || event.shiftKey;
+
+        if (hasSelectionModifier && onNodeClick) {
+            onNodeClick(node, event);
+            return;
+        }
+
+        if (canOpen) {
+            onNodeClick?.(node, event);
+            return;
+        }
+
+        if (canToggle) {
+            onNodeClick?.(node, event);
+            onToggleDirectory?.(node);
+        }
+    };
+
     return (
         <>
             {isStickyHidden ? (
@@ -306,6 +335,7 @@ function GitTreeNodeRow({
                     data-active={isActive ? "true" : "false"}
                     data-drop-target={isDropTarget ? "true" : "false"}
                     data-path={node.path}
+                    data-selected={isSelected ? "true" : "false"}
                     draggable={isDraggable}
                     onDragEnd={() => {
                         clearHoverExpand();
@@ -421,16 +451,17 @@ function GitTreeNodeRow({
                                     boxShadow:
                                         "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
                                 }
+                              : isSelected
+                                ? {
+                                      backgroundColor:
+                                          "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+                                      boxShadow:
+                                          "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
+                                  }
                               : {}),
                         ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
                     }}
-                    onClick={() =>
-                        canOpen
-                            ? onNodeClick?.(node)
-                            : canToggle
-                              ? onToggleDirectory?.(node)
-                              : undefined
-                    }
+                    onClick={handleRowClick}
                 >
                     <TreeIndentGuides depth={depth} />
 
@@ -561,6 +592,7 @@ function GitTreeNodeRow({
                           scheduleHoverExpand={scheduleHoverExpand}
                           onToggleDirectory={onToggleDirectory}
                           renderNodeMeta={renderNodeMeta}
+                          selectedPaths={selectedPaths}
                           setActiveDragData={setActiveDragData}
                           clearHoverExpand={clearHoverExpand}
                           setDropTargetPath={setDropTargetPath}

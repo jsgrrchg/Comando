@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     getExternalComposerDropItems,
     inferMimeTypeFromPath,
+    parseComposerProjectEntryListDragData,
+    serializeComposerProjectEntryListDragData,
 } from "./drag-and-drop";
 
 describe("drag-and-drop", () => {
@@ -16,6 +18,38 @@ describe("drag-and-drop", () => {
         expect(inferMimeTypeFromPath("/tmp/archive.unknown")).toBe(
             "application/octet-stream",
         );
+    });
+
+    it("serializes and parses multi-entry composer payloads", () => {
+        const serialized = serializeComposerProjectEntryListDragData({
+            entries: [
+                {
+                    kind: "file",
+                    name: "app.ts",
+                    relativePath: "src/app.ts",
+                },
+                {
+                    kind: "directory",
+                    name: "docs",
+                    relativePath: "docs",
+                },
+            ],
+        });
+
+        expect(parseComposerProjectEntryListDragData(serialized)).toEqual({
+            entries: [
+                {
+                    kind: "file",
+                    name: "app.ts",
+                    relativePath: "src/app.ts",
+                },
+                {
+                    kind: "directory",
+                    name: "docs",
+                    relativePath: "docs",
+                },
+            ],
+        });
     });
 
     it("extracts external composer drop items from native files", () => {

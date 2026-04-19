@@ -65,4 +65,21 @@ describe("GitTreeView", () => {
         expect(markup).toContain('value="renamed-notes.md"');
         expect(markup).not.toContain(">notes.md</span>");
     });
+
+    it("marks selected rows independently from the active file", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                activePath="notes.md"
+                nodes={[createFileNode(), createFileNode({
+                    id: "file-2",
+                    name: "todo.md",
+                    path: "todo.md",
+                })]}
+                selectedPaths={new Set(["todo.md"])}
+            />,
+        );
+
+        expect(markup).toContain('data-active="true"');
+        expect(markup).toContain('data-selected="true"');
+    });
 });

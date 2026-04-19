@@ -1,4 +1,8 @@
-import { useState, type CSSProperties } from "react";
+import {
+    useState,
+    type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import {
     COMPOSER_PROJECT_ENTRY_MIME,
@@ -44,13 +48,19 @@ export function StickyFolderOverlay({
     scrollLeft = 0,
     enableNodeDrag = false,
     onToggleDirectory,
+    onNodeClick,
     onNodeDragStart,
     onNodeDrop,
+    selectedPaths,
 }: {
     readonly stickyFolders: readonly StickyFolder[];
     readonly scrollLeft?: number;
     readonly enableNodeDrag?: boolean;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
+    readonly onNodeClick?: (
+        node: GitTreeNode,
+        event: ReactMouseEvent<HTMLDivElement>,
+    ) => void;
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
@@ -59,6 +69,7 @@ export function StickyFolderOverlay({
         dragData: GitTreeDragData,
         node: GitTreeNode,
     ) => void;
+    readonly selectedPaths?: ReadonlySet<string>;
 }) {
     if (stickyFolders.length === 0) {
         return null;
@@ -87,8 +98,10 @@ export function StickyFolderOverlay({
                         depth={depth}
                         enableDrag={enableNodeDrag}
                         onToggle={onToggleDirectory}
+                        onNodeClick={onNodeClick}
                         onDragStart={onNodeDragStart}
                         onDrop={onNodeDrop}
+                        selectedPaths={selectedPaths}
                     />
                 </div>
             ))}
@@ -101,26 +114,48 @@ function StickyFolderRow({
     depth,
     enableDrag,
     onToggle,
+    onNodeClick,
     onDragStart,
     onDrop,
+    selectedPaths,
 }: {
     readonly node: GitTreeNode;
     readonly depth: number;
     readonly enableDrag?: boolean;
     readonly onToggle?: (node: GitTreeNode) => void;
+    readonly onNodeClick?: (
+        node: GitTreeNode,
+        event: ReactMouseEvent<HTMLDivElement>,
+    ) => void;
     readonly onDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
     ) => void;
     readonly onDrop?: (dragData: GitTreeDragData, node: GitTreeNode) => void;
+    readonly selectedPaths?: ReadonlySet<string>;
 }) {
     const [isDropTarget, setIsDropTarget] = useState(false);
     const isDraggable = enableDrag === true && !node.isProjectRoot;
+    const isSelected = selectedPaths?.has(node.path) === true;
+
+    const handleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+        const hasSelectionModifier =
+            event.metaKey || event.ctrlKey || event.shiftKey;
+
+        if (hasSelectionModifier && onNodeClick) {
+            onNodeClick(node, event);
+            return;
+        }
+
+        onNodeClick?.(node, event);
+        onToggle?.(node);
+    };
 
     return (
         <div
             className="git-tree-row"
             data-drop-target={isDropTarget ? "true" : "false"}
+            data-selected={isSelected ? "true" : "false"}
             draggable={isDraggable}
             style={{
                 position: "relative",
@@ -142,8 +177,15 @@ function StickyFolderRow({
                     boxShadow:
                         "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
                 }),
+                ...(!isDropTarget &&
+                    isSelected && {
+                        backgroundColor:
+                            "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+                        boxShadow:
+                            "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
+                    }),
             }}
-            onClick={() => onToggle?.(node)}
+            onClick={handleClick}
             onDragStart={(event) => {
                 if (!isDraggable) return;
                 onDragStart?.(node, event.dataTransfer ?? null);

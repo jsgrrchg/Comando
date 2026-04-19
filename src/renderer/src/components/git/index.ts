@@ -8,5 +8,6 @@ export * from "./GitUi";
 export * from "./StickyFolderOverlay";
 export * from "./flattenTree";
 export * from "./tree-dnd";
+export * from "./treeSelection";
 export * from "./types";
 export * from "./useStickyFolders";

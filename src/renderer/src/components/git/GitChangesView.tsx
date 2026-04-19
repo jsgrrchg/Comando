@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 
 import { GitActionButton } from "./GitUi";
 import { GitTreeView } from "./GitTreeView";
@@ -86,7 +86,10 @@ function GitChangeGroupSection({
     readonly expandedPaths: readonly string[] | undefined;
     readonly group: GitChangeGroup;
     readonly layout: "list" | "tree";
-    readonly onNodeClick?: (node: GitTreeNode) => void;
+    readonly onNodeClick?: (
+        node: GitTreeNode,
+        event: ReactMouseEvent<HTMLDivElement>,
+    ) => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly onToggleGroup?: (groupId: GitChangeGroupId) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;

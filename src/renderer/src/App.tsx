@@ -6,6 +6,7 @@ import {
     useRef,
     useState,
     type KeyboardEvent as ReactKeyboardEvent,
+    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
 
@@ -31,7 +32,9 @@ import {
 } from "./app/projects/quick-open";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
+    COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
+    serializeComposerProjectEntryListDragData,
     serializeComposerProjectEntryDragData,
 } from "./app/drag-and-drop";
 import { useAppStore } from "./app/store/app-store";
@@ -42,8 +45,12 @@ import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
 import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
 import {
+    flattenVisibleGitTreeNodes,
     getProjectEntryParentRelativePath,
     GitTreeView,
+    resolveGitTreeDragPaths,
+    selectGitTreeRange,
+    toggleGitTreePathSelection,
     type GitTreeDragData,
     type GitTreeNode,
 } from "./components/git";
@@ -234,6 +241,11 @@ export function App() {
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [gitChangesFilter, setGitChangesFilter] = useState("");
     const [agentsFilter, setAgentsFilter] = useState("");
+    const [fileTreeSelectedPaths, setFileTreeSelectedPaths] = useState<
+        readonly string[]
+    >([]);
+    const [fileTreeSelectionAnchorPath, setFileTreeSelectionAnchorPath] =
+        useState<string | null>(null);
     const [fileTreeRevealSignal, setFileTreeRevealSignal] = useState<
         number | null
     >(null);
@@ -576,6 +588,8 @@ export function App() {
         setFileTreeFilter("");
         setFileTreeSearchResults([]);
         setFileTreeContextMenu(null);
+        setFileTreeSelectedPaths([]);
+        setFileTreeSelectionAnchorPath(null);
         setIsFileTreeSearchLoading(false);
         setIsFileTreeSearchOpen(false);
         setIsQuickOpenLoading(false);
@@ -826,6 +840,11 @@ export function App() {
     const cancelFileTreeInlineEditor = useCallback(() => {
         fileTreeInlineSubmitPendingRef.current = false;
         setFileTreeInlineEditor(null);
+    }, []);
+
+    const clearFileTreeSelection = useCallback(() => {
+        setFileTreeSelectedPaths([]);
+        setFileTreeSelectionAnchorPath(null);
     }, []);
 
     const beginFileTreeInlineRename = useCallback((node: GitTreeNode) => {
@@ -1413,6 +1432,149 @@ export function App() {
         isProjectRootExpanded,
         sidebarFileNodes,
     ]);
+    const visibleSidebarNodes = useMemo(
+        () =>
+            flattenVisibleGitTreeNodes(sidebarTreeNodes).filter(
+                (node) => !node.isProjectRoot,
+            ),
+        [sidebarTreeNodes],
+    );
+    const visibleSidebarNodePaths = useMemo(
+        () => visibleSidebarNodes.map((node) => node.path),
+        [visibleSidebarNodes],
+    );
+    const visibleSidebarNodePathSet = useMemo(
+        () => new Set(visibleSidebarNodePaths),
+        [visibleSidebarNodePaths],
+    );
+    const selectedFileTreePathSet = useMemo(
+        () => new Set(fileTreeSelectedPaths),
+        [fileTreeSelectedPaths],
+    );
+    const visibleSidebarNodesByPath = useMemo(
+        () => new Map(visibleSidebarNodes.map((node) => [node.path, node])),
+        [visibleSidebarNodes],
+    );
+
+    useEffect(() => {
+        setFileTreeSelectedPaths((currentPaths) => {
+            const nextPaths = currentPaths.filter((path) =>
+                visibleSidebarNodePathSet.has(path),
+            );
+            return nextPaths.length === currentPaths.length
+                ? currentPaths
+                : nextPaths;
+        });
+        setFileTreeSelectionAnchorPath((currentPath) =>
+            currentPath && visibleSidebarNodePathSet.has(currentPath)
+                ? currentPath
+                : null,
+        );
+    }, [visibleSidebarNodePathSet]);
+
+    const handleFileTreeNodeClick = useCallback(
+        (node: GitTreeNode, event: ReactMouseEvent<HTMLDivElement>) => {
+            const isRangeSelection = event.shiftKey;
+            const isToggleSelection = event.metaKey || event.ctrlKey;
+
+            if (isRangeSelection) {
+                const anchorPath = fileTreeSelectionAnchorPath ?? node.path;
+                setFileTreeSelectedPaths(
+                    selectGitTreeRange(
+                        visibleSidebarNodePaths,
+                        anchorPath,
+                        node.path,
+                    ),
+                );
+                setFileTreeSelectionAnchorPath(anchorPath);
+                return;
+            }
+
+            if (isToggleSelection) {
+                setFileTreeSelectedPaths((currentPaths) =>
+                    toggleGitTreePathSelection(currentPaths, node.path),
+                );
+                setFileTreeSelectionAnchorPath(node.path);
+                return;
+            }
+
+            setFileTreeSelectedPaths([node.path]);
+            setFileTreeSelectionAnchorPath(node.path);
+
+            if (!activeProjectId || node.kind !== "file") {
+                return;
+            }
+
+            void openFileTab(activeProjectId, node.path, activeWorktreeId);
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            fileTreeSelectionAnchorPath,
+            openFileTab,
+            visibleSidebarNodePaths,
+        ],
+    );
+
+    const handleFileTreeNodeDragStart = useCallback(
+        (node: GitTreeNode, dataTransfer: DataTransfer | null) => {
+            if (!dataTransfer) {
+                return;
+            }
+
+            const dragPaths = resolveGitTreeDragPaths(
+                node.path,
+                fileTreeSelectedPaths,
+                visibleSidebarNodePaths,
+            );
+            const dragNodes = dragPaths
+                .map((path) => visibleSidebarNodesByPath.get(path))
+                .filter((entry): entry is GitTreeNode => Boolean(entry));
+            if (dragNodes.length === 0) {
+                return;
+            }
+
+            setFileTreeSelectedPaths(dragPaths);
+            setFileTreeSelectionAnchorPath(node.path);
+
+            const composerEntries = dragNodes.map((entry) => ({
+                kind: entry.kind,
+                name: entry.name,
+                relativePath: entry.path,
+            }));
+
+            dataTransfer.clearData();
+            dataTransfer.effectAllowed =
+                composerEntries.length > 1 ? "copy" : "copyMove";
+            dataTransfer.setData(
+                COMPOSER_PROJECT_ENTRY_LIST_MIME,
+                serializeComposerProjectEntryListDragData({
+                    entries: composerEntries,
+                }),
+            );
+
+            if (composerEntries.length === 1) {
+                dataTransfer.setData(
+                    COMPOSER_PROJECT_ENTRY_MIME,
+                    serializeComposerProjectEntryDragData(composerEntries[0]),
+                );
+            }
+
+            dataTransfer.setData(
+                "text/plain",
+                composerEntries.length === 1
+                    ? composerEntries[0]?.relativePath ?? ""
+                    : composerEntries
+                          .map((entry) => entry.relativePath)
+                          .join("\n"),
+            );
+        },
+        [
+            fileTreeSelectedPaths,
+            visibleSidebarNodePaths,
+            visibleSidebarNodesByPath,
+        ],
+    );
 
     const { stickyFolders, stickyFolderPaths } = useStickyFolders({
         scrollContainerRef: sidebarScrollRef,
@@ -2006,6 +2168,16 @@ export function App() {
                     <div
                         ref={sidebarScrollRef}
                         className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2"
+                        onClick={(event) => {
+                            if (
+                                event.target instanceof HTMLElement &&
+                                event.target.closest(".git-tree-row")
+                            ) {
+                                return;
+                            }
+
+                            clearFileTreeSelection();
+                        }}
                     >
                         {activeProject ? (
                             <>
@@ -2013,6 +2185,7 @@ export function App() {
                                     <StickyFolderOverlay
                                         stickyFolders={stickyFolders}
                                         enableNodeDrag
+                                        onNodeClick={handleFileTreeNodeClick}
                                         onToggleDirectory={(node) => {
                                             if (node.isProjectRoot) {
                                                 setProjectRootExpandedByContext(
@@ -2037,28 +2210,9 @@ export function App() {
                                                 activeWorktreeId,
                                             );
                                         }}
-                                        onNodeDragStart={(
-                                            node,
-                                            dataTransfer,
-                                        ) => {
-                                            if (!dataTransfer) return;
-                                            dataTransfer.effectAllowed =
-                                                "copyMove";
-                                            dataTransfer.setData(
-                                                COMPOSER_PROJECT_ENTRY_MIME,
-                                                serializeComposerProjectEntryDragData(
-                                                    {
-                                                        kind: node.kind,
-                                                        name: node.name,
-                                                        relativePath: node.path,
-                                                    },
-                                                ),
-                                            );
-                                            dataTransfer.setData(
-                                                "text/plain",
-                                                node.path,
-                                            );
-                                        }}
+                                        onNodeDragStart={
+                                            handleFileTreeNodeDragStart
+                                        }
                                         onNodeDrop={(
                                             dragData,
                                             destinationNode,
@@ -2068,6 +2222,7 @@ export function App() {
                                                 destinationNode,
                                             );
                                         }}
+                                        selectedPaths={selectedFileTreePathSet}
                                     />
                                 ) : null}
                                 <GitTreeView
@@ -2110,46 +2265,37 @@ export function App() {
                                         void submitFileTreeInlineEditor();
                                     }}
                                     stickyFolderPaths={stickyFolderPaths}
+                                    selectedPaths={selectedFileTreePathSet}
                                     scrollToActivePathSignal={
                                         fileTreeRevealSignal ?? undefined
                                     }
-                                    onNodeClick={(node) =>
-                                        activeProjectId
-                                            ? void openFileTab(
-                                                  activeProjectId,
-                                                  node.path,
-                                                  activeWorktreeId,
-                                              )
-                                            : undefined
-                                    }
+                                    onNodeClick={handleFileTreeNodeClick}
                                     onNodeContextMenu={(node, { x, y }) =>
-                                        setFileTreeContextMenu({
-                                            x,
-                                            y,
-                                            payload: {
-                                                kind: "node",
-                                                node,
-                                            },
-                                        })
-                                    }
-                                    onNodeDragStart={(node, dataTransfer) => {
-                                        if (!dataTransfer) return;
-                                        dataTransfer.effectAllowed = "copyMove";
-                                        dataTransfer.setData(
-                                            COMPOSER_PROJECT_ENTRY_MIME,
-                                            serializeComposerProjectEntryDragData(
-                                                {
-                                                    kind: node.kind,
-                                                    name: node.name,
-                                                    relativePath: node.path,
+                                        {
+                                            if (
+                                                !selectedFileTreePathSet.has(
+                                                    node.path,
+                                                )
+                                            ) {
+                                                setFileTreeSelectedPaths([
+                                                    node.path,
+                                                ]);
+                                                setFileTreeSelectionAnchorPath(
+                                                    node.path,
+                                                );
+                                            }
+
+                                            setFileTreeContextMenu({
+                                                x,
+                                                y,
+                                                payload: {
+                                                    kind: "node",
+                                                    node,
                                                 },
-                                            ),
-                                        );
-                                        dataTransfer.setData(
-                                            "text/plain",
-                                            node.path,
-                                        );
-                                    }}
+                                            });
+                                        }
+                                    }
+                                    onNodeDragStart={handleFileTreeNodeDragStart}
                                     onNodeDrop={(dragData, destinationNode) => {
                                         void handleMoveTreeNode(
                                             dragData,

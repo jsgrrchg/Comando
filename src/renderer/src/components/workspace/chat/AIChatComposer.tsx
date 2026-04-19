@@ -19,10 +19,13 @@ import type {
 import { resolveEditorLanguage } from "@shared/editor-language";
 
 import {
+    COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
     getExternalComposerDropItems,
     WORKSPACE_TAB_COMPOSER_DRAG_EVENT,
+    parseComposerProjectEntryListDragData,
     parseComposerProjectEntryDragData,
+    type ComposerProjectEntryDragData,
     type WorkspaceTabComposerDragDetail,
 } from "@renderer/app/drag-and-drop";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
@@ -258,6 +261,26 @@ function readPartsFromDom(root: HTMLElement): AIComposerPart[] {
     }
 
     return normalized;
+}
+
+export function appendComposerProjectEntries(
+    parts: readonly AIComposerPart[],
+    entries: readonly ComposerProjectEntryDragData[],
+): AIComposerPart[] {
+    return entries.reduce<AIComposerPart[]>((nextParts, entry) => {
+        return entry.kind === "directory"
+            ? appendFolderMentionPart(
+                  nextParts,
+                  entry.relativePath,
+                  entry.name,
+              )
+            : appendFileMentionPart(nextParts, {
+                  label: entry.name,
+                  path: entry.relativePath,
+                  relativePath: entry.relativePath,
+                  languageId: getLanguageIdFromPath(entry.relativePath),
+              });
+    }, [...parts]);
 }
 
 /* ─── Parts → DOM sync ─── */
@@ -999,28 +1022,22 @@ export function AIChatComposer({
                 return;
             }
 
+            const composerEntryListData = parseComposerProjectEntryListDragData(
+                e.dataTransfer.getData(COMPOSER_PROJECT_ENTRY_LIST_MIME),
+            );
+            if (composerEntryListData) {
+                onChange(
+                    appendComposerProjectEntries(parts, composerEntryListData.entries),
+                );
+                return;
+            }
+
             const composerEntryData = parseComposerProjectEntryDragData(
                 e.dataTransfer.getData(COMPOSER_PROJECT_ENTRY_MIME),
             );
 
             if (composerEntryData) {
-                const nextParts =
-                    composerEntryData.kind === "directory"
-                        ? appendFolderMentionPart(
-                              parts,
-                              composerEntryData.relativePath,
-                              composerEntryData.name,
-                          )
-                        : appendFileMentionPart(parts, {
-                              label: composerEntryData.name,
-                              path: composerEntryData.relativePath,
-                              relativePath: composerEntryData.relativePath,
-                              languageId: getLanguageIdFromPath(
-                                  composerEntryData.relativePath,
-                              ),
-                          });
-
-                onChange(nextParts);
+                onChange(appendComposerProjectEntries(parts, [composerEntryData]));
                 return;
             }
 

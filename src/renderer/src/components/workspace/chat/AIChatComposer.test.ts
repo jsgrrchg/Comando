@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    appendComposerProjectEntries,
     getComposerSubmitKeyboardAction,
     shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
@@ -128,5 +129,38 @@ describe("AIChatComposer", () => {
                 requireCmdEnterToSend: true,
             }),
         ).toBeNull();
+    });
+
+    it("appends multiple dropped project entries as composer pills", () => {
+        expect(
+            appendComposerProjectEntries([{ text: "", type: "text" }], [
+                {
+                    kind: "file",
+                    name: "app.ts",
+                    relativePath: "src/app.ts",
+                },
+                {
+                    kind: "directory",
+                    name: "docs",
+                    relativePath: "docs",
+                },
+            ]),
+        ).toEqual([
+            { text: "", type: "text" },
+            {
+                label: "app.ts",
+                languageId: "typescript",
+                path: "src/app.ts",
+                relativePath: "src/app.ts",
+                type: "file_mention",
+            },
+            { text: " ", type: "text" },
+            {
+                folderPath: "docs",
+                label: "docs",
+                type: "folder_mention",
+            },
+            { text: " ", type: "text" },
+        ]);
     });
 });
