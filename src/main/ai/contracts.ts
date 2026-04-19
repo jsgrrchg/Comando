@@ -10,6 +10,10 @@ import type {
 import type {
     AiPermissionResponseInput,
     AiPromptResult,
+    AiSessionConfigOption,
+    AiSessionConfigOptionMutationInput,
+    AiSessionModeMutationInput,
+    AiSessionModelMutationInput,
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionSnapshot,
@@ -47,6 +51,7 @@ export const SUPPRESSED_STATUS_TITLES = new Set([
 export const AI_SESSION_STREAMING_FLUSH_MS = 120;
 
 export interface AiServiceOptions {
+    readonly aiWorker?: AiWorkerGateway | null;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
     readonly secretStore: SecretStoreGateway;
@@ -58,12 +63,49 @@ export interface AiServiceOptions {
     readonly persistence: AiPersistenceGateway;
 }
 
+export interface AiWorkerGateway {
+    cancelSession(sessionId: string): Promise<void>;
+    close(): Promise<void>;
+    closeOwnedByWindow(ownerWindowId: string): Promise<void>;
+    closeSession(sessionId: string): Promise<void>;
+    notifyFileBuffer(input: FileBufferNotificationInput): Promise<void>;
+    prepareSession(input: AiWorkerPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
+    refreshProjectScopes(input: AiWorkerRefreshProjectScopesRpcInput): Promise<void>;
+    respondPermission(input: AiPermissionResponseInput): Promise<void>;
+    respondUserInput(input: AiUserInputResponseInput): Promise<void>;
+    sendPrompt(input: AiWorkerSendPromptRpcInput): Promise<AiPromptResult>;
+    setSessionConfigOption(
+        input: AiSessionConfigOptionMutationInput,
+    ): Promise<void>;
+    setSessionMode(input: AiSessionModeMutationInput): Promise<void>;
+    setSessionModel(input: AiSessionModelMutationInput): Promise<void>;
+}
+
+export interface AiWorkerDesiredSelections {
+    readonly configOptions: readonly AiSessionConfigOption[];
+    readonly modeId: string | null;
+    readonly modelId: string | null;
+    readonly preferredConfigOptions: Record<string, boolean | string>;
+}
+
+export interface AiWorkerSessionLaunchInput {
+    readonly additionalRoots: readonly string[];
+    readonly cwd: string;
+    readonly desiredSelections: AiWorkerDesiredSelections;
+    readonly input: SessionDescriptor;
+    readonly ownerWindowId: string;
+    readonly persistedSnapshot: AiSessionSnapshot;
+    readonly projectRoot: string | null;
+    readonly resolvedRuntime: ResolvedAcpRuntime;
+}
+
 export interface LiveAcpSession {
     additionalRoots: readonly string[];
     child: ChildProcessWithoutNullStreams;
     closing: boolean;
     connection: ClientSideConnection;
     cwd: string;
+    desiredSelections: AiWorkerDesiredSelections;
     isRestoring: boolean;
     ownerWindowId: string;
     pendingPermission: {
@@ -71,9 +113,11 @@ export interface LiveAcpSession {
         readonly resolve: (response: RequestPermissionResponse) => void;
     } | null;
     pendingAdditionalRoots: readonly string[] | null;
+    pendingLaunch: AiWorkerSessionLaunchInput | null;
     pendingPersistTimer: ReturnType<typeof setTimeout> | null;
     processedDiffPaths: Map<string, Set<string>>;
     projectRoot: string | null;
+    resolvedRuntime: ResolvedAcpRuntime;
     runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
     terminalOutputBuffers: Map<string, string>;
@@ -170,7 +214,12 @@ export interface AiWorkerInitMessage {
 
 export interface AiWorkerPrepareSessionRpcInput {
     readonly input: PrepareAiSessionInput;
-    readonly ownerWindowId: string;
+    readonly launch: AiWorkerSessionLaunchInput;
+}
+
+export interface AiWorkerRefreshProjectScopesRpcInput {
+    readonly projectId: string;
+    readonly sessions: readonly AiWorkerSessionLaunchInput[];
 }
 
 export interface AiWorkerReadyMessage {
@@ -188,7 +237,7 @@ export interface AiWorkerRespondUserInputRpcInput {
 
 export interface AiWorkerSendPromptRpcInput {
     readonly input: SendAiPromptInput;
-    readonly ownerWindowId: string;
+    readonly launch: AiWorkerSessionLaunchInput;
 }
 
 export interface AiWorkerRpcMethodMap {
@@ -213,7 +262,7 @@ export interface AiWorkerRpcMethodMap {
         readonly result: AiSessionSnapshot;
     };
     readonly "ai.refreshProjectScopes": {
-        readonly params: string;
+        readonly params: AiWorkerRefreshProjectScopesRpcInput;
         readonly result: void;
     };
     readonly "ai.respondPermission": {
@@ -227,5 +276,17 @@ export interface AiWorkerRpcMethodMap {
     readonly "ai.sendPrompt": {
         readonly params: AiWorkerSendPromptRpcInput;
         readonly result: AiPromptResult;
+    };
+    readonly "ai.setSessionConfigOption": {
+        readonly params: AiSessionConfigOptionMutationInput;
+        readonly result: void;
+    };
+    readonly "ai.setSessionMode": {
+        readonly params: AiSessionModeMutationInput;
+        readonly result: void;
+    };
+    readonly "ai.setSessionModel": {
+        readonly params: AiSessionModelMutationInput;
+        readonly result: void;
     };
 }

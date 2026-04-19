@@ -4,12 +4,13 @@ import type {
     AiPermissionResponseInput,
     AiPromptResult,
     AiRuntimeStatus,
+    AiSessionConfigOptionMutationInput,
+    AiSessionModeMutationInput,
+    AiSessionModelMutationInput,
     AiSessionSnapshot,
     AiSessionUpdate,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
-    PrepareAiSessionInput,
-    SendAiPromptInput,
 } from "@shared/ipc";
 
 import {
@@ -17,7 +18,9 @@ import {
     type AiWorkerEventMessage,
     type AiWorkerFatalMessage,
     type AiWorkerLogEventPayload,
+    type AiWorkerGateway,
     type AiWorkerPrepareSessionRpcInput,
+    type AiWorkerRefreshProjectScopesRpcInput,
     type AiWorkerReadyMessage,
     type AiWorkerRpcMethodMap,
     type AiWorkerRespondPermissionRpcInput,
@@ -48,24 +51,7 @@ export interface AiWorkerClientOptions {
     ) => void | Promise<void>;
 }
 
-export interface AiWorkerClient {
-    cancelSession(sessionId: string): Promise<void>;
-    close(): Promise<void>;
-    closeOwnedByWindow(ownerWindowId: string): Promise<void>;
-    closeSession(sessionId: string): Promise<void>;
-    notifyFileBuffer(input: FileBufferNotificationInput): Promise<void>;
-    prepareSession(
-        input: PrepareAiSessionInput,
-        ownerWindowId: string,
-    ): Promise<AiSessionSnapshot>;
-    refreshProjectScopes(projectId: string): Promise<void>;
-    respondPermission(input: AiPermissionResponseInput): Promise<void>;
-    respondUserInput(input: AiUserInputResponseInput): Promise<void>;
-    sendPrompt(
-        input: SendAiPromptInput,
-        ownerWindowId: string,
-    ): Promise<AiPromptResult>;
-}
+export interface AiWorkerClient extends AiWorkerGateway {}
 
 class AiRpcClient {
     readonly #supervisor: RpcWorkerSupervisor<AiWorkerBootstrapState>;
@@ -98,23 +84,15 @@ class RemoteAiWorkerClient implements AiWorkerClient {
     }
 
     async prepareSession(
-        input: PrepareAiSessionInput,
-        ownerWindowId: string,
+        input: AiWorkerPrepareSessionRpcInput,
     ): Promise<AiSessionSnapshot> {
-        return await this.#rpc.call("ai.prepareSession", {
-            input,
-            ownerWindowId,
-        } satisfies AiWorkerPrepareSessionRpcInput);
+        return await this.#rpc.call("ai.prepareSession", input);
     }
 
     async sendPrompt(
-        input: SendAiPromptInput,
-        ownerWindowId: string,
+        input: AiWorkerSendPromptRpcInput,
     ): Promise<AiPromptResult> {
-        return await this.#rpc.call("ai.sendPrompt", {
-            input,
-            ownerWindowId,
-        } satisfies AiWorkerSendPromptRpcInput);
+        return await this.#rpc.call("ai.sendPrompt", input);
     }
 
     async cancelSession(sessionId: string): Promise<void> {
@@ -141,12 +119,28 @@ class RemoteAiWorkerClient implements AiWorkerClient {
         } satisfies AiWorkerRespondUserInputRpcInput);
     }
 
-    async refreshProjectScopes(projectId: string): Promise<void> {
-        await this.#rpc.call("ai.refreshProjectScopes", projectId);
+    async refreshProjectScopes(
+        input: AiWorkerRefreshProjectScopesRpcInput,
+    ): Promise<void> {
+        await this.#rpc.call("ai.refreshProjectScopes", input);
     }
 
     async notifyFileBuffer(input: FileBufferNotificationInput): Promise<void> {
         await this.#rpc.call("ai.notifyFileBuffer", input);
+    }
+
+    async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
+        await this.#rpc.call("ai.setSessionMode", input);
+    }
+
+    async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
+        await this.#rpc.call("ai.setSessionModel", input);
+    }
+
+    async setSessionConfigOption(
+        input: AiSessionConfigOptionMutationInput,
+    ): Promise<void> {
+        await this.#rpc.call("ai.setSessionConfigOption", input);
     }
 
     async close(): Promise<void> {

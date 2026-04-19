@@ -44,6 +44,7 @@ const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
 
 interface DiffResolutionContext {
     readonly meta: unknown;
+    readonly readOpenFileBuffer?: (absolutePath: string) => string | null;
     readonly sessionUpdate: "tool_call" | "tool_call_update";
     readonly toolCallId: string;
 }
@@ -57,6 +58,9 @@ export function mapToolCallUpdate(
     update: ToolCall | ToolCallUpdate,
     updateKind: "tool_call" | "tool_call_update",
     updatedAt: string,
+    options: {
+        readonly readOpenFileBuffer?: (absolutePath: string) => string | null;
+    } = {},
 ): AiSessionSnapshot {
     const existing =
         snapshot.toolActivity.find(
@@ -190,6 +194,7 @@ export function mapToolCallUpdate(
                   normalizedPath,
                   {
                       meta: update._meta,
+                      readOpenFileBuffer: options.readOpenFileBuffer,
                       sessionUpdate: updateKind,
                       toolCallId: update.toolCallId,
                   },
@@ -747,7 +752,9 @@ export function resolveDiffToFullTexts(
     );
     const base = existing
         ? getTrackedFileCurrentText(existing)
-        : (readOpenFileBuffer(absolutePath) ?? tryReadFileAsText(absolutePath));
+        : ((context?.readOpenFileBuffer?.(absolutePath) ??
+              readOpenFileBuffer(absolutePath)) ??
+          tryReadFileAsText(absolutePath));
     if (base === null) {
         return diff;
     }

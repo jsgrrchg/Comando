@@ -140,12 +140,22 @@ if (!hasSingleInstanceLock) {
             try {
                 aiWorkerClient = await createAiWorkerClient({
                     onRuntimeStatus: (status) => {
-                        broadcastAiRuntimeStatus(status);
+                        aiService?.handleWorkerRuntimeStatus(status);
+                    },
+                    onSessionClosed: (payload) => {
+                        aiService?.handleWorkerSessionClosed(payload);
                     },
                     onSessionSnapshot: (ownerWindowId, update) => {
-                        broadcastAiSessionSnapshot(ownerWindowId, update);
+                        aiService?.handleWorkerSessionSnapshot(
+                            ownerWindowId,
+                            update,
+                        );
+                    },
+                    onWorkerRestarted: async () => {
+                        await aiService?.handleWorkerRestarted();
                     },
                 });
+                aiService.setWorker(aiWorkerClient);
             } catch (error) {
                 console.error(
                     "[main] Failed to initialize the AI worker",
@@ -527,12 +537,6 @@ function attachMainWindowLifecycle(
 
         terminalService?.closeOwnedByWindow(context.windowId);
         aiService?.closeOwnedByWindow(context.windowId);
-        const closeOwnedByWindowPromise = aiWorkerClient?.closeOwnedByWindow(
-            context.windowId,
-        );
-        void closeOwnedByWindowPromise?.catch((error) => {
-            debugBenignError("ai.worker.closeOwnedByWindow", error);
-        });
     });
     window.webContents.on("render-process-gone", () => {
         detachAiSessionStream(context.windowId);
