@@ -67,6 +67,25 @@ interface PersistedRuntimePreferencesRow {
     readonly value: string;
 }
 
+const LATEST_RUNTIME_CATALOG_TRANSCRIPT_QUERY = `
+    SELECT
+        (
+            SELECT value
+            FROM app_settings
+            WHERE key = ?
+            LIMIT 1
+        ) AS value,
+        (
+            SELECT chat_transcripts.transcript_json
+            FROM chat_sessions
+            LEFT JOIN chat_transcripts
+                ON chat_transcripts.session_id = chat_sessions.id
+            WHERE chat_sessions.runtime = ?
+            ORDER BY chat_sessions.updated_at DESC
+            LIMIT 1
+        ) AS transcript_json
+`;
+
 export interface PersistedRuntimeSelectionPreferences {
     readonly configOptions: Record<string, boolean | string>;
     readonly modeId: string | null;
@@ -239,51 +258,12 @@ export class AiPersistence {
         return mainProcessPerformance.measureSync(
             "db.ai.listSessionHistory",
             () => {
+                const scopedHistoryQuery = buildScopedSessionHistoryQuery(input);
                 const rows = this.#connection
-                    .prepare<
-                        [
-                            string | null,
-                            string | null,
-                            string | null,
-                            string | null,
-                            number,
-                        ],
-                        PersistedAiHistorySessionRow
-                    >(
-                        `
-                        SELECT
-                            chat_sessions.id AS session_id,
-                            chat_sessions.project_id,
-                            chat_sessions.worktree_id,
-                            chat_sessions.title,
-                            chat_sessions.runtime,
-                            chat_sessions.created_at,
-                            chat_sessions.updated_at,
-                            chat_transcripts.transcript_json,
-                            chat_transcripts.message_count
-                        FROM chat_sessions
-                        LEFT JOIN chat_transcripts
-                            ON chat_transcripts.session_id = chat_sessions.id
-                        WHERE
-                            (
-                                (? IS NULL AND chat_sessions.project_id IS NULL)
-                                OR chat_sessions.project_id = ?
-                            )
-                            AND (
-                                (? IS NULL AND chat_sessions.worktree_id IS NULL)
-                                OR chat_sessions.worktree_id = ?
-                            )
-                        ORDER BY chat_sessions.updated_at DESC
-                        LIMIT ?
-                        `,
-                    )
+                    .prepare(scopedHistoryQuery.sql)
                     .all(
-                        input.projectId,
-                        input.projectId,
-                        input.worktreeId ?? null,
-                        input.worktreeId ?? null,
-                        normalizeHistoryLimit(input.limit),
-                    );
+                        ...scopedHistoryQuery.params,
+                    ) as readonly PersistedAiHistorySessionRow[];
 
                 return rows
                     .map((row) => createHistorySessionSummary(row))
@@ -350,26 +330,7 @@ export class AiPersistence {
             .prepare<
                 [string, AiSessionSnapshot["runtimeId"]],
                 PersistedRuntimeCatalogRow | undefined
-            >(
-                `
-                SELECT
-                    (
-                        SELECT value
-                        FROM app_settings
-                        WHERE key = ?
-                        LIMIT 1
-                    ) AS value,
-                    (
-                        SELECT chat_transcripts.transcript_json
-                        FROM chat_sessions
-                        LEFT JOIN chat_transcripts
-                            ON chat_transcripts.session_id = chat_sessions.id
-                        WHERE chat_sessions.runtime = ?
-                        ORDER BY chat_sessions.updated_at DESC
-                        LIMIT 1
-                    ) AS transcript_json
-                `,
-            )
+            >(LATEST_RUNTIME_CATALOG_TRANSCRIPT_QUERY)
             .get(getRuntimeCatalogKey(runtimeId), runtimeId);
 
         const rawJson = row?.value ?? row?.transcript_json ?? null;
@@ -690,17 +651,22 @@ function applyRuntimeSelectionPreferencesToCatalog(
     | "models"
 > {
     const configOptions = catalog.configOptions.map((option) => {
+        const configOptionValue = Object.prototype.hasOwnProperty.call(
+            preferences.configOptions,
+            option.id,
+        )
+            ? preferences.configOptions[option.id]
+            : null;
         const preferredValue =
             option.type === "select" &&
             (option.category === "mode" || option.id.toLowerCase() === "mode")
-                ? (preferences.modeId ?? preferences.configOptions[option.id])
+                ? (preferences.modeId ?? configOptionValue)
                 : option.type === "select" &&
                     (option.category === "model" ||
                         option.id.toLowerCase() === "model")
-                  ? (preferences.modelId ??
-                    preferences.configOptions[option.id])
-                  : preferences.configOptions[option.id];
-        if (preferredValue === undefined) {
+                  ? (preferences.modelId ?? configOptionValue)
+                  : configOptionValue;
+        if (preferredValue === null) {
             return option;
         }
 
@@ -1624,6 +1590,53 @@ function normalizeHistoryLimit(value: number | undefined): number {
     }
 
     return Math.max(1, Math.min(200, Math.trunc(value)));
+}
+
+function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
+    readonly params: readonly (number | string)[];
+    readonly sql: string;
+} {
+    const whereClauses: string[] = [];
+    const params: Array<number | string> = [];
+    const worktreeId = input.worktreeId ?? null;
+
+    if (input.projectId === null) {
+        whereClauses.push("chat_sessions.project_id IS NULL");
+    } else {
+        whereClauses.push("chat_sessions.project_id = ?");
+        params.push(input.projectId);
+    }
+
+    if (worktreeId === null) {
+        whereClauses.push("chat_sessions.worktree_id IS NULL");
+    } else {
+        whereClauses.push("chat_sessions.worktree_id = ?");
+        params.push(worktreeId);
+    }
+
+    params.push(normalizeHistoryLimit(input.limit));
+
+    return {
+        params,
+        sql: `
+            SELECT
+                chat_sessions.id AS session_id,
+                chat_sessions.project_id,
+                chat_sessions.worktree_id,
+                chat_sessions.title,
+                chat_sessions.runtime,
+                chat_sessions.created_at,
+                chat_sessions.updated_at,
+                chat_transcripts.transcript_json,
+                chat_transcripts.message_count
+            FROM chat_sessions
+            LEFT JOIN chat_transcripts
+                ON chat_transcripts.session_id = chat_sessions.id
+            WHERE ${whereClauses.join(" AND ")}
+            ORDER BY chat_sessions.updated_at DESC
+            LIMIT ?
+        `,
+    };
 }
 
 function normalizeHistoryOffset(value: number | undefined): number {

@@ -60,6 +60,8 @@ let settingsService: SettingsGateway | null = null;
 let terminalService: TerminalService | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
+let isFinalizingQuit = false;
+let pendingShutdown: Promise<void> | null = null;
 const aiSessionStreamPorts = new Map<string, MessagePortMain>();
 
 configureMainProcessApp();
@@ -281,30 +283,62 @@ app.on("before-quit", () => {
     isQuitting = true;
 });
 
-app.on("will-quit", () => {
+app.on("will-quit", (event) => {
+    if (isFinalizingQuit) {
+        return;
+    }
+
+    event.preventDefault();
+
+    if (!pendingShutdown) {
+        pendingShutdown = shutdownApplication().finally(() => {
+            pendingShutdown = null;
+            isFinalizingQuit = true;
+            app.quit();
+        });
+    }
+});
+
+async function shutdownApplication(): Promise<void> {
     for (const windowId of [...aiSessionStreamPorts.keys()]) {
         detachAiSessionStream(windowId);
     }
 
     mainProcessPerformance.flush();
     mainProcessPerformance.stop();
+
     aiService?.close();
-    aiService = null;
-    void aiWorkerClient?.close();
-    aiWorkerClient = null;
-    void gitService?.close();
-    gitService = null;
-    projectService?.close();
-    projectService = null;
     terminalService?.close();
-    terminalService = null;
+
+    const aiWorkerClientToClose = aiWorkerClient;
+    const dbWorkerClientToClose = dbWorkerClient;
+    const gitServiceToClose = gitService;
+    const projectServiceToClose = projectService;
+
+    aiService = null;
+    aiWorkerClient = null;
+    dbWorkerClient = null;
+    gitService = null;
     persistenceService = null;
+    projectService = null;
     secretStore = null;
     settingsService = null;
+    terminalService = null;
     workspaceService = null;
-    void dbWorkerClient?.close();
-    dbWorkerClient = null;
-});
+
+    const shutdownResults = await Promise.allSettled([
+        aiWorkerClientToClose?.close(),
+        gitServiceToClose?.close(),
+        projectServiceToClose?.close(),
+        dbWorkerClientToClose?.close(),
+    ]);
+
+    for (const result of shutdownResults) {
+        if (result.status === "rejected") {
+            debugBenignError("app.shutdown", result.reason);
+        }
+    }
+}
 
 function restoreMainWindows(): void {
     const snapshots =

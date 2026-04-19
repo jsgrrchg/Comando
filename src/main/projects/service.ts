@@ -357,11 +357,11 @@ export class ProjectService {
         return resolveProjectPath(project.rootPath, relativePath);
     }
 
-    close(): void {
-        void this.#worker.close().catch((error) => {
+    async close(): Promise<void> {
+        this.#indexedRoots.clear();
+        await this.#worker.close().catch((error) => {
             logProjectWorkerError("close", error);
         });
-        this.#indexedRoots.clear();
     }
 
     handleProjectTreeInvalidation(payload: ProjectTreeInvalidation): void {

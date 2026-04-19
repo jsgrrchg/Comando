@@ -330,4 +330,14 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ON projects(is_hidden);
     `,
     },
+    {
+        id: "0009-ai-history-indexes",
+        sql: `
+      CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_worktree_updated_at
+        ON chat_sessions(project_id, worktree_id, updated_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_chat_sessions_runtime_updated_at
+        ON chat_sessions(runtime, updated_at DESC);
+    `,
+    },
 ];

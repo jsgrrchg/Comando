@@ -262,6 +262,53 @@ describe("AiPersistence", () => {
         expect(history).toEqual([]);
     });
 
+    it("lists unscoped history using null project and worktree filters", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            projectId: null,
+            runtimeId: "codex",
+            sessionId: "session-global-new",
+            transcript: createTranscriptWithMessages([
+                "Newest global session",
+            ]),
+            updatedAt: "2026-04-16T13:00:00.000Z",
+            worktreeId: null,
+        });
+        seedChatSession(connection, {
+            projectId: null,
+            runtimeId: "codex",
+            sessionId: "session-global-old",
+            transcript: createTranscriptWithMessages([
+                "Older global session",
+            ]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: null,
+        });
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-scoped",
+            transcript: createTranscriptWithMessages([
+                "Scoped session should stay out",
+            ]),
+            updatedAt: "2026-04-16T14:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: null,
+            worktreeId: null,
+        });
+
+        expect(history.map((session) => session.sessionId)).toEqual([
+            "session-global-new",
+            "session-global-old",
+        ]);
+    });
+
     it("loads a transcript page from persisted snapshot messages", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);

@@ -29,12 +29,17 @@ import {
     type WorkspaceChatTabActivityIndicator,
 } from "@renderer/components/workspace/workspaceTabActivity";
 
+import {
+    applySessionUpdateToSidebarHistory,
+    SIDEBAR_AGENTS_HISTORY_LIMIT,
+} from "./sidebarAgentsHistory";
+
 interface SidebarAgentsContextMenuPayload {
     readonly sessionId: string;
 }
 
-const SIDEBAR_AGENTS_LIMIT = 250;
 const SIDEBAR_AGENTS_TITLE_MAX_CHARS = 48;
+const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
 
 export function SidebarAgentsPanel({
     filter,
@@ -70,6 +75,7 @@ export function SidebarAgentsPanel({
     );
     const [renameDraft, setRenameDraft] = useState("");
     const requestIdRef = useRef(0);
+    const refreshTimerRef = useRef<number | null>(null);
     const normalizedFilter = (filter ?? "").trim().toLowerCase();
     const hasQuery = normalizedFilter.length > 0;
 
@@ -86,7 +92,7 @@ export function SidebarAgentsPanel({
         setError(null);
         try {
             const nextSessions = await api.listAiSessionHistory({
-                limit: SIDEBAR_AGENTS_LIMIT,
+                limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
                 projectId,
                 worktreeId: worktreeId ?? null,
             });
@@ -110,11 +116,32 @@ export function SidebarAgentsPanel({
         }
     }, [projectId, worktreeId]);
 
+    const clearRefreshTimer = useCallback(() => {
+        if (refreshTimerRef.current !== null) {
+            window.clearTimeout(refreshTimerRef.current);
+            refreshTimerRef.current = null;
+        }
+    }, []);
+
+    const scheduleReload = useCallback(() => {
+        if (refreshTimerRef.current !== null) {
+            return;
+        }
+
+        refreshTimerRef.current = window.setTimeout(() => {
+            refreshTimerRef.current = null;
+            void loadSessions();
+        }, SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS);
+    }, [loadSessions]);
+
     useEffect(() => {
         setSessions([]);
         setError(null);
+        clearRefreshTimer();
         void loadSessions();
-    }, [loadSessions]);
+    }, [clearRefreshTimer, loadSessions]);
+
+    useEffect(() => clearRefreshTimer, [clearRefreshTimer]);
 
     useEffect(() => {
         const api = getComandoApi();
@@ -122,11 +149,31 @@ export function SidebarAgentsPanel({
             return;
         }
 
-        const unsubscribe = api.onAiSessionSnapshot(() => {
-            void loadSessions();
+        const unsubscribe = api.onAiSessionSnapshot((update) => {
+            let needsReload = false;
+
+            setSessions((current) => {
+                const result = applySessionUpdateToSidebarHistory({
+                    limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+                    scope: {
+                        projectId,
+                        worktreeId: worktreeId ?? null,
+                    },
+                    sessions: current,
+                    update,
+                });
+                needsReload = result.needsReload;
+                return result.sessions;
+            });
+
+            if (needsReload) {
+                scheduleReload();
+            }
         });
-        return unsubscribe;
-    }, [loadSessions]);
+        return () => {
+            unsubscribe();
+        };
+    }, [projectId, scheduleReload, worktreeId]);
 
     const handleOpenSession = useCallback(
         (session: AiHistorySessionSummary) => {

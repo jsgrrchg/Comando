@@ -94,6 +94,12 @@ const runtimeIds = [
     "kilo",
 ] as const satisfies readonly AiRuntimeId[];
 
+const DB_WORKER_METHOD_TIMEOUTS_MS: Readonly<Record<string, number>> = {
+    // Project imports can synchronously touch the filesystem and invoke git
+    // path discovery, so they need more headroom than pure SQLite calls.
+    "projects.addProjectPaths": 30_000,
+};
+
 class DbRpcClient {
     readonly #supervisor: RpcWorkerSupervisor<DbWorkerBootstrapState>;
 
@@ -905,6 +911,7 @@ export async function createDbWorkerClient(
             };
         },
         domain: "db",
+        methodTimeoutsMs: DB_WORKER_METHOD_TIMEOUTS_MS,
         onConnected: (bootstrap, context) => {
             if (context.reason !== "restart") {
                 return;

@@ -22,9 +22,10 @@ describe("databaseMigrations", () => {
             shellStateMigration,
             gitWorktreesMigration,
             projectVisibilityMigration,
+            aiHistoryIndexesMigration,
         ] = databaseMigrations;
 
-        expect(databaseMigrations).toHaveLength(8);
+        expect(databaseMigrations).toHaveLength(9);
         expect(foundationMigration?.id).toBe("0001-foundation");
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
@@ -98,6 +99,13 @@ describe("databaseMigrations", () => {
             "ALTER TABLE projects",
         );
         expect(projectVisibilityMigration?.sql).toContain("is_hidden");
+        expect(aiHistoryIndexesMigration?.id).toBe("0009-ai-history-indexes");
+        expect(aiHistoryIndexesMigration?.sql).toContain(
+            "idx_chat_sessions_project_worktree_updated_at",
+        );
+        expect(aiHistoryIndexesMigration?.sql).toContain(
+            "idx_chat_sessions_runtime_updated_at",
+        );
     });
 
     it("backfills canonical_root_path and worktree_id from a previous schema", () => {
@@ -190,6 +198,30 @@ describe("databaseMigrations", () => {
                     >("SELECT worktree_id FROM workspace_tabs WHERE id = 'tab-1'")
                     .get();
                 expect(tabRow?.worktree_id).toBe("project-1:primary");
+
+                const historyIndexRow = migratedDb
+                    .prepare<
+                        [],
+                        { name: string } | undefined
+                    >(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_chat_sessions_project_worktree_updated_at'",
+                    )
+                    .get();
+                expect(historyIndexRow?.name).toBe(
+                    "idx_chat_sessions_project_worktree_updated_at",
+                );
+
+                const runtimeIndexRow = migratedDb
+                    .prepare<
+                        [],
+                        { name: string } | undefined
+                    >(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_chat_sessions_runtime_updated_at'",
+                    )
+                    .get();
+                expect(runtimeIndexRow?.name).toBe(
+                    "idx_chat_sessions_runtime_updated_at",
+                );
             } finally {
                 migratedDb.close();
             }
