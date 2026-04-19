@@ -42,6 +42,7 @@ import {
 import {
     appendContentBlockToSnapshot,
     applySessionCatalogToSnapshot,
+    buildAiSessionUpdate,
     buildPromptContentBlocks,
     buildUserInputResponsePrompt,
     finalizeStreamingMessages,
@@ -1148,10 +1149,10 @@ export class AiWorkerRuntime {
             event: "ai.snapshot.updated",
             payload: {
                 ownerWindowId: liveSession.ownerWindowId,
-                update: {
-                    kind: "snapshot",
-                    snapshot: liveSession.snapshot,
-                },
+                update: buildAiSessionUpdate(
+                    liveSession.lastBroadcastSnapshot,
+                    liveSession.snapshot,
+                ),
             },
             type: "event",
         });

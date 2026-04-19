@@ -14,6 +14,11 @@ const loadSessionMock = vi.fn(() =>
         models: [],
     }),
 );
+const promptMock = vi.fn(() =>
+    Promise.resolve({
+        stopReason: "completed",
+    }),
+);
 const newSessionMock = vi.fn(() =>
     Promise.resolve({
         configOptions: [],
@@ -39,6 +44,7 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         initialize = initializeMock;
         loadSession = loadSessionMock;
         newSession = newSessionMock;
+        prompt = promptMock;
     },
     PROTOCOL_VERSION: "test-protocol-version",
     ndJsonStream: vi.fn(() => ({})),
@@ -55,6 +61,7 @@ describe("AiWorkerRuntime prepareSession", () => {
             modes: [],
             models: [],
         });
+        promptMock.mockClear();
         newSessionMock.mockClear();
         spawnMock.mockClear();
     });
@@ -149,5 +156,109 @@ describe("AiWorkerRuntime prepareSession", () => {
         expect(emittedEvents.some((event) => event.event === "ai.snapshot.updated")).toBe(
             true,
         );
+    });
+
+    it("emits patch updates after the initial snapshot when the session changes", async () => {
+        const readyStatus: AiRuntimeStatus = {
+            authMethod: "chatgpt",
+            authMethods: [],
+            authReady: true,
+            checkedAt: "2026-04-15T00:00:00.000Z",
+            command: "mock-codex-acp",
+            hasCustomBinaryPath: false,
+            hasGatewayConfig: false,
+            hasGatewayUrl: false,
+            message: null,
+            onboardingRequired: false,
+            runtimeId: "codex",
+            source: "bundled",
+            state: "ready",
+        };
+        const persistedSnapshot: AiSessionSnapshot = {
+            availableCommands: [],
+            configOptions: [],
+            lastError: null,
+            messages: [],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            status: "idle",
+            title: "Codex 1",
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            worktreeId: null,
+        };
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch: AiWorkerSessionLaunchInput = {
+            additionalRoots: [],
+            cwd: process.cwd(),
+            desiredSelections: {
+                configOptions: [],
+                modeId: null,
+                modelId: null,
+                preferredConfigOptions: {},
+            },
+            input: {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            ownerWindowId: "window-1",
+            persistedSnapshot,
+            projectRoot: null,
+            resolvedRuntime: {
+                args: [],
+                command: "mock-codex-acp",
+                env: process.env,
+                executable: "mock-codex-acp",
+                status: readyStatus,
+            },
+        };
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [],
+                projectId: null,
+                prompt: "hello",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            launch,
+        });
+
+        const snapshotEvents = emittedEvents.filter(
+            (event): event is Extract<AiWorkerEventMessage, { event: "ai.snapshot.updated" }> =>
+                event.event === "ai.snapshot.updated",
+        );
+        expect(snapshotEvents.length).toBeGreaterThan(0);
+        expect(
+            snapshotEvents.every(
+                (event) => event.payload.update.kind === "patch",
+            ),
+        ).toBe(true);
     });
 });
