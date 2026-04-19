@@ -14,6 +14,8 @@ import type {
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiTrackedFileHunkMutationInput,
+    AiTrackedFileMutationInput,
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionSnapshot,
@@ -68,8 +70,22 @@ export interface AiWorkerGateway {
     close(): Promise<void>;
     closeOwnedByWindow(ownerWindowId: string): Promise<void>;
     closeSession(sessionId: string): Promise<void>;
+    keepAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
+    keepTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    keepTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
     notifyFileBuffer(input: FileBufferNotificationInput): Promise<void>;
     prepareSession(input: AiWorkerPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
+    rejectAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
+    rejectTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    rejectTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
     refreshProjectScopes(input: AiWorkerRefreshProjectScopesRpcInput): Promise<void>;
     respondPermission(input: AiPermissionResponseInput): Promise<void>;
     respondUserInput(input: AiUserInputResponseInput): Promise<void>;
@@ -97,6 +113,24 @@ export interface AiWorkerSessionLaunchInput {
     readonly persistedSnapshot: AiSessionSnapshot;
     readonly projectRoot: string | null;
     readonly resolvedRuntime: ResolvedAcpRuntime;
+}
+
+export interface AiWorkerReviewSessionContext {
+    readonly additionalRoots: readonly string[];
+    readonly cwd: string;
+    readonly ownerWindowId: string;
+    readonly projectRoot: string | null;
+    readonly snapshot: AiSessionSnapshot;
+}
+
+export interface AiWorkerReviewMutationResult {
+    readonly ownerWindowId: string;
+    readonly snapshot: AiSessionSnapshot;
+}
+
+export interface AiWorkerReviewSessionRpcInput<TInput> {
+    readonly context: AiWorkerReviewSessionContext;
+    readonly input: TInput;
 }
 
 export interface LiveAcpSession {
@@ -257,9 +291,33 @@ export interface AiWorkerRpcMethodMap {
         readonly params: FileBufferNotificationInput;
         readonly result: void;
     };
+    readonly "ai.keepAllTrackedFiles": {
+        readonly params: AiWorkerReviewSessionRpcInput<string>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.keepTrackedFile": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.keepTrackedFileHunks": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
     readonly "ai.prepareSession": {
         readonly params: AiWorkerPrepareSessionRpcInput;
         readonly result: AiSessionSnapshot;
+    };
+    readonly "ai.rejectAllTrackedFiles": {
+        readonly params: AiWorkerReviewSessionRpcInput<string>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.rejectTrackedFile": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.rejectTrackedFileHunks": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
     };
     readonly "ai.refreshProjectScopes": {
         readonly params: AiWorkerRefreshProjectScopesRpcInput;

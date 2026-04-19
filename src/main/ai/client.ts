@@ -9,6 +9,8 @@ import type {
     AiSessionModelMutationInput,
     AiSessionSnapshot,
     AiSessionUpdate,
+    AiTrackedFileHunkMutationInput,
+    AiTrackedFileMutationInput,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
 } from "@shared/ipc";
@@ -22,6 +24,7 @@ import {
     type AiWorkerPrepareSessionRpcInput,
     type AiWorkerRefreshProjectScopesRpcInput,
     type AiWorkerReadyMessage,
+    type AiWorkerReviewSessionRpcInput,
     type AiWorkerRpcMethodMap,
     type AiWorkerRespondPermissionRpcInput,
     type AiWorkerRespondUserInputRpcInput,
@@ -105,6 +108,42 @@ class RemoteAiWorkerClient implements AiWorkerClient {
 
     async closeOwnedByWindow(ownerWindowId: string): Promise<void> {
         await this.#rpc.call("ai.closeOwnedByWindow", ownerWindowId);
+    }
+
+    async keepTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ) {
+        return await this.#rpc.call("ai.keepTrackedFile", input);
+    }
+
+    async rejectTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ) {
+        return await this.#rpc.call("ai.rejectTrackedFile", input);
+    }
+
+    async keepTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ) {
+        return await this.#rpc.call("ai.keepTrackedFileHunks", input);
+    }
+
+    async rejectTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ) {
+        return await this.#rpc.call("ai.rejectTrackedFileHunks", input);
+    }
+
+    async keepAllTrackedFiles(
+        input: AiWorkerReviewSessionRpcInput<string>,
+    ) {
+        return await this.#rpc.call("ai.keepAllTrackedFiles", input);
+    }
+
+    async rejectAllTrackedFiles(
+        input: AiWorkerReviewSessionRpcInput<string>,
+    ) {
+        return await this.#rpc.call("ai.rejectAllTrackedFiles", input);
     }
 
     async respondPermission(input: AiPermissionResponseInput): Promise<void> {

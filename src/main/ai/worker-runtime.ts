@@ -19,9 +19,12 @@ import type {
     AiPermissionRequest,
     AiPromptResult,
     AiSessionSnapshot,
+    AiTrackedFile,
 } from "@shared/ipc";
 import {
     computeDiffHunks,
+    replaceTrackedFile,
+    resolveTrackedFileHunks,
     syncTrackedFile,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
@@ -35,6 +38,8 @@ import {
     type AiWorkerBootstrapState,
     type AiWorkerEventMessage,
     type AiWorkerRefreshProjectScopesRpcInput,
+    type AiWorkerReviewMutationResult,
+    type AiWorkerReviewSessionContext,
     type AiWorkerRpcMethodMap,
     type AiWorkerSessionLaunchInput,
     type LiveAcpSession,
@@ -135,6 +140,30 @@ export class AiWorkerRuntime {
                     params as AiWorkerRpcMethodMap["ai.closeOwnedByWindow"]["params"],
                 );
                 return null;
+            case "ai.keepTrackedFile":
+                return await this.#keepTrackedFile(
+                    params as AiWorkerRpcMethodMap["ai.keepTrackedFile"]["params"],
+                );
+            case "ai.rejectTrackedFile":
+                return await this.#rejectTrackedFile(
+                    params as AiWorkerRpcMethodMap["ai.rejectTrackedFile"]["params"],
+                );
+            case "ai.keepTrackedFileHunks":
+                return await this.#keepTrackedFileHunks(
+                    params as AiWorkerRpcMethodMap["ai.keepTrackedFileHunks"]["params"],
+                );
+            case "ai.rejectTrackedFileHunks":
+                return await this.#rejectTrackedFileHunks(
+                    params as AiWorkerRpcMethodMap["ai.rejectTrackedFileHunks"]["params"],
+                );
+            case "ai.keepAllTrackedFiles":
+                return await this.#keepAllTrackedFiles(
+                    params as AiWorkerRpcMethodMap["ai.keepAllTrackedFiles"]["params"],
+                );
+            case "ai.rejectAllTrackedFiles":
+                return await this.#rejectAllTrackedFiles(
+                    params as AiWorkerRpcMethodMap["ai.rejectAllTrackedFiles"]["params"],
+                );
             case "ai.respondPermission":
                 await this.#respondPermission(
                     params as AiWorkerRpcMethodMap["ai.respondPermission"]["params"],
@@ -342,6 +371,133 @@ export class AiWorkerRuntime {
                 emitClosedEvent: true,
             });
         }
+    }
+
+    async #keepTrackedFile(
+        params: AiWorkerRpcMethodMap["ai.keepTrackedFile"]["params"],
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#withReviewSession(params.context, async (session) => {
+            session.snapshot = {
+                ...session.snapshot,
+                trackedFiles: session.snapshot.trackedFiles.filter(
+                    (trackedFile) => trackedFile.path !== params.input.path,
+                ),
+                updatedAt: new Date().toISOString(),
+            };
+        });
+    }
+
+    async #rejectTrackedFile(
+        params: AiWorkerRpcMethodMap["ai.rejectTrackedFile"]["params"],
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#withReviewSession(params.context, async (session) => {
+            const trackedFile = session.snapshot.trackedFiles.find(
+                (candidate) => candidate.path === params.input.path,
+            );
+            if (!trackedFile) {
+                throw new Error("The file to review was not found.");
+            }
+
+            await this.#revertTrackedFile(session, trackedFile);
+            session.snapshot = {
+                ...session.snapshot,
+                trackedFiles: session.snapshot.trackedFiles.filter(
+                    (candidate) => candidate.path !== params.input.path,
+                ),
+                updatedAt: new Date().toISOString(),
+            };
+        });
+    }
+
+    async #keepTrackedFileHunks(
+        params: AiWorkerRpcMethodMap["ai.keepTrackedFileHunks"]["params"],
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#withReviewSession(params.context, async (session) => {
+            const trackedFile = session.snapshot.trackedFiles.find(
+                (candidate) => candidate.path === params.input.path,
+            );
+            if (!trackedFile) {
+                throw new Error("The file to review was not found.");
+            }
+
+            const nextTrackedFile = resolveTrackedFileHunks(
+                trackedFile,
+                params.input.hunkIds,
+                "keep",
+            );
+            session.snapshot = {
+                ...session.snapshot,
+                trackedFiles: replaceTrackedFile(
+                    session.snapshot.trackedFiles,
+                    trackedFile.path,
+                    nextTrackedFile,
+                ),
+                updatedAt: new Date().toISOString(),
+            };
+        });
+    }
+
+    async #rejectTrackedFileHunks(
+        params: AiWorkerRpcMethodMap["ai.rejectTrackedFileHunks"]["params"],
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#withReviewSession(params.context, async (session) => {
+            const trackedFile = session.snapshot.trackedFiles.find(
+                (candidate) => candidate.path === params.input.path,
+            );
+            if (!trackedFile) {
+                throw new Error("The file to review was not found.");
+            }
+
+            const nextTrackedFile = resolveTrackedFileHunks(
+                trackedFile,
+                params.input.hunkIds,
+                "reject",
+            );
+
+            if (!nextTrackedFile) {
+                await this.#revertTrackedFile(session, trackedFile);
+            } else if (nextTrackedFile.newText !== null) {
+                await this.#applyTrackedFileText(session, nextTrackedFile);
+            }
+
+            session.snapshot = {
+                ...session.snapshot,
+                trackedFiles: replaceTrackedFile(
+                    session.snapshot.trackedFiles,
+                    trackedFile.path,
+                    nextTrackedFile,
+                ),
+                updatedAt: new Date().toISOString(),
+            };
+        });
+    }
+
+    async #keepAllTrackedFiles(
+        params: AiWorkerRpcMethodMap["ai.keepAllTrackedFiles"]["params"],
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#withReviewSession(params.context, async (session) => {
+            session.snapshot = {
+                ...session.snapshot,
+                trackedFiles: [],
+                updatedAt: new Date().toISOString(),
+            };
+        });
+    }
+
+    async #rejectAllTrackedFiles(
+        params: AiWorkerRpcMethodMap["ai.rejectAllTrackedFiles"]["params"],
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#withReviewSession(params.context, async (session) => {
+            for (const trackedFile of session.snapshot.trackedFiles) {
+                await this.#revertTrackedFile(session, trackedFile);
+            }
+
+            session.snapshot = {
+                ...session.snapshot,
+                trackedFiles: [],
+                updatedAt: new Date().toISOString(),
+            };
+        });
     }
 
     async #respondPermission(
@@ -1065,6 +1221,172 @@ export class AiWorkerRuntime {
         this.#queueSnapshotFlush(liveSession);
 
         return {};
+    }
+
+    async #withReviewSession(
+        context: AiWorkerReviewSessionContext,
+        mutate: (session: LiveAcpSession) => Promise<void> | void,
+    ): Promise<AiWorkerReviewMutationResult> {
+        const liveSession =
+            this.#sessions.get(context.snapshot.sessionId) ??
+            this.#createReviewSession(context);
+        const isLiveSession = this.#sessions.has(context.snapshot.sessionId);
+
+        await mutate(liveSession);
+        this.#markSnapshotExternallySynchronized(liveSession);
+
+        return {
+            ownerWindowId: isLiveSession
+                ? liveSession.ownerWindowId
+                : context.ownerWindowId,
+            snapshot: liveSession.snapshot,
+        };
+    }
+
+    #createReviewSession(context: AiWorkerReviewSessionContext): LiveAcpSession {
+        const snapshot = context.snapshot;
+
+        return {
+            additionalRoots: context.additionalRoots,
+            child: null as never,
+            closing: true,
+            connection: null as never,
+            cwd: context.cwd,
+            desiredSelections: {
+                configOptions: snapshot.configOptions,
+                modeId: snapshot.modeId,
+                modelId: snapshot.modelId,
+                preferredConfigOptions: {},
+            },
+            isRestoring: false,
+            lastBroadcastSnapshot: snapshot,
+            ownerWindowId: context.ownerWindowId,
+            pendingAdditionalRoots: null,
+            pendingLaunch: null,
+            pendingPermission: null,
+            pendingPersistTimer: null,
+            processedDiffPaths: new Map(),
+            projectRoot: context.projectRoot,
+            resolvedRuntime: {
+                args: [],
+                command: "",
+                env: process.env,
+                executable: "",
+                status: {
+                    authMethod: null,
+                    authMethods: [],
+                    authReady: false,
+                    checkedAt: new Date().toISOString(),
+                    command: "",
+                    hasCustomBinaryPath: false,
+                    hasGatewayConfig: false,
+                    hasGatewayUrl: false,
+                    message: null,
+                    onboardingRequired: false,
+                    runtimeId: snapshot.runtimeId,
+                    source: "unknown",
+                    state: "ready",
+                },
+            },
+            runtimeId: snapshot.runtimeId,
+            snapshot,
+            stderrChunks: [],
+            stderrHandler: null,
+            terminalOutputBuffers: new Map(),
+        };
+    }
+
+    async #revertTrackedFile(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            const nextPath = this.#resolveSessionPathInfo(
+                liveSession,
+                trackedFile.path,
+            );
+            const previousPath = this.#resolveSessionPathInfo(
+                liveSession,
+                trackedFile.previousPath,
+            );
+
+            if (trackedFile.oldText !== null) {
+                await fs.promises.mkdir(path.dirname(previousPath.absolutePath), {
+                    recursive: true,
+                });
+                await fs.promises.writeFile(
+                    previousPath.absolutePath,
+                    trackedFile.oldText,
+                    "utf8",
+                );
+                this.#fileBuffers.set(
+                    previousPath.absolutePath,
+                    trackedFile.oldText,
+                );
+            }
+
+            await fs.promises.rm(nextPath.absolutePath, { force: true });
+            this.#fileBuffers.delete(nextPath.absolutePath);
+            return;
+        }
+
+        const resolvedPath = this.#resolveSessionPathInfo(
+            liveSession,
+            trackedFile.path,
+        );
+
+        if (trackedFile.kind === "create") {
+            await fs.promises.rm(resolvedPath.absolutePath, { force: true });
+            this.#fileBuffers.delete(resolvedPath.absolutePath);
+            return;
+        }
+
+        if (trackedFile.oldText === null) {
+            return;
+        }
+
+        await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
+            recursive: true,
+        });
+        await fs.promises.writeFile(
+            resolvedPath.absolutePath,
+            trackedFile.oldText,
+            "utf8",
+        );
+        this.#fileBuffers.set(resolvedPath.absolutePath, trackedFile.oldText);
+    }
+
+    async #applyTrackedFileText(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        if (trackedFile.newText === null) {
+            return;
+        }
+
+        const resolvedPath = this.#resolveSessionPathInfo(
+            liveSession,
+            trackedFile.path,
+        );
+
+        await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
+            recursive: true,
+        });
+        await fs.promises.writeFile(
+            resolvedPath.absolutePath,
+            trackedFile.newText,
+            "utf8",
+        );
+        this.#fileBuffers.set(resolvedPath.absolutePath, trackedFile.newText);
+    }
+
+    #markSnapshotExternallySynchronized(liveSession: LiveAcpSession): void {
+        if (liveSession.pendingPersistTimer !== null) {
+            clearTimeout(liveSession.pendingPersistTimer);
+            liveSession.pendingPersistTimer = null;
+        }
+
+        liveSession.lastBroadcastSnapshot = liveSession.snapshot;
     }
 
     async #refreshLiveSessionScopes(

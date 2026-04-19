@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
     AiRuntimeStatus,
     AiSessionSnapshot,
+    AiTrackedFile,
     AiSessionUpdate,
 } from "@shared/ipc";
 import { forgetOpenFileBuffer, recordOpenFileBuffer } from "./openFileBuffers";
@@ -149,8 +150,14 @@ describe("AiService hybrid persistence", () => {
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
                 closeSession: vi.fn(),
+                keepAllTrackedFiles: vi.fn(),
+                keepTrackedFile: vi.fn(),
+                keepTrackedFileHunks: vi.fn(),
                 notifyFileBuffer,
                 prepareSession,
+                rejectAllTrackedFiles: vi.fn(),
+                rejectTrackedFile: vi.fn(),
+                rejectTrackedFileHunks: vi.fn(),
                 refreshProjectScopes: vi.fn(),
                 respondPermission: vi.fn(),
                 respondUserInput: vi.fn(),
@@ -186,6 +193,93 @@ describe("AiService hybrid persistence", () => {
         } finally {
             forgetOpenFileBuffer(absolutePath);
         }
+    });
+
+    it("delegates persisted review mutations to the worker and persists the returned snapshot", async () => {
+        const persistedSnapshot = createSnapshot({
+            sessionId: "session-1",
+            trackedFiles: [
+                {
+                    hunks: [],
+                    identityKey: "notes.md",
+                    isText: true,
+                    kind: "update",
+                    newText: "after",
+                    oldText: "before",
+                    path: "notes.md",
+                    previousPath: null,
+                    reviewState: "pending",
+                    reversible: true,
+                    sessionId: "session-1",
+                    toolCallId: "tool-1",
+                    updatedAt: "2026-04-16T00:00:00.000Z",
+                    version: 1,
+                } satisfies AiTrackedFile,
+            ],
+        });
+        const saveSessionSnapshot = vi.fn();
+        const onSessionSnapshot = vi.fn();
+        const keepTrackedFile = vi.fn(async () => ({
+            ownerWindowId: "",
+            snapshot: {
+                ...persistedSnapshot,
+                trackedFiles: [],
+                updatedAt: "2026-04-16T03:00:00.000Z",
+            },
+        }));
+        const service = createService({
+            aiWorker: {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                keepAllTrackedFiles: vi.fn(),
+                keepTrackedFile,
+                keepTrackedFileHunks: vi.fn(),
+                notifyFileBuffer: vi.fn(),
+                prepareSession: vi.fn(),
+                rejectAllTrackedFiles: vi.fn(),
+                rejectTrackedFile: vi.fn(),
+                rejectTrackedFileHunks: vi.fn(),
+                refreshProjectScopes: vi.fn(),
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt: vi.fn(),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+            },
+            loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+            onSessionSnapshot,
+            saveSessionSnapshot,
+        });
+
+        await service.keepTrackedFile({
+            path: "notes.md",
+            sessionId: "session-1",
+        });
+
+        expect(keepTrackedFile).toHaveBeenCalledWith({
+            context: expect.objectContaining({
+                ownerWindowId: "",
+                snapshot: persistedSnapshot,
+            }),
+            input: {
+                path: "notes.md",
+                sessionId: "session-1",
+            },
+        });
+        expect(saveSessionSnapshot).toHaveBeenCalledWith(
+            expect.objectContaining({
+                trackedFiles: [],
+            }),
+        );
+        expect(onSessionSnapshot).toHaveBeenCalledWith(
+            "",
+            expect.objectContaining({
+                kind: "patch",
+            }),
+        );
     });
 });
 

@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AiRuntimeStatus, AiSessionSnapshot } from "@shared/ipc";
+import type { AiRuntimeStatus, AiSessionSnapshot, AiTrackedFile } from "@shared/ipc";
 
 import type { AiWorkerEventMessage, AiWorkerSessionLaunchInput } from "./contracts";
 
@@ -373,6 +373,60 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).rejects.toThrowError(
             "Codex attempted to access a path outside the project.",
         );
+    });
+
+    it("rejects a tracked file for a non-live session and reverts it on disk", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const filePath = path.join(tempDir, "notes.md");
+        await fs.writeFile(filePath, "after\n", "utf8");
+        const runtime = createRuntime();
+        const trackedFile: AiTrackedFile = {
+            hunks: [],
+            identityKey: "notes.md",
+            isText: true,
+            kind: "update",
+            newText: "after\n",
+            oldText: "before\n",
+            path: "notes.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Review test",
+        }).persistedSnapshot;
+        const result = await runtime.dispatchMethod("ai.rejectTrackedFile", {
+            context: {
+                additionalRoots: [],
+                cwd: tempDir,
+                ownerWindowId: "",
+                projectRoot: tempDir,
+                snapshot: {
+                    ...snapshot,
+                    trackedFiles: [trackedFile],
+                },
+            },
+            input: {
+                path: "notes.md",
+                sessionId: "session-1",
+            },
+        });
+
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("before\n");
+        expect(result).toEqual({
+            ownerWindowId: "",
+            snapshot: expect.objectContaining({
+                trackedFiles: [],
+            }),
+        });
     });
 });
 

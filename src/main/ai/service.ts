@@ -32,7 +32,6 @@ import type {
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
     AiSessionTranscriptPage,
-    AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
@@ -48,7 +47,6 @@ import type {
 } from "@shared/ipc";
 import {
     computeDiffHunks,
-    replaceTrackedFile,
     resolveTrackedFileHunks,
     syncTrackedFile,
     upsertTrackedFile,
@@ -69,6 +67,8 @@ import {
     AI_SESSION_STREAMING_FLUSH_MS,
     type AiWorkerGateway,
     type AiWorkerRefreshProjectScopesRpcInput,
+    type AiWorkerReviewMutationResult,
+    type AiWorkerReviewSessionContext,
     type AiWorkerSessionLaunchInput,
     type AiServiceOptions,
     type LiveAcpSession,
@@ -1030,127 +1030,128 @@ export class AiService {
         );
     }
 
-    async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.filter(
-                (trackedFile) => trackedFile.path !== input.path,
-            ),
-            updatedAt: new Date().toISOString(),
+    async #buildWorkerReviewContext(
+        sessionId: string,
+    ): Promise<{
+        readonly context: AiWorkerReviewSessionContext;
+        readonly snapshot: AiSessionSnapshot;
+    }> {
+        const liveContext = this.#liveSessionContexts.get(sessionId);
+        const snapshot =
+            this.#liveSnapshots.get(sessionId) ??
+            (await this.#persistence.loadSessionSnapshot(sessionId));
+        if (!snapshot) {
+            throw new Error("The AI session was not found.");
+        }
+
+        const projectRoot =
+            snapshot.projectId !== null
+                ? this.#projectService.getProjectRootPath(
+                      snapshot.projectId,
+                      snapshot.worktreeId ?? null,
+                  )
+                : null;
+        const additionalRoots = liveContext
+            ? liveContext.additionalRoots
+            : this.#resolveEffectiveAdditionalRoots(
+                  {
+                      additionalRoots: [],
+                      projectId: snapshot.projectId,
+                      worktreeId: snapshot.worktreeId ?? null,
+                  },
+                  projectRoot,
+              );
+
+        return {
+            context: {
+                additionalRoots,
+                cwd: projectRoot ?? process.cwd(),
+                ownerWindowId: liveContext?.ownerWindowId ?? "",
+                projectRoot,
+                snapshot,
+            },
+            snapshot,
         };
-        this.#persistAndBroadcast(liveSession);
+    }
+
+    #persistReviewMutation(
+        previousSnapshot: AiSessionSnapshot,
+        result: AiWorkerReviewMutationResult,
+    ): void {
+        this.#persistence.saveSessionSnapshot(result.snapshot);
+        if (this.#liveSessionContexts.has(result.snapshot.sessionId)) {
+            this.#liveSnapshots.set(result.snapshot.sessionId, result.snapshot);
+        }
+        this.#onSessionSnapshot(
+            result.ownerWindowId,
+            buildAiSessionUpdate(previousSnapshot, result.snapshot),
+        );
+    }
+
+    async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
+        );
+        const result = await this.#requireAiWorker().keepTrackedFile({
+            context: reviewSession.context,
+            input,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        const trackedFile = liveSession.snapshot.trackedFiles.find(
-            (candidate) => candidate.path === input.path,
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
         );
-
-        if (!trackedFile) {
-            throw new Error("The file to review was not found.");
-        }
-
-        await this.#revertTrackedFile(liveSession, trackedFile);
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.filter(
-                (candidate) => candidate.path !== input.path,
-            ),
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
+        const result = await this.#requireAiWorker().rejectTrackedFile({
+            context: reviewSession.context,
+            input,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async keepTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        const trackedFile = liveSession.snapshot.trackedFiles.find(
-            (candidate) => candidate.path === input.path,
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
         );
-
-        if (!trackedFile) {
-            throw new Error("The file to review was not found.");
-        }
-
-        const nextTrackedFile = resolveTrackedFileHunks(
-            trackedFile,
-            input.hunkIds,
-            "keep",
-        );
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: replaceTrackedFile(
-                liveSession.snapshot.trackedFiles,
-                trackedFile.path,
-                nextTrackedFile,
-            ),
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
+        const result = await this.#requireAiWorker().keepTrackedFileHunks({
+            context: reviewSession.context,
+            input,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        const trackedFile = liveSession.snapshot.trackedFiles.find(
-            (candidate) => candidate.path === input.path,
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
         );
-
-        if (!trackedFile) {
-            throw new Error("The file to review was not found.");
-        }
-
-        const nextTrackedFile = resolveTrackedFileHunks(
-            trackedFile,
-            input.hunkIds,
-            "reject",
-        );
-
-        if (!nextTrackedFile) {
-            await this.#revertTrackedFile(liveSession, trackedFile);
-        } else if (nextTrackedFile.newText !== null) {
-            await this.#applyTrackedFileText(liveSession, nextTrackedFile);
-        }
-
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: replaceTrackedFile(
-                liveSession.snapshot.trackedFiles,
-                trackedFile.path,
-                nextTrackedFile,
-            ),
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
+        const result = await this.#requireAiWorker().rejectTrackedFileHunks({
+            context: reviewSession.context,
+            input,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(sessionId);
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: [],
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
+        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
+        const result = await this.#requireAiWorker().keepAllTrackedFiles({
+            context: reviewSession.context,
+            input: sessionId,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(sessionId);
-
-        for (const trackedFile of liveSession.snapshot.trackedFiles) {
-            await this.#revertTrackedFile(liveSession, trackedFile);
-        }
-
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: [],
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
+        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
+        const result = await this.#requireAiWorker().rejectAllTrackedFiles({
+            context: reviewSession.context,
+            input: sessionId,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async #ensureRuntimeSession(
@@ -1658,197 +1659,6 @@ export class AiService {
         this.#persistAndBroadcast(liveSession);
 
         return {};
-    }
-
-    async #loadSessionForReview(sessionId: string): Promise<LiveAcpSession> {
-        const snapshot =
-            this.#liveSnapshots.get(sessionId) ??
-            (await this.#persistence.loadSessionSnapshot(sessionId));
-        if (!snapshot) {
-            throw new Error("The AI session was not found.");
-        }
-
-        return {
-            additionalRoots: [],
-            child: null as never,
-            closing: true,
-            connection: null as never,
-            cwd:
-                snapshot.projectId !== null
-                    ? this.#projectService.getProjectRootPath(
-                          snapshot.projectId,
-                          snapshot.worktreeId ?? null,
-                      )
-                    : process.cwd(),
-            isRestoring: false,
-            lastBroadcastSnapshot: snapshot,
-            ownerWindowId: "",
-            pendingPermission: null,
-            pendingAdditionalRoots: null,
-            pendingLaunch: null,
-            pendingPersistTimer: null,
-            processedDiffPaths: new Map(),
-            projectRoot:
-                snapshot.projectId !== null
-                    ? this.#projectService.getProjectRootPath(
-                          snapshot.projectId,
-                snapshot.worktreeId ?? null,
-                      )
-                    : null,
-            resolvedRuntime: {
-                args: [],
-                command: "",
-                env: process.env,
-                executable: "",
-                status: this.#withPersistedRuntimeCatalog(
-                    this.#resolveRuntimeStatus(snapshot.runtimeId),
-                ),
-            },
-            runtimeId: snapshot.runtimeId,
-            snapshot,
-            terminalOutputBuffers: new Map(),
-            stderrChunks: [],
-            stderrHandler: null,
-            desiredSelections: {
-                configOptions: snapshot.configOptions,
-                modeId: snapshot.modeId,
-                modelId: snapshot.modelId,
-                preferredConfigOptions: {},
-            },
-        };
-    }
-
-    async #revertTrackedFile(
-        liveSession: LiveAcpSession,
-        trackedFile: AiTrackedFile,
-    ): Promise<void> {
-        if (trackedFile.kind === "move" && trackedFile.previousPath) {
-            const nextPath = this.#resolveSessionPathInfo(
-                liveSession,
-                trackedFile.path,
-            );
-            const previousPath = this.#resolveSessionPathInfo(
-                liveSession,
-                trackedFile.previousPath,
-            );
-
-            if (trackedFile.oldText !== null) {
-                if (
-                    previousPath.relativePath &&
-                    liveSession.snapshot.projectId
-                ) {
-                    await this.#projectService.saveProjectFile({
-                        content: trackedFile.oldText,
-                        projectId: liveSession.snapshot.projectId,
-                        relativePath: previousPath.relativePath,
-                        worktreeId: liveSession.snapshot.worktreeId ?? null,
-                    });
-                } else {
-                    await fs.promises.mkdir(
-                        path.dirname(previousPath.absolutePath),
-                        {
-                            recursive: true,
-                        },
-                    );
-                    await fs.promises.writeFile(
-                        previousPath.absolutePath,
-                        trackedFile.oldText,
-                        "utf8",
-                    );
-                }
-            }
-
-            if (nextPath.relativePath && liveSession.snapshot.projectId) {
-                if (fs.existsSync(nextPath.absolutePath)) {
-                    await this.#projectService.deleteProjectEntry({
-                        projectId: liveSession.snapshot.projectId,
-                        relativePath: nextPath.relativePath,
-                        worktreeId: liveSession.snapshot.worktreeId ?? null,
-                    });
-                }
-            } else {
-                await fs.promises.rm(nextPath.absolutePath, { force: true });
-            }
-
-            return;
-        }
-
-        const resolvedPath = this.#resolveSessionPathInfo(
-            liveSession,
-            trackedFile.path,
-        );
-
-        if (trackedFile.kind === "create") {
-            if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
-                if (fs.existsSync(resolvedPath.absolutePath)) {
-                    await this.#projectService.deleteProjectEntry({
-                        projectId: liveSession.snapshot.projectId,
-                        relativePath: resolvedPath.relativePath,
-                        worktreeId: liveSession.snapshot.worktreeId ?? null,
-                    });
-                }
-                return;
-            }
-
-            await fs.promises.rm(resolvedPath.absolutePath, { force: true });
-            return;
-        }
-
-        if (trackedFile.oldText === null) {
-            return;
-        }
-
-        if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
-            await this.#projectService.saveProjectFile({
-                content: trackedFile.oldText,
-                projectId: liveSession.snapshot.projectId,
-                relativePath: resolvedPath.relativePath,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            });
-            return;
-        }
-
-        await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
-            recursive: true,
-        });
-        await fs.promises.writeFile(
-            resolvedPath.absolutePath,
-            trackedFile.oldText,
-            "utf8",
-        );
-    }
-
-    async #applyTrackedFileText(
-        liveSession: LiveAcpSession,
-        trackedFile: AiTrackedFile,
-    ): Promise<void> {
-        if (trackedFile.newText === null) {
-            return;
-        }
-
-        const resolvedPath = this.#resolveSessionPathInfo(
-            liveSession,
-            trackedFile.path,
-        );
-
-        if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
-            await this.#projectService.saveProjectFile({
-                content: trackedFile.newText,
-                projectId: liveSession.snapshot.projectId,
-                relativePath: resolvedPath.relativePath,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            });
-            return;
-        }
-
-        await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
-            recursive: true,
-        });
-        await fs.promises.writeFile(
-            resolvedPath.absolutePath,
-            trackedFile.newText,
-            "utf8",
-        );
     }
 
     #schedulePendingScopeRefresh(sessionId: string): void {
