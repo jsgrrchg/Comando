@@ -7,6 +7,7 @@ import type {
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionRenameMutationInput,
     AiSessionSnapshot,
     AiSessionUpdate,
     AiTrackedFileHunkMutationInput,
@@ -180,6 +181,10 @@ class RemoteAiWorkerClient implements AiWorkerClient {
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
         await this.#rpc.call("ai.setSessionConfigOption", input);
+    }
+
+    async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
+        await this.#rpc.call("ai.renameSession", input);
     }
 
     async close(): Promise<void> {

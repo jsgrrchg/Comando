@@ -65,6 +65,7 @@ import {
     setConfigOptionOnSnapshot,
     setModeOnSnapshot,
     setModelOnSnapshot,
+    setTitleOnSnapshot,
     shouldFlushLiveSessionImmediately,
     summarizeUserInputAnswers,
     toPosixPath,
@@ -121,6 +122,11 @@ export class AiWorkerRuntime {
                 return await this.#prepareSession(
                     params as AiWorkerRpcMethodMap["ai.prepareSession"]["params"],
                 );
+            case "ai.renameSession":
+                await this.#renameSession(
+                    params as AiWorkerRpcMethodMap["ai.renameSession"]["params"],
+                );
+                return;
             case "ai.sendPrompt":
                 return await this.#sendPrompt(
                     params as AiWorkerRpcMethodMap["ai.sendPrompt"]["params"],
@@ -738,6 +744,22 @@ export class AiWorkerRuntime {
             input.value,
         );
         this.#queueSnapshotFlush(liveSession);
+    }
+
+    async #renameSession(
+        input: AiWorkerRpcMethodMap["ai.renameSession"]["params"],
+    ): Promise<void> {
+        const liveSession = this.#sessions.get(input.sessionId);
+        if (!liveSession) {
+            throw new Error("The AI session was not found.");
+        }
+
+        if (liveSession.snapshot.title === input.title) {
+            return;
+        }
+
+        liveSession.snapshot = setTitleOnSnapshot(liveSession.snapshot, input.title);
+        this.#flushSnapshotEvent(liveSession);
     }
 
     async #ensureRuntimeSession(

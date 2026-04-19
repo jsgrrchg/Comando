@@ -14,6 +14,7 @@ import type {
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionRenameMutationInput,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiRuntimeId,
@@ -79,6 +80,7 @@ export interface AiWorkerGateway {
     ): Promise<AiWorkerReviewMutationResult>;
     notifyFileBuffer(input: FileBufferNotificationInput): Promise<void>;
     prepareSession(input: AiWorkerPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
+    renameSession(input: AiSessionRenameMutationInput): Promise<void>;
     rejectAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
     rejectTrackedFile(
         input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
@@ -306,6 +308,10 @@ export interface AiWorkerRpcMethodMap {
     readonly "ai.prepareSession": {
         readonly params: AiWorkerPrepareSessionRpcInput;
         readonly result: AiSessionSnapshot;
+    };
+    readonly "ai.renameSession": {
+        readonly params: AiSessionRenameMutationInput;
+        readonly result: void;
     };
     readonly "ai.rejectAllTrackedFiles": {
         readonly params: AiWorkerReviewSessionRpcInput<string>;

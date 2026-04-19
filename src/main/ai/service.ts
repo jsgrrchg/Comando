@@ -553,6 +553,11 @@ export class AiService {
     }
 
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
+        if (this.#liveSessionContexts.has(input.sessionId)) {
+            await this.#requireAiWorker().renameSession(input);
+            return;
+        }
+
         await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
             setTitleOnSnapshot(snapshot, input.title),
         );
