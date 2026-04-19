@@ -66,6 +66,7 @@ function createSnapshot(
         sessionId: "session-1",
         status: "idle",
         title: "Session One",
+        tokenUsage: null,
         toolActivity: [
             {
                 createdAt: "2026-04-17T10:04:00.000Z",

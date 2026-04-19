@@ -90,6 +90,7 @@ const AI_REVIEW_DIFF_ZOOM_KEY = "ai.review.diff_zoom";
 const AI_REQUIRE_CMD_ENTER_KEY = "ai.composer.require_cmd_enter";
 const AI_SCREENSHOT_RETENTION_KEY = "ai.composer.screenshot_retention_seconds";
 const AI_HISTORY_RETENTION_KEY = "ai.chat.history_retention_days";
+const AI_CONTEXT_USAGE_BAR_KEY = "ai.composer.context_usage_bar_enabled";
 
 const DEFAULT_CHAT_FONT_FAMILY: ChatFontFamily = DEFAULT_AI_CHAT_FONT_FAMILY;
 const DEFAULT_CHAT_FONT_SIZE = DEFAULT_AI_CHAT_FONT_SIZE;
@@ -100,6 +101,7 @@ const DEFAULT_REVIEW_DIFF_ZOOM = 0.96;
 const DEFAULT_REQUIRE_CMD_ENTER = false;
 const DEFAULT_SCREENSHOT_RETENTION = 0;
 const DEFAULT_HISTORY_RETENTION = 0;
+const DEFAULT_CONTEXT_USAGE_BAR = true;
 const REVIEW_DIFF_ZOOM_MIN = 0.64;
 const REVIEW_DIFF_ZOOM_MAX = 0.96;
 
@@ -359,6 +361,7 @@ export class SettingsService {
                 this.#loadNumberSetting(AI_HISTORY_RETENTION_KEY) ??
                     DEFAULT_HISTORY_RETENTION,
             ),
+            contextUsageBarEnabled: this.#loadContextUsageBarEnabled(),
         };
     }
 
@@ -395,6 +398,10 @@ export class SettingsService {
         this.#saveSetting(
             AI_HISTORY_RETENTION_KEY,
             String(Math.max(0, settings.historyRetentionDays)),
+        );
+        this.#saveSetting(
+            AI_CONTEXT_USAGE_BAR_KEY,
+            String(settings.contextUsageBarEnabled),
         );
     }
 
@@ -759,6 +766,13 @@ export class SettingsService {
         }
 
         return value;
+    }
+
+    #loadContextUsageBarEnabled(): boolean {
+        const raw = this.#loadStringSetting(AI_CONTEXT_USAGE_BAR_KEY);
+        if (raw === "true") return true;
+        if (raw === "false") return false;
+        return DEFAULT_CONTEXT_USAGE_BAR;
     }
 
     #normalizeEditorSuggestionsEnabled(

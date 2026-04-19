@@ -1023,6 +1023,7 @@ export function getDefaultAiChatSettings(): AppAiChatSettings {
         requireCmdEnterToSend: false,
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,
+        contextUsageBarEnabled: true,
     };
 }
 

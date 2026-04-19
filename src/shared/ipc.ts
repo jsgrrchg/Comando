@@ -144,6 +144,7 @@ export interface AppAiChatSettings {
     readonly requireCmdEnterToSend: boolean;
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
+    readonly contextUsageBarEnabled: boolean;
 }
 
 export interface AppAppearanceSettings {
@@ -1211,6 +1212,18 @@ export type AiSessionConfigOption =
           readonly value: string;
       };
 
+export interface AiTokenUsageCost {
+    readonly amount: number;
+    readonly currency: string;
+}
+
+export interface AiTokenUsage {
+    readonly used: number;
+    readonly size: number;
+    readonly cost: AiTokenUsageCost | null;
+    readonly updatedAt: string;
+}
+
 export interface AiSessionSnapshot {
     readonly availableCommands: readonly AiAvailableCommand[];
     readonly configOptions: readonly AiSessionConfigOption[];
@@ -1229,6 +1242,7 @@ export interface AiSessionSnapshot {
     readonly sessionId: string;
     readonly status: AiSessionStatus;
     readonly title: string;
+    readonly tokenUsage: AiTokenUsage | null;
     readonly toolActivity: readonly AiToolActivity[];
     readonly trackedFiles: readonly AiTrackedFile[];
     readonly updatedAt: string;

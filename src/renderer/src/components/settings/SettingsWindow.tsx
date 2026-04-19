@@ -575,6 +575,18 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                 }
             />
             <Row
+                label="Context window indicator"
+                description="Show a thin bar below the composer indicating how much of the context window is in use."
+                control={
+                    <Toggle
+                        value={state.contextUsageBarEnabled}
+                        onChange={(v) =>
+                            state.onContextUsageBarEnabledChange?.(v)
+                        }
+                    />
+                }
+            />
+            <Row
                 label="Screenshot retention"
                 description="How long pasted screenshots stay in the composer before automatic removal."
                 control={

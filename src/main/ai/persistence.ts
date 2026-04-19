@@ -13,6 +13,7 @@ import type {
     AiSessionModel,
     AiSessionSnapshot,
     AiSessionTranscriptPage,
+    AiTokenUsage,
     AiToolActivity,
     AiTrackedFile,
     AiUserInputRequest,
@@ -210,6 +211,7 @@ export class AiPersistence {
                         typeof raw.title === "string"
                             ? raw.title
                             : fallback.title,
+                    tokenUsage: normalizeTokenUsage(raw.tokenUsage),
                     toolActivity: normalizeToolActivity(raw.toolActivity),
                     trackedFiles: normalizeTrackedFiles(raw.trackedFiles),
                     updatedAt:
@@ -797,6 +799,7 @@ export function createEmptyAiSessionSnapshot(options: {
         sessionId: options.sessionId,
         status: options.status ?? "idle",
         title: options.title,
+        tokenUsage: null,
         toolActivity: [],
         trackedFiles: [],
         updatedAt: now,
@@ -824,6 +827,7 @@ function createPersistedSessionSnapshot(
         sessionId: snapshot.sessionId,
         status: snapshot.status,
         title: snapshot.title,
+        tokenUsage: snapshot.tokenUsage,
         toolActivity: snapshot.toolActivity,
         trackedFiles: snapshot.trackedFiles,
         updatedAt: snapshot.updatedAt,
@@ -1341,6 +1345,33 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
             } satisfies AiToolActivity,
         ];
     });
+}
+
+function normalizeTokenUsage(value: unknown): AiTokenUsage | null {
+    if (!isRecord(value)) {
+        return null;
+    }
+    const size = Number(value.size);
+    const used = Number(value.used);
+    if (!Number.isFinite(size) || size <= 0 || !Number.isFinite(used)) {
+        return null;
+    }
+    const costRecord = isRecord(value.cost) ? value.cost : null;
+    const cost =
+        costRecord &&
+        typeof costRecord.amount === "number" &&
+        typeof costRecord.currency === "string"
+            ? { amount: costRecord.amount, currency: costRecord.currency }
+            : null;
+    return {
+        cost,
+        size,
+        updatedAt:
+            typeof value.updatedAt === "string"
+                ? value.updatedAt
+                : new Date().toISOString(),
+        used: Math.max(0, used),
+    };
 }
 
 function normalizeTrackedFiles(value: unknown): readonly AiTrackedFile[] {

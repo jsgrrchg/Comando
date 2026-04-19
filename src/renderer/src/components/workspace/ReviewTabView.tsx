@@ -1303,6 +1303,7 @@ function createEmptySnapshot(
         sessionId: tab.sessionId,
         status: "idle",
         title: tab.title,
+        tokenUsage: null,
         toolActivity: [],
         trackedFiles: [],
         updatedAt: now,

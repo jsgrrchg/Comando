@@ -404,6 +404,7 @@ interface AIChatComposerProps {
     readonly composerFontSize?: number;
     readonly availableCommands: readonly AiAvailableCommand[];
     readonly agentControls?: ReactNode;
+    readonly bottomAccent?: ReactNode;
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly onChange: (parts: AIComposerPart[]) => void;
@@ -487,6 +488,7 @@ export function AIChatComposer({
     composerFontSize = 14,
     availableCommands,
     agentControls,
+    bottomAccent,
     draftFileContexts,
     draftAttachments,
     onChange,
@@ -1414,6 +1416,8 @@ export function AIChatComposer({
                     ) : null}
                 </div>
             </div>
+
+            {bottomAccent}
         </div>
     );
 }

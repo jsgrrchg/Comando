@@ -696,6 +696,7 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
             sessionId: "session-1",
             status: "idle",
             title: "Test",
+            tokenUsage: null,
             toolActivity: [],
             trackedFiles: [],
             updatedAt: "2026-04-20T12:00:00.000Z",

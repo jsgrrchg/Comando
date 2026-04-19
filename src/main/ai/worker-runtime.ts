@@ -1122,6 +1122,32 @@ export class AiWorkerRuntime {
                     updatedAt: update.updatedAt ?? now,
                 };
                 break;
+            case "usage_update": {
+                const size = Number(update.size);
+                const used = Number(update.used);
+                if (!Number.isFinite(size) || size <= 0) {
+                    break;
+                }
+                const cost =
+                    update.cost &&
+                    typeof update.cost.amount === "number" &&
+                    typeof update.cost.currency === "string"
+                        ? {
+                              amount: update.cost.amount,
+                              currency: update.cost.currency,
+                          }
+                        : null;
+                nextSnapshot = {
+                    ...nextSnapshot,
+                    tokenUsage: {
+                        cost,
+                        size,
+                        updatedAt: now,
+                        used: Number.isFinite(used) ? Math.max(0, used) : 0,
+                    },
+                };
+                break;
+            }
             default:
                 break;
         }

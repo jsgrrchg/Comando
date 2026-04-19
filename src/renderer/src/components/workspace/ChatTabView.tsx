@@ -41,6 +41,7 @@ import type {
 import { AIChatAgentControls } from "./AIChatAgentControls";
 import { LanguageIcon } from "./LanguageIcon";
 import { AIChatComposer } from "./chat/AIChatComposer";
+import { AIChatContextUsageBar } from "./chat/AIChatContextUsageBar";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
@@ -2059,6 +2060,13 @@ export const ChatTabView = memo(function ChatTabView({
                         requireCmdEnterToSend={
                             aiChatSettings.requireCmdEnterToSend
                         }
+                        bottomAccent={
+                            aiChatSettings.contextUsageBarEnabled ? (
+                                <AIChatContextUsageBar
+                                    usage={snapshot.tokenUsage}
+                                />
+                            ) : null
+                        }
                         agentControls={
                             hasAgentControls ? (
                                 <AIChatAgentControls
@@ -4040,6 +4048,7 @@ function createEmptySnapshot(
         sessionId: tab.sessionId,
         status: "idle",
         title: tab.title,
+        tokenUsage: null,
         toolActivity: [],
         trackedFiles: [],
         updatedAt: new Date().toISOString(),

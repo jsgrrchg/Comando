@@ -296,6 +296,7 @@ describe("SettingsService", () => {
                 requireCmdEnterToSend: false,
                 screenshotRetentionSeconds: 0,
                 historyRetentionDays: 0,
+                contextUsageBarEnabled: true,
             },
             shellState: null,
         });
@@ -309,6 +310,7 @@ describe("SettingsService", () => {
             requireCmdEnterToSend: false,
             screenshotRetentionSeconds: 0,
             historyRetentionDays: 0,
+            contextUsageBarEnabled: true,
         });
     });
 });
@@ -363,6 +365,7 @@ function createDefaultAiChatSettings() {
         requireCmdEnterToSend: false,
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,
+        contextUsageBarEnabled: true,
     };
 }
 

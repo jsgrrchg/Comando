@@ -72,6 +72,7 @@ describe("AiService prepareSession", () => {
             sessionId: "session-1",
             status: "error",
             title: "Codex 1",
+            tokenUsage: null,
             toolActivity: [],
             trackedFiles: [],
             updatedAt: "2026-04-15T22:23:13.719838Z",

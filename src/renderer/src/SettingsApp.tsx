@@ -295,6 +295,7 @@ export function SettingsApp() {
                 requireCmdEnterToSend: aiChat.requireCmdEnterToSend,
                 screenshotRetentionSeconds: aiChat.screenshotRetentionSeconds,
                 historyRetentionDays: aiChat.historyRetentionDays,
+                contextUsageBarEnabled: aiChat.contextUsageBarEnabled,
                 onChatFontFamilyChange: (id) =>
                     updateAiChat({
                         chatFontFamily: id as ChatFontFamily,
@@ -313,6 +314,8 @@ export function SettingsApp() {
                     updateAiChat({ screenshotRetentionSeconds: seconds }),
                 onHistoryRetentionChange: (days) =>
                     updateAiChat({ historyRetentionDays: days }),
+                onContextUsageBarEnabledChange: (value) =>
+                    updateAiChat({ contextUsageBarEnabled: value }),
             }}
             appAppearance={{
                 fileTreeScale: appAppearance.fileTreeScale,

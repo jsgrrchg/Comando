@@ -143,6 +143,7 @@ function createSnapshot(
         sessionId: TAB.sessionId,
         status: "idle",
         title: TAB.title,
+        tokenUsage: null,
         toolActivity: [],
         trackedFiles: [...trackedFiles],
         updatedAt: "2026-04-14T00:00:00.000Z",

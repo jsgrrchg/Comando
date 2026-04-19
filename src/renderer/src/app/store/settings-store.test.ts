@@ -47,6 +47,7 @@ function createAiChatSettings(
         chatFontSize: 14,
         composerFontFamily: "geist",
         composerFontSize: 14,
+        contextUsageBarEnabled: true,
         historyRetentionDays: 30,
         requireCmdEnterToSend: false,
         reviewDiffZoom: 1,

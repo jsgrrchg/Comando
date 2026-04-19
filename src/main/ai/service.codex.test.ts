@@ -462,6 +462,7 @@ describe("AiService Codex branch", () => {
             sessionId: "session-1",
             status: "idle",
             title: "Codex 1",
+            tokenUsage: null,
             toolActivity: [],
             trackedFiles: [],
             updatedAt: "2026-04-15T00:00:00.000Z",

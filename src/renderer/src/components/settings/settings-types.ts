@@ -90,6 +90,7 @@ export interface SettingsAiChatState {
     readonly requireCmdEnterToSend: boolean;
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
+    readonly contextUsageBarEnabled: boolean;
     readonly onChatFontFamilyChange?: (id: string) => void;
     readonly onChatFontSizeChange?: (size: number) => void;
     readonly onComposerFontFamilyChange?: (id: string) => void;
@@ -97,6 +98,7 @@ export interface SettingsAiChatState {
     readonly onRequireCmdEnterChange?: (value: boolean) => void;
     readonly onScreenshotRetentionChange?: (seconds: number) => void;
     readonly onHistoryRetentionChange?: (days: number) => void;
+    readonly onContextUsageBarEnabledChange?: (value: boolean) => void;
 }
 
 export interface SettingsWindowProps {
