@@ -139,15 +139,7 @@ function handleRequest(request: DbWorkerRequest): void {
     }
 
     if (request.method === "system.shutdown") {
-        try {
-            rpcPort.postMessage({
-                id: request.id,
-                result: true,
-            } satisfies DbWorkerResponse);
-        } finally {
-            rpcPort.close();
-            database?.close();
-        }
+        performShutdown(request.id);
         return;
     }
 
@@ -163,6 +155,59 @@ function handleRequest(request: DbWorkerRequest): void {
             id: request.id,
         } satisfies DbWorkerResponse);
     }
+}
+
+function performShutdown(requestId: number): void {
+    const port = rpcPort;
+    if (!port) {
+        return;
+    }
+
+    // Drop rpcPort immediately so any queued request after the shutdown
+    // is ignored by handleRequest instead of touching resources we are
+    // about to release.
+    rpcPort = null;
+
+    // Stop dispatching queued incoming messages. Without this, messages
+    // that arrived before the main side tore down could still fire
+    // during Isolate teardown via queued microtasks.
+    port.removeAllListeners("message");
+
+    // Acknowledge the shutdown before releasing resources so the main
+    // thread can stop waiting and close its side of the port.
+    try {
+        port.postMessage({
+            id: requestId,
+            result: true,
+        } satisfies DbWorkerResponse);
+    } catch {
+        // Port may already be closed by the main side during app exit.
+    }
+
+    // Defer the native teardown to the next tick. This lets the
+    // acknowledgement flush and any pending better-sqlite3 finalizers
+    // run to completion before the V8 Isolate starts being disposed,
+    // which has been observed to crash the worker otherwise.
+    setImmediate(() => {
+        try {
+            database?.close();
+        } catch {
+            // Close failures during shutdown are not actionable.
+        } finally {
+            database = null;
+            persistenceService = null;
+            settingsService = null;
+            workspaceService = null;
+            aiPersistence = null;
+            projectStore = null;
+        }
+
+        try {
+            port.close();
+        } catch {
+            // Already closed by the main side.
+        }
+    });
 }
 
 function dispatchMethod(method: string, params: unknown): unknown {

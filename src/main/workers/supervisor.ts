@@ -69,6 +69,7 @@ export const WORKER_TIMEOUTS_MS: Record<WorkerDomain, number> = {
 
 const RESTART_BASE_DELAY_MS = 250;
 const RESTART_MAX_DELAY_MS = 5_000;
+const WORKER_GRACEFUL_EXIT_TIMEOUT_MS = 2_000;
 const DOMAIN_OPERATION: Record<WorkerDomain, PerformanceOperationName> = {
     db: "workers.db.rpc",
     git: "workers.git.rpc",
@@ -92,6 +93,7 @@ export class RpcWorkerSupervisor<TReady> {
     #nextRequestId = 1;
     #restartAttempt = 0;
     #restartTimer: ReturnType<typeof setTimeout> | null = null;
+    #terminatingPromise: Promise<void> | null = null;
 
     constructor(options: RpcWorkerSupervisorOptions<TReady>) {
         this.#connect = options.connect;
@@ -150,6 +152,7 @@ export class RpcWorkerSupervisor<TReady> {
             return;
         }
 
+        let gracefulShutdown = false;
         try {
             await this.#dispatchRequest(
                 connection,
@@ -158,6 +161,7 @@ export class RpcWorkerSupervisor<TReady> {
                 undefined,
                 `${this.#domain}-shutdown`,
             );
+            gracefulShutdown = true;
         } catch (error) {
             // Ignore graceful shutdown failures during app exit.
             debugBenignError(
@@ -177,7 +181,46 @@ export class RpcWorkerSupervisor<TReady> {
             debugBenignError(`workers.${this.#domain}.portClose`, error);
         }
 
-        await connection.worker.terminate();
+        // When the shutdown RPC succeeded, the worker is tearing down
+        // its own resources. Wait for it to exit naturally so native
+        // finalizers (e.g., better-sqlite3) complete before the Isolate
+        // is disposed. Fall back to terminate() only if the worker does
+        // not exit in time. If connection.faulted is already set, the
+        // worker has already emitted exit while we were awaiting the
+        // shutdown response — nothing more to wait for.
+        if (gracefulShutdown && !connection.faulted) {
+            await this.#awaitWorkerExit(
+                connection.worker,
+                WORKER_GRACEFUL_EXIT_TIMEOUT_MS,
+            );
+        } else if (!gracefulShutdown) {
+            await connection.worker.terminate();
+        }
+    }
+
+    async #awaitWorkerExit(worker: Worker, timeoutMs: number): Promise<void> {
+        const exited = await new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => {
+                worker.off("exit", onExit);
+                resolve(false);
+            }, timeoutMs);
+            timer.unref?.();
+            const onExit = () => {
+                clearTimeout(timer);
+                resolve(true);
+            };
+            worker.once("exit", onExit);
+        });
+        if (!exited) {
+            try {
+                await worker.terminate();
+            } catch (error) {
+                debugBenignError(
+                    `workers.${this.#domain}.fallbackTerminate`,
+                    error,
+                );
+            }
+        }
     }
 
     async #ensureConnection(): Promise<ManagedConnection<TReady>> {
@@ -215,6 +258,13 @@ export class RpcWorkerSupervisor<TReady> {
             logWorkerEvent("warn", this.#domain, "restart-started", {
                 attempt: this.#restartAttempt,
             });
+        }
+
+        // Wait for any in-flight terminate() to resolve so the previous
+        // worker's V8 Isolate is fully disposed before we spawn a new
+        // one. Otherwise their teardowns can overlap and crash.
+        if (this.#terminatingPromise) {
+            await this.#terminatingPromise;
         }
 
         const connection = await this.#connect();
@@ -429,8 +479,20 @@ export class RpcWorkerSupervisor<TReady> {
         }
 
         if (reason !== "exit") {
-            void connection.worker.terminate().catch(() => {
-                // Ignore repeated termination attempts.
+            // Track the terminate() promise so the next connect attempt
+            // can wait for the old Isolate to finish disposing before
+            // spawning a new worker. Creating a new worker while the
+            // previous one is mid-teardown has been observed to crash
+            // during v8::Isolate::Dispose().
+            const terminating: Promise<void> = connection.worker
+                .terminate()
+                .then(() => undefined)
+                .catch(() => undefined);
+            this.#terminatingPromise = terminating;
+            void terminating.finally(() => {
+                if (this.#terminatingPromise === terminating) {
+                    this.#terminatingPromise = null;
+                }
             });
         }
 

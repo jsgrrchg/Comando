@@ -71,4 +71,45 @@ describe("RpcWorkerSupervisor", () => {
 
         await closePromise;
     });
+
+    it("does not force terminate when the worker exits gracefully after shutdown", async () => {
+        const port = new FakePort();
+        const worker = new FakeWorker();
+
+        port.onPostMessage = (message) => {
+            const payload = message as {
+                readonly id?: number;
+                readonly method?: string;
+            };
+            if (payload.method === "system.shutdown") {
+                // Respond to the shutdown RPC and then exit on next tick,
+                // mirroring the worker's real teardown sequence.
+                queueMicrotask(() => {
+                    port.emit("message", {
+                        id: payload.id,
+                        result: true,
+                    });
+                    queueMicrotask(() => {
+                        worker.emit("exit", 0);
+                    });
+                });
+            }
+        };
+
+        const supervisor = new RpcWorkerSupervisor<void>({
+            connect: () =>
+                Promise.resolve({
+                    port: port as unknown as MessagePort,
+                    readyValue: undefined,
+                    worker: worker as unknown as Worker,
+                }),
+            domain: "db",
+            timeoutMs: 1_000,
+        });
+
+        await supervisor.ready();
+        await supervisor.close();
+
+        expect(worker.terminate).not.toHaveBeenCalled();
+    });
 });
