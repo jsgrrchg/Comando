@@ -245,8 +245,7 @@ describe("EditedFilesBufferPanel", () => {
         );
 
         expect(markup).toContain("shell-scrollbar");
-        expect(markup).toContain("max-height:calc(");
-        expect(markup).toContain("em + 1px)");
+        expect(markup).toContain("max-height:224px");
         expect(markup).toContain("overflow-y:auto");
     });
 });

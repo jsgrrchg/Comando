@@ -11,6 +11,7 @@ import {
 } from "./reviewDiff";
 
 const BASE_TEXT_SIZE_PX = 16;
+export const COMPACT_REVIEW_ROW_HEIGHT_PX = 28;
 
 function toEm(value: number): string {
     return `${value / BASE_TEXT_SIZE_PX}em`;
@@ -128,7 +129,9 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                 style={{
                     borderTop:
                         "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
+                    boxSizing: "border-box",
                     fontFamily: "var(--font-mono)",
+                    minHeight: COMPACT_REVIEW_ROW_HEIGHT_PX,
                     overflow: "hidden",
                 }}
             >

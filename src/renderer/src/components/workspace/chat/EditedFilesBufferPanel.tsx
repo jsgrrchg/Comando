@@ -2,17 +2,19 @@ import { memo, useMemo, useState } from "react";
 
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 
-import { DiffStatBar, ReviewFileRow } from "../review/ReviewFileRow";
+import {
+    COMPACT_REVIEW_ROW_HEIGHT_PX,
+    DiffStatBar,
+    ReviewFileRow,
+} from "../review/ReviewFileRow";
 import type {
     ReviewFileItem,
     ReviewSummary,
 } from "../review/editedFilesPresentationModel";
 import { formatDiffStat } from "../review/reviewDiff";
 
-const COMPACT_MAX_VISIBLE_ROWS = 6;
-// Each compact row renders at ~1.75em with the inherited zoom, plus a 1px divider.
-const COMPACT_ROW_HEIGHT_EM = 1.75;
-const COMPACT_SCROLL_MAX_HEIGHT = `calc(${COMPACT_MAX_VISIBLE_ROWS} * (${COMPACT_ROW_HEIGHT_EM}em + 1px))`;
+const COMPACT_MAX_VISIBLE_ROWS = 8;
+const COMPACT_SCROLL_MAX_HEIGHT = `${COMPACT_MAX_VISIBLE_ROWS * COMPACT_REVIEW_ROW_HEIGHT_PX}px`;
 const BASE_TEXT_SIZE_PX = 16;
 
 function toEm(value: number): string {
