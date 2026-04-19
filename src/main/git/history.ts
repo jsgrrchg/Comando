@@ -12,7 +12,6 @@ import type {
 const FIELD_SEPARATOR = "\u001f";
 const RECORD_SEPARATOR = "\u001e";
 const DEFAULT_HISTORY_LIMIT = 200;
-const MAX_HISTORY_LIMIT = 500;
 
 export async function listGitHistory(
     rootPath: string,
@@ -85,7 +84,7 @@ function normalizeHistoryLimit(limit: number | undefined): number {
         return DEFAULT_HISTORY_LIMIT;
     }
 
-    return Math.max(1, Math.min(MAX_HISTORY_LIMIT, Math.trunc(limit ?? 0)));
+    return Math.max(1, Math.trunc(limit ?? 0));
 }
 
 function parseGitHistory(raw: string): readonly GitHistoryCommitSummary[] {

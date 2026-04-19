@@ -44,6 +44,7 @@ import {
 } from "./settings/window-zoom";
 import { openSettingsWindow } from "./settings/window";
 import { TerminalService } from "./terminals/service";
+import { initializeAutoUpdates } from "./updater";
 import { createMainWindow, forEachLiveWindow } from "./window";
 import { windowRegistry } from "./windows/registry";
 import type { WorkspaceGateway } from "./workspace/service";
@@ -260,6 +261,12 @@ if (!hasSingleInstanceLock) {
             });
 
             restoreMainWindows();
+            initializeAutoUpdates({
+                appChannel,
+                isPackaged: app.isPackaged,
+                platform: process.platform,
+                resourcesPath: process.resourcesPath,
+            });
 
             app.on("activate", () => {
                 if (windowRegistry.listMainWindowContexts().length === 0) {

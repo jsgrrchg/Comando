@@ -55,6 +55,7 @@ const GRAPH_COLORS = [
 ] as const;
 const EMPTY_HISTORY: readonly GitHistoryCommitSummary[] = [];
 const EMPTY_LOADING_SHAS: readonly string[] = [];
+const DEFAULT_GIT_HISTORY_LIMIT = 200;
 const DEFAULT_GIT_HISTORY_COLUMN_WIDTHS = {
     author: 132,
     commit: 92,
@@ -100,6 +101,12 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             ? (state.historyByContext[contextKey] ?? EMPTY_HISTORY)
             : EMPTY_HISTORY,
     );
+    const historyLimit = useGitStore((state) =>
+        contextKey
+            ? (state.historyLimitsByContext[contextKey] ??
+              DEFAULT_GIT_HISTORY_LIMIT)
+            : DEFAULT_GIT_HISTORY_LIMIT,
+    );
     const error = useGitStore((state) =>
         contextKey ? (state.errors[contextKey] ?? null) : null,
     );
@@ -116,6 +123,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     );
     const refreshProject = useGitStore((state) => state.refreshProject);
     const refreshHistory = useGitStore((state) => state.refreshHistory);
+    const loadMoreHistory = useGitStore((state) => state.loadMoreHistory);
     const ensureCommitDetail = useGitStore((state) => state.ensureCommitDetail);
     const selectCommit = useGitStore((state) => state.selectCommit);
     const openGitCommitTab = useWorkspaceStore(
@@ -393,6 +401,14 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         void refreshHistory(projectId, worktreeId);
     }, [projectId, refreshHistory, worktreeId]);
 
+    const handleLoadMoreHistory = useCallback(() => {
+        if (!projectId) {
+            return;
+        }
+
+        void loadMoreHistory(projectId, worktreeId);
+    }, [loadMoreHistory, projectId, worktreeId]);
+
     const selectRelativeCommit = useCallback(
         (direction: "next" | "previous") => {
             if (history.length === 0) {
@@ -564,6 +580,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
 
     const searchHasNoMatches =
         searchQuery.trim().length > 0 && matchedCommitShas.length === 0;
+    const canLoadMoreHistory = history.length > 0 && history.length >= historyLimit;
 
     return (
         <div
@@ -915,6 +932,24 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                                         </Fragment>
                                     );
                                 })}
+                                {canLoadMoreHistory ? (
+                                    <div
+                                        className="flex items-center justify-center border-b border-border-subtle px-3 py-3"
+                                        style={{
+                                            minWidth: gitHistoryTableMinWidth,
+                                        }}
+                                    >
+                                        <IdeActionButton
+                                            disabled={isHistoryLoading}
+                                            onClick={handleLoadMoreHistory}
+                                            title="Load more commits"
+                                        >
+                                            {isHistoryLoading
+                                                ? "loading..."
+                                                : "load more"}
+                                        </IdeActionButton>
+                                    </div>
+                                ) : null}
                             </div>
                         )}
                     </div>

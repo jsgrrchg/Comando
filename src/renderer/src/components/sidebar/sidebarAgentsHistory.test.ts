@@ -194,6 +194,55 @@ describe("applySessionUpdateToSidebarHistory", () => {
         expect(result.sessions).toEqual([]);
     });
 
+    it("inserts an unknown session immediately when the first patch has message data and seed metadata", () => {
+        const sessions = [createSummary()] as const;
+        const update: AiSessionUpdate = {
+            kind: "patch",
+            patch: {
+                changes: {
+                    messages: [
+                        createMessage({
+                            content: "The very first user turn should surface immediately.",
+                            id: "message-seeded-1",
+                            kind: "user",
+                        }),
+                    ],
+                    updatedAt: "2026-04-19T12:00:00.000Z",
+                },
+                runtimeId: "codex",
+                sessionId: "session-seeded",
+            },
+        };
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions,
+            unknownSessionSeed: {
+                projectId: DEFAULT_SCOPE.projectId,
+                title: "Seeded Session",
+                updatedAt: "2026-04-19T11:59:00.000Z",
+                worktreeId: DEFAULT_SCOPE.worktreeId,
+            },
+            update,
+        });
+
+        expect(result.needsReload).toBe(false);
+        expect(result.sessions.map((session) => session.sessionId)).toEqual([
+            "session-seeded",
+            "session-1",
+        ]);
+        expect(result.sessions[0]).toMatchObject({
+            messageCount: 1,
+            preview: "The very first user turn should surface immediately.",
+            projectId: DEFAULT_SCOPE.projectId,
+            sessionId: "session-seeded",
+            title: "Seeded Session",
+            updatedAt: "2026-04-19T12:00:00.000Z",
+            worktreeId: DEFAULT_SCOPE.worktreeId,
+        });
+    });
+
     it("keeps the list untouched and asks for reload when a patch arrives for an unknown session", () => {
         const sessions = [createSummary()] as const;
         const update: AiSessionUpdate = {

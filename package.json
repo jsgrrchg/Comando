@@ -3,6 +3,14 @@
     "version": "0.1.0",
     "private": true,
     "description": "Workspace local-first para programar con IA.",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/jsgrrchg/Comando.git"
+    },
+    "bugs": {
+        "url": "https://github.com/jsgrrchg/Comando/issues"
+    },
+    "homepage": "https://github.com/jsgrrchg/Comando#readme",
     "type": "module",
     "packageManager": "pnpm@10.33.0",
     "main": "out/main/index.js",
@@ -14,12 +22,15 @@
         "icons:build": "node scripts/build-icons.mjs",
         "prepackage:mac": "pnpm run icons:build",
         "package:mac": "node scripts/package-macos-app.mjs",
+        "release:mac": "node scripts/package-macos-app.mjs --publish always",
         "prepackage:win": "pnpm run icons:build",
         "package:win": "node scripts/package-windows-app.mjs",
         "prepackage:win:arm64": "pnpm run icons:build",
         "package:win:arm64": "node scripts/package-windows-app.mjs --arm64",
+        "release:win:arm64": "node scripts/package-windows-app.mjs --arm64 --publish always",
         "prepackage:win:x64": "pnpm run icons:build",
         "package:win:x64": "node scripts/package-windows-app.mjs --x64",
+        "release:win:x64": "node scripts/package-windows-app.mjs --x64 --publish always",
         "lint": "eslint .",
         "postinstall": "pnpm run rebuild:native",
         "rebuild:native": "electron-rebuild -f -w better-sqlite3,node-pty",
@@ -53,6 +64,7 @@
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/xterm": "^6.0.0",
         "better-sqlite3": "^12.9.0",
+        "electron-updater": "^6.8.3",
         "monaco-editor": "^0.55.1",
         "node-pty": "^1.1.0",
         "react": "^19.2.0",
@@ -95,6 +107,7 @@
     "build": {
         "appId": "com.placeholder.comando",
         "productName": "Comando",
+        "electronUpdaterCompatibility": ">=2.16",
         "directories": {
             "buildResources": "resources",
             "output": "dist"
@@ -127,7 +140,13 @@
             "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/bin/**/*}",
             "target": [
                 {
-                    "target": "dir",
+                    "target": "dmg",
+                    "arch": [
+                        "universal"
+                    ]
+                },
+                {
+                    "target": "zip",
                     "arch": [
                         "universal"
                     ]

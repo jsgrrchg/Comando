@@ -1,0 +1,123 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - "v*"
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+concurrency:
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    release-macos:
+        name: macOS universal
+        runs-on: macos-latest
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+            APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+            APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+            APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+            APPLE_ID: ${{ secrets.APPLE_ID }}
+            APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+            CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+            CSC_LINK: ${{ secrets.CSC_LINK }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.33.0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Publish macOS artifacts
+              run: pnpm run release:mac
+
+            - name: Upload macOS workflow artifacts
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: macos-universal-dist
+                  path: build/macos-package/project/dist/*
+
+    release-windows-x64:
+        name: Windows x64
+        runs-on: windows-latest
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.33.0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Publish Windows x64 artifacts
+              run: pnpm run release:win:x64
+
+            - name: Upload Windows x64 workflow artifacts
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: windows-x64-dist
+                  path: dist/*
+
+    release-windows-arm64:
+        name: Windows arm64
+        runs-on: windows-11-arm
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.33.0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Publish Windows arm64 artifacts
+              run: pnpm run release:win:arm64
+
+            - name: Upload Windows arm64 workflow artifacts
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: windows-arm64-dist
+                  path: dist/*

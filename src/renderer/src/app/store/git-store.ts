@@ -22,6 +22,8 @@ const DEFAULT_CHANGE_GROUPS: readonly GitChangeGroupId[] = [
     "staged",
     "untracked",
 ];
+const DEFAULT_GIT_HISTORY_LIMIT = 200;
+const GIT_HISTORY_LOAD_MORE_INCREMENT = 200;
 
 interface GitStoreState {
     readonly activeWorktreeIds: Record<string, string | null>;
@@ -42,6 +44,7 @@ interface GitStoreState {
         string,
         readonly GitHistoryCommitSummary[]
     >;
+    readonly historyLimitsByContext: Record<string, number>;
     readonly loadingCommitShas: Record<string, readonly string[]>;
     readonly loadingContexts: Record<string, boolean>;
     readonly loadingDiffPaths: Record<string, readonly string[]>;
@@ -84,6 +87,10 @@ interface GitStoreState {
         readonly activeWorktreeId?: string | null;
         readonly projects: readonly ProjectSummary[];
     }) => Promise<void>;
+    loadMoreHistory: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<readonly GitHistoryCommitSummary[]>;
     pullRepository: (
         projectId: string,
         worktreeId?: string | null,
@@ -172,6 +179,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     expandedProjects: {},
     expandedWorktreeSections: {},
     historyByContext: {},
+    historyLimitsByContext: {},
     loadingCommitShas: {},
     loadingContexts: {},
     loadingDiffPaths: {},
@@ -417,10 +425,32 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         return snapshot;
     },
 
+    loadMoreHistory: async (projectId, worktreeId = null) => {
+        const contextKey = getContextKey(projectId, worktreeId);
+        const nextLimit =
+            (get().historyLimitsByContext[contextKey] ??
+                DEFAULT_GIT_HISTORY_LIMIT) + GIT_HISTORY_LOAD_MORE_INCREMENT;
+
+        set((state) => ({
+            historyLimitsByContext: {
+                ...state.historyLimitsByContext,
+                [contextKey]: nextLimit,
+            },
+        }));
+
+        return get().refreshHistory(projectId, worktreeId);
+    },
+
     refreshHistory: async (projectId, worktreeId = null) => {
         const contextKey = getContextKey(projectId, worktreeId);
+        const limit =
+            get().historyLimitsByContext[contextKey] ?? DEFAULT_GIT_HISTORY_LIMIT;
         set((state) => ({
             errors: { ...state.errors, [contextKey]: null },
+            historyLimitsByContext: {
+                ...state.historyLimitsByContext,
+                [contextKey]: limit,
+            },
             loadingHistoryContexts: {
                 ...state.loadingHistoryContexts,
                 [contextKey]: true,
@@ -429,7 +459,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
 
         try {
             const history = await getComandoApi().listGitHistory({
-                limit: 200,
+                limit,
                 projectId,
                 worktreeId,
             });

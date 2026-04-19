@@ -17,9 +17,11 @@ const mockGitStoreState = vi.hoisted(() => ({
             string,
             readonly GitHistoryCommitSummary[] | undefined
         >,
+        historyLimitsByContext: {} as Record<string, number | undefined>,
         loadingCommitShas: {} as Record<string, readonly string[] | undefined>,
         loadingContexts: {} as Record<string, boolean | undefined>,
         loadingHistoryContexts: {} as Record<string, boolean | undefined>,
+        loadMoreHistory: vi.fn(() => Promise.resolve([])),
         refreshHistory: vi.fn(() => Promise.resolve([])),
         refreshProject: vi.fn(() => Promise.resolve(null)),
         selectCommit: vi.fn(() => Promise.resolve(null)),
@@ -84,9 +86,11 @@ function resetStoreState() {
     mockGitStoreState.current.historyByContext = {
         [CONTEXT_KEY]: [createCommit()],
     };
+    mockGitStoreState.current.historyLimitsByContext = {};
     mockGitStoreState.current.loadingCommitShas = {};
     mockGitStoreState.current.loadingContexts = {};
     mockGitStoreState.current.loadingHistoryContexts = {};
+    mockGitStoreState.current.loadMoreHistory.mockClear();
     mockGitStoreState.current.refreshHistory.mockClear();
     mockGitStoreState.current.refreshProject.mockClear();
     mockGitStoreState.current.selectCommit.mockClear();
@@ -143,6 +147,25 @@ function createCommitDetail(
 }
 
 describe("GitTabView", () => {
+    it("shows a load more button when the current page is full", () => {
+        resetStoreState();
+        mockGitStoreState.current.historyByContext = {
+            [CONTEXT_KEY]: Array.from({ length: 200 }, (_, index) =>
+                createCommit({
+                    sha: `commit-${index}`,
+                    shortSha: `c${index}`.slice(0, 7),
+                    subject: `Commit ${index}`,
+                }),
+            ),
+        };
+
+        const markup = renderToStaticMarkup(
+            createElement(GitTabView, { tab: TAB }),
+        );
+
+        expect(markup).toContain("load more");
+    });
+
     it("keeps the detail panel hidden before any commit is selected", () => {
         resetStoreState();
 

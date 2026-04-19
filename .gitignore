@@ -19,5 +19,6 @@ src/**/*.d.ts
 vendor/codex-acp/target/
 resources/ai/binaries/*
 !resources/ai/binaries/.gitkeep
+resources/ai/prebuilt/
 resources/ai/embedded/*
 !resources/ai/embedded/.gitkeep

@@ -53,6 +53,15 @@ const electronBuilderCli = path.join(
 );
 const rootPackageJsonPath = path.join(repoRoot, "package.json");
 const rootPackageJson = readJson(rootPackageJsonPath);
+const productName = rootPackageJson.build?.productName ?? "Comando";
+const standaloneDmgArtifactPath = path.join(
+    standaloneDistDir,
+    `${productName}-${rootPackageJson.version}-universal.dmg`,
+);
+const standaloneZipArtifactPath = path.join(
+    standaloneDistDir,
+    `${productName}-${rootPackageJson.version}-universal.zip`,
+);
 const appResourcesRoot = path.join(repoRoot, "resources", "ai");
 const prebuiltRoot = path.join(appResourcesRoot, "prebuilt");
 const prebuiltCodexRoot = path.join(prebuiltRoot, "codex-acp");
@@ -97,6 +106,8 @@ if (process.platform !== "darwin") {
 main();
 
 function main() {
+    const electronBuilderArgs = resolveElectronBuilderArgs(process.argv.slice(2));
+
     console.log("[package:mac] Packaging with prebuilt ACP artifacts.");
     prepareWorkspace();
     stageClaudeRuntime();
@@ -112,16 +123,12 @@ function main() {
     const copiedPackages = stagePackagedApplication();
     stageStandaloneProject(copiedPackages);
 
-    console.log("[package:mac] Packaging universal macOS app.");
+    console.log("[package:mac] Packaging universal macOS app and release artifacts.");
     run(
         process.execPath,
         [
             electronBuilderCli,
-            "--projectDir",
-            standaloneProjectRoot,
-            "--mac",
-            "--universal",
-            "--dir",
+            ...electronBuilderArgs,
         ],
         {
             env: createPackagerEnvironment(),
@@ -137,17 +144,48 @@ function main() {
     replaceLegacyMacIcon(standalonePackagedAppPath);
     repairMovedMacAppBundle(standalonePackagedAppPath);
     verifyPackagedApplication(standalonePackagedAppPath);
+    verifyReleaseArtifacts();
 
-    fs.rmSync(desktopAppPath, { force: true, recursive: true });
-    fs.cpSync(standalonePackagedAppPath, desktopAppPath, {
-        recursive: true,
-    });
-    repairMovedMacAppBundle(desktopAppPath);
+    if (shouldCopyPackagedAppToDesktop()) {
+        fs.rmSync(desktopAppPath, { force: true, recursive: true });
+        fs.cpSync(standalonePackagedAppPath, desktopAppPath, {
+            recursive: true,
+        });
+        repairMovedMacAppBundle(desktopAppPath);
+        console.log(`[package:mac] App copied to ${desktopAppPath}`);
+    }
 
-    console.log(`[package:mac] App copied to ${desktopAppPath}`);
     console.log(
         `[package:mac] Universal staging bundle available at ${standalonePackagedAppPath}`,
     );
+    console.log(
+        `[package:mac] Release DMG available at ${standaloneDmgArtifactPath}`,
+    );
+    console.log(
+        `[package:mac] Release ZIP available at ${standaloneZipArtifactPath}`,
+    );
+}
+
+function resolveElectronBuilderArgs(rawArgs) {
+    const normalizedArgs = rawArgs.filter(
+        (arg) => !["--mac", "--universal"].includes(arg),
+    );
+
+    if (!normalizedArgs.includes("--publish")) {
+        normalizedArgs.push("--publish", "never");
+    }
+
+    return [
+        "--projectDir",
+        standaloneProjectRoot,
+        "--mac",
+        "--universal",
+        ...normalizedArgs,
+    ];
+}
+
+function shouldCopyPackagedAppToDesktop() {
+    return !process.env.CI;
 }
 
 function prepareWorkspace() {
@@ -570,6 +608,19 @@ function verifyPackagedApplication(packagedAppPath) {
         throw new Error(
             "The packaged app is still missing runtime dependencies inside app.asar.",
         );
+    }
+}
+
+function verifyReleaseArtifacts() {
+    for (const artifactPath of [
+        standaloneDmgArtifactPath,
+        standaloneZipArtifactPath,
+    ]) {
+        if (!isFile(artifactPath)) {
+            throw new Error(
+                `Expected release artifact at ${relativeToRepo(artifactPath)}, but it was not generated.`,
+            );
+        }
     }
 }
 

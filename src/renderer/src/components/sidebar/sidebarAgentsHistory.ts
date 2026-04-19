@@ -17,17 +17,27 @@ export interface SidebarAgentsHistoryUpdateResult {
     readonly sessions: readonly AiHistorySessionSummary[];
 }
 
+export interface SidebarAgentsHistoryUnknownSessionSeed {
+    readonly messages?: readonly AiMessage[] | null;
+    readonly projectId: string | null;
+    readonly title: string;
+    readonly updatedAt?: string | null;
+    readonly worktreeId?: string | null;
+}
+
 export const SIDEBAR_AGENTS_HISTORY_LIMIT = 200;
 
 export function applySessionUpdateToSidebarHistory({
     limit,
     scope,
     sessions,
+    unknownSessionSeed,
     update,
 }: {
     readonly limit: number;
     readonly scope: SidebarAgentsHistoryScope;
     readonly sessions: readonly AiHistorySessionSummary[];
+    readonly unknownSessionSeed?: SidebarAgentsHistoryUnknownSessionSeed | null;
     readonly update: AiSessionUpdate;
 }): SidebarAgentsHistoryUpdateResult {
     if (update.kind === "snapshot") {
@@ -44,6 +54,7 @@ export function applySessionUpdateToSidebarHistory({
         patch: update.patch,
         scope,
         sessions,
+        unknownSessionSeed,
     });
 }
 
@@ -100,16 +111,39 @@ function applyPatchToSidebarHistory({
     patch,
     scope,
     sessions,
+    unknownSessionSeed,
 }: {
     readonly limit: number;
     readonly patch: AiSessionPatch;
     readonly scope: SidebarAgentsHistoryScope;
     readonly sessions: readonly AiHistorySessionSummary[];
+    readonly unknownSessionSeed?: SidebarAgentsHistoryUnknownSessionSeed | null;
 }): SidebarAgentsHistoryUpdateResult {
     const existing = sessions.find(
         (session) => session.sessionId === patch.sessionId,
     );
     if (!existing) {
+        const seededSummary = createHistorySummaryFromUnknownPatch(
+            patch,
+            unknownSessionSeed ?? null,
+        );
+        if (seededSummary) {
+            if (
+                !isHistorySummaryVisibleInScope(seededSummary, scope) ||
+                seededSummary.messageCount === 0
+            ) {
+                return {
+                    needsReload: false,
+                    sessions,
+                };
+            }
+
+            return {
+                needsReload: false,
+                sessions: upsertHistorySummary(sessions, seededSummary, limit),
+            };
+        }
+
         return {
             needsReload: true,
             sessions,
@@ -192,6 +226,55 @@ function applyPatchToHistorySummary(
             changes.worktreeId === undefined
                 ? existing.worktreeId ?? null
                 : changes.worktreeId,
+    };
+}
+
+function createHistorySummaryFromUnknownPatch(
+    patch: AiSessionPatch,
+    seed: SidebarAgentsHistoryUnknownSessionSeed | null,
+): AiHistorySessionSummary | null {
+    const nextMessages = resolvePatchedMessages(patch.changes) ?? seed?.messages ?? null;
+    if (!nextMessages || nextMessages.length === 0) {
+        return null;
+    }
+
+    const updatedAt =
+        typeof patch.changes.updatedAt === "string"
+            ? patch.changes.updatedAt
+            : seed?.updatedAt ??
+              nextMessages.at(-1)?.createdAt ??
+              nextMessages[0]?.createdAt;
+    const title =
+        typeof patch.changes.title === "string"
+            ? patch.changes.title
+            : seed?.title ?? "";
+    if (!updatedAt || title.trim().length === 0) {
+        return null;
+    }
+
+    const projectId =
+        patch.changes.projectId === undefined
+            ? seed?.projectId ?? null
+            : patch.changes.projectId;
+    const worktreeId =
+        patch.changes.worktreeId === undefined
+            ? seed?.worktreeId ?? null
+            : patch.changes.worktreeId;
+    const createdAt =
+        nextMessages[0]?.createdAt ??
+        seed?.updatedAt ??
+        updatedAt;
+
+    return {
+        createdAt,
+        messageCount: nextMessages.length,
+        preview: deriveSessionPreview(nextMessages),
+        projectId,
+        runtimeId: patch.runtimeId,
+        sessionId: patch.sessionId,
+        title,
+        updatedAt,
+        worktreeId,
     };
 }
 

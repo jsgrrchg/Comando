@@ -54,7 +54,13 @@ import type {
     ThemeMode,
 } from "./settings-types";
 
-type Category = "appearance" | "editor" | "ai" | "shortcuts" | "runtimes";
+type Category =
+    | "appearance"
+    | "editor"
+    | "ai"
+    | "shortcuts"
+    | "runtimes"
+    | "updates";
 
 const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
@@ -62,6 +68,7 @@ const CATEGORIES: { id: Category; label: string }[] = [
     { id: "ai", label: "AI" },
     { id: "shortcuts", label: "Shortcuts" },
     { id: "runtimes", label: "AI Runtimes" },
+    { id: "updates", label: "Updates" },
 ];
 
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
@@ -70,6 +77,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     ai: "Chat, composer, and AI behavior",
     shortcuts: "Keyboard shortcuts reference",
     runtimes: "AI runtime authentication and wiring",
+    updates: "App version and changelog",
 };
 
 export function SettingsWindow({
@@ -337,6 +345,7 @@ export function SettingsWindow({
                                     onAction={onRuntimeAction}
                                 />
                             )}
+                            {active === "updates" && <UpdatesContent />}
                         </div>
                     </div>
                 </div>
@@ -887,5 +896,173 @@ function RuntimeActionBtn({
         >
             {action.label.toLowerCase()}
         </IdeActionButton>
+    );
+}
+
+const CURRENT_VERSION = "0.1.0";
+const LAST_CHECKED_LABEL = "Just now";
+
+type ChangelogEntry = {
+    version: string;
+    date: string;
+    highlights: readonly string[];
+};
+
+const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
+    {
+        version: "0.1.0",
+        date: "2026-04-19",
+        highlights: [
+            "Added multi-select drag from the file tree to the composer.",
+            "Tightened edited files buffer row sizing for review.",
+            "Fixed live AI session renames being overwritten.",
+        ],
+    },
+    {
+        version: "0.0.9",
+        date: "2026-04-05",
+        highlights: [
+            "Improved sidebar agent updates and history query indexing.",
+            "Added production app icons for macOS and Windows.",
+        ],
+    },
+];
+
+function UpdatesContent() {
+    return (
+        <div>
+            <SectionLabel>Version</SectionLabel>
+            <Row
+                label="Current version"
+                description={`You're on ${CURRENT_VERSION}. Last checked ${LAST_CHECKED_LABEL.toLowerCase()}.`}
+                control={
+                    <div
+                        style={{
+                            alignItems: "center",
+                            display: "flex",
+                            gap: 8,
+                        }}
+                    >
+                        <span
+                            style={{
+                                backgroundColor:
+                                    "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+                                borderRadius: 4,
+                                color: "var(--color-accent)",
+                                fontFamily: "var(--font-mono)",
+                                fontSize: 10,
+                                fontWeight: 600,
+                                letterSpacing: "0.06em",
+                                padding: "2px 6px",
+                                textTransform: "uppercase",
+                            }}
+                        >
+                            {`v${CURRENT_VERSION}`}
+                        </span>
+                        <IdeActionButton active onClick={() => {}}>
+                            check for updates
+                        </IdeActionButton>
+                    </div>
+                }
+            />
+            <Row
+                label="Automatic updates"
+                description="Install updates in the background and apply them on next launch."
+                control={<Toggle value={true} onChange={() => {}} />}
+            />
+
+            <SectionLabel>Changelog</SectionLabel>
+            <div style={{ paddingTop: 4 }}>
+                {CHANGELOG_ENTRIES.map((entry, index) => (
+                    <ChangelogItem
+                        entry={entry}
+                        isLatest={index === 0}
+                        key={entry.version}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function ChangelogItem({
+    entry,
+    isLatest,
+}: {
+    entry: ChangelogEntry;
+    isLatest: boolean;
+}) {
+    return (
+        <div
+            style={{
+                borderBottom:
+                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                padding: "14px 0",
+            }}
+        >
+            <div
+                style={{
+                    alignItems: "center",
+                    display: "flex",
+                    gap: 8,
+                    marginBottom: 6,
+                }}
+            >
+                <span
+                    style={{
+                        color: "var(--color-text-primary)",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 12,
+                        fontWeight: 600,
+                    }}
+                >
+                    {`v${entry.version}`}
+                </span>
+                {isLatest && (
+                    <span
+                        style={{
+                            backgroundColor:
+                                "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+                            borderRadius: 4,
+                            color: "var(--color-accent)",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            padding: "2px 6px",
+                            textTransform: "uppercase",
+                        }}
+                    >
+                        Latest
+                    </span>
+                )}
+                <span
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 10,
+                        marginLeft: "auto",
+                    }}
+                >
+                    {entry.date}
+                </span>
+            </div>
+            <ul
+                style={{
+                    color: "var(--color-text-secondary)",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    listStyle: "disc",
+                    margin: 0,
+                    paddingLeft: 18,
+                }}
+            >
+                {entry.highlights.map((item) => (
+                    <li key={item} style={{ marginBottom: 2 }}>
+                        {item}
+                    </li>
+                ))}
+            </ul>
+        </div>
     );
 }

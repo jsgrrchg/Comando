@@ -32,6 +32,7 @@ import {
 import {
     applySessionUpdateToSidebarHistory,
     SIDEBAR_AGENTS_HISTORY_LIMIT,
+    type SidebarAgentsHistoryUnknownSessionSeed,
 } from "./sidebarAgentsHistory";
 
 interface SidebarAgentsContextMenuPayload {
@@ -160,6 +161,14 @@ export function SidebarAgentsPanel({
                         worktreeId: worktreeId ?? null,
                     },
                     sessions: current,
+                    unknownSessionSeed:
+                        update.kind === "patch"
+                            ? buildUnknownSessionSeed(
+                                  useAiStore.getState().sessions[
+                                      update.patch.sessionId
+                                  ],
+                              )
+                            : null,
                     update,
                 });
                 needsReload = result.needsReload;
@@ -720,6 +729,27 @@ function isSessionWorking(
         snapshot: entry.snapshot ? { status: entry.snapshot.status } : null,
     });
     return indicator?.tone === "working";
+}
+
+function buildUnknownSessionSeed(
+    entry: ReturnType<typeof useAiStore.getState>["sessions"][string] | undefined,
+): SidebarAgentsHistoryUnknownSessionSeed | null {
+    if (!entry) {
+        return null;
+    }
+
+    const title = entry.snapshot?.title ?? entry.meta?.title ?? "";
+    if (title.trim().length === 0) {
+        return null;
+    }
+
+    return {
+        messages: entry.snapshot?.messages ?? null,
+        projectId: entry.snapshot?.projectId ?? entry.meta?.projectId ?? null,
+        title,
+        updatedAt: entry.snapshot?.updatedAt ?? null,
+        worktreeId: entry.snapshot?.worktreeId ?? entry.meta?.worktreeId ?? null,
+    };
 }
 
 function formatSessionCount(count: number): string {
