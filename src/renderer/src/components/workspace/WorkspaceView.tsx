@@ -721,6 +721,84 @@ function WorkspacePaneView({
     const closeTabsToRight = useWorkspaceStore(
         (state) => state.closeTabsToRight,
     );
+    const confirmBeforeClose = useCallback(
+        async (
+            tabIdsToClose: readonly string[],
+            closeAction: () => Promise<void>,
+        ) => {
+            const { tabsById } = useWorkspaceStore.getState();
+            const { sessions } = useAiStore.getState();
+            let workingCount = 0;
+            for (const candidateTabId of tabIdsToClose) {
+                const candidateTab = tabsById[candidateTabId];
+                if (candidateTab?.kind !== "chat") {
+                    continue;
+                }
+                const entry = sessions[candidateTab.sessionId];
+                if (!entry) {
+                    continue;
+                }
+                const indicator = resolveWorkspaceChatTabActivityIndicator({
+                    localError: entry.localError ?? null,
+                    snapshot: entry.snapshot
+                        ? { status: entry.snapshot.status }
+                        : null,
+                });
+                if (indicator?.tone === "working") {
+                    workingCount += 1;
+                }
+            }
+            if (workingCount > 0) {
+                const message =
+                    workingCount === 1
+                        ? "This thread is working. Stop the agent and close anyway?"
+                        : `${workingCount} threads are working. Stop the agents and close anyway?`;
+                if (!window.confirm(message)) {
+                    return;
+                }
+            }
+            await closeAction();
+        },
+        [],
+    );
+    const collectPaneTabIds = useCallback(
+        (tabId: string): readonly string[] => {
+            const { rootNode } = useWorkspaceStore.getState();
+            const pane = collectPaneNodes(rootNode).find((candidate) =>
+                candidate.tabIds.includes(tabId),
+            );
+            return pane?.tabIds ?? [];
+        },
+        [],
+    );
+    const requestCloseTab = useCallback(
+        (tabId: string) =>
+            confirmBeforeClose([tabId], () => closeTab(tabId)),
+        [closeTab, confirmBeforeClose],
+    );
+    const requestCloseOtherTabs = useCallback(
+        (tabId: string) => {
+            const siblingIds = collectPaneTabIds(tabId).filter(
+                (candidate) => candidate !== tabId,
+            );
+            return confirmBeforeClose(siblingIds, () => closeOtherTabs(tabId));
+        },
+        [closeOtherTabs, collectPaneTabIds, confirmBeforeClose],
+    );
+    const requestCloseTabsToRight = useCallback(
+        (tabId: string) => {
+            const paneTabIdsForClose = collectPaneTabIds(tabId);
+            const tabIndexInPane = paneTabIdsForClose.indexOf(tabId);
+            const rightIds =
+                tabIndexInPane >= 0
+                    ? paneTabIdsForClose.slice(tabIndexInPane + 1)
+                    : [];
+            return confirmBeforeClose(rightIds, () =>
+                closeTabsToRight(tabId),
+            );
+        },
+        [closeTabsToRight, collectPaneTabIds, confirmBeforeClose],
+    );
     const createChatTab = useWorkspaceStore((state) => state.createChatTab);
     const createTerminalTab = useWorkspaceStore(
         (state) => state.createTerminalTab,
@@ -843,17 +921,23 @@ function WorkspacePaneView({
         const entries: ContextMenuEntry[] = [
             {
                 label: "Close",
-                action: () => void closeTab(tabContextMenu.payload.tabId),
+                action: () =>
+                    void requestCloseTab(tabContextMenu.payload.tabId),
             },
             {
                 label: "Close Others",
-                action: () => void closeOtherTabs(tabContextMenu.payload.tabId),
+                action: () =>
+                    void requestCloseOtherTabs(
+                        tabContextMenu.payload.tabId,
+                    ),
                 disabled: paneTabIds.length <= 1,
             },
             {
                 label: "Close Tabs to the Right",
                 action: () =>
-                    void closeTabsToRight(tabContextMenu.payload.tabId),
+                    void requestCloseTabsToRight(
+                        tabContextMenu.payload.tabId,
+                    ),
                 disabled: tabIndex === paneTabIds.length - 1,
             },
             { type: "separator" },
@@ -1634,7 +1718,7 @@ function WorkspacePaneView({
                                             data-workspace-tab-close="true"
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                void closeTab(tab.id);
+                                                void requestCloseTab(tab.id);
                                             }}
                                             role="button"
                                             tabIndex={-1}
