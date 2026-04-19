@@ -1,5 +1,6 @@
 export type ChatPillVariant =
     | "accent"
+    | "commit"
     | "success"
     | "neutral"
     | "folder"
@@ -12,6 +13,10 @@ export const CHAT_PILL_VARIANTS: Record<
     accent: {
         background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
         color: "var(--color-accent)",
+    },
+    commit: {
+        background: "color-mix(in srgb, #8db7ff 16%, transparent)",
+        color: "#5f86d6",
     },
     success: {
         background: "color-mix(in srgb, #10b981 15%, transparent)",

@@ -36,6 +36,7 @@ import {
     appendFileAttachmentPart,
     appendFileMentionPart,
     appendFolderMentionPart,
+    appendGitCommitMentionPart,
     composerPartsToPlainText,
     normalizeComposerParts,
 } from "./composerParts";
@@ -160,6 +161,20 @@ function createFileAttachmentNode(
     return el;
 }
 
+function createGitCommitMentionNode(
+    part: Extract<AIComposerPart, { type: "git_commit_mention" }>,
+    metrics: ChatPillMetrics,
+): HTMLSpanElement {
+    const el = document.createElement("span");
+    el.contentEditable = "false";
+    el.dataset.kind = "git_commit_mention";
+    el.dataset.commitSha = part.commitSha;
+    el.dataset.label = part.label;
+    el.textContent = `commit: ${part.label}`;
+    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.commit);
+    return el;
+}
+
 /* ─── DOM → parts extraction ─── */
 
 function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
@@ -228,6 +243,15 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
                     });
                 }
                 return;
+            case "git_commit_mention":
+                if (el.dataset.commitSha && el.dataset.label) {
+                    parts.push({
+                        type: "git_commit_mention",
+                        commitSha: el.dataset.commitSha,
+                        label: el.dataset.label,
+                    });
+                }
+                return;
         }
     }
 
@@ -283,6 +307,29 @@ export function appendComposerProjectEntries(
     }, [...parts]);
 }
 
+export function appendWorkspaceTabComposerItem(
+    parts: readonly AIComposerPart[],
+    item: WorkspaceTabComposerDragDetail["item"],
+): AIComposerPart[] {
+    if (!item) {
+        return [...parts];
+    }
+
+    if (item.kind === "git_commit_mention") {
+        return appendGitCommitMentionPart(parts, {
+            commitSha: item.commitSha,
+            label: item.label,
+        });
+    }
+
+    return appendFileMentionPart(parts, {
+        label: item.label,
+        path: item.relativePath,
+        relativePath: item.relativePath,
+        languageId: getLanguageIdFromPath(item.relativePath),
+    });
+}
+
 /* ─── Parts → DOM sync ─── */
 
 function syncComposerDom(
@@ -313,6 +360,9 @@ function syncComposerDom(
                 break;
             case "file_attachment":
                 root.appendChild(createFileAttachmentNode(part, metrics));
+                break;
+            case "git_commit_mention":
+                root.appendChild(createGitCommitMentionNode(part, metrics));
                 break;
             default:
                 break;
@@ -664,14 +714,9 @@ export function AIChatComposer({
                 return;
             }
 
-            const nextParts: AIComposerPart[] = appendFileMentionPart(
+            const nextParts: AIComposerPart[] = appendWorkspaceTabComposerItem(
                 partsRef.current,
-                {
-                    label: detail.item.label,
-                    path: detail.item.relativePath,
-                    relativePath: detail.item.relativePath,
-                    languageId: getLanguageIdFromPath(detail.item.relativePath),
-                },
+                detail.item,
             );
 
             onChangeRef.current(nextParts);
@@ -778,6 +823,9 @@ export function AIChatComposer({
                     break;
                 case "plan_mention":
                     node = createPlanMentionNode(metrics);
+                    break;
+                case "git_commit_mention":
+                    node = createGitCommitMentionNode(part, metrics);
                     break;
             }
 

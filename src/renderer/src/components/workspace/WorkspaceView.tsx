@@ -305,6 +305,28 @@ function getTrackedFileSignature(file: AiTrackedFile | null): string | null {
     ]);
 }
 
+function getInlineReviewSignature(file: AiTrackedFile | null): string | null {
+    if (!file) {
+        return null;
+    }
+
+    return JSON.stringify([
+        getTrackedFileSignature(file),
+        file.oldText?.length ?? null,
+        file.newText?.length ?? null,
+        file.hunks.map((hunk) => [
+            hunk.id,
+            hunk.oldStart,
+            hunk.oldCount,
+            hunk.newStart,
+            hunk.newCount,
+            hunk.visualStartLine ?? null,
+            hunk.visualEndLine ?? null,
+            hunk.lines.length,
+        ]),
+    ]);
+}
+
 function isQuickCreateMenuSeparator(
     entry: QuickCreateMenuEntry,
 ): entry is QuickCreateMenuSeparator {
@@ -1668,6 +1690,14 @@ function WorkspacePaneView({
                                                                   relativePath:
                                                                       tab.relativePath,
                                                               }
+                                                            : tab.kind ===
+                                                                  "git_commit"
+                                                              ? {
+                                                                    commitSha:
+                                                                        tab.commitSha,
+                                                                    kind: "git_commit_mention",
+                                                                    label: tab.title,
+                                                                }
                                                             : null,
                                                     sourceIndex: tabIndex,
                                                     tabId: tab.id,
@@ -2519,29 +2549,19 @@ function FileTabView({
         [document?.languageId],
     );
     const editorSettings = useResolvedEditorSettings();
-    const trackedFileSignature = useAiStore(
+    const trackedFile = useAiStore(
         useCallback(
             (state: ReturnType<typeof useAiStore.getState>) =>
-                getTrackedFileSignature(
-                    document
-                        ? findTrackedFileForDocument(
-                              state.sessions,
-                              document,
-                              tab.reviewContext,
-                          )
-                        : null,
-                ),
+                document
+                    ? findTrackedFileForDocument(
+                          state.sessions,
+                          document,
+                          tab.reviewContext,
+                      )
+                    : null,
             [document, tab.reviewContext],
         ),
     );
-    void trackedFileSignature;
-    const trackedFile = document
-        ? findTrackedFileForDocument(
-              useAiStore.getState().sessions,
-              document,
-              tab.reviewContext,
-          )
-        : null;
     const keepTrackedFileHunks = useAiStore(
         (state) => state.keepTrackedFileHunks,
     );
@@ -2601,9 +2621,6 @@ function FileTabView({
         [tab.draftContent],
     );
     const canShowInlineReview = isInlineReviewSupported(trackedFile);
-    const reviewSignature = trackedFile
-        ? `${trackedFile.identityKey}:${trackedFile.hunks.map((hunk) => hunk.id).join(",")}`
-        : null;
     const showInlineReview = canShowInlineReview;
     const inlineReviewTrackedFile =
         showInlineReview &&
@@ -2612,6 +2629,10 @@ function FileTabView({
         trackedFile?.newText !== null
             ? trackedFile
             : null;
+    const reviewSignature = useMemo(
+        () => getInlineReviewSignature(inlineReviewTrackedFile),
+        [inlineReviewTrackedFile],
+    );
     const reviewDiff = useMemo(
         () =>
             inlineReviewTrackedFile

@@ -713,6 +713,8 @@ export function serializeComposerPartsForDisplay(
                     return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
                 case "file_attachment":
                     return `${PILL_OPEN}📎${part.label}${PILL_CLOSE}`;
+                case "git_commit_mention":
+                    return `${PILL_OPEN}commit: ${part.label}${PILL_CLOSE}`;
                 default:
                     return "";
             }

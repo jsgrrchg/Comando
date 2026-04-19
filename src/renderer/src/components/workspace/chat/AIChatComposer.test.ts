@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
     appendComposerProjectEntries,
+    appendWorkspaceTabComposerItem,
     getComposerSubmitKeyboardAction,
     shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
@@ -159,6 +160,27 @@ describe("AIChatComposer", () => {
                 folderPath: "docs",
                 label: "docs",
                 type: "folder_mention",
+            },
+            { text: " ", type: "text" },
+        ]);
+    });
+
+    it("appends dropped git commit tabs as inline commit pills", () => {
+        expect(
+            appendWorkspaceTabComposerItem(
+                [{ text: "", type: "text" }],
+                {
+                    commitSha: "abcdef1234567890",
+                    kind: "git_commit_mention",
+                    label: "abcdef1",
+                },
+            ),
+        ).toEqual([
+            { text: "", type: "text" },
+            {
+                commitSha: "abcdef1234567890",
+                label: "abcdef1",
+                type: "git_commit_mention",
             },
             { text: " ", type: "text" },
         ]);

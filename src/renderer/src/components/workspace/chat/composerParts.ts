@@ -57,6 +57,8 @@ export function serializeComposerParts(
                     return `${PILL_OPEN}${p.label}${PILL_CLOSE}`;
                 case "file_attachment":
                     return `${PILL_OPEN}📎${p.label}${PILL_CLOSE}`;
+                case "git_commit_mention":
+                    return `${PILL_OPEN}commit: ${p.label}${PILL_CLOSE}`;
             }
         })
         .join("");
@@ -92,6 +94,8 @@ export function composerPartsToPlainText(
                     return `[${p.label}]`;
                 case "file_attachment":
                     return `[${p.label}]`;
+                case "git_commit_mention":
+                    return `commit: ${p.label}`;
             }
         })
         .join("");
@@ -119,6 +123,8 @@ export function serializeComposerPartsForPrompt(
                         : `${part.path}:${part.startLine}-${part.endLine}`;
                 case "file_attachment":
                     return part.filePath;
+                case "git_commit_mention":
+                    return `commit: ${part.commitSha}`;
             }
         })
         .join("");
@@ -216,6 +222,23 @@ export function appendFileAttachmentPart(
         filePath: file.filePath,
         label: file.label,
         mimeType: file.mimeType,
+    });
+    withSpace.push({ type: "text", text: " " });
+    return normalizeComposerParts(withSpace);
+}
+
+export function appendGitCommitMentionPart(
+    parts: readonly AIComposerPart[],
+    commit: {
+        readonly commitSha: string;
+        readonly label: string;
+    },
+): AIComposerPart[] {
+    const withSpace = ensureTrailingSpace(parts);
+    withSpace.push({
+        type: "git_commit_mention",
+        commitSha: commit.commitSha,
+        label: commit.label,
     });
     withSpace.push({ type: "text", text: " " });
     return normalizeComposerParts(withSpace);

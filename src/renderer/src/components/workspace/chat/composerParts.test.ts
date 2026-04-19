@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { AIComposerPart } from "./composerParts";
 import {
     appendFileAttachmentPart,
+    appendGitCommitMentionPart,
     appendSelectionMentionPart,
     collectExternalComposerRoots,
     composerPartsToPlainText,
@@ -93,6 +94,31 @@ describe("composerParts", () => {
             "Inspect /tmp/spec.pdf",
         );
         expect(composerPartsToPlainText(parts)).toBe("Inspect [spec.pdf]");
+    });
+
+    it("serializes commit pills as explicit commit references", () => {
+        const parts = appendGitCommitMentionPart(
+            [{ type: "text", text: "Review" }],
+            {
+                commitSha: "abcdef1234567890",
+                label: "abcdef1",
+            },
+        );
+
+        expect(parts).toEqual([
+            { type: "text", text: "Review " },
+            {
+                type: "git_commit_mention",
+                commitSha: "abcdef1234567890",
+                label: "abcdef1",
+            },
+            { type: "text", text: " " },
+        ]);
+
+        expect(serializeComposerPartsForPrompt(parts)).toBe(
+            "Review commit: abcdef1234567890 ",
+        );
+        expect(composerPartsToPlainText(parts)).toBe("Review commit: abcdef1 ");
     });
 
     it("collects additional roots for external file and folder pills", () => {

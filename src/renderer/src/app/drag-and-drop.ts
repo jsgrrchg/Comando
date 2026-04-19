@@ -58,6 +58,10 @@ export type WorkspaceTabComposerDragItem = {
     readonly kind: "file_mention";
     readonly label: string;
     readonly relativePath: string;
+} | {
+    readonly kind: "git_commit_mention";
+    readonly commitSha: string;
+    readonly label: string;
 };
 
 export type WorkspaceTabComposerDragPhase = "start" | "move" | "end" | "cancel";
