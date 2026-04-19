@@ -55,6 +55,7 @@ export function SidebarAgentsPanel({
     const updateSessionTabTitles = useWorkspaceStore(
         (state) => state.updateSessionTabTitles,
     );
+    const tabsById = useWorkspaceStore((state) => state.tabsById);
 
     const [sessions, setSessions] = useState<readonly AiHistorySessionSummary[]>(
         [],
@@ -316,6 +317,40 @@ export function SidebarAgentsPanel({
         });
     }, [hasQuery, normalizedFilter, sessions]);
 
+    const openSessionIds = useMemo(() => {
+        const ids = new Set<string>();
+        for (const tab of Object.values(tabsById)) {
+            if (tab.kind === "chat" || tab.kind === "review") {
+                ids.add(tab.sessionId);
+            }
+        }
+        return ids;
+    }, [tabsById]);
+
+    const aiSessions = useAiStore((state) => state.sessions);
+    const openSessions = useMemo(() => {
+        const list = filteredSessions.filter((session) =>
+            openSessionIds.has(session.sessionId),
+        );
+        return [...list].sort((a, b) => {
+            const aWorking = isSessionWorking(aiSessions[a.sessionId]);
+            const bWorking = isSessionWorking(aiSessions[b.sessionId]);
+            if (aWorking === bWorking) {
+                return 0;
+            }
+            return aWorking ? -1 : 1;
+        });
+    }, [aiSessions, filteredSessions, openSessionIds]);
+    const otherSessions = useMemo(
+        () =>
+            filteredSessions.filter(
+                (session) => !openSessionIds.has(session.sessionId),
+            ),
+        [filteredSessions, openSessionIds],
+    );
+    const showSectionHeaders =
+        openSessions.length > 0 && otherSessions.length > 0;
+
     const statusLine = isLoading
         ? "Loading..."
         : error
@@ -367,25 +402,32 @@ export function SidebarAgentsPanel({
                     />
                 ) : null}
 
-                {filteredSessions.length > 0 ? (
-                    <ul className="flex flex-col gap-0.5">
-                        {filteredSessions.map((session) => (
-                            <li key={session.sessionId}>
-                                <SidebarAgentsItem
-                                    isRenaming={
-                                        renamingSessionId === session.sessionId
-                                    }
-                                    onCancelRename={cancelRename}
-                                    onCommitRename={() => void commitRename()}
-                                    onContextMenu={handleContextMenu}
-                                    onOpen={handleOpenSession}
-                                    onRenameDraftChange={setRenameDraft}
-                                    renameDraft={renameDraft}
-                                    session={session}
-                                />
-                            </li>
-                        ))}
-                    </ul>
+                {openSessions.length > 0 ? (
+                    <SidebarAgentsSection
+                        cancelRename={cancelRename}
+                        commitRename={() => void commitRename()}
+                        onContextMenu={handleContextMenu}
+                        onOpen={handleOpenSession}
+                        onRenameDraftChange={setRenameDraft}
+                        renameDraft={renameDraft}
+                        renamingSessionId={renamingSessionId}
+                        sessions={openSessions}
+                        title={showSectionHeaders ? "Open" : null}
+                    />
+                ) : null}
+
+                {otherSessions.length > 0 ? (
+                    <SidebarAgentsSection
+                        cancelRename={cancelRename}
+                        commitRename={() => void commitRename()}
+                        onContextMenu={handleContextMenu}
+                        onOpen={handleOpenSession}
+                        onRenameDraftChange={setRenameDraft}
+                        renameDraft={renameDraft}
+                        renamingSessionId={renamingSessionId}
+                        sessions={otherSessions}
+                        title={showSectionHeaders ? "All" : null}
+                    />
                 ) : null}
             </div>
 
@@ -398,6 +440,60 @@ export function SidebarAgentsPanel({
                 />
             ) : null}
         </div>
+    );
+}
+
+function SidebarAgentsSection({
+    cancelRename,
+    commitRename,
+    onContextMenu,
+    onOpen,
+    onRenameDraftChange,
+    renameDraft,
+    renamingSessionId,
+    sessions,
+    title,
+}: {
+    readonly cancelRename: () => void;
+    readonly commitRename: () => void;
+    readonly onContextMenu: (
+        event: ReactMouseEvent,
+        session: AiHistorySessionSummary,
+    ) => void;
+    readonly onOpen: (session: AiHistorySessionSummary) => void;
+    readonly onRenameDraftChange: (value: string) => void;
+    readonly renameDraft: string;
+    readonly renamingSessionId: string | null;
+    readonly sessions: readonly AiHistorySessionSummary[];
+    readonly title: string | null;
+}) {
+    return (
+        <section className="mt-1 first:mt-0">
+            {title ? (
+                <header className="flex items-center gap-1.5 px-2 pb-0.5 pt-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary/80">
+                    <span>{title}</span>
+                    <span className="font-normal opacity-70">
+                        {sessions.length}
+                    </span>
+                </header>
+            ) : null}
+            <ul className="flex flex-col gap-0.5">
+                {sessions.map((session) => (
+                    <li key={session.sessionId}>
+                        <SidebarAgentsItem
+                            isRenaming={renamingSessionId === session.sessionId}
+                            onCancelRename={cancelRename}
+                            onCommitRename={commitRename}
+                            onContextMenu={onContextMenu}
+                            onOpen={onOpen}
+                            onRenameDraftChange={onRenameDraftChange}
+                            renameDraft={renameDraft}
+                            session={session}
+                        />
+                    </li>
+                ))}
+            </ul>
+        </section>
     );
 }
 
@@ -564,6 +660,19 @@ function SidebarAgentsPlaceholder({ body }: { readonly body: string }) {
             </p>
         </div>
     );
+}
+
+function isSessionWorking(
+    entry: ReturnType<typeof useAiStore.getState>["sessions"][string] | undefined,
+): boolean {
+    if (!entry) {
+        return false;
+    }
+    const indicator = resolveWorkspaceChatTabActivityIndicator({
+        localError: entry.localError ?? null,
+        snapshot: entry.snapshot ? { status: entry.snapshot.status } : null,
+    });
+    return indicator?.tone === "working";
 }
 
 function formatSessionCount(count: number): string {

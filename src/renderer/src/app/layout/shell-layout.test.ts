@@ -44,8 +44,7 @@ describe("shell-layout", () => {
         );
 
         expect(nudgedLayout.leftWidth).toBe(
-            shellLayoutConstraints.defaultLeftWidth -
-                shellLayoutConstraints.keyboardStep,
+            shellLayoutConstraints.minLeftWidth,
         );
     });
 });

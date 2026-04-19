@@ -7,12 +7,12 @@ export interface ShellLayoutDimensions {
 }
 
 export const shellLayoutConstraints = {
-    defaultLeftWidth: 252,
+    defaultLeftWidth: 300,
     framePadding: 24,
     handleWidth: 1,
     minCenterWidth: 520,
-    minLeftWidth: 224,
-    maxLeftWidth: 340,
+    minLeftWidth: 300,
+    maxLeftWidth: 500,
     keyboardStep: 24,
 } as const;
 

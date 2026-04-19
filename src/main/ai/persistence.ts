@@ -285,22 +285,9 @@ export class AiPersistence {
                         normalizeHistoryLimit(input.limit),
                     );
 
-                return rows.map((row) => {
-                    const messages = extractPersistedMessages(
-                        row.transcript_json,
-                    );
-                    return {
-                        createdAt: row.created_at,
-                        messageCount: Math.max(0, row.message_count ?? 0),
-                        preview: deriveSessionPreview(messages),
-                        projectId: row.project_id,
-                        runtimeId: normalizeRuntimeId(row.runtime),
-                        sessionId: row.session_id,
-                        title: row.title,
-                        updatedAt: row.updated_at,
-                        worktreeId: row.worktree_id,
-                    };
-                });
+                return rows
+                    .map((row) => createHistorySessionSummary(row))
+                    .filter((session) => session.messageCount > 0);
             },
         );
     }
@@ -1690,6 +1677,25 @@ function deriveSessionPreview(messages: readonly AiMessage[]): string | null {
 
 function normalizePreviewText(value: string): string {
     return value.replace(/\s+/g, " ").trim();
+}
+
+function createHistorySessionSummary(
+    row: PersistedAiHistorySessionRow,
+): AiHistorySessionSummary {
+    const messages = extractPersistedMessages(row.transcript_json);
+    const messageCount = Math.max(messages.length, row.message_count ?? 0);
+
+    return {
+        createdAt: row.created_at,
+        messageCount,
+        preview: deriveSessionPreview(messages),
+        projectId: row.project_id,
+        runtimeId: normalizeRuntimeId(row.runtime),
+        sessionId: row.session_id,
+        title: row.title,
+        updatedAt: row.updated_at,
+        worktreeId: row.worktree_id,
+    };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

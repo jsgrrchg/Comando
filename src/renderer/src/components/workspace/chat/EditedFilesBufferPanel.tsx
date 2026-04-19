@@ -9,10 +9,10 @@ import type {
 } from "../review/editedFilesPresentationModel";
 import { formatDiffStat } from "../review/reviewDiff";
 
-const COMPACT_MAX_VISIBLE_ROWS = 8;
-const COMPACT_ROW_HEIGHT_PX = 24;
-const COMPACT_ROW_DIVIDER_PX = 1;
-const COMPACT_SCROLL_MAX_HEIGHT = `${COMPACT_MAX_VISIBLE_ROWS * (COMPACT_ROW_HEIGHT_PX + COMPACT_ROW_DIVIDER_PX)}px`;
+const COMPACT_MAX_VISIBLE_ROWS = 6;
+// Each compact row renders at ~1.75em with the inherited zoom, plus a 1px divider.
+const COMPACT_ROW_HEIGHT_EM = 1.75;
+const COMPACT_SCROLL_MAX_HEIGHT = `calc(${COMPACT_MAX_VISIBLE_ROWS} * (${COMPACT_ROW_HEIGHT_EM}em + 1px))`;
 const BASE_TEXT_SIZE_PX = 16;
 
 function toEm(value: number): string {

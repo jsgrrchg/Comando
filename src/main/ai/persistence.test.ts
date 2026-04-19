@@ -185,6 +185,14 @@ describe("AiPersistence", () => {
         seedChatSession(connection, {
             projectId: "project-1",
             runtimeId: "codex",
+            sessionId: "session-empty",
+            transcript: createTranscriptWithMessages([]),
+            updatedAt: "2026-04-16T12:30:00.000Z",
+            worktreeId: "worktree-a",
+        });
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
             sessionId: "session-main",
             transcript: createTranscriptWithMessages([
                 "User asks for a summary",
@@ -230,6 +238,28 @@ describe("AiPersistence", () => {
                 worktreeId: "worktree-a",
             }),
         ]);
+    });
+
+    it("omits empty sessions from history listings", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-empty",
+            transcript: createTranscriptWithMessages([]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(history).toEqual([]);
     });
 
     it("loads a transcript page from persisted snapshot messages", () => {
