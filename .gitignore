@@ -20,5 +20,6 @@ vendor/codex-acp/target/
 resources/ai/binaries/*
 !resources/ai/binaries/.gitkeep
 resources/ai/prebuilt/
+scripts/package-macos-nosign-temp.mjs
 resources/ai/embedded/*
 !resources/ai/embedded/.gitkeep
