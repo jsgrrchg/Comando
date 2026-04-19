@@ -435,12 +435,21 @@ export class AiService {
             ownerWindowId,
         );
         this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
-        const snapshot = await worker.prepareSession({
-            input,
-            launch,
-        });
-        this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
-        return snapshot;
+        try {
+            const snapshot = await worker.prepareSession({
+                input,
+                launch,
+            });
+            this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
+            return snapshot;
+        } catch (error) {
+            this.#discardPreparedSessionContextOnFailure(
+                input.sessionId,
+                ownerWindowId,
+                input.runtimeId,
+            );
+            throw error;
+        }
     }
 
     async refreshProjectScopes(projectId: string): Promise<void> {
@@ -872,6 +881,28 @@ export class AiService {
 
     #clearLiveSession(sessionId: string): void {
         this.#liveSnapshots.delete(sessionId);
+        this.#liveSessionContexts.delete(sessionId);
+    }
+
+    #discardPreparedSessionContextOnFailure(
+        sessionId: string,
+        ownerWindowId: string,
+        runtimeId: AiRuntimeId,
+    ): void {
+        const liveSnapshot = this.#liveSnapshots.get(sessionId);
+        if (liveSnapshot) {
+            return;
+        }
+
+        const context = this.#liveSessionContexts.get(sessionId);
+        if (
+            !context ||
+            context.ownerWindowId !== ownerWindowId ||
+            context.runtimeId !== runtimeId
+        ) {
+            return;
+        }
+
         this.#liveSessionContexts.delete(sessionId);
     }
 
