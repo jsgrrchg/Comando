@@ -193,6 +193,14 @@ export async function createAiWorkerClient(
     const supervisor = new RpcWorkerSupervisor<AiWorkerBootstrapState>({
         connect: options.connect ?? createAiWorkerConnection,
         domain: "ai",
+        // The ACP protocol signals turn completion explicitly and child-process
+        // exits are observed independently, so inference RPCs do not need a
+        // wall-clock deadman — a slow turn would otherwise tear down the whole
+        // worker and cancel every concurrent session.
+        methodTimeoutsMs: {
+            "ai.respondUserInput": null,
+            "ai.sendPrompt": null,
+        },
         onConnected: (bootstrap, context) => {
             if (context.reason === "restart") {
                 return options.onWorkerRestarted?.(bootstrap);

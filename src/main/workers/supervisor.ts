@@ -38,7 +38,7 @@ interface PendingRequest {
     readonly reject: (error: Error) => void;
     readonly requestId: string;
     readonly resolve: (value: unknown) => void;
-    readonly timeout: ReturnType<typeof setTimeout>;
+    readonly timeout: ReturnType<typeof setTimeout> | null;
 }
 
 interface ManagedConnection<TReady> extends RpcWorkerConnection<TReady> {
@@ -53,6 +53,11 @@ interface WorkerConnectedContext {
 export interface RpcWorkerSupervisorOptions<TReady> {
     readonly connect: () => Promise<RpcWorkerConnection<TReady>>;
     readonly domain: WorkerDomain;
+    // Per-method timeout override. `null` disables the deadman timeout for
+    // inherently long-lived methods (e.g., AI inference) where the protocol
+    // itself signals completion and a wall-clock timeout would misfire on
+    // legitimately slow operations.
+    readonly methodTimeoutsMs?: Readonly<Record<string, number | null>>;
     readonly onConnected?: (
         readyValue: TReady,
         context: WorkerConnectedContext,
@@ -81,6 +86,7 @@ const DOMAIN_OPERATION: Record<WorkerDomain, PerformanceOperationName> = {
 export class RpcWorkerSupervisor<TReady> {
     readonly #connect: () => Promise<RpcWorkerConnection<TReady>>;
     readonly #domain: WorkerDomain;
+    readonly #methodTimeoutsMs: Readonly<Record<string, number | null>>;
     readonly #onConnected?: (
         readyValue: TReady,
         context: WorkerConnectedContext,
@@ -100,6 +106,7 @@ export class RpcWorkerSupervisor<TReady> {
     constructor(options: RpcWorkerSupervisorOptions<TReady>) {
         this.#connect = options.connect;
         this.#domain = options.domain;
+        this.#methodTimeoutsMs = options.methodTimeoutsMs ?? {};
         this.#onConnected = options.onConnected;
         this.#onMessage = options.onMessage;
         this.#timeoutMs = options.timeoutMs;
@@ -311,7 +318,9 @@ export class RpcWorkerSupervisor<TReady> {
                 return;
             }
 
-            clearTimeout(pending.timeout);
+            if (pending.timeout) {
+                clearTimeout(pending.timeout);
+            }
             this.#pending.delete(response.id);
 
             if (response.error) {
@@ -364,32 +373,42 @@ export class RpcWorkerSupervisor<TReady> {
         params: unknown,
         requestId: string,
     ): Promise<TResult> {
+        const effectiveTimeoutMs = this.#resolveTimeoutMs(method);
+
         return await new Promise<TResult>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                this.#pending.delete(id);
+            const timeout =
+                effectiveTimeoutMs !== null
+                    ? setTimeout(() => {
+                          this.#pending.delete(id);
 
-                const timeoutError = new Error(
-                    `The ${this.#domain} worker request timed out after ${this.#timeoutMs}ms.`,
-                );
-                logWorkerEvent("warn", this.#domain, "request-timeout", {
-                    method,
-                    requestId,
-                    timeoutMs: this.#timeoutMs,
-                });
+                          const timeoutError = new Error(
+                              `The ${this.#domain} worker request timed out after ${effectiveTimeoutMs}ms.`,
+                          );
+                          logWorkerEvent(
+                              "warn",
+                              this.#domain,
+                              "request-timeout",
+                              {
+                                  method,
+                                  requestId,
+                                  timeoutMs: effectiveTimeoutMs,
+                              },
+                          );
 
-                reject(timeoutError);
-                this.#handleConnectionFailure(
-                    connection,
-                    "timeout",
-                    timeoutError,
-                    {
-                        method,
-                        requestId,
-                        timeoutMs: this.#timeoutMs,
-                    },
-                );
-            }, this.#timeoutMs);
-            timeout.unref?.();
+                          reject(timeoutError);
+                          this.#handleConnectionFailure(
+                              connection,
+                              "timeout",
+                              timeoutError,
+                              {
+                                  method,
+                                  requestId,
+                                  timeoutMs: effectiveTimeoutMs,
+                              },
+                          );
+                      }, effectiveTimeoutMs)
+                    : null;
+            timeout?.unref?.();
 
             this.#pending.set(id, {
                 method,
@@ -407,7 +426,9 @@ export class RpcWorkerSupervisor<TReady> {
                     requestId,
                 } satisfies RpcWorkerRequest);
             } catch (error) {
-                clearTimeout(timeout);
+                if (timeout) {
+                    clearTimeout(timeout);
+                }
                 this.#pending.delete(id);
                 reject(
                     error instanceof Error ? error : new Error(String(error)),
@@ -423,6 +444,14 @@ export class RpcWorkerSupervisor<TReady> {
                 );
             }
         });
+    }
+
+    #resolveTimeoutMs(method: string): number | null {
+        if (method in this.#methodTimeoutsMs) {
+            return this.#methodTimeoutsMs[method] ?? null;
+        }
+
+        return this.#timeoutMs;
     }
 
     #handleConnectionFailure(
@@ -509,7 +538,9 @@ export class RpcWorkerSupervisor<TReady> {
 
     #rejectPending(error: Error): void {
         for (const [id, pending] of this.#pending.entries()) {
-            clearTimeout(pending.timeout);
+            if (pending.timeout) {
+                clearTimeout(pending.timeout);
+            }
             pending.reject(error);
             this.#pending.delete(id);
         }

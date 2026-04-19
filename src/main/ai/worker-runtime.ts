@@ -834,6 +834,26 @@ export class AiWorkerRuntime {
         };
         liveSession.stderrHandler = stderrHandler;
         child.stderr.on("data", stderrHandler);
+        // Attach no-crash listeners for any 'error' event on the child process
+        // and its stdio streams. Without these, an EPIPE or spawn/kill failure
+        // on one session would surface as an unhandled EventEmitter 'error'
+        // and terminate the whole AI worker thread, taking every concurrent
+        // session down with it. The 'exit' handler below remains the source of
+        // truth for finalizing session state.
+        const swallowStreamError =
+            (streamName: "stdin" | "stdout" | "stderr") =>
+            (error: unknown) => {
+                debugBenignError(
+                    `ai.worker.child.${streamName}`,
+                    error,
+                );
+            };
+        child.on("error", (error) => {
+            debugBenignError("ai.worker.child.process", error);
+        });
+        child.stdin.on("error", swallowStreamError("stdin"));
+        child.stdout.on("error", swallowStreamError("stdout"));
+        child.stderr.on("error", swallowStreamError("stderr"));
         child.on("exit", (code, signal) => {
             this.#handleProcessExit(launch.input.sessionId, code, signal);
         });
@@ -1191,7 +1211,7 @@ export class AiWorkerRuntime {
         liveSession: LiveAcpSession,
         params: WriteTextFileRequest,
     ): Promise<Record<string, never>> {
-        const resolvedPath = this.#resolveSessionPathInfo(
+        const resolvedPath = this.#resolveWritableSessionPathInfo(
             liveSession,
             params.path,
         );
@@ -1327,11 +1347,11 @@ export class AiWorkerRuntime {
         trackedFile: AiTrackedFile,
     ): Promise<void> {
         if (trackedFile.kind === "move" && trackedFile.previousPath) {
-            const nextPath = this.#resolveSessionPathInfo(
+            const nextPath = this.#resolveWritableSessionPathInfo(
                 liveSession,
                 trackedFile.path,
             );
-            const previousPath = this.#resolveSessionPathInfo(
+            const previousPath = this.#resolveWritableSessionPathInfo(
                 liveSession,
                 trackedFile.previousPath,
             );
@@ -1356,7 +1376,7 @@ export class AiWorkerRuntime {
             return;
         }
 
-        const resolvedPath = this.#resolveSessionPathInfo(
+        const resolvedPath = this.#resolveWritableSessionPathInfo(
             liveSession,
             trackedFile.path,
         );
@@ -1390,7 +1410,7 @@ export class AiWorkerRuntime {
             return;
         }
 
-        const resolvedPath = this.#resolveSessionPathInfo(
+        const resolvedPath = this.#resolveWritableSessionPathInfo(
             liveSession,
             trackedFile.path,
         );
@@ -1663,6 +1683,22 @@ export class AiWorkerRuntime {
         return this.#resolveSessionPathInfo(liveSession, candidatePath, {
             allowAdditionalRoots: true,
         }).absolutePath;
+    }
+
+    #resolveWritableSessionPathInfo(
+        liveSession: Pick<
+            LiveAcpSession,
+            "additionalRoots" | "cwd" | "projectRoot" | "runtimeId" | "snapshot"
+        >,
+        candidatePath: string,
+    ): {
+        readonly absolutePath: string;
+        readonly displayPath: string;
+        readonly relativePath: string | null;
+    } {
+        return this.#resolveSessionPathInfo(liveSession, candidatePath, {
+            allowAdditionalRoots: true,
+        });
     }
 
     #resolveSessionPathInfo(

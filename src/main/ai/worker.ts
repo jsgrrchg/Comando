@@ -28,6 +28,17 @@ interface SerializedError {
 let aiWorkerRuntime: AiWorkerRuntime | null = null;
 let rpcPort: MessagePort | null = null;
 
+// Prevent a stray throw inside any one session from terminating the whole
+// worker thread. The Node default for an uncaught exception or rejection in
+// a worker is to exit, which the supervisor interprets as a crash and
+// restarts us — cancelling every concurrent AI session along the way.
+process.on("uncaughtException", (error) => {
+    console.error("[ai-worker] uncaughtException:", error);
+});
+process.on("unhandledRejection", (reason) => {
+    console.error("[ai-worker] unhandledRejection:", reason);
+});
+
 parentPort?.once("message", (message: unknown) => {
     initializeWorker(message as AiWorkerInitMessage);
 });
