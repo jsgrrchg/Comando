@@ -300,7 +300,7 @@ function DropdownField({
                               </div>
                           ) : null}
 
-                          <div className="max-h-72 overflow-y-auto py-1">
+                          <div className="max-h-72 overflow-x-auto overflow-y-auto py-1">
                               {filteredOptions.length === 0 ? (
                                   <div className="px-3 py-2 text-[11px] text-text-secondary">
                                       {emptySearchMessage}
@@ -308,7 +308,7 @@ function DropdownField({
                               ) : (
                                   filteredOptions.map((option) => (
                                       <button
-                                          className="app-no-drag flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs transition"
+                                          className="app-no-drag flex min-w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs transition"
                                           key={`${option.groupLabel ?? "default"}:${option.value}`}
                                           onClick={() => {
                                               onChange(option.value);
@@ -330,13 +330,14 @@ function DropdownField({
                                                   option.value === value
                                                       ? "var(--color-accent)"
                                                       : "var(--color-text-primary)",
+                                              width: "max-content",
                                               transition:
                                                   "background-color 100ms ease",
                                           }}
                                           type="button"
                                       >
-                                          <div className="min-w-0 flex-1">
-                                              <div className="truncate">
+                                          <div className="whitespace-nowrap">
+                                              <div>
                                                   {option.groupLabel ? (
                                                       <span
                                                           style={{
