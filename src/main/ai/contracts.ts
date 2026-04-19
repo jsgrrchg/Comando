@@ -1,0 +1,350 @@
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { MessagePort } from "node:worker_threads";
+
+import type {
+    ClientSideConnection,
+    LoadSessionResponse,
+    NewSessionResponse,
+    RequestPermissionResponse,
+} from "@agentclientprotocol/sdk";
+import type {
+    AiPermissionResponseInput,
+    AiPromptResult,
+    AiSessionConfigOption,
+    AiSessionConfigOptionMutationInput,
+    AiSessionModeMutationInput,
+    AiSessionModelMutationInput,
+    AiTrackedFileHunkMutationInput,
+    AiTrackedFileMutationInput,
+    AiRuntimeId,
+    AiRuntimeStatus,
+    AiSessionSnapshot,
+    AiSessionUpdate,
+    AiUserInputResponseInput,
+    FileBufferNotificationInput,
+    PrepareAiSessionInput,
+    SendAiPromptInput,
+} from "@shared/ipc";
+
+import type { ProjectService } from "@main/projects/service";
+import type { SettingsGateway } from "@main/settings/service";
+import type { SecretStoreGateway } from "@main/ai/secret-store";
+
+import type { AiPersistenceGateway } from "./persistence";
+
+export const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY = "codexAcpPreviousPath";
+export const LEGACY_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
+export const CODEX_ACP_STATUS_EVENT_TYPE_KEY = "codexAcpEventType";
+export const LEGACY_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
+export const CODEX_ACP_STATUS_EVENT_TYPE = "status";
+export const CODEX_ACP_STATUS_EVENT_ID_PREFIX = "codex-acp:status:";
+export const LEGACY_STATUS_EVENT_ID_PREFIX = "neverwrite:status:";
+export const CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX =
+    "codex-acp:status:turn:";
+export const LEGACY_STATUS_TURN_EVENT_ID_PREFIX = "neverwrite:status:turn:";
+export const CODEX_ACP_USER_INPUT_EVENT_TYPE = "user_input_request";
+export const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX =
+    "__codex_acp_user_input_response__:";
+export const SUPPRESSED_STATUS_TITLES = new Set([
+    "Preparing input",
+    "Drafting response",
+]);
+
+export const AI_SESSION_STREAMING_FLUSH_MS = 120;
+
+export interface AiServiceOptions {
+    readonly aiWorker?: AiWorkerGateway | null;
+    readonly projectService: ProjectService;
+    readonly settingsService: SettingsGateway;
+    readonly secretStore: SecretStoreGateway;
+    readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
+    readonly onSessionSnapshot: (
+        ownerWindowId: string,
+        update: AiSessionUpdate,
+    ) => void;
+    readonly persistence: AiPersistenceGateway;
+}
+
+export interface AiWorkerGateway {
+    cancelSession(sessionId: string): Promise<void>;
+    close(): Promise<void>;
+    closeOwnedByWindow(ownerWindowId: string): Promise<void>;
+    closeSession(sessionId: string): Promise<void>;
+    keepAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
+    keepTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    keepTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    notifyFileBuffer(input: FileBufferNotificationInput): Promise<void>;
+    prepareSession(input: AiWorkerPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
+    rejectAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
+    rejectTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    rejectTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    refreshProjectScopes(input: AiWorkerRefreshProjectScopesRpcInput): Promise<void>;
+    respondPermission(input: AiPermissionResponseInput): Promise<void>;
+    respondUserInput(input: AiUserInputResponseInput): Promise<void>;
+    sendPrompt(input: AiWorkerSendPromptRpcInput): Promise<AiPromptResult>;
+    setSessionConfigOption(
+        input: AiSessionConfigOptionMutationInput,
+    ): Promise<void>;
+    setSessionMode(input: AiSessionModeMutationInput): Promise<void>;
+    setSessionModel(input: AiSessionModelMutationInput): Promise<void>;
+}
+
+export interface AiWorkerDesiredSelections {
+    readonly configOptions: readonly AiSessionConfigOption[];
+    readonly modeId: string | null;
+    readonly modelId: string | null;
+    readonly preferredConfigOptions: Record<string, boolean | string>;
+}
+
+export interface AiWorkerSessionLaunchInput {
+    readonly additionalRoots: readonly string[];
+    readonly cwd: string;
+    readonly desiredSelections: AiWorkerDesiredSelections;
+    readonly input: SessionDescriptor;
+    readonly ownerWindowId: string;
+    readonly persistedSnapshot: AiSessionSnapshot;
+    readonly projectRoot: string | null;
+    readonly resolvedRuntime: ResolvedAcpRuntime;
+}
+
+export interface AiWorkerReviewSessionContext {
+    readonly additionalRoots: readonly string[];
+    readonly cwd: string;
+    readonly ownerWindowId: string;
+    readonly projectRoot: string | null;
+    readonly snapshot: AiSessionSnapshot;
+}
+
+export interface AiWorkerReviewMutationResult {
+    readonly ownerWindowId: string;
+    readonly snapshot: AiSessionSnapshot;
+}
+
+export interface AiWorkerReviewSessionRpcInput<TInput> {
+    readonly context: AiWorkerReviewSessionContext;
+    readonly input: TInput;
+}
+
+export interface LiveAcpSession {
+    additionalRoots: readonly string[];
+    child: ChildProcessWithoutNullStreams;
+    closing: boolean;
+    connection: ClientSideConnection;
+    cwd: string;
+    desiredSelections: AiWorkerDesiredSelections;
+    isRestoring: boolean;
+    ownerWindowId: string;
+    pendingPermission: {
+        readonly requestId: string;
+        readonly resolve: (response: RequestPermissionResponse) => void;
+    } | null;
+    pendingAdditionalRoots: readonly string[] | null;
+    pendingLaunch: AiWorkerSessionLaunchInput | null;
+    pendingPersistTimer: ReturnType<typeof setTimeout> | null;
+    processedDiffPaths: Map<string, Set<string>>;
+    projectRoot: string | null;
+    resolvedRuntime: ResolvedAcpRuntime;
+    runtimeId: AiRuntimeId;
+    snapshot: AiSessionSnapshot;
+    terminalOutputBuffers: Map<string, string>;
+    lastBroadcastSnapshot: AiSessionSnapshot | null;
+    stderrChunks: string[];
+    stderrHandler: ((chunk: Buffer | string) => void) | null;
+}
+
+export interface ResolvedAcpRuntime {
+    readonly args: readonly string[];
+    readonly command: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly executable: string;
+    readonly status: AiRuntimeStatus;
+}
+
+export type AcpSessionCatalogPayload = Pick<
+    LoadSessionResponse | NewSessionResponse,
+    "configOptions" | "models" | "modes"
+>;
+
+export interface OpenRuntimeSessionResult extends AcpSessionCatalogPayload {
+    readonly runtimeSessionId: string;
+}
+
+export type SessionDescriptor = Pick<
+    PrepareAiSessionInput,
+    "projectId" | "runtimeId" | "sessionId" | "title" | "worktreeId"
+> & {
+    readonly additionalRoots?: readonly string[];
+};
+
+export interface AiWorkerBootstrapState {
+    readonly capabilities: {
+        readonly fileBufferMirroring: boolean;
+        readonly runtimeSessions: boolean;
+    };
+    readonly protocolVersion: 1;
+    readonly startedAt: string;
+}
+
+export interface AiWorkerLogEventPayload {
+    readonly context?: Record<
+        string,
+        boolean | number | string | null | undefined
+    >;
+    readonly level: "debug" | "error" | "info" | "warn";
+    readonly message: string;
+}
+
+export interface AiWorkerSessionClosedEventPayload {
+    readonly ownerWindowId: string;
+    readonly sessionId: string;
+}
+
+export interface AiWorkerSnapshotUpdatedEventPayload {
+    readonly ownerWindowId: string;
+    readonly update: AiSessionUpdate;
+}
+
+export interface AiWorkerRuntimeStatusEventPayload {
+    readonly status: AiRuntimeStatus;
+}
+
+export type AiWorkerEventPayloadByName = {
+    "ai.log": AiWorkerLogEventPayload;
+    "ai.runtime.status": AiWorkerRuntimeStatusEventPayload;
+    "ai.session.closed": AiWorkerSessionClosedEventPayload;
+    "ai.snapshot.updated": AiWorkerSnapshotUpdatedEventPayload;
+};
+
+export type AiWorkerEventName = keyof AiWorkerEventPayloadByName;
+
+export type AiWorkerEventMessage = {
+    [TEvent in AiWorkerEventName]: {
+        readonly event: TEvent;
+        readonly payload: AiWorkerEventPayloadByName[TEvent];
+        readonly type: "event";
+    };
+}[AiWorkerEventName];
+
+export interface AiWorkerFatalMessage {
+    readonly error: {
+        readonly message: string;
+        readonly name: string;
+        readonly stack?: string;
+    };
+    readonly type: "fatal";
+}
+
+export interface AiWorkerInitMessage {
+    readonly port: MessagePort;
+}
+
+export interface AiWorkerPrepareSessionRpcInput {
+    readonly input: PrepareAiSessionInput;
+    readonly launch: AiWorkerSessionLaunchInput;
+}
+
+export interface AiWorkerRefreshProjectScopesRpcInput {
+    readonly projectId: string;
+    readonly sessions: readonly AiWorkerSessionLaunchInput[];
+}
+
+export interface AiWorkerReadyMessage {
+    readonly bootstrap: AiWorkerBootstrapState;
+    readonly type: "ready";
+}
+
+export interface AiWorkerRespondPermissionRpcInput {
+    readonly input: AiPermissionResponseInput;
+}
+
+export interface AiWorkerRespondUserInputRpcInput {
+    readonly input: AiUserInputResponseInput;
+}
+
+export interface AiWorkerSendPromptRpcInput {
+    readonly input: SendAiPromptInput;
+    readonly launch: AiWorkerSessionLaunchInput;
+}
+
+export interface AiWorkerRpcMethodMap {
+    readonly "ai.cancelSession": {
+        readonly params: string;
+        readonly result: void;
+    };
+    readonly "ai.closeOwnedByWindow": {
+        readonly params: string;
+        readonly result: void;
+    };
+    readonly "ai.closeSession": {
+        readonly params: string;
+        readonly result: void;
+    };
+    readonly "ai.notifyFileBuffer": {
+        readonly params: FileBufferNotificationInput;
+        readonly result: void;
+    };
+    readonly "ai.keepAllTrackedFiles": {
+        readonly params: AiWorkerReviewSessionRpcInput<string>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.keepTrackedFile": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.keepTrackedFileHunks": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.prepareSession": {
+        readonly params: AiWorkerPrepareSessionRpcInput;
+        readonly result: AiSessionSnapshot;
+    };
+    readonly "ai.rejectAllTrackedFiles": {
+        readonly params: AiWorkerReviewSessionRpcInput<string>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.rejectTrackedFile": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.rejectTrackedFileHunks": {
+        readonly params: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>;
+        readonly result: AiWorkerReviewMutationResult;
+    };
+    readonly "ai.refreshProjectScopes": {
+        readonly params: AiWorkerRefreshProjectScopesRpcInput;
+        readonly result: void;
+    };
+    readonly "ai.respondPermission": {
+        readonly params: AiWorkerRespondPermissionRpcInput;
+        readonly result: void;
+    };
+    readonly "ai.respondUserInput": {
+        readonly params: AiWorkerRespondUserInputRpcInput;
+        readonly result: void;
+    };
+    readonly "ai.sendPrompt": {
+        readonly params: AiWorkerSendPromptRpcInput;
+        readonly result: AiPromptResult;
+    };
+    readonly "ai.setSessionConfigOption": {
+        readonly params: AiSessionConfigOptionMutationInput;
+        readonly result: void;
+    };
+    readonly "ai.setSessionMode": {
+        readonly params: AiSessionModeMutationInput;
+        readonly result: void;
+    };
+    readonly "ai.setSessionModel": {
+        readonly params: AiSessionModelMutationInput;
+        readonly result: void;
+    };
+}

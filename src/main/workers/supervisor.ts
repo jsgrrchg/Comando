@@ -6,7 +6,7 @@ import {
     type PerformanceOperationName,
 } from "../observability/performance";
 
-export type WorkerDomain = "db" | "git" | "projects";
+export type WorkerDomain = "ai" | "db" | "git" | "projects";
 
 export interface SerializedWorkerError {
     readonly message: string;
@@ -62,6 +62,7 @@ export interface RpcWorkerSupervisorOptions<TReady> {
 }
 
 export const WORKER_TIMEOUTS_MS: Record<WorkerDomain, number> = {
+    ai: 90_000,
     db: 5_000,
     git: 90_000,
     projects: 15_000,
@@ -71,6 +72,7 @@ const RESTART_BASE_DELAY_MS = 250;
 const RESTART_MAX_DELAY_MS = 5_000;
 const WORKER_GRACEFUL_EXIT_TIMEOUT_MS = 2_000;
 const DOMAIN_OPERATION: Record<WorkerDomain, PerformanceOperationName> = {
+    ai: "workers.ai.rpc",
     db: "workers.db.rpc",
     git: "workers.git.rpc",
     projects: "workers.projects.rpc",

@@ -10,7 +10,9 @@ import type {
 import { formatDiffStat } from "../review/reviewDiff";
 
 const COMPACT_MAX_VISIBLE_ROWS = 8;
-const COMPACT_SCROLL_MAX_HEIGHT = "min(32vh, 256px)";
+const COMPACT_ROW_HEIGHT_PX = 24;
+const COMPACT_ROW_DIVIDER_PX = 1;
+const COMPACT_SCROLL_MAX_HEIGHT = `${COMPACT_MAX_VISIBLE_ROWS * (COMPACT_ROW_HEIGHT_PX + COMPACT_ROW_DIVIDER_PX)}px`;
 const BASE_TEXT_SIZE_PX = 16;
 
 function toEm(value: number): string {

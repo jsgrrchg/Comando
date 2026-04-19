@@ -1,46 +1,8 @@
-import { PassThrough } from "node:stream";
-
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiRuntimeStatus, AiSessionSnapshot } from "@shared/ipc";
 
-const initializeMock = vi.fn(() => Promise.resolve(undefined));
-const loadSessionMock = vi.fn(() =>
-    Promise.resolve({
-        configOptions: [],
-        modes: [],
-        models: [],
-    }),
-);
-const newSessionMock = vi.fn(() =>
-    Promise.resolve({
-        configOptions: [],
-        modes: [],
-        models: [],
-        sessionId: "runtime-session-2",
-    }),
-);
-const spawnMock = vi.fn(() => ({
-    kill: vi.fn(),
-    on: vi.fn(),
-    stderr: new PassThrough(),
-    stdin: new PassThrough(),
-    stdout: new PassThrough(),
-}));
-
-vi.mock("node:child_process", () => ({
-    spawn: spawnMock,
-}));
-
-vi.mock("@agentclientprotocol/sdk", () => ({
-    ClientSideConnection: class MockClientSideConnection {
-        initialize = initializeMock;
-        loadSession = loadSessionMock;
-        newSession = newSessionMock;
-    },
-    PROTOCOL_VERSION: "test-protocol-version",
-    ndJsonStream: vi.fn(() => ({})),
-}));
+import type { AiWorkerGateway } from "./contracts";
 
 const readyStatus: AiRuntimeStatus = {
     authMethod: "chatgpt",
@@ -88,23 +50,14 @@ const { AiService } = await import("./service");
 
 describe("AiService prepareSession", () => {
     beforeEach(() => {
-        initializeMock.mockClear();
-        loadSessionMock.mockClear();
-        loadSessionMock.mockResolvedValue({
-            configOptions: [],
-            modes: [],
-            models: [],
-        });
-        newSessionMock.mockClear();
-        spawnMock.mockClear();
+        vi.clearAllMocks();
     });
 
-    it("clears persisted lastError after a successful restore", async () => {
+    it("delegates session startup to the AI worker with a resolved launch payload", async () => {
         const persistedSnapshot: AiSessionSnapshot = {
             availableCommands: [],
             configOptions: [],
-            lastError:
-                "2026-04-15T22:23:13.719838Z ERROR codex_core::codex: failed to load skill /Users/test/.codex/skills/vaultai-release-operator/SKILL.md",
+            lastError: "stale error",
             messages: [],
             modeId: null,
             modes: [],
@@ -124,9 +77,39 @@ describe("AiService prepareSession", () => {
             updatedAt: "2026-04-15T22:23:13.719838Z",
             worktreeId: null,
         };
+        const workerSnapshot: AiSessionSnapshot = {
+            ...persistedSnapshot,
+            lastError: null,
+            status: "idle",
+            updatedAt: "2026-04-16T00:00:00.000Z",
+        };
+        const prepareSession = vi.fn(async () => workerSnapshot);
+        const aiWorker: AiWorkerGateway = {
+            cancelSession: vi.fn(),
+            close: vi.fn(),
+            closeOwnedByWindow: vi.fn(),
+            closeSession: vi.fn(),
+            keepAllTrackedFiles: vi.fn(),
+            keepTrackedFile: vi.fn(),
+            keepTrackedFileHunks: vi.fn(),
+            notifyFileBuffer: vi.fn(),
+            prepareSession,
+            rejectAllTrackedFiles: vi.fn(),
+            rejectTrackedFile: vi.fn(),
+            rejectTrackedFileHunks: vi.fn(),
+            refreshProjectScopes: vi.fn(),
+            respondPermission: vi.fn(),
+            respondUserInput: vi.fn(),
+            sendPrompt: vi.fn(),
+            setSessionConfigOption: vi.fn(),
+            setSessionMode: vi.fn(),
+            setSessionModel: vi.fn(),
+        };
+        const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const saveSessionSnapshot = vi.fn();
         const service = new AiService({
-            onRuntimeStatus: vi.fn(),
+            aiWorker,
+            onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
             onSessionSnapshot: vi.fn(),
             persistence: {
                 loadLatestRuntimeCatalog: vi.fn(() => null),
@@ -143,6 +126,7 @@ describe("AiService prepareSession", () => {
             } as never,
             projectService: {
                 getProjectRootPath: vi.fn(() => process.cwd()),
+                listProjectWorktrees: vi.fn(() => []),
             } as never,
             secretStore: {
                 loadSecret: vi.fn(() => null),
@@ -194,19 +178,37 @@ describe("AiService prepareSession", () => {
             "window-1",
         );
 
-        expect(loadSessionMock).toHaveBeenCalledWith({
-            additionalDirectories: undefined,
-            cwd: process.cwd(),
-            mcpServers: [],
-            sessionId: "runtime-session-1",
-        });
-        expect(snapshot.lastError).toBeNull();
-        expect(snapshot.status).toBe("idle");
-        expect(saveSessionSnapshot).toHaveBeenLastCalledWith(
-            expect.objectContaining({
-                lastError: null,
-                status: "idle",
+        expect(snapshot).toBe(workerSnapshot);
+        expect(prepareSession).toHaveBeenCalledWith({
+            input: {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            launch: expect.objectContaining({
+                additionalRoots: [],
+                cwd: process.cwd(),
+                input: {
+                    additionalRoots: [],
+                    projectId: null,
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Codex 1",
+                    worktreeId: null,
+                },
+                ownerWindowId: "window-1",
+                persistedSnapshot,
+                projectRoot: null,
+                resolvedRuntime: expect.objectContaining({
+                    command: "mock-codex-acp",
+                    executable: "mock-codex-acp",
+                    status: readyStatus,
+                }),
             }),
-        );
+        });
+        expect(saveSessionSnapshot).toHaveBeenCalledWith(workerSnapshot);
+        expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
     });
 });

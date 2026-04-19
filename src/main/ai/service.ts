@@ -1,35 +1,15 @@
-import fs from "node:fs";
 import path from "node:path";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 
 import {
     ClientSideConnection,
-    type ContentBlock,
     PROTOCOL_VERSION,
     ndJsonStream,
     type Client,
-    type Diff,
-    type LoadSessionResponse,
-    type NewSessionResponse,
-    type ReadTextFileRequest,
-    type RequestPermissionRequest,
-    type RequestPermissionResponse,
-    type SessionConfigOption,
-    type SessionModeState,
-    type SessionModelState,
-    type SessionNotification,
-    type ToolCall,
-    type ToolCallContent,
-    type ToolCallUpdate,
-    type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 import type {
-    AiFileDiff,
     AiHistorySessionSummary,
-    AiImageAttachment,
-    AiPermissionRequest,
     AiPermissionResponseInput,
     AiPromptResult,
     PrepareAiSessionInput,
@@ -37,20 +17,15 @@ import type {
     AiRuntimeAuthLogoutInput,
     AiRuntimeId,
     AiRuntimeStatus,
-    AiSessionConfigOption,
     AiSessionConfigOptionMutationInput,
-    AiSessionMode,
     AiSessionModeMutationInput,
-    AiSessionModel,
     AiSessionModelMutationInput,
     AiSessionUpdate,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
     AiSessionTranscriptPage,
-    AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
-    AiUserInputRequest,
     AiUserInputResponseInput,
     ClaudeRuntimeSettingsInput,
     CodexRuntimeSettingsInput,
@@ -64,19 +39,9 @@ import type {
 } from "@shared/ipc";
 import {
     computeDiffHunks,
-    getTrackedFileCurrentText,
-    getTrackedFileDiffBase,
-    replaceTrackedFile,
     resolveTrackedFileHunks,
-    syncTrackedFile,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
-import { SessionBusyError } from "@shared/ai-errors";
-import {
-    inferChatTitleFromPrompt,
-    isDefaultChatTitle,
-} from "@shared/chatTitle";
-import { readOpenFileBuffer } from "./openFileBuffers";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -87,6 +52,34 @@ import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
 } from "./persistence";
+import { listOpenFileBuffers } from "./openFileBuffers";
+import {
+    type AiWorkerGateway,
+    type AiWorkerRefreshProjectScopesRpcInput,
+    type AiWorkerReviewMutationResult,
+    type AiWorkerReviewSessionContext,
+    type AiWorkerSessionLaunchInput,
+    type AiServiceOptions,
+    type ResolvedAcpRuntime,
+    type SessionDescriptor,
+} from "./contracts";
+import {
+    buildAiSessionUpdate,
+    getRecentStderrText,
+    getRuntimeDisplayName,
+    normalizeAdditionalRoots,
+    setConfigOptionOnSnapshot,
+    setModeOnSnapshot,
+    setModelOnSnapshot,
+    setTitleOnSnapshot,
+} from "./session-core";
+import {
+    diffToAiFileDiff,
+    mapToolCallUpdate,
+    normalizeTrackedDiffPath,
+    resolveDiffToFullTexts,
+    shouldSuppressToolActivityUpdate,
+} from "./review-core";
 import { buildRuntimeSpawnEnv } from "./runtime-env";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
@@ -125,23 +118,6 @@ import {
     resolveKiloRuntime,
 } from "./kilo/setup";
 
-const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY = "codexAcpPreviousPath";
-const LEGACY_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
-const CODEX_ACP_STATUS_EVENT_TYPE_KEY = "codexAcpEventType";
-const LEGACY_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
-const CODEX_ACP_STATUS_EVENT_TYPE = "status";
-const CODEX_ACP_STATUS_EVENT_ID_PREFIX = "codex-acp:status:";
-const LEGACY_STATUS_EVENT_ID_PREFIX = "neverwrite:status:";
-const CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX = "codex-acp:status:turn:";
-const LEGACY_STATUS_TURN_EVENT_ID_PREFIX = "neverwrite:status:turn:";
-const CODEX_ACP_USER_INPUT_EVENT_TYPE = "user_input_request";
-const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX =
-    "__codex_acp_user_input_response__:";
-const SUPPRESSED_STATUS_TITLES = new Set([
-    "Preparing input",
-    "Drafting response",
-]);
-
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
 }
@@ -150,74 +126,20 @@ function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
     return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
 }
 
-interface AiServiceOptions {
-    readonly projectService: ProjectService;
-    readonly settingsService: SettingsGateway;
-    readonly secretStore: SecretStoreGateway;
-    readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
-    readonly onSessionSnapshot: (
-        ownerWindowId: string,
-        update: AiSessionUpdate,
-    ) => void;
-    readonly persistence: AiPersistenceGateway;
-}
-
-interface LiveAcpSession {
-    additionalRoots: readonly string[];
-    child: ChildProcessWithoutNullStreams;
-    closing: boolean;
-    connection: ClientSideConnection;
-    cwd: string;
-    isRestoring: boolean;
-    ownerWindowId: string;
-    pendingPermission: {
-        readonly requestId: string;
-        readonly resolve: (response: RequestPermissionResponse) => void;
-    } | null;
-    pendingAdditionalRoots: readonly string[] | null;
-    pendingPersistTimer: ReturnType<typeof setTimeout> | null;
-    // Tracks which `(toolCallId -> normalizedPath)` combinations have already
-    // produced a tracked file within this session. Claude Code emits every
-    // Edit twice against the same toolCallId (streaming tool_call + post-hook
-    // tool_call_update from the structuredPatch), so without dedup the second
-    // emission re-applies the edit on top of the cumulative text.
-    processedDiffPaths: Map<string, Set<string>>;
-    projectRoot: string | null;
-    runtimeId: AiRuntimeId;
-    snapshot: AiSessionSnapshot;
-    terminalOutputBuffers: Map<string, string>;
-    lastBroadcastSnapshot: AiSessionSnapshot | null;
-    stderrChunks: string[];
-    stderrHandler: ((chunk: Buffer | string) => void) | null;
-}
-
-interface ResolvedAcpRuntime {
-    readonly args: readonly string[];
-    readonly command: string;
-    readonly env: NodeJS.ProcessEnv;
-    readonly executable: string;
-    readonly status: AiRuntimeStatus;
-}
-
-type AcpSessionCatalogPayload = Pick<
-    LoadSessionResponse | NewSessionResponse,
-    "configOptions" | "models" | "modes"
->;
-
-interface OpenRuntimeSessionResult extends AcpSessionCatalogPayload {
-    readonly runtimeSessionId: string;
-}
-
-type SessionDescriptor = Pick<
-    PrepareAiSessionInput,
-    "projectId" | "runtimeId" | "sessionId" | "title" | "worktreeId"
-> & {
-    readonly additionalRoots?: readonly string[];
-};
-
-const AI_SESSION_STREAMING_FLUSH_MS = 120;
-
 export class AiService {
+    #aiWorker: AiWorkerGateway | null;
+    readonly #liveSessionContexts = new Map<
+        string,
+        {
+            readonly additionalRoots: readonly string[];
+            ownerWindowId: string;
+            readonly projectId: string | null;
+            readonly runtimeId: AiRuntimeId;
+            readonly sessionId: string;
+            readonly worktreeId: string | null;
+        }
+    >();
+    readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionSnapshot: (
         ownerWindowId: string,
@@ -227,9 +149,9 @@ export class AiService {
     readonly #projectService: ProjectService;
     readonly #secretStore: SecretStoreGateway;
     readonly #settingsService: SettingsGateway;
-    readonly #sessions = new Map<string, LiveAcpSession>();
 
     constructor(options: AiServiceOptions) {
+        this.#aiWorker = options.aiWorker ?? null;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionSnapshot = options.onSessionSnapshot;
         this.#persistence = options.persistence;
@@ -238,14 +160,90 @@ export class AiService {
         this.#settingsService = options.settingsService;
     }
 
+    setWorker(worker: AiWorkerGateway | null): void {
+        this.#aiWorker = worker;
+    }
+
     close(): void {
-        for (const liveSession of this.#sessions.values()) {
-            liveSession.closing = true;
-            this.#resolvePendingPermission(liveSession, null);
-            liveSession.child.kill();
+        this.#liveSessionContexts.clear();
+        this.#liveSnapshots.clear();
+    }
+
+    handleWorkerRuntimeStatus(status: AiRuntimeStatus): void {
+        this.#onRuntimeStatus(status);
+    }
+
+    handleWorkerSessionClosed(payload: {
+        readonly ownerWindowId: string;
+        readonly sessionId: string;
+    }): void {
+        this.#clearLiveSession(payload.sessionId);
+    }
+
+    handleWorkerSessionSnapshot(
+        ownerWindowId: string,
+        update: AiSessionUpdate,
+    ): void {
+        const snapshot = this.#resolveSnapshotFromWorkerUpdate(update);
+        if (!snapshot) {
+            return;
         }
 
-        this.#sessions.clear();
+        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(snapshot);
+        if (snapshot.lastError) {
+            this.#invalidateRuntimeAuthIfNeeded(snapshot.runtimeId, snapshot.lastError);
+        }
+        this.#onSessionSnapshot(ownerWindowId, update);
+    }
+
+    async handleWorkerRestarted(): Promise<void> {
+        const worker = this.#requireAiWorker();
+        await Promise.all(
+            listOpenFileBuffers().map(async (buffer) => {
+                await worker.notifyFileBuffer(buffer);
+            }),
+        );
+        const relaunches = [...this.#liveSessionContexts.values()].map(
+            async (context) => {
+                const snapshot =
+                    this.#liveSnapshots.get(context.sessionId) ??
+                    (await this.#persistence.loadSessionSnapshot(
+                        context.sessionId,
+                    ));
+                if (!snapshot) {
+                    return;
+                }
+
+                const relaunchedSnapshot = await worker.prepareSession({
+                    input: {
+                        projectId: context.projectId,
+                        runtimeId: context.runtimeId,
+                        sessionId: context.sessionId,
+                        title: snapshot.title,
+                        worktreeId: context.worktreeId,
+                    },
+                    launch: await this.#buildWorkerSessionLaunchInput(
+                        {
+                            additionalRoots: context.additionalRoots,
+                            projectId: context.projectId,
+                            runtimeId: context.runtimeId,
+                            sessionId: context.sessionId,
+                            title: snapshot.title,
+                            worktreeId: context.worktreeId,
+                        },
+                        context.ownerWindowId,
+                        snapshot,
+                    ),
+                });
+                this.#acceptPreparedLiveSnapshot(
+                    relaunchedSnapshot,
+                    context.ownerWindowId,
+                );
+            },
+        );
+
+        await Promise.allSettled(relaunches);
     }
 
     getRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
@@ -402,9 +400,9 @@ export class AiService {
     async getSessionSnapshot(
         sessionId: string,
     ): Promise<AiSessionSnapshot | null> {
-        const liveSession = this.#sessions.get(sessionId);
-        if (liveSession) {
-            return liveSession.snapshot;
+        const liveSnapshot = this.#liveSnapshots.get(sessionId);
+        if (liveSnapshot) {
+            return liveSnapshot;
         }
 
         return await this.#persistence.loadSessionSnapshot(sessionId);
@@ -431,140 +429,51 @@ export class AiService {
         input: PrepareAiSessionInput,
         ownerWindowId: string,
     ): Promise<AiSessionSnapshot> {
-        const liveSession = await this.#ensureRuntimeSession(
+        const worker = this.#requireAiWorker();
+        const launch = await this.#buildWorkerSessionLaunchInput(
             input,
             ownerWindowId,
         );
-        return liveSession.snapshot;
+        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
+        const snapshot = await worker.prepareSession({
+            input,
+            launch,
+        });
+        this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
+        return snapshot;
     }
 
     async refreshProjectScopes(projectId: string): Promise<void> {
-        const refreshTasks = [...this.#sessions.entries()]
-            .filter(
-                ([, liveSession]) =>
-                    liveSession.snapshot.projectId === projectId,
-            )
-            .map(async ([sessionId, liveSession]) => {
-                try {
-                    await this.#refreshLiveSessionScopes(
-                        sessionId,
-                        liveSession,
-                    );
-                } catch (error) {
-                    // A single session failing must not abort refreshes for
-                    // other live sessions of the same project.
-                    console.error(
-                        `[ai] refreshProjectScopes failed for session ${sessionId}`,
-                        error,
-                    );
-                }
-            });
+        const worker = this.#requireAiWorker();
+        const sessions = await this.#buildWorkerScopeRefreshInputs(projectId);
+        if (sessions.length === 0) {
+            return;
+        }
 
-        await Promise.all(refreshTasks);
+        await worker.refreshProjectScopes({
+            projectId,
+            sessions,
+        } satisfies AiWorkerRefreshProjectScopesRpcInput);
     }
 
     async sendPrompt(
         input: SendAiPromptInput,
         ownerWindowId: string,
     ): Promise<AiPromptResult> {
-        const liveSession = await this.#ensureRuntimeSession(
+        const worker = this.#requireAiWorker();
+        const launch = await this.#buildWorkerSessionLaunchInput(
             input,
             ownerWindowId,
         );
-        if (
-            liveSession.snapshot.status === "starting" ||
-            liveSession.snapshot.status === "streaming" ||
-            liveSession.snapshot.status === "waiting_permission" ||
-            liveSession.snapshot.status === "waiting_user_input"
-        ) {
-            throw new SessionBusyError();
-        }
-
-        const now = new Date().toISOString();
-        const promptText = input.prompt.trim();
-        const displayContent = serializeComposerPartsForDisplay(
-            input.composerParts,
-            promptText,
-        );
-        if (!promptText && input.attachments.length === 0) {
-            throw new Error("Type a prompt before sending it.");
-        }
-
-        liveSession.snapshot = finalizeStreamingMessages({
-            ...liveSession.snapshot,
-            lastError: null,
-            messages: [
-                ...liveSession.snapshot.messages,
-                {
-                    attachments: input.attachments,
-                    content: displayContent,
-                    createdAt: now,
-                    id: randomUUID(),
-                    kind: "user",
-                    status: "completed",
-                },
-            ],
-            pendingPermission: null,
-            pendingUserInput: null,
-            projectId: input.projectId,
-            status: "starting",
-            title: resolveSessionTitleOnPrompt({
-                currentTitle: liveSession.snapshot.title,
-                fallbackTitle: input.title,
-                displayContent,
-                hasPriorUserMessage: liveSession.snapshot.messages.some(
-                    (message) => message.kind === "user",
-                ),
-            }),
-            updatedAt: now,
-            worktreeId: input.worktreeId ?? null,
+        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
+        return await worker.sendPrompt({
+            input,
+            launch,
         });
-        this.#persistAndBroadcast(liveSession);
-
-        try {
-            const response = await liveSession.connection.prompt({
-                messageId: randomUUID(),
-                prompt: buildPromptContentBlocks(promptText, input.attachments),
-                sessionId: this.#requireRuntimeSessionId(liveSession),
-            });
-
-            liveSession.snapshot = finalizeStreamingMessages({
-                ...liveSession.snapshot,
-                pendingPermission: null,
-                pendingUserInput: null,
-                status: "idle",
-                updatedAt: new Date().toISOString(),
-            });
-            this.#persistAndBroadcast(liveSession);
-            this.#schedulePendingScopeRefresh(input.sessionId);
-
-            return {
-                sessionId: input.sessionId,
-                stopReason: response.stopReason,
-            };
-        } catch (error) {
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : `${getRuntimeDisplayName(input.runtimeId)} could not complete the prompt.`;
-            this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, message);
-            liveSession.snapshot = finalizeStreamingMessages({
-                ...liveSession.snapshot,
-                lastError: message,
-                pendingPermission: null,
-                pendingUserInput: null,
-                status: "error",
-                updatedAt: new Date().toISOString(),
-            });
-            this.#persistAndBroadcast(liveSession);
-            this.#schedulePendingScopeRefresh(input.sessionId);
-            throw error;
-        }
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
-        const liveSession = this.#sessions.get(input.sessionId);
-        if (!liveSession) {
+        if (!this.#liveSessionContexts.has(input.sessionId)) {
             const snapshot = await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
@@ -577,16 +486,15 @@ export class AiService {
             return;
         }
 
-        await this.#setSessionModeOnLiveSession(liveSession, input.modeId);
+        await this.#requireAiWorker().setSessionMode(input);
         this.#persistence.saveRuntimeModePreference(
-            liveSession.runtimeId,
+            this.#getLiveSessionRuntimeId(input.sessionId),
             input.modeId,
         );
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
-        const liveSession = this.#sessions.get(input.sessionId);
-        if (!liveSession) {
+        if (!this.#liveSessionContexts.has(input.sessionId)) {
             const snapshot = await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
@@ -599,9 +507,9 @@ export class AiService {
             return;
         }
 
-        await this.#setSessionModelOnLiveSession(liveSession, input.modelId);
+        await this.#requireAiWorker().setSessionModel(input);
         this.#persistence.saveRuntimeModelPreference(
-            liveSession.runtimeId,
+            this.#getLiveSessionRuntimeId(input.sessionId),
             input.modelId,
         );
     }
@@ -609,8 +517,7 @@ export class AiService {
     async setSessionConfigOption(
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
-        const liveSession = this.#sessions.get(input.sessionId);
-        if (!liveSession) {
+        if (!this.#liveSessionContexts.has(input.sessionId)) {
             const snapshot = await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
@@ -628,13 +535,9 @@ export class AiService {
             return;
         }
 
-        await this.#setSessionConfigOptionOnLiveSession(
-            liveSession,
-            input.optionId,
-            input.value,
-        );
+        await this.#requireAiWorker().setSessionConfigOption(input);
         this.#persistRuntimeSelectionPreference(
-            liveSession.runtimeId,
+            this.#getLiveSessionRuntimeId(input.sessionId),
             input.optionId,
             input.value,
         );
@@ -647,46 +550,24 @@ export class AiService {
     }
 
     async cancelSession(sessionId: string): Promise<void> {
-        const liveSession = this.#sessions.get(sessionId);
-        if (!liveSession || !liveSession.snapshot.runtimeSessionId) {
+        if (!this.#liveSessionContexts.has(sessionId)) {
             return;
         }
 
-        this.#resolvePendingPermission(liveSession, null);
-        await liveSession.connection.cancel({
-            sessionId: liveSession.snapshot.runtimeSessionId,
-        });
+        await this.#requireAiWorker().cancelSession(sessionId);
     }
 
     async closeSession(sessionId: string): Promise<void> {
-        const liveSession = this.#sessions.get(sessionId);
-        if (!liveSession) {
+        if (!this.#liveSessionContexts.has(sessionId)) {
             return;
         }
 
-        liveSession.closing = true;
-        this.#flushLiveSessionPersistence(liveSession, {
-            broadcast: false,
-        });
-        this.#resolvePendingPermission(liveSession, null);
-
-        try {
-            if (liveSession.snapshot.runtimeSessionId) {
-                await liveSession.connection.unstable_closeSession({
-                    sessionId: liveSession.snapshot.runtimeSessionId,
-                });
-            }
-        } catch (error) {
-            // The process is killed below regardless.
-            debugBenignError("ai.service.unstableCloseSession", error);
-        }
-
-        liveSession.child.kill();
-        this.#sessions.delete(sessionId);
+        await this.#requireAiWorker().closeSession(sessionId);
+        this.#clearLiveSession(sessionId);
     }
 
     async deleteSession(sessionId: string): Promise<void> {
-        if (this.#sessions.has(sessionId)) {
+        if (this.#liveSessionContexts.has(sessionId)) {
             try {
                 await this.cancelSession(sessionId);
             } catch (error) {
@@ -697,30 +578,22 @@ export class AiService {
             await this.closeSession(sessionId);
         }
 
+        this.#clearLiveSession(sessionId);
         await this.#persistence.deleteSession(sessionId);
     }
 
     closeOwnedByWindow(ownerWindowId: string): void {
-        const sessionIds = [...this.#sessions.entries()]
+        const sessionIds = [...this.#liveSessionContexts.entries()]
             .filter(
-                ([, liveSession]) =>
-                    liveSession.ownerWindowId === ownerWindowId,
+                ([, liveSession]) => liveSession.ownerWindowId === ownerWindowId,
             )
             .map(([sessionId]) => sessionId);
 
+        void this.#aiWorker?.closeOwnedByWindow(ownerWindowId).catch((error) => {
+            debugBenignError("ai.service.closeOwnedByWindow", error);
+        });
         for (const sessionId of sessionIds) {
-            const liveSession = this.#sessions.get(sessionId);
-            if (!liveSession) {
-                continue;
-            }
-
-            liveSession.closing = true;
-            this.#flushLiveSessionPersistence(liveSession, {
-                broadcast: false,
-            });
-            this.#resolvePendingPermission(liveSession, null);
-            liveSession.child.kill();
-            this.#sessions.delete(sessionId);
+            this.#clearLiveSession(sessionId);
         }
     }
 
@@ -956,272 +829,94 @@ export class AiService {
     }
 
     respondPermission(input: AiPermissionResponseInput): Promise<void> {
-        const liveSession = this.#sessions.get(input.sessionId);
-        if (!liveSession?.pendingPermission) {
-            throw new Error("There is no pending permission request.");
-        }
-
-        if (liveSession.pendingPermission.requestId !== input.requestId) {
-            throw new Error("The permission request no longer matches.");
-        }
-
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            pendingPermission: null,
-            status: "streaming",
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
-
-        this.#resolvePendingPermission(
-            liveSession,
-            input.optionId
-                ? {
-                      _meta: null,
-                      outcome: {
-                          optionId: input.optionId,
-                          outcome: "selected",
-                      },
-                  }
-                : {
-                      _meta: null,
-                      outcome: {
-                          outcome: "cancelled",
-                      },
-                  },
-        );
-
-        return Promise.resolve();
+        return this.#requireAiWorker().respondPermission(input);
     }
 
     async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
-        const liveSession = this.#sessions.get(input.sessionId);
-        if (!liveSession) {
-            throw new Error("The AI session was not found.");
-        }
-
-        const pendingUserInput = liveSession.snapshot.pendingUserInput;
-        if (!pendingUserInput) {
-            throw new Error("There is no pending input request.");
-        }
-
-        if (pendingUserInput.requestId !== input.requestId) {
-            throw new Error("The input request no longer matches.");
-        }
-
-        const answers = input.answers
-            .filter(
-                (answer) =>
-                    answer.questionId.trim().length > 0 &&
-                    answer.answers.some((value) => value.trim().length > 0),
-            )
-            .map((answer) => ({
-                answers: answer.answers
-                    .map((value) => value.trim())
-                    .filter(Boolean),
-                questionId: answer.questionId,
-            }))
-            .filter((answer) => answer.answers.length > 0);
-
-        if (!pendingUserInput.turnId) {
-            throw new Error("Input request is missing a valid turnId.");
-        }
-
-        const promptText = buildUserInputResponsePrompt(
-            pendingUserInput.turnId,
-            answers,
-        );
-        const now = new Date().toISOString();
-
-        liveSession.snapshot = finalizeStreamingMessages({
-            ...liveSession.snapshot,
-            lastError: null,
-            messages: [
-                ...liveSession.snapshot.messages,
-                {
-                    attachments: [],
-                    content: summarizeUserInputAnswers(
-                        pendingUserInput.questions,
-                        answers,
-                    ),
-                    createdAt: now,
-                    id: randomUUID(),
-                    kind: "user",
-                    status: "completed",
-                },
-            ],
-            pendingUserInput: null,
-            status: "starting",
-            updatedAt: now,
-        });
-        this.#persistAndBroadcast(liveSession);
-
-        try {
-            await liveSession.connection.prompt({
-                messageId: randomUUID(),
-                prompt: [
-                    {
-                        text: promptText,
-                        type: "text",
-                    },
-                ],
-                sessionId: this.#requireRuntimeSessionId(liveSession),
-            });
-
-            liveSession.snapshot = finalizeStreamingMessages({
-                ...liveSession.snapshot,
-                status: "idle",
-                updatedAt: new Date().toISOString(),
-            });
-            this.#persistAndBroadcast(liveSession);
-            this.#schedulePendingScopeRefresh(input.sessionId);
-        } catch (error) {
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : `${getRuntimeDisplayName(liveSession.runtimeId)} ACP no pudo enviar la respuesta guiada.`;
-            this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, message);
-            liveSession.snapshot = finalizeStreamingMessages({
-                ...liveSession.snapshot,
-                lastError: message,
-                pendingUserInput,
-                status: "error",
-                updatedAt: new Date().toISOString(),
-            });
-            this.#persistAndBroadcast(liveSession);
-            this.#schedulePendingScopeRefresh(input.sessionId);
-            throw error;
-        }
+        await this.#requireAiWorker().respondUserInput(input);
     }
 
-    async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.filter(
-                (trackedFile) => trackedFile.path !== input.path,
-            ),
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
-    }
-
-    async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        const trackedFile = liveSession.snapshot.trackedFiles.find(
-            (candidate) => candidate.path === input.path,
-        );
-
-        if (!trackedFile) {
-            throw new Error("The file to review was not found.");
+    #requireAiWorker(): AiWorkerGateway {
+        if (!this.#aiWorker) {
+            throw new Error("The AI worker is not available.");
         }
 
-        await this.#revertTrackedFile(liveSession, trackedFile);
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: liveSession.snapshot.trackedFiles.filter(
-                (candidate) => candidate.path !== input.path,
-            ),
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
+        return this.#aiWorker;
     }
 
-    async keepTrackedFileHunks(
-        input: AiTrackedFileHunkMutationInput,
-    ): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        const trackedFile = liveSession.snapshot.trackedFiles.find(
-            (candidate) => candidate.path === input.path,
-        );
-
-        if (!trackedFile) {
-            throw new Error("The file to review was not found.");
-        }
-
-        const nextTrackedFile = resolveTrackedFileHunks(
-            trackedFile,
-            input.hunkIds,
-            "keep",
-        );
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: replaceTrackedFile(
-                liveSession.snapshot.trackedFiles,
-                trackedFile.path,
-                nextTrackedFile,
-            ),
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
-    }
-
-    async rejectTrackedFileHunks(
-        input: AiTrackedFileHunkMutationInput,
-    ): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(input.sessionId);
-        const trackedFile = liveSession.snapshot.trackedFiles.find(
-            (candidate) => candidate.path === input.path,
-        );
-
-        if (!trackedFile) {
-            throw new Error("The file to review was not found.");
-        }
-
-        const nextTrackedFile = resolveTrackedFileHunks(
-            trackedFile,
-            input.hunkIds,
-            "reject",
-        );
-
-        if (!nextTrackedFile) {
-            await this.#revertTrackedFile(liveSession, trackedFile);
-        } else if (nextTrackedFile.newText !== null) {
-            await this.#applyTrackedFileText(liveSession, nextTrackedFile);
-        }
-
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: replaceTrackedFile(
-                liveSession.snapshot.trackedFiles,
-                trackedFile.path,
-                nextTrackedFile,
-            ),
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
-    }
-
-    async keepAllTrackedFiles(sessionId: string): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(sessionId);
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: [],
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
-    }
-
-    async rejectAllTrackedFiles(sessionId: string): Promise<void> {
-        const liveSession = await this.#loadSessionForReview(sessionId);
-
-        for (const trackedFile of liveSession.snapshot.trackedFiles) {
-            await this.#revertTrackedFile(liveSession, trackedFile);
-        }
-
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: [],
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
-    }
-
-    async #ensureRuntimeSession(
+    #rememberLiveSessionContext(
         input: SessionDescriptor,
         ownerWindowId: string,
-    ): Promise<LiveAcpSession> {
-        const existing = this.#sessions.get(input.sessionId);
+        additionalRoots: readonly string[],
+    ): void {
+        this.#liveSessionContexts.set(input.sessionId, {
+            additionalRoots,
+            ownerWindowId,
+            projectId: input.projectId,
+            runtimeId: input.runtimeId,
+            sessionId: input.sessionId,
+            worktreeId: input.worktreeId ?? null,
+        });
+    }
+
+    #cacheLiveSessionSnapshot(
+        snapshot: AiSessionSnapshot,
+        ownerWindowId: string,
+    ): void {
+        this.#liveSnapshots.set(snapshot.sessionId, snapshot);
+        const context = this.#liveSessionContexts.get(snapshot.sessionId);
+        if (context) {
+            context.ownerWindowId = ownerWindowId;
+        }
+    }
+
+    #clearLiveSession(sessionId: string): void {
+        this.#liveSnapshots.delete(sessionId);
+        this.#liveSessionContexts.delete(sessionId);
+    }
+
+    #acceptPreparedLiveSnapshot(
+        snapshot: AiSessionSnapshot,
+        ownerWindowId: string,
+    ): void {
+        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(snapshot);
+    }
+
+    #getLiveSessionRuntimeId(sessionId: string): AiRuntimeId {
+        const runtimeId = this.#liveSnapshots.get(sessionId)?.runtimeId;
+        if (!runtimeId) {
+            throw new Error("The live AI session snapshot is not available.");
+        }
+
+        return runtimeId;
+    }
+
+    #resolveSnapshotFromWorkerUpdate(
+        update: AiSessionUpdate,
+    ): AiSessionSnapshot | null {
+        if (update.kind === "snapshot") {
+            return update.snapshot;
+        }
+
+        const previousSnapshot = this.#liveSnapshots.get(update.patch.sessionId);
+        if (!previousSnapshot) {
+            return null;
+        }
+
+        return {
+            ...previousSnapshot,
+            ...update.patch.changes,
+            runtimeId: update.patch.runtimeId,
+            sessionId: update.patch.sessionId,
+        };
+    }
+
+    async #buildWorkerSessionLaunchInput(
+        input: SessionDescriptor,
+        ownerWindowId: string,
+        snapshotOverride?: AiSessionSnapshot | null,
+    ): Promise<AiWorkerSessionLaunchInput> {
         const projectRoot = input.projectId
             ? this.#projectService.getProjectRootPath(
                   input.projectId,
@@ -1232,21 +927,8 @@ export class AiService {
             input,
             projectRoot,
         );
-        if (
-            existing?.snapshot.runtimeSessionId &&
-            existing.runtimeId === input.runtimeId &&
-            sameAdditionalRoots(existing.additionalRoots, additionalRoots)
-        ) {
-            existing.ownerWindowId = ownerWindowId;
-            return existing;
-        }
-        if (existing) {
-            this.#disposeLiveSession(input.sessionId, existing);
-        }
-
         const resolvedRuntime = this.#resolveRuntimeCommand(input.runtimeId);
         this.#onRuntimeStatus(resolvedRuntime.status);
-
         if (
             resolvedRuntime.status.state !== "ready" ||
             resolvedRuntime.status.onboardingRequired
@@ -1258,6 +940,8 @@ export class AiService {
         }
 
         const persistedSnapshot =
+            snapshotOverride ??
+            this.#liveSnapshots.get(input.sessionId) ??
             (await this.#persistence.loadSessionSnapshot(input.sessionId)) ??
             createEmptyAiSessionSnapshot({
                 projectId: input.projectId,
@@ -1266,719 +950,186 @@ export class AiService {
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             });
-        const cwd = projectRoot ?? process.cwd();
-        const child = spawn(
-            resolvedRuntime.executable,
-            [...resolvedRuntime.args],
-            {
-                cwd,
-                env: resolvedRuntime.env,
-                stdio: ["pipe", "pipe", "pipe"],
-            },
-        );
-        const liveSession = {} as LiveAcpSession;
 
-        const client: Client = {
-            readTextFile: async (params) =>
-                this.#readTextFile(liveSession, params),
-            requestPermission: async (params) =>
-                this.#requestPermission(liveSession, params),
-            sessionUpdate: async (params) =>
-                this.#handleSessionUpdate(liveSession, params),
-            writeTextFile: async (params) =>
-                this.#writeTextFile(liveSession, params),
-        };
-        const stream = ndJsonStream(
-            toWebByteWritable(child.stdin),
-            toWebByteReadable(child.stdout),
-        );
-        const connection = new ClientSideConnection(() => client, stream);
-
-        Object.assign(liveSession, {
+        return {
             additionalRoots,
-            child,
-            closing: false,
-            connection,
-            cwd,
-            isRestoring: false,
-            lastBroadcastSnapshot: null,
-            ownerWindowId,
-            pendingPermission: null,
-            pendingAdditionalRoots: null,
-            pendingPersistTimer: null,
-            processedDiffPaths: new Map(),
-            projectRoot,
-            runtimeId: input.runtimeId,
-            snapshot: {
-                ...persistedSnapshot,
-                projectId: input.projectId,
-                runtimeId: input.runtimeId,
-                status: getPreparedSessionStatus(persistedSnapshot),
-                title:
-                    persistedSnapshot.title &&
-                    !isDefaultChatTitle(persistedSnapshot.title)
-                        ? persistedSnapshot.title
-                        : input.title,
-                updatedAt: new Date().toISOString(),
-                worktreeId: input.worktreeId ?? null,
-            },
-            terminalOutputBuffers: new Map(),
-            stderrChunks: [],
-            stderrHandler: null,
-        } satisfies LiveAcpSession);
-
-        const stderrHandler = (chunk: Buffer | string) => {
-            const text =
-                typeof chunk === "string" ? chunk : chunk.toString("utf8");
-            liveSession.stderrChunks.push(text);
-            if (liveSession.stderrChunks.length > 20) {
-                liveSession.stderrChunks.shift();
-            }
-        };
-        liveSession.stderrHandler = stderrHandler;
-        child.stderr.on("data", stderrHandler);
-        child.on("exit", (code, signal) => {
-            this.#handleProcessExit(input.sessionId, code, signal);
-        });
-        this.#sessions.set(input.sessionId, liveSession);
-        this.#persistAndBroadcast(liveSession);
-
-        try {
-            await connection.initialize({
-                clientCapabilities: {
-                    fs: {
-                        readTextFile: true,
-                        writeTextFile: true,
-                    },
-                },
-                clientInfo: {
-                    name: "comando",
-                    title: "Comando",
-                    version: process.versions.electron,
-                },
-                protocolVersion: PROTOCOL_VERSION,
-            });
-
-            const desiredSelections = this.#resolveDesiredSelections(
+            cwd: projectRoot ?? process.cwd(),
+            desiredSelections: this.#resolveDesiredSelections(
                 input.runtimeId,
                 persistedSnapshot,
-            );
-            const openedSession = await this.#openRuntimeSession(liveSession);
-            liveSession.snapshot = {
-                ...applySessionCatalogToSnapshot(
-                    liveSession.snapshot,
-                    openedSession,
-                ),
-                lastError: null,
-                runtimeSessionId: openedSession.runtimeSessionId,
-            };
-            await this.#applyStoredSessionSelections(
-                liveSession,
-                desiredSelections,
-            );
-            liveSession.snapshot = {
-                ...liveSession.snapshot,
-                lastError: null,
-                status: getPreparedSessionStatus(liveSession.snapshot),
-                updatedAt: new Date().toISOString(),
-            };
-            this.#persistAndBroadcast(liveSession);
-            return liveSession;
-        } catch (error) {
-            const stderrText = getRecentStderrText(liveSession.stderrChunks);
-            const message =
-                stderrText ||
-                (error instanceof Error
-                    ? error.message
-                    : `Could not start ${getRuntimeDisplayName(input.runtimeId)} ACP.`);
-            this.#invalidateRuntimeAuthIfNeeded(input.runtimeId, message);
-            liveSession.snapshot = {
-                ...liveSession.snapshot,
-                lastError: message,
-                status: "error",
-                updatedAt: new Date().toISOString(),
-            };
-            this.#persistAndBroadcast(liveSession);
-            this.#disposeLiveSession(input.sessionId, liveSession);
-            throw error;
-        }
-    }
-
-    async #openRuntimeSession(
-        liveSession: LiveAcpSession,
-    ): Promise<OpenRuntimeSessionResult> {
-        const additionalDirectories =
-            liveSession.additionalRoots.length > 0
-                ? [...liveSession.additionalRoots]
-                : undefined;
-
-        if (liveSession.snapshot.runtimeSessionId) {
-            try {
-                liveSession.isRestoring = true;
-                const response = await liveSession.connection.loadSession({
-                    additionalDirectories,
-                    cwd: liveSession.cwd,
-                    mcpServers: [],
-                    sessionId: liveSession.snapshot.runtimeSessionId,
-                });
-                return {
-                    configOptions: response.configOptions ?? null,
-                    models: response.models ?? null,
-                    modes: response.modes ?? null,
-                    runtimeSessionId: liveSession.snapshot.runtimeSessionId,
-                };
-            } catch (error) {
-                // If the session cannot be resumed, start a new one.
-                debugBenignError("ai.service.loadSession.resume", error);
-            } finally {
-                liveSession.isRestoring = false;
-            }
-        }
-
-        const response = await liveSession.connection.newSession({
-            additionalDirectories,
-            cwd: liveSession.cwd,
-            mcpServers: [],
-        });
-
-        return {
-            configOptions: response.configOptions ?? null,
-            models: response.models ?? null,
-            modes: response.modes ?? null,
-            runtimeSessionId: response.sessionId,
-        };
-    }
-
-    async #requestPermission(
-        liveSession: LiveAcpSession,
-        params: RequestPermissionRequest,
-    ): Promise<RequestPermissionResponse> {
-        const requestId = randomUUID();
-        const pendingPermission: AiPermissionRequest = {
-            options: params.options.map((option) => ({
-                kind: option.kind,
-                name: option.name,
-                optionId: option.optionId,
-            })),
-            requestId,
-            sessionId: liveSession.snapshot.sessionId,
-            title: params.toolCall.title ?? "Permission required",
-            toolCallId: params.toolCall.toolCallId,
-            updatedAt: new Date().toISOString(),
-        };
-
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            pendingPermission,
-            pendingUserInput: null,
-            status: "waiting_permission",
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistAndBroadcast(liveSession);
-
-        return await new Promise<RequestPermissionResponse>((resolve) => {
-            liveSession.pendingPermission = {
-                requestId,
-                resolve,
-            };
-        });
-    }
-
-    #handleSessionUpdate(
-        liveSession: LiveAcpSession,
-        params: SessionNotification,
-    ): Promise<void> {
-        const now = new Date().toISOString();
-        const update = params.update;
-        if (
-            liveSession.isRestoring &&
-            (update.sessionUpdate === "agent_message_chunk" ||
-                update.sessionUpdate === "agent_thought_chunk" ||
-                update.sessionUpdate === "plan" ||
-                update.sessionUpdate === "tool_call" ||
-                update.sessionUpdate === "tool_call_update")
-        ) {
-            return Promise.resolve();
-        }
-        const shouldMarkStreaming =
-            update.sessionUpdate === "agent_message_chunk" ||
-            update.sessionUpdate === "agent_thought_chunk" ||
-            update.sessionUpdate === "plan" ||
-            update.sessionUpdate === "tool_call" ||
-            update.sessionUpdate === "tool_call_update" ||
-            (update.sessionUpdate === "available_commands_update" &&
-                liveSession.snapshot.status === "starting");
-        const nextStatus: AiSessionSnapshot["status"] =
-            liveSession.snapshot.status === "waiting_permission"
-                ? "waiting_permission"
-                : liveSession.snapshot.status === "waiting_user_input"
-                  ? "waiting_user_input"
-                  : shouldMarkStreaming
-                    ? "streaming"
-                    : liveSession.snapshot.status;
-        let nextSnapshot: AiSessionSnapshot = {
-            ...liveSession.snapshot,
-            status: nextStatus,
-            updatedAt: now,
-        };
-
-        switch (update.sessionUpdate) {
-            case "agent_message_chunk":
-                nextSnapshot = appendContentBlockToSnapshot(
-                    nextSnapshot,
-                    "assistant",
-                    update.content,
-                    update.messageId ?? null,
-                );
-                break;
-            case "agent_thought_chunk":
-                nextSnapshot = appendContentBlockToSnapshot(
-                    nextSnapshot,
-                    "thinking",
-                    update.content,
-                    update.messageId ?? null,
-                );
-                break;
-            case "tool_call":
-                nextSnapshot = finalizeStreamingMessages(nextSnapshot);
-                nextSnapshot = mapToolCallUpdate(
-                    liveSession,
-                    nextSnapshot,
-                    update,
-                    "tool_call",
-                    now,
-                );
-                break;
-            case "tool_call_update":
-                nextSnapshot = mapToolCallUpdate(
-                    liveSession,
-                    nextSnapshot,
-                    update,
-                    "tool_call_update",
-                    now,
-                );
-                break;
-            case "plan":
-                nextSnapshot = {
-                    ...nextSnapshot,
-                    plan: {
-                        entries: update.entries.map((entry) => ({
-                            content: entry.content,
-                            priority: entry.priority,
-                            status: entry.status,
-                        })),
-                        updatedAt: now,
-                    },
-                };
-                break;
-            case "available_commands_update":
-                nextSnapshot = {
-                    ...nextSnapshot,
-                    availableCommands: update.availableCommands.map(
-                        (command) => ({
-                            description: command.description,
-                            id: command.name,
-                            insertText: `/${command.name} `,
-                            label: `/${command.name}`,
-                        }),
-                    ),
-                };
-                break;
-            case "current_mode_update":
-                nextSnapshot = setModeOnSnapshot(
-                    nextSnapshot,
-                    update.currentModeId,
-                    now,
-                );
-                break;
-            case "config_option_update":
-                nextSnapshot = applySessionCatalogToSnapshot(
-                    {
-                        ...nextSnapshot,
-                        updatedAt: now,
-                    },
-                    {
-                        configOptions: update.configOptions,
-                    },
-                );
-                break;
-            case "session_info_update":
-                nextSnapshot = {
-                    ...nextSnapshot,
-                    title:
-                        typeof update.title === "string" && update.title.trim()
-                            ? update.title.trim()
-                            : nextSnapshot.title,
-                    updatedAt: update.updatedAt ?? now,
-                };
-                break;
-            default:
-                break;
-        }
-
-        liveSession.snapshot = nextSnapshot;
-        this.#persistAndBroadcast(liveSession);
-        this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
-        return Promise.resolve();
-    }
-
-    async #readTextFile(
-        liveSession: LiveAcpSession,
-        params: ReadTextFileRequest,
-    ): Promise<{ content: string }> {
-        const absolutePath = this.#resolveReadableSessionPath(
-            liveSession,
-            params.path,
-        );
-        const content = await fs.promises.readFile(absolutePath, "utf8");
-
-        if (!params.line && !params.limit) {
-            return {
-                content,
-            };
-        }
-
-        const startLine = Math.max((params.line ?? 1) - 1, 0);
-        const lines = content.split("\n");
-        const selectedLines = params.limit
-            ? lines.slice(startLine, startLine + params.limit)
-            : lines.slice(startLine);
-
-        return {
-            content: selectedLines.join("\n"),
-        };
-    }
-
-    async #writeTextFile(
-        liveSession: LiveAcpSession,
-        params: WriteTextFileRequest,
-    ): Promise<Record<string, never>> {
-        const resolvedPath = this.#resolveSessionPathInfo(
-            liveSession,
-            params.path,
-        );
-        const now = new Date().toISOString();
-        const previousContent = await readTextIfExists(
-            resolvedPath.absolutePath,
-        );
-
-        if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
-            await this.#projectService.saveProjectFile({
-                content: params.content,
-                projectId: liveSession.snapshot.projectId,
-                relativePath: resolvedPath.relativePath,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            });
-        } else {
-            await fs.promises.writeFile(
-                resolvedPath.absolutePath,
-                params.content,
-                "utf8",
-            );
-        }
-
-        const trackedPath =
-            resolvedPath.relativePath ?? resolvedPath.displayPath;
-        liveSession.snapshot = {
-            ...liveSession.snapshot,
-            trackedFiles: upsertTrackedFile(
-                liveSession.snapshot.trackedFiles,
-                syncTrackedFile({
-                    identityKey: trackedPath,
-                    currentText: params.content,
-                    diffBase: previousContent ?? "",
-                    hunks:
-                        previousContent === null
-                            ? []
-                            : computeDiffHunks(
-                                  previousContent,
-                                  params.content,
-                                  trackedPath,
-                              ),
-                    isText: true,
-                    kind: previousContent === null ? "create" : "update",
-                    newText: params.content,
-                    oldText: previousContent,
-                    path: trackedPath,
-                    previousPath: null,
-                    reviewState: "pending",
-                    reversible: true,
-                    sessionId: liveSession.snapshot.sessionId,
-                    toolCallId: null,
-                    updatedAt: now,
-                    version: 1,
-                }),
             ),
-            updatedAt: now,
+            input: {
+                ...input,
+                additionalRoots,
+                worktreeId: input.worktreeId ?? null,
+            },
+            ownerWindowId,
+            persistedSnapshot,
+            projectRoot,
+            resolvedRuntime,
         };
-        this.#persistAndBroadcast(liveSession);
-
-        return {};
     }
 
-    async #loadSessionForReview(sessionId: string): Promise<LiveAcpSession> {
-        const liveSession = this.#sessions.get(sessionId);
-        if (liveSession) {
-            return liveSession;
-        }
+    async #buildWorkerScopeRefreshInputs(
+        projectId: string,
+    ): Promise<readonly AiWorkerSessionLaunchInput[]> {
+        const launches = await Promise.all(
+            [...this.#liveSessionContexts.values()]
+                .filter((context) => context.projectId === projectId)
+                .map(async (context) => {
+                    const snapshot =
+                        this.#liveSnapshots.get(context.sessionId) ??
+                        (await this.#persistence.loadSessionSnapshot(
+                            context.sessionId,
+                        ));
+                    if (!snapshot) {
+                        return null;
+                    }
 
-        const snapshot = await this.#persistence.loadSessionSnapshot(sessionId);
+                    return await this.#buildWorkerSessionLaunchInput(
+                        {
+                            additionalRoots: context.additionalRoots,
+                            projectId: context.projectId,
+                            runtimeId: context.runtimeId,
+                            sessionId: context.sessionId,
+                            title: snapshot.title,
+                            worktreeId: context.worktreeId,
+                        },
+                        context.ownerWindowId,
+                        snapshot,
+                    );
+                }),
+        );
+
+        return launches.filter(
+            (
+                launch,
+            ): launch is AiWorkerSessionLaunchInput => launch !== null,
+        );
+    }
+
+    async #buildWorkerReviewContext(
+        sessionId: string,
+    ): Promise<{
+        readonly context: AiWorkerReviewSessionContext;
+        readonly snapshot: AiSessionSnapshot;
+    }> {
+        const liveContext = this.#liveSessionContexts.get(sessionId);
+        const snapshot =
+            this.#liveSnapshots.get(sessionId) ??
+            (await this.#persistence.loadSessionSnapshot(sessionId));
         if (!snapshot) {
             throw new Error("The AI session was not found.");
         }
 
+        const projectRoot =
+            snapshot.projectId !== null
+                ? this.#projectService.getProjectRootPath(
+                      snapshot.projectId,
+                      snapshot.worktreeId ?? null,
+                  )
+                : null;
+        const additionalRoots = liveContext
+            ? liveContext.additionalRoots
+            : this.#resolveEffectiveAdditionalRoots(
+                  {
+                      additionalRoots: [],
+                      projectId: snapshot.projectId,
+                      worktreeId: snapshot.worktreeId ?? null,
+                  },
+                  projectRoot,
+              );
+
         return {
-            additionalRoots: [],
-            child: null as never,
-            closing: true,
-            connection: null as never,
-            cwd:
-                snapshot.projectId !== null
-                    ? this.#projectService.getProjectRootPath(
-                          snapshot.projectId,
-                          snapshot.worktreeId ?? null,
-                      )
-                    : process.cwd(),
-            isRestoring: false,
-            lastBroadcastSnapshot: snapshot,
-            ownerWindowId: "",
-            pendingPermission: null,
-            pendingAdditionalRoots: null,
-            pendingPersistTimer: null,
-            processedDiffPaths: new Map(),
-            projectRoot:
-                snapshot.projectId !== null
-                    ? this.#projectService.getProjectRootPath(
-                          snapshot.projectId,
-                          snapshot.worktreeId ?? null,
-                      )
-                    : null,
-            runtimeId: snapshot.runtimeId,
+            context: {
+                additionalRoots,
+                cwd: projectRoot ?? process.cwd(),
+                ownerWindowId: liveContext?.ownerWindowId ?? "",
+                projectRoot,
+                snapshot,
+            },
             snapshot,
-            terminalOutputBuffers: new Map(),
-            stderrChunks: [],
-            stderrHandler: null,
         };
     }
 
-    async #revertTrackedFile(
-        liveSession: LiveAcpSession,
-        trackedFile: AiTrackedFile,
-    ): Promise<void> {
-        if (trackedFile.kind === "move" && trackedFile.previousPath) {
-            const nextPath = this.#resolveSessionPathInfo(
-                liveSession,
-                trackedFile.path,
-            );
-            const previousPath = this.#resolveSessionPathInfo(
-                liveSession,
-                trackedFile.previousPath,
-            );
-
-            if (trackedFile.oldText !== null) {
-                if (
-                    previousPath.relativePath &&
-                    liveSession.snapshot.projectId
-                ) {
-                    await this.#projectService.saveProjectFile({
-                        content: trackedFile.oldText,
-                        projectId: liveSession.snapshot.projectId,
-                        relativePath: previousPath.relativePath,
-                        worktreeId: liveSession.snapshot.worktreeId ?? null,
-                    });
-                } else {
-                    await fs.promises.mkdir(
-                        path.dirname(previousPath.absolutePath),
-                        {
-                            recursive: true,
-                        },
-                    );
-                    await fs.promises.writeFile(
-                        previousPath.absolutePath,
-                        trackedFile.oldText,
-                        "utf8",
-                    );
-                }
-            }
-
-            if (nextPath.relativePath && liveSession.snapshot.projectId) {
-                if (fs.existsSync(nextPath.absolutePath)) {
-                    await this.#projectService.deleteProjectEntry({
-                        projectId: liveSession.snapshot.projectId,
-                        relativePath: nextPath.relativePath,
-                        worktreeId: liveSession.snapshot.worktreeId ?? null,
-                    });
-                }
-            } else {
-                await fs.promises.rm(nextPath.absolutePath, { force: true });
-            }
-
-            return;
+    #persistReviewMutation(
+        previousSnapshot: AiSessionSnapshot,
+        result: AiWorkerReviewMutationResult,
+    ): void {
+        this.#persistence.saveSessionSnapshot(result.snapshot);
+        if (this.#liveSessionContexts.has(result.snapshot.sessionId)) {
+            this.#liveSnapshots.set(result.snapshot.sessionId, result.snapshot);
         }
-
-        const resolvedPath = this.#resolveSessionPathInfo(
-            liveSession,
-            trackedFile.path,
-        );
-
-        if (trackedFile.kind === "create") {
-            if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
-                if (fs.existsSync(resolvedPath.absolutePath)) {
-                    await this.#projectService.deleteProjectEntry({
-                        projectId: liveSession.snapshot.projectId,
-                        relativePath: resolvedPath.relativePath,
-                        worktreeId: liveSession.snapshot.worktreeId ?? null,
-                    });
-                }
-                return;
-            }
-
-            await fs.promises.rm(resolvedPath.absolutePath, { force: true });
-            return;
-        }
-
-        if (trackedFile.oldText === null) {
-            return;
-        }
-
-        if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
-            await this.#projectService.saveProjectFile({
-                content: trackedFile.oldText,
-                projectId: liveSession.snapshot.projectId,
-                relativePath: resolvedPath.relativePath,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            });
-            return;
-        }
-
-        await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
-            recursive: true,
-        });
-        await fs.promises.writeFile(
-            resolvedPath.absolutePath,
-            trackedFile.oldText,
-            "utf8",
+        this.#onSessionSnapshot(
+            result.ownerWindowId,
+            buildAiSessionUpdate(previousSnapshot, result.snapshot),
         );
     }
 
-    async #applyTrackedFileText(
-        liveSession: LiveAcpSession,
-        trackedFile: AiTrackedFile,
-    ): Promise<void> {
-        if (trackedFile.newText === null) {
-            return;
-        }
-
-        const resolvedPath = this.#resolveSessionPathInfo(
-            liveSession,
-            trackedFile.path,
+    async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
         );
-
-        if (resolvedPath.relativePath && liveSession.snapshot.projectId) {
-            await this.#projectService.saveProjectFile({
-                content: trackedFile.newText,
-                projectId: liveSession.snapshot.projectId,
-                relativePath: resolvedPath.relativePath,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            });
-            return;
-        }
-
-        await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
-            recursive: true,
+        const result = await this.#requireAiWorker().keepTrackedFile({
+            context: reviewSession.context,
+            input,
         });
-        await fs.promises.writeFile(
-            resolvedPath.absolutePath,
-            trackedFile.newText,
-            "utf8",
-        );
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
-    async #refreshLiveSessionScopes(
-        sessionId: string,
-        liveSession: LiveAcpSession,
-    ): Promise<void> {
-        const projectId = liveSession.snapshot.projectId;
-        if (!projectId) {
-            liveSession.pendingAdditionalRoots = null;
-            return;
-        }
-
-        const projectRoot = this.#resolveProjectRootPathSafe(
-            projectId,
-            liveSession.snapshot.worktreeId ?? null,
+    async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
         );
-        if (!projectRoot) {
-            return;
-        }
-
-        const additionalRoots = this.#resolveEffectiveAdditionalRoots(
-            {
-                additionalRoots: [],
-                projectId,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            },
-            projectRoot,
-        );
-
-        if (sameAdditionalRoots(liveSession.additionalRoots, additionalRoots)) {
-            liveSession.pendingAdditionalRoots = null;
-            return;
-        }
-
-        if (isBusyAiSessionStatus(liveSession.snapshot.status)) {
-            liveSession.pendingAdditionalRoots = additionalRoots;
-            return;
-        }
-
-        liveSession.pendingAdditionalRoots = null;
-        await this.#ensureRuntimeSession(
-            {
-                additionalRoots,
-                projectId,
-                runtimeId: liveSession.runtimeId,
-                sessionId,
-                title: liveSession.snapshot.title,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            },
-            liveSession.ownerWindowId,
-        );
+        const result = await this.#requireAiWorker().rejectTrackedFile({
+            context: reviewSession.context,
+            input,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
-    #schedulePendingScopeRefresh(sessionId: string): void {
-        const liveSession = this.#sessions.get(sessionId);
-        if (
-            !liveSession?.pendingAdditionalRoots ||
-            isBusyAiSessionStatus(liveSession.snapshot.status)
-        ) {
-            return;
-        }
-
-        const nextRoots = liveSession.pendingAdditionalRoots;
-        if (sameAdditionalRoots(liveSession.additionalRoots, nextRoots)) {
-            liveSession.pendingAdditionalRoots = null;
-            return;
-        }
-
-        liveSession.pendingAdditionalRoots = null;
-        void this.#ensureRuntimeSession(
-            {
-                additionalRoots: nextRoots,
-                projectId: liveSession.snapshot.projectId,
-                runtimeId: liveSession.runtimeId,
-                sessionId,
-                title: liveSession.snapshot.title,
-                worktreeId: liveSession.snapshot.worktreeId ?? null,
-            },
-            liveSession.ownerWindowId,
-        ).catch(() => {
-            const currentSession = this.#sessions.get(sessionId);
-            if (!currentSession) {
-                return;
-            }
-
-            currentSession.pendingAdditionalRoots = nextRoots;
+    async keepTrackedFileHunks(
+        input: AiTrackedFileHunkMutationInput,
+    ): Promise<void> {
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
+        );
+        const result = await this.#requireAiWorker().keepTrackedFileHunks({
+            context: reviewSession.context,
+            input,
         });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
+    }
+
+    async rejectTrackedFileHunks(
+        input: AiTrackedFileHunkMutationInput,
+    ): Promise<void> {
+        const reviewSession = await this.#buildWorkerReviewContext(
+            input.sessionId,
+        );
+        const result = await this.#requireAiWorker().rejectTrackedFileHunks({
+            context: reviewSession.context,
+            input,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
+    }
+
+    async keepAllTrackedFiles(sessionId: string): Promise<void> {
+        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
+        const result = await this.#requireAiWorker().keepAllTrackedFiles({
+            context: reviewSession.context,
+            input: sessionId,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
+    }
+
+    async rejectAllTrackedFiles(sessionId: string): Promise<void> {
+        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
+        const result = await this.#requireAiWorker().rejectAllTrackedFiles({
+            context: reviewSession.context,
+            input: sessionId,
+        });
+        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     #resolveEffectiveAdditionalRoots(
@@ -2017,64 +1168,6 @@ export class AiService {
             .map((worktree) => worktree.rootPath);
     }
 
-    #resolveProjectRootPathSafe(
-        projectId: string,
-        worktreeId: string | null,
-    ): string | null {
-        try {
-            return this.#projectService.getProjectRootPath(
-                projectId,
-                worktreeId,
-            );
-        } catch (error) {
-            debugBenignError(
-                "ai.service.resolveProjectRootPathSafe",
-                error,
-            );
-            return null;
-        }
-    }
-
-    #persistAndBroadcast(liveSession: LiveAcpSession): void {
-        if (shouldFlushLiveSessionImmediately(liveSession.snapshot)) {
-            this.#flushLiveSessionPersistence(liveSession);
-            return;
-        }
-
-        if (liveSession.pendingPersistTimer !== null) {
-            return;
-        }
-
-        liveSession.pendingPersistTimer = setTimeout(() => {
-            liveSession.pendingPersistTimer = null;
-            this.#flushLiveSessionPersistence(liveSession);
-        }, AI_SESSION_STREAMING_FLUSH_MS);
-    }
-
-    #flushLiveSessionPersistence(
-        liveSession: LiveAcpSession,
-        options: {
-            readonly broadcast?: boolean;
-        } = {},
-    ): void {
-        if (liveSession.pendingPersistTimer !== null) {
-            clearTimeout(liveSession.pendingPersistTimer);
-            liveSession.pendingPersistTimer = null;
-        }
-
-        this.#persistence.saveSessionSnapshot(liveSession.snapshot);
-        if (options.broadcast !== false) {
-            this.#onSessionSnapshot(
-                liveSession.ownerWindowId,
-                buildAiSessionUpdate(
-                    liveSession.lastBroadcastSnapshot,
-                    liveSession.snapshot,
-                ),
-            );
-        }
-        liveSession.lastBroadcastSnapshot = liveSession.snapshot;
-    }
-
     #resolveDesiredSelections(
         runtimeId: AiRuntimeId,
         persistedSnapshot: Pick<
@@ -2107,199 +1200,20 @@ export class AiService {
         );
     }
 
-    async #applyStoredSessionSelections(
-        liveSession: LiveAcpSession,
-        desiredSelections: Pick<
-            AiSessionSnapshot,
-            "configOptions" | "modeId" | "modelId"
-        > & {
-            readonly preferredConfigOptions?: Record<string, boolean | string>;
-        },
-    ): Promise<void> {
-        const desiredModeId = desiredSelections.modeId?.trim() ?? "";
-        const desiredModelId = desiredSelections.modelId?.trim() ?? "";
-        const modeConfig = getModeConfigOption(
-            liveSession.snapshot.configOptions,
-        );
-        const modelConfig = getModelConfigOption(
-            liveSession.snapshot.configOptions,
-        );
-
-        if (
-            desiredModeId &&
-            desiredModeId !== liveSession.snapshot.modeId &&
-            modeConfig?.type === "select" &&
-            hasSelectConfigValue(modeConfig, desiredModeId)
-        ) {
-            await this.#setSessionConfigOptionOnLiveSession(
-                liveSession,
-                modeConfig.id,
-                desiredModeId,
-            );
-        } else if (
-            desiredModeId &&
-            desiredModeId !== liveSession.snapshot.modeId &&
-            liveSession.snapshot.modes.some((mode) => mode.id === desiredModeId)
-        ) {
-            await this.#setSessionModeOnLiveSession(liveSession, desiredModeId);
-        }
-
-        if (
-            desiredModelId &&
-            desiredModelId !== liveSession.snapshot.modelId &&
-            modelConfig?.type === "select" &&
-            hasSelectConfigValue(modelConfig, desiredModelId)
-        ) {
-            await this.#setSessionConfigOptionOnLiveSession(
-                liveSession,
-                modelConfig.id,
-                desiredModelId,
-            );
-        } else if (
-            desiredModelId &&
-            desiredModelId !== liveSession.snapshot.modelId &&
-            liveSession.snapshot.models.some(
-                (model) => model.id === desiredModelId,
-            )
-        ) {
-            await this.#setSessionModelOnLiveSession(
-                liveSession,
-                desiredModelId,
-            );
-        }
-
-        const desiredConfigValues = new Map<string, boolean | string>();
-        for (const desiredOption of desiredSelections.configOptions) {
-            desiredConfigValues.set(desiredOption.id, desiredOption.value);
-        }
-
-        for (const [optionId, value] of Object.entries(
-            desiredSelections.preferredConfigOptions ?? {},
-        )) {
-            if (!desiredConfigValues.has(optionId)) {
-                desiredConfigValues.set(optionId, value);
-            }
-        }
-
-        for (const [optionId, desiredValue] of desiredConfigValues.entries()) {
-            const desiredOption = desiredSelections.configOptions.find(
-                (option) => option.id === optionId,
-            );
-            if (
-                desiredOption &&
-                (desiredOption.category === "mode" ||
-                    desiredOption.category === "model")
-            ) {
-                continue;
-            }
-
-            const currentOption = liveSession.snapshot.configOptions.find(
-                (option) => option.id === optionId,
-            );
-            if (!currentOption) {
-                continue;
-            }
-
-            if (desiredOption && currentOption.type !== desiredOption.type) {
-                continue;
-            }
-
-            if (
-                currentOption.type === "boolean" &&
-                typeof desiredValue === "boolean" &&
-                currentOption.value !== desiredValue
-            ) {
-                await this.#setSessionConfigOptionOnLiveSession(
-                    liveSession,
-                    optionId,
-                    desiredValue,
-                );
-            }
-
-            if (
-                currentOption.type === "select" &&
-                typeof desiredValue === "string" &&
-                currentOption.value !== desiredValue &&
-                hasSelectConfigValue(currentOption, desiredValue)
-            ) {
-                await this.#setSessionConfigOptionOnLiveSession(
-                    liveSession,
-                    optionId,
-                    desiredValue,
-                );
-            }
-        }
-    }
-
-    async #setSessionModeOnLiveSession(
-        liveSession: LiveAcpSession,
-        modeId: string,
-    ): Promise<void> {
-        await liveSession.connection.setSessionMode({
-            modeId,
-            sessionId: this.#requireRuntimeSessionId(liveSession),
-        });
-
-        liveSession.snapshot = setModeOnSnapshot(liveSession.snapshot, modeId);
-        this.#persistAndBroadcast(liveSession);
-    }
-
-    async #setSessionModelOnLiveSession(
-        liveSession: LiveAcpSession,
-        modelId: string,
-    ): Promise<void> {
-        await liveSession.connection.unstable_setSessionModel({
-            modelId,
-            sessionId: this.#requireRuntimeSessionId(liveSession),
-        });
-
-        liveSession.snapshot = setModelOnSnapshot(
-            liveSession.snapshot,
-            modelId,
-        );
-        this.#persistAndBroadcast(liveSession);
-    }
-
-    async #setSessionConfigOptionOnLiveSession(
-        liveSession: LiveAcpSession,
-        optionId: string,
-        value: boolean | string,
-    ): Promise<void> {
-        const response =
-            typeof value === "boolean"
-                ? await liveSession.connection.setSessionConfigOption({
-                      configId: optionId,
-                      sessionId: this.#requireRuntimeSessionId(liveSession),
-                      type: "boolean",
-                      value,
-                  })
-                : await liveSession.connection.setSessionConfigOption({
-                      configId: optionId,
-                      sessionId: this.#requireRuntimeSessionId(liveSession),
-                      value,
-                  });
-
-        liveSession.snapshot = applySessionCatalogToSnapshot(
-            {
-                ...liveSession.snapshot,
-                updatedAt: new Date().toISOString(),
-            },
-            {
-                configOptions: response.configOptions,
-            },
-        );
-        this.#persistAndBroadcast(liveSession);
-    }
-
     async #updateSessionSnapshot(
         sessionId: string,
         mutate: (snapshot: AiSessionSnapshot) => AiSessionSnapshot,
     ): Promise<AiSessionSnapshot> {
-        const liveSession = this.#sessions.get(sessionId);
-        if (liveSession) {
-            liveSession.snapshot = mutate(liveSession.snapshot);
-            this.#persistAndBroadcast(liveSession);
-            return liveSession.snapshot;
+        const liveSnapshot = this.#liveSnapshots.get(sessionId);
+        if (liveSnapshot) {
+            const nextSnapshot = mutate(liveSnapshot);
+            this.#liveSnapshots.set(sessionId, nextSnapshot);
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
+            this.#onSessionSnapshot(
+                this.#liveSessionContexts.get(sessionId)?.ownerWindowId ?? "",
+                buildAiSessionUpdate(liveSnapshot, nextSnapshot),
+            );
+            return nextSnapshot;
         }
 
         const snapshot = await this.#persistence.loadSessionSnapshot(sessionId);
@@ -2314,146 +1228,6 @@ export class AiService {
             snapshot: nextSnapshot,
         });
         return nextSnapshot;
-    }
-
-    #resolvePendingPermission(
-        liveSession: LiveAcpSession,
-        response: RequestPermissionResponse | null,
-    ): void {
-        if (!liveSession.pendingPermission) {
-            return;
-        }
-
-        liveSession.pendingPermission.resolve(
-            response ?? {
-                _meta: null,
-                outcome: {
-                    outcome: "cancelled",
-                },
-            },
-        );
-        liveSession.pendingPermission = null;
-    }
-
-    #requireRuntimeSessionId(liveSession: LiveAcpSession): string {
-        if (!liveSession.snapshot.runtimeSessionId) {
-            throw new Error("The ACP session is not initialized yet.");
-        }
-
-        return liveSession.snapshot.runtimeSessionId;
-    }
-
-    #resolveReadableSessionPath(
-        liveSession: LiveAcpSession,
-        candidatePath: string,
-    ): string {
-        return this.#resolveSessionPathInfo(liveSession, candidatePath, {
-            allowAdditionalRoots: true,
-        }).absolutePath;
-    }
-
-    #resolveSessionPathInfo(
-        liveSession: Pick<
-            LiveAcpSession,
-            "additionalRoots" | "cwd" | "projectRoot" | "runtimeId" | "snapshot"
-        >,
-        candidatePath: string,
-        options: {
-            readonly allowAdditionalRoots?: boolean;
-        } = {},
-    ): {
-        readonly absolutePath: string;
-        readonly displayPath: string;
-        readonly relativePath: string | null;
-    } {
-        const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
-        const absolutePath = path.isAbsolute(candidatePath)
-            ? path.resolve(candidatePath)
-            : path.resolve(scopeRoot, candidatePath);
-        const insidePrimaryScope =
-            absolutePath === scopeRoot ||
-            absolutePath.startsWith(`${scopeRoot}${path.sep}`);
-        const insideAdditionalRoot =
-            options.allowAdditionalRoots === true &&
-            liveSession.additionalRoots.some((rootPath) =>
-                isPathInsideRoot(absolutePath, rootPath),
-            );
-
-        if (!insidePrimaryScope && !insideAdditionalRoot) {
-            throw new Error(
-                `${getRuntimeDisplayName(liveSession.runtimeId)} attempted to access a path outside the project.`,
-            );
-        }
-
-        const relativePath =
-            insidePrimaryScope &&
-            absolutePath.startsWith(`${scopeRoot}${path.sep}`)
-                ? toPosixPath(path.relative(scopeRoot, absolutePath))
-                : null;
-
-        return {
-            absolutePath,
-            displayPath: relativePath ?? absolutePath,
-            relativePath,
-        };
-    }
-
-    #handleProcessExit(
-        sessionId: string,
-        code: number | null,
-        signal: NodeJS.Signals | null,
-    ): void {
-        const liveSession = this.#sessions.get(sessionId);
-        if (!liveSession) {
-            return;
-        }
-
-        this.#sessions.delete(sessionId);
-        this.#detachChildStreams(liveSession);
-        if (liveSession.closing) {
-            return;
-        }
-
-        const stderrText = liveSession.stderrChunks
-            ? getRecentStderrText(liveSession.stderrChunks)
-            : "";
-        const lastError =
-            stderrText ||
-            `${getRuntimeDisplayName(liveSession.runtimeId)} ACP ended unexpectedly (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
-        this.#invalidateRuntimeAuthIfNeeded(liveSession.runtimeId, lastError);
-        liveSession.snapshot = finalizeStreamingMessages({
-            ...liveSession.snapshot,
-            lastError,
-            pendingPermission: null,
-            pendingUserInput: null,
-            status: "error",
-            updatedAt: new Date().toISOString(),
-        });
-        this.#persistAndBroadcast(liveSession);
-        this.#resolvePendingPermission(liveSession, null);
-    }
-
-    #disposeLiveSession(sessionId: string, liveSession: LiveAcpSession): void {
-        this.#sessions.delete(sessionId);
-        liveSession.closing = true;
-        this.#flushLiveSessionPersistence(liveSession, {
-            broadcast: false,
-        });
-        this.#resolvePendingPermission(liveSession, null);
-        this.#detachChildStreams(liveSession);
-        liveSession.child.kill();
-        liveSession.child.stdin?.destroy();
-        liveSession.child.stdout?.destroy();
-        liveSession.child.stderr?.destroy();
-        liveSession.terminalOutputBuffers.clear();
-    }
-
-    #detachChildStreams(liveSession: LiveAcpSession): void {
-        const handler = liveSession.stderrHandler;
-        if (handler) {
-            liveSession.child.stderr?.off("data", handler);
-            liveSession.stderrHandler = null;
-        }
     }
 
     #resolveRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
@@ -2709,89 +1483,6 @@ export class AiService {
     }
 }
 
-function shouldFlushLiveSessionImmediately(
-    snapshot: AiSessionSnapshot,
-): boolean {
-    return (
-        snapshot.status !== "streaming" ||
-        snapshot.pendingPermission !== null ||
-        snapshot.pendingUserInput !== null ||
-        snapshot.lastError !== null
-    );
-}
-
-function buildAiSessionUpdate(
-    previousSnapshot: AiSessionSnapshot | null,
-    nextSnapshot: AiSessionSnapshot,
-): AiSessionUpdate {
-    if (!previousSnapshot) {
-        return {
-            kind: "snapshot",
-            snapshot: nextSnapshot,
-        };
-    }
-
-    const changes = createAiSessionPatchChanges(previousSnapshot, nextSnapshot);
-
-    if (Object.keys(changes).length === 0) {
-        return {
-            kind: "snapshot",
-            snapshot: nextSnapshot,
-        };
-    }
-
-    return {
-        kind: "patch",
-        patch: {
-            changes,
-            runtimeId: nextSnapshot.runtimeId,
-            sessionId: nextSnapshot.sessionId,
-        },
-    };
-}
-
-function createAiSessionPatchChanges(
-    previousSnapshot: AiSessionSnapshot,
-    nextSnapshot: AiSessionSnapshot,
-): Partial<Omit<AiSessionSnapshot, "runtimeId" | "sessionId">> {
-    const changes: Record<string, unknown> = {};
-
-    const patchableKeys = [
-        "availableCommands",
-        "configOptions",
-        "lastError",
-        "messages",
-        "modeId",
-        "modes",
-        "modelId",
-        "models",
-        "pendingPermission",
-        "pendingUserInput",
-        "plan",
-        "projectId",
-        "runtimeSessionId",
-        "status",
-        "title",
-        "toolActivity",
-        "trackedFiles",
-        "updatedAt",
-        "worktreeId",
-    ] satisfies readonly (keyof Omit<
-        AiSessionSnapshot,
-        "runtimeId" | "sessionId"
-    >)[];
-
-    for (const key of patchableKeys) {
-        if (previousSnapshot[key] !== nextSnapshot[key]) {
-            changes[key] = nextSnapshot[key];
-        }
-    }
-
-    return changes as Partial<
-        Omit<AiSessionSnapshot, "runtimeId" | "sessionId">
-    >;
-}
-
 function normalizeOptionalText(value: string | null): string | null {
     const trimmed = value?.trim() ?? "";
     return trimmed.length > 0 ? trimmed : null;
@@ -2838,1532 +1529,6 @@ function resolveCodexSecretBundle(
         codexApiKey,
         openaiApiKey,
     };
-}
-
-function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "gemini":
-            return "Gemini";
-        case "kilo":
-            return "Kilo";
-        case "codex":
-        default:
-            return "Codex";
-    }
-}
-
-function applySessionCatalogToSnapshot(
-    snapshot: AiSessionSnapshot,
-    payload: AcpSessionCatalogPayload,
-): AiSessionSnapshot {
-    const configOptions =
-        payload.configOptions !== undefined
-            ? mapSessionConfigOptions(payload.configOptions)
-            : snapshot.configOptions;
-    const modes =
-        payload.modes !== undefined
-            ? mapSessionModes(payload.modes, configOptions)
-            : snapshot.modes.length > 0
-              ? snapshot.modes
-              : buildModesFromConfigOptions(configOptions);
-    const models =
-        payload.models !== undefined
-            ? mapSessionModels(payload.models, configOptions)
-            : snapshot.models.length > 0
-              ? snapshot.models
-              : buildModelsFromConfigOptions(configOptions);
-    const modeId =
-        payload.modes !== undefined || payload.configOptions !== undefined
-            ? deriveModeId(payload.modes, configOptions, snapshot.modeId)
-            : snapshot.modeId;
-    const modelId =
-        payload.models !== undefined || payload.configOptions !== undefined
-            ? deriveModelId(payload.models, configOptions, snapshot.modelId)
-            : snapshot.modelId;
-
-    return {
-        ...snapshot,
-        configOptions,
-        modeId,
-        modes,
-        modelId,
-        models,
-    };
-}
-
-function mapSessionModes(
-    state: SessionModeState | null | undefined,
-    configOptions: readonly AiSessionConfigOption[],
-): readonly AiSessionMode[] {
-    if (state?.availableModes?.length) {
-        return state.availableModes.map((mode) => ({
-            description: mode.description ?? null,
-            id: mode.id,
-            name: mode.name,
-        }));
-    }
-
-    return buildModesFromConfigOptions(configOptions);
-}
-
-function mapSessionModels(
-    state: SessionModelState | null | undefined,
-    configOptions: readonly AiSessionConfigOption[],
-): readonly AiSessionModel[] {
-    if (state?.availableModels?.length) {
-        return state.availableModels.map((model) => ({
-            description: model.description ?? null,
-            id: model.modelId,
-            name: model.name,
-        }));
-    }
-
-    return buildModelsFromConfigOptions(configOptions);
-}
-
-function mapSessionConfigOptions(
-    options: readonly SessionConfigOption[] | null | undefined,
-): readonly AiSessionConfigOption[] {
-    if (!options?.length) {
-        return [];
-    }
-
-    return options.map((option) =>
-        option.type === "boolean"
-            ? {
-                  category: mapConfigOptionCategory(option.category),
-                  description: option.description ?? null,
-                  id: option.id,
-                  label: option.name,
-                  type: "boolean",
-                  value: option.currentValue,
-              }
-            : {
-                  category: mapConfigOptionCategory(option.category),
-                  description: option.description ?? null,
-                  id: option.id,
-                  label: option.name,
-                  options: mapSessionSelectOptions(option),
-                  type: "select",
-                  value: option.currentValue,
-              },
-    );
-}
-
-function mapSessionSelectOptions(
-    option: Extract<SessionConfigOption, { type: "select" }>,
-): readonly {
-    description: string | null;
-    groupLabel: string | null;
-    label: string;
-    value: string;
-}[] {
-    const items: {
-        description: string | null;
-        groupLabel: string | null;
-        label: string;
-        value: string;
-    }[] = [];
-
-    for (const entry of option.options) {
-        if ("group" in entry) {
-            for (const childOption of entry.options) {
-                items.push({
-                    description: childOption.description ?? null,
-                    groupLabel: entry.name,
-                    label: childOption.name,
-                    value: childOption.value,
-                });
-            }
-            continue;
-        }
-
-        items.push({
-            description: entry.description ?? null,
-            groupLabel: null,
-            label: entry.name,
-            value: entry.value,
-        });
-    }
-
-    return items;
-}
-
-function mapConfigOptionCategory(
-    category: string | null | undefined,
-): AiSessionConfigOption["category"] {
-    if (category === "mode" || category === "model") {
-        return category;
-    }
-
-    if (category === "thought_level") {
-        return "reasoning";
-    }
-
-    return "other";
-}
-
-function deriveModeId(
-    state: SessionModeState | null | undefined,
-    configOptions: readonly AiSessionConfigOption[],
-    fallback: string | null,
-): string | null {
-    const modeConfig = getModeConfigOption(configOptions);
-    if (modeConfig?.type === "select" && modeConfig.value.trim()) {
-        return modeConfig.value;
-    }
-
-    if (state?.currentModeId?.trim()) {
-        return state.currentModeId;
-    }
-
-    return fallback;
-}
-
-function deriveModelId(
-    state: SessionModelState | null | undefined,
-    configOptions: readonly AiSessionConfigOption[],
-    fallback: string | null,
-): string | null {
-    const modelConfig = getModelConfigOption(configOptions);
-    if (modelConfig?.type === "select" && modelConfig.value.trim()) {
-        return modelConfig.value;
-    }
-
-    if (state?.currentModelId?.trim()) {
-        return state.currentModelId;
-    }
-
-    return fallback;
-}
-
-function buildModesFromConfigOptions(
-    configOptions: readonly AiSessionConfigOption[],
-): readonly AiSessionMode[] {
-    const modeConfig = getModeConfigOption(configOptions);
-    if (!modeConfig || modeConfig.type !== "select") {
-        return [];
-    }
-
-    return modeConfig.options.map((option) => ({
-        description: option.description,
-        id: option.value,
-        name: option.label,
-    }));
-}
-
-function buildModelsFromConfigOptions(
-    configOptions: readonly AiSessionConfigOption[],
-): readonly AiSessionModel[] {
-    const modelConfig = getModelConfigOption(configOptions);
-    if (!modelConfig || modelConfig.type !== "select") {
-        return [];
-    }
-
-    return modelConfig.options.map((option) => ({
-        description: option.description,
-        id: option.value,
-        name: option.label,
-    }));
-}
-
-function getModeConfigOption(
-    configOptions: readonly AiSessionConfigOption[],
-): AiSessionConfigOption | null {
-    return (
-        configOptions.find(
-            (option) =>
-                option.category === "mode" ||
-                option.id.toLowerCase() === "mode",
-        ) ?? null
-    );
-}
-
-function getModelConfigOption(
-    configOptions: readonly AiSessionConfigOption[],
-): AiSessionConfigOption | null {
-    return (
-        configOptions.find(
-            (option) =>
-                option.category === "model" ||
-                option.id.toLowerCase() === "model",
-        ) ?? null
-    );
-}
-
-function hasSelectConfigValue(
-    option: AiSessionConfigOption,
-    value: string,
-): boolean {
-    return (
-        option.type === "select" &&
-        option.options.some((candidate) => candidate.value === value)
-    );
-}
-
-function setModeOnSnapshot(
-    snapshot: AiSessionSnapshot,
-    modeId: string,
-    updatedAt: string = new Date().toISOString(),
-): AiSessionSnapshot {
-    return {
-        ...snapshot,
-        configOptions: snapshot.configOptions.map((option) =>
-            option.type === "select" &&
-            (option.category === "mode" ||
-                option.id.toLowerCase() === "mode") &&
-            hasSelectConfigValue(option, modeId)
-                ? {
-                      ...option,
-                      value: modeId,
-                  }
-                : option,
-        ),
-        modeId,
-        updatedAt,
-    };
-}
-
-function setModelOnSnapshot(
-    snapshot: AiSessionSnapshot,
-    modelId: string,
-    updatedAt: string = new Date().toISOString(),
-): AiSessionSnapshot {
-    return {
-        ...snapshot,
-        configOptions: snapshot.configOptions.map((option) =>
-            option.type === "select" &&
-            (option.category === "model" ||
-                option.id.toLowerCase() === "model") &&
-            hasSelectConfigValue(option, modelId)
-                ? {
-                      ...option,
-                      value: modelId,
-                  }
-                : option,
-        ),
-        modelId,
-        updatedAt,
-    };
-}
-
-function setTitleOnSnapshot(
-    snapshot: AiSessionSnapshot,
-    title: string,
-    updatedAt: string = new Date().toISOString(),
-): AiSessionSnapshot {
-    return {
-        ...snapshot,
-        title,
-        updatedAt,
-    };
-}
-
-function resolveSessionTitleOnPrompt(params: {
-    readonly currentTitle: string;
-    readonly fallbackTitle: string;
-    readonly displayContent: string;
-    readonly hasPriorUserMessage: boolean;
-}): string {
-    const { currentTitle, fallbackTitle, displayContent, hasPriorUserMessage } =
-        params;
-    // Once the user renames the chat, preserve it — the client's input.title
-    // can lag behind a rename and would otherwise overwrite it on every prompt.
-    if (currentTitle && !isDefaultChatTitle(currentTitle)) {
-        return currentTitle;
-    }
-    if (!hasPriorUserMessage) {
-        const inferred = inferChatTitleFromPrompt(displayContent);
-        if (inferred) return inferred;
-    }
-    return fallbackTitle || currentTitle;
-}
-
-function setConfigOptionOnSnapshot(
-    snapshot: AiSessionSnapshot,
-    optionId: string,
-    value: boolean | string,
-    updatedAt: string = new Date().toISOString(),
-): AiSessionSnapshot {
-    const nextConfigOptions = snapshot.configOptions.map((option) =>
-        option.id !== optionId
-            ? option
-            : option.type === "boolean" && typeof value === "boolean"
-              ? {
-                    ...option,
-                    value,
-                }
-              : option.type === "select" &&
-                  typeof value === "string" &&
-                  hasSelectConfigValue(option, value)
-                ? {
-                      ...option,
-                      value,
-                  }
-                : option,
-    );
-    const updatedOption =
-        nextConfigOptions.find((option) => option.id === optionId) ?? null;
-
-    return {
-        ...snapshot,
-        configOptions: nextConfigOptions,
-        modeId:
-            updatedOption?.type === "select" &&
-            updatedOption.category === "mode" &&
-            typeof value === "string"
-                ? value
-                : snapshot.modeId,
-        modelId:
-            updatedOption?.type === "select" &&
-            updatedOption.category === "model" &&
-            typeof value === "string"
-                ? value
-                : snapshot.modelId,
-        updatedAt,
-    };
-}
-
-function appendChunkToSnapshot(
-    snapshot: AiSessionSnapshot,
-    kind: "assistant" | "thinking",
-    content: string,
-    messageId: string | null,
-): AiSessionSnapshot {
-    const messages = [...snapshot.messages];
-    const lastMessage = messages.at(-1);
-
-    if (
-        lastMessage &&
-        lastMessage.kind === kind &&
-        lastMessage.status === "streaming" &&
-        (!messageId || lastMessage.id === messageId)
-    ) {
-        messages[messages.length - 1] = {
-            ...lastMessage,
-            content: `${lastMessage.content}${content}`,
-        };
-
-        return {
-            ...snapshot,
-            messages,
-        };
-    }
-
-    return {
-        ...snapshot,
-        messages: [
-            ...finalizeStreamingMessages(snapshot).messages,
-            {
-                attachments: [],
-                content,
-                createdAt: new Date().toISOString(),
-                id: messageId ?? randomUUID(),
-                kind,
-                status: "streaming",
-            },
-        ],
-    };
-}
-
-function appendContentBlockToSnapshot(
-    snapshot: AiSessionSnapshot,
-    kind: "assistant" | "thinking",
-    content: ContentBlock,
-    messageId: string | null,
-): AiSessionSnapshot {
-    if (content.type === "image") {
-        return appendAttachmentToSnapshot(
-            snapshot,
-            kind,
-            imageContentToAttachment(content, messageId),
-            messageId,
-        );
-    }
-
-    return appendChunkToSnapshot(
-        snapshot,
-        kind,
-        formatContentBlock(content),
-        messageId,
-    );
-}
-
-function appendAttachmentToSnapshot(
-    snapshot: AiSessionSnapshot,
-    kind: "assistant" | "thinking",
-    attachment: AiImageAttachment,
-    messageId: string | null,
-): AiSessionSnapshot {
-    const messages = [...snapshot.messages];
-    const lastMessage = messages.at(-1);
-
-    if (
-        lastMessage &&
-        lastMessage.kind === kind &&
-        lastMessage.status === "streaming" &&
-        (!messageId || lastMessage.id === messageId)
-    ) {
-        messages[messages.length - 1] = {
-            ...lastMessage,
-            attachments: [...lastMessage.attachments, attachment],
-        };
-
-        return {
-            ...snapshot,
-            messages,
-        };
-    }
-
-    return {
-        ...snapshot,
-        messages: [
-            ...finalizeStreamingMessages(snapshot).messages,
-            {
-                attachments: [attachment],
-                content: "",
-                createdAt: new Date().toISOString(),
-                id: messageId ?? randomUUID(),
-                kind,
-                status: "streaming",
-            },
-        ],
-    };
-}
-
-function finalizeStreamingMessages(
-    snapshot: AiSessionSnapshot,
-): AiSessionSnapshot {
-    return {
-        ...snapshot,
-        messages: snapshot.messages.map((message) =>
-            message.status === "streaming"
-                ? {
-                      ...message,
-                      status: "completed",
-                  }
-                : message,
-        ),
-    };
-}
-
-const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
-
-function mapToolCallUpdate(
-    liveSession: Pick<
-        LiveAcpSession,
-        "cwd" | "projectRoot" | "processedDiffPaths" | "terminalOutputBuffers"
-    >,
-    snapshot: AiSessionSnapshot,
-    update: ToolCall | ToolCallUpdate,
-    updateKind: DiffResolutionContext["sessionUpdate"],
-    updatedAt: string,
-): AiSessionSnapshot {
-    const existing =
-        snapshot.toolActivity.find(
-            (candidate) => candidate.id === update.toolCallId,
-        ) ?? null;
-    const nextTitle =
-        typeof update.title === "string" && update.title.trim().length > 0
-            ? update.title.trim()
-            : (existing?.title ?? null);
-
-    if (shouldSuppressToolActivityUpdate(update, nextTitle)) {
-        return snapshot;
-    }
-
-    const toolKind = update.kind ?? existing?.kind ?? "unknown";
-    const content = update.content ?? null;
-    const pendingUserInput = parseUserInputRequest(snapshot, update, updatedAt);
-
-    let exitCode: number | null = existing?.exitCode ?? null;
-    let terminalOutput: string | null = existing?.terminalOutput ?? null;
-
-    if (isRecord(update._meta)) {
-        if (isRecord(update._meta.terminal_output)) {
-            const data = (update._meta.terminal_output as { data: string })
-                .data;
-            if (typeof data === "string") {
-                const terminalId = (
-                    update._meta.terminal_output as { terminal_id: string }
-                ).terminal_id;
-                const prev =
-                    liveSession.terminalOutputBuffers.get(terminalId) ?? "";
-                let next = prev + data;
-                if (next.length > TERMINAL_OUTPUT_MAX_LENGTH) {
-                    next = next.slice(-TERMINAL_OUTPUT_MAX_LENGTH);
-                }
-                liveSession.terminalOutputBuffers.set(terminalId, next);
-                terminalOutput = next;
-            }
-        }
-
-        if (isRecord(update._meta.terminal_exit)) {
-            const termExit = update._meta.terminal_exit as {
-                terminal_id: string;
-                exit_code: number;
-                signal: string | null;
-            };
-            if (typeof termExit.exit_code === "number") {
-                exitCode = termExit.exit_code;
-            }
-            const finalOutput = liveSession.terminalOutputBuffers.get(
-                termExit.terminal_id,
-            );
-            if (finalOutput !== undefined) {
-                terminalOutput = finalOutput;
-                liveSession.terminalOutputBuffers.delete(termExit.terminal_id);
-            }
-        }
-    }
-
-    const normalizeDiffPath = (candidatePath: string) =>
-        normalizeTrackedDiffPath(liveSession, candidatePath);
-    const nextActivity = {
-        createdAt: existing?.createdAt ?? updatedAt,
-        diffs: content
-            ? collectDiffs(content, toolKind, normalizeDiffPath)
-            : (existing?.diffs ?? []),
-        exitCode,
-        id: update.toolCallId,
-        kind: toolKind,
-        locations:
-            update.locations?.map((location) => location.path) ??
-            existing?.locations ??
-            [],
-        rawInputJson:
-            update.rawInput !== undefined
-                ? stringifyJson(update.rawInput)
-                : (existing?.rawInputJson ?? null),
-        rawOutputJson:
-            update.rawOutput !== undefined
-                ? stringifyJson(update.rawOutput)
-                : (existing?.rawOutputJson ?? null),
-        sessionId: snapshot.sessionId,
-        status: update.status ?? existing?.status ?? "pending",
-        summary:
-            buildToolSummary(
-                nextTitle ?? "Tool call",
-                content,
-                toolKind,
-                update.rawInput,
-                update.rawOutput,
-            ) ??
-            existing?.summary ??
-            null,
-        terminalOutput,
-        title: nextTitle ?? "Tool call",
-        updatedAt,
-    };
-
-    const terminalStatus =
-        update.status === "completed" || update.status === "failed";
-
-    const nextTrackedFiles = content
-        ? content.reduce((acc, entry) => {
-              if (entry.type !== "diff") return acc;
-              const normalizedPath = normalizeDiffPath(entry.path);
-              // Claude emits every Edit twice against the same toolCallId
-              // (streaming tool_call + PostToolUseHook tool_call_update from
-              // the structuredPatch). Skip the second emission for a path we
-              // already ingested — the streaming round already produced the
-              // right tracked state, and replaying the structuredPatch hunks
-              // can double-apply edits when oldText is still present in the
-              // spliced text (e.g. insertions after an anchor).
-              const processedPaths =
-                  liveSession.processedDiffPaths.get(update.toolCallId);
-              if (processedPaths?.has(normalizedPath)) {
-                  return acc;
-              }
-              if (processedPaths) {
-                  processedPaths.add(normalizedPath);
-              } else {
-                  liveSession.processedDiffPaths.set(
-                      update.toolCallId,
-                      new Set([normalizedPath]),
-                  );
-              }
-
-              const existing = acc.find(
-                  (candidate) =>
-                      candidate.path === normalizedPath ||
-                      candidate.previousPath === normalizedPath,
-              );
-              const resolvedDiff = resolveDiffToFullTexts(
-                  entry,
-                  existing,
-                  liveSession,
-                  normalizedPath,
-                  {
-                      meta: update._meta,
-                      sessionUpdate: updateKind,
-                      toolCallId: update.toolCallId,
-                  },
-              );
-              return upsertTrackedFile(
-                  acc,
-                  diffToTrackedFile(
-                      snapshot,
-                      resolvedDiff,
-                      toolKind,
-                      update.toolCallId,
-                      updatedAt,
-                      normalizeDiffPath,
-                  ),
-              );
-          }, snapshot.trackedFiles)
-        : snapshot.trackedFiles;
-
-    if (terminalStatus) {
-        liveSession.processedDiffPaths.delete(update.toolCallId);
-    }
-
-    return {
-        ...snapshot,
-        pendingPermission: pendingUserInput ? null : snapshot.pendingPermission,
-        pendingUserInput: pendingUserInput ?? snapshot.pendingUserInput,
-        status: pendingUserInput ? "waiting_user_input" : snapshot.status,
-        toolActivity: [
-            ...snapshot.toolActivity.filter(
-                (candidate) => candidate.id !== update.toolCallId,
-            ),
-            nextActivity,
-        ],
-        trackedFiles: nextTrackedFiles,
-    };
-}
-
-function collectDiffs(
-    content: readonly ToolCallContent[] | null | undefined,
-    toolKind: string,
-    normalizePath: (candidatePath: string) => string = (candidatePath) =>
-        candidatePath,
-): readonly AiFileDiff[] {
-    return (content ?? []).flatMap((entry) =>
-        entry.type === "diff"
-            ? [diffToAiFileDiff(entry, toolKind, normalizePath)]
-            : [],
-    );
-}
-
-function shouldSuppressToolActivityUpdate(
-    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
-    title: string | null,
-): boolean {
-    if (!title || !SUPPRESSED_STATUS_TITLES.has(title)) {
-        return false;
-    }
-
-    // codex-acp tags the initial tool_call with meta.codexAcpEventType =
-    // "status", but the follow-up tool_call_update that completes the item
-    // is emitted without meta (see vendor/codex-acp/src/thread.rs ~1030,
-    // send_status_tool_call_update). Without a second signal the completion
-    // update slipped through, recreating the suppressed "Drafting response"
-    // activity after the agent's turn ended. The toolCallId prefix is
-    // stable across both events, so we use it as the authoritative marker.
-    // `turn:` ids are kept because the UI renders them as a timeline
-    // divider (see ToolActivityItem.isTurnStartedActivity).
-    const isStatusActivity =
-        update.toolCallId.startsWith(CODEX_ACP_STATUS_EVENT_ID_PREFIX) ||
-        update.toolCallId.startsWith(LEGACY_STATUS_EVENT_ID_PREFIX);
-    const isTurnActivity =
-        update.toolCallId.startsWith(CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX) ||
-        update.toolCallId.startsWith(LEGACY_STATUS_TURN_EVENT_ID_PREFIX);
-    if (
-        isStatusActivity &&
-        !isTurnActivity
-    ) {
-        return true;
-    }
-
-    if (
-        readDiffMetaString(
-            update._meta,
-            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
-            LEGACY_STATUS_EVENT_TYPE_KEY,
-        ) === CODEX_ACP_STATUS_EVENT_TYPE
-    ) {
-        return true;
-    }
-
-    return false;
-}
-
-function diffToAiFileDiff(
-    diff: Diff,
-    toolKind: string,
-    normalizePath: (candidatePath: string) => string = (candidatePath) =>
-        candidatePath,
-): AiFileDiff {
-    const previousPathValue = readDiffMetaString(
-        diff._meta,
-        CODEX_ACP_DIFF_PREVIOUS_PATH_KEY,
-        LEGACY_DIFF_PREVIOUS_PATH_KEY,
-    );
-    const path = normalizePath(diff.path);
-    const previousPath = previousPathValue
-        ? normalizePath(previousPathValue)
-        : null;
-    const kind = inferDiffKind(diff, toolKind, previousPath);
-    const oldText = normalizeOldText(diff.oldText ?? null);
-    const newText = normalizeNewText(kind, diff.newText ?? null);
-
-    return {
-        hunks: computeTextDiffHunks(path, oldText, newText),
-        isText: true,
-        kind,
-        newText,
-        oldText,
-        path,
-        previousPath,
-        reversible: isDiffReversible(kind, oldText),
-    };
-}
-
-function diffToTrackedFile(
-    snapshot: AiSessionSnapshot,
-    diff: Diff,
-    toolKind: string,
-    toolCallId: string,
-    updatedAt: string,
-    normalizePath: (candidatePath: string) => string = (candidatePath) =>
-        candidatePath,
-): AiTrackedFile {
-    const fileDiff = diffToAiFileDiff(diff, toolKind, normalizePath);
-
-    return syncTrackedFile({
-        identityKey: fileDiff.previousPath
-            ? `${fileDiff.previousPath}->${fileDiff.path}`
-            : fileDiff.path,
-        currentText: fileDiff.newText ?? "",
-        diffBase: fileDiff.oldText ?? "",
-        hunks: fileDiff.hunks,
-        isText: true,
-        kind: fileDiff.kind,
-        newText: fileDiff.newText,
-        oldText: fileDiff.oldText,
-        path: fileDiff.path,
-        previousPath: fileDiff.previousPath,
-        reviewState: "pending",
-        reversible: fileDiff.reversible,
-        sessionId: snapshot.sessionId,
-        toolCallId,
-        updatedAt,
-        version: 1,
-    });
-}
-
-function inferDiffKind(
-    diff: Diff,
-    toolKind: string,
-    previousPath: string | null,
-): AiTrackedFile["kind"] {
-    if (previousPath || toolKind === "move") {
-        return "move";
-    }
-
-    if (
-        toolKind === "delete" ||
-        (diff.oldText !== null &&
-            diff.oldText !== undefined &&
-            diff.newText == null)
-    ) {
-        return "delete";
-    }
-
-    if (diff.oldText == null) {
-        return "create";
-    }
-
-    return "update";
-}
-
-function normalizeOldText(value: string | null): string | null {
-    if (value === "[file deleted]") {
-        return null;
-    }
-
-    return value;
-}
-
-function normalizeNewText(
-    kind: AiTrackedFile["kind"],
-    value: string | null,
-): string | null {
-    if (kind === "delete") {
-        return null;
-    }
-
-    return value ?? "";
-}
-
-function computeTextDiffHunks(
-    path: string,
-    oldText: string | null,
-    newText: string | null,
-) {
-    if (oldText === null && newText === null) {
-        return [];
-    }
-
-    return computeDiffHunks(oldText ?? "", newText ?? "", path);
-}
-
-function isDiffReversible(
-    kind: AiTrackedFile["kind"],
-    oldText: string | null,
-): boolean {
-    if (kind === "create") {
-        return true;
-    }
-
-    return oldText !== null;
-}
-
-function parseUserInputRequest(
-    snapshot: AiSessionSnapshot,
-    update: ToolCall | ToolCallUpdate,
-    updatedAt: string,
-): AiUserInputRequest | null {
-    if (
-        readDiffMetaString(
-            update._meta,
-            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
-            LEGACY_STATUS_EVENT_TYPE_KEY,
-        ) !== CODEX_ACP_USER_INPUT_EVENT_TYPE ||
-        !isRecord(update.rawInput)
-    ) {
-        return null;
-    }
-
-    const questionsValue = update.rawInput.questions;
-    if (!Array.isArray(questionsValue)) {
-        return null;
-    }
-
-    const questions = questionsValue
-        .map((question, index) => parseUserInputQuestion(question, index))
-        .filter((question): question is NonNullable<typeof question> =>
-            Boolean(question),
-        );
-    if (questions.length === 0) {
-        return null;
-    }
-
-    const headerTitle = questions
-        .find((question) => question.header.trim().length > 0)
-        ?.header.trim();
-    const requestId =
-        typeof update.rawInput.request_id === "string" &&
-        update.rawInput.request_id.trim().length > 0
-            ? update.rawInput.request_id
-            : update.toolCallId;
-    const turnId =
-        typeof update.rawInput.turn_id === "string" &&
-        update.rawInput.turn_id.trim().length > 0
-            ? update.rawInput.turn_id
-            : requestId;
-    if (!turnId) {
-        return null;
-    }
-
-    return {
-        questions,
-        requestId,
-        sessionId: snapshot.sessionId,
-        title:
-            headerTitle ||
-            (update.title ?? snapshot.title).trim() ||
-            "Input requested",
-        toolCallId: update.toolCallId,
-        turnId,
-        updatedAt,
-    };
-}
-
-function parseUserInputQuestion(
-    value: unknown,
-    index: number,
-): AiUserInputRequest["questions"][number] | null {
-    if (!isRecord(value)) {
-        return null;
-    }
-
-    const options = Array.isArray(value.options)
-        ? value.options
-              .map((option) => {
-                  if (!isRecord(option) || typeof option.label !== "string") {
-                      return null;
-                  }
-
-                  return {
-                      description:
-                          typeof option.description === "string"
-                              ? option.description
-                              : null,
-                      label: option.label,
-                  };
-              })
-              .filter((option): option is NonNullable<typeof option> =>
-                  Boolean(option),
-              )
-        : [];
-
-    return {
-        header: typeof value.header === "string" ? value.header : "",
-        id:
-            typeof value.id === "string" && value.id.trim().length > 0
-                ? value.id
-                : `question-${index + 1}`,
-        isOther: value.is_other === true,
-        isSecret: value.is_secret === true,
-        options,
-        question:
-            typeof value.question === "string"
-                ? value.question
-                : typeof value.label === "string"
-                  ? value.label
-                  : "Provide the requested input.",
-    };
-}
-
-function buildUserInputResponsePrompt(
-    turnId: string | null,
-    answers: AiUserInputResponseInput["answers"],
-): string {
-    const payload = {
-        response: {
-            answers: Object.fromEntries(
-                answers.map((answer) => [
-                    answer.questionId,
-                    {
-                        answers: [...answer.answers],
-                    },
-                ]),
-            ),
-        },
-        turn_id: turnId ?? "",
-    };
-
-    return `${CODEX_ACP_USER_INPUT_RESPONSE_PREFIX}${JSON.stringify(payload)}`;
-}
-
-function summarizeUserInputAnswers(
-    questions: readonly AiUserInputRequest["questions"][number][],
-    answers: AiUserInputResponseInput["answers"],
-): string {
-    if (answers.length === 0) {
-        return "Responded to guided input.";
-    }
-
-    return answers
-        .map((answer) => {
-            const question = questions.find(
-                (candidate) => candidate.id === answer.questionId,
-            );
-            const label =
-                question?.header || question?.question || answer.questionId;
-            return `${label}: ${answer.answers.join(", ")}`;
-        })
-        .join("\n");
-}
-
-function readDiffMetaString(meta: unknown, ...keys: readonly string[]): string | null {
-    if (!isRecord(meta)) {
-        return null;
-    }
-
-    for (const key of keys) {
-        const value = meta[key];
-        if (typeof value === "string" && value.trim().length > 0) {
-            return value;
-        }
-    }
-
-    return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null;
-}
-
-function stringifyJson(value: unknown): string | null {
-    if (value === undefined) {
-        return null;
-    }
-
-    try {
-        return JSON.stringify(value, null, 2);
-    } catch (error) {
-        debugBenignError("ai.service.stringifyJson", error);
-        return null;
-    }
-}
-
-function buildToolSummary(
-    title: string,
-    content: readonly ToolCallContent[] | null | undefined,
-    kind: string,
-    rawInput: unknown,
-    rawOutput: unknown,
-): string | null {
-    const diffCount = (content ?? []).filter(
-        (entry) => entry.type === "diff",
-    ).length;
-
-    if (diffCount > 0) {
-        return `${title} · ${diffCount} diff${diffCount === 1 ? "" : "s"}`;
-    }
-
-    const terminalCount = (content ?? []).filter(
-        (entry) => entry.type === "terminal",
-    ).length;
-    if (terminalCount > 0) {
-        return `${title} · terminal session`;
-    }
-
-    const lk = kind.toLowerCase();
-    const input =
-        rawInput && typeof rawInput === "object"
-            ? (rawInput as Record<string, unknown>)
-            : null;
-
-    if (lk === "bash" || lk === "shell" || lk === "execute") {
-        const cmd = input?.command;
-        if (typeof cmd === "string") {
-            const firstLine = cmd.split("\n")[0];
-            const preview =
-                firstLine.length > 80
-                    ? firstLine.slice(0, 77) + "…"
-                    : firstLine;
-            return preview;
-        }
-    }
-
-    if (lk === "read") {
-        const filePath = input?.file_path ?? input?.path;
-        if (typeof filePath === "string") {
-            const segments = filePath.split("/");
-            return segments.length > 2
-                ? `…/${segments.slice(-2).join("/")}`
-                : filePath;
-        }
-    }
-
-    if (lk === "search" || lk === "grep") {
-        const pattern = input?.pattern ?? input?.query ?? input?.regex;
-        if (typeof pattern === "string") {
-            return `"${pattern}"`;
-        }
-    }
-
-    if (lk === "web_fetch" || lk === "fetch") {
-        const url = input?.url;
-        if (typeof url === "string") {
-            try {
-                const parsed = new URL(url);
-                return parsed.hostname + parsed.pathname;
-            } catch (error) {
-                debugBenignError("ai.service.toolSummary.parseUrl", error);
-                return url.length > 60 ? url.slice(0, 57) + "…" : url;
-            }
-        }
-    }
-
-    if (rawOutput !== undefined && rawOutput !== null) {
-        const outputStr =
-            typeof rawOutput === "string"
-                ? rawOutput
-                : JSON.stringify(rawOutput);
-        if (outputStr.length > 0 && outputStr.length <= 100) {
-            return outputStr;
-        }
-        if (outputStr.length > 100) {
-            const lines = outputStr.split("\n").length;
-            return `${lines} line${lines === 1 ? "" : "s"} of output`;
-        }
-    }
-
-    return null;
-}
-
-function formatContentBlock(content: ContentBlock): string {
-    if (content.type === "text") {
-        return content.text;
-    }
-
-    if (content.type === "image") {
-        return content.uri ?? "";
-    }
-
-    if (content.type === "resource_link") {
-        return content.uri;
-    }
-
-    return `[${content.type}]`;
-}
-
-const PILL_OPEN = "\u200B\u00AB";
-const PILL_CLOSE = "\u00BB\u200B";
-
-function serializeComposerPartsForDisplay(
-    parts: SendAiPromptInput["composerParts"] | undefined,
-    fallback: string,
-): string {
-    if (!parts || parts.length === 0) {
-        return fallback;
-    }
-
-    return parts
-        .map((part) => {
-            switch (part.type) {
-                case "text":
-                    return part.text;
-                case "file_mention":
-                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
-                case "folder_mention":
-                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
-                case "fetch_mention":
-                    return `${PILL_OPEN}@fetch${PILL_CLOSE}`;
-                case "plan_mention":
-                    return `${PILL_OPEN}/plan${PILL_CLOSE}`;
-                case "selection_mention":
-                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
-                case "file_attachment":
-                    return `${PILL_OPEN}📎${part.label}${PILL_CLOSE}`;
-                default:
-                    return "";
-            }
-        })
-        .join("")
-        .trim();
-}
-
-function imageContentToAttachment(
-    content: Extract<ContentBlock, { type: "image" }>,
-    messageId: string | null,
-): AiImageAttachment {
-    return {
-        dataBase64: content.data,
-        id: messageId ? `${messageId}:image:${randomUUID()}` : randomUUID(),
-        mimeType: content.mimeType,
-        name: null,
-        sizeBytes: estimateBase64Size(content.data),
-    };
-}
-
-function buildPromptContentBlocks(
-    promptText: string,
-    attachments: readonly AiImageAttachment[],
-): ContentBlock[] {
-    const prompt: ContentBlock[] = [];
-
-    if (promptText) {
-        prompt.push({
-            text: promptText,
-            type: "text",
-        });
-    }
-
-    for (const attachment of attachments) {
-        prompt.push({
-            data: attachment.dataBase64,
-            mimeType: attachment.mimeType,
-            type: "image",
-        });
-    }
-
-    return prompt;
-}
-
-function estimateBase64Size(dataBase64: string): number {
-    const padding = dataBase64.endsWith("==")
-        ? 2
-        : dataBase64.endsWith("=")
-          ? 1
-          : 0;
-
-    return Math.max(0, Math.floor((dataBase64.length * 3) / 4) - padding);
-}
-
-function getPreparedSessionStatus(
-    snapshot: Pick<
-        AiSessionSnapshot,
-        "lastError" | "pendingPermission" | "pendingUserInput"
-    >,
-): AiSessionSnapshot["status"] {
-    if (snapshot.pendingPermission) {
-        return "waiting_permission";
-    }
-    if (snapshot.pendingUserInput) {
-        return "waiting_user_input";
-    }
-    if (snapshot.lastError) {
-        return "error";
-    }
-    return "idle";
-}
-
-function getRecentStderrText(stderrChunks: readonly string[]): string {
-    const normalized = stripAnsiControlSequences(stderrChunks.join(""))
-        .trim()
-        .split("\n")
-        .map((line) => line.trimEnd())
-        .filter((line) => line.length > 0);
-
-    if (normalized.length === 0) {
-        return "";
-    }
-
-    return normalized.slice(-4).join("\n");
-}
-
-const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
-
-function stripAnsiControlSequences(value: string): string {
-    return value.replace(ANSI_ESCAPE_RE, "");
-}
-
-function isBusyAiSessionStatus(status: AiSessionSnapshot["status"]): boolean {
-    return (
-        status === "starting" ||
-        status === "streaming" ||
-        status === "waiting_permission" ||
-        status === "waiting_user_input"
-    );
-}
-
-async function readTextIfExists(absolutePath: string): Promise<string | null> {
-    try {
-        return await fs.promises.readFile(absolutePath, "utf8");
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            return null;
-        }
-
-        throw error;
-    }
-}
-
-function normalizeAdditionalRoots(
-    roots: readonly string[] | undefined,
-): string[] {
-    if (!roots || roots.length === 0) {
-        return [];
-    }
-
-    const seen = new Set<string>();
-    const normalizedRoots: string[] = [];
-
-    for (const rootPath of roots) {
-        if (!rootPath?.trim()) {
-            continue;
-        }
-
-        const normalized = path.resolve(rootPath);
-        if (seen.has(normalized)) {
-            continue;
-        }
-
-        seen.add(normalized);
-        normalizedRoots.push(normalized);
-    }
-
-    normalizedRoots.sort((left, right) => left.localeCompare(right));
-    return normalizedRoots;
-}
-
-function sameAdditionalRoots(
-    left: readonly string[],
-    right: readonly string[],
-): boolean {
-    if (left.length !== right.length) {
-        return false;
-    }
-
-    return left.every((entry, index) => entry === right[index]);
-}
-
-function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
-    const resolvedCandidate = path.resolve(candidatePath);
-    const resolvedRoot = path.resolve(rootPath);
-
-    return (
-        resolvedCandidate === resolvedRoot ||
-        resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
-    );
-}
-
-function toPosixPath(candidatePath: string): string {
-    return candidatePath.split(path.sep).join("/");
-}
-
-function normalizeTrackedDiffPath(
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
-    candidatePath: string,
-): string {
-    const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
-    const absolutePath = path.isAbsolute(candidatePath)
-        ? path.resolve(candidatePath)
-        : path.resolve(scopeRoot, candidatePath);
-
-    if (
-        absolutePath === scopeRoot ||
-        absolutePath.startsWith(`${scopeRoot}${path.sep}`)
-    ) {
-        const relativePath = path.relative(scopeRoot, absolutePath);
-        return relativePath.length > 0
-            ? toPosixPath(relativePath)
-            : toPosixPath(path.basename(absolutePath));
-    }
-
-    return path.isAbsolute(candidatePath)
-        ? absolutePath
-        : toPosixPath(candidatePath);
-}
-
-const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
-
-function resolveTrackedDiffAbsolutePath(
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
-    trackedPath: string,
-): string {
-    const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
-    return path.isAbsolute(trackedPath)
-        ? path.resolve(trackedPath)
-        : path.resolve(scopeRoot, trackedPath);
-}
-
-function tryReadFileAsText(absolutePath: string): string | null {
-    try {
-        const stats = fs.statSync(absolutePath);
-        if (!stats.isFile() || stats.size > TRACKED_DIFF_MAX_READ_BYTES) {
-            return null;
-        }
-        return fs.readFileSync(absolutePath, "utf8");
-    } catch (error) {
-        debugBenignError("ai.service.tryReadFileAsText", error);
-        return null;
-    }
-}
-
-/**
- * Agents that use tool-level string replaces (edit_text_file and friends)
- * deliver diff.oldText/newText as snippets, not whole files. Keeping snippets
- * as the tracked representation made the review pipeline render only the
- * changed lines and miscount additions/deletions.
- *
- * Splice the snippet onto the cumulative text we already have (from a previous
- * edit in this session or from disk for the first edit), so downstream
- * consumers see whole-file texts. Falls back to the raw diff when we cannot
- * resolve a base (missing file, binary, oversized) or when the snippet is
- * ambiguous inside the base.
- */
-interface DiffResolutionContext {
-    readonly meta: unknown;
-    readonly sessionUpdate: "tool_call" | "tool_call_update";
-    readonly toolCallId: string;
-}
-
-function isClaudeEditReEmission(
-    diff: Pick<Diff, "newText" | "oldText">,
-    existing: AiTrackedFile | undefined,
-    base: string,
-    context: DiffResolutionContext | undefined,
-): boolean {
-    if (!existing || !context || context.sessionUpdate !== "tool_call_update") {
-        return false;
-    }
-
-    if (!existing.toolCallId || existing.toolCallId !== context.toolCallId) {
-        return false;
-    }
-
-    if (!isRecord(context.meta) || !isRecord(context.meta.claudeCode)) {
-        return false;
-    }
-
-    const toolName = context.meta.claudeCode.toolName;
-    if (toolName !== "Edit") {
-        return false;
-    }
-
-    const oldSnippet = diff.oldText ?? "";
-    const newSnippet = diff.newText ?? "";
-    if (oldSnippet.length === 0 && newSnippet.length === 0) {
-        return false;
-    }
-
-    if (oldSnippet.length > 0 && base.includes(oldSnippet)) {
-        return false;
-    }
-
-    return newSnippet.length === 0 || base.includes(newSnippet);
-}
-
-function resolveDiffToFullTexts(
-    diff: Diff,
-    existing: AiTrackedFile | undefined,
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
-    normalizedPath: string,
-    context?: DiffResolutionContext,
-): Diff {
-    // Nothing to splice for creates/deletes — the incoming texts already
-    // describe the whole before/after state of the file.
-    if (diff.oldText == null || diff.newText == null) {
-        return diff;
-    }
-
-    const oldSnippet = diff.oldText;
-    const newSnippet = diff.newText;
-    const absolutePath = resolveTrackedDiffAbsolutePath(
-        liveSession,
-        normalizedPath,
-    );
-    // Prefer the in-editor buffer (what the user actually sees) over the disk
-    // when the file is open with unsaved changes. Falls back to disk for files
-    // that aren't open in a tab, and to the raw diff if neither source works.
-    const base = existing
-        ? getTrackedFileCurrentText(existing)
-        : (readOpenFileBuffer(absolutePath) ?? tryReadFileAsText(absolutePath));
-    if (base === null) {
-        return diff;
-    }
-
-    // The canonical oldText we want to keep across edits is the file before
-    // the agent started touching it. For the first tracked edit that is the
-    // on-disk content; for subsequent edits it's the diffBase captured when
-    // the first edit landed.
-    const canonicalOldText = existing
-        ? (existing.oldText ?? base)
-        : base;
-
-    if (oldSnippet === base) {
-        return { ...diff, oldText: canonicalOldText, newText: newSnippet };
-    }
-
-    if (oldSnippet.length === 0) {
-        return diff;
-    }
-
-    const first = base.indexOf(oldSnippet);
-    if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
-        if (existing && isClaudeEditReEmission(diff, existing, base, context)) {
-            return {
-                ...diff,
-                oldText: getTrackedFileDiffBase(existing),
-                newText: getTrackedFileCurrentText(existing),
-            };
-        }
-        return diff;
-    }
-
-    const spliced =
-        base.slice(0, first) + newSnippet + base.slice(first + oldSnippet.length);
-
-    return { ...diff, oldText: canonicalOldText, newText: spliced };
 }
 
 export const __testing = {

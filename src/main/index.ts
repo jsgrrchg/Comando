@@ -22,6 +22,10 @@ import {
 } from "@shared/ipc";
 
 import { appChannel, appIdentity, configureMainProcessApp } from "./app-runtime";
+import {
+    createAiWorkerClient,
+    type AiWorkerClient,
+} from "./ai/client";
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
@@ -47,6 +51,7 @@ import type { WorkspaceGateway } from "./workspace/service";
 let dbWorkerClient: DbWorkerClient | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
+let aiWorkerClient: AiWorkerClient | null = null;
 let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
 let gitService: GitWorkerClient | null = null;
@@ -132,6 +137,31 @@ if (!hasSingleInstanceLock) {
                 secretStore,
                 settingsService,
             });
+            try {
+                aiWorkerClient = await createAiWorkerClient({
+                    onRuntimeStatus: (status) => {
+                        aiService?.handleWorkerRuntimeStatus(status);
+                    },
+                    onSessionClosed: (payload) => {
+                        aiService?.handleWorkerSessionClosed(payload);
+                    },
+                    onSessionSnapshot: (ownerWindowId, update) => {
+                        aiService?.handleWorkerSessionSnapshot(
+                            ownerWindowId,
+                            update,
+                        );
+                    },
+                    onWorkerRestarted: async () => {
+                        await aiService?.handleWorkerRestarted();
+                    },
+                });
+                aiService.setWorker(aiWorkerClient);
+            } catch (error) {
+                console.error(
+                    "[main] Failed to initialize the AI worker",
+                    error,
+                );
+            }
             terminalService = new TerminalService({
                 onData: broadcastTerminalData,
                 onExit: broadcastTerminalExit,
@@ -153,6 +183,7 @@ if (!hasSingleInstanceLock) {
 
             registerIpcHandlers({
                 aiService,
+                aiWorker: aiWorkerClient,
                 getSnapshot: () => {
                     if (!bootstrapSnapshot) {
                         throw new Error(
@@ -259,6 +290,8 @@ app.on("will-quit", () => {
     mainProcessPerformance.stop();
     aiService?.close();
     aiService = null;
+    void aiWorkerClient?.close();
+    aiWorkerClient = null;
     void gitService?.close();
     gitService = null;
     projectService?.close();

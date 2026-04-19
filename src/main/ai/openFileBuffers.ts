@@ -19,3 +19,15 @@ export function forgetOpenFileBuffer(absolutePath: string): void {
 export function readOpenFileBuffer(absolutePath: string): string | null {
     return buffersByAbsolutePath.get(absolutePath) ?? null;
 }
+
+export function listOpenFileBuffers(): readonly {
+    readonly absolutePath: string;
+    readonly content: string;
+}[] {
+    return [...buffersByAbsolutePath.entries()].map(
+        ([absolutePath, content]) => ({
+            absolutePath,
+            content,
+        }),
+    );
+}
