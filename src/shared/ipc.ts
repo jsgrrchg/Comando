@@ -1090,6 +1090,11 @@ export type AiComposerMessagePart =
           readonly filePath: string;
           readonly mimeType: string;
           readonly label: string;
+      }
+    | {
+          readonly type: "git_commit_mention";
+          readonly commitSha: string;
+          readonly label: string;
       };
 
 export interface AiMessage {

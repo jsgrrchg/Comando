@@ -71,6 +71,12 @@ interface ProjectsState {
     ) => Promise<void>;
 }
 
+interface ResolveNextActiveProjectIdInput {
+    readonly activatedProjectId: string | null;
+    readonly currentActiveProjectId: string | null;
+    readonly projects: readonly ProjectSummary[];
+}
+
 type SetProjectsState = (
     partial:
         | Partial<ProjectsState>
@@ -97,15 +103,16 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
 
         try {
-            const projects = await getComandoApi().addProjectPaths([
-                normalizedPath,
-            ]);
+            const { activatedProjectId, projects } =
+                await getComandoApi().addProjectPaths([
+                    normalizedPath,
+                ]);
             const currentActiveProjectId = get().activeProjectId;
-            const nextActiveProjectId = projects.some(
-                (project) => project.id === currentActiveProjectId,
-            )
-                ? currentActiveProjectId
-                : (currentActiveProjectId ?? projects[0]?.id ?? null);
+            const nextActiveProjectId = resolveNextActiveProjectId({
+                activatedProjectId,
+                currentActiveProjectId,
+                projects,
+            });
 
             set({
                 activeProjectId: nextActiveProjectId,
@@ -128,13 +135,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
     addProjects: async () => {
         try {
-            const projects = await getComandoApi().openProjects();
+            const { activatedProjectId, projects } =
+                await getComandoApi().openProjects();
             const currentActiveProjectId = get().activeProjectId;
-            const nextActiveProjectId = projects.some(
-                (project) => project.id === currentActiveProjectId,
-            )
-                ? currentActiveProjectId
-                : (currentActiveProjectId ?? projects[0]?.id ?? null);
+            const nextActiveProjectId = resolveNextActiveProjectId({
+                activatedProjectId,
+                currentActiveProjectId,
+                projects,
+            });
 
             set({
                 activeProjectId: nextActiveProjectId,
@@ -539,6 +547,28 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 }));
+
+export function resolveNextActiveProjectId({
+    activatedProjectId,
+    currentActiveProjectId,
+    projects,
+}: ResolveNextActiveProjectIdInput): string | null {
+    if (
+        activatedProjectId &&
+        projects.some((project) => project.id === activatedProjectId)
+    ) {
+        return activatedProjectId;
+    }
+
+    if (
+        currentActiveProjectId &&
+        projects.some((project) => project.id === currentActiveProjectId)
+    ) {
+        return currentActiveProjectId;
+    }
+
+    return currentActiveProjectId ?? projects[0]?.id ?? null;
+}
 
 function getParentKey(parentRelativePath: string | null): ParentKey {
     return parentRelativePath ?? ROOT_NODE_KEY;

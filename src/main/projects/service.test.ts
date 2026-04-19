@@ -58,10 +58,12 @@ describe("ProjectService", () => {
         fs.mkdirSync(path.dirname(projectFilePath), { recursive: true });
         fs.writeFileSync(projectFilePath, "export const value = 1;\n");
 
-        const [firstProject] = await projectService.addProjectPaths([
+        const firstAddResult = await projectService.addProjectPaths([
             projectRoot,
         ]);
+        const [firstProject] = firstAddResult.projects;
         expect(firstProject).toBeDefined();
+        expect(firstAddResult.activatedProjectId).toBe(firstProject?.id ?? null);
         if (!firstProject) {
             throw new Error("Expected the first project to be created.");
         }
@@ -106,10 +108,14 @@ describe("ProjectService", () => {
             is_hidden: 1,
         });
 
-        const [reopenedProject] = await projectService.addProjectPaths([
+        const reopenedAddResult = await projectService.addProjectPaths([
             projectRoot,
         ]);
+        const [reopenedProject] = reopenedAddResult.projects;
         expect(reopenedProject?.id).toBe(firstProject.id);
+        expect(reopenedAddResult.activatedProjectId).toBe(
+            reopenedProject?.id ?? null,
+        );
         if (!reopenedProject) {
             throw new Error("Expected the project to be re-added.");
         }
@@ -146,7 +152,8 @@ describe("ProjectService", () => {
             "export const helper = true;\n",
         );
 
-        const [project] = await projectService.addProjectPaths([projectRoot]);
+        const addResult = await projectService.addProjectPaths([projectRoot]);
+        const [project] = addResult.projects;
         expect(project).toBeDefined();
         if (!project) {
             throw new Error("Expected the project to be created.");
@@ -232,7 +239,8 @@ describe("ProjectService", () => {
             "export const RestartSignal = true;\n",
         );
 
-        const [project] = await projectService.addProjectPaths([projectRoot]);
+        const addResult = await projectService.addProjectPaths([projectRoot]);
+        const [project] = addResult.projects;
         expect(project).toBeDefined();
         if (!project) {
             throw new Error("Expected the project to be created.");

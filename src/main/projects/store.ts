@@ -52,6 +52,7 @@ export interface ProjectStoreWorktreeRecord {
 
 export interface ProjectStoreAddPathsResult {
     readonly projects: readonly ProjectSummary[];
+    readonly touchedProjectIds: readonly string[];
     readonly touchedRootPaths: readonly string[];
 }
 
@@ -197,6 +198,7 @@ export class SqliteProjectStore implements ProjectStore {
             WHERE root_path = ?
             `,
         );
+        const touchedProjectIds: string[] = [];
         const touchedRootPaths: string[] = [];
 
         const transaction = this.#connection.transaction(
@@ -231,6 +233,7 @@ export class SqliteProjectStore implements ProjectStore {
                             rootPath: projectPathMeta.worktreeRootPath,
                         });
                         touchRecent.run(existing.id, now);
+                        touchedProjectIds.push(existing.id);
                         touchedRootPaths.push(projectPathMeta.worktreeRootPath);
                         continue;
                     }
@@ -272,6 +275,7 @@ export class SqliteProjectStore implements ProjectStore {
                         });
                     }
                     touchRecent.run(projectId, now);
+                    touchedProjectIds.push(projectId);
                     touchedRootPaths.push(projectPathMeta.worktreeRootPath);
                 }
             },
@@ -285,6 +289,7 @@ export class SqliteProjectStore implements ProjectStore {
 
         return {
             projects: this.listProjects(),
+            touchedProjectIds,
             touchedRootPaths,
         };
     }

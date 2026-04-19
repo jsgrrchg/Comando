@@ -4,6 +4,7 @@ import type {
     CreateProjectEntryInput,
     DeleteProjectEntryInput,
     ListProjectTreeInput,
+    ProjectAddResult,
     OpenProjectFileInput,
     ProjectEntryMutationResult,
     ProjectFileDocument,
@@ -88,7 +89,7 @@ export class ProjectService {
 
     async addProjectPaths(
         projectPaths: readonly string[],
-    ): Promise<ProjectSummary[]> {
+    ): Promise<ProjectAddResult> {
         const result = await this.#store.addProjectPaths(projectPaths);
         this.#markWorkerRegistryDirty();
         await this.#ensureWorkerRegistry();
@@ -97,7 +98,12 @@ export class ProjectService {
             this.#onProjectTouched?.(rootPath);
         }
 
-        return [...result.projects];
+        return {
+            activatedProjectId:
+                result.touchedProjectIds[result.touchedProjectIds.length - 1] ??
+                null,
+            projects: [...result.projects],
+        };
     }
 
     async removeProject(projectId: string): Promise<void> {

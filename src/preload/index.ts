@@ -6,6 +6,7 @@ import {
     IPC_CHANNELS,
     IPC_EVENTS,
     type AppChangelogRelease,
+    type ProjectAddResult,
     type AppPrivacyAccessState,
     type AppUpdateState,
     type AppBootstrapSnapshot,
@@ -289,8 +290,11 @@ const comandoApi: ComandoApi = {
         ),
     createTerminalSession: (input: CreateTerminalSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.createTerminalSession, input),
-    addProjectPaths: (paths: string[]) =>
-        ipcRenderer.invoke(IPC_CHANNELS.addProjectPaths, paths),
+    addProjectPaths: async (paths: string[]) =>
+        assertIpcObject<ProjectAddResult>(
+            IPC_CHANNELS.addProjectPaths,
+            await ipcRenderer.invoke(IPC_CHANNELS.addProjectPaths, paths),
+        ),
     listProjects: async () =>
         assertIpcArray<ProjectSummary>(
             IPC_CHANNELS.listProjects,
@@ -515,7 +519,11 @@ const comandoApi: ComandoApi = {
     },
     openProjectFile: (input: OpenProjectFileInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectFile, input),
-    openProjects: () => ipcRenderer.invoke(IPC_CHANNELS.openProjects),
+    openProjects: async () =>
+        assertIpcObject<ProjectAddResult>(
+            IPC_CHANNELS.openProjects,
+            await ipcRenderer.invoke(IPC_CHANNELS.openProjects),
+        ),
     saveProjectFile: (input: SaveProjectFileInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveProjectFile, input),
     createProjectEntry: (input: CreateProjectEntryInput) =>

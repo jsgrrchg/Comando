@@ -356,6 +356,7 @@ function dispatchMethod(method: string, params: unknown): unknown {
             const result = projectStore.addProjectPaths(params as string[]);
             return {
                 state: projectStore.loadState(),
+                touchedProjectIds: result.touchedProjectIds,
                 touchedRootPaths: result.touchedRootPaths,
             };
         }

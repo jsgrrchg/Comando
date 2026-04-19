@@ -741,11 +741,13 @@ class ProjectStoreClient implements ProjectStore {
     async addProjectPaths(projectPaths: readonly string[]) {
         const result = await this.#rpc.call<{
             readonly state: ProjectStoreStateSnapshot;
+            readonly touchedProjectIds: readonly string[];
             readonly touchedRootPaths: readonly string[];
         }>("projects.addProjectPaths", [...projectPaths]);
         this.#hydrate(result.state);
         return {
             projects: this.listProjects(),
+            touchedProjectIds: result.touchedProjectIds,
             touchedRootPaths: result.touchedRootPaths,
         };
     }

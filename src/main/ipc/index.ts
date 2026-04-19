@@ -745,7 +745,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             : await dialog.showOpenDialog(dialogOptions);
 
         if (result.canceled || result.filePaths.length === 0) {
-            return options.projectService.listProjects();
+            return {
+                activatedProjectId: null,
+                projects: options.projectService.listProjects(),
+            };
         }
 
         return options.projectService.addProjectPaths(result.filePaths);
