@@ -1,9 +1,12 @@
-# Placeholders De Iconos
+# Recursos De Iconos
 
-Durante la Fase 0 dejamos los bundle IDs y los recursos visuales como placeholders deliberados.
+- macOS 26+: `resources/icons/macos.icon`
+- macOS 15 fallback: `resources/icons/macos.icns`
+- Windows: `resources/icons/windows.ico`
+- PNG base legacy: `resources/icons/app.png`
 
-- macOS: `resources/icons/macos-placeholder.icns`
-- Windows: `resources/icons/windows-placeholder.ico`
-- PNG base: `resources/icons/app-placeholder.png`
+Regenera los derivados con:
 
-Cuando cerremos branding, estos archivos se reemplazan por assets reales sin tocar la arquitectura base.
+```bash
+pnpm run icons:build
+```

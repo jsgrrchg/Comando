@@ -28,7 +28,7 @@ Base de la Fase 0 para una app Electron local-first orientada a programación co
 - `src/preload`: bridge tipado sin exponer Node crudo al renderer
 - `src/renderer`: shell React y tokens visuales
 - `src/shared`: contratos compartidos entre procesos
-- `resources/icons`: placeholders de identidad visual
+- `resources/icons`: assets reales de iconos para macOS y Windows
 
 ## Decisiones Iniciales
 

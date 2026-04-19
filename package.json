@@ -11,9 +11,14 @@
         "dev": "COMANDO_APP_CHANNEL=dev electron-vite dev",
         "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
+        "icons:build": "node scripts/build-icons.mjs",
+        "prepackage:mac": "pnpm run icons:build",
         "package:mac": "node scripts/package-macos-app.mjs",
+        "prepackage:win": "pnpm run icons:build",
         "package:win": "node scripts/package-windows-app.mjs",
+        "prepackage:win:arm64": "pnpm run icons:build",
         "package:win:arm64": "node scripts/package-windows-app.mjs --arm64",
+        "prepackage:win:x64": "pnpm run icons:build",
         "package:win:x64": "node scripts/package-windows-app.mjs --x64",
         "lint": "eslint .",
         "postinstall": "pnpm run rebuild:native",
@@ -118,7 +123,7 @@
         ],
         "mac": {
             "category": "public.app-category.developer-tools",
-            "icon": "resources/icons/macos-placeholder.icns",
+            "icon": "resources/icons/macos.icon",
             "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/bin/**/*}",
             "target": [
                 {
@@ -131,8 +136,11 @@
             "minimumSystemVersion": "15.0",
             "artifactName": "${productName}-${version}-${arch}.${ext}"
         },
+        "dmg": {
+            "icon": "resources/icons/macos.icns"
+        },
         "win": {
-            "icon": "resources/icons/windows-placeholder.ico",
+            "icon": "resources/icons/windows.ico",
             "target": [
                 {
                     "target": "nsis",

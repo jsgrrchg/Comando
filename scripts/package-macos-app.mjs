@@ -67,6 +67,7 @@ const bundledArm64CodexBinary = path.join(
     "binaries",
     "codex-acp",
 );
+const legacyMacIconPath = path.join(repoRoot, "resources", "icons", "macos.icns");
 const desktopAiRoot = path.join(desktopAppPath, "Contents", "Resources", "ai");
 const desktopClaudeRoot = path.join(
     desktopAiRoot,
@@ -133,6 +134,8 @@ function main() {
         );
     }
 
+    replaceLegacyMacIcon(standalonePackagedAppPath);
+    repairMovedMacAppBundle(standalonePackagedAppPath);
     verifyPackagedApplication(standalonePackagedAppPath);
 
     fs.rmSync(desktopAppPath, { force: true, recursive: true });
@@ -568,6 +571,26 @@ function verifyPackagedApplication(packagedAppPath) {
             "The packaged app is still missing runtime dependencies inside app.asar.",
         );
     }
+}
+
+function replaceLegacyMacIcon(packagedAppPath) {
+    if (!isFile(legacyMacIconPath)) {
+        throw new Error(
+            `Expected legacy macOS icon at ${relativeToRepo(legacyMacIconPath)}, but it was not found.`,
+        );
+    }
+
+    const targetIconPath = path.join(
+        packagedAppPath,
+        "Contents",
+        "Resources",
+        "icon.icns",
+    );
+
+    fs.copyFileSync(legacyMacIconPath, targetIconPath);
+    console.log(
+        `[package:mac] Replaced legacy app icon with ${relativeToRepo(legacyMacIconPath)}.`,
+    );
 }
 
 function repairMovedMacAppBundle(appPath) {

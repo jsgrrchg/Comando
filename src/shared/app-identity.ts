@@ -1,6 +1,6 @@
 export type AppChannel = "dev" | "release";
 
-interface AppIconPlaceholderPaths {
+interface AppIconPaths {
     readonly macos: string;
     readonly windows: string;
     readonly png: string;
@@ -9,24 +9,24 @@ interface AppIconPlaceholderPaths {
 export interface AppIdentity {
     readonly bundleIdPlaceholder: string;
     readonly channel: AppChannel;
-    readonly iconPlaceholderPaths: AppIconPlaceholderPaths;
+    readonly iconPaths: AppIconPaths;
     readonly id: string;
     readonly name: string;
     readonly productName: string;
     readonly windowTitle: string;
 }
 
-const iconPlaceholderPaths = {
-    macos: "resources/icons/macos-placeholder.icns",
-    windows: "resources/icons/windows-placeholder.ico",
-    png: "resources/icons/app-placeholder.png",
-} as const satisfies AppIconPlaceholderPaths;
+const iconPaths = {
+    macos: "resources/icons/macos.icon",
+    windows: "resources/icons/windows.ico",
+    png: "resources/icons/app.png",
+} as const satisfies AppIconPaths;
 
 const APP_IDENTITIES = {
     dev: {
         bundleIdPlaceholder: "com.placeholder.comando",
         channel: "dev",
-        iconPlaceholderPaths,
+        iconPaths,
         id: "comando-dev",
         name: "Comando Dev",
         productName: "Comando Dev",
@@ -35,7 +35,7 @@ const APP_IDENTITIES = {
     release: {
         bundleIdPlaceholder: "com.placeholder.comando",
         channel: "release",
-        iconPlaceholderPaths,
+        iconPaths,
         id: "comando",
         name: "Comando",
         productName: "Comando",
