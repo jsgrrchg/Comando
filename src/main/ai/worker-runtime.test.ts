@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +22,19 @@ const promptMock = vi.fn(() =>
         stopReason: "completed",
     }),
 );
+let latestClientFactory:
+    | (() => {
+          readTextFile: (params: {
+              readonly limit?: number;
+              readonly line?: number;
+              readonly path: string;
+          }) => Promise<{ content: string }>;
+          writeTextFile: (params: {
+              readonly content: string;
+              readonly path: string;
+          }) => Promise<Record<string, never>>;
+      })
+    | null = null;
 const newSessionMock = vi.fn(() =>
     Promise.resolve({
         configOptions: [],
@@ -41,6 +57,13 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("@agentclientprotocol/sdk", () => ({
     ClientSideConnection: class MockClientSideConnection {
+        constructor(
+            clientFactory: typeof latestClientFactory,
+            _stream: unknown,
+        ) {
+            latestClientFactory = clientFactory;
+        }
+
         initialize = initializeMock;
         loadSession = loadSessionMock;
         newSession = newSessionMock;
@@ -64,6 +87,7 @@ describe("AiWorkerRuntime prepareSession", () => {
         promptMock.mockClear();
         newSessionMock.mockClear();
         spawnMock.mockClear();
+        latestClientFactory = null;
     });
 
     it("clears persisted lastError after a successful restore", async () => {
@@ -261,4 +285,175 @@ describe("AiWorkerRuntime prepareSession", () => {
             ),
         ).toBe(true);
     });
+
+    it("reads unsaved buffer content before hitting disk", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const filePath = path.join(tempDir, "draft.txt");
+        await fs.writeFile(filePath, "on-disk", "utf8");
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Buffer test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        await runtime.dispatchMethod("ai.notifyFileBuffer", {
+            absolutePath: filePath,
+            content: "unsaved-buffer",
+        });
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await expect(
+            client!.readTextFile({
+                path: "draft.txt",
+            }),
+        ).resolves.toEqual({
+            content: "unsaved-buffer",
+        });
+    });
+
+    it("writes directly to disk inside the allowed scope", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Write test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await expect(
+            client!.writeTextFile({
+                content: "worker-write",
+                path: "nested/output.txt",
+            }),
+        ).resolves.toEqual({});
+        await expect(
+            fs.readFile(path.join(tempDir, "nested/output.txt"), "utf8"),
+        ).resolves.toBe("worker-write");
+    });
+
+    it("keeps the out-of-project path error semantics", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Scope test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await expect(
+            client!.readTextFile({
+                path: "../outside.txt",
+            }),
+        ).rejects.toThrowError(
+            "Codex attempted to access a path outside the project.",
+        );
+    });
 });
+
+function createRuntime() {
+    return new AiWorkerRuntime({
+        emitEvent: vi.fn(),
+    });
+}
+
+function createLaunch(
+    overrides: Partial<AiWorkerSessionLaunchInput> & {
+        readonly cwd: string;
+        readonly projectRoot: string | null;
+        readonly title: string;
+    },
+): AiWorkerSessionLaunchInput {
+    const { cwd, projectRoot, title, ...rest } = overrides;
+    const readyStatus: AiRuntimeStatus = {
+        authMethod: "chatgpt",
+        authMethods: [],
+        authReady: true,
+        checkedAt: "2026-04-15T00:00:00.000Z",
+        command: "mock-codex-acp",
+        hasCustomBinaryPath: false,
+        hasGatewayConfig: false,
+        hasGatewayUrl: false,
+        message: null,
+        onboardingRequired: false,
+        runtimeId: "codex",
+        source: "bundled",
+        state: "ready",
+    };
+
+    return {
+        additionalRoots: [],
+        cwd,
+        desiredSelections: {
+            configOptions: [],
+            modeId: null,
+            modelId: null,
+            preferredConfigOptions: {},
+        },
+        input: {
+            projectId: null,
+            runtimeId: "codex",
+            sessionId: "session-1",
+            title,
+            worktreeId: null,
+        },
+        ownerWindowId: "window-1",
+        persistedSnapshot: {
+            availableCommands: [],
+            configOptions: [],
+            lastError: null,
+            messages: [],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            status: "idle",
+            title,
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            worktreeId: null,
+        },
+        projectRoot,
+        resolvedRuntime: {
+            args: [],
+            command: "mock-codex-acp",
+            env: process.env,
+            executable: "mock-codex-acp",
+            status: readyStatus,
+        },
+        ...rest,
+    };
+}

@@ -5,6 +5,7 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
 } from "@shared/ipc";
+import { forgetOpenFileBuffer, recordOpenFileBuffer } from "./openFileBuffers";
 
 const readyStatus: AiRuntimeStatus = {
     authMethod: "chatgpt",
@@ -133,9 +134,63 @@ describe("AiService hybrid persistence", () => {
             }),
         );
     });
+
+    it("replays open file buffers to the worker when it restarts", async () => {
+        const persistedSnapshot = createSnapshot({
+            sessionId: "session-1",
+            title: "Restartable",
+        });
+        const prepareSession = vi.fn(async () => persistedSnapshot);
+        const notifyFileBuffer = vi.fn(async () => undefined);
+        const absolutePath = "/tmp/comando-phase-4-buffer.txt";
+        const service = createService({
+            aiWorker: {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                notifyFileBuffer,
+                prepareSession,
+                refreshProjectScopes: vi.fn(),
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt: vi.fn(),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+            },
+            loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+        });
+
+        recordOpenFileBuffer(absolutePath, "unsaved content");
+        try {
+            await service.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Restartable",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            prepareSession.mockClear();
+
+            await service.handleWorkerRestarted();
+
+            expect(notifyFileBuffer).toHaveBeenCalledWith({
+                absolutePath,
+                content: "unsaved content",
+            });
+            expect(prepareSession).toHaveBeenCalledTimes(1);
+        } finally {
+            forgetOpenFileBuffer(absolutePath);
+        }
+    });
 });
 
 function createService(overrides: {
+    readonly aiWorker?: object;
     readonly loadSessionSnapshot?: ReturnType<typeof vi.fn>;
     readonly onSessionSnapshot?: (
         ownerWindowId: string,
@@ -144,6 +199,7 @@ function createService(overrides: {
     readonly saveSessionSnapshot?: ReturnType<typeof vi.fn>;
 } = {}) {
     return new AiService({
+        aiWorker: overrides.aiWorker as never,
         onRuntimeStatus: vi.fn(),
         onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
         persistence: {

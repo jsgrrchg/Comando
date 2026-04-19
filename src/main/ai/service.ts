@@ -64,6 +64,7 @@ import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
 } from "./persistence";
+import { listOpenFileBuffers } from "./openFileBuffers";
 import {
     AI_SESSION_STREAMING_FLUSH_MS,
     type AiWorkerGateway,
@@ -232,6 +233,11 @@ export class AiService {
 
     async handleWorkerRestarted(): Promise<void> {
         const worker = this.#requireAiWorker();
+        await Promise.all(
+            listOpenFileBuffers().map(async (buffer) => {
+                await worker.notifyFileBuffer(buffer);
+            }),
+        );
         const relaunches = [...this.#liveSessionContexts.values()].map(
             async (context) => {
                 const snapshot =
