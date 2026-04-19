@@ -83,6 +83,29 @@ describe("markdownLists", () => {
         });
     });
 
+    it("respects ordered list resets after a blank paragraph", () => {
+        const source = "1. first\n\n1. second";
+        const result = continueMarkdownList(source, source.length);
+
+        expect(result).toEqual({
+            selectionEnd: "1. first\n\n1. second\n2. ".length,
+            selectionOffset: "1. first\n\n1. second\n2. ".length,
+            selectionStart: "1. first\n\n1. second\n2. ".length,
+            text: "1. first\n\n1. second\n2. ",
+        });
+    });
+
+    it("does not renumber ordered lists across blank paragraphs", () => {
+        const result = normalizeMarkdownListText("1. first\n\n1. second", 19);
+
+        expect(result).toEqual({
+            selectionEnd: 19,
+            selectionOffset: 19,
+            selectionStart: 19,
+            text: "1. first\n\n1. second",
+        });
+    });
+
     it("normalizes uppercase task markers and spacing", () => {
         const result = normalizeMarkdownListText("- [X]   Done", 12);
 

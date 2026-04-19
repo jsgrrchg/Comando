@@ -143,6 +143,9 @@ export function normalizeMarkdownListText(
     for (const line of iterateLineRanges(text)) {
         const item = parseMarkdownListItem(line.text);
         if (!item) {
+            if (line.text.trim().length === 0) {
+                contexts.length = 0;
+            }
             continue;
         }
 
