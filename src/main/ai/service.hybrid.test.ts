@@ -141,6 +141,7 @@ describe("AiService hybrid persistence", () => {
             sessionId: "session-1",
             title: "Restartable",
         });
+        const saveSessionSnapshot = vi.fn();
         const prepareSession = vi.fn(async () => persistedSnapshot);
         const notifyFileBuffer = vi.fn(async () => undefined);
         const absolutePath = "/tmp/comando-phase-4-buffer.txt";
@@ -167,6 +168,7 @@ describe("AiService hybrid persistence", () => {
                 setSessionModel: vi.fn(),
             },
             loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+            saveSessionSnapshot,
         });
 
         recordOpenFileBuffer(absolutePath, "unsaved content");
@@ -190,6 +192,7 @@ describe("AiService hybrid persistence", () => {
                 content: "unsaved content",
             });
             expect(prepareSession).toHaveBeenCalledTimes(1);
+            expect(saveSessionSnapshot).toHaveBeenCalledWith(persistedSnapshot);
         } finally {
             forgetOpenFileBuffer(absolutePath);
         }

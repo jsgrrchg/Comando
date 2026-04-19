@@ -106,6 +106,7 @@ describe("AiService prepareSession", () => {
             setSessionModel: vi.fn(),
         };
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
+        const saveSessionSnapshot = vi.fn();
         const service = new AiService({
             aiWorker,
             onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
@@ -121,7 +122,7 @@ describe("AiService prepareSession", () => {
                 saveRuntimeSelectionPreferenceOption: vi.fn(),
                 saveRuntimeModePreference: vi.fn(),
                 saveRuntimeModelPreference: vi.fn(),
-                saveSessionSnapshot: vi.fn(),
+                saveSessionSnapshot,
             } as never,
             projectService: {
                 getProjectRootPath: vi.fn(() => process.cwd()),
@@ -207,6 +208,7 @@ describe("AiService prepareSession", () => {
                 }),
             }),
         });
+        expect(saveSessionSnapshot).toHaveBeenCalledWith(workerSnapshot);
         expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
     });
 });

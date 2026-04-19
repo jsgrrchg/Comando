@@ -215,7 +215,7 @@ export class AiService {
                     return;
                 }
 
-                await worker.prepareSession({
+                const relaunchedSnapshot = await worker.prepareSession({
                     input: {
                         projectId: context.projectId,
                         runtimeId: context.runtimeId,
@@ -236,6 +236,10 @@ export class AiService {
                         snapshot,
                     ),
                 });
+                this.#acceptPreparedLiveSnapshot(
+                    relaunchedSnapshot,
+                    context.ownerWindowId,
+                );
             },
         );
 
@@ -435,7 +439,7 @@ export class AiService {
             input,
             launch,
         });
-        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
+        this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
         return snapshot;
     }
 
@@ -869,6 +873,14 @@ export class AiService {
     #clearLiveSession(sessionId: string): void {
         this.#liveSnapshots.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
+    }
+
+    #acceptPreparedLiveSnapshot(
+        snapshot: AiSessionSnapshot,
+        ownerWindowId: string,
+    ): void {
+        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(snapshot);
     }
 
     #getLiveSessionRuntimeId(sessionId: string): AiRuntimeId {
