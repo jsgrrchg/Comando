@@ -1,4 +1,8 @@
-import type { AppChangelogRelease, AppUpdateState } from "@shared/ipc";
+import type {
+    AppChangelogRelease,
+    AppPrivacyAccessState,
+    AppUpdateState,
+} from "@shared/ipc";
 
 export type ThemeMode = "system" | "light" | "dark";
 
@@ -107,10 +111,16 @@ export interface SettingsWindowProps {
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly aiChat: SettingsAiChatState;
+    readonly privacy: SettingsPrivacyState;
     readonly updates: SettingsUpdatesState;
     readonly shortcuts?: readonly ShortcutEntryOption[];
     readonly runtimes?: readonly RuntimeCardOption[];
     readonly onRuntimeAction?: (runtimeId: string, actionId: string) => void;
+}
+
+export interface SettingsPrivacyState {
+    readonly state: AppPrivacyAccessState;
+    readonly onOpenFullDiskAccessSettings?: () => void;
 }
 
 export interface SettingsUpdatesState {

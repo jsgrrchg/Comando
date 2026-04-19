@@ -80,12 +80,12 @@ cd comando
 # Install dependencies
 pnpm install
 
-# Build and stage the Codex and Claude ACP runtimes so they can be bundled
-pnpm stage:ai
-
 # Start in development mode (renderer HMR, main auto-restart)
 pnpm dev
 ```
+
+`pnpm dev` already runs `pnpm stage:ai` through the `predev` hook, so you normally do not need to run it manually.
+Run `pnpm stage:ai` yourself only if you want to refresh the staged AI runtimes ahead of time or troubleshoot packaging/runtime issues.
 
 If native dependencies fail after install:
 
@@ -112,7 +112,9 @@ pnpm rebuild:native
 
 ## Packaging
 
-Before running the app in hot-reload mode or building release artifacts, make sure the Codex and Claude ACP runtimes have been built and staged with:
+Comando stages the Codex and Claude ACP runtimes automatically before `pnpm dev` and `pnpm build` via the `predev` and `prebuild` hooks.
+
+Run the staging step manually only when you want to refresh the staged artifacts ahead of time or diagnose runtime/package issues:
 
 ```bash
 pnpm stage:ai

@@ -4,6 +4,7 @@ import {
     IPC_CHANNELS,
     IPC_EVENTS,
     type AppChangelogRelease,
+    type AppPrivacyAccessState,
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AppWindowKind,
@@ -115,6 +116,10 @@ import {
     installAppUpdateAndRestart,
 } from "@main/updater";
 import { loadAppChangelog } from "@main/changelog";
+import {
+    getAppPrivacyAccessState,
+    openMacOsFullDiskAccessSettings,
+} from "@main/privacy-access";
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 
@@ -135,6 +140,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getBootstrapSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getAppUpdateState);
     ipcMain.removeHandler(IPC_CHANNELS.getAppChangelog);
+    ipcMain.removeHandler(IPC_CHANNELS.getAppPrivacyAccessState);
+    ipcMain.removeHandler(IPC_CHANNELS.openMacOsFullDiskAccessSettings);
     ipcMain.removeHandler(IPC_CHANNELS.checkForAppUpdates);
     ipcMain.removeHandler(IPC_CHANNELS.installAppUpdateAndRestart);
     ipcMain.removeHandler(IPC_CHANNELS.getPersistenceSnapshot);
@@ -228,6 +235,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.getAppChangelog,
         (): readonly AppChangelogRelease[] => loadAppChangelog(),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getAppPrivacyAccessState,
+        (): AppPrivacyAccessState => getAppPrivacyAccessState(),
+    );
+    ipcMain.handle(IPC_CHANNELS.openMacOsFullDiskAccessSettings, () =>
+        openMacOsFullDiskAccessSettings(),
     );
     ipcMain.handle(
         IPC_CHANNELS.checkForAppUpdates,

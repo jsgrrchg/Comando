@@ -6,6 +6,7 @@ import type {
     AppChangelogRelease,
     AppAiChatSettings,
     AppAppearanceSettings,
+    AppPrivacyAccessState,
     AppUpdateState,
     AppEditorSettings,
     ChatFontFamily,
@@ -76,6 +77,14 @@ export function SettingsApp() {
     const [appChangelog, setAppChangelog] = useState<
         readonly AppChangelogRelease[]
     >([]);
+    const [appPrivacyAccessState, setAppPrivacyAccessState] =
+        useState<AppPrivacyAccessState>({
+            canOpenFullDiskAccessSettings: false,
+            lastDeniedPath: null,
+            lastUpdatedAt: null,
+            message: "Loading privacy access status...",
+            status: "not-applicable",
+        });
     const availableFontFamilyIds = useAvailableFontFamilyIds();
     const hydrateSettings = useSettingsStore((state) => state.hydrate);
     const settingsRevision = useSettingsStore((state) => state.revision);
@@ -124,6 +133,15 @@ export function SettingsApp() {
         setAppChangelog(releases);
     }, []);
 
+    const loadAppPrivacyAccessState = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        const nextState = await window.comando.getAppPrivacyAccessState();
+        setAppPrivacyAccessState(nextState);
+    }, []);
+
     useEffect(() => {
         const timeout = window.setTimeout(() => {
             void Promise.all([
@@ -131,6 +149,7 @@ export function SettingsApp() {
                 loadRuntimeStatuses(),
                 loadAppUpdateState(),
                 loadAppChangelog(),
+                loadAppPrivacyAccessState(),
             ]);
         }, 0);
 
@@ -140,6 +159,7 @@ export function SettingsApp() {
     }, [
         hydrateSettings,
         loadAppChangelog,
+        loadAppPrivacyAccessState,
         loadAppUpdateState,
         loadRuntimeStatuses,
     ]);
@@ -151,6 +171,16 @@ export function SettingsApp() {
 
         return window.comando.onAppUpdateState((nextState) => {
             setAppUpdateState(nextState);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!window.comando) {
+            return undefined;
+        }
+
+        return window.comando.onAppPrivacyAccessState((nextState) => {
+            setAppPrivacyAccessState(nextState);
         });
     }, []);
 
@@ -410,6 +440,16 @@ export function SettingsApp() {
                 onMinimapEnabledChange: handleAppEditorMinimapEnabledChange,
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
+            }}
+            privacy={{
+                onOpenFullDiskAccessSettings: () => {
+                    if (!window.comando) {
+                        return;
+                    }
+
+                    void window.comando.openMacOsFullDiskAccessSettings();
+                },
+                state: appPrivacyAccessState,
             }}
             onRuntimeAction={(runtimeId, actionId) =>
                 void handleRuntimeAction({

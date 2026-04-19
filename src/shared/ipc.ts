@@ -7,6 +7,9 @@ export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
     getAppUpdateState: "app:get-update-state",
     getAppChangelog: "app:get-changelog",
+    getAppPrivacyAccessState: "app:get-privacy-access-state",
+    openMacOsFullDiskAccessSettings:
+        "app:open-macos-full-disk-access-settings",
     checkForAppUpdates: "app:check-for-updates",
     installAppUpdateAndRestart: "app:install-update-and-restart",
     getPersistenceSnapshot: "app:get-persistence-snapshot",
@@ -94,6 +97,7 @@ export const IPC_CHANNELS = {
 
 export const IPC_EVENTS = {
     appUpdateState: "app:update-state",
+    appPrivacyAccessState: "app:privacy-access-state",
     projectTreeInvalidated: "projects:tree-invalidated",
     projectWindowRequested: "app:project-window-requested",
     themeUpdated: "app:theme-updated",
@@ -412,6 +416,19 @@ export interface AppChangelogRelease {
     readonly date: string | null;
     readonly highlights: readonly string[];
     readonly version: string;
+}
+
+export type AppPrivacyAccessStatus =
+    | "not-applicable"
+    | "monitoring"
+    | "attention-needed";
+
+export interface AppPrivacyAccessState {
+    readonly canOpenFullDiskAccessSettings: boolean;
+    readonly lastDeniedPath: string | null;
+    readonly lastUpdatedAt: string | null;
+    readonly message: string;
+    readonly status: AppPrivacyAccessStatus;
 }
 
 export interface ProjectSettingsUpdatedEvent {
@@ -1423,6 +1440,8 @@ export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getAppUpdateState: () => Promise<AppUpdateState>;
     getAppChangelog: () => Promise<readonly AppChangelogRelease[]>;
+    getAppPrivacyAccessState: () => Promise<AppPrivacyAccessState>;
+    openMacOsFullDiskAccessSettings: () => Promise<void>;
     checkForAppUpdates: () => Promise<AppUpdateState>;
     installAppUpdateAndRestart: () => Promise<void>;
     getPersistenceSnapshot: () => Promise<PersistenceSnapshot | null>;
@@ -1586,6 +1605,9 @@ export interface ComandoApi {
         listener: (payload: ProjectTreeInvalidation) => void,
     ) => () => void;
     onAppUpdateState: (listener: (payload: AppUpdateState) => void) => () => void;
+    onAppPrivacyAccessState: (
+        listener: (payload: AppPrivacyAccessState) => void,
+    ) => () => void;
     onGitRepositoryInvalidated: (
         listener: (payload: GitRepositoryInvalidation) => void,
     ) => () => void;

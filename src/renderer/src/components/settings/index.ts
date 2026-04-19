@@ -16,6 +16,7 @@ export type {
     RuntimeCardOption,
     SettingsAiChatState,
     SettingsEditorControlState,
+    SettingsPrivacyState,
     SettingsThemeControlState,
     SettingsWindowProps,
     ShortcutEntryOption,

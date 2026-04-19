@@ -18,6 +18,10 @@ import { normalizeProjectSearchQuery } from "@shared/project-search";
 
 import { mainProcessPerformance } from "../observability/performance";
 import { debugBenignError } from "../observability/logging";
+import {
+    recordFilesystemAccessFailure,
+    recordFilesystemAccessSuccess,
+} from "../privacy-access";
 import { logWorkerClientCallFailure } from "../workers/supervisor";
 import type { ProjectStore, ProjectStoreWorktreeRecord } from "./store";
 import {
@@ -134,12 +138,19 @@ export class ProjectService {
             .measureAsync(
                 "projects.listProjectTreeChildren",
                 async () =>
-                    await this.#worker.listProjectTreeChildren({
-                        parentRelativePath: input.parentRelativePath,
-                        projectId: input.projectId,
-                        rootPath: project.rootPath,
-                        worktreeId: project.worktreeId,
-                    }),
+                    await this.#trackFilesystemAccess(
+                        resolveProjectPath(
+                            project.rootPath,
+                            input.parentRelativePath,
+                        ),
+                        async () =>
+                            await this.#worker.listProjectTreeChildren({
+                                parentRelativePath: input.parentRelativePath,
+                                projectId: input.projectId,
+                                rootPath: project.rootPath,
+                                worktreeId: project.worktreeId,
+                            }),
+                    ),
                 {
                     parentRelativePath: input.parentRelativePath ?? ".",
                     projectId: input.projectId,
@@ -160,12 +171,16 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
 
-        return await this.#worker.openProjectFile({
-            projectId: input.projectId,
-            relativePath: input.relativePath,
-            rootPath: project.rootPath,
-            worktreeId: project.worktreeId,
-        });
+        return await this.#trackFilesystemAccess(
+            resolveProjectPath(project.rootPath, input.relativePath),
+            async () =>
+                await this.#worker.openProjectFile({
+                    projectId: input.projectId,
+                    relativePath: input.relativePath,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
+        );
     }
 
     async searchProjectEntries(
@@ -191,10 +206,14 @@ export class ProjectService {
                 worktreeId: project.worktreeId,
             });
         const response = this.#indexedRoots.has(normalizedRootPath)
-            ? await search()
+            ? await this.#trackFilesystemAccess(project.rootPath, search)
             : await mainProcessPerformance.measureAsync(
                   "projects.buildSearchIndex",
-                  search,
+                  async () =>
+                      await this.#trackFilesystemAccess(
+                          project.rootPath,
+                          search,
+                      ),
                   {
                       projectId: input.projectId,
                       rootPath: normalizedRootPath,
@@ -217,14 +236,18 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
 
-        return await this.#worker.saveProjectFile({
-            content: input.content,
-            expectedModifiedAtMs: input.expectedModifiedAtMs ?? null,
-            projectId: input.projectId,
-            relativePath: input.relativePath,
-            rootPath: project.rootPath,
-            worktreeId: project.worktreeId,
-        });
+        return await this.#trackFilesystemAccess(
+            resolveProjectPath(project.rootPath, input.relativePath),
+            async () =>
+                await this.#worker.saveProjectFile({
+                    content: input.content,
+                    expectedModifiedAtMs: input.expectedModifiedAtMs ?? null,
+                    projectId: input.projectId,
+                    relativePath: input.relativePath,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
+        );
     }
 
     async createProjectEntry(
@@ -237,14 +260,18 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
 
-        return await this.#worker.createProjectEntry({
-            kind: input.kind,
-            name: input.name,
-            parentRelativePath: input.parentRelativePath,
-            projectId: input.projectId,
-            rootPath: project.rootPath,
-            worktreeId: project.worktreeId,
-        });
+        return await this.#trackFilesystemAccess(
+            resolveProjectPath(project.rootPath, input.parentRelativePath),
+            async () =>
+                await this.#worker.createProjectEntry({
+                    kind: input.kind,
+                    name: input.name,
+                    parentRelativePath: input.parentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
+        );
     }
 
     async renameProjectEntry(
@@ -257,14 +284,18 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
 
-        return await this.#worker.renameProjectEntry({
-            nextName: input.nextName,
-            nextParentRelativePath: input.nextParentRelativePath,
-            projectId: input.projectId,
-            relativePath: input.relativePath,
-            rootPath: project.rootPath,
-            worktreeId: project.worktreeId,
-        });
+        return await this.#trackFilesystemAccess(
+            resolveProjectPath(project.rootPath, input.relativePath),
+            async () =>
+                await this.#worker.renameProjectEntry({
+                    nextName: input.nextName,
+                    nextParentRelativePath: input.nextParentRelativePath,
+                    projectId: input.projectId,
+                    relativePath: input.relativePath,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
+        );
     }
 
     async deleteProjectEntry(input: DeleteProjectEntryInput): Promise<void> {
@@ -275,12 +306,17 @@ export class ProjectService {
         );
         this.touchProject(input.projectId);
 
-        await this.#worker.deleteProjectEntry({
-            projectId: input.projectId,
-            relativePath: input.relativePath,
-            rootPath: project.rootPath,
-            worktreeId: project.worktreeId,
-        });
+        await this.#trackFilesystemAccess(
+            resolveProjectPath(project.rootPath, input.relativePath),
+            async () => {
+                await this.#worker.deleteProjectEntry({
+                    projectId: input.projectId,
+                    relativePath: input.relativePath,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                });
+            },
+        );
     }
 
     getProjectRootPath(
@@ -391,6 +427,20 @@ export class ProjectService {
             .catch((error) => {
                 logProjectWorkerError("refreshAfterRestart", error);
             });
+    }
+
+    async #trackFilesystemAccess<T>(
+        attemptedPath: string,
+        operation: () => Promise<T>,
+    ): Promise<T> {
+        try {
+            const result = await operation();
+            recordFilesystemAccessSuccess(attemptedPath);
+            return result;
+        } catch (error) {
+            recordFilesystemAccessFailure(attemptedPath, error);
+            throw error;
+        }
     }
 
     #getProjectById(projectId: string): {

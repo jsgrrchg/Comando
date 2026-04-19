@@ -49,6 +49,7 @@ import type {
     RuntimeCardOption,
     SettingsAiChatState,
     SettingsEditorControlState,
+    SettingsPrivacyState,
     SettingsThemeControlState,
     SettingsUpdatesState,
     SettingsWindowProps,
@@ -60,6 +61,7 @@ type Category =
     | "appearance"
     | "editor"
     | "ai"
+    | "privacy"
     | "shortcuts"
     | "runtimes"
     | "updates";
@@ -68,6 +70,7 @@ const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "editor", label: "Editor" },
     { id: "ai", label: "AI" },
+    { id: "privacy", label: "Privacy" },
     { id: "shortcuts", label: "Shortcuts" },
     { id: "runtimes", label: "AI Runtimes" },
     { id: "updates", label: "Updates" },
@@ -77,6 +80,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     appearance: "Theme mode and visual presets",
     editor: "Typography and editor behavior",
     ai: "Chat, composer, and AI behavior",
+    privacy: "Protected folders and macOS permission guidance",
     shortcuts: "Keyboard shortcuts reference",
     runtimes: "AI runtime authentication and wiring",
     updates: "App version and changelog",
@@ -86,6 +90,7 @@ export function SettingsWindow({
     aiChat,
     appAppearance,
     appEditor,
+    privacy,
     onRuntimeAction,
     shortcuts = [],
     runtimes = [],
@@ -338,6 +343,14 @@ export function SettingsWindow({
                             )}
                             {active === "ai" && (
                                 <AiChatContent state={aiChat} />
+                            )}
+                            {active === "privacy" && (
+                                <PrivacyContent
+                                    onOpenFullDiskAccessSettings={
+                                        privacy.onOpenFullDiskAccessSettings
+                                    }
+                                    state={privacy.state}
+                                />
                             )}
                             {active === "shortcuts" && (
                                 <ShortcutsContent shortcuts={shortcuts} />
@@ -653,6 +666,46 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                         max={AI_COMPOSER_FONT_SIZE_MAX}
                         onChange={(v) => state.onComposerFontSizeChange?.(v)}
                     />
+                }
+            />
+        </div>
+    );
+}
+
+function PrivacyContent({
+    onOpenFullDiskAccessSettings,
+    state,
+}: SettingsPrivacyState) {
+    const canOpenSettings =
+        state.canOpenFullDiskAccessSettings &&
+        onOpenFullDiskAccessSettings !== undefined;
+
+    return (
+        <div>
+            <SectionLabel>Protected folders</SectionLabel>
+            <Row
+                label="macOS filesystem access"
+                description={state.message}
+                control={<PrivacyStatusBadge status={state.status} />}
+            />
+            {state.lastDeniedPath ? (
+                <Row
+                    label="Last blocked path"
+                    description={state.lastDeniedPath}
+                    control={null}
+                />
+            ) : null}
+            <Row
+                label="Full Disk Access"
+                description="If macOS blocks Comando from opening projects in Documents, Desktop, or other protected folders, add Comando to Privacy & Security > Full Disk Access."
+                control={
+                    <IdeActionButton
+                        active={state.status === "attention-needed"}
+                        disabled={!canOpenSettings}
+                        onClick={() => onOpenFullDiskAccessSettings?.()}
+                    >
+                        open full disk access
+                    </IdeActionButton>
                 }
             />
         </div>
@@ -1078,6 +1131,33 @@ function UpdateStatusBadge({ state }: { state: AppUpdateState }) {
     );
 }
 
+function PrivacyStatusBadge({
+    status,
+}: {
+    status: SettingsPrivacyState["state"]["status"];
+}) {
+    const { backgroundColor, color, label } =
+        getPrivacyStatusPresentation(status);
+
+    return (
+        <span
+            style={{
+                backgroundColor,
+                borderRadius: 4,
+                color,
+                fontFamily: "var(--font-mono)",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                padding: "2px 6px",
+                textTransform: "uppercase",
+            }}
+        >
+            {label}
+        </span>
+    );
+}
+
 function ChangelogItem({
     entry,
     isLatest,
@@ -1276,6 +1356,39 @@ function getUpdateStatusPresentation(status: AppUpdateState["status"]): {
                     "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
                 color: "var(--color-text-secondary)",
                 label: "Unavailable",
+            };
+    }
+}
+
+function getPrivacyStatusPresentation(
+    status: SettingsPrivacyState["state"]["status"],
+): {
+    readonly backgroundColor: string;
+    readonly color: string;
+    readonly label: string;
+} {
+    switch (status) {
+        case "attention-needed":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--diff-remove) 14%, transparent)",
+                color: "var(--diff-remove)",
+                label: "Needs attention",
+            };
+        case "monitoring":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+                color: "var(--color-accent)",
+                label: "Monitoring",
+            };
+        case "not-applicable":
+        default:
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
+                color: "var(--color-text-secondary)",
+                label: "N/A",
             };
     }
 }

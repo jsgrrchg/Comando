@@ -6,6 +6,7 @@ import {
     IPC_CHANNELS,
     IPC_EVENTS,
     type AppChangelogRelease,
+    type AppPrivacyAccessState,
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
@@ -219,6 +220,13 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getAppChangelog,
             await ipcRenderer.invoke(IPC_CHANNELS.getAppChangelog),
         ),
+    getAppPrivacyAccessState: async () =>
+        assertIpcObject<AppPrivacyAccessState>(
+            IPC_CHANNELS.getAppPrivacyAccessState,
+            await ipcRenderer.invoke(IPC_CHANNELS.getAppPrivacyAccessState),
+        ),
+    openMacOsFullDiskAccessSettings: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.openMacOsFullDiskAccessSettings),
     checkForAppUpdates: async () =>
         assertIpcObject<AppUpdateState>(
             IPC_CHANNELS.checkForAppUpdates,
@@ -316,6 +324,23 @@ const comandoApi: ComandoApi = {
 
         return () => {
             ipcRenderer.removeListener(IPC_EVENTS.appUpdateState, handleEvent);
+        };
+    },
+    onAppPrivacyAccessState: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            payload: AppPrivacyAccessState,
+        ) => {
+            listener(payload);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.appPrivacyAccessState, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.appPrivacyAccessState,
+                handleEvent,
+            );
         };
     },
     onProjectWindowRequested: (listener) => {
