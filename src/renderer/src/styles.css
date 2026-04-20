@@ -909,7 +909,8 @@ button {
 
 .sidebar-git-scope-menu__search {
     position: relative;
-    padding: 0 12px 10px;
+    margin-bottom: 10px;
+    padding: 0 12px;
 }
 
 .sidebar-git-scope-menu__search-icon {
