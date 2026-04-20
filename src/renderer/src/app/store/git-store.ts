@@ -59,6 +59,11 @@ interface GitStoreState {
         projectId: string,
         branchName: string,
         worktreeId?: string | null,
+        options?: {
+            readonly force?: boolean;
+            readonly newBranchName?: string | null;
+            readonly startPoint?: string | null;
+        },
     ) => Promise<GitRepositorySnapshot>;
     commitChanges: (input: GitCommitInput) => Promise<{
         readonly commitSha: string;
@@ -191,10 +196,18 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     selectedDiffPaths: {},
     snapshots: {},
 
-    checkoutBranch: async (projectId, branchName, worktreeId = null) => {
+    checkoutBranch: async (
+        projectId,
+        branchName,
+        worktreeId = null,
+        options = {},
+    ) => {
         const snapshot = await getComandoApi().checkoutGitBranch({
             branchName,
+            force: options.force,
+            newBranchName: options.newBranchName,
             projectId,
+            startPoint: options.startPoint,
             worktreeId,
         });
 

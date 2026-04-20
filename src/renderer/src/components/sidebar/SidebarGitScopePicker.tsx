@@ -36,6 +36,13 @@ interface SidebarGitScopePickerProps {
 const EMPTY_BRANCHES: readonly GitBranchSummary[] = [];
 const EMPTY_WORKTREES: readonly GitWorktreeSummary[] = [];
 
+interface RemoteBranchResolution {
+    readonly hasSuggestedNameConflict: boolean;
+    readonly linkedWorktree: GitWorktreeSummary | null;
+    readonly localBranch: GitBranchSummary | null;
+    readonly suggestedLocalBranchName: string;
+}
+
 export function SidebarGitScopePicker({
     projectId,
     worktreeId,
@@ -76,6 +83,7 @@ export function SidebarGitScopePicker({
             : EMPTY_BRANCHES,
     );
     const checkoutBranch = useGitStore((state) => state.checkoutBranch);
+    const createWorktree = useGitStore((state) => state.createWorktree);
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
@@ -99,12 +107,27 @@ export function SidebarGitScopePicker({
         }
 
         return branches.filter((branch) => {
-            const linkedWorktree = snapshot?.worktrees.find(
-                (entry) => entry.branchName === branch.name,
-            );
+            const linkedWorktree = branch.isRemote
+                ? resolveRemoteBranchResolution(
+                      branch,
+                      branches,
+                      snapshot?.worktrees ?? EMPTY_WORKTREES,
+                  ).linkedWorktree
+                : findBranchWorktree(
+                      branch.name,
+                      snapshot?.worktrees ?? EMPTY_WORKTREES,
+                  );
+            const trackingLocalBranch = branch.isRemote
+                ? resolveRemoteBranchResolution(
+                      branch,
+                      branches,
+                      snapshot?.worktrees ?? EMPTY_WORKTREES,
+                  ).localBranch
+                : null;
             const haystack = [
                 branch.name,
                 branch.upstreamName ?? "",
+                trackingLocalBranch?.name ?? "",
                 linkedWorktree?.rootPath ?? "",
                 linkedWorktree?.branchName ?? "",
                 branch.isRemote ? "remote" : "local",
@@ -359,26 +382,43 @@ export function SidebarGitScopePicker({
                 return;
             }
 
-            const linkedWorktree =
-                snapshot?.worktrees.find(
-                    (entry) =>
-                        entry.branchName === branch.name &&
-                        entry.id !== (worktreeId ?? null),
-                ) ?? null;
+            const remoteResolution = branch.isRemote
+                ? resolveRemoteBranchResolution(
+                      branch,
+                      branches,
+                      snapshot?.worktrees ?? EMPTY_WORKTREES,
+                  )
+                : null;
+            const targetBranch = remoteResolution?.localBranch ?? branch;
+            const linkedWorktree = branch.isRemote
+                ? remoteResolution?.linkedWorktree ??
+                  findBranchWorktree(
+                      targetBranch.name,
+                      snapshot?.worktrees ?? EMPTY_WORKTREES,
+                  )
+                : findBranchWorktree(
+                      targetBranch.name,
+                      snapshot?.worktrees ?? EMPTY_WORKTREES,
+                  );
 
-            if (linkedWorktree) {
+            if (
+                linkedWorktree &&
+                linkedWorktree.id !== (worktreeId ?? snapshot?.currentWorktreeId ?? null)
+            ) {
                 await handleSelectWorktree(linkedWorktree.id);
                 return;
             }
 
             if (branch.isRemote) {
-                setActionError(
-                    "Remote branches are read-only. Switch from a local branch or create a worktree first.",
-                );
-                return;
+                if (remoteResolution?.hasSuggestedNameConflict) {
+                    setActionError(
+                        `Could not create a local branch for ${branch.name}. ${remoteResolution.suggestedLocalBranchName} already exists with a different upstream. Use the Worktree action or rename that local branch first.`,
+                    );
+                    return;
+                }
             }
 
-            if (branch.name === snapshot?.branch?.name) {
+            if (targetBranch.name === snapshot?.branch?.name) {
                 setIsOpen(false);
                 setQuery("");
                 setActionError(null);
@@ -391,8 +431,16 @@ export function SidebarGitScopePicker({
             try {
                 const result = await checkoutBranch(
                     projectId,
-                    branch.name,
+                    targetBranch.name,
                     worktreeId ?? snapshot?.currentWorktreeId ?? null,
+                    branch.isRemote && !remoteResolution?.localBranch
+                        ? {
+                              newBranchName:
+                                  remoteResolution?.suggestedLocalBranchName ??
+                                  stripRemotePrefix(branch.name),
+                              startPoint: branch.name,
+                          }
+                        : undefined,
                 );
                 const nextWorktreeId =
                     result.currentWorktreeId ??
@@ -413,12 +461,76 @@ export function SidebarGitScopePicker({
             }
         },
         [
+            branches,
             checkoutBranch,
             handleSelectWorktree,
             isBusy,
             projectId,
             refreshProjectTree,
             snapshot,
+            worktreeId,
+        ],
+    );
+
+    const handleCreateWorktreeFromBranch = useCallback(
+        async (branch: GitBranchSummary) => {
+            if (!projectId || isBusy || !project || !branch.isRemote) {
+                return;
+            }
+
+            const suggestedBranchName = buildUniqueLocalBranchName(
+                stripRemotePrefix(branch.name),
+                branches,
+            );
+            const suggestedPath = buildSuggestedWorktreePath(
+                project.rootPath,
+                suggestedBranchName,
+                snapshot?.worktrees ?? EMPTY_WORKTREES,
+            );
+
+            setActionError(null);
+            setIsBusy(true);
+
+            try {
+                const createdWorktree = await createWorktree({
+                    branchName: suggestedBranchName,
+                    path: suggestedPath,
+                    projectId,
+                    startPoint: branch.name,
+                    worktreeId: worktreeId ?? snapshot?.currentWorktreeId ?? null,
+                });
+
+                await setActiveWorktree(projectId, createdWorktree.id);
+                await Promise.all([
+                    refreshGitProject(projectId, createdWorktree.id),
+                    refreshGitHistory(projectId, createdWorktree.id),
+                    refreshProjectTree(projectId, createdWorktree.id),
+                ]);
+
+                setIsOpen(false);
+                setQuery("");
+            } catch (error) {
+                setActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not create a worktree from this branch.",
+                );
+            } finally {
+                setIsBusy(false);
+            }
+        },
+        [
+            branches,
+            createWorktree,
+            isBusy,
+            project,
+            projectId,
+            refreshGitHistory,
+            refreshGitProject,
+            refreshProjectTree,
+            setActiveWorktree,
+            snapshot?.currentWorktreeId,
+            snapshot?.worktrees,
             worktreeId,
         ],
     );
@@ -603,13 +715,11 @@ export function SidebarGitScopePicker({
                                                                 const idx =
                                                                     rowIndex++;
                                                                 const branchWorktree =
-                                                                    snapshot?.worktrees.find(
-                                                                        (
-                                                                            entry,
-                                                                        ) =>
-                                                                            entry.branchName ===
-                                                                            branch.name,
-                                                                    ) ?? null;
+                                                                    findBranchWorktree(
+                                                                        branch.name,
+                                                                        snapshot?.worktrees ??
+                                                                            EMPTY_WORKTREES,
+                                                                    );
                                                                 const badges =
                                                                     getBranchBadges(
                                                                         branch,
@@ -633,6 +743,7 @@ export function SidebarGitScopePicker({
                                                                             description={getBranchDescription(
                                                                                 branch,
                                                                                 branchWorktree,
+                                                                                null,
                                                                             )}
                                                                             isActive={
                                                                                 branch.name ===
@@ -688,19 +799,47 @@ export function SidebarGitScopePicker({
                                                             (branch) => {
                                                                 const idx =
                                                                     rowIndex++;
+                                                                const remoteResolution =
+                                                                    resolveRemoteBranchResolution(
+                                                                        branch,
+                                                                        branches,
+                                                                        snapshot?.worktrees ??
+                                                                            EMPTY_WORKTREES,
+                                                                    );
                                                                 const branchWorktree =
-                                                                    snapshot?.worktrees.find(
-                                                                        (
-                                                                            entry,
-                                                                        ) =>
-                                                                            entry.branchName ===
-                                                                            branch.name,
-                                                                    ) ?? null;
+                                                                    remoteResolution.linkedWorktree;
                                                                 const badges =
                                                                     getRemoteBranchBadges(
+                                                                        remoteResolution,
                                                                         branchWorktree,
                                                                         worktreeId,
                                                                     );
+                                                                const remoteActions =
+                                                                    remoteResolution.localBranch
+                                                                        ? []
+                                                                        : [
+                                                                              {
+                                                                                  disabled:
+                                                                                      remoteResolution.hasSuggestedNameConflict,
+                                                                                  label: "Checkout",
+                                                                                  onClick: () =>
+                                                                                      void handleSelectBranch(
+                                                                                          branch,
+                                                                                      ),
+                                                                                  title:
+                                                                                      remoteResolution.hasSuggestedNameConflict
+                                                                                          ? `Cannot create ${remoteResolution.suggestedLocalBranchName} because a different local branch already uses that name.`
+                                                                                          : `Create ${remoteResolution.suggestedLocalBranchName} from ${branch.name}`,
+                                                                              },
+                                                                              {
+                                                                                  label: "Worktree",
+                                                                                  onClick: () =>
+                                                                                      void handleCreateWorktreeFromBranch(
+                                                                                          branch,
+                                                                                      ),
+                                                                                  title: `Create a new worktree from ${branch.name}`,
+                                                                              },
+                                                                          ];
 
                                                                 return (
                                                                     <div
@@ -712,13 +851,22 @@ export function SidebarGitScopePicker({
                                                                         }
                                                                     >
                                                                         <SidebarNodeRow
+                                                                            actions={
+                                                                                remoteActions
+                                                                            }
                                                                             badges={
                                                                                 badges
                                                                             }
-                                                                            className="opacity-70"
                                                                             description={getBranchDescription(
                                                                                 branch,
                                                                                 branchWorktree,
+                                                                                remoteResolution.localBranch,
+                                                                            )}
+                                                                            isActive={Boolean(
+                                                                                snapshot
+                                                                                    ?.branch
+                                                                                    ?.upstreamName ===
+                                                                                    branch.name,
                                                                             )}
                                                                             isSelected={
                                                                                 idx ===
@@ -927,10 +1075,15 @@ function getBranchBadges(
 }
 
 function getRemoteBranchBadges(
+    resolution: RemoteBranchResolution,
     branchWorktree: GitWorktreeSummary | null,
     activeWorktreeId: string | null,
 ): readonly SidebarBadge[] {
     const badges: SidebarBadge[] = [];
+
+    if (resolution.localBranch) {
+        badges.push({ label: "Local", tone: "neutral" });
+    }
 
     if (branchWorktree && branchWorktree.id !== activeWorktreeId) {
         badges.push({ label: "Worktree", tone: "success" });
@@ -962,14 +1115,24 @@ function getWorktreeBadges(
 function getBranchDescription(
     branch: GitBranchSummary,
     branchWorktree: GitWorktreeSummary | null,
+    trackingLocalBranch: GitBranchSummary | null,
 ): string {
     if (branchWorktree) {
         return branchWorktree.rootPath;
     }
 
     const syncBits = [];
+    if (branch.isRemote && trackingLocalBranch) {
+        syncBits.push(`Local ${trackingLocalBranch.name}`);
+    }
     if (branch.upstreamName) {
-        syncBits.push(branch.upstreamName);
+        const upstreamLabel =
+            branch.isRemote && branch.upstreamName === branch.name
+                ? null
+                : branch.upstreamName;
+        if (upstreamLabel) {
+            syncBits.push(upstreamLabel);
+        }
     }
     if (branch.aheadBy > 0) {
         syncBits.push(`Ahead ${branch.aheadBy}`);
@@ -999,6 +1162,110 @@ function getWorktreeBadgeLabel(worktree: GitWorktreeSummary): string {
 
 function getDetachedWorktreeLabel(worktree: GitWorktreeSummary): string {
     return getBaseName(worktree.rootPath) || "Detached";
+}
+
+function findBranchWorktree(
+    branchName: string,
+    worktrees: readonly GitWorktreeSummary[],
+): GitWorktreeSummary | null {
+    return (
+        worktrees.find((entry) => entry.branchName === branchName) ?? null
+    );
+}
+
+function findTrackingLocalBranch(
+    remoteBranch: GitBranchSummary,
+    branches: readonly GitBranchSummary[],
+): GitBranchSummary | null {
+    return (
+        branches.find(
+            (branch) =>
+                !branch.isRemote && branch.upstreamName === remoteBranch.name,
+        ) ?? null
+    );
+}
+
+export function resolveRemoteBranchResolution(
+    remoteBranch: GitBranchSummary,
+    branches: readonly GitBranchSummary[],
+    worktrees: readonly GitWorktreeSummary[],
+): RemoteBranchResolution {
+    const localBranch = findTrackingLocalBranch(remoteBranch, branches);
+    const suggestedLocalBranchName = stripRemotePrefix(remoteBranch.name);
+    const linkedWorktree =
+        findBranchWorktree(localBranch?.name ?? suggestedLocalBranchName, worktrees);
+    const hasSuggestedNameConflict =
+        !localBranch &&
+        branches.some(
+            (branch) =>
+                !branch.isRemote && branch.name === suggestedLocalBranchName,
+        );
+
+    return {
+        hasSuggestedNameConflict,
+        linkedWorktree,
+        localBranch,
+        suggestedLocalBranchName,
+    };
+}
+
+export function buildUniqueLocalBranchName(
+    baseBranchName: string,
+    branches: readonly GitBranchSummary[],
+): string {
+    const sanitizedBaseName = sanitizeBranchName(baseBranchName);
+    let candidate = sanitizedBaseName;
+    let suffix = 2;
+
+    while (
+        branches.some(
+            (branch) => !branch.isRemote && branch.name === candidate,
+        )
+    ) {
+        candidate = `${sanitizedBaseName}-${suffix}`;
+        suffix += 1;
+    }
+
+    return candidate;
+}
+
+export function buildSuggestedWorktreePath(
+    rootPath: string,
+    branchName: string,
+    worktrees: readonly GitWorktreeSummary[],
+): string {
+    const normalizedRoot = rootPath.replace(/[\\/]+$/, "");
+    const suffix = sanitizePathSegment(branchName);
+    const existingPaths = new Set(
+        worktrees.map((worktree) => worktree.rootPath.replace(/[\\/]+$/, "")),
+    );
+    let candidate = `${normalizedRoot}-${suffix}`;
+    let index = 2;
+
+    while (existingPaths.has(candidate)) {
+        candidate = `${normalizedRoot}-${suffix}-${index}`;
+        index += 1;
+    }
+
+    return candidate;
+}
+
+export function stripRemotePrefix(referenceName: string): string {
+    const segments = referenceName.split("/");
+    return segments.length > 1 ? segments.slice(1).join("/") : referenceName;
+}
+
+function sanitizeBranchName(branchName: string): string {
+    return branchName.trim().replace(/\s+/g, "-") || "branch";
+}
+
+function sanitizePathSegment(value: string): string {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._/-]+/g, "-")
+        .replace(/[\\/]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "worktree";
 }
 
 function getBaseName(path: string): string {
