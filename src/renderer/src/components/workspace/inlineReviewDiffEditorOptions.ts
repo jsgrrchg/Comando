@@ -74,12 +74,6 @@ export function buildInlineReviewDiffEditorOptions({
         readOnly: true,
         renderOverviewRuler: false,
         renderSideBySide: false,
-        scrollbar: {
-            alwaysConsumeMouseWheel: false,
-            horizontalScrollbarSize: 6,
-            useShadows: false,
-            verticalScrollbarSize: 6,
-        },
         scrollBeyondLastLine: false,
         ...semanticHighlightingOptions,
         smoothScrolling: true,

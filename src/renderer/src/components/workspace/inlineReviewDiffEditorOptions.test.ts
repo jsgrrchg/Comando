@@ -22,6 +22,7 @@ describe("buildInlineReviewDiffEditorOptions", () => {
         expect(options.lineNumbersMinChars).toBe(7);
         expect(options.wordWrap).toBe("on");
         expect(options.minimap?.enabled).toBe(true);
+        expect(options.scrollbar).toBeUndefined();
     });
 
     it("expands the gutter for larger inline diff line numbers", () => {

@@ -1256,19 +1256,6 @@ button {
     width: 0 !important;
 }
 
-.inline-review-diff
-    .monaco-scrollable-element.modified-in-monaco-diff-editor
-    .scrollbar.vertical {
-    width: 6px !important;
-}
-
-.inline-review-diff
-    .monaco-scrollable-element.modified-in-monaco-diff-editor
-    .scrollbar.vertical
-    .slider {
-    width: 6px !important;
-}
-
 .inline-review-diff .monaco-editor .find-widget {
     z-index: 8 !important;
 }
