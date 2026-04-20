@@ -6,6 +6,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -19,6 +20,11 @@ import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
 import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "@renderer/components/context-menu/ContextMenu";
+import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
 } from "@renderer/components/virtual/MeasuredVirtualList";
@@ -28,7 +34,7 @@ import { SidebarNodeRow, type SidebarBadge } from "./SidebarNodeRow";
 type GitScopeTabId = "branches" | "worktrees";
 
 interface MenuPosition {
-    readonly minWidth: number;
+    readonly width: number;
     readonly x: number;
     readonly y: number;
 }
@@ -70,6 +76,16 @@ interface WorktreeListRow {
     readonly title: string;
     readonly worktree: GitWorktreeSummary;
 }
+
+type GitScopeContextMenuPayload =
+    | {
+          readonly branchName: string;
+          readonly kind: "branch";
+      }
+    | {
+          readonly kind: "worktree";
+          readonly worktreeId: string;
+      };
 
 type RenderListItem =
     | {
@@ -114,6 +130,9 @@ export function SidebarGitScopePicker({
     const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
     const [query, setQuery] = useState("");
     const [focusIndex, setFocusIndex] = useState(-1);
+    const [itemContextMenu, setItemContextMenu] = useState<
+        ContextMenuState<GitScopeContextMenuPayload> | null
+    >(null);
     const [collapsedSections, setCollapsedSections] = useState<
         Record<string, boolean>
     >({});
@@ -145,8 +164,11 @@ export function SidebarGitScopePicker({
     );
     const checkoutBranch = useGitStore((state) => state.checkoutBranch);
     const createWorktree = useGitStore((state) => state.createWorktree);
+    const deleteLocalBranch = useGitStore((state) => state.deleteLocalBranch);
+    const deleteRemoteBranch = useGitStore((state) => state.deleteRemoteBranch);
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
+    const removeWorktree = useGitStore((state) => state.removeWorktree);
     const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
 
     const activeWorktree =
@@ -262,6 +284,14 @@ export function SidebarGitScopePicker({
                 worktree,
             })) satisfies readonly WorktreeListRow[],
         [worktreeId, worktrees],
+    );
+    const branchRowByName = useMemo(
+        () => new Map(branchRows.map((row) => [row.branch.name, row])),
+        [branchRows],
+    );
+    const worktreeRowById = useMemo(
+        () => new Map(worktreeRows.map((row) => [row.worktree.id, row])),
+        [worktreeRows],
     );
 
     const normalizedQuery = deferredQuery.trim().toLowerCase();
@@ -403,10 +433,9 @@ export function SidebarGitScopePicker({
 
         const buttonRect = button.getBoundingClientRect();
         const measuredMenuRect = menuRef.current?.getBoundingClientRect();
-        const minWidth = Math.max(280, Math.ceil(buttonRect.width));
         const width = Math.min(
-            380,
-            Math.max(minWidth, Math.ceil(measuredMenuRect?.width ?? minWidth)),
+            window.innerWidth - 16,
+            Math.max(280, Math.ceil(buttonRect.width)),
         );
         const estimatedRows = Math.max(listItems.length, 1);
         const estimatedHeight = Math.min(
@@ -428,7 +457,7 @@ export function SidebarGitScopePicker({
         );
 
         setMenuPosition({
-            minWidth,
+            width,
             x: safePosition.x,
             y: safePosition.y,
         });
@@ -441,11 +470,18 @@ export function SidebarGitScopePicker({
         setActionError(null);
         setQuery("");
         setIsOpen(false);
+        setItemContextMenu(null);
         setActiveTab("branches");
         setIsBusy(false);
         setFocusIndex(-1);
         setCollapsedSections({});
     }, [projectId]);
+
+    useEffect(() => {
+        if (!isOpen) {
+            setItemContextMenu(null);
+        }
+    }, [isOpen]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -456,6 +492,12 @@ export function SidebarGitScopePicker({
             const target = event.target as Node;
             if (containerRef.current?.contains(target)) return;
             if (menuRef.current?.contains(target)) return;
+            if (
+                target instanceof Element &&
+                target.closest('[data-context-menu-root="true"]')
+            ) {
+                return;
+            }
             setIsOpen(false);
             setQuery("");
             setActionError(null);
@@ -490,9 +532,19 @@ export function SidebarGitScopePicker({
         handleViewportChange();
         window.addEventListener("resize", handleViewportChange);
         window.addEventListener("scroll", handleViewportChange, true);
+
+        let resizeObserver: ResizeObserver | null = null;
+        if (typeof ResizeObserver !== "undefined" && buttonRef.current) {
+            resizeObserver = new ResizeObserver(() => {
+                handleViewportChange();
+            });
+            resizeObserver.observe(buttonRef.current);
+        }
+
         return () => {
             window.removeEventListener("resize", handleViewportChange);
             window.removeEventListener("scroll", handleViewportChange, true);
+            resizeObserver?.disconnect();
         };
     }, [isOpen, updateMenuPosition]);
 
@@ -662,14 +714,16 @@ export function SidebarGitScopePicker({
 
     const handleCreateWorktreeFromBranch = useCallback(
         async (branch: GitBranchSummary) => {
-            if (!projectId || isBusy || !project || !branch.isRemote) {
+            if (!projectId || isBusy || !project) {
                 return;
             }
 
-            const suggestedBranchName = buildUniqueLocalBranchName(
-                stripRemotePrefix(branch.name),
-                branches,
-            );
+            const suggestedBranchName = branch.isRemote
+                ? buildUniqueLocalBranchName(
+                      stripRemotePrefix(branch.name),
+                      branches,
+                  )
+                : branch.name;
             const suggestedPath = buildSuggestedWorktreePath(
                 project.rootPath,
                 suggestedBranchName,
@@ -684,7 +738,7 @@ export function SidebarGitScopePicker({
                     branchName: suggestedBranchName,
                     path: suggestedPath,
                     projectId,
-                    startPoint: branch.name,
+                    startPoint: branch.isRemote ? branch.name : null,
                     worktreeId: worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 });
 
@@ -722,6 +776,420 @@ export function SidebarGitScopePicker({
             worktreeId,
         ],
     );
+
+    const handleDeleteLocalBranch = useCallback(
+        async (branch: GitBranchSummary) => {
+            if (
+                !projectId ||
+                isBusy ||
+                branch.isRemote ||
+                branch.isCurrent ||
+                findBranchWorktree(
+                    branch.name,
+                    snapshot?.worktrees ?? EMPTY_WORKTREES,
+                )
+            ) {
+                return;
+            }
+
+            const confirmed = window.confirm(
+                `Delete the local branch "${branch.name}"?\n\nThis only removes the local branch reference. Any remote branch will remain untouched.`,
+            );
+            if (!confirmed) {
+                return;
+            }
+
+            setActionError(null);
+            setIsBusy(true);
+
+            try {
+                await deleteLocalBranch(
+                    projectId,
+                    branch.name,
+                    worktreeId ?? snapshot?.currentWorktreeId ?? null,
+                );
+                setItemContextMenu(null);
+            } catch (error) {
+                setActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not delete this local branch.",
+                );
+            } finally {
+                setIsBusy(false);
+            }
+        },
+        [
+            deleteLocalBranch,
+            isBusy,
+            projectId,
+            snapshot?.currentWorktreeId,
+            snapshot?.worktrees,
+            worktreeId,
+        ],
+    );
+
+    const handleDeleteRemoteBranch = useCallback(
+        async (branch: GitBranchSummary) => {
+            if (!projectId || isBusy) {
+                return;
+            }
+
+            const remoteReference = branch.isRemote
+                ? branch.name
+                : branch.upstreamName;
+            const parsedReference = parseRemoteBranchReference(remoteReference);
+            if (!parsedReference) {
+                setActionError("Could not resolve the remote branch reference.");
+                return;
+            }
+
+            const confirmed = window.confirm(
+                `Delete the remote branch "${parsedReference.remoteName}/${parsedReference.remoteRef}"?\n\nThis will remove it from the remote for everyone with access. Local branches and worktrees on your machine will remain.\n\nThis cannot be undone.`,
+            );
+            if (!confirmed) {
+                return;
+            }
+
+            setActionError(null);
+            setIsBusy(true);
+
+            try {
+                await deleteRemoteBranch(
+                    projectId,
+                    parsedReference.remoteName,
+                    parsedReference.remoteRef,
+                    worktreeId ?? snapshot?.currentWorktreeId ?? null,
+                );
+                setItemContextMenu(null);
+            } catch (error) {
+                setActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not delete this remote branch.",
+                );
+            } finally {
+                setIsBusy(false);
+            }
+        },
+        [
+            deleteRemoteBranch,
+            isBusy,
+            projectId,
+            snapshot?.currentWorktreeId,
+            worktreeId,
+        ],
+    );
+
+    const handleOpenWorktreeInNewWindow = useCallback(
+        async (targetWorktree: GitWorktreeSummary) => {
+            if (!projectId || isBusy) {
+                return;
+            }
+
+            setActionError(null);
+            setIsBusy(true);
+
+            try {
+                await getComandoApi().openProjectWindow({
+                    forceNewWindow: true,
+                    projectId,
+                    worktreeId: targetWorktree.id,
+                });
+                setIsOpen(false);
+                setQuery("");
+            } catch (error) {
+                setActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not open this worktree in a new window.",
+                );
+            } finally {
+                setIsBusy(false);
+            }
+        },
+        [isBusy, projectId],
+    );
+
+    const handleRevealWorktreeInFinder = useCallback(
+        async (targetWorktree: GitWorktreeSummary) => {
+            if (!projectId) {
+                return;
+            }
+
+            try {
+                await getComandoApi().revealProjectEntry({
+                    projectId,
+                    relativePath: null,
+                    worktreeId: targetWorktree.id,
+                });
+            } catch (error) {
+                setActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not reveal this worktree in Finder.",
+                );
+            }
+        },
+        [projectId],
+    );
+
+    const handleRemoveWorktree = useCallback(
+        async (targetWorktree: GitWorktreeSummary) => {
+            if (
+                !projectId ||
+                isBusy ||
+                targetWorktree.isCurrent ||
+                targetWorktree.isLocked ||
+                targetWorktree.isPrimary
+            ) {
+                return;
+            }
+
+            const label =
+                targetWorktree.branchName ??
+                getDetachedWorktreeLabel(targetWorktree);
+            const confirmed = window.confirm(
+                `Remove the worktree "${label}"?\n\nThis removes the worktree checkout at:\n${targetWorktree.rootPath}`,
+            );
+            if (!confirmed) {
+                return;
+            }
+
+            setActionError(null);
+            setIsBusy(true);
+
+            try {
+                const nextSnapshot = await removeWorktree(
+                    projectId,
+                    targetWorktree.rootPath,
+                    worktreeId ?? snapshot?.currentWorktreeId ?? null,
+                );
+                await Promise.all([
+                    refreshGitProject(
+                        projectId,
+                        nextSnapshot.currentWorktreeId ?? null,
+                    ),
+                    refreshGitHistory(
+                        projectId,
+                        nextSnapshot.currentWorktreeId ?? null,
+                    ),
+                    refreshProjectTree(
+                        projectId,
+                        nextSnapshot.currentWorktreeId ?? null,
+                    ),
+                ]);
+                setIsOpen(false);
+                setQuery("");
+            } catch (error) {
+                setActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not remove this worktree.",
+                );
+            } finally {
+                setIsBusy(false);
+            }
+        },
+        [
+            isBusy,
+            projectId,
+            refreshGitHistory,
+            refreshGitProject,
+            refreshProjectTree,
+            removeWorktree,
+            snapshot?.currentWorktreeId,
+            worktreeId,
+        ],
+    );
+
+    const openItemContextMenu = useCallback(
+        (
+            payload: GitScopeContextMenuPayload,
+            position: { readonly x: number; readonly y: number },
+        ) => {
+            setItemContextMenu({
+                payload,
+                x: position.x,
+                y: position.y,
+            });
+        },
+        [],
+    );
+
+    const handleBranchContextMenu = useCallback(
+        (event: ReactMouseEvent, branchName: string) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openItemContextMenu(
+                { branchName, kind: "branch" },
+                { x: event.clientX, y: event.clientY },
+            );
+        },
+        [openItemContextMenu],
+    );
+
+    const handleWorktreeContextMenu = useCallback(
+        (event: ReactMouseEvent, targetWorktreeId: string) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openItemContextMenu(
+                { kind: "worktree", worktreeId: targetWorktreeId },
+                { x: event.clientX, y: event.clientY },
+            );
+        },
+        [openItemContextMenu],
+    );
+
+    const handleMenuTriggerClick = useCallback(
+        (
+            event: ReactMouseEvent<HTMLButtonElement>,
+            payload: GitScopeContextMenuPayload,
+        ) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            openItemContextMenu(payload, {
+                x: rect.right - 8,
+                y: rect.bottom + 6,
+            });
+        },
+        [openItemContextMenu],
+    );
+
+    const contextMenuEntries = useMemo(() => {
+        if (!itemContextMenu) {
+            return [] satisfies ContextMenuEntry[];
+        }
+
+        if (itemContextMenu.payload.kind === "branch") {
+            const row =
+                branchRowByName.get(itemContextMenu.payload.branchName) ?? null;
+            if (!row) {
+                return [] satisfies ContextMenuEntry[];
+            }
+
+            const entries: ContextMenuEntry[] = [];
+            const linkedWorktree = row.branchWorktree;
+            const canSwitchToLinkedWorktree =
+                linkedWorktree !== null &&
+                linkedWorktree.id !==
+                    (worktreeId ?? snapshot?.currentWorktreeId ?? null);
+            const checkoutLabel = canSwitchToLinkedWorktree
+                ? "Switch to Worktree"
+                : "Checkout";
+            const canCreateWorktree = linkedWorktree === null;
+            const canDeleteLocalBranch =
+                !row.branch.isRemote &&
+                !row.branch.isCurrent &&
+                linkedWorktree === null;
+            const canDeleteRemoteBranch =
+                parseRemoteBranchReference(
+                    row.branch.isRemote
+                        ? row.branch.name
+                        : row.branch.upstreamName,
+                ) !== null;
+
+            entries.push({
+                action: () => void handleSelectBranch(row.branch),
+                disabled: isBusy || row.isActive,
+                label: checkoutLabel,
+            });
+
+            if (linkedWorktree) {
+                entries.push({
+                    action: () =>
+                        void handleOpenWorktreeInNewWindow(linkedWorktree),
+                    disabled: isBusy,
+                    label: "Open Worktree in New Window",
+                });
+            }
+
+            if (canCreateWorktree) {
+                entries.push({
+                    action: () => void handleCreateWorktreeFromBranch(row.branch),
+                    disabled: isBusy || !projectId,
+                    label: "Create Worktree",
+                });
+            }
+
+            if (canDeleteLocalBranch) {
+                entries.push({ type: "separator" });
+                entries.push({
+                    action: () => void handleDeleteLocalBranch(row.branch),
+                    danger: true,
+                    disabled: isBusy,
+                    label: "Remove Local Branch",
+                });
+            }
+
+            if (canDeleteRemoteBranch) {
+                if (!canDeleteLocalBranch) {
+                    entries.push({ type: "separator" });
+                }
+                entries.push({
+                    action: () => void handleDeleteRemoteBranch(row.branch),
+                    danger: true,
+                    disabled: isBusy,
+                    label: "Delete Remote Branch",
+                });
+            }
+
+            return entries;
+        }
+
+        const row =
+            worktreeRowById.get(itemContextMenu.payload.worktreeId) ?? null;
+        if (!row) {
+            return [] satisfies ContextMenuEntry[];
+        }
+
+        return [
+            {
+                action: () => void handleSelectWorktree(row.worktree.id),
+                disabled: isBusy || row.isActive,
+                label: "Switch Here",
+            },
+            {
+                action: () =>
+                    void handleOpenWorktreeInNewWindow(row.worktree),
+                disabled: isBusy,
+                label: "Open in New Window",
+            },
+            {
+                action: () => void handleRevealWorktreeInFinder(row.worktree),
+                disabled: !projectId,
+                label: "Reveal in Finder",
+            },
+            { type: "separator" },
+            {
+                action: () => void handleRemoveWorktree(row.worktree),
+                danger: true,
+                disabled:
+                    isBusy ||
+                    row.worktree.isCurrent ||
+                    row.worktree.isLocked ||
+                    row.worktree.isPrimary,
+                label: "Remove Worktree",
+            },
+        ] satisfies ContextMenuEntry[];
+    }, [
+        branchRowByName,
+        handleCreateWorktreeFromBranch,
+        handleDeleteLocalBranch,
+        handleDeleteRemoteBranch,
+        handleOpenWorktreeInNewWindow,
+        handleRemoveWorktree,
+        handleRevealWorktreeInFinder,
+        handleSelectBranch,
+        handleSelectWorktree,
+        isBusy,
+        itemContextMenu,
+        projectId,
+        snapshot?.currentWorktreeId,
+        worktreeId,
+        worktreeRowById,
+    ]);
 
     const handleSelectFocused = useCallback(() => {
         const item = flatItems[focusIndex];
@@ -810,48 +1278,39 @@ export function SidebarGitScopePicker({
 
             if (item.kind === "branch") {
                 const { row, selectableIndex } = item;
-                const remoteActions =
-                    row.branch.isRemote && row.remoteResolution
-                        ? row.remoteResolution.localBranch
-                            ? []
-                            : [
-                                  {
-                                      disabled:
-                                          row.remoteResolution.hasSuggestedNameConflict,
-                                      label: "Checkout",
-                                      onClick: () =>
-                                          void handleSelectBranch(row.branch),
-                                      title:
-                                          row.remoteResolution.hasSuggestedNameConflict
-                                              ? `Cannot create ${row.remoteResolution.suggestedLocalBranchName} because a different local branch already uses that name.`
-                                              : `Create ${row.remoteResolution.suggestedLocalBranchName} from ${row.branch.name}`,
-                                  },
-                                  {
-                                      label: "Worktree",
-                                      onClick: () =>
-                                          void handleCreateWorktreeFromBranch(
-                                              row.branch,
-                                          ),
-                                      title: `Create a new worktree from ${row.branch.name}`,
-                                  },
-                              ]
-                        : [];
 
                 return (
                     <div data-row-index={selectableIndex}>
                         <SidebarNodeRow
-                            actions={remoteActions}
                             badges={row.badges}
                             description={row.description}
                             isActive={row.isActive}
                             isSelected={selectableIndex === focusIndex}
                             leading={<BranchGlyph />}
+                            onContextMenu={(event) =>
+                                handleBranchContextMenu(
+                                    event,
+                                    row.branch.name,
+                                )
+                            }
                             onClick={
                                 isBusy
                                     ? undefined
                                     : () => void handleSelectBranch(row.branch)
                             }
                             title={row.branch.name}
+                            trailing={
+                                <RowMenuTrigger
+                                    disabled={isBusy}
+                                    label={`Open branch menu for ${row.branch.name}`}
+                                    onClick={(event) =>
+                                        handleMenuTriggerClick(event, {
+                                            branchName: row.branch.name,
+                                            kind: "branch",
+                                        })
+                                    }
+                                />
+                            }
                         />
                     </div>
                 );
@@ -867,6 +1326,12 @@ export function SidebarGitScopePicker({
                         isActive={row.isActive}
                         isSelected={selectableIndex === focusIndex}
                         leading={<WorktreeGlyph />}
+                        onContextMenu={(event) =>
+                            handleWorktreeContextMenu(
+                                event,
+                                row.worktree.id,
+                            )
+                        }
                         onClick={
                             isBusy
                                 ? undefined
@@ -876,15 +1341,29 @@ export function SidebarGitScopePicker({
                                       )
                         }
                         title={row.title}
+                        trailing={
+                            <RowMenuTrigger
+                                disabled={isBusy}
+                                label={`Open worktree menu for ${row.title}`}
+                                onClick={(event) =>
+                                    handleMenuTriggerClick(event, {
+                                        kind: "worktree",
+                                        worktreeId: row.worktree.id,
+                                    })
+                                }
+                            />
+                        }
                     />
                 </div>
             );
         },
         [
             focusIndex,
-            handleCreateWorktreeFromBranch,
+            handleBranchContextMenu,
+            handleMenuTriggerClick,
             handleSelectBranch,
             handleSelectWorktree,
+            handleWorktreeContextMenu,
             isBusy,
             toggleSection,
         ],
@@ -938,8 +1417,8 @@ export function SidebarGitScopePicker({
                           ref={menuRef}
                           style={{
                               left: menuPosition?.x ?? 8,
-                              minWidth: menuPosition?.minWidth ?? 280,
                               top: menuPosition?.y ?? 8,
+                              width: menuPosition?.width ?? 280,
                           }}
                       >
                           <div className="sidebar-git-scope-menu__header">
@@ -1035,6 +1514,16 @@ export function SidebarGitScopePicker({
                       document.body,
                   )
                 : null}
+
+            {itemContextMenu ? (
+                <ContextMenu
+                    entries={contextMenuEntries}
+                    menu={itemContextMenu}
+                    minWidth={188}
+                    onClose={() => setItemContextMenu(null)}
+                    zIndex={10010}
+                />
+            ) : null}
         </div>
     );
 }
@@ -1115,6 +1604,34 @@ function EmptyState({ label }: { readonly label: string }) {
     return <div className="sidebar-git-scope-menu__empty">{label}</div>;
 }
 
+function RowMenuTrigger({
+    disabled = false,
+    label,
+    onClick,
+}: {
+    readonly disabled?: boolean;
+    readonly label: string;
+    readonly onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+}) {
+    return (
+        <button
+            aria-label={label}
+            className={[
+                "flex h-6 w-6 items-center justify-center rounded-md text-text-secondary transition",
+                disabled
+                    ? "cursor-not-allowed text-text-secondary/40"
+                    : "hover:bg-bg-tertiary hover:text-text-primary",
+            ].join(" ")}
+            disabled={disabled}
+            onClick={onClick}
+            title={label}
+            type="button"
+        >
+            <HorizontalDotsIcon />
+        </button>
+    );
+}
+
 function SearchIcon() {
     return (
         <svg
@@ -1177,10 +1694,6 @@ function getWorktreeBadges(
 
     if (worktree.isCurrent) {
         badges.push({ label: "Current", tone: "accent" });
-    }
-
-    if (worktree.isPrimary) {
-        badges.push({ label: "Primary", tone: "neutral" });
     }
 
     if (worktree.isLocked) {
@@ -1356,6 +1869,47 @@ export function stripRemotePrefix(referenceName: string): string {
     return segments.length > 1 ? segments.slice(1).join("/") : referenceName;
 }
 
+export function parseRemoteBranchReference(referenceName: string | null): {
+    readonly remoteName: string;
+    readonly remoteRef: string;
+} | null {
+    if (!referenceName) {
+        return null;
+    }
+
+    const segments = referenceName.split("/").filter(Boolean);
+    if (segments.length < 2) {
+        return null;
+    }
+
+    if (segments[0] === "refs" && segments[1] === "remotes") {
+        if (segments.length < 4) {
+            return null;
+        }
+
+        return {
+            remoteName: segments[2] ?? "",
+            remoteRef: segments.slice(3).join("/"),
+        };
+    }
+
+    if (segments[0] === "remotes") {
+        if (segments.length < 3) {
+            return null;
+        }
+
+        return {
+            remoteName: segments[1] ?? "",
+            remoteRef: segments.slice(2).join("/"),
+        };
+    }
+
+    return {
+        remoteName: segments[0] ?? "",
+        remoteRef: segments.slice(1).join("/"),
+    };
+}
+
 function sanitizeBranchName(branchName: string): string {
     return branchName.trim().replace(/\s+/g, "-") || "branch";
 }
@@ -1371,6 +1925,16 @@ function sanitizePathSegment(value: string): string {
 
 function getBaseName(path: string): string {
     return path.split(/[/\\]/).filter(Boolean).at(-1) ?? path;
+}
+
+function getComandoApi() {
+    if (!window.comando) {
+        throw new Error(
+            "The desktop bridge is not available yet. Restart the Electron app and try again.",
+        );
+    }
+
+    return window.comando;
 }
 
 function ChevronIcon({ open }: { readonly open: boolean }) {
@@ -1391,6 +1955,21 @@ function ChevronIcon({ open }: { readonly open: boolean }) {
                 strokeLinejoin="round"
                 strokeWidth="1.4"
             />
+        </svg>
+    );
+}
+
+function HorizontalDotsIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-3.5 w-3.5"
+            fill="currentColor"
+            viewBox="0 0 16 16"
+        >
+            <circle cx="3" cy="8" r="1.2" />
+            <circle cx="8" cy="8" r="1.2" />
+            <circle cx="13" cy="8" r="1.2" />
         </svg>
     );
 }

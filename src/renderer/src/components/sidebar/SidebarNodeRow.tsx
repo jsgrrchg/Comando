@@ -32,6 +32,7 @@ interface SidebarNodeRowProps {
     readonly onClick?: () => void;
     readonly onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
     readonly title: string;
+    readonly trailing?: ReactNode;
 }
 
 function SidebarNodeRowComponent({
@@ -46,6 +47,7 @@ function SidebarNodeRowComponent({
     onClick,
     onContextMenu,
     title,
+    trailing,
 }: SidebarNodeRowProps) {
     const rowClasses = [
         "group flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 transition-colors",
@@ -110,6 +112,12 @@ function SidebarNodeRowComponent({
                             {action.label}
                         </button>
                     ))}
+                </div>
+            ) : null}
+
+            {trailing ? (
+                <div className="app-no-drag flex shrink-0 items-center">
+                    {trailing}
                 </div>
             ) : null}
         </div>

@@ -244,6 +244,30 @@ async function dispatchMethod(
                 input.options,
             );
         }
+        case "git.deleteLocalBranch": {
+            const input = params as {
+                readonly inputPath: string;
+                readonly options: Parameters<
+                    GitService["deleteLocalBranch"]
+                >[1];
+            };
+            return await gitService.deleteLocalBranch(
+                input.inputPath,
+                input.options,
+            );
+        }
+        case "git.deleteRemoteBranch": {
+            const input = params as {
+                readonly inputPath: string;
+                readonly options: Parameters<
+                    GitService["deleteRemoteBranch"]
+                >[1];
+            };
+            return await gitService.deleteRemoteBranch(
+                input.inputPath,
+                input.options,
+            );
+        }
         case "git.fetch": {
             const input = params as {
                 readonly inputPath: string;

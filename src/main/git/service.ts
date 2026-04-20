@@ -100,6 +100,20 @@ export interface GitGateway {
             readonly startPoint?: string | null;
         },
     ): Promise<GitRepositorySnapshot>;
+    deleteLocalBranch(
+        inputPath: string,
+        options: {
+            readonly branchName: string;
+            readonly force?: boolean;
+        },
+    ): Promise<GitRepositorySnapshot>;
+    deleteRemoteBranch(
+        inputPath: string,
+        options: {
+            readonly remoteName: string;
+            readonly remoteRef: string;
+        },
+    ): Promise<GitRepositorySnapshot>;
     removeWorktree(
         inputPath: string,
         options: {
@@ -600,10 +614,53 @@ export class GitService implements GitGateway {
             args.push("--force");
         }
 
-        args.push("-b", options.branchName, path.resolve(options.path));
-        args.push(options.startPoint ?? options.branchName);
+        const resolvedPath = path.resolve(options.path);
+        if (options.startPoint === null) {
+            args.push(resolvedPath, options.branchName);
+        } else {
+            args.push("-b", options.branchName, resolvedPath);
+            args.push(options.startPoint ?? options.branchName);
+        }
 
         await git.raw(args);
+        this.invalidate(inputPath);
+        return this.getRepositorySnapshot(inputPath);
+    }
+
+    async deleteLocalBranch(
+        inputPath: string,
+        options: {
+            readonly branchName: string;
+            readonly force?: boolean;
+        },
+    ): Promise<GitRepositorySnapshot> {
+        const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
+        const git = simpleGit(rootPath);
+        const args = ["branch", options.force ? "-D" : "-d", options.branchName];
+
+        await git.raw(args);
+        this.invalidate(inputPath);
+        return this.getRepositorySnapshot(inputPath);
+    }
+
+    async deleteRemoteBranch(
+        inputPath: string,
+        options: {
+            readonly remoteName: string;
+            readonly remoteRef: string;
+        },
+    ): Promise<GitRepositorySnapshot> {
+        const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
+        const git = simpleGit(rootPath);
+
+        await git.raw([
+            "push",
+            options.remoteName,
+            "--delete",
+            options.remoteRef,
+        ]);
+        await git.raw(["fetch", options.remoteName, "--prune"]);
+
         this.invalidate(inputPath);
         return this.getRepositorySnapshot(inputPath);
     }

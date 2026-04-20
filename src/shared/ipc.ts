@@ -45,6 +45,8 @@ export const IPC_CHANNELS = {
     checkoutGitBranch: "git:checkout-branch",
     createGitWorktree: "git:create-worktree",
     removeGitWorktree: "git:remove-worktree",
+    deleteLocalGitBranch: "git:delete-local-branch",
+    deleteRemoteGitBranch: "git:delete-remote-branch",
     fetchGitRepository: "git:fetch",
     pullGitRepository: "git:pull",
     pushGitRepository: "git:push",
@@ -442,6 +444,7 @@ export interface OpenSettingsWindowInput {
 
 export interface OpenProjectWindowInput {
     readonly branchName?: string | null;
+    readonly forceNewWindow?: boolean;
     readonly projectId: string;
     readonly worktreeId?: string | null;
 }
@@ -706,6 +709,16 @@ export interface GitCreateWorktreeInput extends GitRepositoryScopeInput {
 export interface GitRemoveWorktreeInput extends GitRepositoryScopeInput {
     readonly force?: boolean;
     readonly path: string;
+}
+
+export interface GitDeleteLocalBranchInput extends GitRepositoryScopeInput {
+    readonly branchName: string;
+    readonly force?: boolean;
+}
+
+export interface GitDeleteRemoteBranchInput extends GitRepositoryScopeInput {
+    readonly remoteName: string;
+    readonly remoteRef: string;
 }
 
 export interface GitFetchInput extends GitRepositoryScopeInput {
@@ -1517,6 +1530,12 @@ export interface ComandoApi {
     ) => Promise<GitWorktreeSummary>;
     removeGitWorktree: (
         input: GitRemoveWorktreeInput,
+    ) => Promise<GitRepositorySnapshot>;
+    deleteLocalGitBranch: (
+        input: GitDeleteLocalBranchInput,
+    ) => Promise<GitRepositorySnapshot>;
+    deleteRemoteGitBranch: (
+        input: GitDeleteRemoteBranchInput,
     ) => Promise<GitRepositorySnapshot>;
     fetchGitRepository: (
         input: GitFetchInput,

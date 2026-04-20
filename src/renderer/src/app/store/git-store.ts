@@ -112,6 +112,20 @@ interface GitStoreState {
         projectId: string,
         preferredWorktreeId?: string | null,
     ) => Promise<GitRepositorySnapshot | null>;
+    deleteLocalBranch: (
+        projectId: string,
+        branchName: string,
+        worktreeId?: string | null,
+        options?: {
+            readonly force?: boolean;
+        },
+    ) => Promise<GitRepositorySnapshot>;
+    deleteRemoteBranch: (
+        projectId: string,
+        remoteName: string,
+        remoteRef: string,
+        worktreeId?: string | null,
+    ) => Promise<GitRepositorySnapshot>;
     removeWorktree: (
         projectId: string,
         path: string,
@@ -603,6 +617,42 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         }
     },
 
+    deleteLocalBranch: async (
+        projectId,
+        branchName,
+        worktreeId = null,
+        options = {},
+    ) => {
+        const snapshot = await getComandoApi().deleteLocalGitBranch({
+            branchName,
+            force: options.force,
+            projectId,
+            worktreeId,
+        });
+        applySnapshotState(set, projectId, snapshot);
+        void get().refreshProject(projectId, snapshot.currentWorktreeId);
+        void get().refreshHistory(projectId, snapshot.currentWorktreeId);
+        return snapshot;
+    },
+
+    deleteRemoteBranch: async (
+        projectId,
+        remoteName,
+        remoteRef,
+        worktreeId = null,
+    ) => {
+        const snapshot = await getComandoApi().deleteRemoteGitBranch({
+            projectId,
+            remoteName,
+            remoteRef,
+            worktreeId,
+        });
+        applySnapshotState(set, projectId, snapshot);
+        void get().refreshProject(projectId, snapshot.currentWorktreeId);
+        void get().refreshHistory(projectId, snapshot.currentWorktreeId);
+        return snapshot;
+    },
+
     removeWorktree: async (projectId, path, worktreeId = null) => {
         const snapshot = await getComandoApi().removeGitWorktree({
             path,
@@ -903,6 +953,15 @@ function resolveSnapshotWorktreeId(
         return preferredWorktreeId;
     }
 
+    if (
+        preferredWorktreeId &&
+        snapshot.worktrees.some(
+            (worktree) => worktree.id === preferredWorktreeId,
+        )
+    ) {
+        return preferredWorktreeId;
+    }
+
     const currentWorktreeId =
         snapshot.currentWorktreeId ??
         snapshot.worktrees.find((worktree) => worktree.isCurrent)?.id ??
@@ -913,15 +972,6 @@ function resolveSnapshotWorktreeId(
         snapshot.worktrees.some((worktree) => worktree.id === currentWorktreeId)
     ) {
         return currentWorktreeId;
-    }
-
-    if (
-        preferredWorktreeId &&
-        snapshot.worktrees.some(
-            (worktree) => worktree.id === preferredWorktreeId,
-        )
-    ) {
-        return preferredWorktreeId;
     }
 
     return (

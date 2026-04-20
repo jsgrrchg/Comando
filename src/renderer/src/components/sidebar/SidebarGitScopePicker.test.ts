@@ -5,6 +5,7 @@ import type { GitBranchSummary, GitWorktreeSummary } from "@shared/ipc";
 import {
     buildSuggestedWorktreePath,
     buildUniqueLocalBranchName,
+    parseRemoteBranchReference,
     resolveRemoteBranchResolution,
     stripRemotePrefix,
 } from "./SidebarGitScopePicker";
@@ -133,5 +134,20 @@ describe("SidebarGitScopePicker helpers", () => {
         expect(stripRemotePrefix("origin/feature/hardening/ui")).toBe(
             "feature/hardening/ui",
         );
+    });
+
+    it("parses remote branch references from both origin/* and remotes/origin/* forms", () => {
+        expect(parseRemoteBranchReference("origin/feature/hardening/ui")).toEqual(
+            {
+                remoteName: "origin",
+                remoteRef: "feature/hardening/ui",
+            },
+        );
+        expect(
+            parseRemoteBranchReference("remotes/origin/feature/hardening/ui"),
+        ).toEqual({
+            remoteName: "origin",
+            remoteRef: "feature/hardening/ui",
+        });
     });
 });

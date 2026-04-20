@@ -371,11 +371,12 @@ function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
         return;
     }
 
-    const existingWindow = windowRegistry.getMainWindowByProjectId(
-        input.projectId,
-    );
+    const existingWindow = input.forceNewWindow
+        ? null
+        : windowRegistry.getMainWindowByProjectId(input.projectId);
     if (!existingWindow) {
         void openNewMainWindowWithOptions({
+            forceNewWindow: input.forceNewWindow,
             projectId: input.projectId,
             worktreeId: input.worktreeId,
         });
@@ -412,6 +413,7 @@ function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
 }
 
 async function openNewMainWindowWithOptions(input: {
+    readonly forceNewWindow?: boolean;
     readonly projectId: string | null;
     readonly worktreeId?: string | null;
 }): Promise<void> {
@@ -419,7 +421,7 @@ async function openNewMainWindowWithOptions(input: {
         return;
     }
 
-    if (input.projectId) {
+    if (input.projectId && !input.forceNewWindow) {
         const existingWindow = windowRegistry.getMainWindowByProjectId(
             input.projectId,
         );

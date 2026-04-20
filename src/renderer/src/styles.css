@@ -845,7 +845,6 @@ button {
 .sidebar-git-scope-menu {
     position: fixed;
     z-index: 10010;
-    max-width: 380px;
     overflow: hidden;
     border: 1px solid var(--color-border);
     border-radius: 12px;

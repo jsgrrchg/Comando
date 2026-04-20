@@ -36,6 +36,8 @@ import {
     type GitCommitInput,
     type GitCommitResult,
     type GitCreateWorktreeInput,
+    type GitDeleteLocalBranchInput,
+    type GitDeleteRemoteBranchInput,
     type GitDiffInput,
     type GitDiscardPathsInput,
     type GitFetchInput,
@@ -172,6 +174,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.checkoutGitBranch);
     ipcMain.removeHandler(IPC_CHANNELS.createGitWorktree);
     ipcMain.removeHandler(IPC_CHANNELS.removeGitWorktree);
+    ipcMain.removeHandler(IPC_CHANNELS.deleteLocalGitBranch);
+    ipcMain.removeHandler(IPC_CHANNELS.deleteRemoteGitBranch);
     ipcMain.removeHandler(IPC_CHANNELS.fetchGitRepository);
     ipcMain.removeHandler(IPC_CHANNELS.pullGitRepository);
     ipcMain.removeHandler(IPC_CHANNELS.pushGitRepository);
@@ -655,6 +659,42 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     options.gitService.removeWorktree(rootPath, {
                         force: input.force,
                         path: input.path,
+                    }),
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.deleteLocalGitBranch,
+        async (
+            _event,
+            input: GitDeleteLocalBranchInput,
+        ): Promise<SharedGitRepositorySnapshot> =>
+            handleGitSnapshotMutation(
+                options.projectService,
+                options.gitService,
+                input,
+                "branch",
+                async (rootPath) =>
+                    options.gitService.deleteLocalBranch(rootPath, {
+                        branchName: input.branchName,
+                        force: input.force,
+                    }),
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.deleteRemoteGitBranch,
+        async (
+            _event,
+            input: GitDeleteRemoteBranchInput,
+        ): Promise<SharedGitRepositorySnapshot> =>
+            handleGitSnapshotMutation(
+                options.projectService,
+                options.gitService,
+                input,
+                "remote",
+                async (rootPath) =>
+                    options.gitService.deleteRemoteBranch(rootPath, {
+                        remoteName: input.remoteName,
+                        remoteRef: input.remoteRef,
                     }),
             ),
     );

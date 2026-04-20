@@ -59,6 +59,8 @@ import {
     type GitCommitInput,
     type GitCommitResult,
     type GitCreateWorktreeInput,
+    type GitDeleteLocalBranchInput,
+    type GitDeleteRemoteBranchInput,
     type GitDiscardPathsInput,
     type GitDiffInput,
     type GitFileDiff,
@@ -621,6 +623,16 @@ const comandoApi: ComandoApi = {
     removeGitWorktree: (input: GitRemoveWorktreeInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.removeGitWorktree,
+            input,
+        ) as Promise<GitRepositorySnapshot>,
+    deleteLocalGitBranch: (input: GitDeleteLocalBranchInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.deleteLocalGitBranch,
+            input,
+        ) as Promise<GitRepositorySnapshot>,
+    deleteRemoteGitBranch: (input: GitDeleteRemoteBranchInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.deleteRemoteGitBranch,
             input,
         ) as Promise<GitRepositorySnapshot>,
     fetchGitRepository: (input: GitFetchInput) =>

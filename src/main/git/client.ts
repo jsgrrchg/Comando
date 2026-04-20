@@ -248,6 +248,30 @@ class GitWorkerGateway implements GitWorkerClient {
         });
     }
 
+    async deleteLocalBranch(
+        inputPath: string,
+        options: Parameters<GitGateway["deleteLocalBranch"]>[1],
+    ) {
+        return await this.#rpc.call<
+            Awaited<ReturnType<GitGateway["deleteLocalBranch"]>>
+        >("git.deleteLocalBranch", {
+            inputPath,
+            options,
+        });
+    }
+
+    async deleteRemoteBranch(
+        inputPath: string,
+        options: Parameters<GitGateway["deleteRemoteBranch"]>[1],
+    ) {
+        return await this.#rpc.call<
+            Awaited<ReturnType<GitGateway["deleteRemoteBranch"]>>
+        >("git.deleteRemoteBranch", {
+            inputPath,
+            options,
+        });
+    }
+
     async fetch(
         inputPath: string,
         options?: Parameters<GitGateway["fetch"]>[1],

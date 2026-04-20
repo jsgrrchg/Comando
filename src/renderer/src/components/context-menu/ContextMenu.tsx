@@ -87,6 +87,7 @@ export function ContextMenu<T>({
     return createPortal(
         <div
             className="fixed rounded-lg border border-border bg-bg-panel p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)]"
+            data-context-menu-root="true"
             ref={ref}
             style={{
                 left: position.x,
