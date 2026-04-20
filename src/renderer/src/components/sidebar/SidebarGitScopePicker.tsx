@@ -1,4 +1,5 @@
 import {
+    useDeferredValue,
     useCallback,
     useEffect,
     useLayoutEffect,
@@ -17,6 +18,10 @@ import type {
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
+import {
+    MeasuredVirtualList,
+    type MeasuredVirtualListHandle,
+} from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { SidebarNodeRow, type SidebarBadge } from "./SidebarNodeRow";
 
@@ -35,6 +40,10 @@ interface SidebarGitScopePickerProps {
 
 const EMPTY_BRANCHES: readonly GitBranchSummary[] = [];
 const EMPTY_WORKTREES: readonly GitWorktreeSummary[] = [];
+const GIT_SCOPE_VIRTUALIZATION_THRESHOLD = 120;
+const GIT_SCOPE_VIRTUALIZATION_OVERSCAN = 6;
+const GIT_SCOPE_ROW_ESTIMATE = 52;
+const GIT_SCOPE_SECTION_ESTIMATE = 30;
 
 interface RemoteBranchResolution {
     readonly hasSuggestedNameConflict: boolean;
@@ -42,6 +51,57 @@ interface RemoteBranchResolution {
     readonly localBranch: GitBranchSummary | null;
     readonly suggestedLocalBranchName: string;
 }
+
+interface BranchListRow {
+    readonly badges: readonly SidebarBadge[];
+    readonly branch: GitBranchSummary;
+    readonly branchWorktree: GitWorktreeSummary | null;
+    readonly description: string;
+    readonly isActive: boolean;
+    readonly remoteResolution: RemoteBranchResolution | null;
+    readonly searchText: string;
+}
+
+interface WorktreeListRow {
+    readonly badges: readonly SidebarBadge[];
+    readonly description: string;
+    readonly isActive: boolean;
+    readonly searchText: string;
+    readonly title: string;
+    readonly worktree: GitWorktreeSummary;
+}
+
+type RenderListItem =
+    | {
+          readonly collapsed: boolean;
+          readonly count: number;
+          readonly key: string;
+          readonly kind: "section";
+          readonly label: string;
+          readonly section: "local" | "remote";
+      }
+    | {
+          readonly key: string;
+          readonly kind: "branch";
+          readonly row: BranchListRow;
+          readonly selectableIndex: number;
+      }
+    | {
+          readonly key: string;
+          readonly kind: "worktree";
+          readonly row: WorktreeListRow;
+          readonly selectableIndex: number;
+      };
+
+type SelectableListItem =
+    | {
+          readonly branch: GitBranchSummary;
+          readonly kind: "branch";
+      }
+    | {
+          readonly kind: "worktree";
+          readonly worktree: GitWorktreeSummary;
+      };
 
 export function SidebarGitScopePicker({
     projectId,
@@ -62,6 +122,7 @@ export function SidebarGitScopePicker({
     const menuRef = useRef<HTMLDivElement | null>(null);
     const searchRef = useRef<HTMLInputElement | null>(null);
     const listRef = useRef<HTMLDivElement | null>(null);
+    const virtualListRef = useRef<MeasuredVirtualListHandle | null>(null);
 
     const project = useProjectsStore((state) =>
         projectId
@@ -98,109 +159,241 @@ export function SidebarGitScopePicker({
     const activeRootPath =
         activeWorktree?.rootPath ?? snapshot?.rootPath ?? null;
     const availableBranches = branches.length;
-    const availableWorktrees = snapshot?.worktrees.length ?? 0;
+    const worktrees = snapshot?.worktrees ?? EMPTY_WORKTREES;
+    const availableWorktrees = worktrees.length;
+    const deferredQuery = useDeferredValue(query);
 
-    const filteredBranches = useMemo(() => {
-        const normalizedQuery = query.trim().toLowerCase();
-        if (!normalizedQuery) {
-            return branches;
+    const branchRows = useMemo(() => {
+        const localBranchByUpstream = new Map<string, GitBranchSummary>();
+        const localBranchNames = new Set<string>();
+        const worktreeByBranchName = new Map<string, GitWorktreeSummary>();
+
+        for (const branch of branches) {
+            if (branch.isRemote) {
+                continue;
+            }
+
+            localBranchNames.add(branch.name);
+            if (branch.upstreamName) {
+                localBranchByUpstream.set(branch.upstreamName, branch);
+            }
         }
 
-        return branches.filter((branch) => {
-            const linkedWorktree = branch.isRemote
-                ? resolveRemoteBranchResolution(
+        for (const worktree of worktrees) {
+            if (!worktree.branchName) {
+                continue;
+            }
+
+            worktreeByBranchName.set(worktree.branchName, worktree);
+        }
+
+        return branches.map((branch) => {
+            const remoteResolution = branch.isRemote
+                ? resolveRemoteBranchResolutionWithIndexes(
                       branch,
-                      branches,
-                      snapshot?.worktrees ?? EMPTY_WORKTREES,
-                  ).linkedWorktree
-                : findBranchWorktree(
-                      branch.name,
-                      snapshot?.worktrees ?? EMPTY_WORKTREES,
-                  );
-            const trackingLocalBranch = branch.isRemote
-                ? resolveRemoteBranchResolution(
-                      branch,
-                      branches,
-                      snapshot?.worktrees ?? EMPTY_WORKTREES,
-                  ).localBranch
+                      localBranchByUpstream,
+                      localBranchNames,
+                      worktreeByBranchName,
+                  )
                 : null;
-            const haystack = [
+            const branchWorktree = branch.isRemote
+                ? remoteResolution?.linkedWorktree ?? null
+                : (worktreeByBranchName.get(branch.name) ?? null);
+            const badges = branch.isRemote
+                ? getRemoteBranchBadges(
+                      remoteResolution ?? {
+                          hasSuggestedNameConflict: false,
+                          linkedWorktree: branchWorktree,
+                          localBranch: null,
+                          suggestedLocalBranchName: stripRemotePrefix(
+                              branch.name,
+                          ),
+                      },
+                      branchWorktree,
+                      worktreeId,
+                  )
+                : getBranchBadges(branch, branchWorktree, worktreeId);
+            const description = getBranchDescription(
+                branch,
+                branchWorktree,
+                remoteResolution?.localBranch ?? null,
+            );
+            const searchText = [
                 branch.name,
                 branch.upstreamName ?? "",
-                trackingLocalBranch?.name ?? "",
-                linkedWorktree?.rootPath ?? "",
-                linkedWorktree?.branchName ?? "",
+                remoteResolution?.localBranch?.name ?? "",
+                branchWorktree?.rootPath ?? "",
+                branchWorktree?.branchName ?? "",
                 branch.isRemote ? "remote" : "local",
             ]
                 .join(" ")
                 .toLowerCase();
 
-            return haystack.includes(normalizedQuery);
+            return {
+                badges,
+                branch,
+                branchWorktree,
+                description,
+                isActive: branch.isRemote
+                    ? snapshot?.branch?.upstreamName === branch.name
+                    : snapshot?.branch?.name === branch.name,
+                remoteResolution,
+                searchText,
+            } satisfies BranchListRow;
         });
-    }, [branches, query, snapshot?.worktrees]);
+    }, [branches, snapshot?.branch?.name, snapshot?.branch?.upstreamName, worktreeId, worktrees]);
 
-    const localBranches = useMemo(
-        () => filteredBranches.filter((b) => !b.isRemote),
-        [filteredBranches],
-    );
-    const remoteBranches = useMemo(
-        () => filteredBranches.filter((b) => b.isRemote),
-        [filteredBranches],
+    const worktreeRows = useMemo(
+        () =>
+            worktrees.map((worktree) => ({
+                badges: getWorktreeBadges(worktree),
+                description: worktree.rootPath,
+                isActive: worktree.id === (worktreeId ?? null),
+                searchText: [
+                    worktree.branchName ?? "",
+                    worktree.rootPath,
+                    worktree.commitSha ?? "",
+                    getWorktreeBadgeLabel(worktree),
+                ]
+                    .join(" ")
+                    .toLowerCase(),
+                title:
+                    worktree.branchName ?? getDetachedWorktreeLabel(worktree),
+                worktree,
+            })) satisfies readonly WorktreeListRow[],
+        [worktreeId, worktrees],
     );
 
-    const filteredWorktrees = useMemo(() => {
-        const worktrees = snapshot?.worktrees ?? EMPTY_WORKTREES;
-        const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
+    const filteredBranchRows = useMemo(() => {
         if (!normalizedQuery) {
-            return worktrees;
+            return branchRows;
         }
 
-        return worktrees.filter((entry) =>
-            [
-                entry.branchName ?? "",
-                entry.rootPath,
-                entry.commitSha ?? "",
-                getWorktreeBadgeLabel(entry),
-            ]
-                .join(" ")
-                .toLowerCase()
-                .includes(normalizedQuery),
-        );
-    }, [query, snapshot?.worktrees]);
+        return branchRows.filter((row) => row.searchText.includes(normalizedQuery));
+    }, [branchRows, normalizedQuery]);
 
-    const flatItems = useMemo(() => {
+    const localBranchRows = useMemo(
+        () => filteredBranchRows.filter((row) => !row.branch.isRemote),
+        [filteredBranchRows],
+    );
+    const remoteBranchRows = useMemo(
+        () => filteredBranchRows.filter((row) => row.branch.isRemote),
+        [filteredBranchRows],
+    );
+
+    const filteredWorktreeRows = useMemo(() => {
+        if (!normalizedQuery) {
+            return worktreeRows;
+        }
+
+        return worktreeRows.filter((row) => row.searchText.includes(normalizedQuery));
+    }, [normalizedQuery, worktreeRows]);
+
+    const listItems = useMemo(() => {
+        let selectableIndex = 0;
+        const items: RenderListItem[] = [];
+
         if (activeTab === "worktrees") {
-            return filteredWorktrees.map((entry) => ({
-                kind: "worktree" as const,
-                worktree: entry,
-            }));
+            for (const row of filteredWorktreeRows) {
+                items.push({
+                    key: row.worktree.id,
+                    kind: "worktree",
+                    row,
+                    selectableIndex,
+                });
+                selectableIndex += 1;
+            }
+
+            return items;
         }
 
-        const items: Array<
-            | { kind: "branch"; branch: GitBranchSummary }
-            | { kind: "worktree"; worktree: GitWorktreeSummary }
-        > = [];
+        if (localBranchRows.length > 0) {
+            items.push({
+                collapsed: !!collapsedSections.local,
+                count: localBranchRows.length,
+                key: "section-local",
+                kind: "section",
+                label: "Local",
+                section: "local",
+            });
 
-        if (!collapsedSections.local) {
-            for (const branch of localBranches) {
-                items.push({ kind: "branch", branch });
+            if (!collapsedSections.local) {
+                for (const row of localBranchRows) {
+                    items.push({
+                        key: row.branch.name,
+                        kind: "branch",
+                        row,
+                        selectableIndex,
+                    });
+                    selectableIndex += 1;
+                }
             }
         }
 
-        if (!collapsedSections.remote) {
-            for (const branch of remoteBranches) {
-                items.push({ kind: "branch", branch });
+        if (remoteBranchRows.length > 0) {
+            items.push({
+                collapsed: !!collapsedSections.remote,
+                count: remoteBranchRows.length,
+                key: "section-remote",
+                kind: "section",
+                label: "Remote",
+                section: "remote",
+            });
+
+            if (!collapsedSections.remote) {
+                for (const row of remoteBranchRows) {
+                    items.push({
+                        key: row.branch.name,
+                        kind: "branch",
+                        row,
+                        selectableIndex,
+                    });
+                    selectableIndex += 1;
+                }
             }
         }
 
         return items;
     }, [
         activeTab,
-        collapsedSections,
-        filteredWorktrees,
-        localBranches,
-        remoteBranches,
+        collapsedSections.local,
+        collapsedSections.remote,
+        filteredWorktreeRows,
+        localBranchRows,
+        remoteBranchRows,
     ]);
+
+    const flatItems = useMemo<readonly SelectableListItem[]>(() => {
+        const items: SelectableListItem[] = [];
+
+        for (const item of listItems) {
+            if (item.kind === "section") {
+                continue;
+            }
+
+            if (item.kind === "branch") {
+                items.push({ branch: item.row.branch, kind: "branch" });
+                continue;
+            }
+
+            items.push({ kind: "worktree", worktree: item.row.worktree });
+        }
+
+        return items;
+    }, [listItems]);
+    const selectableRenderIndexByFocusIndex = useMemo(
+        () =>
+            new Map(
+                listItems.flatMap((item, renderIndex) =>
+                    item.kind === "section"
+                        ? []
+                        : [[item.selectableIndex, renderIndex] as const],
+                ),
+            ),
+        [listItems],
+    );
+    const shouldVirtualizeList = listItems.length >= GIT_SCOPE_VIRTUALIZATION_THRESHOLD;
 
     const updateMenuPosition = useCallback(() => {
         const button = buttonRef.current;
@@ -215,13 +408,10 @@ export function SidebarGitScopePicker({
             380,
             Math.max(minWidth, Math.ceil(measuredMenuRect?.width ?? minWidth)),
         );
-        const estimatedRows =
-            activeTab === "branches"
-                ? Math.max(filteredBranches.length, 1)
-                : Math.max(filteredWorktrees.length, 1);
+        const estimatedRows = Math.max(listItems.length, 1);
         const estimatedHeight = Math.min(
             420,
-            estimatedRows * 56 + 144 + (actionError ? 40 : 0),
+            estimatedRows * GIT_SCOPE_ROW_ESTIMATE + 144 + (actionError ? 40 : 0),
         );
         const height = Math.ceil(measuredMenuRect?.height ?? estimatedHeight);
         const spaceAbove = buttonRect.top - 8;
@@ -244,9 +434,7 @@ export function SidebarGitScopePicker({
         });
     }, [
         actionError,
-        activeTab,
-        filteredBranches.length,
-        filteredWorktrees.length,
+        listItems.length,
     ]);
 
     useEffect(() => {
@@ -565,13 +753,32 @@ export function SidebarGitScopePicker({
         [flatItems.length, focusIndex, handleSelectFocused],
     );
 
+    const handleVirtualListReady = useCallback(
+        (handle: MeasuredVirtualListHandle | null) => {
+            virtualListRef.current = handle;
+        },
+        [],
+    );
+
     useEffect(() => {
         if (focusIndex < 0 || !listRef.current) return;
+
+        const renderIndex = selectableRenderIndexByFocusIndex.get(focusIndex);
+        if (renderIndex == null) {
+            return;
+        }
+
+        if (shouldVirtualizeList) {
+            virtualListRef.current?.scrollToIndex(renderIndex, {
+                align: "center",
+            });
+            return;
+        }
 
         const rows = listRef.current.querySelectorAll("[data-row-index]");
         const row = rows[focusIndex] as HTMLElement | undefined;
         row?.scrollIntoView({ block: "nearest" });
-    }, [focusIndex]);
+    }, [focusIndex, selectableRenderIndexByFocusIndex, shouldVirtualizeList]);
 
     const toggleSection = useCallback((section: string) => {
         setCollapsedSections((prev) => ({
@@ -588,8 +795,100 @@ export function SidebarGitScopePicker({
         activeTab === "branches"
             ? "No branches match your search."
             : "No worktrees match your search.";
+    const renderListItem = useCallback(
+        (item: RenderListItem) => {
+            if (item.kind === "section") {
+                return (
+                    <SectionHeader
+                        collapsed={item.collapsed}
+                        count={item.count}
+                        label={item.label}
+                        onToggle={() => toggleSection(item.section)}
+                    />
+                );
+            }
 
-    let rowIndex = 0;
+            if (item.kind === "branch") {
+                const { row, selectableIndex } = item;
+                const remoteActions =
+                    row.branch.isRemote && row.remoteResolution
+                        ? row.remoteResolution.localBranch
+                            ? []
+                            : [
+                                  {
+                                      disabled:
+                                          row.remoteResolution.hasSuggestedNameConflict,
+                                      label: "Checkout",
+                                      onClick: () =>
+                                          void handleSelectBranch(row.branch),
+                                      title:
+                                          row.remoteResolution.hasSuggestedNameConflict
+                                              ? `Cannot create ${row.remoteResolution.suggestedLocalBranchName} because a different local branch already uses that name.`
+                                              : `Create ${row.remoteResolution.suggestedLocalBranchName} from ${row.branch.name}`,
+                                  },
+                                  {
+                                      label: "Worktree",
+                                      onClick: () =>
+                                          void handleCreateWorktreeFromBranch(
+                                              row.branch,
+                                          ),
+                                      title: `Create a new worktree from ${row.branch.name}`,
+                                  },
+                              ]
+                        : [];
+
+                return (
+                    <div data-row-index={selectableIndex}>
+                        <SidebarNodeRow
+                            actions={remoteActions}
+                            badges={row.badges}
+                            description={row.description}
+                            isActive={row.isActive}
+                            isSelected={selectableIndex === focusIndex}
+                            leading={<BranchGlyph />}
+                            onClick={
+                                isBusy
+                                    ? undefined
+                                    : () => void handleSelectBranch(row.branch)
+                            }
+                            title={row.branch.name}
+                        />
+                    </div>
+                );
+            }
+
+            const { row, selectableIndex } = item;
+
+            return (
+                <div data-row-index={selectableIndex}>
+                    <SidebarNodeRow
+                        badges={row.badges}
+                        description={row.description}
+                        isActive={row.isActive}
+                        isSelected={selectableIndex === focusIndex}
+                        leading={<WorktreeGlyph />}
+                        onClick={
+                            isBusy
+                                ? undefined
+                                : () =>
+                                      void handleSelectWorktree(
+                                          row.worktree.id,
+                                      )
+                        }
+                        title={row.title}
+                    />
+                </div>
+            );
+        },
+        [
+            focusIndex,
+            handleCreateWorktreeFromBranch,
+            handleSelectBranch,
+            handleSelectWorktree,
+            isBusy,
+            toggleSection,
+        ],
+    );
 
     return (
         <div className="relative app-no-drag" ref={containerRef}>
@@ -692,253 +991,32 @@ export function SidebarGitScopePicker({
                               className="shell-scrollbar sidebar-git-scope-menu__list"
                               ref={listRef}
                           >
-                              {activeTab === "branches" ? (
-                                  filteredBranches.length > 0 ? (
-                                      <>
-                                          {localBranches.length > 0 ? (
-                                              <>
-                                                  <SectionHeader
-                                                      collapsed={
-                                                          !!collapsedSections.local
-                                                      }
-                                                      count={
-                                                          localBranches.length
-                                                      }
-                                                      label="Local"
-                                                      onToggle={() =>
-                                                          toggleSection("local")
-                                                      }
-                                                  />
-                                                  {!collapsedSections.local
-                                                      ? localBranches.map(
-                                                            (branch) => {
-                                                                const idx =
-                                                                    rowIndex++;
-                                                                const branchWorktree =
-                                                                    findBranchWorktree(
-                                                                        branch.name,
-                                                                        snapshot?.worktrees ??
-                                                                            EMPTY_WORKTREES,
-                                                                    );
-                                                                const badges =
-                                                                    getBranchBadges(
-                                                                        branch,
-                                                                        branchWorktree,
-                                                                        worktreeId,
-                                                                    );
-
-                                                                return (
-                                                                    <div
-                                                                        data-row-index={
-                                                                            idx
-                                                                        }
-                                                                        key={
-                                                                            branch.name
-                                                                        }
-                                                                    >
-                                                                        <SidebarNodeRow
-                                                                            badges={
-                                                                                badges
-                                                                            }
-                                                                            description={getBranchDescription(
-                                                                                branch,
-                                                                                branchWorktree,
-                                                                                null,
-                                                                            )}
-                                                                            isActive={
-                                                                                branch.name ===
-                                                                                snapshot
-                                                                                    ?.branch
-                                                                                    ?.name
-                                                                            }
-                                                                            isSelected={
-                                                                                idx ===
-                                                                                focusIndex
-                                                                            }
-                                                                            leading={
-                                                                                <BranchGlyph />
-                                                                            }
-                                                                            onClick={
-                                                                                isBusy
-                                                                                    ? undefined
-                                                                                    : () =>
-                                                                                          void handleSelectBranch(
-                                                                                              branch,
-                                                                                          )
-                                                                            }
-                                                                            title={
-                                                                                branch.name
-                                                                            }
-                                                                        />
-                                                                    </div>
-                                                                );
-                                                            },
-                                                        )
-                                                      : null}
-                                              </>
-                                          ) : null}
-
-                                          {remoteBranches.length > 0 ? (
-                                              <>
-                                                  <SectionHeader
-                                                      collapsed={
-                                                          !!collapsedSections.remote
-                                                      }
-                                                      count={
-                                                          remoteBranches.length
-                                                      }
-                                                      label="Remote"
-                                                      onToggle={() =>
-                                                          toggleSection(
-                                                              "remote",
-                                                          )
-                                                      }
-                                                  />
-                                                  {!collapsedSections.remote
-                                                      ? remoteBranches.map(
-                                                            (branch) => {
-                                                                const idx =
-                                                                    rowIndex++;
-                                                                const remoteResolution =
-                                                                    resolveRemoteBranchResolution(
-                                                                        branch,
-                                                                        branches,
-                                                                        snapshot?.worktrees ??
-                                                                            EMPTY_WORKTREES,
-                                                                    );
-                                                                const branchWorktree =
-                                                                    remoteResolution.linkedWorktree;
-                                                                const badges =
-                                                                    getRemoteBranchBadges(
-                                                                        remoteResolution,
-                                                                        branchWorktree,
-                                                                        worktreeId,
-                                                                    );
-                                                                const remoteActions =
-                                                                    remoteResolution.localBranch
-                                                                        ? []
-                                                                        : [
-                                                                              {
-                                                                                  disabled:
-                                                                                      remoteResolution.hasSuggestedNameConflict,
-                                                                                  label: "Checkout",
-                                                                                  onClick: () =>
-                                                                                      void handleSelectBranch(
-                                                                                          branch,
-                                                                                      ),
-                                                                                  title:
-                                                                                      remoteResolution.hasSuggestedNameConflict
-                                                                                          ? `Cannot create ${remoteResolution.suggestedLocalBranchName} because a different local branch already uses that name.`
-                                                                                          : `Create ${remoteResolution.suggestedLocalBranchName} from ${branch.name}`,
-                                                                              },
-                                                                              {
-                                                                                  label: "Worktree",
-                                                                                  onClick: () =>
-                                                                                      void handleCreateWorktreeFromBranch(
-                                                                                          branch,
-                                                                                      ),
-                                                                                  title: `Create a new worktree from ${branch.name}`,
-                                                                              },
-                                                                          ];
-
-                                                                return (
-                                                                    <div
-                                                                        data-row-index={
-                                                                            idx
-                                                                        }
-                                                                        key={
-                                                                            branch.name
-                                                                        }
-                                                                    >
-                                                                        <SidebarNodeRow
-                                                                            actions={
-                                                                                remoteActions
-                                                                            }
-                                                                            badges={
-                                                                                badges
-                                                                            }
-                                                                            description={getBranchDescription(
-                                                                                branch,
-                                                                                branchWorktree,
-                                                                                remoteResolution.localBranch,
-                                                                            )}
-                                                                            isActive={Boolean(
-                                                                                snapshot
-                                                                                    ?.branch
-                                                                                    ?.upstreamName ===
-                                                                                    branch.name,
-                                                                            )}
-                                                                            isSelected={
-                                                                                idx ===
-                                                                                focusIndex
-                                                                            }
-                                                                            leading={
-                                                                                <BranchGlyph />
-                                                                            }
-                                                                            onClick={
-                                                                                isBusy
-                                                                                    ? undefined
-                                                                                    : () =>
-                                                                                          void handleSelectBranch(
-                                                                                              branch,
-                                                                                          )
-                                                                            }
-                                                                            title={
-                                                                                branch.name
-                                                                            }
-                                                                        />
-                                                                    </div>
-                                                                );
-                                                            },
-                                                        )
-                                                      : null}
-                                              </>
-                                          ) : null}
-                                      </>
-                                  ) : (
-                                      <EmptyState label={emptyLabel} />
-                                  )
-                              ) : filteredWorktrees.length > 0 ? (
-                                  filteredWorktrees.map((entry) => {
-                                      const idx = rowIndex++;
-                                      return (
-                                          <div
-                                              data-row-index={idx}
-                                              key={entry.id}
-                                          >
-                                              <SidebarNodeRow
-                                                  badges={getWorktreeBadges(
-                                                      entry,
-                                                  )}
-                                                  description={entry.rootPath}
-                                                  isActive={
-                                                      entry.id ===
-                                                      (worktreeId ?? null)
-                                                  }
-                                                  isSelected={
-                                                      idx === focusIndex
-                                                  }
-                                                  leading={<WorktreeGlyph />}
-                                                  onClick={
-                                                      isBusy
-                                                          ? undefined
-                                                          : () =>
-                                                                void handleSelectWorktree(
-                                                                    entry.id,
-                                                                )
-                                                  }
-                                                  title={
-                                                      entry.branchName ??
-                                                      getDetachedWorktreeLabel(
-                                                          entry,
-                                                      )
-                                                  }
-                                              />
-                                          </div>
-                                      );
-                                  })
-                              ) : (
+                              {listItems.length === 0 ? (
                                   <EmptyState label={emptyLabel} />
+                              ) : shouldVirtualizeList ? (
+                                  <MeasuredVirtualList
+                                      defaultViewportHeight={420}
+                                      enabled={shouldVirtualizeList}
+                                      estimateSize={(item) =>
+                                          item.kind === "section"
+                                              ? GIT_SCOPE_SECTION_ESTIMATE
+                                              : GIT_SCOPE_ROW_ESTIMATE
+                                      }
+                                      getItemKey={(item) => item.key}
+                                      items={listItems}
+                                      onReady={handleVirtualListReady}
+                                      overscan={GIT_SCOPE_VIRTUALIZATION_OVERSCAN}
+                                      renderItem={({ item }) =>
+                                          renderListItem(item)
+                                      }
+                                      scrollContainerRef={listRef}
+                                  />
+                              ) : (
+                                  listItems.map((item) => (
+                                      <div key={item.key}>
+                                          {renderListItem(item)}
+                                      </div>
+                                  ))
                               )}
                           </div>
 
@@ -1173,33 +1251,20 @@ function findBranchWorktree(
     );
 }
 
-function findTrackingLocalBranch(
+function resolveRemoteBranchResolutionWithIndexes(
     remoteBranch: GitBranchSummary,
-    branches: readonly GitBranchSummary[],
-): GitBranchSummary | null {
-    return (
-        branches.find(
-            (branch) =>
-                !branch.isRemote && branch.upstreamName === remoteBranch.name,
-        ) ?? null
-    );
-}
-
-export function resolveRemoteBranchResolution(
-    remoteBranch: GitBranchSummary,
-    branches: readonly GitBranchSummary[],
-    worktrees: readonly GitWorktreeSummary[],
+    localBranchByUpstream: ReadonlyMap<string, GitBranchSummary>,
+    localBranchNames: ReadonlySet<string>,
+    worktreeByBranchName: ReadonlyMap<string, GitWorktreeSummary>,
 ): RemoteBranchResolution {
-    const localBranch = findTrackingLocalBranch(remoteBranch, branches);
+    const localBranch = localBranchByUpstream.get(remoteBranch.name) ?? null;
     const suggestedLocalBranchName = stripRemotePrefix(remoteBranch.name);
     const linkedWorktree =
-        findBranchWorktree(localBranch?.name ?? suggestedLocalBranchName, worktrees);
+        worktreeByBranchName.get(
+            localBranch?.name ?? suggestedLocalBranchName,
+        ) ?? null;
     const hasSuggestedNameConflict =
-        !localBranch &&
-        branches.some(
-            (branch) =>
-                !branch.isRemote && branch.name === suggestedLocalBranchName,
-        );
+        !localBranch && localBranchNames.has(suggestedLocalBranchName);
 
     return {
         hasSuggestedNameConflict,
@@ -1207,6 +1272,42 @@ export function resolveRemoteBranchResolution(
         localBranch,
         suggestedLocalBranchName,
     };
+}
+
+export function resolveRemoteBranchResolution(
+    remoteBranch: GitBranchSummary,
+    branches: readonly GitBranchSummary[],
+    worktrees: readonly GitWorktreeSummary[],
+): RemoteBranchResolution {
+    const localBranchByUpstream = new Map<string, GitBranchSummary>();
+    const localBranchNames = new Set<string>();
+    const worktreeByBranchName = new Map<string, GitWorktreeSummary>();
+
+    for (const branch of branches) {
+        if (branch.isRemote) {
+            continue;
+        }
+
+        localBranchNames.add(branch.name);
+        if (branch.upstreamName) {
+            localBranchByUpstream.set(branch.upstreamName, branch);
+        }
+    }
+
+    for (const worktree of worktrees) {
+        if (!worktree.branchName) {
+            continue;
+        }
+
+        worktreeByBranchName.set(worktree.branchName, worktree);
+    }
+
+    return resolveRemoteBranchResolutionWithIndexes(
+        remoteBranch,
+        localBranchByUpstream,
+        localBranchNames,
+        worktreeByBranchName,
+    );
 }
 
 export function buildUniqueLocalBranchName(

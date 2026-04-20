@@ -1,4 +1,4 @@
-import type { MouseEvent, ReactNode } from "react";
+import { memo, type MouseEvent, type ReactNode } from "react";
 
 export type SidebarBadgeTone =
     | "accent"
@@ -34,7 +34,7 @@ interface SidebarNodeRowProps {
     readonly title: string;
 }
 
-export function SidebarNodeRow({
+function SidebarNodeRowComponent({
     actions,
     badges,
     className,
@@ -115,6 +115,8 @@ export function SidebarNodeRow({
         </div>
     );
 }
+
+export const SidebarNodeRow = memo(SidebarNodeRowComponent);
 
 function RowContent({
     badges,
