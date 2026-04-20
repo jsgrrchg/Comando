@@ -1797,4 +1797,74 @@ describe("workspace runtime focus helpers", () => {
             title: "Codex 1",
         });
     });
+
+    it("closes the live terminal session when a terminal tab is closed", async () => {
+        resetWorkspacePersistenceForTests();
+        closeTerminalSessionMock.mockClear();
+        saveWorkspaceSnapshotMock.mockClear();
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    closeTerminalSession: closeTerminalSessionMock,
+                    saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
+                },
+            },
+            writable: true,
+        });
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            ...createDefaultWorkspaceState(),
+            error: null,
+            hydrated: true,
+            lastFocusedChatTabId: null,
+            lastFocusedRuntimeId: "codex",
+            lastQuickCreateAction: "codex",
+            recentActiveTabIds: [],
+            recentClosedTabs: [],
+            recentFocusedChatTabIds: [],
+        }), true);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                activeTabId: "terminal-1",
+                id: "pane-a",
+                tabIds: ["terminal-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "terminal-1": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    exitCode: null,
+                    id: "terminal-1",
+                    isReady: true,
+                    kind: "terminal",
+                    launchError: null,
+                    output: "",
+                    projectId: "project-1",
+                    session: {
+                        cwd: "/tmp",
+                        projectId: "project-1",
+                        sessionId: "terminal-session-1",
+                        worktreeId: null,
+                    },
+                    sessionId: "terminal-session-1",
+                    signalCode: null,
+                    title: "Terminal 1",
+                    worktreeId: null,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().closeTab("terminal-1");
+
+        expect(closeTerminalSessionMock).toHaveBeenCalledWith(
+            "terminal-session-1",
+        );
+        expect(useWorkspaceStore.getState().tabsById["terminal-1"]).toBeUndefined();
+    });
 });
