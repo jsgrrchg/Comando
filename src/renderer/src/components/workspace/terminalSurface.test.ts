@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+    applyTerminalSurfaceTheme,
+    areTerminalSurfaceThemesEqual,
     createTerminalSurfaceOptions,
     syncTerminalViewport,
 } from "./terminalSurface";
@@ -123,5 +125,108 @@ describe("syncTerminalViewport", () => {
 
         expect(result.sizeChanged).toBe(false);
         expect(refresh).toHaveBeenCalledWith(0, 33);
+    });
+});
+
+describe("areTerminalSurfaceThemesEqual", () => {
+    it("detects when the terminal theme did not change", () => {
+        expect(
+            areTerminalSurfaceThemesEqual(
+                {
+                    background: "#111111",
+                    cursor: "#ffffff",
+                    foreground: "#eeeeee",
+                    selectionBackground: "#333333",
+                },
+                {
+                    background: "#111111",
+                    cursor: "#ffffff",
+                    foreground: "#eeeeee",
+                    selectionBackground: "#333333",
+                },
+            ),
+        ).toBe(true);
+    });
+
+    it("detects when any terminal theme token changed", () => {
+        expect(
+            areTerminalSurfaceThemesEqual(
+                {
+                    background: "#111111",
+                    cursor: "#ffffff",
+                    foreground: "#eeeeee",
+                    selectionBackground: "#333333",
+                },
+                {
+                    background: "#111111",
+                    cursor: "#ff00ff",
+                    foreground: "#eeeeee",
+                    selectionBackground: "#333333",
+                },
+            ),
+        ).toBe(false);
+    });
+});
+
+describe("applyTerminalSurfaceTheme", () => {
+    it("skips refresh when the terminal already uses the same theme", () => {
+        const refresh = vi.fn();
+        const terminal = {
+            options: {
+                theme: {
+                    background: "#111111",
+                    cursor: "#ffffff",
+                    foreground: "#eeeeee",
+                    selectionBackground: "#333333",
+                },
+            },
+            refresh,
+            rows: 24,
+        };
+
+        const didApply = applyTerminalSurfaceTheme({
+            terminal,
+            theme: {
+                background: "#111111",
+                cursor: "#ffffff",
+                foreground: "#eeeeee",
+                selectionBackground: "#333333",
+            },
+        });
+
+        expect(didApply).toBe(false);
+        expect(refresh).not.toHaveBeenCalled();
+    });
+
+    it("updates xterm and refreshes visible rows when the theme changed", () => {
+        const refresh = vi.fn();
+        const terminal = {
+            options: {
+                theme: {
+                    background: "#111111",
+                    cursor: "#ffffff",
+                    foreground: "#eeeeee",
+                    selectionBackground: "#333333",
+                },
+            },
+            refresh,
+            rows: 24,
+        };
+
+        const nextTheme = {
+            background: "#222222",
+            cursor: "#ff00ff",
+            foreground: "#f5f5f5",
+            selectionBackground: "#444444",
+        };
+
+        const didApply = applyTerminalSurfaceTheme({
+            terminal,
+            theme: nextTheme,
+        });
+
+        expect(didApply).toBe(true);
+        expect(terminal.options.theme).toEqual(nextTheme);
+        expect(refresh).toHaveBeenCalledWith(0, 23);
     });
 });

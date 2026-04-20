@@ -32,6 +32,14 @@ interface TerminalViewportRuntime {
     refresh: (start: number, end: number) => void;
 }
 
+interface TerminalThemeRuntime {
+    readonly options: {
+        theme?: Partial<TerminalSurfaceTheme>;
+    };
+    readonly rows: number;
+    refresh: (start: number, end: number) => void;
+}
+
 export function createTerminalSurfaceOptions(
     theme: TerminalSurfaceTheme,
 ): TerminalSurfaceOptions {
@@ -47,6 +55,43 @@ export function createTerminalSurfaceOptions(
         scrollback: 5000,
         theme,
     };
+}
+
+export function areTerminalSurfaceThemesEqual(
+    first: Partial<TerminalSurfaceTheme> | null | undefined,
+    second: TerminalSurfaceTheme,
+): boolean {
+    return (
+        first?.background === second.background &&
+        first?.cursor === second.cursor &&
+        first?.foreground === second.foreground &&
+        first?.selectionBackground === second.selectionBackground
+    );
+}
+
+export function applyTerminalSurfaceTheme({
+    terminal,
+    theme,
+}: {
+    readonly terminal: TerminalThemeRuntime | null | undefined;
+    readonly theme: TerminalSurfaceTheme;
+}): boolean {
+    if (!terminal) {
+        return false;
+    }
+
+    const currentTheme = terminal.options.theme;
+    if (areTerminalSurfaceThemesEqual(currentTheme, theme)) {
+        return false;
+    }
+
+    terminal.options.theme = theme;
+
+    if (terminal.rows > 0) {
+        terminal.refresh(0, terminal.rows - 1);
+    }
+
+    return true;
 }
 
 export function syncTerminalViewport({
