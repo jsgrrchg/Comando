@@ -51,7 +51,7 @@ describe("QueuedMessagesPanel", () => {
         expect(markup).toContain("[clear]");
         expect(markup).toContain("Delete");
         expect(markup).toContain("Edit");
-        expect(markup).toContain("send");
+        expect(markup).toContain("steer");
         expect(markup).toContain("Retry failing message");
         expect(markup).toContain("font-size:1.25em");
     });

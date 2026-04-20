@@ -39,7 +39,7 @@ function summarizeQueuedPrompt(item: QueuedPrompt): string {
     return "Untitled message";
 }
 
-function getStatusLabel(status: QueuedPrompt["status"]): string {
+function getStatusLabel(status: QueuedPrompt["status"]): string | null {
     if (status === "sending") {
         return "sending\u2026";
     }
@@ -48,7 +48,7 @@ function getStatusLabel(status: QueuedPrompt["status"]): string {
         return "failed!";
     }
 
-    return "queued";
+    return null;
 }
 
 function getStatusColor(status: QueuedPrompt["status"]): string {
@@ -56,11 +56,7 @@ function getStatusColor(status: QueuedPrompt["status"]): string {
         return "#ef4444";
     }
 
-    if (status === "sending") {
-        return "var(--color-accent)";
-    }
-
-    return "#8b5cf6";
+    return "var(--color-accent)";
 }
 
 export interface QueuedMessagesPanelProps {
@@ -254,23 +250,37 @@ export function QueuedMessagesPanel({
                                 >
                                     {summary}
                                 </span>
-                                <span
-                                    style={{
-                                        color: getStatusColor(item.status),
-                                        flexShrink: 0,
-                                        fontSize: toEm(10),
-                                        fontWeight: 500,
-                                        opacity: 0.7,
-                                    }}
-                                >
-                                    {getStatusLabel(item.status)}
-                                </span>
-                                <div className="flex shrink-0 items-center gap-0.5">
+                                {getStatusLabel(item.status) ? (
+                                    <span
+                                        style={{
+                                            color: getStatusColor(item.status),
+                                            flexShrink: 0,
+                                            fontSize: toEm(10),
+                                            fontWeight: 500,
+                                            opacity: 0.7,
+                                        }}
+                                    >
+                                        {getStatusLabel(item.status)}
+                                    </span>
+                                ) : null}
+                                <div className="flex shrink-0 items-center gap-1">
                                     <button
                                         aria-label={`Delete ${summary}`}
                                         className="review-action-btn"
                                         disabled={sending}
                                         onClick={() => onDelete(item.id)}
+                                        onMouseEnter={(e) => {
+                                            if (!sending) {
+                                                e.currentTarget.style.opacity =
+                                                    "1";
+                                            }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            if (!sending) {
+                                                e.currentTarget.style.opacity =
+                                                    "0.5";
+                                            }
+                                        }}
                                         style={{
                                             background: "transparent",
                                             border: "none",
@@ -278,9 +288,11 @@ export function QueuedMessagesPanel({
                                             cursor: sending
                                                 ? "not-allowed"
                                                 : "pointer",
-                                            fontSize: toEm(11),
+                                            fontSize: toEm(12),
+                                            lineHeight: 1,
                                             opacity: sending ? 0.2 : 0.5,
-                                            padding: "2px 3px",
+                                            padding: "4px 6px",
+                                            transition: "opacity 100ms ease",
                                         }}
                                         type="button"
                                     >
@@ -291,14 +303,25 @@ export function QueuedMessagesPanel({
                                             aria-label={`Edit ${summary}`}
                                             className="review-action-btn"
                                             onClick={() => onEdit(item.id)}
+                                            onMouseEnter={(e) => {
+                                                e.currentTarget.style.opacity =
+                                                    "1";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                                e.currentTarget.style.opacity =
+                                                    "0.5";
+                                            }}
                                             style={{
                                                 background: "transparent",
                                                 border: "none",
                                                 color: "var(--color-text-secondary)",
                                                 cursor: "pointer",
-                                                fontSize: toEm(11),
+                                                fontSize: toEm(12),
+                                                lineHeight: 1,
                                                 opacity: 0.5,
-                                                padding: "2px 3px",
+                                                padding: "4px 6px",
+                                                transition:
+                                                    "opacity 100ms ease",
                                             }}
                                             type="button"
                                         >
@@ -329,7 +352,7 @@ export function QueuedMessagesPanel({
                                         }}
                                         type="button"
                                     >
-                                        send
+                                        steer
                                     </button>
                                 </div>
                             </div>

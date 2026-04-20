@@ -219,6 +219,16 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                         className="review-action-btn"
                         disabled={rejectableCount === 0}
                         onClick={onRejectAll}
+                        onMouseEnter={(e) => {
+                            if (rejectableCount > 0) {
+                                e.currentTarget.style.opacity = "1";
+                            }
+                        }}
+                        onMouseLeave={(e) => {
+                            if (rejectableCount > 0) {
+                                e.currentTarget.style.opacity = "0.6";
+                            }
+                        }}
                         style={{
                             background: "transparent",
                             border: "none",
@@ -229,8 +239,10 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                                     : "pointer",
                             fontSize: toEm(13),
                             fontWeight: 600,
+                            lineHeight: 1,
                             opacity: rejectableCount === 0 ? 0.25 : 0.6,
-                            padding: "2px 3px",
+                            padding: "4px 6px",
+                            transition: "opacity 100ms ease",
                         }}
                         title="Reject All"
                         type="button"
@@ -241,6 +253,12 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                         aria-label="Keep All"
                         className="review-action-btn"
                         onClick={onKeepAll}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.opacity = "1";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.opacity = "0.6";
+                        }}
                         style={{
                             background: "transparent",
                             border: "none",
@@ -248,8 +266,10 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                             cursor: "pointer",
                             fontSize: toEm(13),
                             fontWeight: 600,
+                            lineHeight: 1,
                             opacity: 0.6,
-                            padding: "2px 3px",
+                            padding: "4px 6px",
+                            transition: "opacity 100ms ease",
                         }}
                         title="Keep All"
                         type="button"

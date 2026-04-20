@@ -257,8 +257,9 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                                     ? "pointer"
                                     : "not-allowed",
                                 fontSize: toEm(13),
+                                lineHeight: 1,
                                 opacity: item.canReject ? 0.6 : 0.2,
-                                padding: "2px 3px",
+                                padding: "4px 6px",
                                 transition:
                                     "opacity 100ms ease, filter 100ms ease",
                             }}
@@ -283,8 +284,9 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                                 color: "var(--diff-add)",
                                 cursor: "pointer",
                                 fontSize: toEm(13),
+                                lineHeight: 1,
                                 opacity: 0.6,
-                                padding: "2px 3px",
+                                padding: "4px 6px",
                                 transition:
                                     "opacity 100ms ease, filter 100ms ease",
                             }}
