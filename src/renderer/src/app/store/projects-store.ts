@@ -84,6 +84,17 @@ type SetProjectsState = (
 
 type GetProjectsState = () => ProjectsState;
 
+interface ProjectTreeRefreshEntry {
+    readonly nodes: readonly ProjectTreeNode[];
+    readonly parentRelativePath: string | null;
+}
+
+interface ProjectTreeRefreshResolution {
+    readonly error: unknown | null;
+    readonly expandedDirectories: readonly string[];
+    readonly treeNodes: Record<ParentKey, readonly ProjectTreeNode[]>;
+}
+
 export const useProjectsStore = create<ProjectsState>((set, get) => ({
     activeProjectId: null,
     error: null,
@@ -327,7 +338,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         const parentPaths = [null, ...expandedDirectories];
 
         try {
-            const entries = await Promise.all(
+            const results = await Promise.allSettled(
                 parentPaths.map(async (parentRelativePath) => ({
                     nodes: await getComandoApi().listProjectTree({
                         parentRelativePath,
@@ -339,24 +350,31 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
             );
 
             set((currentState) => {
-                const projectTree = {
-                    ...(currentState.treeNodes[contextKey] ?? {}),
-                };
+                const resolution = resolveProjectTreeRefresh({
+                    currentTree: currentState.treeNodes[contextKey] ?? {},
+                    expandedDirectories:
+                        currentState.expandedDirectories[contextKey] ?? [],
+                    parentPaths,
+                    results,
+                });
 
-                for (const entry of entries) {
-                    projectTree[getParentKey(entry.parentRelativePath)] =
-                        entry.nodes;
+                if (resolution.error) {
+                    throw resolution.error;
                 }
 
                 return {
                     error: null,
+                    expandedDirectories: {
+                        ...currentState.expandedDirectories,
+                        [contextKey]: resolution.expandedDirectories,
+                    },
                     fullyLoadedTreeProjects: {
                         ...currentState.fullyLoadedTreeProjects,
                         [contextKey]: false,
                     },
                     treeNodes: {
                         ...currentState.treeNodes,
-                        [contextKey]: projectTree,
+                        [contextKey]: resolution.treeNodes,
                     },
                 };
             });
@@ -616,6 +634,33 @@ async function loadDirectory(
             },
         }));
     } catch (error) {
+        if (isMissingProjectTreePathError(error)) {
+            set((state) => ({
+                error: null,
+                expandedDirectories: {
+                    ...state.expandedDirectories,
+                    [contextKey]:
+                        parentRelativePath === null
+                            ? []
+                            : removeMatchingPaths(
+                                  state.expandedDirectories[contextKey] ?? [],
+                                  parentRelativePath,
+                              ),
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [contextKey]:
+                        parentRelativePath === null
+                            ? { [ROOT_NODE_KEY]: [] }
+                            : omitTreeBranch(
+                                  state.treeNodes[contextKey] ?? {},
+                                  parentRelativePath,
+                              ),
+                },
+            }));
+            return;
+        }
+
         set({
             error:
                 error instanceof Error
@@ -659,12 +704,70 @@ function getTreeContextKey(
     return `${projectId}::${worktreeId ?? "__primary__"}`;
 }
 
+export function resolveProjectTreeRefresh(input: {
+    readonly currentTree: Record<ParentKey, readonly ProjectTreeNode[]>;
+    readonly expandedDirectories: readonly string[];
+    readonly parentPaths: readonly (string | null)[];
+    readonly results: readonly PromiseSettledResult<ProjectTreeRefreshEntry>[];
+}): ProjectTreeRefreshResolution {
+    let nextTree = { ...input.currentTree };
+    let nextExpandedDirectories: readonly string[] = [
+        ...input.expandedDirectories,
+    ];
+    let nextError: unknown | null = null;
+
+    for (const [index, result] of input.results.entries()) {
+        if (result.status === "fulfilled") {
+            nextTree[getParentKey(result.value.parentRelativePath)] =
+                result.value.nodes;
+            continue;
+        }
+
+        if (!isMissingProjectTreePathError(result.reason)) {
+            nextError ??= result.reason;
+            continue;
+        }
+
+        const missingPath = input.parentPaths[index] ?? null;
+        if (missingPath === null) {
+            nextExpandedDirectories = [];
+            nextTree = { [ROOT_NODE_KEY]: [] };
+            continue;
+        }
+
+        nextExpandedDirectories = removeMatchingPaths(
+            nextExpandedDirectories,
+            missingPath,
+        );
+        nextTree = omitTreeBranch(nextTree, missingPath);
+    }
+
+    return {
+        error: nextError,
+        expandedDirectories: nextExpandedDirectories,
+        treeNodes: nextTree,
+    };
+}
+
 function removeMatchingPaths(
     paths: readonly string[],
     relativePath: string,
 ): readonly string[] {
     return paths.filter(
         (path) => path !== relativePath && !path.startsWith(`${relativePath}/`),
+    );
+}
+
+function omitTreeBranch(
+    treeNodes: Record<ParentKey, readonly ProjectTreeNode[]>,
+    relativePath: string,
+): Record<ParentKey, readonly ProjectTreeNode[]> {
+    return Object.fromEntries(
+        Object.entries(treeNodes).filter(
+            ([parentKey]) =>
+                parentKey !== relativePath &&
+                !parentKey.startsWith(`${relativePath}/`),
+        ),
     );
 }
 
@@ -715,4 +818,9 @@ function mergeUniquePaths(
     }
 
     return mergedPaths;
+}
+
+function isMissingProjectTreePathError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("ENOENT") || message.includes("ENOTDIR");
 }

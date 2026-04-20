@@ -40,10 +40,23 @@ export function listProjectTreeChildren(options: {
         options.rootPath,
         options.parentRelativePath,
     );
-    const entries = fs
-        .readdirSync(absoluteDirectoryPath, { withFileTypes: true })
-        .filter((entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()))
-        .sort(compareDirectoryEntries);
+    let entries: fs.Dirent[];
+
+    try {
+        entries = fs
+            .readdirSync(absoluteDirectoryPath, { withFileTypes: true })
+            .filter(
+                (entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()),
+            )
+            .sort(compareDirectoryEntries);
+    } catch (error) {
+        if (isMissingProjectDirectoryError(error)) {
+            debugBenignError("projects.listProjectTreeChildren", error);
+            return [];
+        }
+
+        throw error;
+    }
 
     return entries.map((entry) => {
         const relativePath = normalizeRelativePath(
@@ -322,6 +335,17 @@ function directoryHasVisibleChildren(directoryPath: string): boolean {
         debugBenignError("projects.directoryHasVisibleChildren", error);
         return false;
     }
+}
+
+function isMissingProjectDirectoryError(
+    error: unknown,
+): error is NodeJS.ErrnoException {
+    return (
+        error instanceof Error &&
+        "code" in error &&
+        ((error as NodeJS.ErrnoException).code === "ENOENT" ||
+            (error as NodeJS.ErrnoException).code === "ENOTDIR")
+    );
 }
 
 function compareDirectoryEntries(left: fs.Dirent, right: fs.Dirent): number {

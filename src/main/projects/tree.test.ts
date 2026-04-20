@@ -47,6 +47,22 @@ describe("project tree helpers", () => {
         });
     });
 
+    it("returns an empty result when a requested directory disappears", () => {
+        const rootPath = createProjectFixture();
+
+        const nodes = listProjectTreeChildren({
+            gitSnapshot: {
+                changedPaths: [],
+                exactBadges: new Map(),
+            },
+            parentRelativePath: "assets",
+            projectId: "project-1",
+            rootPath,
+        });
+
+        expect(nodes).toEqual([]);
+    });
+
     it("reads text files and preserves the relative path metadata", async () => {
         const rootPath = createProjectFixture();
         const relativePath = "src/main.ts";

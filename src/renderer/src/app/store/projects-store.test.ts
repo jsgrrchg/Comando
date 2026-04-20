@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
     getAncestorDirectoryPaths,
+    resolveProjectTreeRefresh,
     resolveNextActiveProjectId,
 } from "./projects-store";
 
@@ -82,5 +83,87 @@ describe("resolveNextActiveProjectId", () => {
                 projects,
             }),
         ).toBeNull();
+    });
+});
+
+describe("resolveProjectTreeRefresh", () => {
+    it("prunes expanded directories that disappeared during refresh", () => {
+        const resolution = resolveProjectTreeRefresh({
+            currentTree: {
+                __root__: [
+                    {
+                        extension: null,
+                        gitStatus: null,
+                        hasChildren: true,
+                        id: "project-1:assets",
+                        kind: "directory",
+                        name: "assets",
+                        parentRelativePath: null,
+                        relativePath: "assets",
+                    },
+                ],
+                assets: [
+                    {
+                        extension: "png",
+                        gitStatus: null,
+                        hasChildren: false,
+                        id: "project-1:assets/logo.png",
+                        kind: "file",
+                        name: "logo.png",
+                        parentRelativePath: "assets",
+                        relativePath: "assets/logo.png",
+                    },
+                ],
+            },
+            expandedDirectories: ["assets"],
+            parentPaths: [null, "assets"],
+            results: [
+                {
+                    status: "fulfilled",
+                    value: {
+                        nodes: [],
+                        parentRelativePath: null,
+                    },
+                },
+                {
+                    reason: new Error(
+                        "Error invoking remote method 'projects:list-tree': Error: ENOENT: no such file or directory, scandir '/tmp/project/assets'",
+                    ),
+                    status: "rejected",
+                },
+            ],
+        });
+
+        expect(resolution.error).toBeNull();
+        expect(resolution.expandedDirectories).toEqual([]);
+        expect(resolution.treeNodes).toEqual({
+            __root__: [],
+        });
+    });
+
+    it("keeps the first non-missing-path error so the caller can surface it", () => {
+        const resolution = resolveProjectTreeRefresh({
+            currentTree: {
+                __root__: [],
+            },
+            expandedDirectories: ["assets"],
+            parentPaths: [null, "assets"],
+            results: [
+                {
+                    status: "fulfilled",
+                    value: {
+                        nodes: [],
+                        parentRelativePath: null,
+                    },
+                },
+                {
+                    reason: new Error("EACCES: permission denied"),
+                    status: "rejected",
+                },
+            ],
+        });
+
+        expect(resolution.error).toBeInstanceOf(Error);
+        expect((resolution.error as Error).message).toContain("EACCES");
     });
 });
