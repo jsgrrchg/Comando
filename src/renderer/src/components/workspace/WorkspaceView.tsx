@@ -62,6 +62,7 @@ import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
+import { useProjectsStore } from "@renderer/app/store/projects-store";
 import {
     getBestMatchingChatTabId,
     useWorkspaceStore,
@@ -100,8 +101,10 @@ import { createDiffFromTrackedFile } from "@renderer/components/workspace/review
 import { closeWorkspaceTabsWithConfirmation } from "@renderer/components/workspace/workspaceCloseGuard";
 import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/workspace/workspaceTabActivity";
 import {
+    applyTerminalSurfaceTheme,
     createTerminalSurfaceOptions,
     syncTerminalViewport,
+    type TerminalSurfaceTheme,
 } from "@renderer/components/workspace/terminalSurface";
 import {
     getReviewHunkVisualEndLine,
@@ -358,6 +361,48 @@ function captureDiffEditorScrollState(
         originalScrollLeft: originalEditor?.getScrollLeft() ?? 0,
         originalScrollTop: originalEditor?.getScrollTop() ?? 0,
     };
+}
+
+type PortableEditorRestoreState = {
+    readonly column: number;
+    readonly lineNumber: number;
+    readonly scrollLeft: number;
+    readonly scrollTop: number;
+};
+
+function capturePortableEditorRestoreState(
+    editor: MonacoEditor.ICodeEditor | null,
+): PortableEditorRestoreState | null {
+    if (!editor) {
+        return null;
+    }
+
+    const position = editor.getPosition();
+    if (!position) {
+        return null;
+    }
+
+    return {
+        column: position.column,
+        lineNumber: position.lineNumber,
+        scrollLeft: editor.getScrollLeft(),
+        scrollTop: editor.getScrollTop(),
+    };
+}
+
+function isMonacoCancellationError(error: unknown): boolean {
+    return error instanceof Error && error.message.includes("Canceled");
+}
+
+function isMonacoDisposedError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+        return false;
+    }
+
+    return (
+        error.message.includes("has been disposed") ||
+        error.message.includes("got disposed before DiffEditorWidget model got reset")
+    );
 }
 
 function getOrCreateMonacoTextModel(input: {
@@ -2535,6 +2580,26 @@ function countTextLines(text: string): number {
     return text.split("\n").length;
 }
 
+function buildProjectScopedFilePath(input: {
+    readonly projectName: string | null;
+    readonly relativePath: string;
+}): string {
+    const normalizedRelativePath = input.relativePath.trim();
+    if (!normalizedRelativePath) {
+        return input.projectName ?? "";
+    }
+
+    if (
+        !input.projectName ||
+        normalizedRelativePath === input.projectName ||
+        normalizedRelativePath.startsWith(`${input.projectName}/`)
+    ) {
+        return normalizedRelativePath;
+    }
+
+    return `${input.projectName}/${normalizedRelativePath}`;
+}
+
 function FileTabView({
     isActivePane,
     onAttachLineFragment,
@@ -2559,6 +2624,15 @@ function FileTabView({
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const document = tab.document;
+    const projectSummary = useProjectsStore((state) =>
+        state.projects.find((project) => project.id === tab.projectId) ?? null,
+    );
+    const documentDisplayPath = document
+        ? buildProjectScopedFilePath({
+              projectName: projectSummary?.name ?? null,
+              relativePath: document.relativePath,
+          })
+        : null;
     const canEdit = document
         ? !document.isBinary && !document.isTooLarge
         : false;
@@ -2589,9 +2663,11 @@ function FileTabView({
     const keepTrackedFileHunks = useAiStore(
         (state) => state.keepTrackedFileHunks,
     );
+    const keepTrackedFile = useAiStore((state) => state.keepTrackedFile);
     const rejectTrackedFileHunks = useAiStore(
         (state) => state.rejectTrackedFileHunks,
     );
+    const rejectTrackedFile = useAiStore((state) => state.rejectTrackedFile);
     const updateFileViewState = useWorkspaceStore(
         (state) => state.updateFileViewState,
     );
@@ -2617,6 +2693,14 @@ function FileTabView({
     const inlineReviewScrollStateRef = useRef<
         ReturnType<typeof captureDiffEditorScrollState>
     >(captureDiffEditorScrollState(null));
+    const pendingEditorInlineReviewRestoreStateRef = useRef<{
+        readonly state: PortableEditorRestoreState;
+        readonly tabId: string;
+    } | null>(null);
+    const pendingInlineReviewRestoreStateRef = useRef<{
+        readonly state: PortableEditorRestoreState;
+        readonly tabId: string;
+    } | null>(null);
     const fileTabIdRef = useRef(tab.id);
     const gitGutterDecorationsRef =
         useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
@@ -2789,7 +2873,13 @@ function FileTabView({
             viewState: MonacoEditor.ICodeEditorViewState,
         ) => {
             clearScheduledEditorViewStateRestore();
-            editor.restoreViewState(viewState);
+            try {
+                editor.restoreViewState(viewState);
+            } catch (error) {
+                if (!isMonacoCancellationError(error)) {
+                    throw error;
+                }
+            }
             editor.layout();
 
             // Re-apply after the first paint because Monaco can recompute
@@ -2802,8 +2892,57 @@ function FileTabView({
                         return;
                     }
 
-                    editor.restoreViewState(viewState);
+                    try {
+                        editor.restoreViewState(viewState);
+                    } catch (error) {
+                        if (!isMonacoCancellationError(error)) {
+                            throw error;
+                        }
+                    }
                     editor.layout();
+                },
+            );
+        },
+        [clearScheduledEditorViewStateRestore],
+    );
+
+    const restorePortableEditorState = useCallback(
+        (
+            editor: MonacoEditor.IStandaloneCodeEditor,
+            state: PortableEditorRestoreState,
+        ) => {
+            const applyState = () => {
+                const model = editor.getModel();
+                if (!model) {
+                    return;
+                }
+
+                const lineNumber = Math.min(
+                    Math.max(state.lineNumber, 1),
+                    model.getLineCount(),
+                );
+                const column = Math.min(
+                    Math.max(state.column, 1),
+                    model.getLineMaxColumn(lineNumber),
+                );
+
+                editor.layout();
+                editor.setPosition({ lineNumber, column });
+                editor.setScrollLeft(state.scrollLeft);
+                editor.setScrollTop(state.scrollTop);
+            };
+
+            clearScheduledEditorViewStateRestore();
+            applyState();
+            viewStateRestoreFrameRef.current = window.requestAnimationFrame(
+                () => {
+                    viewStateRestoreFrameRef.current = null;
+
+                    if (editorRef.current !== editor) {
+                        return;
+                    }
+
+                    applyState();
                 },
             );
         },
@@ -2830,8 +2969,83 @@ function FileTabView({
         [persistEditorViewState],
     );
 
+    const captureEditorStateForInlineReview = useCallback(
+        (editor: MonacoEditor.IStandaloneCodeEditor | null) => {
+            const state = capturePortableEditorRestoreState(editor);
+            if (!state) {
+                return;
+            }
+
+            pendingEditorInlineReviewRestoreStateRef.current = {
+                state,
+                tabId: fileTabIdRef.current,
+            };
+        },
+        [],
+    );
+
+    const captureInlineReviewModifiedEditorState = useCallback(() => {
+        const state = capturePortableEditorRestoreState(
+            diffEditorRef.current?.getModifiedEditor() ?? null,
+        );
+        if (!state) {
+            return;
+        }
+
+        pendingInlineReviewRestoreStateRef.current = {
+            state,
+            tabId: fileTabIdRef.current,
+        };
+    }, []);
+
+    const handleKeepInlineReviewFile = useCallback(() => {
+        if (!inlineReviewTrackedFile) {
+            return;
+        }
+
+        captureInlineReviewModifiedEditorState();
+        void keepTrackedFile({
+            path: inlineReviewTrackedFile.path,
+            sessionId: inlineReviewTrackedFile.sessionId,
+        });
+    }, [
+        captureInlineReviewModifiedEditorState,
+        inlineReviewTrackedFile,
+        keepTrackedFile,
+    ]);
+
+    const handleRejectInlineReviewFile = useCallback(() => {
+        if (!inlineReviewTrackedFile) {
+            return;
+        }
+
+        captureInlineReviewModifiedEditorState();
+        void rejectTrackedFile({
+            path: inlineReviewTrackedFile.path,
+            sessionId: inlineReviewTrackedFile.sessionId,
+        });
+    }, [
+        captureInlineReviewModifiedEditorState,
+        inlineReviewTrackedFile,
+        rejectTrackedFile,
+    ]);
+
     useEffect(() => {
         fileTabIdRef.current = tab.id;
+    }, [tab.id]);
+
+    useEffect(() => {
+        const pendingState = pendingEditorInlineReviewRestoreStateRef.current;
+        if (pendingState && pendingState.tabId !== tab.id) {
+            pendingEditorInlineReviewRestoreStateRef.current = null;
+        }
+    }, [tab.id]);
+
+    useEffect(() => {
+        const pendingState = pendingInlineReviewRestoreStateRef.current;
+        if (pendingState && pendingState.tabId !== tab.id) {
+            pendingInlineReviewRestoreStateRef.current = null;
+        }
     }, [tab.id]);
 
     useEffect(() => {
@@ -2842,6 +3056,7 @@ function FileTabView({
     useEffect(() => {
         return () => {
             if (editorRef.current) {
+                captureEditorStateForInlineReview(editorRef.current);
                 pendingEditorViewStateRef.current =
                     editorRef.current.saveViewState();
             }
@@ -2850,6 +3065,7 @@ function FileTabView({
             flushScheduledEditorViewStatePersist();
         };
     }, [
+        captureEditorStateForInlineReview,
         clearScheduledEditorViewStateRestore,
         flushScheduledEditorViewStatePersist,
     ]);
@@ -3126,6 +3342,54 @@ function FileTabView({
         inlineReviewScrollRestoreFrameRef.current = null;
     }, []);
 
+    const restorePortableInlineReviewState = useCallback(
+        (
+            diffEditor: MonacoEditor.IStandaloneDiffEditor,
+            state: PortableEditorRestoreState,
+        ) => {
+            const applyState = () => {
+                const originalEditor = diffEditor.getOriginalEditor();
+                const modifiedEditor = diffEditor.getModifiedEditor();
+                const model = modifiedEditor.getModel();
+                if (!model) {
+                    return;
+                }
+
+                const lineNumber = Math.min(
+                    Math.max(state.lineNumber, 1),
+                    model.getLineCount(),
+                );
+                const column = Math.min(
+                    Math.max(state.column, 1),
+                    model.getLineMaxColumn(lineNumber),
+                );
+
+                diffEditor.layout();
+                originalEditor.setScrollLeft(state.scrollLeft);
+                originalEditor.setScrollTop(state.scrollTop);
+                modifiedEditor.setPosition({ lineNumber, column });
+                modifiedEditor.setScrollLeft(state.scrollLeft);
+                modifiedEditor.setScrollTop(state.scrollTop);
+                inlineReviewScrollStateRef.current =
+                    captureDiffEditorScrollState(diffEditor);
+            };
+
+            clearInlineReviewScrollRestore();
+            applyState();
+            inlineReviewScrollRestoreFrameRef.current =
+                window.requestAnimationFrame(() => {
+                    inlineReviewScrollRestoreFrameRef.current = null;
+
+                    if (diffEditorRef.current !== diffEditor) {
+                        return;
+                    }
+
+                    applyState();
+                });
+        },
+        [clearInlineReviewScrollRestore],
+    );
+
     const restoreInlineReviewScrollState = useCallback(
         (
             diffEditor: MonacoEditor.IStandaloneDiffEditor,
@@ -3207,17 +3471,39 @@ function FileTabView({
                 value: trackedFile.newText ?? "",
             });
 
-            inlineReviewDecorationsRef.current?.clear();
-            diffEditor.setModel({
-                modified: nextModifiedModel,
-                original: nextOriginalModel,
-            });
-            inlineReviewCurrentModelsRef.current = {
-                modified: nextModifiedModel,
-                original: nextOriginalModel,
-                revision: inlineReviewModelRevision,
-            };
-            restoreInlineReviewScrollState(diffEditor, scrollState);
+            const pendingInlineReviewRestoreState =
+                pendingEditorInlineReviewRestoreStateRef.current?.tabId ===
+                tab.id
+                    ? pendingEditorInlineReviewRestoreStateRef.current.state
+                    : null;
+
+            try {
+                inlineReviewDecorationsRef.current?.clear();
+                diffEditor.setModel({
+                    modified: nextModifiedModel,
+                    original: nextOriginalModel,
+                });
+                inlineReviewCurrentModelsRef.current = {
+                    modified: nextModifiedModel,
+                    original: nextOriginalModel,
+                    revision: inlineReviewModelRevision,
+                };
+                if (pendingInlineReviewRestoreState) {
+                    restorePortableInlineReviewState(
+                        diffEditor,
+                        pendingInlineReviewRestoreState,
+                    );
+                    pendingEditorInlineReviewRestoreStateRef.current = null;
+                } else {
+                    restoreInlineReviewScrollState(diffEditor, scrollState);
+                }
+            } catch (error) {
+                if (!isMonacoDisposedError(error)) {
+                    throw error;
+                }
+
+                return;
+            }
 
             if (
                 previousModels?.original &&
@@ -3238,6 +3524,7 @@ function FileTabView({
             inlineReviewModelRevision,
             monacoLanguageId,
             restoreInlineReviewScrollState,
+            restorePortableInlineReviewState,
             tab.id,
         ],
     );
@@ -3536,13 +3823,21 @@ function FileTabView({
     }
 
     if (document.kind === "image") {
-        return <ImageFileView document={document} />;
+        return (
+            <ImageFileView
+                displayPath={documentDisplayPath}
+                document={document}
+            />
+        );
     }
 
     if (!canEdit) {
         return (
             <div className="flex h-full min-h-0 flex-col">
-                <FilePathBar path={document.absolutePath} />
+                <FilePathBar
+                    path={documentDisplayPath ?? document.relativePath}
+                    titlePath={document.absolutePath}
+                />
                 <div className="flex h-full items-center justify-center px-6 text-center">
                     <div>
                         <div className="text-sm font-medium text-text-primary">
@@ -3562,10 +3857,11 @@ function FileTabView({
             <DeferredSurfaceState
                 actionLabel={monacoLoadError ? "Retry editor load" : undefined}
                 onAction={monacoLoadError ? retryMonacoLoad : undefined}
-                path={document.absolutePath}
+                path={documentDisplayPath ?? document.relativePath}
                 statusLabel={
                     monacoLoadError ? "Editor unavailable" : "Loading editor..."
                 }
+                titlePath={document.absolutePath}
                 title={
                     monacoLoadError
                         ? "Could not load the editor"
@@ -3581,11 +3877,51 @@ function FileTabView({
 
     const DiffEditorComponent = runtime.DiffEditor;
     const EditorComponent = runtime.Editor;
+    const inlineReviewFileActions =
+        inlineReviewTrackedFile?.reviewState === "pending" ? (
+            <>
+                <button
+                    className="review-action-btn"
+                    onClick={handleRejectInlineReviewFile}
+                    style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--diff-remove)",
+                        cursor: "pointer",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        opacity: 0.7,
+                        padding: "4px 6px",
+                    }}
+                    type="button"
+                >
+                    ✕ reject all
+                </button>
+                <button
+                    className="review-action-btn"
+                    onClick={handleKeepInlineReviewFile}
+                    style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--diff-add)",
+                        cursor: "pointer",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        opacity: 0.7,
+                        padding: "4px 6px",
+                    }}
+                    type="button"
+                >
+                    ✓ keep all
+                </button>
+            </>
+        ) : null;
 
     return (
         <div className="flex h-full min-h-0 flex-col">
             <FilePathBar
-                path={document.absolutePath}
+                actions={inlineReviewFileActions}
+                path={documentDisplayPath ?? document.relativePath}
                 statusLabel={
                     tab.isSaving
                         ? "Saving..."
@@ -3593,6 +3929,7 @@ function FileTabView({
                           ? "Unsaved changes"
                           : "Saved"
                 }
+                titlePath={document.absolutePath}
             />
 
             {tab.hasExternalChange ? (
@@ -3654,7 +3991,10 @@ function FileTabView({
                             modifiedModelPath={
                                 inlineReviewShellModelPaths?.modified ?? undefined
                             }
-                            onMount={(editor, monaco) => {
+                            onMount={(
+                                editor: MonacoEditor.IStandaloneDiffEditor,
+                                monaco: MonacoNamespace,
+                            ) => {
                                 diffEditorRef.current = editor;
                                 inlineReviewMonacoRef.current = monaco;
                                 const originalEditor =
@@ -3701,7 +4041,6 @@ function FileTabView({
                                     originalEditor.onDidScrollChange(
                                         syncInlineReviewScrollState,
                                     );
-
                                 syncInlineReviewScrollState();
                                 syncFindWidgetVisibility();
                                 applyInlineReviewModels(inlineReviewTrackedFile);
@@ -3740,6 +4079,7 @@ function FileTabView({
                         hoveredInlineReviewHunkState ? (
                             <InlineReviewHunkZone
                                 onAccept={() => {
+                                    captureInlineReviewModifiedEditorState();
                                     void keepTrackedFileHunks({
                                         hunkIds: [hoveredInlineReviewHunk.id],
                                         path: inlineReviewTrackedFile.path,
@@ -3756,6 +4096,7 @@ function FileTabView({
                                     scheduleInlineReviewOverlayHide();
                                 }}
                                 onReject={() => {
+                                    captureInlineReviewModifiedEditorState();
                                     void rejectTrackedFileHunks({
                                         hunkIds: [hoveredInlineReviewHunk.id],
                                         path: inlineReviewTrackedFile.path,
@@ -3776,16 +4117,31 @@ function FileTabView({
                         }
                         onMount={(editor) => {
                             editorRef.current = editor;
-                            const persistedViewState =
-                                tab.viewState ??
-                                pendingEditorViewStateRef.current;
-                            if (persistedViewState) {
-                                restoreEditorViewState(
+                            const pendingInlineReviewRestoreState =
+                                pendingInlineReviewRestoreStateRef.current
+                                    ?.tabId === tab.id
+                                    ? pendingInlineReviewRestoreStateRef.current
+                                          .state
+                                    : null;
+                            if (pendingInlineReviewRestoreState) {
+                                restorePortableEditorState(
                                     editor,
-                                    persistedViewState,
+                                    pendingInlineReviewRestoreState,
                                 );
-                                pendingEditorViewStateRef.current =
-                                    persistedViewState;
+                                pendingInlineReviewRestoreStateRef.current =
+                                    null;
+                            } else {
+                                const persistedViewState =
+                                    tab.viewState ??
+                                    pendingEditorViewStateRef.current;
+                                if (persistedViewState) {
+                                    restoreEditorViewState(
+                                        editor,
+                                        persistedViewState,
+                                    );
+                                    pendingEditorViewStateRef.current =
+                                        persistedViewState;
+                                }
                             }
                             const cleanupAttachShortcut =
                                 bindAttachSelectionShortcut({
@@ -3804,15 +4160,18 @@ function FileTabView({
                                 });
                             const scrollListener = editor.onDidScrollChange(
                                 () => {
+                                    captureEditorStateForInlineReview(editor);
                                     scheduleEditorViewStatePersist(editor);
                                 },
                             );
                             const cursorListener =
                                 editor.onDidChangeCursorSelection(() => {
+                                    captureEditorStateForInlineReview(editor);
                                     scheduleEditorViewStatePersist(editor);
                                 });
                             const hiddenAreasListener =
                                 editor.onDidChangeHiddenAreas(() => {
+                                    captureEditorStateForInlineReview(editor);
                                     scheduleEditorViewStatePersist(editor);
                                 });
                             setEditorMountVersion((previous) => previous + 1);
@@ -4025,6 +4384,7 @@ function DeferredSurfaceState({
     onAction,
     path,
     statusLabel,
+    titlePath,
     title,
 }: {
     readonly actionLabel?: string;
@@ -4032,12 +4392,17 @@ function DeferredSurfaceState({
     readonly onAction?: () => void;
     readonly path?: string;
     readonly statusLabel?: string;
+    readonly titlePath?: string;
     readonly title: string;
 }) {
     return (
         <div className="flex h-full min-h-0 flex-col">
             {path ? (
-                <FilePathBar path={path} statusLabel={statusLabel} />
+                <FilePathBar
+                    path={path}
+                    statusLabel={statusLabel}
+                    titlePath={titlePath}
+                />
             ) : null}
             <div className="flex h-full items-center justify-center px-6 text-center">
                 <div className="max-w-lg">
@@ -4063,11 +4428,15 @@ function DeferredSurfaceState({
 }
 
 function FilePathBar({
+    actions,
     path,
     statusLabel,
+    titlePath,
 }: {
+    readonly actions?: ReactNode;
     readonly path: string;
     readonly statusLabel?: string;
+    readonly titlePath?: string;
 }) {
     return (
         <div
@@ -4079,20 +4448,29 @@ function FilePathBar({
                 fontFamily: "var(--font-mono)",
             }}
         >
-            <div className="min-w-0 truncate" title={path}>
+            <div className="min-w-0 truncate" title={titlePath ?? path}>
                 {path}
             </div>
-            {statusLabel ? (
-                <div
-                    className="shrink-0"
-                    style={{
-                        fontSize: "10px",
-                        fontWeight: 600,
-                        letterSpacing: "0.06em",
-                        textTransform: "uppercase",
-                    }}
-                >
-                    {statusLabel}
+            {actions || statusLabel ? (
+                <div className="ml-auto flex shrink-0 items-center gap-3">
+                    {actions ? (
+                        <div className="flex items-center gap-1.5">
+                            {actions}
+                        </div>
+                    ) : null}
+                    {statusLabel ? (
+                        <div
+                            className="shrink-0"
+                            style={{
+                                fontSize: "10px",
+                                fontWeight: 600,
+                                letterSpacing: "0.06em",
+                                textTransform: "uppercase",
+                            }}
+                        >
+                            {statusLabel}
+                        </div>
+                    ) : null}
                 </div>
             ) : null}
         </div>
@@ -4133,8 +4511,10 @@ const IMAGE_ZOOM_MAX = 10;
 const IMAGE_ZOOM_SENSITIVITY = 0.005;
 
 function ImageFileView({
+    displayPath,
     document,
 }: {
+    readonly displayPath: string | null;
     readonly document: ProjectFileDocument;
 }) {
     const imageSrc = buildImageDataUrl(document);
@@ -4224,7 +4604,10 @@ function ImageFileView({
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <FilePathBar path={document.absolutePath} />
+            <FilePathBar
+                path={displayPath ?? document.relativePath}
+                titlePath={document.absolutePath}
+            />
             <div
                 ref={containerRef}
                 className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-bg-primary px-6 py-6"
@@ -4374,6 +4757,7 @@ function TerminalTabView({
     readonly tab: RuntimeWorkspaceTerminalTab;
 }) {
     const { loadError, retryLoad, runtime } = useXtermSurfaceRuntime();
+    const terminalTheme = useTerminalTheme();
     const containerRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -4438,7 +4822,7 @@ function TerminalTabView({
         }
 
         const terminal = new runtime.Terminal(
-            createTerminalSurfaceOptions(getTerminalTheme()),
+            createTerminalSurfaceOptions(terminalTheme),
         );
         const fitAddon = new runtime.FitAddon();
         terminal.loadAddon(fitAddon);
@@ -4490,6 +4874,17 @@ function TerminalTabView({
             writeChainRef.current = Promise.resolve();
         };
     }, [onResize, onSendInput, runtime, tab.sessionId]);
+
+    useEffect(() => {
+        const didApplyTheme = applyTerminalSurfaceTheme({
+            terminal: terminalRef.current,
+            theme: terminalTheme,
+        });
+
+        if (didApplyTheme) {
+            scheduleViewportSync();
+        }
+    }, [scheduleViewportSync, terminalTheme]);
 
     useEffect(() => {
         const terminal = terminalRef.current;
@@ -4961,6 +5356,55 @@ function useMonacoTheme(
             }
         };
     }, [runtime]);
+
+    return theme;
+}
+
+function useTerminalTheme(): TerminalSurfaceTheme {
+    const [theme, setTheme] = useState<TerminalSurfaceTheme>(() =>
+        getTerminalTheme(),
+    );
+
+    useEffect(() => {
+        let frameHandle = 0;
+
+        const updateTheme = () => {
+            frameHandle = 0;
+            const nextTheme = getTerminalTheme();
+            setTheme((currentTheme) =>
+                currentTheme.background === nextTheme.background &&
+                currentTheme.cursor === nextTheme.cursor &&
+                currentTheme.foreground === nextTheme.foreground &&
+                currentTheme.selectionBackground ===
+                    nextTheme.selectionBackground
+                    ? currentTheme
+                    : nextTheme,
+            );
+        };
+
+        const scheduleThemeUpdate = () => {
+            if (frameHandle !== 0) {
+                return;
+            }
+
+            frameHandle = window.requestAnimationFrame(updateTheme);
+        };
+
+        scheduleThemeUpdate();
+
+        const observer = new MutationObserver(scheduleThemeUpdate);
+        observer.observe(document.documentElement, {
+            attributeFilter: ["class", "style"],
+            attributes: true,
+        });
+
+        return () => {
+            observer.disconnect();
+            if (frameHandle !== 0) {
+                window.cancelAnimationFrame(frameHandle);
+            }
+        };
+    }, []);
 
     return theme;
 }
