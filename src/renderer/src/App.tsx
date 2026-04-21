@@ -124,6 +124,7 @@ export function App() {
 
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
     const addProjects = useProjectsStore((state) => state.addProjects);
+    const cloneRepository = useProjectsStore((state) => state.cloneRepository);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const loadingNodeKeys = useProjectsStore((state) => state.loadingNodeKeys);
     const projects = useProjectsStore((state) => state.projects);
@@ -2413,6 +2414,9 @@ export function App() {
                     <div className="border-t border-border/50 px-2 py-2">
                         <ProjectSwitcher
                             activeProject={activeProject}
+                            onCloneRepository={(repositoryUrl) =>
+                                cloneRepository(repositoryUrl)
+                            }
                             onOpenProjects={() => {
                                 void addProjects();
                             }}
@@ -2602,12 +2606,14 @@ export function App() {
 
 function ProjectSwitcher({
     activeProject,
+    onCloneRepository,
     onOpenProjects,
     onOpenSettings,
     onSelectProject,
     projects,
 }: {
     readonly activeProject: ProjectSummary | null;
+    readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onOpenProjects: () => void;
     readonly onOpenSettings: () => void;
     readonly onSelectProject: (projectId: string) => void;
@@ -2615,8 +2621,13 @@ function ProjectSwitcher({
 }) {
     const [open, setOpen] = useState(false);
     const [search, setSearch] = useState("");
+    const [cloneMode, setCloneMode] = useState(false);
+    const [cloneUrl, setCloneUrl] = useState("");
+    const [cloneError, setCloneError] = useState<string | null>(null);
+    const [cloneSubmitting, setCloneSubmitting] = useState(false);
     const ref = useRef<HTMLDivElement | null>(null);
     const searchRef = useRef<HTMLInputElement | null>(null);
+    const cloneInputRef = useRef<HTMLInputElement | null>(null);
     const normalizedSearch = search.trim().toLowerCase();
     const filteredProjects = projects.filter((project) => {
         if (!normalizedSearch) return true;
@@ -2626,19 +2637,36 @@ function ProjectSwitcher({
         );
     });
 
+    const resetMenuState = () => {
+        setOpen(false);
+        setSearch("");
+        setCloneMode(false);
+        setCloneUrl("");
+        setCloneError(null);
+        setCloneSubmitting(false);
+    };
+
     useEffect(() => {
         if (!open) return;
-        searchRef.current?.focus();
+        if (cloneMode) {
+            cloneInputRef.current?.focus();
+        } else {
+            searchRef.current?.focus();
+        }
         const handleDown = (e: MouseEvent) => {
             if (ref.current && !ref.current.contains(e.target as Node)) {
-                setOpen(false);
-                setSearch("");
+                resetMenuState();
             }
         };
         const handleKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
-                setOpen(false);
-                setSearch("");
+                if (cloneMode) {
+                    setCloneMode(false);
+                    setCloneUrl("");
+                    setCloneError(null);
+                    return;
+                }
+                resetMenuState();
             }
         };
         document.addEventListener("mousedown", handleDown);
@@ -2647,12 +2675,37 @@ function ProjectSwitcher({
             document.removeEventListener("mousedown", handleDown);
             document.removeEventListener("keydown", handleKey);
         };
-    }, [open]);
+    }, [open, cloneMode]);
 
     const handleAction = (action: () => void) => {
-        setOpen(false);
-        setSearch("");
+        resetMenuState();
         queueMicrotask(action);
+    };
+
+    const handleCloneSubmit = async () => {
+        const trimmedUrl = cloneUrl.trim();
+        if (!trimmedUrl) {
+            setCloneError("Paste a repository URL before cloning.");
+            return;
+        }
+
+        setCloneSubmitting(true);
+        setCloneError(null);
+        try {
+            const completed = await onCloneRepository(trimmedUrl);
+            if (completed) {
+                resetMenuState();
+            } else {
+                setCloneSubmitting(false);
+            }
+        } catch (error) {
+            setCloneSubmitting(false);
+            setCloneError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not clone the repository.",
+            );
+        }
     };
 
     const menuItem = (
@@ -2685,66 +2738,165 @@ function ProjectSwitcher({
         <div ref={ref} style={{ position: "relative" }}>
             {open && (
                 <div className="project-switcher-menu">
-                    {projects.length > 0 && (
-                        <div className="project-switcher-search">
-                            <svg
-                                fill="none"
-                                height="12"
-                                style={{ opacity: 0.4, flexShrink: 0 }}
-                                viewBox="0 0 16 16"
-                                width="12"
-                            >
-                                <circle
-                                    cx="7"
-                                    cy="7"
-                                    r="5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                />
-                                <path
-                                    d="m13 13-2.5-2.5"
-                                    stroke="currentColor"
-                                    strokeLinecap="round"
-                                    strokeWidth="1.5"
-                                />
-                            </svg>
+                    {cloneMode ? (
+                        <div className="project-switcher-clone">
+                            <div className="project-switcher-clone-label">
+                                Clone repository
+                            </div>
                             <input
                                 autoCapitalize="off"
                                 autoCorrect="off"
-                                className="project-switcher-search-input"
-                                onChange={(e) => setSearch(e.target.value)}
-                                onKeyDown={(e) => e.stopPropagation()}
-                                placeholder="Search projects…"
-                                ref={searchRef}
+                                className="project-switcher-clone-input"
+                                disabled={cloneSubmitting}
+                                onChange={(e) => {
+                                    setCloneUrl(e.target.value);
+                                    if (cloneError) setCloneError(null);
+                                }}
+                                onKeyDown={(e) => {
+                                    e.stopPropagation();
+                                    if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        void handleCloneSubmit();
+                                    }
+                                }}
+                                placeholder="https://github.com/user/repo.git"
+                                ref={cloneInputRef}
                                 spellCheck={false}
-                                value={search}
+                                value={cloneUrl}
                             />
-                            <span className="project-switcher-search-count">
-                                {filteredProjects.length}/{projects.length}
-                            </span>
-                        </div>
-                    )}
-                    <div className="project-switcher-list">
-                        {projects.length > 0 &&
-                        filteredProjects.length === 0 ? (
-                            <div className="project-switcher-empty">
-                                No projects match your search.
+                            {cloneError && (
+                                <div className="project-switcher-clone-error">
+                                    {cloneError}
+                                </div>
+                            )}
+                            <div className="project-switcher-clone-actions">
+                                <button
+                                    className="project-switcher-clone-btn"
+                                    disabled={cloneSubmitting}
+                                    onClick={() => {
+                                        setCloneMode(false);
+                                        setCloneUrl("");
+                                        setCloneError(null);
+                                    }}
+                                    type="button"
+                                >
+                                    Back
+                                </button>
+                                <button
+                                    className="project-switcher-clone-btn project-switcher-clone-btn-primary"
+                                    disabled={
+                                        cloneSubmitting || !cloneUrl.trim()
+                                    }
+                                    onClick={() => {
+                                        void handleCloneSubmit();
+                                    }}
+                                    type="button"
+                                >
+                                    {cloneSubmitting
+                                        ? "Cloning…"
+                                        : "Choose folder & clone"}
+                                </button>
                             </div>
-                        ) : (
-                            filteredProjects.map((project) =>
-                                menuItem(
-                                    project.name,
-                                    () => onSelectProject(project.id),
-                                    project.id === activeProject?.id,
-                                ),
-                            )
-                        )}
-                    </div>
-                    {projects.length > 0 && (
-                        <div className="project-switcher-sep" />
+                        </div>
+                    ) : (
+                        <>
+                            {projects.length > 0 && (
+                                <div className="project-switcher-search">
+                                    <svg
+                                        fill="none"
+                                        height="12"
+                                        style={{
+                                            opacity: 0.4,
+                                            flexShrink: 0,
+                                        }}
+                                        viewBox="0 0 16 16"
+                                        width="12"
+                                    >
+                                        <circle
+                                            cx="7"
+                                            cy="7"
+                                            r="5"
+                                            stroke="currentColor"
+                                            strokeWidth="1.5"
+                                        />
+                                        <path
+                                            d="m13 13-2.5-2.5"
+                                            stroke="currentColor"
+                                            strokeLinecap="round"
+                                            strokeWidth="1.5"
+                                        />
+                                    </svg>
+                                    <input
+                                        autoCapitalize="off"
+                                        autoCorrect="off"
+                                        className="project-switcher-search-input"
+                                        onChange={(e) =>
+                                            setSearch(e.target.value)
+                                        }
+                                        onKeyDown={(e) => e.stopPropagation()}
+                                        placeholder="Search projects…"
+                                        ref={searchRef}
+                                        spellCheck={false}
+                                        value={search}
+                                    />
+                                    <span className="project-switcher-search-count">
+                                        {filteredProjects.length}/
+                                        {projects.length}
+                                    </span>
+                                </div>
+                            )}
+                            <div className="project-switcher-list">
+                                {projects.length > 0 &&
+                                filteredProjects.length === 0 ? (
+                                    <div className="project-switcher-empty">
+                                        No projects match your search.
+                                    </div>
+                                ) : (
+                                    filteredProjects.map((project) =>
+                                        menuItem(
+                                            project.name,
+                                            () => onSelectProject(project.id),
+                                            project.id === activeProject?.id,
+                                        ),
+                                    )
+                                )}
+                            </div>
+                            {projects.length > 0 && (
+                                <div className="project-switcher-sep" />
+                            )}
+                            {menuItem(
+                                "Open folder…",
+                                onOpenProjects,
+                                false,
+                                true,
+                            )}
+                            <button
+                                className="project-switcher-menu-item"
+                                onClick={() => {
+                                    setCloneMode(true);
+                                    setCloneError(null);
+                                    setCloneUrl("");
+                                }}
+                                type="button"
+                            >
+                                <span className="project-switcher-check" />
+                                <span
+                                    className="truncate"
+                                    style={{
+                                        color: "var(--color-text-secondary)",
+                                    }}
+                                >
+                                    Clone repository…
+                                </span>
+                            </button>
+                            {menuItem(
+                                "Settings",
+                                onOpenSettings,
+                                false,
+                                true,
+                            )}
+                        </>
                     )}
-                    {menuItem("Open folder…", onOpenProjects, false, true)}
-                    {menuItem("Settings", onOpenSettings, false, true)}
                 </div>
             )}
 

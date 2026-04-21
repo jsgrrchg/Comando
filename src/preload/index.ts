@@ -27,6 +27,8 @@ import {
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
     type ClaudeRuntimeSettingsInput,
+    type CloneRepositoryInput,
+    type CloneRepositoryResult,
     type ComandoApi,
     type CodexRuntimeSettingsInput,
     type CreateProjectEntryInput,
@@ -525,6 +527,11 @@ const comandoApi: ComandoApi = {
         assertIpcObject<ProjectAddResult>(
             IPC_CHANNELS.openProjects,
             await ipcRenderer.invoke(IPC_CHANNELS.openProjects),
+        ),
+    cloneRepository: async (input: CloneRepositoryInput) =>
+        assertIpcObject<CloneRepositoryResult>(
+            IPC_CHANNELS.cloneRepository,
+            await ipcRenderer.invoke(IPC_CHANNELS.cloneRepository, input),
         ),
     saveProjectFile: (input: SaveProjectFileInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveProjectFile, input),

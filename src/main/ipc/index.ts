@@ -21,6 +21,8 @@ import {
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
     type ClaudeRuntimeSettingsInput,
+    type CloneRepositoryInput,
+    type CloneRepositoryResult,
     type CodexRuntimeSettingsInput,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
@@ -91,6 +93,7 @@ import {
     shell,
     type OpenDialogOptions,
 } from "electron";
+import { simpleGit } from "simple-git";
 
 import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
@@ -181,6 +184,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.pushGitRepository);
     ipcMain.removeHandler(IPC_CHANNELS.listProjects);
     ipcMain.removeHandler(IPC_CHANNELS.openProjects);
+    ipcMain.removeHandler(IPC_CHANNELS.cloneRepository);
     ipcMain.removeHandler(IPC_CHANNELS.addProjectPaths);
     ipcMain.removeHandler(IPC_CHANNELS.removeProject);
     ipcMain.removeHandler(IPC_CHANNELS.touchProject);
@@ -793,6 +797,54 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
         return options.projectService.addProjectPaths(result.filePaths);
     });
+    ipcMain.handle(
+        IPC_CHANNELS.cloneRepository,
+        async (event, input: CloneRepositoryInput): Promise<CloneRepositoryResult> => {
+            const repositoryUrl = input?.repositoryUrl?.trim() ?? "";
+            if (!repositoryUrl) {
+                throw new Error("Repository URL is required.");
+            }
+
+            const ownerWindow =
+                BrowserWindow.fromWebContents(event.sender) ??
+                BrowserWindow.getFocusedWindow();
+            const dialogOptions: OpenDialogOptions = {
+                buttonLabel: "Clone Here",
+                message: "Choose a folder where the repository will be cloned.",
+                properties: ["openDirectory", "createDirectory"],
+                title: "Clone repository",
+            };
+            const selection = ownerWindow
+                ? await dialog.showOpenDialog(ownerWindow, dialogOptions)
+                : await dialog.showOpenDialog(dialogOptions);
+
+            if (selection.canceled || selection.filePaths.length === 0) {
+                return { kind: "canceled" };
+            }
+
+            const parentDirectory = selection.filePaths[0];
+            if (!parentDirectory) {
+                return { kind: "canceled" };
+            }
+
+            const repositoryName = deriveRepositoryFolderName(repositoryUrl);
+            const targetPath = path.join(parentDirectory, repositoryName);
+
+            try {
+                await simpleGit(parentDirectory).clone(repositoryUrl, targetPath);
+            } catch (error) {
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : "Could not clone the repository.";
+                throw new Error(message);
+            }
+
+            const result =
+                await options.projectService.addProjectPaths([targetPath]);
+            return { kind: "added", result };
+        },
+    );
     ipcMain.handle(IPC_CHANNELS.addProjectPaths, (_event, paths: string[]) =>
         options.projectService.addProjectPaths(paths),
     );
@@ -2281,4 +2333,16 @@ function normalizePathKey(filePath: string): string {
 
 function normalizeGitPath(filePath: string): string {
     return filePath.split(path.sep).join("/");
+}
+
+function deriveRepositoryFolderName(repositoryUrl: string): string {
+    // Strip query strings and fragments, then take the final segment and drop
+    // a trailing ".git" when present. Fallback to "repository" when parsing
+    // yields an empty slug.
+    const trimmed = repositoryUrl.trim().split(/[?#]/)[0] ?? "";
+    const segments = trimmed.replace(/[\\/]+$/, "").split(/[\\/]/);
+    const lastSegment = segments.pop() ?? "";
+    const withoutGitSuffix = lastSegment.replace(/\.git$/i, "");
+    const sanitized = withoutGitSuffix.replace(/[^\w.-]+/g, "-");
+    return sanitized.length > 0 ? sanitized : "repository";
 }

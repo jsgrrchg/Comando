@@ -52,6 +52,7 @@ export const IPC_CHANNELS = {
     pushGitRepository: "git:push",
     listProjects: "projects:list",
     openProjects: "projects:open",
+    cloneRepository: "projects:clone-repository",
     addProjectPaths: "projects:add-paths",
     removeProject: "projects:remove",
     touchProject: "projects:touch",
@@ -760,6 +761,19 @@ export interface ProjectAddResult {
     readonly projectIdsToOpen: readonly string[];
     readonly projects: readonly ProjectSummary[];
 }
+
+export interface CloneRepositoryInput {
+    readonly repositoryUrl: string;
+}
+
+export type CloneRepositoryResult =
+    | {
+          readonly kind: "added";
+          readonly result: ProjectAddResult;
+      }
+    | {
+          readonly kind: "canceled";
+      };
 
 export interface ProjectTreeNode {
     readonly id: string;
@@ -1544,6 +1558,9 @@ export interface ComandoApi {
     pushGitRepository: (input: GitPushInput) => Promise<GitRepositorySnapshot>;
     listProjects: () => Promise<ProjectSummary[]>;
     openProjects: () => Promise<ProjectAddResult>;
+    cloneRepository: (
+        input: CloneRepositoryInput,
+    ) => Promise<CloneRepositoryResult>;
     addProjectPaths: (paths: string[]) => Promise<ProjectAddResult>;
     removeProject: (projectId: string) => Promise<void>;
     touchProject: (projectId: string) => Promise<void>;

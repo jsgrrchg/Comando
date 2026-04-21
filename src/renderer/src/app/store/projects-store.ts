@@ -24,6 +24,7 @@ interface ProjectsState {
     >;
     addProjectPath: (projectPath: string) => Promise<void>;
     addProjects: () => Promise<void>;
+    cloneRepository: (repositoryUrl: string) => Promise<boolean>;
     createEntry: (
         projectId: string,
         parentRelativePath: string | null,
@@ -172,6 +173,53 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         ? error.message
                         : "Could not add the selected project.",
             });
+        }
+    },
+
+    cloneRepository: async (repositoryUrl) => {
+        const normalizedUrl = repositoryUrl.trim();
+        if (!normalizedUrl) {
+            set({ error: "Paste a repository URL before cloning." });
+            return false;
+        }
+
+        try {
+            const response = await getComandoApi().cloneRepository({
+                repositoryUrl: normalizedUrl,
+            });
+
+            if (response.kind === "canceled") {
+                set({ error: null });
+                return false;
+            }
+
+            const { projectIdsToOpen, projects } = response.result;
+            const currentActiveProjectId = get().activeProjectId;
+            const nextActiveProjectId = resolveNextActiveProjectId({
+                currentActiveProjectId,
+                projects,
+            });
+
+            set({
+                activeProjectId: nextActiveProjectId,
+                error: null,
+                projects,
+            });
+
+            if (nextActiveProjectId) {
+                await loadDirectory(nextActiveProjectId, null, set, get);
+            }
+
+            await openProjectsInWindows(projectIdsToOpen);
+            return true;
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not clone the repository.",
+            });
+            return false;
         }
     },
 
