@@ -1892,6 +1892,8 @@ function WorkspacePaneView({
                                 }
                             >
                                 <TerminalTabView
+                                    isActive={tab.id === paneActiveTabId}
+                                    isActivePane={isActivePane}
                                     onResize={updateTerminalSize}
                                     onSendInput={sendTerminalInput}
                                     tab={tab}
@@ -4788,10 +4790,14 @@ function InlineReviewHunkZone({
 }
 
 function TerminalTabView({
+    isActive,
+    isActivePane,
     onResize,
     onSendInput,
     tab,
 }: {
+    readonly isActive: boolean;
+    readonly isActivePane: boolean;
     readonly onResize: (
         sessionId: string,
         cols: number,
@@ -4812,6 +4818,24 @@ function TerminalTabView({
     );
     const pendingViewportSyncFrameRef = useRef<number | null>(null);
     const writeChainRef = useRef<Promise<void>>(Promise.resolve());
+    const focusFrameRef = useRef<number | null>(null);
+
+    const cancelScheduledFocus = useEffectEvent(() => {
+        if (focusFrameRef.current === null) {
+            return;
+        }
+
+        globalThis.cancelAnimationFrame(focusFrameRef.current);
+        focusFrameRef.current = null;
+    });
+
+    const scheduleTerminalFocus = useEffectEvent(() => {
+        cancelScheduledFocus();
+        focusFrameRef.current = globalThis.requestAnimationFrame(() => {
+            focusFrameRef.current = null;
+            terminalRef.current?.focus();
+        });
+    });
 
     const cancelScheduledViewportSync = useEffectEvent(() => {
         if (pendingViewportSyncFrameRef.current === null) {
@@ -4880,6 +4904,9 @@ function TerminalTabView({
         terminalRef.current = terminal;
         fitAddonRef.current = fitAddon;
         scheduleViewportSync(1);
+        if (isActivePane && isActive) {
+            scheduleTerminalFocus();
+        }
 
         const handleViewportChange = () => {
             scheduleViewportSync();
@@ -4908,6 +4935,7 @@ function TerminalTabView({
             globalThis.removeEventListener("resize", handleViewportChange);
             globalThis.removeEventListener("focus", handleViewportChange);
             resizeObserver?.disconnect();
+            cancelScheduledFocus();
             cancelScheduledViewportSync();
             terminal.dispose();
             terminalRef.current = null;
@@ -4917,7 +4945,18 @@ function TerminalTabView({
             writtenLengthRef.current = 0;
             writeChainRef.current = Promise.resolve();
         };
-    }, [onResize, onSendInput, runtime, tab.sessionId]);
+    }, [isActive, isActivePane, onResize, onSendInput, runtime, tab.sessionId]);
+
+    useEffect(() => {
+        if (!isActivePane || !isActive || !terminalRef.current) {
+            return;
+        }
+
+        scheduleTerminalFocus();
+        return () => {
+            cancelScheduledFocus();
+        };
+    }, [isActive, isActivePane]);
 
     useEffect(() => {
         const didApplyTheme = applyTerminalSurfaceTheme({
