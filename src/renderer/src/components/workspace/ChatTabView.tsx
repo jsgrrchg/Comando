@@ -54,6 +54,10 @@ import {
     type ChatTimelineModel,
     type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
+import {
+    isActiveChatTurnStatus,
+    isChatStreamingStatus,
+} from "./chat/chatTurnStatus";
 import { isScrollViewportNearBottom } from "./chat/chatScroll";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
@@ -496,8 +500,10 @@ export const ChatTabView = memo(function ChatTabView({
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
-    const isStreaming =
-        snapshot.status === "starting" || snapshot.status === "streaming";
+    const isStreaming = isChatStreamingStatus(snapshot.status);
+    const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
+        ? tab.sessionId
+        : null;
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const availableCommands =
         snapshot.availableCommands.length > 0
@@ -635,13 +641,14 @@ export const ChatTabView = memo(function ChatTabView({
         pendingReviewCount > 0;
 
     useEffect(() => {
-        if (!isStreaming) {
+        if (activeTurnKey === null) {
             streamStartTimeRef.current = null;
             setElapsed("");
             return undefined;
         }
+
         streamStartTimeRef.current = Date.now();
-        const interval = window.setInterval(() => {
+        const updateElapsed = () => {
             const startedAt = streamStartTimeRef.current;
             if (startedAt === null) return;
             const totalSec = Math.floor((Date.now() - startedAt) / 1000);
@@ -652,9 +659,10 @@ export const ChatTabView = memo(function ChatTabView({
                     ? `${min}m ${String(sec).padStart(2, "0")}s`
                     : `${sec}s`,
             );
-        }, 500);
+        };
+        const interval = window.setInterval(updateElapsed, 500);
         return () => window.clearInterval(interval);
-    }, [isStreaming]);
+    }, [activeTurnKey]);
 
     const timelineModel = useMemo(() => {
         const previousTimelineModel =

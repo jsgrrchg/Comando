@@ -41,6 +41,7 @@ import {
     composerPartsToPlainText,
     normalizeComposerParts,
 } from "./composerParts";
+import { isActiveChatTurnStatus } from "./chatTurnStatus";
 import {
     AIChatMentionPicker,
     getMentionSuggestions,
@@ -620,11 +621,7 @@ export function AIChatComposer({
         [composerFontSize],
     );
 
-    const isStreaming = status === "streaming" || status === "starting";
-    const isSessionBusy =
-        isStreaming ||
-        status === "waiting_permission" ||
-        status === "waiting_user_input";
+    const isSessionBusy = isActiveChatTurnStatus(status);
     const hasDraft =
         parts.some((p) => p.type !== "text" || p.text.trim().length > 0) ||
         draftAttachments.length > 0 ||
