@@ -23,7 +23,6 @@ import {
     recordFilesystemAccessFailure,
     recordFilesystemAccessSuccess,
 } from "../privacy-access";
-import { logWorkerClientCallFailure } from "../workers/supervisor";
 import type { ProjectStore, ProjectStoreWorktreeRecord } from "./store";
 import {
     createLocalProjectWorkerClient,
@@ -114,12 +113,7 @@ export class ProjectService {
         }
 
         this.#markWorkerRegistryDirty();
-        try {
-            await this.#worker.removeProject(projectId);
-        } catch (error) {
-            logProjectWorkerError("removeProject", error);
-            throw error;
-        }
+        await this.#worker.removeProject(projectId);
         this.#store.removeProject(projectId);
     }
 
@@ -399,9 +393,7 @@ export class ProjectService {
 
     async close(): Promise<void> {
         this.#indexedRoots.clear();
-        await this.#worker.close().catch((error) => {
-            logProjectWorkerError("close", error);
-        });
+        await this.#worker.close().catch(() => undefined);
     }
 
     handleProjectTreeInvalidation(payload: ProjectTreeInvalidation): void {
@@ -428,9 +420,7 @@ export class ProjectService {
             .then(() => {
                 this.#scheduleWorkerRegistrySync();
             })
-            .catch((error) => {
-                logProjectWorkerError("refreshAfterRestart", error);
-            });
+            .catch(() => undefined);
     }
 
     async #trackFilesystemAccess<T>(
@@ -506,9 +496,7 @@ export class ProjectService {
     }
 
     #scheduleWorkerRegistrySync(): void {
-        void this.#ensureWorkerRegistry().catch((error) => {
-            logProjectWorkerError("syncRegistry", error);
-        });
+        void this.#ensureWorkerRegistry().catch(() => undefined);
     }
 
     async #ensureWorkerRegistry(): Promise<void> {
@@ -569,10 +557,6 @@ export class ProjectService {
 
 function normalizeRootPath(rootPath: string): string {
     return path.resolve(rootPath);
-}
-
-function logProjectWorkerError(method: string, error: unknown): void {
-    logWorkerClientCallFailure("projects", method, error);
 }
 
 export { shouldIgnoreProjectWatchPath };

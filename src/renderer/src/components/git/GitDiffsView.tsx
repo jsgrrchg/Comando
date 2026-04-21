@@ -421,6 +421,7 @@ const DiffLineRow = memo(function DiffLineRow({
     );
     return (
         <DiffLineView
+            compactLineNumbers
             filePath={filePath}
             fontFamily={codeFontFamily}
             fontSize={codeFontSize}

@@ -9,10 +9,21 @@ import {
     PROTOCOL_VERSION,
     ndJsonStream,
     type Client,
+    type CreateTerminalRequest,
+    type CreateTerminalResponse,
+    type KillTerminalRequest,
+    type KillTerminalResponse,
     type ReadTextFileRequest,
+    type ReleaseTerminalRequest,
+    type ReleaseTerminalResponse,
     type RequestPermissionRequest,
     type RequestPermissionResponse,
     type SessionNotification,
+    type TerminalExitStatus,
+    type TerminalOutputRequest,
+    type TerminalOutputResponse,
+    type WaitForTerminalExitRequest,
+    type WaitForTerminalExitResponse,
     type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 import type {
@@ -47,6 +58,7 @@ import {
     type AiWorkerRpcMethodMap,
     type AiWorkerSessionLaunchInput,
     type LiveAcpSession,
+    type LiveAcpTerminal,
 } from "./contracts";
 import {
     appendContentBlockToSnapshot,
@@ -80,6 +92,10 @@ export interface AiWorkerRuntimeOptions {
     readonly debugLogsEnabled?: boolean;
     readonly emitEvent: (message: AiWorkerEventMessage) => void;
 }
+
+const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
+const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
+const TERMINAL_PERMISSION_REJECT_OPTION_ID = "comando.terminal.reject_once";
 
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
@@ -801,12 +817,22 @@ export class AiWorkerRuntime {
         );
         const liveSession = {} as LiveAcpSession;
         const client: Client = {
+            createTerminal: (params) =>
+                this.#createTerminal(liveSession, params),
+            killTerminal: (params) =>
+                Promise.resolve(this.#killTerminal(liveSession, params)),
             readTextFile: async (params) =>
                 this.#readTextFile(liveSession, params),
             requestPermission: async (params) =>
                 this.#requestPermission(liveSession, params),
+            releaseTerminal: (params) =>
+                Promise.resolve(this.#releaseTerminal(liveSession, params)),
             sessionUpdate: async (params) =>
                 this.#handleSessionUpdate(liveSession, params),
+            terminalOutput: (params) =>
+                Promise.resolve(this.#terminalOutput(liveSession, params)),
+            waitForTerminalExit: async (params) =>
+                this.#waitForTerminalExit(liveSession, params),
             writeTextFile: async (params) =>
                 this.#writeTextFile(liveSession, params),
         };
@@ -848,6 +874,7 @@ export class AiWorkerRuntime {
                 updatedAt: new Date().toISOString(),
                 worktreeId: launch.input.worktreeId ?? null,
             },
+            terminals: new Map(),
             terminalOutputBuffers: new Map(),
             stderrChunks: [],
             stderrHandler: null,
@@ -896,6 +923,7 @@ export class AiWorkerRuntime {
                         readTextFile: true,
                         writeTextFile: true,
                     },
+                    terminal: true,
                 },
                 clientInfo: {
                     name: "comando",
@@ -1005,6 +1033,7 @@ export class AiWorkerRuntime {
     ): Promise<RequestPermissionResponse> {
         const requestId = randomUUID();
         const pendingPermission: AiPermissionRequest = {
+            description: buildPermissionDescription(params.toolCall),
             options: params.options.map((option) => ({
                 kind: option.kind,
                 name: option.name,
@@ -1298,6 +1327,195 @@ export class AiWorkerRuntime {
         return {};
     }
 
+    async #createTerminal(
+        liveSession: LiveAcpSession,
+        params: CreateTerminalRequest,
+    ): Promise<CreateTerminalResponse> {
+        this.#assertTerminalSession(liveSession, params.sessionId);
+
+        const command = params.command.trim();
+        if (!command) {
+            throw new Error("The ACP terminal command cannot be empty.");
+        }
+
+        const args = params.args ?? [];
+        const cwd = this.#resolveTerminalCwd(liveSession, params.cwd ?? null);
+        const commandLine = formatTerminalCommandLine(command, args);
+        const terminalId = randomUUID();
+
+        const permission = await this.#requestPermission(liveSession, {
+            _meta: null,
+            options: [
+                {
+                    _meta: null,
+                    kind: "allow_once",
+                    name: "Run once",
+                    optionId: TERMINAL_PERMISSION_ALLOW_OPTION_ID,
+                },
+                {
+                    _meta: null,
+                    kind: "reject_once",
+                    name: "Deny",
+                    optionId: TERMINAL_PERMISSION_REJECT_OPTION_ID,
+                },
+            ],
+            sessionId: params.sessionId,
+            toolCall: {
+                _meta: null,
+                kind: "execute",
+                rawInput: {
+                    command: commandLine,
+                    cwd,
+                },
+                status: "pending",
+                title: "Run terminal command",
+                toolCallId: terminalId,
+            },
+        });
+
+        if (
+            permission.outcome.outcome !== "selected" ||
+            permission.outcome.optionId !== TERMINAL_PERMISSION_ALLOW_OPTION_ID
+        ) {
+            throw new Error("The terminal command was not approved.");
+        }
+
+        const child = spawn(command, args, {
+            cwd,
+            env: buildTerminalEnv(params.env ?? []),
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        const terminal: LiveAcpTerminal = {
+            child,
+            commandLine,
+            cwd,
+            exitStatus: null,
+            output: "",
+            outputByteLimit: normalizeTerminalOutputByteLimit(
+                params.outputByteLimit ?? null,
+            ),
+            released: false,
+            truncated: false,
+            waiters: new Set(),
+        };
+
+        liveSession.terminals.set(terminalId, terminal);
+        this.#upsertTerminalActivity(liveSession, terminalId, {
+            commandLine,
+            cwd,
+            status: "in_progress",
+            terminal,
+        });
+
+        child.stdout.on("data", (chunk: Buffer | string) => {
+            this.#appendTerminalOutput(
+                liveSession,
+                terminalId,
+                chunk,
+                commandLine,
+                cwd,
+            );
+        });
+        child.stderr.on("data", (chunk: Buffer | string) => {
+            this.#appendTerminalOutput(
+                liveSession,
+                terminalId,
+                chunk,
+                commandLine,
+                cwd,
+            );
+        });
+        child.on("error", (error) => {
+            debugBenignError("ai.worker.terminal.process", error);
+            this.#appendTerminalOutput(
+                liveSession,
+                terminalId,
+                `${error.message}\n`,
+                commandLine,
+                cwd,
+            );
+        });
+        child.on("close", (code, signal) => {
+            this.#finalizeTerminal(
+                liveSession,
+                terminalId,
+                {
+                    exitCode: code,
+                    signal,
+                },
+                commandLine,
+                cwd,
+            );
+        });
+
+        return {
+            _meta: null,
+            terminalId,
+        };
+    }
+
+    #terminalOutput(
+        liveSession: LiveAcpSession,
+        params: TerminalOutputRequest,
+    ): TerminalOutputResponse {
+        this.#assertTerminalSession(liveSession, params.sessionId);
+        const terminal = this.#requireTerminal(liveSession, params.terminalId);
+
+        return {
+            _meta: null,
+            exitStatus: terminal.exitStatus,
+            output: terminal.output,
+            truncated: terminal.truncated,
+        };
+    }
+
+    async #waitForTerminalExit(
+        liveSession: LiveAcpSession,
+        params: WaitForTerminalExitRequest,
+    ): Promise<WaitForTerminalExitResponse> {
+        this.#assertTerminalSession(liveSession, params.sessionId);
+        const terminal = this.#requireTerminal(liveSession, params.terminalId);
+        const exitStatus =
+            terminal.exitStatus ??
+            (await new Promise<TerminalExitStatus>((resolve) => {
+                terminal.waiters.add(resolve);
+            }));
+
+        return {
+            _meta: null,
+            exitCode: exitStatus.exitCode ?? null,
+            signal: exitStatus.signal ?? null,
+        };
+    }
+
+    #killTerminal(
+        liveSession: LiveAcpSession,
+        params: KillTerminalRequest,
+    ): KillTerminalResponse {
+        this.#assertTerminalSession(liveSession, params.sessionId);
+        const terminal = this.#requireTerminal(liveSession, params.terminalId);
+        if (!terminal.exitStatus) {
+            terminal.child.kill();
+        }
+
+        return {
+            _meta: null,
+        };
+    }
+
+    #releaseTerminal(
+        liveSession: LiveAcpSession,
+        params: ReleaseTerminalRequest,
+    ): ReleaseTerminalResponse {
+        this.#assertTerminalSession(liveSession, params.sessionId);
+        const terminal = this.#requireTerminal(liveSession, params.terminalId);
+        this.#releaseTerminalState(liveSession, params.terminalId, terminal);
+
+        return {
+            _meta: null,
+        };
+    }
+
     async #withReviewSession(
         context: AiWorkerReviewSessionContext,
         mutate: (session: LiveAcpSession) => Promise<void> | void,
@@ -1367,6 +1585,7 @@ export class AiWorkerRuntime {
             snapshot,
             stderrChunks: [],
             stderrHandler: null,
+            terminals: new Map(),
             terminalOutputBuffers: new Map(),
         };
     }
@@ -1678,6 +1897,195 @@ export class AiWorkerRuntime {
         }
     }
 
+    #assertTerminalSession(
+        liveSession: LiveAcpSession,
+        requestSessionId: string,
+    ): void {
+        const runtimeSessionId = this.#requireRuntimeSessionId(liveSession);
+        if (
+            requestSessionId !== runtimeSessionId &&
+            requestSessionId !== liveSession.snapshot.sessionId
+        ) {
+            throw new Error("The ACP terminal request targets a different session.");
+        }
+    }
+
+    #resolveTerminalCwd(
+        liveSession: LiveAcpSession,
+        candidateCwd: string | null,
+    ): string {
+        const cwd = candidateCwd?.trim() || liveSession.cwd;
+        return this.#resolveSessionPathInfo(liveSession, cwd, {
+            allowAdditionalRoots: true,
+        }).absolutePath;
+    }
+
+    #requireTerminal(
+        liveSession: LiveAcpSession,
+        terminalId: string,
+    ): LiveAcpTerminal {
+        const terminal = liveSession.terminals.get(terminalId);
+        if (!terminal || terminal.released) {
+            throw new Error("The ACP terminal was not found.");
+        }
+
+        return terminal;
+    }
+
+    #appendTerminalOutput(
+        liveSession: LiveAcpSession,
+        terminalId: string,
+        chunk: Buffer | string,
+        commandLine: string,
+        cwd: string,
+    ): void {
+        const terminal = liveSession.terminals.get(terminalId);
+        if (!terminal || terminal.released || liveSession.closing) {
+            return;
+        }
+
+        const nextOutput = appendTerminalOutput(
+            terminal.output,
+            typeof chunk === "string" ? chunk : chunk.toString("utf8"),
+            terminal.outputByteLimit,
+        );
+        terminal.output = nextOutput.output;
+        terminal.truncated = terminal.truncated || nextOutput.truncated;
+        this.#upsertTerminalActivity(liveSession, terminalId, {
+            commandLine,
+            cwd,
+            status: terminal.exitStatus ? "completed" : "in_progress",
+            terminal,
+        });
+    }
+
+    #finalizeTerminal(
+        liveSession: LiveAcpSession,
+        terminalId: string,
+        exitStatus: TerminalExitStatus,
+        commandLine: string,
+        cwd: string,
+    ): void {
+        const terminal = liveSession.terminals.get(terminalId);
+        if (!terminal || terminal.exitStatus) {
+            return;
+        }
+
+        terminal.exitStatus = {
+            _meta: null,
+            exitCode: normalizeTerminalExitCode(exitStatus.exitCode ?? null),
+            signal: exitStatus.signal ?? null,
+        };
+        for (const resolve of terminal.waiters) {
+            resolve(terminal.exitStatus);
+        }
+        terminal.waiters.clear();
+
+        if (!terminal.released && !liveSession.closing) {
+            const failed =
+                terminal.exitStatus.exitCode !== 0 ||
+                terminal.exitStatus.signal !== null;
+            this.#upsertTerminalActivity(liveSession, terminalId, {
+                commandLine,
+                cwd,
+                status: failed ? "failed" : "completed",
+                terminal,
+            });
+        }
+    }
+
+    #upsertTerminalActivity(
+        liveSession: LiveAcpSession,
+        terminalId: string,
+        input: {
+            readonly commandLine: string;
+            readonly cwd: string;
+            readonly status: AiSessionSnapshot["toolActivity"][number]["status"];
+            readonly terminal: LiveAcpTerminal;
+        },
+    ): void {
+        const now = new Date().toISOString();
+        const existing =
+            liveSession.snapshot.toolActivity.find(
+                (activity) => activity.id === terminalId,
+            ) ?? null;
+
+        liveSession.snapshot = {
+            ...liveSession.snapshot,
+            status:
+                liveSession.snapshot.status === "waiting_permission" ||
+                liveSession.snapshot.status === "waiting_user_input"
+                    ? liveSession.snapshot.status
+                    : "streaming",
+            toolActivity: [
+                ...liveSession.snapshot.toolActivity.filter(
+                    (activity) => activity.id !== terminalId,
+                ),
+                {
+                    createdAt: existing?.createdAt ?? now,
+                    diffs: existing?.diffs ?? [],
+                    exitCode: input.terminal.exitStatus?.exitCode ?? null,
+                    id: terminalId,
+                    kind: "execute",
+                    locations: existing?.locations ?? [],
+                    rawInputJson:
+                        existing?.rawInputJson ??
+                        stringifyJson({
+                            command: input.commandLine,
+                            cwd: input.cwd,
+                        }),
+                    rawOutputJson: existing?.rawOutputJson ?? null,
+                    sessionId: liveSession.snapshot.sessionId,
+                    status: input.status,
+                    summary: existing?.summary ?? null,
+                    terminalOutput: input.terminal.output || null,
+                    title: `Run ${input.commandLine}`,
+                    updatedAt: now,
+                },
+            ],
+            updatedAt: now,
+        };
+        this.#queueSnapshotFlush(liveSession);
+    }
+
+    #releaseTerminalState(
+        liveSession: LiveAcpSession,
+        terminalId: string,
+        terminal: LiveAcpTerminal,
+    ): void {
+        terminal.released = true;
+        let killed = false;
+        if (!terminal.exitStatus) {
+            terminal.child.kill();
+            terminal.exitStatus = {
+                _meta: null,
+                exitCode: null,
+                signal: "SIGTERM",
+            };
+            killed = true;
+            for (const resolve of terminal.waiters) {
+                resolve(terminal.exitStatus);
+            }
+            terminal.waiters.clear();
+        }
+        if (killed && !liveSession.closing) {
+            this.#upsertTerminalActivity(liveSession, terminalId, {
+                commandLine: terminal.commandLine,
+                cwd: terminal.cwd,
+                status: "failed",
+                terminal,
+            });
+        }
+        liveSession.terminals.delete(terminalId);
+    }
+
+    #releaseAllTerminals(liveSession: LiveAcpSession): void {
+        for (const [terminalId, terminal] of liveSession.terminals.entries()) {
+            this.#releaseTerminalState(liveSession, terminalId, terminal);
+        }
+        liveSession.terminals.clear();
+    }
+
     #resolvePendingPermission(
         liveSession: LiveAcpSession,
         response: RequestPermissionResponse | null,
@@ -1788,6 +2196,7 @@ export class AiWorkerRuntime {
 
         this.#sessions.delete(sessionId);
         this.#detachChildStreams(liveSession);
+        this.#releaseAllTerminals(liveSession);
         if (liveSession.closing) {
             return;
         }
@@ -1843,6 +2252,7 @@ export class AiWorkerRuntime {
         liveSession.child.stdin?.destroy();
         liveSession.child.stdout?.destroy();
         liveSession.child.stderr?.destroy();
+        this.#releaseAllTerminals(liveSession);
         liveSession.terminalOutputBuffers.clear();
         if (options.emitClosedEvent) {
             this.#emitSessionClosed(liveSession);
@@ -1891,4 +2301,126 @@ export class AiWorkerRuntime {
             type: "event",
         });
     }
+}
+
+function buildTerminalEnv(
+    env: NonNullable<CreateTerminalRequest["env"]>,
+): NodeJS.ProcessEnv {
+    const nextEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+    };
+
+    for (const entry of env) {
+        if (!entry.name || entry.name.includes("=") || entry.name.includes("\0")) {
+            continue;
+        }
+        nextEnv[entry.name] = entry.value;
+    }
+
+    return nextEnv;
+}
+
+function normalizeTerminalOutputByteLimit(limit: number | null): number {
+    if (limit === null || !Number.isFinite(limit)) {
+        return DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT;
+    }
+
+    return Math.max(0, Math.floor(limit));
+}
+
+function normalizeTerminalExitCode(exitCode: number | null): number | null {
+    if (exitCode === null || !Number.isFinite(exitCode) || exitCode < 0) {
+        return null;
+    }
+
+    return Math.floor(exitCode);
+}
+
+function appendTerminalOutput(
+    currentOutput: string,
+    chunk: string,
+    outputByteLimit: number,
+): {
+    readonly output: string;
+    readonly truncated: boolean;
+} {
+    const nextOutput = currentOutput + chunk;
+    if (Buffer.byteLength(nextOutput, "utf8") <= outputByteLimit) {
+        return {
+            output: nextOutput,
+            truncated: false,
+        };
+    }
+
+    if (outputByteLimit <= 0) {
+        return {
+            output: "",
+            truncated: nextOutput.length > 0,
+        };
+    }
+
+    let low = 0;
+    let high = nextOutput.length;
+    while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (Buffer.byteLength(nextOutput.slice(mid), "utf8") > outputByteLimit) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    let output = nextOutput.slice(low);
+    if (/^[\uDC00-\uDFFF]/.test(output)) {
+        output = output.slice(1);
+    }
+
+    return {
+        output,
+        truncated: true,
+    };
+}
+
+function formatTerminalCommandLine(
+    command: string,
+    args: readonly string[],
+): string {
+    return [command, ...args].map(quoteShellArg).join(" ");
+}
+
+function quoteShellArg(value: string): string {
+    if (/^[A-Za-z0-9_./:=@%+-]+$/.test(value)) {
+        return value;
+    }
+
+    return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function buildPermissionDescription(
+    toolCall: RequestPermissionRequest["toolCall"],
+): string | null {
+    const rawInput = toolCall.rawInput;
+    if (!isRecordValue(rawInput) || typeof rawInput.command !== "string") {
+        return null;
+    }
+
+    const lines = [`Command: ${rawInput.command}`];
+    if (typeof rawInput.cwd === "string" && rawInput.cwd.trim()) {
+        lines.push(`Directory: ${rawInput.cwd}`);
+    }
+
+    return lines.join("\n");
+}
+
+function stringifyJson(value: unknown): string | null {
+    try {
+        return JSON.stringify(value);
+    } catch (error) {
+        debugBenignError("ai.worker.stringifyJson", error);
+        return null;
+    }
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }

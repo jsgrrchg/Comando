@@ -1241,6 +1241,8 @@ function normalizePermissionRequest(
     }
 
     return {
+        description:
+            typeof value.description === "string" ? value.description : null,
         options,
         requestId: value.requestId,
         sessionId: value.sessionId,

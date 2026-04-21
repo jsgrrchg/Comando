@@ -68,6 +68,8 @@ describe("GitDiffsView", () => {
         expect(markup).toContain('data-line-type="remove"');
         expect(markup).toContain('data-line-type="add"');
         expect(markup).toContain("cm-static-code");
+        expect(markup).toContain("grid-template-columns:44px minmax(0, 1fr)");
+        expect(markup).not.toContain("grid-template-columns:56px 56px");
         expect(markup).toContain("const before = true;");
         expect(markup).toContain("const after = true;");
     });

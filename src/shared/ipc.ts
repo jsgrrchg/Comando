@@ -1234,6 +1234,7 @@ export interface AiPermissionOption {
 }
 
 export interface AiPermissionRequest {
+    readonly description: string | null;
     readonly options: readonly AiPermissionOption[];
     readonly requestId: string;
     readonly sessionId: string;

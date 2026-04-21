@@ -26,12 +26,10 @@ function getInlineReviewLineNumbersMinChars(options: {
     readonly modifiedLineCount: number;
     readonly originalLineCount: number;
 }): number {
-    const digits = Math.max(
+    return Math.max(
         getLineNumberDigits(options.modifiedLineCount),
         getLineNumberDigits(options.originalLineCount),
     );
-
-    return digits * 2 + 1;
 }
 
 export function buildInlineReviewDiffEditorOptions({
@@ -45,6 +43,7 @@ export function buildInlineReviewDiffEditorOptions({
 }: BuildInlineReviewDiffEditorOptionsInput): MonacoEditor.IStandaloneDiffEditorConstructionOptions {
     return {
         automaticLayout: true,
+        compactMode: true,
         diffWordWrap: "inherit",
         experimental: {
             showEmptyDecorations: true,
@@ -72,6 +71,7 @@ export function buildInlineReviewDiffEditorOptions({
         overviewRulerLanes: 0,
         padding: { top: 16, bottom: 16 },
         readOnly: true,
+        renderIndicators: false,
         renderOverviewRuler: false,
         renderSideBySide: false,
         scrollBeyondLastLine: false,

@@ -2911,6 +2911,20 @@ function renderPermissionRequest(
                         "1px solid color-mix(in srgb, #d97706 15%, var(--color-border))",
                 }}
             >
+                {perm.description ? (
+                    <div
+                        className="w-full whitespace-pre-wrap rounded-md px-2 py-1.5 font-mono"
+                        style={{
+                            backgroundColor:
+                                "color-mix(in srgb, #d97706 5%, var(--color-bg-tertiary))",
+                            color: "var(--color-text-secondary)",
+                            fontSize: "0.74em",
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        {perm.description}
+                    </div>
+                ) : null}
                 {perm.options.map((opt) => {
                     const isApprove =
                         opt.kind === "allow_once" ||

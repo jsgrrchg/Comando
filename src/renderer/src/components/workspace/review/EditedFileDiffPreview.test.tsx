@@ -131,6 +131,19 @@ describe("EditedFileDiffPreview", () => {
         expect(markup).not.toContain("left:8px");
     });
 
+    it("uses a compact single line-number gutter in review previews", () => {
+        const markup = renderToStaticMarkup(
+            <EditedFileDiffPreview
+                diff={createDiff()}
+                diffZoom={0.72}
+                expanded
+            />,
+        );
+
+        expect(markup).toContain("grid-template-columns:44px max-content");
+        expect(markup).not.toContain("grid-template-columns:56px 56px");
+    });
+
     it("disables wrapping for code files by default", () => {
         const markup = renderToStaticMarkup(
             <EditedFileDiffPreview

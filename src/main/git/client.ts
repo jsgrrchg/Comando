@@ -3,7 +3,6 @@ import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 
 import { mainProcessPerformance } from "../observability/performance";
 import {
-    logWorkerClientCallFailure,
     RpcWorkerSupervisor,
     WORKER_TIMEOUTS_MS,
 } from "../workers/supervisor";
@@ -306,15 +305,11 @@ class GitWorkerGateway implements GitWorkerClient {
     }
 
     invalidate(inputPath?: string): void {
-        void this.#rpc.call("git.invalidate", inputPath).catch((error) => {
-            logGitWorkerError("git.invalidate", error);
-        });
+        void this.#rpc.call("git.invalidate", inputPath).catch(() => undefined);
     }
 
     clear(): void {
-        void this.#rpc.call("git.clear").catch((error) => {
-            logGitWorkerError("git.clear", error);
-        });
+        void this.#rpc.call("git.clear").catch(() => undefined);
     }
 
     async close(): Promise<void> {
@@ -409,8 +404,4 @@ function deserializeWorkerError(input: {
     error.name = input.name;
     error.stack = input.stack;
     return error;
-}
-
-function logGitWorkerError(method: string, error: unknown): void {
-    logWorkerClientCallFailure("git", method, error);
 }

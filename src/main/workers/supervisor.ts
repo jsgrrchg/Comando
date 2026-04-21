@@ -263,12 +263,6 @@ export class RpcWorkerSupervisor<TReady> {
     async #connectAndBind(
         reason: "initial" | "restart",
     ): Promise<ManagedConnection<TReady>> {
-        if (reason === "restart") {
-            logWorkerEvent("warn", this.#domain, "restart-started", {
-                attempt: this.#restartAttempt,
-            });
-        }
-
         // Wait for any in-flight terminate() to resolve so the previous
         // worker's V8 Isolate is fully disposed before we spawn a new
         // one. Otherwise their teardowns can overlap and crash.
@@ -282,19 +276,11 @@ export class RpcWorkerSupervisor<TReady> {
         this.#connection = managedConnection;
         this.#hasConnectedOnce = true;
         this.#restartAttempt = 0;
-        logWorkerEvent("info", this.#domain, "ready", {
-            reason,
-            threadId: managedConnection.worker.threadId,
-        });
 
         if (this.#onConnected) {
             void Promise.resolve(
                 this.#onConnected(managedConnection.readyValue, { reason }),
-            ).catch((error) => {
-                logWorkerEvent("warn", this.#domain, "on-connected-failed", {
-                    error: formatErrorMessage(error),
-                });
-            });
+            ).catch(() => undefined);
         }
 
         return managedConnection;
@@ -337,14 +323,11 @@ export class RpcWorkerSupervisor<TReady> {
                 error instanceof Error ? error : new Error(String(error)),
             );
         };
-        const handleExit = (code: number) => {
+        const handleExit = () => {
             this.#handleConnectionFailure(
                 managedConnection,
                 "exit",
                 new Error("The worker thread exited unexpectedly."),
-                {
-                    exitCode: code,
-                },
             );
         };
 
@@ -384,27 +367,12 @@ export class RpcWorkerSupervisor<TReady> {
                           const timeoutError = new Error(
                               `The ${this.#domain} worker request timed out after ${effectiveTimeoutMs}ms.`,
                           );
-                          logWorkerEvent(
-                              "warn",
-                              this.#domain,
-                              "request-timeout",
-                              {
-                                  method,
-                                  requestId,
-                                  timeoutMs: effectiveTimeoutMs,
-                              },
-                          );
 
                           reject(timeoutError);
                           this.#handleConnectionFailure(
                               connection,
                               "timeout",
                               timeoutError,
-                              {
-                                  method,
-                                  requestId,
-                                  timeoutMs: effectiveTimeoutMs,
-                              },
                           );
                       }, effectiveTimeoutMs)
                     : null;
@@ -437,10 +405,6 @@ export class RpcWorkerSupervisor<TReady> {
                     connection,
                     "post-message-failed",
                     error instanceof Error ? error : new Error(String(error)),
-                    {
-                        method,
-                        requestId,
-                    },
                 );
             }
         });
@@ -458,7 +422,6 @@ export class RpcWorkerSupervisor<TReady> {
         connection: ManagedConnection<TReady>,
         reason: "error" | "exit" | "post-message-failed" | "timeout",
         error: Error,
-        metadata?: Record<string, number | string>,
     ): void {
         if (connection.faulted) {
             return;
@@ -490,17 +453,6 @@ export class RpcWorkerSupervisor<TReady> {
                 ? error
                 : new Error(`The ${this.#domain} worker stopped unexpectedly.`);
         this.#rejectPending(workerError);
-
-        logWorkerEvent(
-            reason === "exit" ? "warn" : "error",
-            this.#domain,
-            reason,
-            {
-                ...metadata,
-                error: error.message,
-                threadId: connection.worker.threadId,
-            },
-        );
 
         try {
             connection.port.close();
@@ -557,18 +509,9 @@ export class RpcWorkerSupervisor<TReady> {
             RESTART_MAX_DELAY_MS,
         );
 
-        logWorkerEvent("warn", this.#domain, "restart-scheduled", {
-            attempt: this.#restartAttempt,
-            delayMs,
-        });
-
         this.#restartTimer = setTimeout(() => {
             this.#restartTimer = null;
-            void this.#ensureConnection().catch((error) => {
-                logWorkerEvent("error", this.#domain, "restart-failed", {
-                    attempt: this.#restartAttempt,
-                    error: formatErrorMessage(error),
-                });
+            void this.#ensureConnection().catch(() => {
                 this.#scheduleRestart();
             });
         }, delayMs);
@@ -585,21 +528,6 @@ export class RpcWorkerSupervisor<TReady> {
     }
 }
 
-export function logWorkerClientCallFailure(
-    domain: WorkerDomain,
-    method: string,
-    error: unknown,
-): void {
-    if (isBenignWorkerCloseError(error)) {
-        return;
-    }
-
-    logWorkerEvent("warn", domain, "call-failed", {
-        error: formatErrorMessage(error),
-        method,
-    });
-}
-
 function deserializeWorkerError(input: SerializedWorkerError): Error {
     const error = new Error(input.message);
     error.name = input.name;
@@ -613,27 +541,4 @@ function createAlreadyClosedWorkerError(domain: WorkerDomain): Error {
 
 function createClosedWorkerError(domain: WorkerDomain): Error {
     return new Error(`The ${domain} worker client was closed.`);
-}
-
-function formatErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-}
-
-function isBenignWorkerCloseError(error: unknown): boolean {
-    return (
-        error instanceof Error &&
-        /worker client (is already closed|was closed)/i.test(error.message)
-    );
-}
-
-function logWorkerEvent(
-    level: "error" | "info" | "warn",
-    domain: WorkerDomain,
-    event: string,
-    metadata?: Record<string, number | string | undefined>,
-): void {
-    void level;
-    void domain;
-    void event;
-    void metadata;
 }

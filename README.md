@@ -256,8 +256,8 @@ Contributions are welcome. Before opening a PR:
 
 ## Known Issues
 
-1. You cannot edit files while they have pending agent review changes.
-2. Some open files may require a manual reload to reflect the latest external changes.
+1. Files with pending agent review changes cannot be edited. This is intentional: the review flow prioritizes accuracy and reliability over allowing concurrent edits.
+2. The Pending review tab may show approximate diffs for some agent edits. Comando tracks pending changes from agent tool-call diffs and reconciles snippet-based edits when possible, but ambiguous snippets can still produce incomplete review data.
 3. Scroll restoration is not accurate when switching from inline review to the editable file view.
 
 ## License

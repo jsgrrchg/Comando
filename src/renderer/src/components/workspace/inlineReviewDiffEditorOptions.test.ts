@@ -15,17 +15,19 @@ describe("buildInlineReviewDiffEditorOptions", () => {
         });
 
         expect(options.renderSideBySide).toBe(false);
+        expect(options.compactMode).toBe(true);
         expect(options.experimental?.useTrueInlineView).toBe(false);
         expect(options.experimental?.showEmptyDecorations).toBe(true);
         expect(options.hideUnchangedRegions?.enabled).toBe(false);
         expect(options.lineDecorationsWidth).toBe(12);
-        expect(options.lineNumbersMinChars).toBe(7);
+        expect(options.lineNumbersMinChars).toBe(3);
         expect(options.wordWrap).toBe("on");
         expect(options.minimap?.enabled).toBe(true);
+        expect(options.renderIndicators).toBe(false);
         expect(options.scrollbar).toBeUndefined();
     });
 
-    it("expands the gutter for larger inline diff line numbers", () => {
+    it("sizes the gutter for a single inline diff line-number column", () => {
         const options = buildInlineReviewDiffEditorOptions({
             fontFamily: "var(--font-mono)",
             fontSize: 13,
@@ -36,7 +38,7 @@ describe("buildInlineReviewDiffEditorOptions", () => {
             wordWrap: "off",
         });
 
-        expect(options.lineNumbersMinChars).toBe(11);
+        expect(options.lineNumbersMinChars).toBe(5);
         expect(options.minimap?.enabled).toBe(false);
     });
 });

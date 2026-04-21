@@ -52,6 +52,17 @@ function getLineBorder(type: DiffLine["type"]): string {
     return "2px solid transparent";
 }
 
+function getLineRowBorder(type: DiffLine["type"], compactLineNumbers: boolean) {
+    return compactLineNumbers ? "none" : getLineBorder(type);
+}
+
+function getLineNumberBorder(
+    type: DiffLine["type"],
+    compactLineNumbers: boolean,
+) {
+    return compactLineNumbers ? getLineBorder(type) : undefined;
+}
+
 function getTextColor(type: DiffLine["type"]): string {
     if (type === "add") {
         return "var(--diff-add)";
@@ -204,7 +215,7 @@ export const DiffLineView = memo(function DiffLineView({
                 ...textStyles,
                 alignItems: "stretch",
                 backgroundColor: getLineBackground(line.type),
-                borderLeft: getLineBorder(line.type),
+                borderLeft: getLineRowBorder(line.type, compactLineNumbers),
                 color: getTextColor(line.type),
                 display: "grid",
                 fontFamily: fontFamily ?? undefined,
@@ -219,6 +230,10 @@ export const DiffLineView = memo(function DiffLineView({
         >
             <div
                 style={{
+                    borderLeft: getLineNumberBorder(
+                        line.type,
+                        compactLineNumbers,
+                    ),
                     borderRight:
                         "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
                     color: "var(--color-text-secondary)",

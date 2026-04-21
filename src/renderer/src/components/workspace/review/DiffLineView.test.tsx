@@ -50,6 +50,10 @@ describe("DiffLineView", () => {
         );
 
         expect(compactMarkup).toContain('data-line-type="add"');
+        expect(compactMarkup).toContain("border-left:none");
+        expect(compactMarkup).toContain(
+            "border-left:2px solid color-mix(in srgb, var(--diff-add) 45%, transparent)",
+        );
         expect(compactMarkup).toContain("22");
         expect(compactMarkup).toContain("const after = true;");
         expect(separatorMarkup).toContain('data-line-type="separator"');

@@ -1,4 +1,7 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type {
+    ChildProcess,
+    ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import type { MessagePort } from "node:worker_threads";
 
 import type {
@@ -6,6 +9,7 @@ import type {
     LoadSessionResponse,
     NewSessionResponse,
     RequestPermissionResponse,
+    TerminalExitStatus,
 } from "@agentclientprotocol/sdk";
 import type {
     AiPermissionResponseInput,
@@ -156,10 +160,23 @@ export interface LiveAcpSession {
     resolvedRuntime: ResolvedAcpRuntime;
     runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
+    terminals: Map<string, LiveAcpTerminal>;
     terminalOutputBuffers: Map<string, string>;
     lastBroadcastSnapshot: AiSessionSnapshot | null;
     stderrChunks: string[];
     stderrHandler: ((chunk: Buffer | string) => void) | null;
+}
+
+export interface LiveAcpTerminal {
+    child: ChildProcess;
+    commandLine: string;
+    cwd: string;
+    exitStatus: TerminalExitStatus | null;
+    output: string;
+    outputByteLimit: number;
+    released: boolean;
+    truncated: boolean;
+    waiters: Set<(status: TerminalExitStatus) => void>;
 }
 
 export interface ResolvedAcpRuntime {

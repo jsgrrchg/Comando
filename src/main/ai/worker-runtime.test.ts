@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -6,7 +7,13 @@ import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_IMAGE_ATTACHMENTS } from "@shared/ai-attachments";
-import type { AiRuntimeStatus, AiSessionSnapshot, AiTrackedFile } from "@shared/ipc";
+import type {
+    AiPermissionRequest,
+    AiRuntimeStatus,
+    AiSessionSnapshot,
+    AiToolActivity,
+    AiTrackedFile,
+} from "@shared/ipc";
 import { computeDiffHunks } from "@shared/ai-tracked-file";
 
 import type { AiWorkerEventMessage, AiWorkerSessionLaunchInput } from "./contracts";
@@ -26,11 +33,45 @@ const promptMock = vi.fn(() =>
 );
 let latestClientFactory:
     | (() => {
+          createTerminal: (params: {
+              readonly args?: readonly string[];
+              readonly command: string;
+              readonly cwd?: string | null;
+              readonly env?: readonly { readonly name: string; readonly value: string }[];
+              readonly outputByteLimit?: number | null;
+              readonly sessionId: string;
+          }) => Promise<{ terminalId: string }>;
+          killTerminal: (params: {
+              readonly sessionId: string;
+              readonly terminalId: string;
+          }) => Promise<Record<string, never>>;
           readTextFile: (params: {
               readonly limit?: number;
               readonly line?: number;
               readonly path: string;
           }) => Promise<{ content: string }>;
+          releaseTerminal: (params: {
+              readonly sessionId: string;
+              readonly terminalId: string;
+          }) => Promise<Record<string, never>>;
+          terminalOutput: (params: {
+              readonly sessionId: string;
+              readonly terminalId: string;
+          }) => Promise<{
+              exitStatus?: {
+                  readonly exitCode?: number | null;
+                  readonly signal?: string | null;
+              } | null;
+              output: string;
+              truncated: boolean;
+          }>;
+          waitForTerminalExit: (params: {
+              readonly sessionId: string;
+              readonly terminalId: string;
+          }) => Promise<{
+              readonly exitCode?: number | null;
+              readonly signal?: string | null;
+          }>;
           writeTextFile: (params: {
               readonly content: string;
               readonly path: string;
@@ -45,13 +86,37 @@ const newSessionMock = vi.fn(() =>
         sessionId: "runtime-session-2",
     }),
 );
-const spawnMock = vi.fn(() => ({
-    kill: vi.fn(),
-    on: vi.fn(),
-    stderr: new PassThrough(),
-    stdin: new PassThrough(),
-    stdout: new PassThrough(),
-}));
+function createMockChildProcess() {
+    const emitter = new EventEmitter();
+    const child = {
+        emit: (event: string, ...args: unknown[]) => emitter.emit(event, ...args),
+        kill: vi.fn(() => true),
+        off: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            emitter.off(event, listener);
+            return child;
+        }),
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            emitter.on(event, listener);
+            return child;
+        }),
+        once: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            emitter.once(event, listener);
+            return child;
+        }),
+        stderr: new PassThrough(),
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+    };
+    return child;
+}
+
+type MockChildProcess = ReturnType<typeof createMockChildProcess>;
+let spawnedChildren: MockChildProcess[] = [];
+const spawnMock = vi.fn(() => {
+    const child = createMockChildProcess();
+    spawnedChildren.push(child);
+    return child;
+});
 
 vi.mock("node:child_process", () => ({
     spawn: spawnMock,
@@ -61,8 +126,9 @@ vi.mock("@agentclientprotocol/sdk", () => ({
     ClientSideConnection: class MockClientSideConnection {
         constructor(
             clientFactory: typeof latestClientFactory,
-            _stream: unknown,
+            stream: unknown,
         ) {
+            void stream;
             latestClientFactory = clientFactory;
         }
 
@@ -89,6 +155,7 @@ describe("AiWorkerRuntime prepareSession", () => {
         promptMock.mockClear();
         newSessionMock.mockClear();
         spawnMock.mockClear();
+        spawnedChildren = [];
         latestClientFactory = null;
     });
 
@@ -425,6 +492,218 @@ describe("AiWorkerRuntime prepareSession", () => {
         );
     });
 
+    it("advertises and handles ACP terminals through the existing permission flow", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Terminal test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        expect(initializeMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                clientCapabilities: {
+                    fs: {
+                        readTextFile: true,
+                        writeTextFile: true,
+                    },
+                    terminal: true,
+                },
+            }),
+        );
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const createPromise = client!.createTerminal({
+            args: ["-v"],
+            command: "node",
+            cwd: tempDir,
+            env: [],
+            outputByteLimit: 1024,
+            sessionId: "runtime-session-1",
+        });
+
+        await Promise.resolve();
+        const pendingPermission = getLatestPendingPermission(emittedEvents);
+        expect(pendingPermission).not.toBeNull();
+        expect(pendingPermission!.description).toContain("Command: node -v");
+        expect(pendingPermission!.title).toBe("Run terminal command");
+
+        const allowOption = pendingPermission!.options.find(
+            (option) => option.kind === "allow_once",
+        );
+        expect(allowOption).toBeDefined();
+        await runtime.dispatchMethod("ai.respondPermission", {
+            input: {
+                optionId: allowOption!.optionId,
+                requestId: pendingPermission!.requestId,
+                sessionId: "session-1",
+            },
+        });
+
+        const { terminalId } = await createPromise;
+        expect(spawnMock).toHaveBeenLastCalledWith(
+            "node",
+            ["-v"],
+            expect.objectContaining({
+                cwd: tempDir,
+                stdio: ["ignore", "pipe", "pipe"],
+            }),
+        );
+
+        const terminalChild = spawnedChildren.at(-1);
+        expect(terminalChild).toBeDefined();
+        terminalChild!.stdout.write("v25.0.0\n");
+        await expect(
+            client!.terminalOutput({
+                sessionId: "runtime-session-1",
+                terminalId,
+            }),
+        ).resolves.toEqual({
+            _meta: null,
+            exitStatus: null,
+            output: "v25.0.0\n",
+            truncated: false,
+        });
+
+        terminalChild!.emit("close", 0, null);
+        await expect(
+            client!.waitForTerminalExit({
+                sessionId: "runtime-session-1",
+                terminalId,
+            }),
+        ).resolves.toEqual({
+            _meta: null,
+            exitCode: 0,
+            signal: null,
+        });
+
+        await vi.waitFor(() => {
+            const toolActivity = getLatestToolActivity(emittedEvents);
+            expect(toolActivity).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        exitCode: 0,
+                        kind: "execute",
+                        rawInputJson: JSON.stringify({
+                            command: "node -v",
+                            cwd: tempDir,
+                        }),
+                        status: "completed",
+                        terminalOutput: "v25.0.0\n",
+                    }),
+                ]),
+            );
+        });
+    });
+
+    it("normalizes negative ACP terminal exit codes to null", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Terminal failure test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const createPromise = client!.createTerminal({
+            args: [],
+            command: "missing-command",
+            cwd: tempDir,
+            env: [],
+            outputByteLimit: 1024,
+            sessionId: "runtime-session-1",
+        });
+
+        await Promise.resolve();
+        const pendingPermission = getLatestPendingPermission(emittedEvents);
+        expect(pendingPermission).not.toBeNull();
+        const allowOption = pendingPermission!.options.find(
+            (option) => option.kind === "allow_once",
+        );
+        expect(allowOption).toBeDefined();
+        await runtime.dispatchMethod("ai.respondPermission", {
+            input: {
+                optionId: allowOption!.optionId,
+                requestId: pendingPermission!.requestId,
+                sessionId: "session-1",
+            },
+        });
+
+        const { terminalId } = await createPromise;
+        const terminalChild = spawnedChildren.at(-1);
+        expect(terminalChild).toBeDefined();
+        terminalChild!.emit("error", new Error("spawn ENOENT"));
+        terminalChild!.emit("close", -2, null);
+
+        await expect(
+            client!.terminalOutput({
+                sessionId: "runtime-session-1",
+                terminalId,
+            }),
+        ).resolves.toEqual({
+            _meta: null,
+            exitStatus: {
+                _meta: null,
+                exitCode: null,
+                signal: null,
+            },
+            output: "spawn ENOENT\n",
+            truncated: false,
+        });
+        await expect(
+            client!.waitForTerminalExit({
+                sessionId: "runtime-session-1",
+                terminalId,
+            }),
+        ).resolves.toEqual({
+            _meta: null,
+            exitCode: null,
+            signal: null,
+        });
+
+        await vi.waitFor(() => {
+            const toolActivity = getLatestToolActivity(emittedEvents);
+            expect(toolActivity).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        exitCode: null,
+                        kind: "execute",
+                        status: "failed",
+                        terminalOutput: "spawn ENOENT\n",
+                    }),
+                ]),
+            );
+        });
+    });
+
     it("keeps the out-of-project path error semantics", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -642,6 +921,48 @@ function createRuntime() {
     return new AiWorkerRuntime({
         emitEvent: vi.fn(),
     });
+}
+
+function getLatestPendingPermission(
+    events: readonly AiWorkerEventMessage[],
+): AiPermissionRequest | null {
+    for (const event of [...events].reverse()) {
+        if (event.event !== "ai.snapshot.updated") {
+            continue;
+        }
+
+        const update = event.payload.update;
+        if (update.kind === "snapshot") {
+            return update.snapshot.pendingPermission;
+        }
+
+        if ("pendingPermission" in update.patch.changes) {
+            return update.patch.changes.pendingPermission ?? null;
+        }
+    }
+
+    return null;
+}
+
+function getLatestToolActivity(
+    events: readonly AiWorkerEventMessage[],
+): readonly AiToolActivity[] | null {
+    for (const event of [...events].reverse()) {
+        if (event.event !== "ai.snapshot.updated") {
+            continue;
+        }
+
+        const update = event.payload.update;
+        if (update.kind === "snapshot") {
+            return update.snapshot.toolActivity;
+        }
+
+        if ("toolActivity" in update.patch.changes) {
+            return update.patch.changes.toolActivity ?? null;
+        }
+    }
+
+    return null;
 }
 
 function createLaunch(

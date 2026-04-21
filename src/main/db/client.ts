@@ -49,7 +49,6 @@ import {
 import type { SettingsGateway } from "../settings/service";
 import type { WorkspaceGateway } from "../workspace/service";
 import {
-    logWorkerClientCallFailure,
     RpcWorkerSupervisor,
     WORKER_TIMEOUTS_MS,
 } from "../workers/supervisor";
@@ -209,9 +208,7 @@ class PersistenceClient implements PersistenceGateway {
                 windowId,
                 worktreeId,
             })
-            .catch((error) => {
-                logDbWorkerError("persistence.saveActiveProjectId", error);
-            });
+            .catch(() => undefined);
     }
 
     saveShellState(
@@ -227,9 +224,7 @@ class PersistenceClient implements PersistenceGateway {
                 shellState,
                 windowId,
             })
-            .catch((error) => {
-                logDbWorkerError("persistence.saveShellState", error);
-            });
+            .catch(() => undefined);
     }
 
     saveWindowState(state: PersistedWindowState): void {
@@ -239,18 +234,14 @@ class PersistenceClient implements PersistenceGateway {
         }));
         void this.#rpc
             .call("persistence.saveWindowState", state)
-            .catch((error) => {
-                logDbWorkerError("persistence.saveWindowState", error);
-            });
+            .catch(() => undefined);
     }
 
     markWindowClosed(windowId: string): void {
         this.#openWindowIds.delete(windowId);
         void this.#rpc
             .call("persistence.markWindowClosed", windowId)
-            .catch((error) => {
-                logDbWorkerError("persistence.markWindowClosed", error);
-            });
+            .catch(() => undefined);
     }
 
     markWindowOpen(windowId: string): void {
@@ -261,9 +252,7 @@ class PersistenceClient implements PersistenceGateway {
 
         void this.#rpc
             .call("persistence.markWindowOpen", windowId)
-            .catch((error) => {
-                logDbWorkerError("persistence.markWindowOpen", error);
-            });
+            .catch(() => undefined);
     }
 
     #trackSnapshot(snapshot: PersistenceSnapshot): void {
@@ -418,9 +407,7 @@ class SettingsClient implements SettingsGateway {
     }
 
     #dispatch(method: string, params: unknown): void {
-        void this.#rpc.call(method, params).catch((error) => {
-            logDbWorkerError(method, error);
-        });
+        void this.#rpc.call(method, params).catch(() => undefined);
     }
 }
 
@@ -467,9 +454,7 @@ class SecretStoreClient implements SecretStoreGateway {
                 key,
                 value: storedValue,
             })
-            .catch((error) => {
-                logDbWorkerError("secrets.saveRecord", error);
-            });
+            .catch(() => undefined);
     }
 }
 
@@ -657,9 +642,7 @@ class AiPersistenceClient implements AiPersistenceGateway {
                 patch,
                 runtimeId,
             })
-            .catch((error) => {
-                logDbWorkerError("ai.saveRuntimeSelectionPreferences", error);
-            });
+            .catch(() => undefined);
     }
 
     saveRuntimeSelectionPreferenceOption(
@@ -699,9 +682,7 @@ class AiPersistenceClient implements AiPersistenceGateway {
                     snapshot,
                 });
             })
-            .catch((error) => {
-                logDbWorkerError("ai.saveSessionSnapshot", error);
-            });
+            .catch(() => undefined);
     }
 }
 
@@ -792,9 +773,7 @@ class ProjectStoreClient implements ProjectStore {
         this.#worktreeIdsByProjectId.delete(projectId);
         void this.#rpc
             .call("projects.removeProject", projectId)
-            .catch((error) => {
-                logDbWorkerError("projects.removeProject", error);
-            });
+            .catch(() => undefined);
     }
 
     touchProject(projectId: string): void {
@@ -811,9 +790,7 @@ class ProjectStoreClient implements ProjectStore {
 
         void this.#rpc
             .call("projects.touchProject", projectId)
-            .catch((error) => {
-                logDbWorkerError("projects.touchProject", error);
-            });
+            .catch(() => undefined);
     }
 
     async syncProjectWorktrees(
@@ -1048,10 +1025,6 @@ function toRuntimeCatalog(
         modelId: snapshot.modelId,
         models: snapshot.models,
     };
-}
-
-function logDbWorkerError(method: string, error: unknown): void {
-    logWorkerClientCallFailure("db", method, error);
 }
 
 function requireSetting<T>(value: T | null | undefined, name: string): T {
