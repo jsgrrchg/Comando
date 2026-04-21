@@ -163,6 +163,52 @@ const cmakeMonarchDefinition: monaco.languages.IMonarchLanguage = {
     },
 };
 
+const astroMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    brackets: [
+        { open: "{", close: "}", token: "delimiter.curly" },
+        { open: "[", close: "]", token: "delimiter.square" },
+        { open: "(", close: ")", token: "delimiter.parenthesis" },
+        { open: "<", close: ">", token: "delimiter.angle" },
+    ],
+    defaultToken: "",
+    tokenizer: {
+        root: [
+            [/^---\s*$/, "metatag"],
+            [/<!--/, "comment", "@comment"],
+            [/<\/?[A-Za-z][\w:-]*/, "tag"],
+            [/\{/, { token: "delimiter.curly", next: "@expression" }],
+            [/\b[A-Za-z_][\w:-]*(?=\=)/, "attribute.name"],
+            [/"/, "string", "@stringDouble"],
+            [/'/, "string", "@stringSingle"],
+        ],
+        comment: [
+            [/-->/, "comment", "@pop"],
+            [/[^-]+/, "comment"],
+            [/./, "comment"],
+        ],
+        expression: [
+            [/\}/, { token: "delimiter.curly", next: "@pop" }],
+            [/\b(?:const|let|var|function|return|if|else|for|while|switch|case|break|continue|import|from|export|default|async|await|new|class|extends|implements|interface|type|typeof|try|catch|finally|throw)\b/, "keyword"],
+            [/\b\d+(?:\.\d+)?\b/, "number"],
+            [/"/, "string", "@stringDouble"],
+            [/'/, "string", "@stringSingle"],
+            [/=>|==|!=|<=|>=|&&|\|\||[=+\-*/<>!?|&.:]/, "operators"],
+            [/[A-Z][A-Za-z0-9_]*/, "type.identifier"],
+            [/[A-Za-z_$][\w$-]*/, "identifier"],
+        ],
+        stringDouble: [
+            [/[^\\"]+/, "string"],
+            [/\\./, "string.escape"],
+            [/"/, "string", "@pop"],
+        ],
+        stringSingle: [
+            [/[^\\']+/, "string"],
+            [/\\./, "string.escape"],
+            [/'/, "string", "@pop"],
+        ],
+    },
+};
+
 const makefileMonarchDefinition: monaco.languages.IMonarchLanguage = {
     defaultToken: "",
     tokenizer: {
@@ -324,6 +370,7 @@ function registerLanguageIds(
 }
 
 function configureMarkdownFenceLanguages() {
+    registerLanguageIds(["astro"], monarchLanguage(astroMonarchDefinition));
     registerLanguageIds(
         ["markdown"],
         basicLanguage(

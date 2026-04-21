@@ -17,6 +17,7 @@ type TextMateGrammarModule = {
 };
 
 const TEXT_MATE_LANGUAGE_IDS = [
+    "astro",
     "cmake",
     "dockerfile",
     "hcl",
@@ -52,6 +53,11 @@ type TextMateLanguageDefinition = {
 const TEXT_MATE_LANGUAGE_DEFINITIONS: Readonly<
     Record<TextMateLanguageId, TextMateLanguageDefinition>
 > = {
+    astro: {
+        canonicalLanguageId: "astro",
+        loadModule: () => import("@shikijs/langs/astro"),
+        scopeName: "source.astro",
+    },
     cmake: {
         canonicalLanguageId: "cmake",
         loadModule: () => import("@shikijs/langs/cmake"),

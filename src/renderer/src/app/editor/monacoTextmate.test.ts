@@ -9,6 +9,7 @@ import {
 describe("monacoTextmate", () => {
     it("exposes the initial TextMate language set", () => {
         expect(getTextMateLanguageIds()).toEqual([
+            "astro",
             "cmake",
             "dockerfile",
             "hcl",
@@ -20,6 +21,7 @@ describe("monacoTextmate", () => {
     });
 
     it("maps supported language ids to their TextMate scopes", () => {
+        expect(getTextMateScopeName("astro")).toBe("source.astro");
         expect(getTextMateScopeName("rust")).toBe("source.rust");
         expect(getTextMateScopeName("rs")).toBe("source.rust");
         expect(getTextMateScopeName("python")).toBe("source.python");
@@ -36,6 +38,7 @@ describe("monacoTextmate", () => {
     });
 
     it("reports unsupported ids cleanly", () => {
+        expect(isTextMateLanguageSupported("astro")).toBe(true);
         expect(isTextMateLanguageSupported("rust")).toBe(true);
         expect(isTextMateLanguageSupported("typescript")).toBe(false);
         expect(getTextMateScopeName("typescript")).toBeNull();
