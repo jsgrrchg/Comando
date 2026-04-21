@@ -4995,6 +4995,10 @@ function TerminalTabView({
         });
     });
 
+    const createCurrentTerminalSurfaceOptions = useEffectEvent(() =>
+        createTerminalSurfaceOptions(terminalTheme),
+    );
+
     const cancelScheduledViewportSync = useEffectEvent(() => {
         if (pendingViewportSyncFrameRef.current === null) {
             return;
@@ -5048,7 +5052,7 @@ function TerminalTabView({
         }
 
         const terminal = new runtime.Terminal(
-            createTerminalSurfaceOptions(terminalTheme),
+            createCurrentTerminalSurfaceOptions(),
         );
         const fitAddon = new runtime.FitAddon();
         terminal.loadAddon(fitAddon);
@@ -5062,9 +5066,6 @@ function TerminalTabView({
         terminalRef.current = terminal;
         fitAddonRef.current = fitAddon;
         scheduleViewportSync(1);
-        if (isActivePane && isActive) {
-            scheduleTerminalFocus();
-        }
 
         const handleViewportChange = () => {
             scheduleViewportSync();
@@ -5103,7 +5104,7 @@ function TerminalTabView({
             writtenLengthRef.current = 0;
             writeChainRef.current = Promise.resolve();
         };
-    }, [isActive, isActivePane, onResize, onSendInput, runtime, tab.sessionId]);
+    }, [onResize, onSendInput, runtime, tab.sessionId]);
 
     useEffect(() => {
         if (!isActivePane || !isActive || !terminalRef.current) {
@@ -5114,7 +5115,7 @@ function TerminalTabView({
         return () => {
             cancelScheduledFocus();
         };
-    }, [isActive, isActivePane]);
+    }, [isActive, isActivePane, runtime, tab.sessionId]);
 
     useEffect(() => {
         const didApplyTheme = applyTerminalSurfaceTheme({
@@ -5125,7 +5126,7 @@ function TerminalTabView({
         if (didApplyTheme) {
             scheduleViewportSync();
         }
-    }, [scheduleViewportSync, terminalTheme]);
+    }, [terminalTheme]);
 
     useEffect(() => {
         const terminal = terminalRef.current;
