@@ -162,6 +162,7 @@ export interface AppAiChatSettings {
 }
 
 export interface AppAppearanceSettings {
+    readonly boostCodeContrast: boolean;
     readonly fileTreeScale: number;
     readonly themeMode: ThemeMode;
     readonly themePreset: ThemePreset;

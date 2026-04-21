@@ -29,6 +29,7 @@ import {
 import {
     createComandoTextMateTheme,
     createMonarchFallbackRules,
+    type ComandoCodeColorAnchors,
     type ComandoSemanticTokenColors,
 } from "./monacoTextmateTheme";
 import { installTypeScriptReactLanguageServices } from "./monacoTypeScriptReact";
@@ -1093,6 +1094,48 @@ function readThemeColor(
     );
 }
 
+// Reads the 12 `--code-color-*` CSS variables written by applyAppearance.
+// Returns undefined if *any* of them is missing, which keeps Monaco on its
+// built-in fallback palette during early boot (before the app theme is
+// applied). When present, each value drives the corresponding anchor in the
+// generated TextMate theme.
+function readCodeAnchors(
+    styles: CSSStyleDeclaration,
+): ComandoCodeColorAnchors | undefined {
+    const properties = [
+        "--code-color-comment",
+        "--code-color-constant",
+        "--code-color-escape",
+        "--code-color-function",
+        "--code-color-keyword",
+        "--code-color-markup",
+        "--code-color-parameter",
+        "--code-color-property",
+        "--code-color-string",
+        "--code-color-type",
+        "--code-color-typeparameter",
+        "--code-color-variable",
+    ] as const;
+    const values = properties.map((name) => styles.getPropertyValue(name).trim());
+    if (values.some((value) => value.length === 0)) {
+        return undefined;
+    }
+    return {
+        comment: values[0],
+        constant: values[1],
+        escape: values[2],
+        function: values[3],
+        keyword: values[4],
+        markup: values[5],
+        parameter: values[6],
+        property: values[7],
+        string: values[8],
+        type: values[9],
+        typeParameter: values[10],
+        variable: values[11],
+    };
+}
+
 export function getMonacoThemeFromDom(): ComandoMonacoTheme {
     if (typeof document === "undefined") {
         return LIGHT_THEME_NAME;
@@ -1163,8 +1206,10 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
         "--color-bg-secondary",
         isDark ? "#252525" : "#f5f5f5",
     );
+    const codeAnchors = readCodeAnchors(styles);
     const textMateTheme = createComandoTextMateTheme({
         accent,
+        codeAnchors,
         editorBackground,
         editorForeground,
         isDark,

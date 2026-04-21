@@ -254,6 +254,16 @@ export function SettingsApp() {
         void saveAppAppearanceSettings(nextAppearance);
     };
 
+    const handleAppBoostCodeContrastChange = (boostCodeContrast: boolean) => {
+        const nextAppearance = {
+            ...appAppearance,
+            boostCodeContrast,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppEditorFontFamilyChange = (fontFamilyId: string) => {
         const nextEditor: AppEditorSettings = {
             ...appEditor,
@@ -403,8 +413,10 @@ export function SettingsApp() {
                     updateAiChat({ contextUsageBarEnabled: value }),
             }}
             appAppearance={{
+                boostCodeContrast: appAppearance.boostCodeContrast,
                 fileTreeScale: appAppearance.fileTreeScale,
                 mode: appAppearance.themeMode,
+                onBoostCodeContrastChange: handleAppBoostCodeContrastChange,
                 onFileTreeScaleChange: handleAppFileTreeScaleChange,
                 onModeChange: handleAppThemeModeChange,
                 onPresetChange: handleAppThemePresetChange,

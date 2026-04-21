@@ -8,6 +8,10 @@ export interface ComandoTextMateThemeInput {
     // Accent is accepted for compatibility with the caller but is not used in
     // the palette anymore; it no longer participates in cache keying either.
     readonly accent?: string;
+    // Optional override for the 12 syntax anchors. When provided, replaces
+    // the built-in light/dark defaults and drives every token in the
+    // generated palette. Supplied by the preset system via CSS variables.
+    readonly codeAnchors?: ComandoCodeColorAnchors;
     readonly editorBackground: string;
     readonly editorForeground: string;
     readonly isDark: boolean;
@@ -172,36 +176,121 @@ function blendColors(
     return `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
 }
 
+function defaultDarkAnchors(
+    input: ComandoTextMateThemeInput,
+    editorBackground: string,
+): ComandoCodeColorAnchors {
+    return {
+        comment: accessibleColor(
+            input.textSecondary,
+            editorBackground,
+            "#9CA3AF",
+        ),
+        constant: "#FDBA74",
+        escape: "#F472B6",
+        function: "#60A5FA",
+        keyword: "#C084FC",
+        markup: "#FCA5A5",
+        parameter: "#FED7AA",
+        property: "#FDA4AF",
+        string: "#A7F3D0",
+        type: "#FACC15",
+        typeParameter: "#86EFAC",
+        variable: accessibleColor(
+            input.editorForeground,
+            editorBackground,
+            "#E5E7EB",
+        ),
+    };
+}
+
+function defaultLightAnchors(
+    input: ComandoTextMateThemeInput,
+    editorBackground: string,
+): ComandoCodeColorAnchors {
+    return {
+        comment: accessibleColor(
+            input.textSecondary,
+            editorBackground,
+            "#6B7280",
+        ),
+        constant: "#9A3412",
+        escape: "#BE185D",
+        function: "#0550AE",
+        keyword: "#7C3AED",
+        markup: "#B42318",
+        parameter: "#B45309",
+        property: "#1E3A8A",
+        string: "#0B6B3A",
+        type: "#8A5A00",
+        typeParameter: "#15803D",
+        variable: accessibleColor(
+            input.editorForeground,
+            editorBackground,
+            "#1F2937",
+        ),
+    };
+}
+
+// When a preset provides explicit anchors, derive the 7 secondary slots
+// (attribute, decorator, macro, namespace, number, regexp, tag) from them so
+// each preset paints a coherent palette without requiring 19 hand-tuned
+// colors. Fallbacks used to hardcode these slots per-mode; now they echo the
+// caller's anchors via simple blends.
+function deriveSecondaryFromAnchors(
+    anchors: ComandoCodeColorAnchors,
+    editorBackground: string,
+): Pick<
+    ComandoTextMatePalette,
+    "attribute" | "decorator" | "macro" | "namespace" | "regexp"
+> {
+    return {
+        attribute: blendColors(anchors.markup, anchors.constant, 0.5),
+        decorator: anchors.escape,
+        macro: anchors.type,
+        namespace: blendColors(anchors.function, anchors.type, 0.5),
+        regexp: blendColors(anchors.string, editorBackground, 0.85),
+    };
+}
+
 function createPalette(input: ComandoTextMateThemeInput): ComandoTextMatePalette {
     const editorBackground = normalizeRawThemeColor(
         input.editorBackground,
         input.isDark ? "#1C1C1C" : "#FFFFFF",
     );
 
-    if (input.isDark) {
-        const anchors = {
-            comment: accessibleColor(
-                input.textSecondary,
-                editorBackground,
-                "#9CA3AF",
-            ),
-            constant: "#FDBA74",
-            escape: "#F472B6",
-            function: "#60A5FA",
-            keyword: "#C084FC",
-            markup: "#FCA5A5",
-            parameter: "#FED7AA",
-            property: "#FDA4AF",
-            string: "#A7F3D0",
-            type: "#FACC15",
-            typeParameter: "#86EFAC",
-            variable: accessibleColor(
-                input.editorForeground,
-                editorBackground,
-                "#E5E7EB",
-            ),
-        } as const satisfies ComandoCodeColorAnchors;
+    const anchors: ComandoCodeColorAnchors = input.codeAnchors
+        ? input.codeAnchors
+        : input.isDark
+          ? defaultDarkAnchors(input, editorBackground)
+          : defaultLightAnchors(input, editorBackground);
 
+    if (input.codeAnchors) {
+        const secondary = deriveSecondaryFromAnchors(anchors, editorBackground);
+        return {
+            anchors,
+            attribute: secondary.attribute,
+            comment: anchors.comment,
+            constant: anchors.constant,
+            decorator: secondary.decorator,
+            escape: anchors.escape,
+            function: anchors.function,
+            keyword: anchors.keyword,
+            macro: secondary.macro,
+            namespace: secondary.namespace,
+            number: anchors.constant,
+            parameter: anchors.parameter,
+            property: anchors.property,
+            regexp: secondary.regexp,
+            string: anchors.string,
+            tag: anchors.markup,
+            type: anchors.type,
+            typeParameter: anchors.typeParameter,
+            variable: anchors.variable,
+        };
+    }
+
+    if (input.isDark) {
         return {
             anchors,
             attribute: "#FDE68A",
@@ -224,25 +313,6 @@ function createPalette(input: ComandoTextMateThemeInput): ComandoTextMatePalette
             variable: anchors.variable,
         };
     }
-
-    const anchors = {
-        comment: accessibleColor(input.textSecondary, editorBackground, "#6B7280"),
-        constant: "#9A3412",
-        escape: "#BE185D",
-        function: "#0550AE",
-        keyword: "#7C3AED",
-        markup: "#B42318",
-        parameter: "#B45309",
-        property: "#1E3A8A",
-        string: "#0B6B3A",
-        type: "#8A5A00",
-        typeParameter: "#15803D",
-        variable: accessibleColor(
-            input.editorForeground,
-            editorBackground,
-            "#1F2937",
-        ),
-    } as const satisfies ComandoCodeColorAnchors;
 
     return {
         anchors,
@@ -654,7 +724,27 @@ export function createComandoTextMateTheme(
     input: ComandoTextMateThemeInput,
 ): ComandoTextMateTheme {
     // Accent is intentionally excluded from the cache key since it does not
-    // participate in the palette or the raw theme settings.
+    // participate in the palette or the raw theme settings. Code anchors do
+    // participate when supplied: they fully drive the generated palette, so
+    // their fingerprint must invalidate the cache across preset changes.
+    const anchorsFingerprint = input.codeAnchors
+        ? [
+              input.codeAnchors.comment,
+              input.codeAnchors.constant,
+              input.codeAnchors.escape,
+              input.codeAnchors.function,
+              input.codeAnchors.keyword,
+              input.codeAnchors.markup,
+              input.codeAnchors.parameter,
+              input.codeAnchors.property,
+              input.codeAnchors.string,
+              input.codeAnchors.type,
+              input.codeAnchors.typeParameter,
+              input.codeAnchors.variable,
+          ]
+              .map((color) => normalizeRawThemeColor(color, "#000000"))
+              .join(",")
+        : "default";
     const cacheKey = [
         input.themeName,
         normalizeRawThemeColor(
@@ -670,6 +760,7 @@ export function createComandoTextMateTheme(
             input.isDark ? "#8A8A8A" : "#737373",
         ),
         input.isDark ? "dark" : "light",
+        anchorsFingerprint,
     ].join("|");
     const cachedTheme = textMateThemeCache.get(cacheKey);
 

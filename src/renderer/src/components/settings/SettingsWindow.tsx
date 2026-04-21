@@ -429,6 +429,20 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                 onChange={(id) => state.onPresetChange?.(id)}
             />
 
+            <SectionLabel>Accessibility</SectionLabel>
+            <Row
+                label="Boost code contrast"
+                description="Darken or lighten syntax colors that fall below the WCAG AA contrast ratio against the editor background. Turn this off to see each preset's exact original palette."
+                control={
+                    <Toggle
+                        value={state.boostCodeContrast}
+                        onChange={(v) =>
+                            state.onBoostCodeContrastChange?.(v)
+                        }
+                    />
+                }
+            />
+
             <SectionLabel>Zoom</SectionLabel>
             <Row
                 label="App zoom"

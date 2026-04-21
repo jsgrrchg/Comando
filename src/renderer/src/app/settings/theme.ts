@@ -25,6 +25,7 @@ import {
     DEFAULT_EDITOR_FONT_FAMILY,
     DEFAULT_EDITOR_FONT_SIZE,
 } from "@shared/typography";
+import type { ComandoCodeColorAnchors } from "@renderer/app/editor/monacoTextmateTheme";
 
 export interface ThemePresetOption {
     readonly description: string;
@@ -56,6 +57,11 @@ interface ThemeColors {
     readonly textSecondary: string;
 }
 
+interface ThemePaletteCodeColors {
+    readonly dark: ComandoCodeColorAnchors;
+    readonly light: ComandoCodeColorAnchors;
+}
+
 interface ThemePalette {
     readonly dark: ThemeColors;
     readonly label: string;
@@ -76,6 +82,7 @@ interface ThemeTokens {
     readonly border: string;
     readonly borderStrong: string;
     readonly borderSubtle: string;
+    readonly code: ComandoCodeColorAnchors;
     readonly editor: string;
     readonly editorText: string;
     readonly selection: string;
@@ -678,6 +685,646 @@ const THEME_PALETTES: Record<ThemePreset, ThemePalette> = {
     },
 };
 
+// Per-preset syntax highlight palettes. Each preset defines 12 "anchor"
+// tokens used by Monaco's TextMate theme: the 12 named code categories
+// covered by `ComandoCodeColorAnchors`. Canonical presets (nord, gruvbox,
+// catppuccin, etc.) mirror the colors published in their original repos;
+// the in-house presets (default, ocean, forest, rose, amber, lavender,
+// sunset, claude, codex) were curated to harmonize with each preset's
+// accent and base surfaces.
+const CODE_PALETTES: Record<ThemePreset, ThemePaletteCodeColors> = {
+    default: {
+        light: {
+            comment: "#737373",
+            constant: "#9A3412",
+            escape: "#BE185D",
+            function: "#1D4ED8",
+            keyword: "#6D28D9",
+            markup: "#B42318",
+            parameter: "#B45309",
+            property: "#1E3A8A",
+            string: "#0B6B3A",
+            type: "#8A5A00",
+            typeParameter: "#15803D",
+            variable: "#1F2937",
+        },
+        dark: {
+            comment: "#8A8A8A",
+            constant: "#FDBA74",
+            escape: "#F472B6",
+            function: "#93C5FD",
+            keyword: "#C4B5FD",
+            markup: "#FCA5A5",
+            parameter: "#FED7AA",
+            property: "#FDA4AF",
+            string: "#A7F3D0",
+            type: "#FDE68A",
+            typeParameter: "#86EFAC",
+            variable: "#E5E7EB",
+        },
+    },
+    ocean: {
+        light: {
+            comment: "#64748B",
+            constant: "#B45309",
+            escape: "#BE185D",
+            function: "#0284C7",
+            keyword: "#1D4ED8",
+            markup: "#0369A1",
+            parameter: "#0E7490",
+            property: "#0F766E",
+            string: "#047857",
+            type: "#065F46",
+            typeParameter: "#155E75",
+            variable: "#0F172A",
+        },
+        dark: {
+            comment: "#64748B",
+            constant: "#FBA17E",
+            escape: "#F9A8D4",
+            function: "#38BDF8",
+            keyword: "#93C5FD",
+            markup: "#7DD3FC",
+            parameter: "#BAE6FD",
+            property: "#5EEAD4",
+            string: "#86EFAC",
+            type: "#A5F3FC",
+            typeParameter: "#67E8F9",
+            variable: "#E2E8F0",
+        },
+    },
+    forest: {
+        light: {
+            comment: "#78716C",
+            constant: "#B45309",
+            escape: "#BE185D",
+            function: "#047857",
+            keyword: "#7E22CE",
+            markup: "#854D0E",
+            parameter: "#166534",
+            property: "#15803D",
+            string: "#166534",
+            type: "#854D0E",
+            typeParameter: "#0369A1",
+            variable: "#1C1917",
+        },
+        dark: {
+            comment: "#A8A29E",
+            constant: "#FDBA74",
+            escape: "#F9A8D4",
+            function: "#6EE7B7",
+            keyword: "#C4B5FD",
+            markup: "#FCD34D",
+            parameter: "#D6F0A2",
+            property: "#A7F3D0",
+            string: "#BEF264",
+            type: "#FDE68A",
+            typeParameter: "#67E8F9",
+            variable: "#E7E5E4",
+        },
+    },
+    rose: {
+        light: {
+            comment: "#886F78",
+            constant: "#9F1239",
+            escape: "#BE185D",
+            function: "#9F1239",
+            keyword: "#BE123C",
+            markup: "#9F1239",
+            parameter: "#9D174D",
+            property: "#831843",
+            string: "#065F46",
+            type: "#854D0E",
+            typeParameter: "#0369A1",
+            variable: "#1F1215",
+        },
+        dark: {
+            comment: "#A8949B",
+            constant: "#FCA5A5",
+            escape: "#F9A8D4",
+            function: "#FDA4AF",
+            keyword: "#F472B6",
+            markup: "#FECACA",
+            parameter: "#FED7AA",
+            property: "#FBCFE8",
+            string: "#BEF264",
+            type: "#FCD34D",
+            typeParameter: "#86EFAC",
+            variable: "#EDE4E7",
+        },
+    },
+    amber: {
+        light: {
+            comment: "#8A7A60",
+            constant: "#9A3412",
+            escape: "#BE185D",
+            function: "#B45309",
+            keyword: "#7E22CE",
+            markup: "#9F1239",
+            parameter: "#854D0E",
+            property: "#92400E",
+            string: "#166534",
+            type: "#78350F",
+            typeParameter: "#1E40AF",
+            variable: "#1C1408",
+        },
+        dark: {
+            comment: "#A89E8A",
+            constant: "#FB923C",
+            escape: "#F9A8D4",
+            function: "#FCD34D",
+            keyword: "#C4B5FD",
+            markup: "#FECACA",
+            parameter: "#FED7AA",
+            property: "#FDE68A",
+            string: "#BEF264",
+            type: "#FDBA74",
+            typeParameter: "#86EFAC",
+            variable: "#EAE4D8",
+        },
+    },
+    lavender: {
+        light: {
+            comment: "#7C6F96",
+            constant: "#9A3412",
+            escape: "#BE185D",
+            function: "#6D28D9",
+            keyword: "#5B21B6",
+            markup: "#7E22CE",
+            parameter: "#7C2D12",
+            property: "#5B21B6",
+            string: "#047857",
+            type: "#854D0E",
+            typeParameter: "#0E7490",
+            variable: "#1A1525",
+        },
+        dark: {
+            comment: "#9B90AD",
+            constant: "#FCA5A5",
+            escape: "#F472B6",
+            function: "#C4B5FD",
+            keyword: "#A78BFA",
+            markup: "#DDD6FE",
+            parameter: "#FDE68A",
+            property: "#F9A8D4",
+            string: "#A7F3D0",
+            type: "#FCD34D",
+            typeParameter: "#67E8F9",
+            variable: "#E8E2F0",
+        },
+    },
+    nord: {
+        light: {
+            comment: "#4C566A",
+            constant: "#B48EAD",
+            escape: "#D08770",
+            function: "#5E81AC",
+            keyword: "#5E81AC",
+            markup: "#5E81AC",
+            parameter: "#2E3440",
+            property: "#2E3440",
+            string: "#587539",
+            type: "#5E81AC",
+            typeParameter: "#5E81AC",
+            variable: "#2E3440",
+        },
+        dark: {
+            comment: "#616E88",
+            constant: "#B48EAD",
+            escape: "#EBCB8B",
+            function: "#88C0D0",
+            keyword: "#81A1C1",
+            markup: "#88C0D0",
+            parameter: "#D8DEE9",
+            property: "#D8DEE9",
+            string: "#A3BE8C",
+            type: "#8FBCBB",
+            typeParameter: "#8FBCBB",
+            variable: "#D8DEE9",
+        },
+    },
+    sunset: {
+        light: {
+            comment: "#8C6E5A",
+            constant: "#B45309",
+            escape: "#BE123C",
+            function: "#C2410C",
+            keyword: "#7C2D12",
+            markup: "#9F1239",
+            parameter: "#78350F",
+            property: "#854D0E",
+            string: "#166534",
+            type: "#4A044E",
+            typeParameter: "#1E40AF",
+            variable: "#21150E",
+        },
+        dark: {
+            comment: "#A8917E",
+            constant: "#FCD34D",
+            escape: "#F472B6",
+            function: "#FDBA74",
+            keyword: "#FB923C",
+            markup: "#FCA5A5",
+            parameter: "#FED7AA",
+            property: "#FBCFE8",
+            string: "#BEF264",
+            type: "#FACC15",
+            typeParameter: "#67E8F9",
+            variable: "#ECE2D8",
+        },
+    },
+    catppuccin: {
+        light: {
+            comment: "#7C7F93",
+            constant: "#FE640B",
+            escape: "#EA76CB",
+            function: "#1E66F5",
+            keyword: "#8839EF",
+            markup: "#1E66F5",
+            parameter: "#E64553",
+            property: "#179299",
+            string: "#40A02B",
+            type: "#DF8E1D",
+            typeParameter: "#04A5E5",
+            variable: "#4C4F69",
+        },
+        dark: {
+            comment: "#9399B2",
+            constant: "#FAB387",
+            escape: "#F5C2E7",
+            function: "#89B4FA",
+            keyword: "#CBA6F7",
+            markup: "#89B4FA",
+            parameter: "#EBA0AC",
+            property: "#94E2D5",
+            string: "#A6E3A1",
+            type: "#F9E2AF",
+            typeParameter: "#89DCEB",
+            variable: "#CDD6F4",
+        },
+    },
+    solarized: {
+        light: {
+            comment: "#93A1A1",
+            constant: "#CB4B16",
+            escape: "#CB4B16",
+            function: "#268BD2",
+            keyword: "#859900",
+            markup: "#268BD2",
+            parameter: "#657B83",
+            property: "#657B83",
+            string: "#2AA198",
+            type: "#CB4B16",
+            typeParameter: "#CB4B16",
+            variable: "#268BD2",
+        },
+        dark: {
+            comment: "#586E75",
+            constant: "#CB4B16",
+            escape: "#CB4B16",
+            function: "#268BD2",
+            keyword: "#859900",
+            markup: "#268BD2",
+            parameter: "#839496",
+            property: "#839496",
+            string: "#2AA198",
+            type: "#CB4B16",
+            typeParameter: "#CB4B16",
+            variable: "#268BD2",
+        },
+    },
+    tokyoNight: {
+        light: {
+            comment: "#888B94",
+            constant: "#965027",
+            escape: "#363C4D",
+            function: "#2959AA",
+            keyword: "#65359D",
+            markup: "#2959AA",
+            parameter: "#8F5E15",
+            property: "#0F4B6E",
+            string: "#385F0D",
+            type: "#006C86",
+            typeParameter: "#006C86",
+            variable: "#343B58",
+        },
+        dark: {
+            comment: "#51597D",
+            constant: "#FF9E64",
+            escape: "#89DDFF",
+            function: "#7AA2F7",
+            keyword: "#BB9AF7",
+            markup: "#7AA2F7",
+            parameter: "#E0AF68",
+            property: "#7DCFFF",
+            string: "#9ECE6A",
+            type: "#0DB9D7",
+            typeParameter: "#0DB9D7",
+            variable: "#C0CAF5",
+        },
+    },
+    gruvbox: {
+        light: {
+            comment: "#928374",
+            constant: "#8F3F71",
+            escape: "#AF3A03",
+            function: "#79740E",
+            keyword: "#9D0006",
+            markup: "#79740E",
+            parameter: "#076678",
+            property: "#427B58",
+            string: "#79740E",
+            type: "#B57614",
+            typeParameter: "#B57614",
+            variable: "#3C3836",
+        },
+        dark: {
+            comment: "#928374",
+            constant: "#D3869B",
+            escape: "#FE8019",
+            function: "#B8BB26",
+            keyword: "#FB4934",
+            markup: "#B8BB26",
+            parameter: "#83A598",
+            property: "#8EC07C",
+            string: "#B8BB26",
+            type: "#FABD2F",
+            typeParameter: "#FABD2F",
+            variable: "#EBDBB2",
+        },
+    },
+    ayu: {
+        light: {
+            comment: "#ADAEB1",
+            constant: "#A37ACC",
+            escape: "#4CBF99",
+            function: "#EBA400",
+            keyword: "#FA8532",
+            markup: "#86B300",
+            parameter: "#A37ACC",
+            property: "#F07171",
+            string: "#86B300",
+            type: "#22A4E6",
+            typeParameter: "#55B4D4",
+            variable: "#5C6166",
+        },
+        dark: {
+            comment: "#5A6673",
+            constant: "#D2A6FF",
+            escape: "#95E6CB",
+            function: "#FFB454",
+            keyword: "#FF8F40",
+            markup: "#AAD94C",
+            parameter: "#D2A6FF",
+            property: "#F07178",
+            string: "#AAD94C",
+            type: "#59C2FF",
+            typeParameter: "#59C2FF",
+            variable: "#BFBDB6",
+        },
+    },
+    nightOwl: {
+        light: {
+            comment: "#989FB1",
+            constant: "#4876D6",
+            escape: "#AA0982",
+            function: "#4876D6",
+            keyword: "#994CC3",
+            markup: "#4876D6",
+            parameter: "#0C969B",
+            property: "#0C969B",
+            string: "#4876D6",
+            type: "#4876D6",
+            typeParameter: "#4876D6",
+            variable: "#403F53",
+        },
+        dark: {
+            comment: "#637777",
+            constant: "#82AAFF",
+            escape: "#F78C6C",
+            function: "#82AAFF",
+            keyword: "#C792EA",
+            markup: "#82B1FF",
+            parameter: "#7FDBCA",
+            property: "#7FDBCA",
+            string: "#ECC48D",
+            type: "#C5E478",
+            typeParameter: "#5F7E97",
+            variable: "#D6DEEB",
+        },
+    },
+    vesper: {
+        light: {
+            comment: "#6E6E6E",
+            constant: "#B5530A",
+            escape: "#595959",
+            function: "#B5530A",
+            keyword: "#595959",
+            markup: "#B5530A",
+            parameter: "#101010",
+            property: "#595959",
+            string: "#0F7A5E",
+            type: "#B5530A",
+            typeParameter: "#B5530A",
+            variable: "#101010",
+        },
+        dark: {
+            comment: "#8B8B8B",
+            constant: "#FFC799",
+            escape: "#A0A0A0",
+            function: "#FFC799",
+            keyword: "#A0A0A0",
+            markup: "#FFC799",
+            parameter: "#FFFFFF",
+            property: "#A0A0A0",
+            string: "#99FFE4",
+            type: "#FFC799",
+            typeParameter: "#FFC799",
+            variable: "#FFFFFF",
+        },
+    },
+    rosePine: {
+        light: {
+            comment: "#9893A5",
+            constant: "#286983",
+            escape: "#286983",
+            function: "#D7827E",
+            keyword: "#286983",
+            markup: "#56949F",
+            parameter: "#907AA9",
+            property: "#56949F",
+            string: "#EA9D34",
+            type: "#56949F",
+            typeParameter: "#56949F",
+            variable: "#575279",
+        },
+        dark: {
+            comment: "#6E6A86",
+            constant: "#31748F",
+            escape: "#31748F",
+            function: "#EBBCBA",
+            keyword: "#31748F",
+            markup: "#9CCFD8",
+            parameter: "#C4A7E7",
+            property: "#9CCFD8",
+            string: "#F6C177",
+            type: "#9CCFD8",
+            typeParameter: "#9CCFD8",
+            variable: "#E0DEF4",
+        },
+    },
+    kanagawa: {
+        light: {
+            comment: "#8A8980",
+            constant: "#CC6D00",
+            escape: "#4E8CA2",
+            function: "#4D699B",
+            keyword: "#624C83",
+            markup: "#CC6D00",
+            parameter: "#5D57A3",
+            property: "#B35B79",
+            string: "#6F894E",
+            type: "#597B75",
+            typeParameter: "#597B75",
+            variable: "#545464",
+        },
+        dark: {
+            comment: "#727169",
+            constant: "#FFA066",
+            escape: "#9CABCA",
+            function: "#7E9CD8",
+            keyword: "#957FB8",
+            markup: "#FFA066",
+            parameter: "#B8B4D0",
+            property: "#7FB4CA",
+            string: "#98BB6C",
+            type: "#7AA89F",
+            typeParameter: "#7AA89F",
+            variable: "#DCD7BA",
+        },
+    },
+    everforest: {
+        light: {
+            comment: "#939F91",
+            constant: "#35A77C",
+            escape: "#F57D26",
+            function: "#8DA101",
+            keyword: "#F85552",
+            markup: "#F57D26",
+            parameter: "#5C6A72",
+            property: "#3A94C5",
+            string: "#8DA101",
+            type: "#DFA000",
+            typeParameter: "#DFA000",
+            variable: "#5C6A72",
+        },
+        dark: {
+            comment: "#859289",
+            constant: "#83C092",
+            escape: "#E69875",
+            function: "#A7C080",
+            keyword: "#E67E80",
+            markup: "#E69875",
+            parameter: "#D3C6AA",
+            property: "#7FBBB3",
+            string: "#A7C080",
+            type: "#DBBC7F",
+            typeParameter: "#DBBC7F",
+            variable: "#D3C6AA",
+        },
+    },
+    synthwave84: {
+        light: {
+            comment: "#5A5F8A",
+            constant: "#A02E22",
+            escape: "#0A6B6A",
+            function: "#0A6B6A",
+            keyword: "#7A5C00",
+            markup: "#1A7A52",
+            parameter: "#9B1F7A",
+            property: "#9B1F7A",
+            string: "#8A3A00",
+            type: "#A00E1A",
+            typeParameter: "#A00E1A",
+            variable: "#9B1F7A",
+        },
+        dark: {
+            comment: "#848BBD",
+            constant: "#F97E72",
+            escape: "#36F9F6",
+            function: "#36F9F6",
+            keyword: "#FEDE5D",
+            markup: "#72F1B8",
+            parameter: "#FF7EDB",
+            property: "#FF7EDB",
+            string: "#FF8B39",
+            type: "#FE4450",
+            typeParameter: "#FE4450",
+            variable: "#FF7EDB",
+        },
+    },
+    claude: {
+        light: {
+            comment: "#8A8780",
+            constant: "#9A3412",
+            escape: "#BE185D",
+            function: "#C2410C",
+            keyword: "#991B1B",
+            markup: "#7C2D12",
+            parameter: "#B45309",
+            property: "#BE123C",
+            string: "#166534",
+            type: "#854D0E",
+            typeParameter: "#0E7490",
+            variable: "#141413",
+        },
+        dark: {
+            comment: "#A09D95",
+            constant: "#F97316",
+            escape: "#EC4899",
+            function: "#FB923C",
+            keyword: "#FCA5A5",
+            markup: "#FCD34D",
+            parameter: "#FED7AA",
+            property: "#FBCFE8",
+            string: "#BEF264",
+            type: "#FACC15",
+            typeParameter: "#67E8F9",
+            variable: "#F4F3EE",
+        },
+    },
+    codex: {
+        light: {
+            comment: "#6E6E80",
+            constant: "#9A3412",
+            escape: "#BE185D",
+            function: "#047857",
+            keyword: "#065F46",
+            markup: "#166534",
+            parameter: "#15803D",
+            property: "#0E7490",
+            string: "#854D0E",
+            type: "#0F766E",
+            typeParameter: "#1D4ED8",
+            variable: "#1A1A1A",
+        },
+        dark: {
+            comment: "#8E8EA0",
+            constant: "#FBA17E",
+            escape: "#F472B6",
+            function: "#6EE7B7",
+            keyword: "#86EFAC",
+            markup: "#A7F3D0",
+            parameter: "#BBF7D0",
+            property: "#67E8F9",
+            string: "#FDE68A",
+            type: "#5EEAD4",
+            typeParameter: "#93C5FD",
+            variable: "#ECECF1",
+        },
+    },
+};
+
 const THEME_DESCRIPTIONS: Record<ThemePreset, string> = {
     default: "The neutral baseline palette shared across Comando.",
     ocean: "Cool blues with a crisp shell and calmer contrast.",
@@ -964,7 +1611,101 @@ function hexToRgba(hex: string, opacity: number): string {
     return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
 }
 
-function createThemeTokens(colors: ThemeColors, isDark: boolean): ThemeTokens {
+// Minimum WCAG AA contrast for body text.
+const MIN_AA_CONTRAST = 4.5;
+
+function hexChannels(hex: string): readonly [number, number, number] {
+    const normalized = hex.replace("#", "");
+    return [
+        Number.parseInt(normalized.slice(0, 2), 16),
+        Number.parseInt(normalized.slice(2, 4), 16),
+        Number.parseInt(normalized.slice(4, 6), 16),
+    ];
+}
+
+function channelsToHex(
+    channels: readonly [number, number, number],
+): string {
+    const clamp = (value: number) =>
+        Math.max(0, Math.min(255, Math.round(value)))
+            .toString(16)
+            .padStart(2, "0")
+            .toUpperCase();
+    return `#${clamp(channels[0])}${clamp(channels[1])}${clamp(channels[2])}`;
+}
+
+function relativeLuminance(hex: string): number {
+    const [red, green, blue] = hexChannels(hex).map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.03928
+            ? normalized / 12.92
+            : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function contrastRatio(a: string, b: string): number {
+    const aLum = relativeLuminance(a);
+    const bLum = relativeLuminance(b);
+    const lighter = Math.max(aLum, bLum);
+    const darker = Math.min(aLum, bLum);
+    return (lighter + 0.05) / (darker + 0.05);
+}
+
+// Shift a color toward the target contrast against `background` by moving it
+// away from the background's luminance. Preserves hue/saturation by scaling
+// RGB channels proportionally.
+function boostContrast(color: string, background: string): string {
+    if (contrastRatio(color, background) >= MIN_AA_CONTRAST) {
+        return color;
+    }
+    const bgLum = relativeLuminance(background);
+    const channels = hexChannels(color);
+    const shouldDarken = bgLum > 0.5;
+    // Try 20 increasing-intensity steps; stop at the first that clears AA.
+    for (let step = 1; step <= 20; step += 1) {
+        const factor = shouldDarken ? 1 - step * 0.05 : 1 + step * 0.08;
+        const shifted = channels.map((channel) => {
+            if (shouldDarken) {
+                return channel * factor;
+            }
+            // Lighten by lerping toward white.
+            return channel + (255 - channel) * (step * 0.06);
+        }) as [number, number, number];
+        const candidate = channelsToHex(shifted);
+        if (contrastRatio(candidate, background) >= MIN_AA_CONTRAST) {
+            return candidate;
+        }
+    }
+    // Fallback: pick pure black or white depending on background luminance.
+    return bgLum > 0.5 ? "#000000" : "#FFFFFF";
+}
+
+function applyCodeContrastBoost(
+    anchors: ComandoCodeColorAnchors,
+    background: string,
+): ComandoCodeColorAnchors {
+    return {
+        comment: boostContrast(anchors.comment, background),
+        constant: boostContrast(anchors.constant, background),
+        escape: boostContrast(anchors.escape, background),
+        function: boostContrast(anchors.function, background),
+        keyword: boostContrast(anchors.keyword, background),
+        markup: boostContrast(anchors.markup, background),
+        parameter: boostContrast(anchors.parameter, background),
+        property: boostContrast(anchors.property, background),
+        string: boostContrast(anchors.string, background),
+        type: boostContrast(anchors.type, background),
+        typeParameter: boostContrast(anchors.typeParameter, background),
+        variable: boostContrast(anchors.variable, background),
+    };
+}
+
+function createThemeTokens(
+    colors: ThemeColors,
+    code: ComandoCodeColorAnchors,
+    isDark: boolean,
+): ThemeTokens {
     return {
         accent: colors.accent,
         accentSoft: hexToRgba(colors.accent, isDark ? 0.16 : 0.12),
@@ -979,6 +1720,7 @@ function createThemeTokens(colors: ThemeColors, isDark: boolean): ThemeTokens {
         border: colors.border,
         borderStrong: colors.border,
         borderSubtle: hexToRgba(colors.border, isDark ? 0.45 : 0.35),
+        code,
         editor: colors.bgPrimary,
         editorText: colors.textPrimary,
         selection: hexToRgba(colors.accent, isDark ? 0.2 : 0.12),
@@ -988,13 +1730,24 @@ function createThemeTokens(colors: ThemeColors, isDark: boolean): ThemeTokens {
     };
 }
 
-function getThemeTokens(preset: ThemePreset, isDark: boolean): ThemeTokens {
+function getThemeTokens(
+    preset: ThemePreset,
+    isDark: boolean,
+    boostCodeContrast: boolean,
+): ThemeTokens {
     const palette = THEME_PALETTES[preset];
-    return createThemeTokens(isDark ? palette.dark : palette.light, isDark);
+    const colors = isDark ? palette.dark : palette.light;
+    const codePalette = CODE_PALETTES[preset];
+    const rawCode = isDark ? codePalette.dark : codePalette.light;
+    const code = boostCodeContrast
+        ? applyCodeContrastBoost(rawCode, colors.bgPrimary)
+        : rawCode;
+    return createThemeTokens(colors, code, isDark);
 }
 
 export function getDefaultAppAppearance(): AppAppearanceSettings {
     return {
+        boostCodeContrast: true,
         fileTreeScale: FILE_TREE_SCALE_DEFAULT,
         themeMode: "system",
         themePreset: "default",
@@ -1050,6 +1803,8 @@ export function resolveAppearance(
     const defaults = getDefaultAppAppearance();
 
     return {
+        boostCodeContrast:
+            appAppearance?.boostCodeContrast ?? defaults.boostCodeContrast,
         fileTreeScale: clampFileTreeScale(
             appAppearance?.fileTreeScale ?? defaults.fileTreeScale,
         ),
@@ -1158,7 +1913,11 @@ export function applyAppearance(
     systemIsDark: boolean,
 ): void {
     const isDark = resolveIsDark(appearance.themeMode, systemIsDark);
-    const palette = getThemeTokens(appearance.themePreset, isDark);
+    const palette = getThemeTokens(
+        appearance.themePreset,
+        isDark,
+        appearance.boostCodeContrast,
+    );
     const root = document.documentElement;
 
     root.classList.toggle("dark", isDark);
@@ -1181,6 +1940,21 @@ export function applyAppearance(
     root.style.setProperty("--color-accent-strong", palette.accentStrong);
     root.style.setProperty("--color-selection", palette.selection);
     root.style.setProperty("--shadow-soft", palette.shadowSoft);
+    root.style.setProperty("--code-color-comment", palette.code.comment);
+    root.style.setProperty("--code-color-constant", palette.code.constant);
+    root.style.setProperty("--code-color-escape", palette.code.escape);
+    root.style.setProperty("--code-color-function", palette.code.function);
+    root.style.setProperty("--code-color-keyword", palette.code.keyword);
+    root.style.setProperty("--code-color-markup", palette.code.markup);
+    root.style.setProperty("--code-color-parameter", palette.code.parameter);
+    root.style.setProperty("--code-color-property", palette.code.property);
+    root.style.setProperty("--code-color-string", palette.code.string);
+    root.style.setProperty("--code-color-type", palette.code.type);
+    root.style.setProperty(
+        "--code-color-typeparameter",
+        palette.code.typeParameter,
+    );
+    root.style.setProperty("--code-color-variable", palette.code.variable);
     root.style.setProperty(
         "--file-tree-scale",
         String(clampFileTreeScale(appearance.fileTreeScale)),

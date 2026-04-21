@@ -12,6 +12,7 @@ describe("SettingsService", () => {
 
         service.saveSnapshot({
             appearance: {
+                boostCodeContrast: true,
                 fileTreeScale: 1.1,
                 themeMode: "dark",
                 themePreset: "ocean",
@@ -35,6 +36,7 @@ describe("SettingsService", () => {
             ai: createEmptyAiSettings(),
             aiChat: createDefaultAiChatSettings(),
             appearance: {
+                boostCodeContrast: true,
                 fileTreeScale: 1.1,
                 themeMode: "dark",
                 themePreset: "ocean",
@@ -90,6 +92,7 @@ describe("SettingsService", () => {
             ai: createEmptyAiSettings(),
             aiChat: createDefaultAiChatSettings(),
             appearance: {
+                boostCodeContrast: true,
                 fileTreeScale: 1,
                 themeMode: "system",
                 themePreset: "default",
@@ -234,6 +237,7 @@ describe("SettingsService", () => {
 
         service.saveSnapshot({
             appearance: {
+                boostCodeContrast: false,
                 fileTreeScale: 0.95,
                 themeMode: "dark",
                 themePreset: "tokyoNight",
@@ -251,6 +255,7 @@ describe("SettingsService", () => {
         });
 
         expect(service.loadSnapshot().appearance).toEqual({
+            boostCodeContrast: false,
             fileTreeScale: 0.95,
             themeMode: "dark",
             themePreset: "tokyoNight",

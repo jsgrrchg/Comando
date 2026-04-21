@@ -64,6 +64,7 @@ const GEMINI_HAS_GEMINI_API_KEY_KEY = "ai.gemini.has_gemini_api_key";
 const GEMINI_HAS_GOOGLE_API_KEY_KEY = "ai.gemini.has_google_api_key";
 const KILO_AUTH_INVALIDATED_AT_KEY = "ai.kilo.auth_invalidated_at_ms";
 const KILO_BINARY_PATH_KEY = "ai.kilo.binary_path";
+const APP_BOOST_CODE_CONTRAST_KEY = "appearance.boost_code_contrast";
 const APP_FILE_TREE_SCALE_KEY = "appearance.file_tree_scale";
 const APP_THEME_MODE_KEY = "appearance.theme_mode";
 const APP_THEME_PRESET_KEY = "appearance.theme_preset";
@@ -243,6 +244,8 @@ export class SettingsService {
 
     loadAppAppearanceSettings(): AppAppearanceSettings {
         return {
+            boostCodeContrast:
+                this.#loadBooleanSetting(APP_BOOST_CODE_CONTRAST_KEY) ?? true,
             fileTreeScale: this.#normalizeFileTreeScale(
                 this.#loadNumberSetting(APP_FILE_TREE_SCALE_KEY),
             ),
@@ -259,6 +262,10 @@ export class SettingsService {
     }
 
     saveAppAppearanceSettings(settings: AppAppearanceSettings): void {
+        this.#saveBooleanSetting(
+            APP_BOOST_CODE_CONTRAST_KEY,
+            settings.boostCodeContrast,
+        );
         this.#saveSetting(
             APP_FILE_TREE_SCALE_KEY,
             String(this.#normalizeFileTreeScale(settings.fileTreeScale)),

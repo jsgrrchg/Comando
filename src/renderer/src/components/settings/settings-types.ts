@@ -24,12 +24,14 @@ export interface ThemePresetOption {
 }
 
 export interface SettingsThemeControlState {
+    readonly boostCodeContrast: boolean;
     readonly fileTreeScale?: number;
     readonly mode: ThemeMode;
     readonly presetId: string;
     readonly presets: readonly ThemePresetOption[];
     readonly zoomFactor?: number;
     readonly disabled?: boolean;
+    readonly onBoostCodeContrastChange?: (enabled: boolean) => void;
     readonly onFileTreeScaleChange?: (fileTreeScale: number) => void;
     readonly onModeChange?: (mode: ThemeMode) => void;
     readonly onPresetChange?: (presetId: string) => void;

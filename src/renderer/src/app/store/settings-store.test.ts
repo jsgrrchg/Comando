@@ -31,6 +31,7 @@ function createAppearanceSettings(
     overrides: Partial<AppAppearanceSettings> = {},
 ): AppAppearanceSettings {
     return {
+        boostCodeContrast: true,
         fileTreeScale: 1,
         themeMode: "system",
         themePreset: "default",
