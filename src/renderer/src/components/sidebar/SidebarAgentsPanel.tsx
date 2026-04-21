@@ -444,6 +444,39 @@ export function SidebarAgentsPanel({
     }, [tabsById]);
 
     const aiSessions = useAiStore((state) => state.sessions);
+    const workingOrderRef = useRef<Map<string, number>>(new Map());
+    const workingCounterRef = useRef(0);
+    const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
+
+    useEffect(() => {
+        const map = workingOrderRef.current;
+        let changed = false;
+
+        for (const [sessionId, entry] of Object.entries(aiSessions)) {
+            const working = isSessionWorking(entry);
+            const tracked = map.has(sessionId);
+            if (working && !tracked) {
+                workingCounterRef.current += 1;
+                map.set(sessionId, workingCounterRef.current);
+                changed = true;
+            } else if (!working && tracked) {
+                map.delete(sessionId);
+                changed = true;
+            }
+        }
+
+        for (const trackedId of Array.from(map.keys())) {
+            if (!(trackedId in aiSessions)) {
+                map.delete(trackedId);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            setWorkingOrderRevision((value) => value + 1);
+        }
+    }, [aiSessions]);
+
     const unpinnedSessions = useMemo(
         () => filteredSessions.filter((session) => !isSessionPinned(session)),
         [filteredSessions],
@@ -452,15 +485,24 @@ export function SidebarAgentsPanel({
         const list = unpinnedSessions.filter((session) =>
             openSessionIds.has(session.sessionId),
         );
+        const workingOrder = workingOrderRef.current;
         return [...list].sort((a, b) => {
-            const aWorking = isSessionWorking(aiSessions[a.sessionId]);
-            const bWorking = isSessionWorking(aiSessions[b.sessionId]);
-            if (aWorking === bWorking) {
-                return 0;
+            const aOrder = workingOrder.get(a.sessionId);
+            const bOrder = workingOrder.get(b.sessionId);
+            const aWorking = aOrder !== undefined;
+            const bWorking = bOrder !== undefined;
+            if (aWorking && bWorking) {
+                // Freeze working sessions in the order they entered the working state.
+                return aOrder - bOrder;
             }
-            return aWorking ? -1 : 1;
+            if (aWorking !== bWorking) {
+                return aWorking ? -1 : 1;
+            }
+            return 0;
         });
-    }, [aiSessions, openSessionIds, unpinnedSessions]);
+        // workingOrderRevision keeps this memo in sync with the ref-backed map.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openSessionIds, unpinnedSessions, workingOrderRevision]);
     const otherSessions = useMemo(
         () =>
             unpinnedSessions.filter(
