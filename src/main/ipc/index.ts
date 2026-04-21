@@ -80,6 +80,7 @@ import {
     type SettingsSnapshot,
     type SystemTheme,
     type ThemeMode,
+    type TsconfigResolutionSnapshot,
     type WindowContextSnapshot,
     type WriteTerminalInput,
     type WorkspaceSnapshot,
@@ -120,6 +121,10 @@ import {
     getAppUpdateState,
     installAppUpdateAndRestart,
 } from "@main/updater";
+import {
+    createEmptyTsconfigResolution,
+    resolveTsconfigForPath,
+} from "@main/tsconfig/resolve";
 import { loadAppChangelog } from "@main/changelog";
 import {
     getAppPrivacyAccessState,
@@ -163,6 +168,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
     ipcMain.removeHandler(IPC_CHANNELS.setTrafficLightVisibility);
     ipcMain.removeHandler(IPC_CHANNELS.setNativeAppearance);
+    ipcMain.removeHandler(IPC_CHANNELS.resolveTsconfigForPath);
     ipcMain.removeHandler(IPC_CHANNELS.getGitRepositorySnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.listGitBranches);
     ipcMain.removeHandler(IPC_CHANNELS.listGitWorktrees);
@@ -403,6 +409,32 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 return;
             }
             nativeTheme.themeSource = mode;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.resolveTsconfigForPath,
+        async (event, filePath: string): Promise<TsconfigResolutionSnapshot> => {
+            const context = windowRegistry.getContextByWebContents(
+                event.sender,
+            );
+            if (!context?.projectId) {
+                return createEmptyTsconfigResolution(null);
+            }
+
+            try {
+                return await resolveTsconfigForPath({
+                    filePath,
+                    projectRootPath: options.projectService.getProjectRootPath(
+                        context.projectId,
+                        context.worktreeId ?? null,
+                    ),
+                });
+            } catch (error) {
+                debugBenignError("ipc.resolveTsconfigForPath", error);
+                return createEmptyTsconfigResolution(null, [
+                    "The active project tsconfig could not be resolved.",
+                ]);
+            }
         },
     );
     ipcMain.handle(
@@ -837,7 +869,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     error instanceof Error
                         ? error.message
                         : "Could not clone the repository.";
-                throw new Error(message);
+                throw new Error(message, { cause: error });
             }
 
             const result =

@@ -3,114 +3,96 @@ import {
     INITIAL,
     Registry,
     type IGrammar,
+    type IGrammarConfiguration,
     type IRawGrammar,
+    type RegistryOptions,
     type StateStack,
 } from "vscode-textmate";
 import { OnigScanner, OnigString, loadWASM } from "vscode-oniguruma";
 
 import onigWasmUrl from "vscode-oniguruma/release/onig.wasm?url";
 
+import { MONACO_MAX_TOKENIZATION_LINE_LENGTH } from "./monacoPerformance";
+import {
+    TEXT_MATE_GRAMMAR_DEFINITIONS,
+    TEXT_MATE_INJECTION_DEFINITIONS,
+    TEXT_MATE_LANGUAGE_DEFINITIONS,
+    type TextMateGrammarDefinition,
+    type TextMateLanguageId,
+    type TextMateTokenType,
+} from "./monacoTextmateLanguages";
+import type { ComandoTextMateTheme } from "./monacoTextmateTheme";
+
 type MonacoNamespace = typeof import("monaco-editor");
 
-type TextMateGrammarModule = {
-    readonly default: readonly unknown[];
-};
+const TEXT_MATE_LANGUAGE_IDS = TEXT_MATE_LANGUAGE_DEFINITIONS.map(
+    (definition) => definition.languageId,
+);
 
-const TEXT_MATE_LANGUAGE_IDS = [
-    "astro",
-    "cmake",
-    "dockerfile",
-    "hcl",
-    "python",
-    "ruby",
-    "rust",
-    "shell",
-] as const;
-
-type TextMateLanguageId = (typeof TEXT_MATE_LANGUAGE_IDS)[number];
-
-const TEXT_MATE_LANGUAGE_ALIASES: Readonly<Record<string, TextMateLanguageId>> = {
-    bash: "shell",
-    docker: "dockerfile",
-    fish: "shell",
-    py: "python",
-    rb: "ruby",
-    rs: "rust",
-    sh: "shell",
-    shellscript: "shell",
-    tf: "hcl",
-    terraform: "hcl",
-    tfvars: "hcl",
-    zsh: "shell",
-};
-
-type TextMateLanguageDefinition = {
-    readonly canonicalLanguageId: TextMateLanguageId;
-    readonly loadModule: () => Promise<TextMateGrammarModule>;
-    readonly scopeName: string;
-};
-
-const TEXT_MATE_LANGUAGE_DEFINITIONS: Readonly<
-    Record<TextMateLanguageId, TextMateLanguageDefinition>
-> = {
-    astro: {
-        canonicalLanguageId: "astro",
-        loadModule: () => import("@shikijs/langs/astro"),
-        scopeName: "source.astro",
-    },
-    cmake: {
-        canonicalLanguageId: "cmake",
-        loadModule: () => import("@shikijs/langs/cmake"),
-        scopeName: "source.cmake",
-    },
-    dockerfile: {
-        canonicalLanguageId: "dockerfile",
-        loadModule: () => import("@shikijs/langs/dockerfile"),
-        scopeName: "source.dockerfile",
-    },
-    hcl: {
-        canonicalLanguageId: "hcl",
-        loadModule: () => import("@shikijs/langs/hcl"),
-        scopeName: "source.hcl",
-    },
-    python: {
-        canonicalLanguageId: "python",
-        loadModule: () => import("@shikijs/langs/python"),
-        scopeName: "source.python",
-    },
-    ruby: {
-        canonicalLanguageId: "ruby",
-        loadModule: () => import("@shikijs/langs/ruby"),
-        scopeName: "source.ruby",
-    },
-    rust: {
-        canonicalLanguageId: "rust",
-        loadModule: () => import("@shikijs/langs/rust"),
-        scopeName: "source.rust",
-    },
-    shell: {
-        canonicalLanguageId: "shell",
-        loadModule: () => import("@shikijs/langs/shellscript"),
-        scopeName: "source.shell",
-    },
-};
-
-const textMateDefinitions = Object.values(TEXT_MATE_LANGUAGE_DEFINITIONS);
-const primaryScopeToLanguageId = new Map(
-    textMateDefinitions.map((definition) => [
-        definition.scopeName,
-        definition.canonicalLanguageId,
+const textMateLanguageDefinitionsById = new Map<
+    TextMateLanguageId,
+    TextMateGrammarDefinition
+>(
+    TEXT_MATE_LANGUAGE_DEFINITIONS.map((definition) => [
+        definition.languageId,
+        definition,
     ]),
 );
+const textMateLanguageAliases = new Map<string, TextMateLanguageId>(
+    TEXT_MATE_LANGUAGE_DEFINITIONS.flatMap((definition) =>
+        definition.aliases.map((alias) => [
+            normalizeLanguageId(alias),
+            definition.languageId,
+        ]),
+    ),
+);
+const textMateGrammarDefinitionsByScope = new Map<
+    string,
+    TextMateGrammarDefinition
+>(
+    TEXT_MATE_GRAMMAR_DEFINITIONS.map((definition) => [
+        definition.scopeName,
+        definition,
+    ]),
+);
+const injectionScopeNamesByTargetScope = new Map<string, string[]>();
+
+for (const definition of TEXT_MATE_INJECTION_DEFINITIONS) {
+    for (const targetScopeName of definition.injectTo ?? []) {
+        const scopeNames =
+            injectionScopeNamesByTargetScope.get(targetScopeName) ?? [];
+        scopeNames.push(definition.scopeName);
+        injectionScopeNamesByTargetScope.set(targetScopeName, scopeNames);
+    }
+}
+
+const standardTokenTypeByName = {
+    comment: 1,
+    other: 0,
+    regex: 3,
+    string: 2,
+} as const satisfies Record<TextMateTokenType, number>;
+
+const monacoTextMateLanguageIds: Readonly<Record<string, string>> = {
+    jsx: "javascriptreact",
+    tsx: "typescriptreact",
+};
+
 const rawGrammarCache = new Map<string, IRawGrammar>();
-const grammarModuleLoadCache = new Map<TextMateLanguageId, Promise<void>>();
+const configuredGrammarLoadCache = new Map<string, Promise<IGrammar>>();
+const grammarModuleLoadCache = new Map<string, Promise<void>>();
+const encodedLanguageIds = new Map<string, number>();
 const textMateProviderInstallCache = new Map<string, Promise<boolean>>();
+const textMateProviderDisposables = new Map<string, { dispose(): void }>();
 
 let onigLibPromise: Promise<{
     readonly createOnigScanner: (sources: string[]) => OnigScanner;
     readonly createOnigString: (source: string) => OnigString;
 }> | null = null;
 let textMateRegistryPromise: Promise<Registry> | null = null;
+let activeMonacoNamespace: MonacoNamespace | null = null;
+let currentTextMateTheme: ComandoTextMateTheme | null = null;
+let textMateThemeVersion = 0;
 let didRegisterHclFallback = false;
 let didRegisterTextMateLanguageHooks = false;
 
@@ -172,37 +154,51 @@ const hclLanguageConfiguration: monaco.languages.LanguageConfiguration = {
 };
 
 class TextMateTokenizerState implements monaco.languages.IState {
-    public constructor(private readonly stateStack: StateStack) {}
+    public constructor(
+        private readonly stateStack: StateStack,
+        private readonly themeVersion = textMateThemeVersion,
+    ) {}
 
     public clone(): TextMateTokenizerState {
-        return new TextMateTokenizerState(this.stateStack);
+        return new TextMateTokenizerState(this.stateStack, this.themeVersion);
     }
 
     public equals(other: monaco.languages.IState): boolean {
         return (
             other instanceof TextMateTokenizerState &&
-            other.stateStack === this.stateStack
+            other.stateStack === this.stateStack &&
+            other.themeVersion === this.themeVersion
         );
     }
 
     public get ruleStack(): StateStack {
         return this.stateStack;
     }
+
+    public get isCurrentThemeVersion(): boolean {
+        return this.themeVersion === textMateThemeVersion;
+    }
 }
 
 function getTextMateLanguageDefinition(
     languageId: string,
-): TextMateLanguageDefinition | null {
+): TextMateGrammarDefinition | null {
     const resolvedLanguageId = resolveTextMateLanguageId(languageId);
     if (!resolvedLanguageId) {
         return null;
     }
 
-    return TEXT_MATE_LANGUAGE_DEFINITIONS[resolvedLanguageId];
+    return textMateLanguageDefinitionsById.get(resolvedLanguageId) ?? null;
 }
 
 function normalizeLanguageId(languageId: string): string {
     return languageId.trim().toLowerCase();
+}
+
+function normalizeMonacoTextMateLanguageId(languageId: string): string {
+    const normalizedLanguageId = normalizeLanguageId(languageId);
+
+    return monacoTextMateLanguageIds[normalizedLanguageId] ?? normalizedLanguageId;
 }
 
 function resolveTextMateLanguageId(languageId: string): TextMateLanguageId | null {
@@ -212,80 +208,239 @@ function resolveTextMateLanguageId(languageId: string): TextMateLanguageId | nul
         return null;
     }
 
-    return (
-        TEXT_MATE_LANGUAGE_DEFINITIONS[
-            normalizedLanguageId as TextMateLanguageId
-        ]?.canonicalLanguageId ??
-        TEXT_MATE_LANGUAGE_ALIASES[normalizedLanguageId] ??
-        null
+    if (
+        textMateLanguageDefinitionsById.has(
+            normalizedLanguageId as TextMateLanguageId,
+        )
+    ) {
+        return normalizedLanguageId as TextMateLanguageId;
+    }
+
+    return textMateLanguageAliases.get(normalizedLanguageId) ?? null;
+}
+
+function getEncodedLanguageId(languageId: string): number {
+    const normalizedLanguageId = normalizeLanguageId(languageId);
+    const monacoEncodedLanguageId =
+        activeMonacoNamespace?.languages.getEncodedLanguageId(
+            normalizedLanguageId,
+        );
+
+    if (
+        typeof monacoEncodedLanguageId === "number" &&
+        monacoEncodedLanguageId > 0
+    ) {
+        encodedLanguageIds.set(normalizedLanguageId, monacoEncodedLanguageId);
+        return monacoEncodedLanguageId;
+    }
+
+    const cachedLanguageId = encodedLanguageIds.get(normalizedLanguageId);
+    if (cachedLanguageId) {
+        return cachedLanguageId;
+    }
+
+    const encodedLanguageId = encodedLanguageIds.size + 1;
+    encodedLanguageIds.set(normalizedLanguageId, encodedLanguageId);
+    return encodedLanguageId;
+}
+
+function getTextMateInjectionScopeNames(scopeName: string): string[] | undefined {
+    const scopeNames = injectionScopeNamesByTargetScope.get(scopeName);
+    return scopeNames ? [...scopeNames] : undefined;
+}
+
+function getTextMateInjectionDefinitions(
+    scopeName: string,
+): readonly TextMateGrammarDefinition[] {
+    const injectionScopeNames = getTextMateInjectionScopeNames(scopeName);
+    if (!injectionScopeNames) {
+        return [];
+    }
+
+    return injectionScopeNames.flatMap((injectionScopeName) => {
+        const definition = textMateGrammarDefinitionsByScope.get(injectionScopeName);
+        return definition ? [definition] : [];
+    });
+}
+
+function mapEmbeddedLanguages(
+    embeddedLanguages: TextMateGrammarDefinition["embeddedLanguages"],
+): IGrammarConfiguration["embeddedLanguages"] | undefined {
+    if (!embeddedLanguages) {
+        return undefined;
+    }
+
+    return Object.fromEntries(
+        Object.entries(embeddedLanguages).map(([scopeName, languageId]) => [
+            scopeName,
+            getEncodedLanguageId(normalizeMonacoTextMateLanguageId(languageId)),
+        ]),
     );
 }
 
-function pickMonacoScope(scopes: readonly string[]): string {
-    for (let index = scopes.length - 1; index >= 0; index -= 1) {
-        const scope = scopes[index];
-        if (
-            scope.startsWith("meta.") ||
-            scope.startsWith("source.") ||
-            scope.startsWith("text.")
-        ) {
-            continue;
-        }
-
-        return scope;
+function mapTokenTypes(
+    tokenTypes: TextMateGrammarDefinition["tokenTypes"],
+): IGrammarConfiguration["tokenTypes"] | undefined {
+    if (!tokenTypes) {
+        return undefined;
     }
 
-    return scopes[scopes.length - 1] ?? "";
+    return Object.fromEntries(
+        Object.entries(tokenTypes).map(([selector, tokenType]) => [
+            selector,
+            standardTokenTypeByName[tokenType],
+        ]),
+    ) as IGrammarConfiguration["tokenTypes"];
 }
 
-function createTextMateTokensProvider(
-    grammar: IGrammar,
-): monaco.languages.TokensProvider {
+function createTextMateGrammarConfiguration(
+    definition: TextMateGrammarDefinition,
+): IGrammarConfiguration {
     return {
-        getInitialState: () => new TextMateTokenizerState(INITIAL),
-        tokenize: (line, state) => {
+        balancedBracketSelectors: definition.balancedBracketScopes
+            ? [...definition.balancedBracketScopes]
+            : undefined,
+        embeddedLanguages: mapEmbeddedLanguages(definition.embeddedLanguages),
+        tokenTypes: mapTokenTypes(definition.tokenTypes),
+        unbalancedBracketSelectors: definition.unbalancedBracketScopes
+            ? [...definition.unbalancedBracketScopes]
+            : undefined,
+    };
+}
+
+function createTextMateEncodedTokensProvider(
+    grammar: IGrammar,
+): monaco.languages.EncodedTokensProvider {
+    return {
+        getInitialState: () =>
+            new TextMateTokenizerState(INITIAL, textMateThemeVersion),
+        tokenizeEncoded: (line, state) => {
             const currentState =
-                state instanceof TextMateTokenizerState
+                state instanceof TextMateTokenizerState &&
+                state.isCurrentThemeVersion
                     ? state.ruleStack
                     : INITIAL;
-            const lineTokens = grammar.tokenizeLine(line, currentState);
+            if (line.length > MONACO_MAX_TOKENIZATION_LINE_LENGTH) {
+                return {
+                    endState: new TextMateTokenizerState(
+                        currentState,
+                        textMateThemeVersion,
+                    ),
+                    tokens: new Uint32Array([0, 0]),
+                };
+            }
+            const lineTokens = grammar.tokenizeLine2(line, currentState);
 
             return {
-                endState: new TextMateTokenizerState(lineTokens.ruleStack),
-                tokens: lineTokens.tokens.map((token) => ({
-                    scopes: pickMonacoScope(token.scopes),
-                    startIndex: token.startIndex,
-                })),
+                endState: new TextMateTokenizerState(
+                    lineTokens.ruleStack,
+                    textMateThemeVersion,
+                ),
+                tokens: lineTokens.tokens,
             };
         },
     };
 }
 
+function refreshTextMateModelsForLanguage(
+    monacoNsps: MonacoNamespace,
+    languageId: string,
+) {
+    for (const model of monacoNsps.editor.getModels()) {
+        if (normalizeLanguageId(model.getLanguageId()) !== languageId) {
+            continue;
+        }
+
+        monacoNsps.editor.setModelLanguage(model, languageId);
+    }
+}
+
+function getRawGrammarScopeName(grammar: unknown): string | null {
+    if (
+        typeof grammar === "object" &&
+        grammar !== null &&
+        "scopeName" in grammar &&
+        typeof grammar.scopeName === "string"
+    ) {
+        return grammar.scopeName;
+    }
+
+    return null;
+}
+
+function getPerformanceNow(): number | null {
+    return typeof performance === "undefined" ? null : performance.now();
+}
+
+function logTextMatePerformance(
+    label: string,
+    startedAt: number | null,
+): void {
+    if (!import.meta.env.DEV || startedAt === null) {
+        return;
+    }
+
+    console.debug(
+        `[monaco-textmate][perf] ${label} ${(performance.now() - startedAt).toFixed(1)}ms`,
+    );
+}
+
 async function loadTextMateGrammarModule(
-    languageId: TextMateLanguageId,
+    definition: TextMateGrammarDefinition,
 ): Promise<void> {
-    const cachedLoader = grammarModuleLoadCache.get(languageId);
+    const cachedLoader = grammarModuleLoadCache.get(definition.shikiLanguageId);
+
     if (cachedLoader) {
-        return cachedLoader;
+        await cachedLoader;
+        if (!rawGrammarCache.has(definition.scopeName)) {
+            throw new Error(
+                `TextMate grammar module "${definition.shikiLanguageId}" did not expose "${definition.scopeName}".`,
+            );
+        }
+        return;
     }
 
     const loaderPromise = (async () => {
-        const definition = TEXT_MATE_LANGUAGE_DEFINITIONS[languageId];
-        const grammarModule = await definition.loadModule();
-
-        for (const grammar of grammarModule.default as readonly IRawGrammar[]) {
-            rawGrammarCache.set(grammar.scopeName, grammar);
-        }
-
-        if (!rawGrammarCache.has(definition.scopeName)) {
-            throw new Error(
-                `TextMate grammar module "${languageId}" did not expose "${definition.scopeName}".`,
+        try {
+            const startedAt = getPerformanceNow();
+            const grammarModule = await definition.loadModule();
+            logTextMatePerformance(
+                `module ${definition.shikiLanguageId}`,
+                startedAt,
             );
+
+            for (const grammar of grammarModule.default) {
+                const scopeName = getRawGrammarScopeName(grammar);
+                if (scopeName && !rawGrammarCache.has(scopeName)) {
+                    rawGrammarCache.set(scopeName, grammar as IRawGrammar);
+                }
+            }
+        } catch (error) {
+            grammarModuleLoadCache.delete(definition.shikiLanguageId);
+            throw error;
         }
     })();
 
-    grammarModuleLoadCache.set(languageId, loaderPromise);
-    return loaderPromise;
+    grammarModuleLoadCache.set(definition.shikiLanguageId, loaderPromise);
+    await loaderPromise;
+
+    if (!rawGrammarCache.has(definition.scopeName)) {
+        throw new Error(
+            `TextMate grammar module "${definition.shikiLanguageId}" did not expose "${definition.scopeName}".`,
+        );
+    }
+}
+
+async function loadTextMateGrammarsForDefinition(
+    definition: TextMateGrammarDefinition,
+): Promise<void> {
+    await loadTextMateGrammarModule(definition);
+    await Promise.all(
+        getTextMateInjectionDefinitions(definition.scopeName).map(
+            (injectionDefinition) =>
+                loadTextMateGrammarModule(injectionDefinition),
+        ),
+    );
 }
 
 async function loadRawGrammarByScope(
@@ -296,12 +451,12 @@ async function loadRawGrammarByScope(
         return cachedGrammar;
     }
 
-    const primaryLanguageId = primaryScopeToLanguageId.get(scopeName);
-    if (!primaryLanguageId) {
+    const definition = textMateGrammarDefinitionsByScope.get(scopeName);
+    if (!definition) {
         return null;
     }
 
-    await loadTextMateGrammarModule(primaryLanguageId);
+    await loadTextMateGrammarModule(definition);
     return rawGrammarCache.get(scopeName) ?? null;
 }
 
@@ -311,24 +466,33 @@ async function loadOnigLib() {
     }
 
     onigLibPromise = (async () => {
-        const response = await fetch(onigWasmUrl);
-        if (!response.ok) {
-            throw new Error(
-                `Failed to load Oniguruma WASM (${response.status} ${response.statusText}).`,
-            );
+        const startedAt = getPerformanceNow();
+        try {
+            const response = await fetch(onigWasmUrl);
+            if (!response.ok) {
+                throw new Error(
+                    `Failed to load Oniguruma WASM (${response.status} ${response.statusText}).`,
+                );
+            }
+
+            const wasmBytes = await response.arrayBuffer();
+            await loadWASM(wasmBytes);
+            logTextMatePerformance("oniguruma wasm", startedAt);
+
+            return {
+                createOnigScanner(sources: string[]) {
+                    return new OnigScanner(sources);
+                },
+                createOnigString(source: string) {
+                    return new OnigString(source);
+                },
+            };
+        } catch (error) {
+            onigLibPromise = null;
+            throw new Error("Failed to initialize Oniguruma for TextMate.", {
+                cause: error,
+            });
         }
-
-        const wasmBytes = await response.arrayBuffer();
-        await loadWASM(wasmBytes);
-
-        return {
-            createOnigScanner(sources: string[]) {
-                return new OnigScanner(sources);
-            },
-            createOnigString(source: string) {
-                return new OnigString(source);
-            },
-        };
     })();
 
     return onigLibPromise;
@@ -339,14 +503,67 @@ async function getTextMateRegistry(): Promise<Registry> {
         return textMateRegistryPromise;
     }
 
+    const registryOptions: RegistryOptions = {
+        getInjections: getTextMateInjectionScopeNames,
+        loadGrammar: loadRawGrammarByScope,
+        onigLib: loadOnigLib(),
+    };
+
+    if (currentTextMateTheme) {
+        registryOptions.theme = currentTextMateTheme.rawTheme;
+        registryOptions.colorMap = [...currentTextMateTheme.indexedColorMap];
+    }
+
     textMateRegistryPromise = Promise.resolve(
-        new Registry({
-            loadGrammar: loadRawGrammarByScope,
-            onigLib: loadOnigLib(),
-        }),
+        new Registry(registryOptions),
     );
 
     return textMateRegistryPromise;
+}
+
+async function loadConfiguredTextMateGrammar(
+    definition: TextMateGrammarDefinition,
+    languageId: string,
+): Promise<IGrammar> {
+    const initialLanguageId = normalizeMonacoTextMateLanguageId(languageId);
+    const grammarCacheKey = `${definition.scopeName}:${initialLanguageId}`;
+    const cachedGrammar = configuredGrammarLoadCache.get(grammarCacheKey);
+    if (cachedGrammar) {
+        return cachedGrammar;
+    }
+
+    const grammarPromise = (async () => {
+        try {
+            const startedAt = getPerformanceNow();
+            await loadTextMateGrammarsForDefinition(definition);
+            const registry = await getTextMateRegistry();
+            const grammar = await registry.loadGrammarWithConfiguration(
+                definition.scopeName,
+                getEncodedLanguageId(initialLanguageId),
+                createTextMateGrammarConfiguration(definition),
+            );
+
+            if (!grammar) {
+                throw new Error(
+                    `Could not load TextMate grammar "${definition.scopeName}".`,
+                );
+            }
+
+            logTextMatePerformance(
+                `grammar ${definition.scopeName}:${initialLanguageId}`,
+                startedAt,
+            );
+
+            return grammar;
+        } catch (error) {
+            configuredGrammarLoadCache.delete(grammarCacheKey);
+            textMateRegistryPromise = null;
+            throw error;
+        }
+    })();
+
+    configuredGrammarLoadCache.set(grammarCacheKey, grammarPromise);
+    return grammarPromise;
 }
 
 function ensureHclFallback(monacoNsps: MonacoNamespace) {
@@ -381,6 +598,7 @@ async function installTextMateProvider(
     languageId: string,
 ): Promise<boolean> {
     try {
+        activeMonacoNamespace = monacoNsps;
         const normalizedLanguageId = normalizeLanguageId(languageId);
         const definition = getTextMateLanguageDefinition(normalizedLanguageId);
 
@@ -388,20 +606,20 @@ async function installTextMateProvider(
             return false;
         }
 
-        await loadTextMateGrammarModule(definition.canonicalLanguageId);
-        const registry = await getTextMateRegistry();
-        const grammar = await registry.loadGrammar(definition.scopeName);
-
-        if (!grammar) {
-            throw new Error(
-                `Could not load TextMate grammar "${definition.scopeName}".`,
-            );
-        }
-
-        monacoNsps.languages.setTokensProvider(
+        const grammar = await loadConfiguredTextMateGrammar(
+            definition,
             normalizedLanguageId,
-            createTextMateTokensProvider(grammar),
         );
+
+        textMateProviderDisposables.get(normalizedLanguageId)?.dispose();
+        textMateProviderDisposables.set(
+            normalizedLanguageId,
+            monacoNsps.languages.setTokensProvider(
+                normalizedLanguageId,
+                createTextMateEncodedTokensProvider(grammar),
+            ),
+        );
+        refreshTextMateModelsForLanguage(monacoNsps, normalizedLanguageId);
 
         return true;
     } catch (error) {
@@ -433,7 +651,13 @@ function ensureTextMateProvider(
     const installPromise = installTextMateProvider(
         monacoNsps,
         normalizedLanguageId,
-    );
+    ).then((installed) => {
+        if (!installed) {
+            textMateProviderInstallCache.delete(normalizedLanguageId);
+        }
+
+        return installed;
+    });
     textMateProviderInstallCache.set(normalizedLanguageId, installPromise);
     return installPromise;
 }
@@ -454,10 +678,28 @@ export function ensureMonacoTextMateProvider(
     monacoNsps: MonacoNamespace,
     languageId: string,
 ) {
+    activeMonacoNamespace = monacoNsps;
     return ensureTextMateProvider(monacoNsps, languageId);
 }
 
+export function applyMonacoTextMateTheme(
+    monacoNsps: MonacoNamespace,
+    theme: ComandoTextMateTheme,
+) {
+    activeMonacoNamespace = monacoNsps;
+    currentTextMateTheme = theme;
+    textMateThemeVersion += 1;
+    monacoNsps.languages.setColorMap([...theme.indexedColorMap]);
+
+    if (textMateRegistryPromise) {
+        void textMateRegistryPromise.then((registry) => {
+            registry.setTheme(theme.rawTheme, [...theme.indexedColorMap]);
+        });
+    }
+}
+
 export function configureMonacoTextMateLanguages(monacoNsps: MonacoNamespace) {
+    activeMonacoNamespace = monacoNsps;
     ensureHclFallback(monacoNsps);
 
     if (didRegisterTextMateLanguageHooks) {

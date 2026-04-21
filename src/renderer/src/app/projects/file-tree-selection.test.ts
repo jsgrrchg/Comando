@@ -10,6 +10,7 @@ function createFileTab(
     overrides: Partial<RuntimeWorkspaceFileTab> = {},
 ): RuntimeWorkspaceFileTab {
     return {
+        createdAt: "2026-04-14T00:00:00.000Z",
         document: null,
         draftContent: "",
         hasExternalChange: false,

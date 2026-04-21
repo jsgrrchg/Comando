@@ -31,6 +31,30 @@ describe("MarkdownContent", () => {
         expect(markup).not.toContain("markdown-diff-block");
     });
 
+    it("renders tilde fenced code blocks", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: "~~~python\nprint('hello')\n~~~",
+            }),
+        );
+
+        expect(markup).toContain(">python<");
+        expect(markup).toContain("cm-static-code");
+        expect(markup).toContain("print");
+    });
+
+    it("renders unclosed fenced code blocks while content is streaming", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: "```zig\nconst value: i32 = 1;",
+            }),
+        );
+
+        expect(markup).toContain(">zig<");
+        expect(markup).toContain("cm-static-code");
+        expect(markup).toContain("value");
+    });
+
     it("keeps highlighting for TOML and GraphQL", () => {
         const tomlMarkup = renderToStaticMarkup(
             createElement(MarkdownContent, {

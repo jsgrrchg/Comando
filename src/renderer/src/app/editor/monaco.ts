@@ -1,21 +1,45 @@
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 
+import type {
+    TsconfigModuleResolution,
+    TsconfigResolutionSnapshot,
+} from "@shared/ipc";
+
 import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+// Custom TypeScript worker that exposes getEncoded*Classifications so the
+// semantic tokens provider can receive real data. See ts.worker.ts.
+import tsWorker from "./ts.worker?worker";
 
 import {
+    applyMonacoTextMateTheme,
     configureMonacoTextMateLanguages,
     ensureMonacoTextMateProvider,
     isTextMateLanguageSupported,
 } from "./monacoTextmate";
+import { configureMonacoColorDecorators } from "./monacoColorProvider";
+import { COMANDO_BRACKET_PAIR_COLOR_COUNT } from "./monacoEditorFeatures";
+import {
+    LARGE_FILE_JSON_LANGUAGE_ID,
+    LARGE_FILE_JSONC_LANGUAGE_ID,
+} from "./monacoPerformance";
+import {
+    createComandoTextMateTheme,
+    createMonarchFallbackRules,
+    type ComandoSemanticTokenColors,
+} from "./monacoTextmateTheme";
+import { installTypeScriptReactLanguageServices } from "./monacoTypeScriptReact";
+import { setupTypeScriptCustomWorker } from "./monacoTypeScriptCustomWorker";
+import { isTypeScriptWorkerLanguageId } from "./monacoLanguage";
 import {
     shellLanguageConfiguration,
     shellMonarchDefinition,
 } from "./monacoShell";
+
+export { installMonacoTokenDebugAction } from "./monacoTokenDebug";
 
 export type ComandoMonacoTheme = "comando-light" | "comando-dark";
 
@@ -35,19 +59,23 @@ type MonarchLanguageModule = {
     readonly language: monaco.languages.IMonarchLanguage;
 };
 
+type MonacoLanguageServiceDefaults = {
+    getCompilerOptions(): Record<string, unknown>;
+    getDiagnosticsOptions(): Record<string, unknown>;
+    setCompilerOptions(options: Record<string, unknown>): void;
+    setDiagnosticsOptions(options: Record<string, unknown>): void;
+    setEagerModelSync(value: boolean): void;
+};
+
 type MonacoTypeScriptApi = {
-    readonly javascriptDefaults: {
-        getCompilerOptions(): Record<string, unknown>;
-        setCompilerOptions(options: Record<string, unknown>): void;
-        setEagerModelSync(value: boolean): void;
-    };
-    readonly typescriptDefaults: {
-        getCompilerOptions(): Record<string, unknown>;
-        setCompilerOptions(options: Record<string, unknown>): void;
-        setEagerModelSync(value: boolean): void;
-    };
+    readonly javascriptDefaults: MonacoLanguageServiceDefaults;
+    readonly typescriptDefaults: MonacoLanguageServiceDefaults;
     readonly JsxEmit: {
         readonly ReactJSX: number;
+    };
+    readonly ModuleResolutionKind: {
+        readonly Classic: number;
+        readonly NodeJs: number;
     };
     readonly ScriptTarget: {
         readonly Latest: number;
@@ -73,6 +101,11 @@ const deferredMonacoLanguageCache = new Map<
     DeferredMonacoLanguage,
     Promise<MonarchLanguageModule | TokenizedLanguageModule>
 >();
+let currentTsconfigSignature: string | null = null;
+let defaultTypeScriptCompilerOptions: Record<string, unknown> | null = null;
+let defaultJavaScriptCompilerOptions: Record<string, unknown> | null = null;
+let defaultTypeScriptDiagnosticsOptions: Record<string, unknown> | null = null;
+let defaultJavaScriptDiagnosticsOptions: Record<string, unknown> | null = null;
 
 function loadDeferredMonacoLanguage(
     definition: DeferredMonacoLanguage,
@@ -85,6 +118,223 @@ function loadDeferredMonacoLanguage(
     const loaderPromise = definition.load();
     deferredMonacoLanguageCache.set(definition, loaderPromise);
     return loaderPromise;
+}
+
+function getMonacoTypeScriptApi(): MonacoTypeScriptApi {
+    return monaco.languages.typescript as unknown as MonacoTypeScriptApi;
+}
+
+function createBaseTypeScriptCompilerOptions(
+    compilerOptions: Record<string, unknown>,
+    monacoTypeScript: MonacoTypeScriptApi,
+): Record<string, unknown> {
+    return {
+        ...compilerOptions,
+        allowNonTsExtensions: true,
+        jsx: monacoTypeScript.JsxEmit.ReactJSX,
+        target: monacoTypeScript.ScriptTarget.Latest,
+    };
+}
+
+function mapModuleResolution(
+    monacoTypeScript: MonacoTypeScriptApi,
+    moduleResolution: TsconfigModuleResolution | null,
+): number | null {
+    if (moduleResolution === "classic") {
+        return monacoTypeScript.ModuleResolutionKind.Classic;
+    }
+
+    if (
+        moduleResolution === "node" ||
+        moduleResolution === "node16" ||
+        moduleResolution === "nodenext" ||
+        moduleResolution === "bundler"
+    ) {
+        return monacoTypeScript.ModuleResolutionKind.NodeJs;
+    }
+
+    return null;
+}
+
+function createCompilerOptionsFromTsconfig(
+    monacoTypeScript: MonacoTypeScriptApi,
+    baseCompilerOptions: Record<string, unknown>,
+    tsconfig: TsconfigResolutionSnapshot,
+): Record<string, unknown> {
+    const compilerOptions = tsconfig.compilerOptions;
+    if (!compilerOptions) {
+        return { ...baseCompilerOptions };
+    }
+
+    const moduleResolution = mapModuleResolution(
+        monacoTypeScript,
+        compilerOptions.moduleResolution,
+    );
+
+    return {
+        ...baseCompilerOptions,
+        ...(compilerOptions.baseUrl
+            ? { baseUrl: compilerOptions.baseUrl }
+            : {}),
+        ...(compilerOptions.paths
+            ? {
+                  paths: Object.fromEntries(
+                      Object.entries(compilerOptions.paths).map(
+                          ([alias, targets]) => [alias, [...targets]],
+                      ),
+                  ),
+              }
+            : {}),
+        ...(moduleResolution ? { moduleResolution } : {}),
+    };
+}
+
+function mergeDiagnosticCodes(
+    currentCodes: unknown,
+    nextCodes: readonly number[],
+): number[] {
+    const codes = new Set(
+        Array.isArray(currentCodes)
+            ? currentCodes.filter(
+                  (code): code is number => typeof code === "number",
+              )
+            : [],
+    );
+
+    for (const code of nextCodes) {
+        codes.add(code);
+    }
+
+    return [...codes];
+}
+
+function createDiagnosticsOptionsFromTsconfig(
+    baseDiagnosticsOptions: Record<string, unknown>,
+    tsconfig: TsconfigResolutionSnapshot,
+): Record<string, unknown> {
+    if (tsconfig.diagnosticCodesToIgnore.length === 0) {
+        return { ...baseDiagnosticsOptions };
+    }
+
+    return {
+        ...baseDiagnosticsOptions,
+        diagnosticCodesToIgnore: mergeDiagnosticCodes(
+            baseDiagnosticsOptions.diagnosticCodesToIgnore,
+            tsconfig.diagnosticCodesToIgnore,
+        ),
+    };
+}
+
+function configureDefaultTypeScriptLanguageServices(
+    monacoTypeScript: MonacoTypeScriptApi,
+) {
+    defaultTypeScriptCompilerOptions = createBaseTypeScriptCompilerOptions(
+        monacoTypeScript.typescriptDefaults.getCompilerOptions(),
+        monacoTypeScript,
+    );
+    defaultJavaScriptCompilerOptions = {
+        ...createBaseTypeScriptCompilerOptions(
+            monacoTypeScript.javascriptDefaults.getCompilerOptions(),
+            monacoTypeScript,
+        ),
+        allowJs: true,
+    };
+    defaultTypeScriptDiagnosticsOptions =
+        monacoTypeScript.typescriptDefaults.getDiagnosticsOptions();
+    defaultJavaScriptDiagnosticsOptions =
+        monacoTypeScript.javascriptDefaults.getDiagnosticsOptions();
+
+    monacoTypeScript.typescriptDefaults.setCompilerOptions(
+        defaultTypeScriptCompilerOptions,
+    );
+    monacoTypeScript.javascriptDefaults.setCompilerOptions(
+        defaultJavaScriptCompilerOptions,
+    );
+    monacoTypeScript.typescriptDefaults.setEagerModelSync(true);
+    monacoTypeScript.javascriptDefaults.setEagerModelSync(true);
+}
+
+function applyTypeScriptProjectConfig(tsconfig: TsconfigResolutionSnapshot): void {
+    const monacoTypeScript = getMonacoTypeScriptApi();
+    const typeScriptCompilerOptions =
+        defaultTypeScriptCompilerOptions ??
+        createBaseTypeScriptCompilerOptions(
+            monacoTypeScript.typescriptDefaults.getCompilerOptions(),
+            monacoTypeScript,
+        );
+    const javaScriptCompilerOptions =
+        defaultJavaScriptCompilerOptions ??
+        createBaseTypeScriptCompilerOptions(
+            monacoTypeScript.javascriptDefaults.getCompilerOptions(),
+            monacoTypeScript,
+        );
+    const typeScriptDiagnosticsOptions =
+        defaultTypeScriptDiagnosticsOptions ??
+        monacoTypeScript.typescriptDefaults.getDiagnosticsOptions();
+    const javaScriptDiagnosticsOptions =
+        defaultJavaScriptDiagnosticsOptions ??
+        monacoTypeScript.javascriptDefaults.getDiagnosticsOptions();
+
+    monacoTypeScript.typescriptDefaults.setCompilerOptions(
+        createCompilerOptionsFromTsconfig(
+            monacoTypeScript,
+            typeScriptCompilerOptions,
+            tsconfig,
+        ),
+    );
+    monacoTypeScript.javascriptDefaults.setCompilerOptions(
+        createCompilerOptionsFromTsconfig(
+            monacoTypeScript,
+            javaScriptCompilerOptions,
+            tsconfig,
+        ),
+    );
+    monacoTypeScript.typescriptDefaults.setDiagnosticsOptions(
+        createDiagnosticsOptionsFromTsconfig(
+            typeScriptDiagnosticsOptions,
+            tsconfig,
+        ),
+    );
+    monacoTypeScript.javascriptDefaults.setDiagnosticsOptions(
+        createDiagnosticsOptionsFromTsconfig(
+            javaScriptDiagnosticsOptions,
+            tsconfig,
+        ),
+    );
+}
+
+function getTsconfigSignature(tsconfig: TsconfigResolutionSnapshot): string {
+    return JSON.stringify({
+        aliasPatterns: tsconfig.aliasPatterns,
+        compilerOptions: tsconfig.compilerOptions,
+        configPath: tsconfig.configPath,
+        diagnosticCodesToIgnore: tsconfig.diagnosticCodesToIgnore,
+        errors: tsconfig.errors,
+    });
+}
+
+export async function applyProjectTypeScriptConfigForPath(
+    filePath: string,
+): Promise<void> {
+    if (typeof window === "undefined" || !window.comando) {
+        return;
+    }
+
+    const tsconfig = await window.comando.resolveTsconfigForPath(filePath);
+    const signature = getTsconfigSignature(tsconfig);
+    if (signature === currentTsconfigSignature) {
+        return;
+    }
+
+    currentTsconfigSignature = signature;
+    applyTypeScriptProjectConfig(tsconfig);
+
+    if (tsconfig.errors.length > 0) {
+        console.warn(
+            "[comando] TypeScript project config could not be fully resolved.",
+            tsconfig.errors,
+        );
+    }
 }
 
 function basicLanguage(
@@ -104,6 +354,10 @@ function monarchLanguage(
         kind: "monarch",
         load: () => Promise.resolve({ conf, language }),
     };
+}
+
+function textMateOnlyLanguage(): DeferredMonacoLanguage {
+    return monarchLanguage(textMateOnlyMonarchDefinition);
 }
 
 function jsonLanguage({
@@ -159,52 +413,6 @@ const cmakeMonarchDefinition: monaco.languages.IMonarchLanguage = {
             [/\b\d+(?:\.\d+)?\b/, "number"],
             [/[()[\]{}]/, "@brackets"],
             [/[A-Za-z_][\w-]*/, "identifier"],
-        ],
-    },
-};
-
-const astroMonarchDefinition: monaco.languages.IMonarchLanguage = {
-    brackets: [
-        { open: "{", close: "}", token: "delimiter.curly" },
-        { open: "[", close: "]", token: "delimiter.square" },
-        { open: "(", close: ")", token: "delimiter.parenthesis" },
-        { open: "<", close: ">", token: "delimiter.angle" },
-    ],
-    defaultToken: "",
-    tokenizer: {
-        root: [
-            [/^---\s*$/, "metatag"],
-            [/<!--/, "comment", "@comment"],
-            [/<\/?[A-Za-z][\w:-]*/, "tag"],
-            [/\{/, { token: "delimiter.curly", next: "@expression" }],
-            [/\b[A-Za-z_][\w:-]*(?=\=)/, "attribute.name"],
-            [/"/, "string", "@stringDouble"],
-            [/'/, "string", "@stringSingle"],
-        ],
-        comment: [
-            [/-->/, "comment", "@pop"],
-            [/[^-]+/, "comment"],
-            [/./, "comment"],
-        ],
-        expression: [
-            [/\}/, { token: "delimiter.curly", next: "@pop" }],
-            [/\b(?:const|let|var|function|return|if|else|for|while|switch|case|break|continue|import|from|export|default|async|await|new|class|extends|implements|interface|type|typeof|try|catch|finally|throw)\b/, "keyword"],
-            [/\b\d+(?:\.\d+)?\b/, "number"],
-            [/"/, "string", "@stringDouble"],
-            [/'/, "string", "@stringSingle"],
-            [/=>|==|!=|<=|>=|&&|\|\||[=+\-*/<>!?|&.:]/, "operators"],
-            [/[A-Z][A-Za-z0-9_]*/, "type.identifier"],
-            [/[A-Za-z_$][\w$-]*/, "identifier"],
-        ],
-        stringDouble: [
-            [/[^\\"]+/, "string"],
-            [/\\./, "string.escape"],
-            [/"/, "string", "@pop"],
-        ],
-        stringSingle: [
-            [/[^\\']+/, "string"],
-            [/\\./, "string.escape"],
-            [/'/, "string", "@pop"],
         ],
     },
 };
@@ -301,6 +509,13 @@ const wastMonarchDefinition: monaco.languages.IMonarchLanguage = {
     },
 };
 
+const textMateOnlyMonarchDefinition: monaco.languages.IMonarchLanguage = {
+    defaultToken: "",
+    tokenizer: {
+        root: [],
+    },
+};
+
 function registerLanguageIds(
     languageIds: readonly string[],
     definition: DeferredMonacoLanguage,
@@ -334,10 +549,12 @@ function registerLanguageIds(
             void loadDeferredMonacoLanguage(definition).then((loaded) => {
                 if (definition.kind === "monarch") {
                     const monarchLanguage = loaded as MonarchLanguageModule;
-                    monaco.languages.setMonarchTokensProvider(
-                        languageId,
-                        monarchLanguage.language,
-                    );
+                    if (!shouldInstallTextMate) {
+                        monaco.languages.setMonarchTokensProvider(
+                            languageId,
+                            monarchLanguage.language,
+                        );
+                    }
                     if (monarchLanguage.conf) {
                         monaco.languages.setLanguageConfiguration(
                             languageId,
@@ -351,10 +568,12 @@ function registerLanguageIds(
                 }
 
                 const tokenizedLanguage = loaded as TokenizedLanguageModule;
-                monaco.languages.setTokensProvider(
-                    languageId,
-                    tokenizedLanguage.tokensProvider,
-                );
+                if (!shouldInstallTextMate) {
+                    monaco.languages.setTokensProvider(
+                        languageId,
+                        tokenizedLanguage.tokensProvider,
+                    );
+                }
                 if (tokenizedLanguage.conf) {
                     monaco.languages.setLanguageConfiguration(
                         languageId,
@@ -370,7 +589,21 @@ function registerLanguageIds(
 }
 
 function configureMarkdownFenceLanguages() {
-    registerLanguageIds(["astro"], monarchLanguage(astroMonarchDefinition));
+    registerLanguageIds(["astro"], textMateOnlyLanguage());
+    registerLanguageIds(
+        ["bat", "batch", "cmd"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/bat/bat.js"),
+        ),
+    );
+    registerLanguageIds(
+        [LARGE_FILE_JSON_LANGUAGE_ID],
+        jsonLanguage({ allowComments: false }),
+    );
+    registerLanguageIds(
+        [LARGE_FILE_JSONC_LANGUAGE_ID],
+        jsonLanguage({ allowComments: true }),
+    );
     registerLanguageIds(
         ["markdown"],
         basicLanguage(
@@ -413,9 +646,19 @@ function configureMarkdownFenceLanguages() {
         ),
     );
     registerLanguageIds(
+        ["csv", "tsv"],
+        textMateOnlyLanguage(),
+    );
+    registerLanguageIds(
         ["d"],
         basicLanguage(
             () => import("monaco-editor/esm/vs/basic-languages/cpp/cpp.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["dart"],
+        basicLanguage(
+            () => import("monaco-editor/esm/vs/basic-languages/dart/dart.js"),
         ),
     );
     registerLanguageIds(
@@ -454,6 +697,7 @@ function configureMarkdownFenceLanguages() {
                 import("monaco-editor/esm/vs/basic-languages/elixir/elixir.js"),
         ),
     );
+    registerLanguageIds(["fish"], textMateOnlyLanguage());
     registerLanguageIds(
         ["go", "golang"],
         basicLanguage(
@@ -476,6 +720,7 @@ function configureMarkdownFenceLanguages() {
             () => import("monaco-editor/esm/vs/basic-languages/html/html.js"),
         ),
     );
+    registerLanguageIds(["http", "rest"], textMateOnlyLanguage());
     registerLanguageIds(
         ["java"],
         basicLanguage(
@@ -491,7 +736,14 @@ function configureMarkdownFenceLanguages() {
     registerLanguageIds(["json"], jsonLanguage({ allowComments: false }));
     registerLanguageIds(["jsonc"], jsonLanguage({ allowComments: true }));
     registerLanguageIds(
-        ["javascript", "js", "node", "nodejs", "mjs", "cjs", "jsx"],
+        ["javascript", "js", "node", "nodejs", "mjs", "cjs"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/javascript/javascript.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["javascriptreact", "jsx"],
         basicLanguage(
             () =>
                 import("monaco-editor/esm/vs/basic-languages/javascript/javascript.js"),
@@ -510,9 +762,20 @@ function configureMarkdownFenceLanguages() {
             () => import("monaco-editor/esm/vs/basic-languages/lua/lua.js"),
         ),
     );
+    registerLanguageIds(["log"], textMateOnlyLanguage());
     registerLanguageIds(
         ["make", "makefile", "mk"],
         monarchLanguage(makefileMonarchDefinition),
+    );
+    registerLanguageIds(["nginx"], textMateOnlyLanguage());
+    registerLanguageIds(["nix"], textMateOnlyLanguage());
+    registerLanguageIds(["nu", "nushell"], textMateOnlyLanguage());
+    registerLanguageIds(
+        ["objc", "objective-c", "objectivec"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/objective-c/objective-c.js"),
+        ),
     );
     registerLanguageIds(
         ["pascal", "delphi"],
@@ -540,6 +803,7 @@ function configureMarkdownFenceLanguages() {
                 import("monaco-editor/esm/vs/basic-languages/powershell/powershell.js"),
         ),
     );
+    registerLanguageIds(["prisma"], textMateOnlyLanguage());
     registerLanguageIds(
         ["properties", "ini", "cfg", "conf", "dotenv", "env"],
         basicLanguage(
@@ -591,8 +855,15 @@ function configureMarkdownFenceLanguages() {
         ),
     );
     registerLanguageIds(
-        ["shell", "sh", "bash", "zsh", "fish", "shellscript"],
+        ["shell", "sh", "bash", "zsh", "shellscript"],
         monarchLanguage(shellMonarchDefinition, shellLanguageConfiguration),
+    );
+    registerLanguageIds(
+        ["solidity", "sol"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/solidity/solidity.js"),
+        ),
     );
     registerLanguageIds(
         ["sql"],
@@ -634,6 +905,7 @@ function configureMarkdownFenceLanguages() {
             () => import("monaco-editor/esm/vs/basic-languages/less/less.js"),
         ),
     );
+    registerLanguageIds(["svelte"], textMateOnlyLanguage());
     registerLanguageIds(
         ["swift"],
         basicLanguage(
@@ -653,7 +925,14 @@ function configureMarkdownFenceLanguages() {
         ),
     );
     registerLanguageIds(
-        ["typescript", "ts", "tsx"],
+        ["typescript", "ts"],
+        basicLanguage(
+            () =>
+                import("monaco-editor/esm/vs/basic-languages/typescript/typescript.js"),
+        ),
+    );
+    registerLanguageIds(
+        ["typescriptreact", "tsx"],
         basicLanguage(
             () =>
                 import("monaco-editor/esm/vs/basic-languages/typescript/typescript.js"),
@@ -665,6 +944,7 @@ function configureMarkdownFenceLanguages() {
             () => import("monaco-editor/esm/vs/basic-languages/vb/vb.js"),
         ),
     );
+    registerLanguageIds(["vue"], textMateOnlyLanguage());
     registerLanguageIds(
         ["xml", "svg", "xhtml"],
         basicLanguage(
@@ -681,12 +961,13 @@ function configureMarkdownFenceLanguages() {
         ["wast", "wat", "wasm"],
         monarchLanguage(wastMonarchDefinition),
     );
+    registerLanguageIds(["zig"], textMateOnlyLanguage());
 }
 
 if (!monacoGlobal.__comandoMonacoConfigured) {
     monacoGlobal.MonacoEnvironment = {
         getWorker: (_moduleId, label) => {
-            if (label === "json") {
+            if (label === "json" || label === "jsonc") {
                 return new jsonWorker();
             }
 
@@ -702,7 +983,7 @@ if (!monacoGlobal.__comandoMonacoConfigured) {
                 return new htmlWorker();
             }
 
-            if (label === "typescript" || label === "javascript") {
+            if (isTypeScriptWorkerLanguageId(label)) {
                 return new tsWorker();
             }
 
@@ -711,25 +992,11 @@ if (!monacoGlobal.__comandoMonacoConfigured) {
     };
 
     loader.config({ monaco });
-    const monacoTypeScript = monaco.languages
-        .typescript as unknown as MonacoTypeScriptApi;
-
-    monacoTypeScript.typescriptDefaults.setCompilerOptions({
-        ...monacoTypeScript.typescriptDefaults.getCompilerOptions(),
-        allowNonTsExtensions: true,
-        jsx: monacoTypeScript.JsxEmit.ReactJSX,
-        target: monacoTypeScript.ScriptTarget.Latest,
-    });
-    monacoTypeScript.javascriptDefaults.setCompilerOptions({
-        ...monacoTypeScript.javascriptDefaults.getCompilerOptions(),
-        allowJs: true,
-        allowNonTsExtensions: true,
-        jsx: monacoTypeScript.JsxEmit.ReactJSX,
-        target: monacoTypeScript.ScriptTarget.Latest,
-    });
-    monacoTypeScript.typescriptDefaults.setEagerModelSync(true);
-    monacoTypeScript.javascriptDefaults.setEagerModelSync(true);
+    setupTypeScriptCustomWorker(monaco);
+    configureDefaultTypeScriptLanguageServices(getMonacoTypeScriptApi());
     configureMarkdownFenceLanguages();
+    installTypeScriptReactLanguageServices(monaco);
+    configureMonacoColorDecorators(monaco);
     configureMonacoTextMateLanguages(monaco);
     monacoGlobal.__comandoMonacoConfigured = true;
 }
@@ -777,44 +1044,42 @@ function withAlpha(hexColor: string, alpha: number): string {
     return `${base}${channelToHex(alpha * 255)}`;
 }
 
-function parseHexColor(value: string): {
-    readonly blue: number;
-    readonly green: number;
-    readonly red: number;
-} | null {
-    const normalized = normalizeMonacoColor(value, "");
-
-    if (!/^#[\da-f]{6}(?:[\da-f]{2})?$/i.test(normalized)) {
-        return null;
-    }
-
-    return {
-        blue: Number.parseInt(normalized.slice(5, 7), 16),
-        green: Number.parseInt(normalized.slice(3, 5), 16),
-        red: Number.parseInt(normalized.slice(1, 3), 16),
-    };
-}
-
-function mixHexColors(
-    base: string,
-    overlay: string,
-    overlayWeight: number,
-): string {
-    const baseColor = parseHexColor(base);
-    const overlayColor = parseHexColor(overlay);
-    const normalizedWeight = Math.min(1, Math.max(0, overlayWeight));
-
-    if (!baseColor || !overlayColor) {
-        return normalizeMonacoColor(overlay, base);
-    }
-
-    const baseWeight = 1 - normalizedWeight;
-
-    return `#${channelToHex(baseColor.red * baseWeight + overlayColor.red * normalizedWeight)}${channelToHex(baseColor.green * baseWeight + overlayColor.green * normalizedWeight)}${channelToHex(baseColor.blue * baseWeight + overlayColor.blue * normalizedWeight)}`;
-}
-
 function themeRuleColor(value: string): string {
     return normalizeMonacoColor(value, value).slice(1, 7);
+}
+
+function createMonacoSemanticTokenRules(
+    semanticTokenColors: ComandoSemanticTokenColors,
+): monaco.editor.ITokenThemeRule[] {
+    return Object.entries(semanticTokenColors).map(([token, rule]) => ({
+        token,
+        foreground: themeRuleColor(rule.foreground),
+        ...(rule.fontStyle ? { fontStyle: rule.fontStyle } : {}),
+    }));
+}
+
+function createMonacoBracketPairThemeColors(
+    bracketPairColors: readonly string[],
+    unexpectedBracketColor: string,
+    isDark: boolean,
+): Record<string, string> {
+    const colors: Record<string, string> = {
+        "editorBracketHighlight.unexpectedBracket.foreground":
+            unexpectedBracketColor,
+    };
+
+    bracketPairColors
+        .slice(0, COMANDO_BRACKET_PAIR_COLOR_COUNT)
+        .forEach((color, index) => {
+            const colorIndex = index + 1;
+            colors[`editorBracketHighlight.foreground${colorIndex}`] = color;
+            colors[`editorBracketPairGuide.background${colorIndex}`] =
+                withAlpha(color, isDark ? 0.2 : 0.16);
+            colors[`editorBracketPairGuide.activeBackground${colorIndex}`] =
+                withAlpha(color, isDark ? 0.52 : 0.42);
+        });
+
+    return colors;
 }
 
 function readThemeColor(
@@ -898,21 +1163,23 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
         "--color-bg-secondary",
         isDark ? "#252525" : "#f5f5f5",
     );
-    const keywordColor = mixHexColors(editorForeground, accent, 0.84);
-    const typeColor = mixHexColors(editorForeground, accent, 0.66);
-    const functionColor = mixHexColors(editorForeground, accent, 0.58);
-    const stringColor = mixHexColors(editorForeground, accent, 0.4);
-    const numberColor = mixHexColors(editorForeground, accent, 0.74);
-    const constantColor = mixHexColors(editorForeground, accent, 0.7);
-    const tagColor = mixHexColors(editorForeground, accent, 0.8);
-    const attributeColor = mixHexColors(editorForeground, accent, 0.48);
-    const regexpColor = mixHexColors(editorForeground, accent, 0.52);
-    const variableColor = mixHexColors(editorForeground, accent, 0.3);
-    const propertyColor = mixHexColors(editorForeground, accent, 0.42);
-    const namespaceColor = mixHexColors(editorForeground, accent, 0.5);
-    const macroColor = mixHexColors(editorForeground, accent, 0.64);
-    const decoratorColor = mixHexColors(editorForeground, accent, 0.72);
-    const escapeColor = mixHexColors(editorForeground, accent, 0.78);
+    const textMateTheme = createComandoTextMateTheme({
+        accent,
+        editorBackground,
+        editorForeground,
+        isDark,
+        textSecondary,
+        themeName,
+    });
+    const {
+        constant: constantColor,
+        function: functionColor,
+        keyword: keywordColor,
+        namespace: namespaceColor,
+        string: stringColor,
+        tag: tagColor,
+        type: typeColor,
+    } = textMateTheme.palette;
     const lineHighlight = withAlpha(editorForeground, isDark ? 0.04 : 0.035);
     const scrollbar = withAlpha(editorForeground, isDark ? 0.14 : 0.1);
     const scrollbarHover = withAlpha(editorForeground, isDark ? 0.22 : 0.16);
@@ -920,130 +1187,40 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
     const insertedGutterBackground = withAlpha("#10b981", isDark ? 0.22 : 0.14);
     const removedBackground = withAlpha("#ef4444", isDark ? 0.18 : 0.12);
     const removedGutterBackground = withAlpha("#ef4444", isDark ? 0.22 : 0.14);
+    const bracketPairThemeColors = createMonacoBracketPairThemeColors(
+        [
+            keywordColor,
+            stringColor,
+            functionColor,
+            typeColor,
+            constantColor,
+            namespaceColor,
+        ],
+        tagColor,
+        isDark,
+    );
 
     monaco.editor.defineTheme(themeName, {
         base: isDark ? "vs-dark" : "vs",
+        encodedTokensColors: [...textMateTheme.encodedTokensColors],
         inherit: true,
+        // These `rules` only fire for tokens emitted by Monaco's Monarch /
+        // basic-languages tokenizers (SQL, XML, YAML, Makefile, etc.). Every
+        // TextMate-backed language is painted via `encodedTokensColors`
+        // above, so we deliberately keep this list small and derive it from
+        // the same palette instead of hand-maintaining a parallel copy of
+        // the TextMate scope table.
         rules: [
-            {
-                token: "comment",
-                foreground: themeRuleColor(textSecondary),
-                fontStyle: "italic",
-            },
-            { token: "keyword", foreground: themeRuleColor(keywordColor) },
-            { token: "operator", foreground: themeRuleColor(keywordColor) },
-            {
-                token: "keyword.control",
-                foreground: themeRuleColor(keywordColor),
-            },
-            { token: "keyword.other", foreground: themeRuleColor(keywordColor) },
-            { token: "keyword.operator", foreground: themeRuleColor(keywordColor) },
-            { token: "storage", foreground: themeRuleColor(keywordColor) },
-            { token: "storage.modifier", foreground: themeRuleColor(keywordColor) },
-            { token: "string", foreground: themeRuleColor(stringColor) },
-            {
-                token: "punctuation.definition.string",
-                foreground: themeRuleColor(stringColor),
-            },
-            {
-                token: "constant.character.escape",
-                foreground: themeRuleColor(escapeColor),
-            },
-            { token: "number", foreground: themeRuleColor(numberColor) },
-            {
-                token: "constant",
-                foreground: themeRuleColor(constantColor),
-            },
-            { token: "regexp", foreground: themeRuleColor(regexpColor) },
-            { token: "type", foreground: themeRuleColor(typeColor) },
-            { token: "storage.type", foreground: themeRuleColor(typeColor) },
-            {
-                token: "type.identifier",
-                foreground: themeRuleColor(typeColor),
-            },
-            { token: "class", foreground: themeRuleColor(typeColor) },
-            { token: "interface", foreground: themeRuleColor(typeColor) },
-            { token: "support.type", foreground: themeRuleColor(typeColor) },
-            { token: "support.class", foreground: themeRuleColor(typeColor) },
-            {
-                token: "entity.name.type",
-                foreground: themeRuleColor(typeColor),
-            },
-            { token: "function", foreground: themeRuleColor(functionColor) },
-            {
-                token: "function.method",
-                foreground: themeRuleColor(functionColor),
-            },
-            {
-                token: "entity.name.function",
-                foreground: themeRuleColor(functionColor),
-            },
-            {
-                token: "support.function",
-                foreground: themeRuleColor(functionColor),
-            },
-            {
-                token: "support.function.builtin",
-                foreground: themeRuleColor(functionColor),
-            },
-            {
-                token: "entity.name.function.decorator",
-                foreground: themeRuleColor(decoratorColor),
-            },
-            {
-                token: "entity.name.function.macro",
-                foreground: themeRuleColor(macroColor),
-            },
-            { token: "tag", foreground: themeRuleColor(tagColor) },
-            {
-                token: "entity.name.namespace",
-                foreground: themeRuleColor(namespaceColor),
-            },
-            {
-                token: "entity.name.module",
-                foreground: themeRuleColor(namespaceColor),
-            },
-            {
-                token: "entity.name.constant",
-                foreground: themeRuleColor(constantColor),
-            },
-            {
-                token: "attribute.name",
-                foreground: themeRuleColor(attributeColor),
-            },
-            {
-                token: "entity.other.attribute-name",
-                foreground: themeRuleColor(attributeColor),
-            },
-            {
-                token: "meta.attribute",
-                foreground: themeRuleColor(decoratorColor),
-            },
-            { token: "variable", foreground: themeRuleColor(variableColor) },
-            {
-                token: "variable.other",
-                foreground: themeRuleColor(variableColor),
-            },
-            {
-                token: "variable.other.readwrite",
-                foreground: themeRuleColor(variableColor),
-            },
-            {
-                token: "variable.parameter",
-                foreground: themeRuleColor(variableColor),
-            },
-            {
-                token: "variable.language",
-                foreground: themeRuleColor(keywordColor),
-            },
-            {
-                token: "variable.other.member",
-                foreground: themeRuleColor(propertyColor),
-            },
-            {
-                token: "variable.other.constant",
-                foreground: themeRuleColor(constantColor),
-            },
+            ...createMonarchFallbackRules(textMateTheme.palette).map(
+                (rule) => ({
+                    token: rule.token,
+                    foreground: themeRuleColor(rule.foreground),
+                    ...(rule.fontStyle ? { fontStyle: rule.fontStyle } : {}),
+                }),
+            ),
+            ...createMonacoSemanticTokenRules(
+                textMateTheme.semanticTokenColors,
+            ),
         ],
         colors: {
             "diffEditor.insertedLineBackground": insertedBackground,
@@ -1097,9 +1274,15 @@ export function applyMonacoThemeFromDom(): ComandoMonacoTheme {
             "scrollbarSlider.activeBackground": scrollbarHover,
             "scrollbarSlider.background": scrollbar,
             "scrollbarSlider.hoverBackground": scrollbarHover,
+            ...bracketPairThemeColors,
         },
     });
     monaco.editor.setTheme(themeName);
+    applyMonacoTextMateTheme(monaco, textMateTheme);
 
     return themeName;
+}
+
+export function ensureMonacoTextMateForLanguage(languageId: string) {
+    return ensureMonacoTextMateProvider(monaco, languageId);
 }

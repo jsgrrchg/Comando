@@ -39,9 +39,14 @@ const EDITOR_LANGUAGES: readonly EditorLanguageDefinition[] = [
         label: "JavaScript",
     },
     {
-        extensions: ["json", "jsonc"],
+        extensions: ["json"],
         id: "json",
         label: "JSON",
+    },
+    {
+        extensions: ["jsonc"],
+        id: "jsonc",
+        label: "JSONC",
     },
     {
         extensions: ["md", "markdown", "mdown", "mkd"],
@@ -324,6 +329,80 @@ const EDITOR_LANGUAGES: readonly EditorLanguageDefinition[] = [
         id: "vue",
         label: "Vue",
     },
+    {
+        extensions: ["dart"],
+        id: "dart",
+        label: "Dart",
+    },
+    {
+        extensions: ["nix"],
+        filenames: ["flake.nix"],
+        id: "nix",
+        label: "Nix",
+    },
+    {
+        extensions: ["zig"],
+        id: "zig",
+        label: "Zig",
+    },
+    {
+        extensions: ["m", "mm"],
+        id: "objc",
+        label: "Objective-C",
+    },
+    {
+        extensions: ["bat"],
+        id: "bat",
+        label: "Batch",
+    },
+    {
+        extensions: ["cmd"],
+        id: "cmd",
+        label: "Windows Command",
+    },
+    {
+        extensions: ["fish"],
+        id: "fish",
+        interpreters: ["fish"],
+        label: "Fish",
+    },
+    {
+        extensions: ["nu"],
+        id: "nu",
+        interpreters: ["nu"],
+        label: "Nushell",
+    },
+    {
+        extensions: ["sol"],
+        id: "solidity",
+        label: "Solidity",
+    },
+    {
+        extensions: ["nginx"],
+        filenames: ["nginx.conf"],
+        id: "nginx",
+        label: "Nginx",
+    },
+    {
+        extensions: ["http", "rest"],
+        id: "http",
+        label: "HTTP",
+    },
+    {
+        extensions: ["csv", "tsv"],
+        id: "csv",
+        label: "CSV",
+    },
+    {
+        extensions: ["log"],
+        id: "log",
+        label: "Log",
+    },
+];
+
+const EDITOR_LANGUAGE_IDS: readonly string[] = [
+    DEFAULT_EDITOR_LANGUAGE.id,
+    ...EDITOR_LANGUAGES.map((language) => language.id),
 ];
 
 const extensionIndex = new Map<string, EditorLanguageDefinition>();
@@ -394,6 +473,10 @@ export function resolveEditorLanguage(options: {
 
 export function shouldWrapEditorLanguage(languageId: string): boolean {
     return wrappedLanguageIds.has(languageId.toLowerCase());
+}
+
+export function getEditorLanguageIds(): readonly string[] {
+    return EDITOR_LANGUAGE_IDS;
 }
 
 function toResolvedLanguage(

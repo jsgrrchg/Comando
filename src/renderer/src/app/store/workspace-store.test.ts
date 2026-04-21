@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ProjectFileDocument } from "@shared/ipc";
+import type { ProjectFileDocument, WorkspacePaneNode } from "@shared/ipc";
 
 import {
     createDefaultWorkspaceState,
@@ -58,7 +58,7 @@ function createWorkspaceFileTab(id: string, relativePath: string) {
 function findWorkspacePane(
     node: WorkspaceTreeState["rootNode"],
     paneId: string,
-) {
+): WorkspacePaneNode | null {
     if (node.type === "pane") {
         return node.id === paneId ? node : null;
     }

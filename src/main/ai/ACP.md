@@ -15,12 +15,12 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini | Kilo |
 |---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.29.0` + local upstream snapshot including the post-release `usage_update` stream fix) | Rust (`codex-acp` `0.11.1`) | External Gemini CLI binary | External Kilo CLI binary |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.29.2` + local vendored patches) | Rust (`codex-acp` `0.11.1` + local vendored patches) | External Gemini CLI binary | External Kilo CLI binary |
 | **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today |
 | **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` |
 | **Runtime discovery** | env, settings, vendor JS, embedded bundle, PATH fallback | env, settings, bundled binary, embedded target cache, PATH fallback | env, settings, PATH | env, settings, PATH |
-| **Notes** | Debug builds prefer vendored JS directly. Gateway auth is supported. | Detects and rejects plain `codex` CLI because current integration still expects ACP. | Login readiness is inferred from `~/.gemini/settings.json`. | Login readiness is inferred from Kilo auth stores under the user data directory. |
+| **Notes** | Debug builds prefer vendored JS directly. Gateway auth is supported. | Detects and rejects plain `codex` CLI because current integration still expects ACP. | Login readiness is inferred from `~/.gemini/settings.json`. | Login readiness is inferred from system-level Kilo auth stores (`XDG_DATA_HOME`, `LOCALAPPDATA`, `~/.local/share`). |
 
 Notes:
 
@@ -222,8 +222,6 @@ The packaging entrypoints are:
 ## Authentication
 
 ### Storage model
-
-Unlike the previous codebase, Comando does not keep AI setup in standalone JSON files.
 
 - Runtime settings are stored in the app SQLite database via `SettingsService`
 - Secrets are stored in the same `app_settings` table but encrypted through Electron `safeStorage`
@@ -465,9 +463,17 @@ Instead:
 src/main/
 ├── ai/
 │   ├── ACP.md
-│   ├── service.ts                    # ACP client orchestration and session lifecycle
+│   ├── client.ts                     # ACP client wrapper and connection utilities
+│   ├── contracts.ts                  # Runtime metadata keys and ACP compatibility constants
+│   ├── openFileBuffers.ts            # Tracked open buffers shared with AI sessions
 │   ├── persistence.ts                # Session history, runtime catalog and selection persistence
+│   ├── review-core.ts                # Review/change-tracking state helpers
+│   ├── runtime-env.ts                # Shared runtime environment construction
 │   ├── secret-store.ts               # Encrypted secret storage via Electron safeStorage
+│   ├── service.ts                    # AI service orchestration and runtime settings flows
+│   ├── session-core.ts               # Session-level reducers and shared AI state helpers
+│   ├── worker-runtime.ts             # Live ACP session/runtime execution
+│   ├── worker.ts                     # AI worker bootstrap
 │   ├── resolver/
 │   │   └── runtime-resolver.ts       # Codex runtime discovery and compatibility checks
 │   ├── claude/
@@ -480,12 +486,15 @@ src/main/
 │       └── setup.ts                  # Kilo runtime resolution and auth detection
 │
 ├── db/
+│   ├── awaitable.ts                  # Promise coordination helpers for the DB worker
 │   ├── client.ts                     # DB worker client, runtime catalog rehydration
 │   ├── index.ts                      # SQLite bootstrap
+│   ├── migrations.ts                 # Schema migrations
 │   └── worker.ts                     # Worker entrypoint and AI bootstrap state
 │
 └── ipc/
-    └── index.ts                      # Typed Electron IPC handlers
+    ├── index.ts                      # Typed Electron IPC handlers
+    └── rate-limit.ts                 # IPC-side throttling helpers
 
 scripts/
 └── ai/

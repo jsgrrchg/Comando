@@ -9,11 +9,11 @@ import type {
     ProjectTreeNode,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
+import { INLINE_EDITOR_MAX_BYTES } from "@shared/editor-performance";
 
 import { debugBenignError } from "../observability/logging";
 import { shouldIgnoreEntry } from "./ignore";
 
-const DEFAULT_INLINE_EDITOR_MAX_BYTES = 4 * 1024 * 1024;
 const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
 
 interface GitSnapshot {
@@ -102,7 +102,7 @@ export async function readProjectFile(options: {
         options.rootPath,
         options.relativePath,
     );
-    const maxBytes = options.maxBytes ?? DEFAULT_INLINE_EDITOR_MAX_BYTES;
+    const maxBytes = options.maxBytes ?? INLINE_EDITOR_MAX_BYTES;
     const stats = await fs.promises.stat(absolutePath);
     const isTooLarge = stats.size > maxBytes;
     const mimeType = resolveMimeType(absolutePath);

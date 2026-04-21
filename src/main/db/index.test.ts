@@ -23,9 +23,10 @@ describe("databaseMigrations", () => {
             gitWorktreesMigration,
             projectVisibilityMigration,
             aiHistoryIndexesMigration,
+            aiPinnedSessionsMigration,
         ] = databaseMigrations;
 
-        expect(databaseMigrations).toHaveLength(9);
+        expect(databaseMigrations).toHaveLength(10);
         expect(foundationMigration?.id).toBe("0001-foundation");
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
@@ -105,6 +106,11 @@ describe("databaseMigrations", () => {
         );
         expect(aiHistoryIndexesMigration?.sql).toContain(
             "idx_chat_sessions_runtime_updated_at",
+        );
+        expect(aiPinnedSessionsMigration?.id).toBe("0010-ai-pinned-sessions");
+        expect(aiPinnedSessionsMigration?.sql).toContain("pinned_at");
+        expect(aiPinnedSessionsMigration?.sql).toContain(
+            "idx_chat_sessions_project_worktree_pinned_at",
         );
     });
 

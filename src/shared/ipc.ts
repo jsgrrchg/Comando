@@ -31,6 +31,7 @@ export const IPC_CHANNELS = {
     saveShellState: "app:save-shell-state",
     setTrafficLightVisibility: "app:set-traffic-light-visibility",
     setNativeAppearance: "app:set-native-appearance",
+    resolveTsconfigForPath: "tsconfig:resolve-for-path",
     getGitRepositorySnapshot: "git:get-repository-snapshot",
     listGitBranches: "git:list-branches",
     listGitWorktrees: "git:list-worktrees",
@@ -448,6 +449,28 @@ export interface OpenProjectWindowInput {
     readonly forceNewWindow?: boolean;
     readonly projectId: string;
     readonly worktreeId?: string | null;
+}
+
+export type TsconfigModuleResolution =
+    | "bundler"
+    | "classic"
+    | "node"
+    | "node16"
+    | "nodenext";
+
+export interface TsconfigCompilerOptionsSnapshot {
+    readonly baseUrl: string | null;
+    readonly moduleResolution: TsconfigModuleResolution | null;
+    readonly paths: Readonly<Record<string, readonly string[]>> | null;
+}
+
+export interface TsconfigResolutionSnapshot {
+    readonly aliasPatterns: readonly string[];
+    readonly compilerOptions: TsconfigCompilerOptionsSnapshot | null;
+    readonly configPath: string | null;
+    readonly diagnosticCodesToIgnore: readonly number[];
+    readonly errors: readonly string[];
+    readonly projectRootPath: string | null;
 }
 
 export type GitRepositoryState =
@@ -1507,6 +1530,9 @@ export interface ComandoApi {
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     setNativeAppearance: (mode: ThemeMode) => Promise<void>;
+    resolveTsconfigForPath: (
+        filePath: string,
+    ) => Promise<TsconfigResolutionSnapshot>;
     getGitRepositorySnapshot: (
         input: GitRepositoryScopeInput,
     ) => Promise<GitRepositorySnapshot | null>;

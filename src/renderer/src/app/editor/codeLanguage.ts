@@ -11,13 +11,16 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 
 type LanguageKey =
     | "astro"
+    | "bat"
     | "c"
     | "csharp"
     | "clojure"
     | "cmake"
     | "cpp"
     | "css"
+    | "csv"
     | "d"
+    | "dart"
     | "diff"
     | "dockerfile"
     | "elixir"
@@ -28,6 +31,7 @@ type LanguageKey =
     | "hcl"
     | "haskell"
     | "html"
+    | "http"
     | "java"
     | "javascript"
     | "javascript-jsx"
@@ -35,8 +39,13 @@ type LanguageKey =
     | "julia"
     | "kotlin"
     | "lua"
+    | "log"
     | "markdown"
     | "makefile"
+    | "nginx"
+    | "nix"
+    | "nu"
+    | "objc"
     | "pascal"
     | "perl"
     | "php"
@@ -51,6 +60,7 @@ type LanguageKey =
     | "sass"
     | "scala"
     | "shell"
+    | "solidity"
     | "sql"
     | "sql-mssql"
     | "sql-mysql"
@@ -68,17 +78,21 @@ type LanguageKey =
     | "vue"
     | "wast"
     | "xml"
-    | "yaml";
+    | "yaml"
+    | "zig";
 
 const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     astro: ["astro"],
+    bat: ["bat", "batch", "cmd"],
     c: ["c"],
     csharp: ["csharp", "c#", "cs"],
     clojure: ["clojure", "clj", "cljs"],
     cmake: ["cmake"],
     cpp: ["cpp", "c++", "cc", "cxx", "h", "hpp"],
     css: ["css", "scss", "less"],
+    csv: ["csv", "tsv"],
     d: ["d"],
+    dart: ["dart"],
     diff: ["diff", "patch"],
     dockerfile: ["dockerfile", "docker"],
     elixir: ["elixir", "ex", "exs"],
@@ -89,6 +103,7 @@ const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     hcl: ["hcl", "terraform", "tf", "tfvars"],
     haskell: ["haskell", "hs"],
     html: ["html"],
+    http: ["http", "rest"],
     java: ["java"],
     javascript: ["javascript", "js", "node", "nodejs", "mjs", "cjs"],
     "javascript-jsx": ["jsx"],
@@ -96,8 +111,13 @@ const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     julia: ["julia", "jl"],
     kotlin: ["kotlin", "kt", "kts"],
     lua: ["lua"],
+    log: ["log"],
     markdown: ["markdown", "md", "mdown", "mkd"],
     makefile: ["make", "makefile", "mk"],
+    nginx: ["nginx"],
+    nix: ["nix"],
+    nu: ["nu", "nushell"],
+    objc: ["objc", "objective-c", "objectivec", "m", "mm"],
     pascal: ["pascal", "delphi"],
     perl: ["perl", "pl"],
     php: ["php", "php3", "php4", "php5", "phtml"],
@@ -112,6 +132,7 @@ const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     sass: ["sass"],
     scala: ["scala", "sc"],
     shell: ["shell", "sh", "bash", "zsh", "fish", "shellscript"],
+    solidity: ["solidity", "sol"],
     sql: ["sql"],
     "sql-mssql": ["mssql", "tsql"],
     "sql-mysql": ["mysql", "mariadb"],
@@ -130,41 +151,55 @@ const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     wast: ["wast", "wat", "wasm"],
     xml: ["xml", "svg", "xhtml"],
     yaml: ["yaml", "yml"],
+    zig: ["zig"],
 };
 
 const markdownFenceAliasToKey = new Map<string, LanguageKey>();
 const pathLanguageIdToKey: Record<string, LanguageKey | null> = {
     astro: "astro",
+    bat: "bat",
     c: "c",
     clojure: "clojure",
     cmake: "cmake",
+    cmd: "bat",
     cpp: "cpp",
     csharp: "csharp",
     css: "css",
+    csv: "csv",
     d: "d",
+    dart: "dart",
     dockerfile: "dockerfile",
     diff: "diff",
     elixir: "elixir",
     erlang: "erlang",
+    fish: "shell",
     go: "go",
     graphql: "graphql",
     groovy: "groovy",
     hcl: "hcl",
     haskell: "haskell",
     html: "html",
+    http: "http",
     ini: "properties",
     java: "java",
     javascript: "javascript",
     jsx: "javascript-jsx",
     json: "json",
+    jsonc: "json",
     julia: "julia",
     kotlin: "kotlin",
     less: "css",
     lua: "lua",
+    log: "log",
     markdown: "markdown",
     makefile: "makefile",
     mdx: "typescript-jsx",
+    nginx: "nginx",
+    nix: "nix",
+    nu: "nu",
+    objc: "objc",
     pascal: "pascal",
+    perl: "perl",
     php: "php",
     plaintext: null,
     powershell: "powershell",
@@ -179,6 +214,7 @@ const pathLanguageIdToKey: Record<string, LanguageKey | null> = {
     scala: "scala",
     scss: "css",
     shell: "shell",
+    solidity: "solidity",
     sql: "sql",
     stylus: "stylus",
     svelte: "svelte",
@@ -192,6 +228,7 @@ const pathLanguageIdToKey: Record<string, LanguageKey | null> = {
     wast: "wast",
     xml: "xml",
     yaml: "yaml",
+    zig: "zig",
 };
 const mimeTypeToKey: Record<string, LanguageKey | null> = {
     "application/astro": "astro",
@@ -200,6 +237,7 @@ const mimeTypeToKey: Record<string, LanguageKey | null> = {
     "application/json": "json",
     "application/prisma": "prisma",
     "application/sql": "sql",
+    "application/x-solidity": "solidity",
     "application/toml": "toml",
     "application/typescript": "typescript",
     "application/x-httpd-php": "php",
@@ -209,6 +247,7 @@ const mimeTypeToKey: Record<string, LanguageKey | null> = {
     "application/yaml": "yaml",
     "image/svg+xml": "xml",
     "text/css": "css",
+    "text/csv": "csv",
     "text/html": "html",
     "text/javascript": "javascript",
     "text/jsx": "javascript-jsx",
@@ -227,6 +266,10 @@ const mimeTypeToKey: Record<string, LanguageKey | null> = {
     "text/x-c++src": "cpp",
     "text/x-diff": "diff",
     "text/x-go": "go",
+    "text/x-http": "http",
+    "text/x-log": "log",
+    "text/x-nginx-conf": "nginx",
+    "text/x-nushell": "nu",
     "text/x-java-source": "java",
     "text/x-java": "java",
     "text/x-jsx": "javascript-jsx",
@@ -239,6 +282,7 @@ const mimeTypeToKey: Record<string, LanguageKey | null> = {
     "text/x-sql": "sql",
     "text/x-tsx": "typescript-jsx",
     "text/x-vue": "vue",
+    "text/tab-separated-values": "csv",
     "text/xml": "xml",
     "text/yaml": "yaml",
 };
@@ -246,6 +290,7 @@ const languageCache = new Map<LanguageKey, Promise<LanguageSupport | null>>();
 const exactPathAliases = new Map<string, LanguageKey>([
     ["dockerfile", "dockerfile"],
     ["makefile", "makefile"],
+    ["nginx.conf", "nginx"],
 ]);
 
 for (const key of Object.keys(markdownFenceAliases) as LanguageKey[]) {
@@ -503,6 +548,190 @@ async function loadAstroLanguage(): Promise<LanguageSupport | Language> {
     );
 }
 
+async function loadBatchLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                { regex: /^\s*(?:rem\b|::).*$/i, token: "comment" },
+                {
+                    regex: /%[A-Za-z_][\w]*%|![A-Za-z_][\w]*!|%[0-9*]/,
+                    token: "variableName",
+                },
+                { regex: /:[A-Za-z_][\w.-]*/, token: "definition" },
+                {
+                    regex: /\b(?:assoc|call|cd|chdir|choice|cls|cmd|copy|del|dir|do|echo|else|endlocal|erase|errorlevel|exit|for|goto|if|in|md|mkdir|move|not|path|pause|popd|pushd|rd|ren|rename|rmdir|set|setlocal|shift|start|title|type|xcopy)\b/i,
+                    token: "keyword",
+                },
+                { regex: /"(?:[^"]|"")*"/, token: "string" },
+                { regex: /\b\d+\b/, token: "number" },
+                { regex: /==|<=|>=|&&|\|\||[=<>|&]/, token: "operator" },
+            ],
+        }),
+    );
+}
+
+async function loadCsvLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                { regex: /"(?:[^"]|"")*"/, token: "string" },
+                { regex: /[,\t]/, token: "punctuation" },
+                { regex: /[^,\t\r\n]+/, token: "variableName" },
+            ],
+        }),
+    );
+}
+
+async function loadLogLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                {
+                    regex: /\b(?:TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|CRITICAL)\b/,
+                    token: "keyword",
+                },
+                {
+                    regex: /\b\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?\b/,
+                    token: "number",
+                },
+                { regex: /"(?:[^"\\]|\\.)*"/, token: "string" },
+                { regex: /\b(?:true|false|null)\b/i, token: "atom" },
+                { regex: /\b\d+(?:\.\d+)?\b/, token: "number" },
+                { regex: /\[[^\]]*\]/, token: "meta" },
+                { regex: /[A-Za-z_][\w.-]*(?==)/, token: "propertyName" },
+            ],
+        }),
+    );
+}
+
+async function loadNixLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                { regex: /#.*/, token: "comment" },
+                { regex: /\/\*.*?\*\//, token: "comment" },
+                {
+                    regex: /\b(?:assert|else|if|in|inherit|let|or|rec|then|with)\b/,
+                    token: "keyword",
+                },
+                {
+                    regex: /\b(?:abort|baseNameOf|derivation|dirOf|fetchGit|fetchTarball|import|isNull|map|placeholder|removeAttrs|throw|toString)\b(?=\s)/,
+                    token: "function",
+                },
+                { regex: /''(?:[^']|'(?!'))*''/, token: "string" },
+                { regex: /"(?:[^"\\]|\\"|\\.)*"/, token: "string" },
+                { regex: /\$\{[^}]*\}/, token: "meta" },
+                { regex: /\b(?:true|false|null)\b/, token: "atom" },
+                { regex: /\b\d+(?:\.\d+)?\b/, token: "number" },
+                { regex: /[A-Za-z_][\w'-]*(?=\s*=)/, token: "definition" },
+                { regex: /[=+\-*/<>!?:@.]+|&&|\|\|/, token: "operator" },
+                { regex: /[()[\]{};,]/, token: "punctuation" },
+                { regex: /[A-Za-z_][\w'-]*/, token: "variableName" },
+            ],
+        }),
+    );
+}
+
+async function loadNushellLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                { regex: /#.*/, token: "comment" },
+                {
+                    regex: /\b(?:alias|break|continue|def|def-env|else|export|for|hide|if|in|let|loop|match|module|mut|overlay|return|try|use|where|while)\b/,
+                    token: "keyword",
+                },
+                { regex: /\$[A-Za-z_][\w.-]*/, token: "variableName" },
+                { regex: /--?[A-Za-z][\w-]*/, token: "attributeName" },
+                { regex: /"(?:[^"\\]|\\.)*"/, token: "string" },
+                { regex: /'(?:[^'\\]|\\.)*'/, token: "string" },
+                { regex: /\b(?:true|false|null)\b/, token: "atom" },
+                { regex: /\b\d+(?:\.\d+)?(?:kb|mb|gb|ms|sec|min|hr)?\b/i, token: "number" },
+                { regex: /\|>|==|!=|<=|>=|&&|\|\||[=+\-*/<>!?|]/, token: "operator" },
+                { regex: /[()[\]{},.:;]/, token: "punctuation" },
+                { regex: /[A-Za-z_][\w-]*(?=\s)/, token: "function" },
+            ],
+        }),
+    );
+}
+
+async function loadSolidityLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                { regex: /\/\/.*/, token: "comment" },
+                { regex: /\/\*.*?\*\//, token: "comment" },
+                {
+                    regex: /\b(?:abstract|after|anonymous|as|assembly|break|calldata|case|catch|constant|constructor|continue|contract|delete|do|else|emit|enum|error|event|external|fallback|for|from|function|if|immutable|import|indexed|interface|internal|is|library|mapping|memory|modifier|new|override|payable|private|public|pure|receive|return|returns|revert|storage|struct|try|type|unchecked|using|view|virtual|while)\b/,
+                    token: "keyword",
+                },
+                {
+                    regex: /\b(?:address|bool|bytes(?:[1-9]|[12][0-9]|3[0-2])?|int(?:8|16|32|64|128|256)?|string|uint(?:8|16|32|64|128|256)?)\b/,
+                    token: "typeName",
+                },
+                { regex: /0x[a-fA-F0-9]+/, token: "number" },
+                { regex: /"(?:[^"\\]|\\.)*"/, token: "string" },
+                { regex: /'(?:[^'\\]|\\.)*'/, token: "string" },
+                { regex: /\b(?:true|false|wei|gwei|ether|seconds|minutes|hours|days|weeks)\b/, token: "atom" },
+                { regex: /\b\d+(?:\.\d+)?\b/, token: "number" },
+                { regex: /\b[A-Za-z_][\w]*(?=\s*\()/, token: "function" },
+                { regex: /=>|==|!=|<=|>=|&&|\|\||[=+\-*/%<>!?|&^~]/, token: "operator" },
+                { regex: /[()[\]{},.:;]/, token: "punctuation" },
+                { regex: /\b[A-Z][A-Za-z0-9_]*\b/, token: "typeName" },
+                { regex: /\b[A-Za-z_][\w]*\b/, token: "variableName" },
+            ],
+        }),
+    );
+}
+
+async function loadZigLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                { regex: /\/\/.*/, token: "comment" },
+                {
+                    regex: /\b(?:align|allowzero|and|anyframe|anytype|asm|async|await|break|callconv|catch|comptime|const|continue|defer|else|enum|errdefer|error|export|extern|fn|for|if|inline|linksection|noalias|noinline|nosuspend|opaque|or|orelse|packed|pub|resume|return|struct|suspend|switch|test|threadlocal|try|union|unreachable|usingnamespace|var|volatile|while)\b/,
+                    token: "keyword",
+                },
+                { regex: /@[A-Za-z_][\w]*/, token: "meta" },
+                {
+                    regex: /\b(?:bool|c_int|c_long|c_longdouble|c_longlong|c_short|c_uint|c_ulong|c_ulonglong|c_ushort|comptime_float|comptime_int|f16|f32|f64|f80|f128|isize|noreturn|type|usize|void)\b/,
+                    token: "typeName",
+                },
+                { regex: /"(?:[^"\\]|\\.)*"/, token: "string" },
+                { regex: /'(?:[^'\\]|\\.)*'/, token: "string" },
+                { regex: /\b(?:true|false|null|undefined)\b/, token: "atom" },
+                { regex: /\b(?:0x[a-fA-F0-9_]+|\d[\d_]*(?:\.\d[\d_]*)?)\b/, token: "number" },
+                { regex: /\b[A-Za-z_][\w]*(?=\s*\()/, token: "function" },
+                { regex: /==|!=|<=|>=|=>|[=+\-*/%<>!?|&^~]/, token: "operator" },
+                { regex: /[()[\]{},.:;]/, token: "punctuation" },
+                { regex: /\b[A-Za-z_][\w]*\b/, token: "variableName" },
+            ],
+        }),
+    );
+}
+
 async function loadLanguageByKey(
     key: LanguageKey,
 ): Promise<LanguageSupport | Language | null> {
@@ -511,6 +740,8 @@ async function loadLanguageByKey(
             return import("@codemirror/lang-markdown").then(({ markdown }) =>
                 markdown(),
             );
+        case "bat":
+            return loadBatchLanguage();
         case "c":
         case "cpp":
             return import("@codemirror/lang-cpp").then(({ cpp }) => cpp());
@@ -518,6 +749,18 @@ async function loadLanguageByKey(
             return import("@codemirror/legacy-modes/mode/clike").then(
                 ({ csharp }) => StreamLanguage.define(csharp),
             );
+        case "dart":
+            return import("@codemirror/legacy-modes/mode/clike").then(
+                ({ dart }) => StreamLanguage.define(dart),
+            );
+        case "objc":
+            return import("@codemirror/legacy-modes/mode/clike").then(
+                ({ objectiveC }) => StreamLanguage.define(objectiveC),
+            );
+        case "csv":
+            return loadCsvLanguage();
+        case "log":
+            return loadLogLanguage();
         case "rust":
             return import("@codemirror/lang-rust").then(({ rust }) => rust());
         case "javascript":
@@ -603,6 +846,14 @@ async function loadLanguageByKey(
                         }),
                     ),
             );
+        case "nginx":
+            return import("@codemirror/legacy-modes/mode/nginx").then(
+                ({ nginx }) => StreamLanguage.define(nginx),
+            );
+        case "nix":
+            return loadNixLanguage();
+        case "nu":
+            return loadNushellLanguage();
         case "powershell":
             return import("@codemirror/legacy-modes/mode/powershell").then(
                 ({ powerShell }) => StreamLanguage.define(powerShell),
@@ -623,9 +874,17 @@ async function loadLanguageByKey(
             return import("@codemirror/legacy-modes/mode/shell").then(
                 ({ shell }) => StreamLanguage.define(shell),
             );
+        case "solidity":
+            return loadSolidityLanguage();
+        case "zig":
+            return loadZigLanguage();
         case "toml":
             return import("@codemirror/legacy-modes/mode/toml").then(
                 ({ toml }) => StreamLanguage.define(toml),
+            );
+        case "http":
+            return import("@codemirror/legacy-modes/mode/http").then(
+                ({ http }) => StreamLanguage.define(http),
             );
         case "go":
             return import("@codemirror/legacy-modes/mode/go").then(({ go }) =>

@@ -109,6 +109,26 @@ describe("project tree helpers", () => {
         expect(document.languageLabel).toBe("Python");
     });
 
+    it("keeps 10MB JSON files within the inline editor budget", async () => {
+        const rootPath = createProjectFixture();
+        const relativePath = "large.json";
+        const content = JSON.stringify({
+            payload: "x".repeat(10 * 1024 * 1024),
+        });
+
+        fs.writeFileSync(path.join(rootPath, relativePath), content);
+
+        const document = await readProjectFile({
+            projectId: "project-1",
+            relativePath,
+            rootPath,
+        });
+
+        expect(document.isTooLarge).toBe(false);
+        expect(document.content.length).toBe(content.length);
+        expect(document.languageId).toBe("json");
+    });
+
     it("reads images with inline preview metadata", async () => {
         const rootPath = createProjectFixture();
         const relativePath = "assets/logo.png";

@@ -165,11 +165,11 @@ const SHELL_SUBCOMMANDS = [
 ] as const;
 
 const SHELL_OPTION_REGEX =
-    /(?:-{1,2}[A-Za-z0-9][\w-]*)(?:=(?:"[^"\n]*"|'[^'\n]*'|[^\s"'`|&;(){}\[\]]+))?/;
+    /(?:-{1,2}[A-Za-z0-9][\w-]*)(?:=(?:"[^"\n]*"|'[^'\n]*'|[^\s"'`|&;(){}[\]]+))?/;
 const SHELL_PATH_REGEX =
-    /(?:~\/|\.\.\/|\.\/|\/|[A-Za-z0-9._-]+\/)[^\s"'`|&;(){}\[\]]*/;
+    /(?:~\/|\.\.\/|\.\/|\/|[A-Za-z0-9._-]+\/)[^\s"'`|&;(){}[\]]*/;
 const SHELL_ASSIGNMENT_REGEX =
-    /\b[A-Za-z_][\w]*=(?:"[^"\n]*"|'[^'\n]*'|[^\s"'`|&;(){}\[\]]+)/;
+    /\b[A-Za-z_][\w]*=(?:"[^"\n]*"|'[^'\n]*'|[^\s"'`|&;(){}[\]]+)/;
 
 const shellKeywordSet = new Set<string>(SHELL_KEYWORDS);
 const shellBuiltinSet = new Set<string>(SHELL_BUILTINS);

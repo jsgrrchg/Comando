@@ -47,6 +47,15 @@ describe("resolveEditorLanguage", () => {
 
         expect(
             resolveEditorLanguage({
+                filePath: "/workspace/config/settings.jsonc",
+            }),
+        ).toEqual({
+            id: "jsonc",
+            label: "JSONC",
+        });
+
+        expect(
+            resolveEditorLanguage({
                 filePath: "/workspace/config/Cargo.toml",
             }),
         ).toEqual({
@@ -197,6 +206,123 @@ describe("resolveEditorLanguage", () => {
             id: "elixir",
             label: "Elixir",
         });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/app/main.dart",
+            }),
+        ).toEqual({
+            id: "dart",
+            label: "Dart",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/flake.nix",
+            }),
+        ).toEqual({
+            id: "nix",
+            label: "Nix",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/src/main.zig",
+            }),
+        ).toEqual({
+            id: "zig",
+            label: "Zig",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/ios/AppDelegate.m",
+            }),
+        ).toEqual({
+            id: "objc",
+            label: "Objective-C",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/scripts/build.bat",
+            }),
+        ).toEqual({
+            id: "bat",
+            label: "Batch",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/scripts/build.cmd",
+            }),
+        ).toEqual({
+            id: "cmd",
+            label: "Windows Command",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/scripts/prompt.fish",
+            }),
+        ).toEqual({
+            id: "fish",
+            label: "Fish",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/scripts/build.nu",
+            }),
+        ).toEqual({
+            id: "nu",
+            label: "Nushell",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/contracts/Token.sol",
+            }),
+        ).toEqual({
+            id: "solidity",
+            label: "Solidity",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/nginx.conf",
+            }),
+        ).toEqual({
+            id: "nginx",
+            label: "Nginx",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/api/request.http",
+            }),
+        ).toEqual({
+            id: "http",
+            label: "HTTP",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/data/export.csv",
+            }),
+        ).toEqual({
+            id: "csv",
+            label: "CSV",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/logs/app.log",
+            }),
+        ).toEqual({
+            id: "log",
+            label: "Log",
+        });
     });
 
     it("falls back to the shebang for extensionless scripts", () => {
@@ -218,6 +344,16 @@ describe("resolveEditorLanguage", () => {
         ).toEqual({
             id: "python",
             label: "Python",
+        });
+
+        expect(
+            resolveEditorLanguage({
+                filePath: "/workspace/scripts/prompt",
+                probeContent: "#!/usr/bin/env fish\nset -gx EDITOR vim\n",
+            }),
+        ).toEqual({
+            id: "fish",
+            label: "Fish",
         });
     });
 

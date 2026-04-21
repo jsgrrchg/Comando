@@ -48,7 +48,16 @@ interface Block {
     readonly type: "code" | "text";
 }
 
-const BLOCK_RE = /```([^\n`]*)\n([\s\S]*?)```/g;
+interface MarkdownFenceOpening {
+    readonly char: "`" | "~";
+    readonly info: string;
+    readonly length: number;
+}
+
+interface TextRange {
+    readonly from: number;
+    readonly to: number;
+}
 
 /* ─── Table parsing ─── */
 
@@ -110,19 +119,35 @@ function parseBlocks(text: string): Block[] {
     const cached = parsedBlockCache.get(text);
     if (cached) return cached;
     const blocks: Block[] = [];
+    let cursor = 0;
     let lastIndex = 0;
 
-    for (const match of text.matchAll(BLOCK_RE)) {
-        const before = text.slice(lastIndex, match.index);
-        if (before) {
-            blocks.push({ content: before, info: "", type: "text" });
+    while (cursor < text.length) {
+        const lineEnd = text.indexOf("\n", cursor);
+        const lineTo = lineEnd === -1 ? text.length : lineEnd;
+        const lineText = text.slice(cursor, lineTo);
+        const opening = parseMarkdownFenceOpening(lineText);
+
+        if (!opening) {
+            cursor = lineEnd === -1 ? text.length : lineEnd + 1;
+            continue;
         }
+
+        const before = text.slice(lastIndex, cursor);
+        if (before) blocks.push({ content: before, info: "", type: "text" });
+
+        const contentStart = lineEnd === -1 ? lineTo : lineEnd + 1;
+        const closing = findMarkdownFenceClosing(text, contentStart, opening);
+        const contentEnd = closing?.from ?? text.length;
+        const content = text.slice(contentStart, contentEnd).replace(/\n$/, "");
+
         blocks.push({
-            content: (match[2] ?? "").replace(/\n$/, ""),
-            info: (match[1] ?? "").trim().toLowerCase(),
+            content,
+            info: opening.info.toLowerCase(),
             type: "code",
         });
-        lastIndex = (match.index ?? 0) + match[0].length;
+        lastIndex = closing?.to ?? text.length;
+        cursor = lastIndex;
     }
 
     const tail = text.slice(lastIndex);
@@ -131,6 +156,77 @@ function parseBlocks(text: string): Block[] {
     }
 
     return rememberParsedBlocks(text, blocks);
+}
+
+function parseMarkdownFenceOpening(lineText: string): MarkdownFenceOpening | null {
+    const match = lineText.match(/^(?: {0,3})(`{3,}|~{3,})(.*)$/);
+    if (!match) {
+        return null;
+    }
+
+    const marker = match[1] ?? "";
+    const info = (match[2] ?? "").trim();
+    const char = marker[0];
+    if (char !== "`" && char !== "~") {
+        return null;
+    }
+    if (char === "`" && info.includes("`")) {
+        return null;
+    }
+
+    return {
+        char,
+        info,
+        length: marker.length,
+    };
+}
+
+function findMarkdownFenceClosing(
+    text: string,
+    startOffset: number,
+    opening: MarkdownFenceOpening,
+): TextRange | null {
+    let cursor = startOffset;
+
+    while (cursor < text.length) {
+        const lineEnd = text.indexOf("\n", cursor);
+        const lineTo = lineEnd === -1 ? text.length : lineEnd;
+        const lineText = text.slice(cursor, lineTo);
+
+        if (isMarkdownFenceClosingLine(lineText, opening)) {
+            return {
+                from: cursor,
+                to: lineEnd === -1 ? lineTo : lineEnd + 1,
+            };
+        }
+
+        if (lineEnd === -1) {
+            break;
+        }
+        cursor = lineEnd + 1;
+    }
+
+    return null;
+}
+
+function isMarkdownFenceClosingLine(
+    lineText: string,
+    opening: MarkdownFenceOpening,
+): boolean {
+    let cursor = 0;
+    while (cursor < lineText.length && lineText[cursor] === " " && cursor < 3) {
+        cursor += 1;
+    }
+
+    let markerLength = 0;
+    while (lineText[cursor + markerLength] === opening.char) {
+        markerLength += 1;
+    }
+    if (markerLength < opening.length) {
+        return false;
+    }
+
+    return lineText.slice(cursor + markerLength).trim().length === 0;
 }
 
 /* ─── Inline rendering ─── */

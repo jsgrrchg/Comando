@@ -34,6 +34,18 @@ describe("resolveMarkdownCodeLanguageKey", () => {
         expect(resolveMarkdownCodeLanguageKey("bash")).toBe("shell");
         expect(resolveMarkdownCodeLanguageKey("graphql")).toBe("graphql");
         expect(resolveMarkdownCodeLanguageKey("patch")).toBe("diff");
+        expect(resolveMarkdownCodeLanguageKey("bat")).toBe("bat");
+        expect(resolveMarkdownCodeLanguageKey("cmd")).toBe("bat");
+        expect(resolveMarkdownCodeLanguageKey("csv")).toBe("csv");
+        expect(resolveMarkdownCodeLanguageKey("dart")).toBe("dart");
+        expect(resolveMarkdownCodeLanguageKey("http")).toBe("http");
+        expect(resolveMarkdownCodeLanguageKey("log")).toBe("log");
+        expect(resolveMarkdownCodeLanguageKey("nginx")).toBe("nginx");
+        expect(resolveMarkdownCodeLanguageKey("nix")).toBe("nix");
+        expect(resolveMarkdownCodeLanguageKey("nu")).toBe("nu");
+        expect(resolveMarkdownCodeLanguageKey("objc")).toBe("objc");
+        expect(resolveMarkdownCodeLanguageKey("sol")).toBe("solidity");
+        expect(resolveMarkdownCodeLanguageKey("zig")).toBe("zig");
     });
 });
 
@@ -92,6 +104,33 @@ describe("resolveCodeLanguageKeyFromPath", () => {
         ).toBe("scala");
         expect(resolveCodeLanguageKeyFromPath("/workspace/lib/demo.ex")).toBe(
             "elixir",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/bin/build.bat")).toBe(
+            "bat",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/data/report.csv")).toBe(
+            "csv",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/lib/main.dart")).toBe(
+            "dart",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/api/request.http")).toBe(
+            "http",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/app.log")).toBe("log");
+        expect(resolveCodeLanguageKeyFromPath("/workspace/nginx.conf")).toBe(
+            "nginx",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/flake.nix")).toBe("nix");
+        expect(resolveCodeLanguageKeyFromPath("/workspace/script.nu")).toBe("nu");
+        expect(resolveCodeLanguageKeyFromPath("/workspace/AppDelegate.m")).toBe(
+            "objc",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/Token.sol")).toBe(
+            "solidity",
+        );
+        expect(resolveCodeLanguageKeyFromPath("/workspace/src/main.zig")).toBe(
+            "zig",
         );
     });
 
@@ -168,6 +207,17 @@ describe("loadCodeLanguageSupportForPath", () => {
     it("loads language support for the extended language set", async () => {
         const filePaths = [
             "/workspace/docs/README.md",
+            "/workspace/bin/build.bat",
+            "/workspace/data/report.csv",
+            "/workspace/lib/main.dart",
+            "/workspace/api/request.http",
+            "/workspace/app.log",
+            "/workspace/nginx.conf",
+            "/workspace/flake.nix",
+            "/workspace/script.nu",
+            "/workspace/AppDelegate.m",
+            "/workspace/Token.sol",
+            "/workspace/src/main.zig",
             "/workspace/src/Program.cs",
             "/workspace/infra/main.tf",
             "/workspace/infra/root.hcl",

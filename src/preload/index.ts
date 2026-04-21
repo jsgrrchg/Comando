@@ -91,6 +91,7 @@ import {
     type SystemTheme,
     type TerminalDataEvent,
     type TerminalExitEvent,
+    type TsconfigResolutionSnapshot,
     type WriteTerminalInput,
     type WorkspaceSnapshot,
 } from "@shared/ipc";
@@ -559,6 +560,14 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
     setNativeAppearance: (mode: ThemeMode) =>
         ipcRenderer.invoke(IPC_CHANNELS.setNativeAppearance, mode),
+    resolveTsconfigForPath: async (filePath: string) =>
+        assertIpcObject<TsconfigResolutionSnapshot>(
+            IPC_CHANNELS.resolveTsconfigForPath,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.resolveTsconfigForPath,
+                filePath,
+            ),
+        ),
     getGitRepositorySnapshot: async (input: GitRepositoryScopeInput) =>
         assertIpcObjectOrNull<GitRepositorySnapshot>(
             IPC_CHANNELS.getGitRepositorySnapshot,

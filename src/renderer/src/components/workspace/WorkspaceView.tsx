@@ -52,7 +52,13 @@ import {
     indentMarkdownListItems,
     outdentMarkdownListItems,
 } from "@renderer/app/editor/markdownLists";
+import { createComandoEditorFeatureOptions } from "@renderer/app/editor/monacoEditorFeatures";
 import { resolveMonacoLanguageId } from "@renderer/app/editor/monacoLanguage";
+import {
+    MONACO_MAX_TOKENIZATION_LINE_LENGTH,
+    resolveLargeFileMonacoLanguageId,
+    shouldDisableTextMateForDocumentSize,
+} from "@renderer/app/editor/monacoPerformance";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import {
     loadAppEditorSettings,
@@ -181,6 +187,9 @@ type MonacoSurfaceRuntime = {
     readonly DiffEditor: typeof import("@monaco-editor/react").DiffEditor;
     readonly Editor: typeof import("@monaco-editor/react").default;
     readonly applyMonacoThemeFromDom: typeof import("@renderer/app/editor/monaco").applyMonacoThemeFromDom;
+    readonly applyProjectTypeScriptConfigForPath: typeof import("@renderer/app/editor/monaco").applyProjectTypeScriptConfigForPath;
+    readonly ensureMonacoTextMateForLanguage: typeof import("@renderer/app/editor/monaco").ensureMonacoTextMateForLanguage;
+    readonly installMonacoTokenDebugAction: typeof import("@renderer/app/editor/monaco").installMonacoTokenDebugAction;
 };
 
 type XtermSurfaceRuntime = {
@@ -2398,9 +2407,8 @@ function tryAttachEditorSelectionToComposer(input: {
     return true;
 }
 
-function bindAttachSelectionShortcut(input: {
+interface AttachSelectionShortcutInput {
     readonly documentLanguageId: string;
-    readonly editor: MonacoEditor.IStandaloneCodeEditor;
     readonly onAttachLineFragment: (input: {
         readonly context: AiFileContextAttachment;
         readonly worktreeId: string | null;
@@ -2409,47 +2417,133 @@ function bindAttachSelectionShortcut(input: {
     readonly relativePath: string;
     readonly tabTitle: string;
     readonly worktreeId: string | null;
-}): (() => void) | null {
+}
+
+function isAttachSelectionShortcutEvent(event: KeyboardEvent): boolean {
+    return (
+        event.key.toLowerCase() === "l" &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey
+    );
+}
+
+function stopHandledAttachSelectionShortcut(event: KeyboardEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+}
+
+function tryAttachEditorSelectionWithShortcutInput(
+    input: AttachSelectionShortcutInput & {
+        readonly editor: MonacoEditor.IStandaloneCodeEditor;
+    },
+): boolean {
+    return tryAttachEditorSelectionToComposer({
+        documentLanguageId: input.documentLanguageId,
+        editor: input.editor,
+        onAttachLineFragment: input.onAttachLineFragment,
+        projectId: input.projectId,
+        relativePath: input.relativePath,
+        tabTitle: input.tabTitle,
+        worktreeId: input.worktreeId,
+    });
+}
+
+function bindAttachSelectionShortcut(
+    input: AttachSelectionShortcutInput & {
+        readonly editor: MonacoEditor.IStandaloneCodeEditor;
+    },
+): (() => void) | null {
     const editorDomNode = input.editor.getDomNode();
     if (!editorDomNode) {
         return null;
     }
 
     const handleEditorKeyDown = (event: KeyboardEvent) => {
-        if (
-            event.key.toLowerCase() !== "l" ||
-            !(event.metaKey || event.ctrlKey) ||
-            event.altKey ||
-            event.shiftKey
-        ) {
+        if (!isAttachSelectionShortcutEvent(event)) {
             return;
         }
 
         // Intercept in capture so Monaco doesn't expand line selection
         // before we can attach the current selection.
-        const attached = tryAttachEditorSelectionToComposer({
-            documentLanguageId: input.documentLanguageId,
-            editor: input.editor,
-            onAttachLineFragment: input.onAttachLineFragment,
-            projectId: input.projectId,
-            relativePath: input.relativePath,
-            tabTitle: input.tabTitle,
-            worktreeId: input.worktreeId,
-        });
+        const attached = tryAttachEditorSelectionWithShortcutInput(input);
 
         if (!attached) {
             return;
         }
 
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+        stopHandledAttachSelectionShortcut(event);
     };
 
     editorDomNode.addEventListener("keydown", handleEditorKeyDown, true);
 
     return () => {
         editorDomNode.removeEventListener("keydown", handleEditorKeyDown, true);
+    };
+}
+
+function getAttachSelectionDiffEditorCandidates(
+    event: KeyboardEvent,
+    editors: readonly MonacoEditor.IStandaloneCodeEditor[],
+): MonacoEditor.IStandaloneCodeEditor[] {
+    const eventTarget = event.target instanceof Node ? event.target : null;
+    const targetEditors = eventTarget
+        ? editors.filter((editor) => editor.getDomNode()?.contains(eventTarget))
+        : [];
+    const focusedEditors = editors.filter(
+        (editor) => editor.hasTextFocus() || editor.hasWidgetFocus(),
+    );
+    const targetedCandidates = [...targetEditors, ...focusedEditors].filter(
+        (editor, index, candidates) => candidates.indexOf(editor) === index,
+    );
+
+    if (targetedCandidates.length > 0) {
+        return targetedCandidates;
+    }
+
+    return [...editors];
+}
+
+function bindInlineReviewAttachSelectionShortcut(
+    input: AttachSelectionShortcutInput & {
+        readonly diffEditor: MonacoEditor.IStandaloneDiffEditor;
+    },
+): (() => void) {
+    const containerDomNode = input.diffEditor.getContainerDomNode();
+
+    const handleDiffEditorKeyDown = (event: KeyboardEvent) => {
+        if (!isAttachSelectionShortcutEvent(event)) {
+            return;
+        }
+
+        const candidates = getAttachSelectionDiffEditorCandidates(event, [
+            input.diffEditor.getModifiedEditor(),
+            input.diffEditor.getOriginalEditor(),
+        ]);
+
+        if (
+            !candidates.some((editor) =>
+                tryAttachEditorSelectionWithShortcutInput({
+                    ...input,
+                    editor,
+                }),
+            )
+        ) {
+            return;
+        }
+
+        stopHandledAttachSelectionShortcut(event);
+    };
+
+    containerDomNode.addEventListener("keydown", handleDiffEditorKeyDown, true);
+
+    return () => {
+        containerDomNode.removeEventListener(
+            "keydown",
+            handleDiffEditorKeyDown,
+            true,
+        );
     };
 }
 
@@ -2667,9 +2761,18 @@ function FileTabView({
     } = useMonacoSurfaceRuntime(canEdit);
     const editorTheme = useMonacoTheme(runtime);
     const monacoLanguageId = useMemo(
-        () => resolveMonacoLanguageId(document?.languageId ?? ""),
-        [document?.languageId],
+        () => {
+            const resolvedLanguageId = resolveMonacoLanguageId(
+                document?.languageId ?? "",
+            );
+
+            return shouldDisableTextMateForDocumentSize(document?.sizeBytes)
+                ? resolveLargeFileMonacoLanguageId(resolvedLanguageId)
+                : resolvedLanguageId;
+        },
+        [document?.languageId, document?.sizeBytes],
     );
+    const documentAbsolutePath = document?.absolutePath ?? null;
     const editorSettings = useResolvedEditorSettings();
     const trackedFile = useAiStore(
         useCallback(
@@ -2787,26 +2890,26 @@ function FileTabView({
         [inlineReviewTrackedFile],
     );
     const inlineReviewShellModelPaths = useMemo(() => {
-        if (!document) {
+        if (!documentAbsolutePath) {
             return null;
         }
 
         return {
             modified: buildWorkspaceEditorModelPath(
-                document.absolutePath,
+                documentAbsolutePath,
                 tab.id,
                 "review-modified",
                 "shell",
             ),
             original: buildWorkspaceEditorModelPath(
-                document.absolutePath,
+                documentAbsolutePath,
                 tab.id,
                 "review-original",
                 "shell",
             ),
         };
     }, [
-        document?.absolutePath,
+        documentAbsolutePath,
         tab.id,
     ]);
     const reviewDiff = useMemo(
@@ -3359,6 +3462,17 @@ function FileTabView({
     const handleEditorBeforeMount = useCallback(() => {
         runtime?.applyMonacoThemeFromDom();
     }, [runtime]);
+
+    useEffect(() => {
+        if (!runtime || !document || document.kind === "image") {
+            return;
+        }
+
+        void runtime.applyProjectTypeScriptConfigForPath(document.absolutePath);
+    }, [
+        document,
+        runtime,
+    ]);
 
     const clearInlineReviewScrollRestore = useCallback(() => {
         if (inlineReviewScrollRestoreFrameRef.current == null) {
@@ -4029,6 +4143,9 @@ function FileTabView({
                                 monaco: MonacoNamespace,
                             ) => {
                                 diffEditorRef.current = editor;
+                                void runtime?.ensureMonacoTextMateForLanguage(
+                                    monacoLanguageId,
+                                );
                                 inlineReviewMonacoRef.current = monaco;
                                 inlineReviewOwnedModelsRef.current = {
                                     modified:
@@ -4040,14 +4157,36 @@ function FileTabView({
                                     editor.getOriginalEditor();
                                 const modifiedEditor =
                                     editor.getModifiedEditor();
+                                const editorFeatureOptions =
+                                    createComandoEditorFeatureOptions();
+                                originalEditor.updateOptions({
+                                    ...editorFeatureOptions,
+                                    largeFileOptimizations: true,
+                                    maxTokenizationLineLength:
+                                        MONACO_MAX_TOKENIZATION_LINE_LENGTH,
+                                });
+                                modifiedEditor.updateOptions({
+                                    ...editorFeatureOptions,
+                                    largeFileOptimizations: true,
+                                    maxTokenizationLineLength:
+                                        MONACO_MAX_TOKENIZATION_LINE_LENGTH,
+                                });
+                                const cleanupOriginalTokenDebug =
+                                    runtime?.installMonacoTokenDebugAction(
+                                        originalEditor,
+                                    ) ?? null;
+                                const cleanupModifiedTokenDebug =
+                                    runtime?.installMonacoTokenDebugAction(
+                                        modifiedEditor,
+                                    ) ?? null;
                                 const syncInlineReviewScrollState = () => {
                                     inlineReviewScrollStateRef.current =
                                         captureDiffEditorScrollState(editor);
                                 };
                                 const cleanupAttachShortcut =
-                                    bindAttachSelectionShortcut({
+                                    bindInlineReviewAttachSelectionShortcut({
                                         documentLanguageId: document.languageId,
-                                        editor: modifiedEditor,
+                                        diffEditor: editor,
                                         onAttachLineFragment,
                                         projectId: tab.projectId,
                                         relativePath: tab.relativePath,
@@ -4087,6 +4226,8 @@ function FileTabView({
                                 editor.onDidDispose(() => {
                                     const ownedModels =
                                         inlineReviewOwnedModelsRef.current;
+                                    cleanupOriginalTokenDebug?.dispose();
+                                    cleanupModifiedTokenDebug?.dispose();
                                     cleanupAttachShortcut?.();
                                     cleanupFindWidgetEscape?.();
                                     findStateListener?.dispose();
@@ -4163,6 +4304,12 @@ function FileTabView({
                         }
                         onMount={(editor) => {
                             editorRef.current = editor;
+                            void runtime?.ensureMonacoTextMateForLanguage(
+                                monacoLanguageId,
+                            );
+                            const cleanupTokenDebug =
+                                runtime?.installMonacoTokenDebugAction(editor) ??
+                                null;
                             const pendingInlineReviewRestoreState =
                                 pendingInlineReviewRestoreStateRef.current
                                     ?.tabId === tab.id
@@ -4232,6 +4379,7 @@ function FileTabView({
                                 flushScheduledEditorViewStatePersist();
                                 editorRef.current = null;
                                 gitGutterDecorationsRef.current = null;
+                                cleanupTokenDebug?.dispose();
                                 scrollListener.dispose();
                                 cursorListener.dispose();
                                 hiddenAreasListener.dispose();
@@ -4253,6 +4401,10 @@ function FileTabView({
                             lineNumbersMinChars: shouldShowGitGutter
                                 ? gitGutterLineNumbersMinChars
                                 : 3,
+                            ...createComandoEditorFeatureOptions(),
+                            largeFileOptimizations: true,
+                            maxTokenizationLineLength:
+                                MONACO_MAX_TOKENIZATION_LINE_LENGTH,
                             minimap: {
                                 enabled: editorSettings.minimapEnabled,
                             },
@@ -4328,6 +4480,12 @@ function useMonacoSurfaceRuntime(enabled: boolean): {
                     Editor: monacoReact.default,
                     applyMonacoThemeFromDom:
                         monacoTheme.applyMonacoThemeFromDom,
+                    applyProjectTypeScriptConfigForPath:
+                        monacoTheme.applyProjectTypeScriptConfigForPath,
+                    ensureMonacoTextMateForLanguage:
+                        monacoTheme.ensureMonacoTextMateForLanguage,
+                    installMonacoTokenDebugAction:
+                        monacoTheme.installMonacoTokenDebugAction,
                 });
             })
             .catch((error) => {
