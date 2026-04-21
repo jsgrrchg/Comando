@@ -181,6 +181,79 @@ describe("toolActivityReviewModel", () => {
         expect(items[1]?.diff.path).toBe("src/secondary.ts");
     });
 
+    it("prefers the matched tracked file diff for chat review rendering", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [
+                        {
+                            id: "snippet-hunk",
+                            lines: [
+                                {
+                                    id: "snippet-remove",
+                                    text: "old snippet",
+                                    type: "remove",
+                                },
+                                {
+                                    id: "snippet-add",
+                                    text: "new snippet",
+                                    type: "add",
+                                },
+                            ],
+                            newCount: 1,
+                            newStart: 4,
+                            oldCount: 1,
+                            oldStart: 4,
+                            visualEndLine: 4,
+                            visualStartLine: 4,
+                        },
+                    ],
+                    isText: true,
+                    kind: "update",
+                    newText: "new snippet",
+                    oldText: "old snippet",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            hunks: [
+                {
+                    id: "full-file-hunk",
+                    lines: [
+                        {
+                            id: "full-remove",
+                            text: "old snippet",
+                            type: "remove",
+                        },
+                        {
+                            id: "full-add",
+                            text: "new snippet",
+                            type: "add",
+                        },
+                    ],
+                    newCount: 1,
+                    newStart: 1502,
+                    oldCount: 1,
+                    oldStart: 1502,
+                    visualEndLine: 1502,
+                    visualStartLine: 1502,
+                },
+            ],
+            newText: "full file after",
+            oldText: "full file before",
+        });
+
+        const [item] = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(item).toBeDefined();
+        expect(item?.file?.identityKey).toBe("tracked-1");
+        expect(item?.diff.hunks[0]?.oldStart).toBe(1502);
+        expect(item?.diff.hunks[0]?.newStart).toBe(1502);
+    });
+
     it("marks preview-only when only activity diff exists", () => {
         const activity = createActivity({
             diffs: [

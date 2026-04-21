@@ -124,7 +124,11 @@ export function deriveChangeReviewItems(
             unmatchedTrackedFiles.delete(file.identityKey);
         }
 
-        return createChangeReviewItem(diff, file, index);
+        return createChangeReviewItem(
+            file ? createDiffFromTrackedFile(file) : diff,
+            file,
+            index,
+        );
     });
 
     const fallbackItems = sortTrackedFiles([
