@@ -1,8 +1,8 @@
 # Comando
 
-> A local-first workspace for coding with AI on real codebases.
+> A local-first workspace for coding with AI on real codebases. Spawn as many agent chats as you need — the app is built for it.
 
-Comando is an Electron desktop application that orchestrates AI-assisted programming directly on local repositories. It is not a chat embedded in an editor, nor a web client wrapped in a shell: it is a multi-pane workspace designed to let AI operate as a first-class collaborator inside your development flow, without sacrificing control, privacy, or proximity to the code.
+Comando is a multi-pane workspace designed to let AI operate as a first-class collaborator inside your development flow, without sacrificing control, privacy, or proximity to the code.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-41-47848F)](https://www.electronjs.org/)
@@ -26,6 +26,7 @@ Comando is an Electron desktop application that orchestrates AI-assisted program
 - [Tech stack](#tech-stack)
 - [Project status](#project-status)
 - [Contributing](#contributing)
+- [Known Issues](#known-issues)
 - [License](#license)
 
 ---
@@ -34,15 +35,15 @@ Comando is an Electron desktop application that orchestrates AI-assisted program
 
 Comando is a development environment built around three principles:
 
-- **Local-first**: all relevant state (sessions, history, credentials, workspaces) lives on your machine in SQLite and the OS keychain. No proprietary backend, no telemetry, no mandatory remote sync.
-- **Codebase-centric**: every AI session is anchored to a specific project root. The AI works on real files, not pasted snippets.
+- **Local-first**: all relevant state (sessions, history, workspaces, and encrypted credentials) lives on your machine in SQLite, with secrets protected by Electron `safeStorage`. No proprietary backend, no telemetry, no mandatory remote sync.
+- **Codebase-centric**: every AI session is anchored to a specific project root, branch, or worktree.
 - **Explicit control**: edits, tool calls, and changes proposed by the AI go through a review flow before being applied. No silent auto-apply.
 
 ## Features
 
 - **Multi-pane workspace** with Monaco editor, integrated terminal (xterm + native pty), AI chat, and diff viewer.
 - **Persistent AI sessions** anchored to a project, with history, file mentions, and real-time streaming.
-- **Change review** side-by-side before accepting AI-proposed edits, with per-hunk rejection.
+- **Inline change review** with per-hunk rejection, similar to Zed, Cursor, Antigravity, and others. There is also a dedicated Review Changes tab.
 - **Integrated Git**: history, diff viewer, staging, and commit — all from the UI.
 - **Persistent tabs** for files, sessions, commits, and terminals.
 - **Project sidebar** with file tree and multi-repo catalog.
@@ -54,28 +55,30 @@ Comando is a development environment built around three principles:
 
 Comando implements the [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol) and talks to multiple runtimes:
 
-| Runtime | Provider | Authentication |
-|---------|----------|----------------|
-| **Claude** | Anthropic | `~/.claude.json` or `ANTHROPIC_API_KEY` (gateway-compatible via `ANTHROPIC_BASE_URL`) |
-| **Codex** | OpenAI | ChatGPT login or API key |
-| **Gemini** | Google | Login via Gemini CLI |
-| **Kilo** | Kilo | `kilo auth` |
+| Runtime | Provider | Delivery | Authentication |
+|---------|----------|----------|----------------|
+| **Claude** | Anthropic | Bundled/staged ACP runtime | `~/.claude.json` or `ANTHROPIC_API_KEY` (gateway-compatible via `ANTHROPIC_BASE_URL`) |
+| **Codex** | OpenAI | Bundled/staged ACP runtime | ChatGPT login, Codex API key, or OpenAI API key |
+| **Gemini** | Google | External runtime | Login via Gemini CLI or API-key-based configuration |
+| **Kilo** | Kilo | External runtime | `kilo auth` |
 
 Credentials are stored encrypted via Electron's `safeStorage`.
+The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes; Gemini and Kilo are configured as external runtimes.
 
 ## Requirements
 
-- **Node.js** 18 or higher
+- **Node.js** `^20.19.0` or `>=22.12.0`
 - **pnpm** 10.33.0 (see `packageManager` in `package.json`)
 - **Supported platforms**: macOS 15+ (universal arm64 + x64), Windows 10/11 (x64 + arm64)
-- C++ toolchain to compile native dependencies (`better-sqlite3`, `node-pty`)
+- C++ toolchain to compile native dependencies during development (`better-sqlite3`, `node-pty`)
+- macOS packaging must run on macOS; Windows packaging must run on Windows
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-org>/comando.git
-cd comando
+git clone https://github.com/jsgrrchg/Comando.git
+cd Comando
 
 # Install dependencies
 pnpm install
@@ -99,36 +102,44 @@ pnpm rebuild:native
 |--------|-------------|
 | `pnpm dev` | Local development with hot reload on the `Comando Dev` channel |
 | `pnpm build` | Production build of `main`, `preload`, and `renderer` |
+| `pnpm icons:build` | Generate platform icon assets from source artwork |
 | `pnpm lint` | Static validation with ESLint |
 | `pnpm test` | Unit tests with Vitest |
 | `pnpm test:watch` | Tests in watch mode |
 | `pnpm typecheck` | Type checking for `node` and `web` |
 | `pnpm check` | Full CI-style check (typecheck + lint + test + build) |
-| `pnpm stage:ai` | Stage Claude and Codex runtimes into the bundle |
+| `pnpm stage:ai` | Stage bundled AI runtimes and embedded assets used by dev/build/package flows |
+| `pnpm stage:codex-runtime` | Refresh only the staged Codex runtime payload |
+| `pnpm verify:ai-runtimes` | Verify that the staged AI runtimes are valid |
 | `pnpm rebuild:native` | Rebuild `better-sqlite3` and `node-pty` |
+| `pnpm package:mac` | Build the universal macOS app and local release artifacts |
+| `pnpm package:win` | Build the Windows app for the current Windows host architecture |
+| `pnpm package:win:x64` | Build the Windows app for `x64` |
+| `pnpm package:win:arm64` | Build the Windows app for `arm64` |
 | `pnpm release:mac` | Package macOS universal and publish artifacts to the configured provider |
 | `pnpm release:win:x64` | Package Windows `x64` and publish artifacts to the configured provider |
 | `pnpm release:win:arm64` | Package Windows `arm64` and publish artifacts to the configured provider |
 
 ## Packaging
 
-Comando stages the Codex and Claude ACP runtimes automatically before `pnpm dev` and `pnpm build` via the `predev` and `prebuild` hooks.
+Comando stages the bundled Claude and Codex ACP runtimes automatically before `pnpm dev` and `pnpm build` via the `predev` and `prebuild` hooks. Packaging also relies on the staged embedded Node/runtime payload under `resources/ai`.
 
 Run the staging step manually only when you want to refresh the staged artifacts ahead of time or diagnose runtime/package issues:
 
 ```bash
 pnpm stage:ai
+pnpm verify:ai-runtimes
 ```
 
 ```bash
-# macOS (universal arm64 + x64, produces .dmg + .zip)
+# macOS only (universal arm64 + x64, produces .dmg + .zip)
 pnpm package:mac
 
 # macOS publish (GitHub Releases)
 pnpm release:mac
 
-# Windows
-pnpm package:win          # multi-arch
+# Windows only
+pnpm package:win          # packages the current Windows host arch
 pnpm package:win:x64
 pnpm package:win:arm64
 pnpm release:win:x64
@@ -184,24 +195,32 @@ For automatic GitHub releases:
 ```
 src/
 ├── main/                 # Electron main process
-│   ├── ai/              # ACP client and runtimes (Claude, Codex, Gemini, Kilo)
-│   ├── db/              # SQLite bootstrap and worker
+│   ├── ai/              # ACP client, runtimes, review flow, runtime setup
+│   ├── db/              # SQLite bootstrap
 │   ├── git/             # Git operations (simple-git)
 │   ├── ipc/             # Typed IPC handlers
+│   ├── observability/   # Logging
+│   ├── persistence/     # Cross-cutting persistence helpers
 │   ├── projects/        # Project catalog and FS access
-│   ├── terminals/       # pty spawning and management
-│   ├── workspace/       # Workspace state
-│   ├── windows/         # Main and settings windows
 │   ├── settings/        # Settings service + encryption
-│   └── observability/   # Logging
+│   ├── terminals/       # pty spawning and management
+│   ├── testing/         # Main-process test helpers
+│   ├── windows/         # Main and settings windows
+│   ├── workers/         # Background worker supervisor
+│   ├── workspace/       # Workspace state
+│   └── index.ts         # Main process entrypoint
 ├── preload/             # Typed Node ↔ Renderer bridge
 ├── renderer/            # React frontend
 │   └── src/
+│       ├── app/         # State, hooks, editor, layout, settings, theme
+│       ├── assets/      # Fonts and static renderer assets
 │       ├── components/  # UI (sidebar, workspace, settings, git…)
-│       ├── app/         # Zustand stores
+│       ├── App.tsx      # Main window entry
+│       ├── SettingsApp.tsx # Settings window entry
 │       ├── styles.css   # Tailwind globals
 │       └── main.tsx
-└── shared/              # IPC contracts, constants, theme tokens
+├── shared/              # IPC contracts, constants, theme tokens
+└── test/                # Shared test helpers and fixtures
 ```
 
 ## Tech stack
@@ -239,6 +258,7 @@ Contributions are welcome. Before opening a PR:
 
 1. You cannot edit files while they have pending agent review changes.
 2. Some open files may require a manual reload to reflect the latest external changes.
+3. Scroll restoration is not accurate when switching from inline review to the editable file view.
 
 ## License
 

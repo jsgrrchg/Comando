@@ -14,6 +14,9 @@
     "homepage": "https://github.com/jsgrrchg/Comando#readme",
     "type": "module",
     "packageManager": "pnpm@10.33.0",
+    "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+    },
     "main": "out/main/index.js",
     "scripts": {
         "predev": "pnpm run stage:ai",
