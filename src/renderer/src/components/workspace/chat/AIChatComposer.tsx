@@ -1,4 +1,5 @@
 import {
+    type CSSProperties,
     Fragment,
     useCallback,
     useEffect,
@@ -55,6 +56,16 @@ import { useTextContextMenu } from "../../context-menu/useTextContextMenu";
 
 const MIN_COMPOSER_HEIGHT = 76;
 const MAX_COMPOSER_HEIGHT = 600;
+
+export function getComposerShellSizingStyle(
+    customHeight: number | null,
+): Pick<CSSProperties, "height" | "maxHeight" | "minHeight"> {
+    return {
+        minHeight: MIN_COMPOSER_HEIGHT,
+        maxHeight: MAX_COMPOSER_HEIGHT,
+        ...(customHeight != null ? { height: customHeight } : {}),
+    };
+}
 
 /* ─── DOM pill helpers ─── */
 
@@ -1227,6 +1238,7 @@ export function AIChatComposer({
     const isEmpty = parts.every(
         (p) => p.type === "text" && p.text.trim().length === 0,
     );
+    const shellSizingStyle = getComposerShellSizingStyle(customHeight);
 
     return (
         <div
@@ -1254,7 +1266,7 @@ export function AIChatComposer({
                         : "none",
                 overflow: "hidden",
                 transition: "box-shadow 0.15s ease",
-                ...(customHeight != null ? { height: customHeight } : {}),
+                ...shellSizingStyle,
             }}
         >
             {/* Resize handle */}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     appendComposerProjectEntries,
     appendWorkspaceTabComposerItem,
+    getComposerShellSizingStyle,
     getComposerSubmitKeyboardAction,
     shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
@@ -184,5 +185,20 @@ describe("AIChatComposer", () => {
             },
             { text: " ", type: "text" },
         ]);
+    });
+
+    it("caps the default composer shell height so large pastes stay scrollable", () => {
+        expect(getComposerShellSizingStyle(null)).toEqual({
+            maxHeight: 600,
+            minHeight: 76,
+        });
+    });
+
+    it("preserves the manual resize height while keeping the same bounds", () => {
+        expect(getComposerShellSizingStyle(320)).toEqual({
+            height: 320,
+            maxHeight: 600,
+            minHeight: 76,
+        });
     });
 });
