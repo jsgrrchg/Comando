@@ -3115,9 +3115,9 @@ function FileTabView({
     );
 
     const captureInlineReviewModifiedEditorState = useCallback(() => {
-        const state = capturePortableEditorRestoreState(
-            diffEditorRef.current?.getModifiedEditor() ?? null,
-        );
+        const modifiedEditor =
+            diffEditorRef.current?.getModifiedEditor() ?? null;
+        const state = capturePortableEditorRestoreState(modifiedEditor);
         if (!state) {
             return;
         }
@@ -3126,6 +3126,12 @@ function FileTabView({
             state,
             tabId: fileTabIdRef.current,
         };
+
+        const viewState = modifiedEditor?.saveViewState() ?? null;
+        if (viewState) {
+            pendingEditorViewStateRef.current = viewState;
+            pendingEditorViewStateTabIdRef.current = fileTabIdRef.current;
+        }
     }, []);
 
     const handleKeepInlineReviewFile = useCallback(() => {
@@ -3191,11 +3197,16 @@ function FileTabView({
                     editorRef.current.saveViewState();
             }
 
+            if (diffEditorRef.current) {
+                captureInlineReviewModifiedEditorState();
+            }
+
             clearScheduledEditorViewStateRestore();
             flushScheduledEditorViewStatePersist();
         };
     }, [
         captureEditorStateForInlineReview,
+        captureInlineReviewModifiedEditorState,
         clearScheduledEditorViewStateRestore,
         flushScheduledEditorViewStatePersist,
     ]);
@@ -3566,6 +3577,53 @@ function FileTabView({
         [clearInlineReviewScrollRestore],
     );
 
+    const restoreInlineReviewViewState = useCallback(
+        (
+            diffEditor: MonacoEditor.IStandaloneDiffEditor,
+            viewState: MonacoEditor.ICodeEditorViewState,
+        ) => {
+            clearInlineReviewScrollRestore();
+
+            const applyViewState = () => {
+                const originalEditor = diffEditor.getOriginalEditor();
+                const modifiedEditor = diffEditor.getModifiedEditor();
+
+                try {
+                    modifiedEditor.restoreViewState(viewState);
+                } catch (error) {
+                    if (!isMonacoCancellationError(error)) {
+                        throw error;
+                    }
+                }
+
+                diffEditor.layout();
+
+                const restoredState =
+                    capturePortableEditorRestoreState(modifiedEditor);
+                if (restoredState) {
+                    originalEditor.setScrollLeft(restoredState.scrollLeft);
+                    originalEditor.setScrollTop(restoredState.scrollTop);
+                }
+
+                inlineReviewScrollStateRef.current =
+                    captureDiffEditorScrollState(diffEditor);
+            };
+
+            applyViewState();
+            inlineReviewScrollRestoreFrameRef.current =
+                window.requestAnimationFrame(() => {
+                    inlineReviewScrollRestoreFrameRef.current = null;
+
+                    if (diffEditorRef.current !== diffEditor) {
+                        return;
+                    }
+
+                    applyViewState();
+                });
+        },
+        [clearInlineReviewScrollRestore],
+    );
+
     const applyInlineReviewModels = useCallback(
         (trackedFile: AiTrackedFile | null) => {
             if (
@@ -3589,6 +3647,8 @@ function FileTabView({
             const monaco = inlineReviewMonacoRef.current;
             const previousModels = diffEditor.getModel();
             const scrollState = inlineReviewScrollStateRef.current;
+            const persistedInlineReviewViewState =
+                tab.viewState ?? pendingEditorViewStateRef.current;
             const nextOriginalModel = getOrCreateMonacoTextModel({
                 language: monacoLanguageId,
                 modelPath: buildWorkspaceEditorModelPath(
@@ -3639,6 +3699,13 @@ function FileTabView({
                         pendingInlineReviewRestoreState,
                     );
                     pendingEditorInlineReviewRestoreStateRef.current = null;
+                } else if (persistedInlineReviewViewState) {
+                    restoreInlineReviewViewState(
+                        diffEditor,
+                        persistedInlineReviewViewState,
+                    );
+                    pendingEditorViewStateRef.current =
+                        persistedInlineReviewViewState;
                 } else {
                     restoreInlineReviewScrollState(diffEditor, scrollState);
                 }
@@ -3669,8 +3736,10 @@ function FileTabView({
             inlineReviewModelRevision,
             monacoLanguageId,
             restoreInlineReviewScrollState,
+            restoreInlineReviewViewState,
             restorePortableInlineReviewState,
             tab.id,
+            tab.viewState,
         ],
     );
 
@@ -4183,6 +4252,13 @@ function FileTabView({
                                     inlineReviewScrollStateRef.current =
                                         captureDiffEditorScrollState(editor);
                                 };
+                                const persistInlineReviewViewState = () => {
+                                    syncInlineReviewScrollState();
+                                    captureInlineReviewModifiedEditorState();
+                                    scheduleEditorViewStatePersist(
+                                        modifiedEditor,
+                                    );
+                                };
                                 const cleanupAttachShortcut =
                                     bindInlineReviewAttachSelectionShortcut({
                                         documentLanguageId: document.languageId,
@@ -4213,11 +4289,19 @@ function FileTabView({
                                         ) ?? null;
                                 const modifiedScrollListener =
                                     modifiedEditor.onDidScrollChange(
-                                        syncInlineReviewScrollState,
+                                        persistInlineReviewViewState,
                                     );
                                 const originalScrollListener =
                                     originalEditor.onDidScrollChange(
-                                        syncInlineReviewScrollState,
+                                        persistInlineReviewViewState,
+                                    );
+                                const modifiedCursorListener =
+                                    modifiedEditor.onDidChangeCursorSelection(
+                                        persistInlineReviewViewState,
+                                    );
+                                const modifiedHiddenAreasListener =
+                                    modifiedEditor.onDidChangeHiddenAreas(
+                                        persistInlineReviewViewState,
                                     );
                                 syncInlineReviewScrollState();
                                 syncFindWidgetVisibility();
@@ -4233,6 +4317,8 @@ function FileTabView({
                                     findStateListener?.dispose();
                                     modifiedScrollListener.dispose();
                                     originalScrollListener.dispose();
+                                    modifiedCursorListener.dispose();
+                                    modifiedHiddenAreasListener.dispose();
                                     clearInlineReviewScrollRestore();
                                     diffEditorRef.current = null;
                                     inlineReviewMonacoRef.current = null;
