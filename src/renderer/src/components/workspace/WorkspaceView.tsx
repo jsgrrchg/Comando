@@ -405,6 +405,28 @@ function isMonacoDisposedError(error: unknown): boolean {
     );
 }
 
+type InlineReviewModelState = {
+    readonly modified: MonacoEditor.ITextModel | null;
+    readonly original: MonacoEditor.ITextModel | null;
+    readonly revision: string | null;
+};
+
+function disposeInlineReviewModels(models: {
+    readonly modified: MonacoEditor.ITextModel | null;
+    readonly original: MonacoEditor.ITextModel | null;
+}): void {
+    const disposedModels = new Set<MonacoEditor.ITextModel>();
+
+    for (const model of [models.original, models.modified]) {
+        if (!model || disposedModels.has(model) || model.isDisposed()) {
+            continue;
+        }
+
+        disposedModels.add(model);
+        model.dispose();
+    }
+}
+
 function getOrCreateMonacoTextModel(input: {
     readonly language: string;
     readonly modelPath: string;
@@ -2680,14 +2702,17 @@ function FileTabView({
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
     const inlineReviewMonacoRef = useRef<MonacoNamespace | null>(null);
-    const inlineReviewCurrentModelsRef = useRef<{
-        readonly modified: MonacoEditor.ITextModel | null;
-        readonly original: MonacoEditor.ITextModel | null;
-        readonly revision: string | null;
-    }>({
+    const inlineReviewCurrentModelsRef = useRef<InlineReviewModelState>({
         modified: null,
         original: null,
         revision: null,
+    });
+    const inlineReviewOwnedModelsRef = useRef<{
+        readonly modified: MonacoEditor.ITextModel | null;
+        readonly original: MonacoEditor.ITextModel | null;
+    }>({
+        modified: null,
+        original: null,
     });
     const inlineReviewScrollRestoreFrameRef = useRef<number | null>(null);
     const inlineReviewScrollStateRef = useRef<
@@ -3488,6 +3513,10 @@ function FileTabView({
                     original: nextOriginalModel,
                     revision: inlineReviewModelRevision,
                 };
+                inlineReviewOwnedModelsRef.current = {
+                    modified: nextModifiedModel,
+                    original: nextOriginalModel,
+                };
                 if (pendingInlineReviewRestoreState) {
                     restorePortableInlineReviewState(
                         diffEditor,
@@ -3991,12 +4020,20 @@ function FileTabView({
                             modifiedModelPath={
                                 inlineReviewShellModelPaths?.modified ?? undefined
                             }
+                            keepCurrentModifiedModel
+                            keepCurrentOriginalModel
                             onMount={(
                                 editor: MonacoEditor.IStandaloneDiffEditor,
                                 monaco: MonacoNamespace,
                             ) => {
                                 diffEditorRef.current = editor;
                                 inlineReviewMonacoRef.current = monaco;
+                                inlineReviewOwnedModelsRef.current = {
+                                    modified:
+                                        editor.getModel()?.modified ?? null,
+                                    original:
+                                        editor.getModel()?.original ?? null,
+                                };
                                 const originalEditor =
                                     editor.getOriginalEditor();
                                 const modifiedEditor =
@@ -4046,6 +4083,8 @@ function FileTabView({
                                 applyInlineReviewModels(inlineReviewTrackedFile);
 
                                 editor.onDidDispose(() => {
+                                    const ownedModels =
+                                        inlineReviewOwnedModelsRef.current;
                                     cleanupAttachShortcut?.();
                                     cleanupFindWidgetEscape?.();
                                     findStateListener?.dispose();
@@ -4060,7 +4099,12 @@ function FileTabView({
                                         original: null,
                                         revision: null,
                                     };
+                                    inlineReviewOwnedModelsRef.current = {
+                                        modified: null,
+                                        original: null,
+                                    };
                                     setIsInlineReviewFindWidgetVisible(false);
+                                    disposeInlineReviewModels(ownedModels);
                                 });
                                 setDiffEditorMountVersion(
                                     (previous) => previous + 1,
