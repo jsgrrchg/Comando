@@ -176,6 +176,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.listGitHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getGitDiff);
     ipcMain.removeHandler(IPC_CHANNELS.getGitCommitDetail);
+    ipcMain.removeHandler(IPC_CHANNELS.initGitRepository);
     ipcMain.removeHandler(IPC_CHANNELS.stageGitPaths);
     ipcMain.removeHandler(IPC_CHANNELS.unstageGitPaths);
     ipcMain.removeHandler(IPC_CHANNELS.discardGitPaths);
@@ -548,6 +549,20 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 input.commitSha,
             );
         },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.initGitRepository,
+        async (
+            _event,
+            input: GitRepositoryScopeInput,
+        ): Promise<SharedGitRepositorySnapshot> =>
+            handleGitSnapshotMutation(
+                options.projectService,
+                options.gitService,
+                input,
+                "unknown",
+                async (rootPath) => options.gitService.initRepository(rootPath),
+            ),
     );
     ipcMain.handle(
         IPC_CHANNELS.stageGitPaths,

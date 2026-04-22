@@ -237,6 +237,26 @@ describe("GitService", () => {
         expect(resolution.canonicalRootPath).toBeNull();
     });
 
+    it("initializes a non-repository project", async () => {
+        const rootPath = createGitRepositoryFixture();
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        const service = new GitService({ cacheSnapshots: false });
+
+        const snapshot = await service.initRepository(rootPath);
+
+        expect(snapshot.resolution.state).toBe("ready");
+        expect(snapshot.resolution.canonicalRootPath).toBe(
+            fs.realpathSync(rootPath),
+        );
+        expect(snapshot.worktrees[0]).toMatchObject({
+            branchName: "main",
+            isCurrent: true,
+            isMain: true,
+        });
+        expect(snapshot.status.hasUntracked).toBe(true);
+        await expect(service.listHistory(rootPath)).resolves.toEqual([]);
+    });
+
     it("runs preflight checks before committing", async () => {
         const rootPath = createGitRepositoryFixture();
         const isolatedHome = createGitRepositoryFixture();

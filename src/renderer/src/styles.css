@@ -981,6 +981,65 @@ button {
     font-size: 11px;
 }
 
+.sidebar-git-scope-menu__init {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px 12px;
+}
+
+.sidebar-git-scope-menu__init-copy {
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.sidebar-git-scope-menu__init-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    width: 100%;
+    min-height: 30px;
+    border: 1px solid
+        color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+    border-radius: 7px;
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 14%,
+        var(--color-bg-elevated)
+    );
+    color: var(--color-text-primary);
+    font-size: 11px;
+    font-weight: 600;
+    transition:
+        border-color 120ms ease,
+        background-color 120ms ease;
+}
+
+.sidebar-git-scope-menu__init-button:hover:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--color-accent) 60%,
+        var(--color-border)
+    );
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 20%,
+        var(--color-bg-elevated)
+    );
+}
+
+.sidebar-git-scope-menu__init-button:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.sidebar-git-scope-menu__init-button svg {
+    width: 13px;
+    height: 13px;
+}
+
 .sidebar-git-scope-menu__status {
     border-top: 1px solid var(--color-border);
     padding: 8px 12px;

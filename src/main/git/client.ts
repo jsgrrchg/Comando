@@ -160,6 +160,12 @@ class GitWorkerGateway implements GitWorkerClient {
         });
     }
 
+    async initRepository(inputPath: string) {
+        return await this.#rpc.call<
+            Awaited<ReturnType<GitGateway["initRepository"]>>
+        >("git.initRepository", inputPath);
+    }
+
     async stagePaths(inputPath: string, relativePaths: readonly string[]) {
         return await this.#rpc.call<
             Awaited<ReturnType<GitGateway["stagePaths"]>>

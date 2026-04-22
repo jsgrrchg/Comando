@@ -87,6 +87,10 @@ interface GitStoreState {
         worktreeId?: string | null,
     ) => Promise<GitCommitDetail | null>;
     ingestSnapshot: (snapshot: GitRepositorySnapshot) => void;
+    initRepository: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<GitRepositorySnapshot>;
     hydrate: (options: {
         readonly activeProjectId: string | null;
         readonly activeWorktreeId?: string | null;
@@ -348,6 +352,17 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
 
     ingestSnapshot: (snapshot) => {
         applySnapshotState(set, snapshot.projectId, snapshot);
+    },
+
+    initRepository: async (projectId, worktreeId = null) => {
+        const snapshot = await getComandoApi().initGitRepository({
+            projectId,
+            worktreeId,
+        });
+        applySnapshotState(set, projectId, snapshot);
+        void get().refreshProject(projectId, snapshot.currentWorktreeId);
+        void get().refreshHistory(projectId, snapshot.currentWorktreeId);
+        return snapshot;
     },
 
     hydrate: async ({ activeProjectId, activeWorktreeId = null, projects }) => {

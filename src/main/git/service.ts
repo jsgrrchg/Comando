@@ -59,6 +59,7 @@ export interface GitGateway {
         inputPath: string,
         commitSha: string,
     ): Promise<GitCommitDetail>;
+    initRepository(inputPath: string): Promise<GitRepositorySnapshot>;
     stagePaths(
         inputPath: string,
         relativePaths: readonly string[],
@@ -438,6 +439,27 @@ export class GitService implements GitGateway {
         }
 
         return getGitCommitDetail(resolution.canonicalRootPath, commitSha);
+    }
+
+    async initRepository(inputPath: string): Promise<GitRepositorySnapshot> {
+        const normalizedPath = path.resolve(inputPath);
+        const resolution = await this.resolveRepository(normalizedPath);
+
+        if (resolution.state === "ready") {
+            return this.getRepositorySnapshot(normalizedPath);
+        }
+
+        if (resolution.state !== "not_repo") {
+            throw new Error(
+                "The selected path cannot be initialized as a git repository.",
+            );
+        }
+
+        const git = simpleGit(normalizedPath);
+        await git.raw(["init"]);
+        await git.raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
+        this.invalidate(normalizedPath);
+        return this.getRepositorySnapshot(normalizedPath);
     }
 
     async stagePaths(

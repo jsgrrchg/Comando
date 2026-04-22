@@ -166,6 +166,7 @@ export function SidebarGitScopePicker({
     const createWorktree = useGitStore((state) => state.createWorktree);
     const deleteLocalBranch = useGitStore((state) => state.deleteLocalBranch);
     const deleteRemoteBranch = useGitStore((state) => state.deleteRemoteBranch);
+    const initRepository = useGitStore((state) => state.initRepository);
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const removeWorktree = useGitStore((state) => state.removeWorktree);
@@ -176,8 +177,11 @@ export function SidebarGitScopePicker({
         snapshot?.worktrees.find((entry) => entry.isCurrent) ??
         snapshot?.worktrees.find((entry) => entry.isPrimary) ??
         null;
+    const canInitializeGit = snapshot?.repositoryState === "not_repo";
     const activeBranchName =
-        activeWorktree?.branchName ?? snapshot?.branch?.name ?? "Detached HEAD";
+        activeWorktree?.branchName ??
+        snapshot?.branch?.name ??
+        (canInitializeGit ? "No Git Repository" : "Detached HEAD");
     const activeRootPath =
         activeWorktree?.rootPath ?? snapshot?.rootPath ?? null;
     const availableBranches = branches.length;
@@ -1003,6 +1007,40 @@ export function SidebarGitScopePicker({
         ],
     );
 
+    const handleInitRepository = useCallback(async () => {
+        if (!projectId || isBusy || !canInitializeGit) {
+            return;
+        }
+
+        setActionError(null);
+        setIsBusy(true);
+
+        try {
+            const nextSnapshot = await initRepository(projectId, worktreeId);
+            await refreshProjectTree(
+                projectId,
+                nextSnapshot.currentWorktreeId ?? worktreeId ?? null,
+            );
+            setIsOpen(false);
+            setQuery("");
+        } catch (error) {
+            setActionError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not initialize this git repository.",
+            );
+        } finally {
+            setIsBusy(false);
+        }
+    }, [
+        canInitializeGit,
+        initRepository,
+        isBusy,
+        projectId,
+        refreshProjectTree,
+        worktreeId,
+    ]);
+
     const openItemContextMenu = useCallback(
         (
             payload: GitScopeContextMenuPayload,
@@ -1470,7 +1508,12 @@ export function SidebarGitScopePicker({
                               className="shell-scrollbar sidebar-git-scope-menu__list"
                               ref={listRef}
                           >
-                              {listItems.length === 0 ? (
+                              {canInitializeGit ? (
+                                  <GitInitState
+                                      disabled={isBusy}
+                                      onInit={handleInitRepository}
+                                  />
+                              ) : listItems.length === 0 ? (
                                   <EmptyState label={emptyLabel} />
                               ) : shouldVirtualizeList ? (
                                   <MeasuredVirtualList
@@ -1602,6 +1645,31 @@ function SectionHeader({
 
 function EmptyState({ label }: { readonly label: string }) {
     return <div className="sidebar-git-scope-menu__empty">{label}</div>;
+}
+
+function GitInitState({
+    disabled,
+    onInit,
+}: {
+    readonly disabled: boolean;
+    readonly onInit: () => Promise<void>;
+}) {
+    return (
+        <div className="sidebar-git-scope-menu__init">
+            <div className="sidebar-git-scope-menu__init-copy">
+                This project is not a Git repository yet.
+            </div>
+            <button
+                className="sidebar-git-scope-menu__init-button"
+                disabled={disabled}
+                onClick={() => void onInit()}
+                type="button"
+            >
+                <BranchGlyph />
+                <span>Initialize Git</span>
+            </button>
+        </div>
+    );
 }
 
 function RowMenuTrigger({

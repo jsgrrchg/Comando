@@ -606,6 +606,11 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getGitCommitDetail,
             input,
         ) as Promise<GitCommitDetail | null>,
+    initGitRepository: (input: GitRepositoryScopeInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.initGitRepository,
+            input,
+        ) as Promise<GitRepositorySnapshot>,
     stageGitPaths: (input: GitStagePathsInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.stageGitPaths,

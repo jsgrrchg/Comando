@@ -20,15 +20,24 @@ export async function listGitHistory(
     const git = createBackgroundSafeGit(rootPath);
     const limit = normalizeHistoryLimit(options.limit);
     const format = buildHistoryFormat();
-    const raw = await git.raw([
-        "log",
-        "--all",
-        "--date-order",
-        `--max-count=${limit}`,
-        `--pretty=format:${format}`,
-    ]);
 
-    return parseGitHistory(raw);
+    try {
+        const raw = await git.raw([
+            "log",
+            "--all",
+            "--date-order",
+            `--max-count=${limit}`,
+            `--pretty=format:${format}`,
+        ]);
+
+        return parseGitHistory(raw);
+    } catch (error) {
+        if (isEmptyRepositoryHistoryError(error)) {
+            return [];
+        }
+
+        throw error;
+    }
 }
 
 export async function getGitCommitDetail(
@@ -120,6 +129,18 @@ function parseGitHistory(raw: string): readonly GitHistoryCommitSummary[] {
             } satisfies GitHistoryCommitSummary;
         })
         .filter((commit) => commit.sha.length > 0);
+}
+
+function isEmptyRepositoryHistoryError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+        return false;
+    }
+
+    return (
+        error.message.includes("does not have any commits yet") ||
+        error.message.includes("your current branch") ||
+        error.message.includes("bad default revision")
+    );
 }
 
 function parseCommitReferences(raw: string): readonly GitCommitReference[] {

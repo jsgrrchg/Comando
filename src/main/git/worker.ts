@@ -172,6 +172,8 @@ async function dispatchMethod(
                 input.commitSha,
             );
         }
+        case "git.initRepository":
+            return await gitService.initRepository(params as string);
         case "git.stagePaths": {
             const input = params as {
                 readonly inputPath: string;

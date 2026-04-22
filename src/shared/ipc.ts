@@ -39,6 +39,7 @@ export const IPC_CHANNELS = {
     listGitHistory: "git:list-history",
     getGitDiff: "git:get-diff",
     getGitCommitDetail: "git:get-commit-detail",
+    initGitRepository: "git:init-repository",
     stageGitPaths: "git:stage-paths",
     unstageGitPaths: "git:unstage-paths",
     discardGitPaths: "git:discard-paths",
@@ -1554,6 +1555,9 @@ export interface ComandoApi {
     getGitCommitDetail: (
         input: GitCommitDetailInput,
     ) => Promise<GitCommitDetail | null>;
+    initGitRepository: (
+        input: GitRepositoryScopeInput,
+    ) => Promise<GitRepositorySnapshot>;
     stageGitPaths: (
         input: GitStagePathsInput,
     ) => Promise<GitRepositorySnapshot>;
