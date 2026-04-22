@@ -4,13 +4,18 @@ import { LANGUAGE_COLORS } from "@renderer/components/workspace/LanguageIcon";
 /* ─── Types ─── */
 
 type FileTypeIconId =
+    | "astro"
     | "clang"
     | "config"
     | "css"
+    | "dart"
     | "document"
+    | "elixir"
     | "gitfile"
     | "go"
     | "graphql"
+    | "haskell"
+    | "hcl"
     | "html"
     | "image"
     | "java"
@@ -20,16 +25,22 @@ type FileTypeIconId =
     | "lockfile"
     | "lua"
     | "markdown"
+    | "nix"
     | "package"
     | "php"
+    | "prisma"
     | "python"
     | "ruby"
     | "rust"
     | "shell"
+    | "solidity"
     | "sql"
+    | "svelte"
     | "swift"
     | "typescript"
-    | "yaml";
+    | "vue"
+    | "yaml"
+    | "zig";
 
 interface ResolvedIcon {
     readonly iconId: FileTypeIconId;
@@ -98,6 +109,7 @@ const IMAGE_EXTENSIONS = new Set([
 ]);
 
 const LANGUAGE_TO_ICON: Record<string, FileTypeIconId> = {
+    astro: "astro",
     c: "clang",
     clojure: "document",
     cmake: "config",
@@ -105,18 +117,23 @@ const LANGUAGE_TO_ICON: Record<string, FileTypeIconId> = {
     csharp: "clang",
     css: "css",
     d: "clang",
+    dart: "dart",
     diff: "document",
     dockerfile: "config",
+    elixir: "elixir",
     erlang: "document",
     go: "go",
     graphql: "graphql",
     groovy: "java",
+    haskell: "haskell",
+    hcl: "hcl",
     html: "html",
     ini: "config",
     java: "java",
     javascript: "javascript",
     jsx: "javascript",
     json: "json",
+    jsonc: "json",
     julia: "document",
     kotlin: "kotlin",
     less: "css",
@@ -124,10 +141,12 @@ const LANGUAGE_TO_ICON: Record<string, FileTypeIconId> = {
     makefile: "config",
     markdown: "markdown",
     mdx: "markdown",
+    nix: "nix",
     pascal: "document",
     perl: "document",
     php: "php",
     powershell: "shell",
+    prisma: "prisma",
     protobuf: "config",
     python: "python",
     r: "document",
@@ -137,17 +156,21 @@ const LANGUAGE_TO_ICON: Record<string, FileTypeIconId> = {
     scala: "java",
     scss: "css",
     shell: "shell",
+    solidity: "solidity",
     sql: "sql",
     stylus: "css",
+    svelte: "svelte",
     swift: "swift",
     tcl: "document",
     toml: "config",
     typescript: "typescript",
     tsx: "typescript",
     vb: "document",
+    vue: "vue",
     wast: "document",
     xml: "html",
     yaml: "yaml",
+    zig: "zig",
 };
 
 /* ─── Resolution ─── */
@@ -567,16 +590,136 @@ function DocumentIcon() {
     );
 }
 
+function VueIcon() {
+    return (
+        <>
+            <path d="M1.5 3L8 14L14.5 3" strokeWidth="1" />
+            <path d="M4.5 3L8 9L11.5 3" strokeWidth="1" />
+        </>
+    );
+}
+
+function SvelteIcon() {
+    return (
+        <>
+            <path
+                d="M12 4C10.5 2.5 8 2.5 6 4L5 5C3.5 6.5 3.5 9 5 10.5"
+                strokeWidth="1"
+            />
+            <path
+                d="M4 12C5.5 13.5 8 13.5 10 12L11 11C12.5 9.5 12.5 7 11 5.5"
+                strokeWidth="1"
+            />
+        </>
+    );
+}
+
+function AstroIcon() {
+    return (
+        <>
+            <path d="M8 2L3 13L13 13Z" strokeWidth="1" />
+            <path d="M5.5 10C6.5 11 9.5 11 10.5 10" strokeWidth="0.8" />
+        </>
+    );
+}
+
+function DartIcon() {
+    return (
+        <>
+            <path d="M3.5 12.5L12.5 3.5" strokeWidth="1" />
+            <path d="M12.5 3.5L9.5 3.5L12.5 6.5" strokeWidth="1" />
+            <path
+                d="M3.5 12.5L2 11L3.5 9.5L5 11L3.5 12.5Z"
+                strokeWidth="0.8"
+            />
+        </>
+    );
+}
+
+function PrismaIcon() {
+    return (
+        <>
+            <path d="M8 2L13 12L3 13Z" strokeWidth="1" />
+            <path d="M8 2L4.5 9.5L8 12" strokeWidth="0.7" />
+        </>
+    );
+}
+
+function ElixirIcon() {
+    return (
+        <>
+            <path
+                d="M8 2C5.5 4.5 4 7.5 4 10C4 12.2 5.8 14 8 14C10.2 14 12 12.2 12 10C12 7.5 10.5 4.5 8 2Z"
+                strokeWidth="1"
+            />
+        </>
+    );
+}
+
+function HaskellIcon() {
+    return (
+        <>
+            <path d="M3 3L10 13" strokeWidth="1" />
+            <path d="M6 9L3 13" strokeWidth="1" />
+            <path d="M11 8H14" strokeWidth="0.8" />
+            <path d="M11 11H14" strokeWidth="0.8" />
+        </>
+    );
+}
+
+function ZigIcon() {
+    return (
+        <>
+            <path d="M3 3L13 3L3 13L13 13" strokeWidth="1" />
+        </>
+    );
+}
+
+function NixIcon() {
+    return (
+        <>
+            <path d="M8 2L8 14" strokeWidth="0.9" />
+            <path d="M3 5L13 11" strokeWidth="0.9" />
+            <path d="M3 11L13 5" strokeWidth="0.9" />
+            <circle cx="8" cy="8" r="1.3" strokeWidth="0.7" />
+        </>
+    );
+}
+
+function SolidityIcon() {
+    return (
+        <>
+            <path d="M8 2L4 6L8 9L12 6Z" strokeWidth="1" />
+            <path d="M8 7L4 10L8 14L12 10Z" strokeWidth="1" />
+        </>
+    );
+}
+
+function HclIcon() {
+    return (
+        <>
+            <path d="M3 5.5L7 7.5L7 12.5L3 10.5Z" strokeWidth="1" />
+            <path d="M7 7.5L11 5.5L11 10.5L7 12.5Z" strokeWidth="1" />
+            <path d="M7 2.5L11 4.5L11 7.5L7 5.5Z" strokeWidth="1" />
+        </>
+    );
+}
+
 /* ─── Icon registry ─── */
 
 const ICON_COMPONENTS: Record<FileTypeIconId, () => React.ReactNode> = {
+    astro: AstroIcon,
     clang: ClangIcon,
     config: ConfigIcon,
     css: CssIcon,
+    dart: DartIcon,
     document: DocumentIcon,
+    elixir: ElixirIcon,
     gitfile: GitfileIcon,
     go: GoIcon,
     graphql: GraphqlIcon,
+    haskell: HaskellIcon,
+    hcl: HclIcon,
     html: HtmlIcon,
     image: ImageIcon,
     java: JavaIcon,
@@ -586,16 +729,22 @@ const ICON_COMPONENTS: Record<FileTypeIconId, () => React.ReactNode> = {
     lockfile: LockfileIcon,
     lua: LuaIcon,
     markdown: MarkdownIcon,
+    nix: NixIcon,
     package: PackageIcon,
     php: PhpIcon,
+    prisma: PrismaIcon,
     python: PythonIcon,
     ruby: RubyIcon,
     rust: RustIcon,
     shell: ShellIcon,
+    solidity: SolidityIcon,
     sql: SqlIcon,
+    svelte: SvelteIcon,
     swift: SwiftIcon,
     typescript: TypeScriptIcon,
+    vue: VueIcon,
     yaml: YamlIcon,
+    zig: ZigIcon,
 };
 
 /* ─── Component ─── */
