@@ -1,18 +1,18 @@
 {
-  "fill" : {
-    "solid" : "display-p3:0.99524,0.99048,1.00000,1.00000"
-  },
+  "fill" : "automatic",
   "groups" : [
     {
       "layers" : [
         {
+          "blend-mode" : "normal",
+          "fill" : "none",
+          "glass" : false,
           "image-name" : "image3.png",
-          "name" : "image3",
           "position" : {
-            "scale" : 1.7,
+            "scale" : 0.93,
             "translation-in-points" : [
-              6.8,
-              62
+              0,
+              24.32247083665652
             ]
           }
         }
