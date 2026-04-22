@@ -271,7 +271,7 @@ function mapConfigOptionCategory(
         return category;
     }
 
-    if (category === "thought_level") {
+    if (category === "thought_level" || category === "effort") {
         return "reasoning";
     }
 

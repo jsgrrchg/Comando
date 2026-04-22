@@ -25,7 +25,7 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
-- The vendored Claude ACP snapshot currently includes a local Comando patch that exposes model-specific thinking effort levels (`low`, `medium`, `high`, `xhigh`, `max`) as ACP session config options when the selected Claude model reports support for them.
+- The vendored Claude ACP snapshot follows upstream effort-level support. Comando maps the upstream `effort` config option into the UI's reasoning controls and keeps compatibility with older saved `effort_level` preferences.
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Some compatibility markers still use legacy ACP metadata names inside the session stream.
@@ -169,9 +169,9 @@ This means Claude is staged as an embedded project, not as a freshly built stand
 
 Current local snapshot note:
 
-- `vendor/Claude-agent-acp-upstream/` has been patched to support Claude thinking effort selection through ACP config options.
-- The patch derives the visible `effort_level` values from each model's `supportedEffortLevels`, preserves the current effort when possible during model switches, and falls back to a sensible default when the previous effort is not supported.
-- This local divergence should be reevaluated once Zed ships equivalent support in the official upstream `claude-agent-acp`, so Comando can prefer the upstream behavior and reduce vendor drift.
+- `vendor/Claude-agent-acp-upstream/` uses the upstream Claude ACP effort implementation.
+- Upstream exposes model-specific effort values through the `effort` ACP session config option when the selected Claude model reports support for them.
+- Comando still accepts older saved `effort_level` preferences and applies them to upstream's `effort` option.
 
 ### macOS packaging (`scripts/package-macos-app.mjs`)
 

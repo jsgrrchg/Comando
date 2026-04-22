@@ -84,6 +84,50 @@ describe("AiPersistence", () => {
         });
     });
 
+    it("applies legacy Claude effort preferences to upstream effort catalogs", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const transcript = createCatalogTranscript({
+            access: "read-only",
+            modelId: "gpt-5",
+            reasoning: "high",
+        });
+
+        seedChatSession(connection, {
+            runtimeId: "claude",
+            sessionId: "session-claude-effort",
+            transcript: {
+                ...transcript,
+                configOptions: transcript.configOptions.map((option) =>
+                    option.id === "thought_level"
+                        ? {
+                              ...option,
+                              id: "effort",
+                              label: "Effort",
+                          }
+                        : option,
+                ),
+            },
+            updatedAt: "2026-04-15T10:00:00.000Z",
+        });
+        persistence.saveRuntimeSelectionPreferenceOption(
+            "claude",
+            "effort_level",
+            "medium",
+        );
+
+        const catalog = persistence.loadLatestRuntimeCatalog("claude");
+
+        expect(
+            catalog?.configOptions.some(
+                (option) =>
+                    option.id === "effort" &&
+                    option.category === "reasoning" &&
+                    option.value === "medium",
+            ),
+        ).toBe(true);
+    });
+
     it("persists a compact transcript snapshot and restores the runtime catalog separately", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);

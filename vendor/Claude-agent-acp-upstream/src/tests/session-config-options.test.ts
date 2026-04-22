@@ -100,7 +100,6 @@ describe("session config options", () => {
       models: structuredClone(MOCK_MODELS),
       configOptions: structuredClone(MOCK_CONFIG_OPTIONS),
       modelInfos: [],
-      effortLevel: "high",
       contextWindowSize: 200000,
     };
   }
@@ -232,7 +231,7 @@ describe("session config options", () => {
       expect(configUpdate).toBeUndefined();
     });
 
-    it("changes effort_level and calls applyFlagSettings", async () => {
+    it("changes effort and calls applyFlagSettings", async () => {
       const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
       session.modelInfos = [
         {
@@ -244,10 +243,10 @@ describe("session config options", () => {
         },
       ];
       session.configOptions.push({
-        id: "effort_level",
+        id: "effort",
         name: "Effort",
         type: "select",
-        category: "thought_level",
+        category: "effort",
         description: "How much the model thinks before responding",
         currentValue: "high",
         options: [
@@ -259,18 +258,17 @@ describe("session config options", () => {
 
       const response = await agent.setSessionConfigOption({
         sessionId: SESSION_ID,
-        configId: "effort_level",
+        configId: "effort",
         value: "medium",
       });
 
       expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "medium" });
-      expect(session.effortLevel).toBe("medium");
-      expect(response.configOptions.find((o) => o.id === "effort_level")?.currentValue).toBe(
+      expect(response.configOptions.find((o) => o.id === "effort")?.currentValue).toBe(
         "medium",
       );
     });
 
-    it("accepts max for effort_level when the model reports it", async () => {
+    it("accepts max for effort when the model reports it", async () => {
       const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
       session.modelInfos = [
         {
@@ -282,10 +280,10 @@ describe("session config options", () => {
         },
       ];
       session.configOptions.push({
-        id: "effort_level",
+        id: "effort",
         name: "Effort",
         type: "select",
-        category: "thought_level",
+        category: "effort",
         description: "How much the model thinks before responding",
         currentValue: "high",
         options: [
@@ -298,13 +296,12 @@ describe("session config options", () => {
 
       const response = await agent.setSessionConfigOption({
         sessionId: SESSION_ID,
-        configId: "effort_level",
+        configId: "effort",
         value: "max",
       });
 
       expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "max" });
-      expect(session.effortLevel).toBe("max");
-      expect(response.configOptions.find((o) => o.id === "effort_level")?.currentValue).toBe(
+      expect(response.configOptions.find((o) => o.id === "effort")?.currentValue).toBe(
         "max",
       );
     });
@@ -332,7 +329,7 @@ describe("session config options", () => {
         value: "claude-sonnet-4-5",
       });
 
-      const effortOption = response.configOptions.find((o) => o.id === "effort_level") as
+      const effortOption = response.configOptions.find((o) => o.id === "effort") as
         | {
             category: string;
             currentValue: string;
@@ -340,18 +337,18 @@ describe("session config options", () => {
           }
         | undefined;
       expect(effortOption).toMatchObject({
-        category: "thought_level",
-        currentValue: "high",
+        category: "effort",
+        currentValue: "xhigh",
       });
       expect(effortOption?.options.map((option) => option.value)).toEqual([
         "medium",
         "high",
         "xhigh",
       ]);
-      expect(applyFlagSettingsSpy).not.toHaveBeenCalled();
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "xhigh" });
     });
 
-    it("preserves max when the selected model reports it", async () => {
+    it("includes max when the selected model reports it", async () => {
       const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
       session.modelInfos = [
         {
@@ -374,7 +371,7 @@ describe("session config options", () => {
         value: "claude-sonnet-4-5",
       });
 
-      const effortOption = response.configOptions.find((o) => o.id === "effort_level") as
+      const effortOption = response.configOptions.find((o) => o.id === "effort") as
         | {
             category: string;
             currentValue: string;
@@ -382,8 +379,8 @@ describe("session config options", () => {
           }
         | undefined;
       expect(effortOption).toMatchObject({
-        category: "thought_level",
-        currentValue: "high",
+        category: "effort",
+        currentValue: "xhigh",
       });
       expect(effortOption?.options.map((option) => option.value)).toEqual([
         "medium",
@@ -391,7 +388,7 @@ describe("session config options", () => {
         "xhigh",
         "max",
       ]);
-      expect(applyFlagSettingsSpy).not.toHaveBeenCalled();
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "xhigh" });
     });
 
     it("resolves model alias 'opus' to full model ID", async () => {

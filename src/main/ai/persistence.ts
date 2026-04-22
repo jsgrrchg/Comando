@@ -646,6 +646,35 @@ function normalizeSelectionPreferenceOptions(
     return normalized;
 }
 
+function getPreferredConfigOptionValue(
+    preferences: PersistedRuntimeSelectionPreferences,
+    optionId: string,
+): boolean | string | null {
+    if (Object.prototype.hasOwnProperty.call(preferences.configOptions, optionId)) {
+        return preferences.configOptions[optionId];
+    }
+
+    const legacyIds =
+        optionId === "effort"
+            ? ["effort_level"]
+            : optionId === "effort_level"
+              ? ["effort"]
+              : [];
+
+    for (const legacyId of legacyIds) {
+        if (
+            Object.prototype.hasOwnProperty.call(
+                preferences.configOptions,
+                legacyId,
+            )
+        ) {
+            return preferences.configOptions[legacyId];
+        }
+    }
+
+    return null;
+}
+
 function applyRuntimeSelectionPreferencesToCatalog(
     catalog: Pick<
         AiSessionSnapshot,
@@ -667,12 +696,10 @@ function applyRuntimeSelectionPreferencesToCatalog(
     | "models"
 > {
     const configOptions = catalog.configOptions.map((option) => {
-        const configOptionValue = Object.prototype.hasOwnProperty.call(
-            preferences.configOptions,
+        const configOptionValue = getPreferredConfigOptionValue(
+            preferences,
             option.id,
-        )
-            ? preferences.configOptions[option.id]
-            : null;
+        );
         const preferredValue =
             option.type === "select" &&
             (option.category === "mode" || option.id.toLowerCase() === "mode")
@@ -1024,6 +1051,10 @@ function normalizeConfigOptions(
 function normalizeConfigCategory(
     value: unknown,
 ): AiSessionConfigOption["category"] {
+    if (value === "effort") {
+        return "reasoning";
+    }
+
     return value === "mode" ||
         value === "model" ||
         value === "other" ||

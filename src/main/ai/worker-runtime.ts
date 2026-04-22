@@ -97,6 +97,28 @@ const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
 const TERMINAL_PERMISSION_REJECT_OPTION_ID = "comando.terminal.reject_once";
 
+function setDesiredConfigValue(
+    values: Map<string, boolean | string>,
+    optionId: string,
+    value: boolean | string,
+    options: { readonly overrideCompatibility?: boolean } = {},
+): void {
+    values.set(optionId, value);
+
+    const compatibilityId =
+        optionId === "effort_level"
+            ? "effort"
+            : optionId === "effort"
+              ? "effort_level"
+              : null;
+    if (
+        compatibilityId &&
+        (options.overrideCompatibility || !values.has(compatibilityId))
+    ) {
+        values.set(compatibilityId, value);
+    }
+}
+
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
 }
@@ -1836,14 +1858,20 @@ export class AiWorkerRuntime {
 
         const desiredConfigValues = new Map<string, boolean | string>();
         for (const desiredOption of desiredSelections.configOptions) {
-            desiredConfigValues.set(desiredOption.id, desiredOption.value);
+            setDesiredConfigValue(
+                desiredConfigValues,
+                desiredOption.id,
+                desiredOption.value,
+            );
         }
 
         for (const [optionId, value] of Object.entries(
             desiredSelections.preferredConfigOptions,
         )) {
             if (!desiredConfigValues.has(optionId)) {
-                desiredConfigValues.set(optionId, value);
+                setDesiredConfigValue(desiredConfigValues, optionId, value, {
+                    overrideCompatibility: true,
+                });
             }
         }
 
