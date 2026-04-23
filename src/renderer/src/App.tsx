@@ -2893,7 +2893,7 @@ function ProjectSwitcher({
             )}
 
             <button
-                className="sidebar-action-row app-no-drag w-full"
+                className="sidebar-action-row sidebar-action-row--switcher app-no-drag w-full"
                 onClick={() => setOpen((v) => !v)}
                 type="button"
             >

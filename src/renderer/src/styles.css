@@ -745,6 +745,19 @@ button {
     background: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
+.sidebar-action-row--switcher {
+    background: color-mix(in srgb, var(--color-text-primary) 5%, transparent);
+    box-shadow: inset 0 0 0 1px var(--color-border);
+    color: var(--color-text-primary);
+}
+
+.sidebar-action-row--switcher:hover {
+    background: color-mix(in srgb, var(--color-text-primary) 9%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+    color: var(--color-text-primary);
+}
+
 .sidebar-agents-row {
     display: flex;
     flex-direction: column;
