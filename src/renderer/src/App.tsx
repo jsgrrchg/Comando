@@ -250,8 +250,6 @@ export function App() {
     const [fileTreeContextMenu, setFileTreeContextMenu] =
         useState<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
     const [isFileTreeSearchOpen, setIsFileTreeSearchOpen] = useState(false);
-    const [isFileTreeSearchLoading, setIsFileTreeSearchLoading] =
-        useState(false);
     const [projectRootExpandedByContext, setProjectRootExpandedByContext] =
         useState<Record<string, boolean>>({});
     const [fileTreeFilter, setFileTreeFilter] = useState("");
@@ -611,7 +609,6 @@ export function App() {
         setFileTreeContextMenu(null);
         setFileTreeSelectedPaths([]);
         setFileTreeSelectionAnchorPath(null);
-        setIsFileTreeSearchLoading(false);
         setIsFileTreeSearchOpen(false);
         setIsQuickOpenLoading(false);
         setIsQuickOpenOpen(false);
@@ -642,11 +639,9 @@ export function App() {
         if (!activeProjectId || !normalizedFilter || !window.comando) {
             fileTreeSearchRequestRef.current += 1;
             setFileTreeSearchResults([]);
-            setIsFileTreeSearchLoading(false);
             return;
         }
 
-        setIsFileTreeSearchLoading(true);
         const requestId = fileTreeSearchRequestRef.current + 1;
         fileTreeSearchRequestRef.current = requestId;
         const timeoutId = window.setTimeout(() => {
@@ -671,13 +666,6 @@ export function App() {
 
                     setFileTreeSearchResults([]);
                 })
-                .finally(() => {
-                    if (fileTreeSearchRequestRef.current !== requestId) {
-                        return;
-                    }
-
-                    setIsFileTreeSearchLoading(false);
-                });
         }, 120);
 
         return () => {
@@ -2306,9 +2294,7 @@ export function App() {
                                     enableNodeDrag
                                     emptyState={
                                         isFilteringFileTree
-                                            ? isFileTreeSearchLoading
-                                                ? "Searching project files..."
-                                                : "No matching files or folders."
+                                            ? "No matching files or folders."
                                             : undefined
                                     }
                                     expandedPaths={
