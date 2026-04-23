@@ -29,12 +29,14 @@ export interface SettingsThemeControlState {
     readonly mode: ThemeMode;
     readonly presetId: string;
     readonly presets: readonly ThemePresetOption[];
+    readonly stickyFoldersEnabled: boolean;
     readonly zoomFactor?: number;
     readonly disabled?: boolean;
     readonly onBoostCodeContrastChange?: (enabled: boolean) => void;
     readonly onFileTreeScaleChange?: (fileTreeScale: number) => void;
     readonly onModeChange?: (mode: ThemeMode) => void;
     readonly onPresetChange?: (presetId: string) => void;
+    readonly onStickyFoldersEnabledChange?: (enabled: boolean) => void;
     readonly onZoomFactorChange?: (zoomFactor: number) => void;
 }
 

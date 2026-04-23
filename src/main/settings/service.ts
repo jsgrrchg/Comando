@@ -66,6 +66,7 @@ const KILO_AUTH_INVALIDATED_AT_KEY = "ai.kilo.auth_invalidated_at_ms";
 const KILO_BINARY_PATH_KEY = "ai.kilo.binary_path";
 const APP_BOOST_CODE_CONTRAST_KEY = "appearance.boost_code_contrast";
 const APP_FILE_TREE_SCALE_KEY = "appearance.file_tree_scale";
+const APP_STICKY_FOLDERS_ENABLED_KEY = "appearance.sticky_folders_enabled";
 const APP_THEME_MODE_KEY = "appearance.theme_mode";
 const APP_THEME_PRESET_KEY = "appearance.theme_preset";
 const APP_ZOOM_FACTOR_KEY = "appearance.zoom_factor";
@@ -112,6 +113,7 @@ const VALID_CHAT_FONT_FAMILIES = new Set<ChatFontFamily>(
 
 const DEFAULT_THEME_MODE: ThemeMode = "system";
 const DEFAULT_THEME_PRESET: ThemePreset = "default";
+const DEFAULT_STICKY_FOLDERS_ENABLED = true;
 const DEFAULT_EDITOR_LINE_HEIGHT = 1.55;
 const DEFAULT_EDITOR_AUTOSAVE_DELAY_MS = EDITOR_AUTOSAVE_DELAY_MS_DEFAULT;
 const DEFAULT_EDITOR_MINIMAP_ENABLED = true;
@@ -249,6 +251,9 @@ export class SettingsService {
             fileTreeScale: this.#normalizeFileTreeScale(
                 this.#loadNumberSetting(APP_FILE_TREE_SCALE_KEY),
             ),
+            stickyFoldersEnabled:
+                this.#loadBooleanSetting(APP_STICKY_FOLDERS_ENABLED_KEY) ??
+                DEFAULT_STICKY_FOLDERS_ENABLED,
             themeMode: this.#normalizeThemeMode(
                 this.#loadStringSetting(APP_THEME_MODE_KEY),
             ),
@@ -269,6 +274,10 @@ export class SettingsService {
         this.#saveSetting(
             APP_FILE_TREE_SCALE_KEY,
             String(this.#normalizeFileTreeScale(settings.fileTreeScale)),
+        );
+        this.#saveBooleanSetting(
+            APP_STICKY_FOLDERS_ENABLED_KEY,
+            settings.stickyFoldersEnabled ?? DEFAULT_STICKY_FOLDERS_ENABLED,
         );
         this.#saveSetting(
             APP_THEME_MODE_KEY,

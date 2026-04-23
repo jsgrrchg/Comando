@@ -404,6 +404,18 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                     />
                 }
             />
+            <Row
+                label="Sticky folders"
+                description="Keep parent folders pinned while scrolling the file tree."
+                control={
+                    <Toggle
+                        value={state.stickyFoldersEnabled}
+                        onChange={(v) =>
+                            state.onStickyFoldersEnabledChange?.(v)
+                        }
+                    />
+                }
+            />
 
             <SectionLabel>Mode</SectionLabel>
             <Row

@@ -45,6 +45,7 @@ import { useAppStore } from "./app/store/app-store";
 import { useAiStore } from "./app/store/ai-store";
 import { useGitStore } from "./app/store/git-store";
 import { useProjectsStore } from "./app/store/projects-store";
+import { useSettingsStore } from "./app/store/settings-store";
 import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
 import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
@@ -241,6 +242,9 @@ export function App() {
         (state) => state.addDraftFileContext,
     );
     const hydrateAiSettings = useAiStore((state) => state.hydrateSettings);
+    const stickyFoldersEnabled = useSettingsStore(
+        (state) => state.appearance.stickyFoldersEnabled,
+    );
 
     const [dragState, setDragState] = useState<DragState>(null);
     const [fileTreeContextMenu, setFileTreeContextMenu] =
@@ -1617,6 +1621,7 @@ export function App() {
         nodes: isFilteringFileTree ? [] : sidebarTreeNodes,
         expandedPaths: isFilteringFileTree ? [] : activeExpandedDirectories,
         layout: "tree",
+        enabled: stickyFoldersEnabled,
     });
 
     const handleRevealActiveFileInTree = useCallback(async () => {
@@ -2245,7 +2250,8 @@ export function App() {
                     >
                         {activeProject ? (
                             <>
-                                {!isFilteringFileTree ? (
+                                {!isFilteringFileTree &&
+                                stickyFoldersEnabled ? (
                                     <StickyFolderOverlay
                                         stickyFolders={stickyFolders}
                                         enableNodeDrag

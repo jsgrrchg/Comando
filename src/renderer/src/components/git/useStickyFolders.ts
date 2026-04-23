@@ -27,11 +27,13 @@ export function useStickyFolders({
     nodes,
     expandedPaths,
     layout,
+    enabled = true,
 }: {
     readonly scrollContainerRef: RefObject<HTMLElement | null>;
     readonly nodes: readonly GitTreeNode[];
     readonly expandedPaths: readonly string[] | undefined;
     readonly layout: GitViewLayout;
+    readonly enabled?: boolean;
 }): UseStickyFoldersResult {
     const [scrollTop, setScrollTop] = useState(0);
     const [scrollLeft, setScrollLeft] = useState(0);
@@ -102,6 +104,10 @@ export function useStickyFolders({
     );
 
     const stickyFolders = useMemo(() => {
+        if (!enabled) {
+            return [];
+        }
+
         const effectiveRowHeight = ROW_HEIGHT * scale;
         const result: StickyFolder[] = [];
 
@@ -152,7 +158,14 @@ export function useStickyFolders({
         }
 
         return result;
-    }, [flatRows, folderLastDescendant, scrollTop, scale, paddingTop]);
+    }, [
+        enabled,
+        flatRows,
+        folderLastDescendant,
+        scrollTop,
+        scale,
+        paddingTop,
+    ]);
 
     const stickyFolderPaths = useMemo(
         () => new Set(stickyFolders.map((f) => f.path)),

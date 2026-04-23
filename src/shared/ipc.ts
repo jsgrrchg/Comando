@@ -165,6 +165,7 @@ export interface AppAiChatSettings {
 export interface AppAppearanceSettings {
     readonly boostCodeContrast: boolean;
     readonly fileTreeScale: number;
+    readonly stickyFoldersEnabled: boolean;
     readonly themeMode: ThemeMode;
     readonly themePreset: ThemePreset;
     readonly zoomFactor: number;

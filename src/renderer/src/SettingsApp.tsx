@@ -234,6 +234,18 @@ export function SettingsApp() {
         void saveAppAppearanceSettings(nextAppearance);
     };
 
+    const handleAppStickyFoldersEnabledChange = (
+        stickyFoldersEnabled: boolean,
+    ) => {
+        const nextAppearance = {
+            ...appAppearance,
+            stickyFoldersEnabled,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppThemePresetChange = (themePresetId: string) => {
         const nextAppearance = {
             ...appAppearance,
@@ -420,6 +432,8 @@ export function SettingsApp() {
                 onFileTreeScaleChange: handleAppFileTreeScaleChange,
                 onModeChange: handleAppThemeModeChange,
                 onPresetChange: handleAppThemePresetChange,
+                onStickyFoldersEnabledChange:
+                    handleAppStickyFoldersEnabledChange,
                 onZoomFactorChange: handleAppZoomFactorChange,
                 presetId: appAppearance.themePreset,
                 presets: THEME_PRESET_OPTIONS.map((preset) => ({
@@ -428,6 +442,7 @@ export function SettingsApp() {
                     label: preset.label,
                     swatches: preset.swatches,
                 })),
+                stickyFoldersEnabled: appAppearance.stickyFoldersEnabled,
                 zoomFactor: appAppearance.zoomFactor,
             }}
             appEditor={{

@@ -8,6 +8,7 @@ import {
     COMPOSER_PROJECT_ENTRY_MIME,
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 
 import { GitEmptyState } from "./GitUi";
 import { GitTreeView } from "./GitTreeView";
@@ -22,11 +23,15 @@ export function GitFilesView({
 }: GitFilesViewProps) {
     const [isRootDropActive, setIsRootDropActive] = useState(false);
     const scrollRef = useRef<HTMLDivElement | null>(null);
+    const stickyFoldersEnabled = useSettingsStore(
+        (state) => state.appearance.stickyFoldersEnabled,
+    );
     const { stickyFolders, stickyFolderPaths, scrollLeft } = useStickyFolders({
         scrollContainerRef: scrollRef,
         nodes: treeProps.nodes,
         expandedPaths: treeProps.expandedPaths,
         layout: treeProps.layout ?? "tree",
+        enabled: stickyFoldersEnabled,
     });
 
     if (treeProps.nodes.length === 0) {

@@ -1749,6 +1749,7 @@ export function getDefaultAppAppearance(): AppAppearanceSettings {
     return {
         boostCodeContrast: true,
         fileTreeScale: FILE_TREE_SCALE_DEFAULT,
+        stickyFoldersEnabled: true,
         themeMode: "system",
         themePreset: "default",
         zoomFactor: APP_ZOOM_FACTOR_DEFAULT,
@@ -1808,6 +1809,9 @@ export function resolveAppearance(
         fileTreeScale: clampFileTreeScale(
             appAppearance?.fileTreeScale ?? defaults.fileTreeScale,
         ),
+        stickyFoldersEnabled:
+            appAppearance?.stickyFoldersEnabled ??
+            defaults.stickyFoldersEnabled,
         themeMode: appAppearance?.themeMode ?? defaults.themeMode,
         themePreset: appAppearance?.themePreset ?? defaults.themePreset,
         zoomFactor: clampAppZoomFactor(

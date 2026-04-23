@@ -14,6 +14,7 @@ describe("SettingsService", () => {
             appearance: {
                 boostCodeContrast: true,
                 fileTreeScale: 1.1,
+                stickyFoldersEnabled: false,
                 themeMode: "dark",
                 themePreset: "ocean",
                 zoomFactor: 1.15,
@@ -38,6 +39,7 @@ describe("SettingsService", () => {
             appearance: {
                 boostCodeContrast: true,
                 fileTreeScale: 1.1,
+                stickyFoldersEnabled: false,
                 themeMode: "dark",
                 themePreset: "ocean",
                 zoomFactor: 1.15,
@@ -94,6 +96,7 @@ describe("SettingsService", () => {
             appearance: {
                 boostCodeContrast: true,
                 fileTreeScale: 1,
+                stickyFoldersEnabled: true,
                 themeMode: "system",
                 themePreset: "default",
                 zoomFactor: 1,
@@ -239,6 +242,7 @@ describe("SettingsService", () => {
             appearance: {
                 boostCodeContrast: false,
                 fileTreeScale: 0.95,
+                stickyFoldersEnabled: true,
                 themeMode: "dark",
                 themePreset: "tokyoNight",
                 zoomFactor: 0.9,
@@ -257,6 +261,7 @@ describe("SettingsService", () => {
         expect(service.loadSnapshot().appearance).toEqual({
             boostCodeContrast: false,
             fileTreeScale: 0.95,
+            stickyFoldersEnabled: true,
             themeMode: "dark",
             themePreset: "tokyoNight",
             zoomFactor: 0.9,

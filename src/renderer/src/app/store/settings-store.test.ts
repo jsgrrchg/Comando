@@ -33,6 +33,7 @@ function createAppearanceSettings(
     return {
         boostCodeContrast: true,
         fileTreeScale: 1,
+        stickyFoldersEnabled: true,
         themeMode: "system",
         themePreset: "default",
         zoomFactor: 1,
