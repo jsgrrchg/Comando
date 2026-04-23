@@ -131,30 +131,38 @@ export function applySessionCatalogToSnapshot(
     snapshot: AiSessionSnapshot,
     payload: AcpSessionCatalogPayload,
 ): AiSessionSnapshot {
-    const configOptions =
+    const baseConfigOptions =
         payload.configOptions !== undefined
             ? mapSessionConfigOptions(payload.configOptions)
             : snapshot.configOptions;
     const modes =
         payload.modes !== undefined
-            ? mapSessionModes(payload.modes, configOptions)
+            ? mapSessionModes(payload.modes, baseConfigOptions)
             : snapshot.modes.length > 0
               ? snapshot.modes
-              : buildModesFromConfigOptions(configOptions);
+              : buildModesFromConfigOptions(baseConfigOptions);
     const models =
         payload.models !== undefined
-            ? mapSessionModels(payload.models, configOptions)
+            ? mapSessionModels(payload.models, baseConfigOptions)
             : snapshot.models.length > 0
               ? snapshot.models
-              : buildModelsFromConfigOptions(configOptions);
+              : buildModelsFromConfigOptions(baseConfigOptions);
+    const mergedConfigOptions = mergeMissingModelOptions(
+        baseConfigOptions,
+        models,
+    );
     const modeId =
         payload.modes !== undefined || payload.configOptions !== undefined
-            ? deriveModeId(payload.modes, configOptions, snapshot.modeId)
+            ? deriveModeId(payload.modes, mergedConfigOptions, snapshot.modeId)
             : snapshot.modeId;
     const modelId =
         payload.models !== undefined || payload.configOptions !== undefined
-            ? deriveModelId(payload.models, configOptions, snapshot.modelId)
+            ? deriveModelId(payload.models, mergedConfigOptions, snapshot.modelId)
             : snapshot.modelId;
+    const configOptions = syncSelectedModelOption(
+        mergedConfigOptions,
+        modelId,
+    );
 
     return {
         ...snapshot,
@@ -300,13 +308,16 @@ function deriveModelId(
     configOptions: readonly AiSessionConfigOption[],
     fallback: string | null,
 ): string | null {
+    if (
+        state?.currentModelId?.trim() &&
+        !state.currentModelId.includes("/")
+    ) {
+        return state.currentModelId;
+    }
+
     const modelConfig = getModelConfigOption(configOptions);
     if (modelConfig?.type === "select" && modelConfig.value.trim()) {
         return modelConfig.value;
-    }
-
-    if (state?.currentModelId?.trim()) {
-        return state.currentModelId;
     }
 
     return fallback;
@@ -340,6 +351,70 @@ function buildModelsFromConfigOptions(
         id: option.value,
         name: option.label,
     }));
+}
+
+export function mergeMissingModelOptions(
+    configOptions: readonly AiSessionConfigOption[],
+    models: readonly AiSessionModel[],
+): readonly AiSessionConfigOption[] {
+    const modelConfig = getModelConfigOption(configOptions);
+    if (!modeConfigOrModelConfigExists(modelConfig) || models.length === 0) {
+        return configOptions;
+    }
+
+    const knownValues = new Set(modelConfig.options.map((option) => option.value));
+    const missingOptions = models.flatMap((model) =>
+        knownValues.has(model.id) || model.id.includes("/")
+            ? []
+            : [
+                  {
+                      description: model.description,
+                      groupLabel: null,
+                      label: model.name,
+                      value: model.id,
+                  },
+              ],
+    );
+
+    if (missingOptions.length === 0) {
+        return configOptions;
+    }
+
+    return configOptions.map((option) =>
+        option === modelConfig
+            ? {
+                  ...option,
+                  options: [...option.options, ...missingOptions],
+              }
+            : option,
+    );
+}
+
+export function syncSelectedModelOption(
+    configOptions: readonly AiSessionConfigOption[],
+    modelId: string | null,
+): readonly AiSessionConfigOption[] {
+    if (!modelId?.trim()) {
+        return configOptions;
+    }
+
+    const modelConfig = getModelConfigOption(configOptions);
+    if (
+        !modeConfigOrModelConfigExists(modelConfig) ||
+        !hasSelectConfigValue(modelConfig, modelId) ||
+        modelConfig.value === modelId
+    ) {
+        return configOptions;
+    }
+
+    return configOptions.map((option) =>
+        option === modelConfig
+            ? {
+                  ...option,
+                  value: modelId,
+              }
+            : option,
+    );
 }
 
 function modeConfigOrModelConfigExists(

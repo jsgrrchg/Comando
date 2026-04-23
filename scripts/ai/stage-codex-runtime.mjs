@@ -102,6 +102,47 @@ function buildVendoredReleaseBinary() {
     return codexTargetReleaseBinary;
 }
 
+function collectVendoredSourceFiles(directory, collected = []) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (
+            entry.name === "target" ||
+            entry.name === ".git" ||
+            entry.name === "node_modules"
+        ) {
+            continue;
+        }
+
+        const absolutePath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+            collectVendoredSourceFiles(absolutePath, collected);
+            continue;
+        }
+
+        if (entry.isFile()) {
+            collected.push(absolutePath);
+        }
+    }
+
+    return collected;
+}
+
+function shouldRebuildVendoredReleaseBinary() {
+    if (!isExecutableFile(codexTargetReleaseBinary)) {
+        return true;
+    }
+
+    const binaryMtimeMs = fs.statSync(codexTargetReleaseBinary).mtimeMs;
+    const sourceFiles = collectVendoredSourceFiles(codexVendorDir);
+
+    return sourceFiles.some((sourceFile) => {
+        try {
+            return fs.statSync(sourceFile).mtimeMs > binaryMtimeMs;
+        } catch {
+            return true;
+        }
+    });
+}
+
 function resolveStageSource() {
     migrateLegacyTargetDir();
 
@@ -124,6 +165,13 @@ function resolveStageSource() {
         return {
             path: runtimeOverride,
             source: "runtime-env",
+        };
+    }
+
+    if (fs.existsSync(codexVendorDir) && shouldRebuildVendoredReleaseBinary()) {
+        return {
+            path: buildVendoredReleaseBinary(),
+            source: "embedded-release-built",
         };
     }
 
