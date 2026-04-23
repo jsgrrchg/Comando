@@ -25,6 +25,10 @@ import { syncTrackedFile } from "@shared/ai-tracked-file";
 import type { Awaitable } from "../db/awaitable";
 import { debugBenignError } from "../observability/logging";
 import { mainProcessPerformance } from "../observability/performance";
+import {
+    mergeMissingModelOptions,
+    syncSelectedModelOption,
+} from "./session-core";
 
 interface PersistedAiSessionRow {
     readonly draft: string;
@@ -736,32 +740,42 @@ function applyRuntimeSelectionPreferencesToCatalog(
         return option;
     });
 
+    const mergedConfigOptions = mergeMissingModelOptions(
+        configOptions,
+        catalog.models,
+    );
     const modeOption =
-        configOptions.find(
+        mergedConfigOptions.find(
             (option) =>
                 option.type === "select" &&
                 (option.category === "mode" ||
                     option.id.toLowerCase() === "mode"),
         ) ?? null;
     const modelOption =
-        configOptions.find(
+        mergedConfigOptions.find(
             (option) =>
                 option.type === "select" &&
                 (option.category === "model" ||
                     option.id.toLowerCase() === "model"),
         ) ?? null;
 
+    const modelId =
+        modelOption?.type === "select"
+            ? modelOption.value
+            : (preferences.modelId ?? catalog.modelId);
+    const synchronizedConfigOptions = syncSelectedModelOption(
+        mergedConfigOptions,
+        modelId,
+    );
+
     return {
         ...catalog,
-        configOptions,
+        configOptions: synchronizedConfigOptions,
         modeId:
             modeOption?.type === "select"
                 ? modeOption.value
                 : (preferences.modeId ?? catalog.modeId),
-        modelId:
-            modelOption?.type === "select"
-                ? modelOption.value
-                : (preferences.modelId ?? catalog.modelId),
+        modelId,
     };
 }
 
