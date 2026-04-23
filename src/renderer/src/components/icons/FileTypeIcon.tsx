@@ -241,12 +241,18 @@ function SvgShell({
     children,
 }: SvgShellProps) {
     const dim = scaled ? scalePx(size) : `${size}px`;
+    // Brand hex colors are mixed with the theme foreground so they stay
+    // legible on both light and dark backgrounds. Non-hex values
+    // (currentColor, var(--...)) are already theme-aware.
+    const strokeColor = color.startsWith("#")
+        ? `color-mix(in oklab, ${color} 62%, var(--color-text-primary))`
+        : color;
     return (
         <svg
             className={className}
             fill="none"
             height={dim}
-            stroke={color}
+            stroke={strokeColor}
             strokeLinecap="round"
             strokeLinejoin="round"
             style={{ flexShrink: 0, opacity }}

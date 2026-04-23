@@ -4,15 +4,14 @@
     {
       "layers" : [
         {
-          "blend-mode" : "normal",
-          "fill" : "none",
           "glass" : false,
-          "image-name" : "image3.png",
+          "image-name" : "comando_icon_grueso_compacto_transparente_real.png",
+          "name" : "comando_icon_grueso_compacto_transparente_real",
           "position" : {
-            "scale" : 0.93,
+            "scale" : 1,
             "translation-in-points" : [
-              0,
-              24.32247083665652
+              -13,
+              0
             ]
           }
         }

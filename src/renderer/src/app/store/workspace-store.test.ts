@@ -55,6 +55,24 @@ function createWorkspaceFileTab(id: string, relativePath: string) {
     };
 }
 
+function createWorkspaceChatTab(
+    id: string,
+    sessionId: string,
+    runtimeId: "claude" | "codex" | "gemini" | "kilo",
+) {
+    return {
+        createdAt: "2026-04-14T00:00:00.000Z",
+        draft: "",
+        id,
+        kind: "chat" as const,
+        projectId: "project-1",
+        runtimeId,
+        sessionId,
+        title: `${runtimeId} chat`,
+        worktreeId: null,
+    };
+}
+
 function findWorkspacePane(
     node: WorkspaceTreeState["rootNode"],
     paneId: string,
@@ -1693,6 +1711,82 @@ describe("workspace runtime focus helpers", () => {
         expect(
             state.recentClosedTabs.some((entry) => entry.tab.id === "file-2"),
         ).toBe(false);
+    });
+
+    it("does not make a restored chat the implicit line attachment target until it receives focus", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-file",
+            lastFocusedChatTabId: "chat-closed",
+            lastFocusedRuntimeId: "claude",
+            recentActiveTabIds: ["chat-closed", "chat-target", "file-1"],
+            recentFocusedChatTabIds: ["chat-closed", "chat-target"],
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "file-1",
+                        id: "pane-file",
+                        tabIds: ["file-1"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: "chat-closed",
+                        id: "pane-chat",
+                        tabIds: ["chat-target", "chat-closed"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "chat-closed": createWorkspaceChatTab(
+                    "chat-closed",
+                    "session-closed",
+                    "claude",
+                ),
+                "chat-target": createWorkspaceChatTab(
+                    "chat-target",
+                    "session-target",
+                    "codex",
+                ),
+                "file-1": createWorkspaceFileTab("file-1", "src/app.ts"),
+            },
+        }));
+
+        await useWorkspaceStore.getState().closeTab("chat-closed");
+        await useWorkspaceStore.getState().reopenLastClosedTab();
+
+        const restoredState = useWorkspaceStore.getState();
+        const chatPane = findWorkspacePane(restoredState.rootNode, "pane-chat");
+
+        expect(chatPane?.activeTabId).toBe("chat-closed");
+        expect(restoredState.lastFocusedChatTabId).toBe("chat-target");
+        expect(
+            getBestMatchingChatTabId(restoredState, {
+                currentPaneId: "pane-file",
+                lastFocusedChatTabId: restoredState.lastFocusedChatTabId,
+                projectId: "project-1",
+                recentFocusedChatTabIds:
+                    restoredState.recentFocusedChatTabIds,
+                worktreeId: null,
+            }),
+        ).toBe("chat-target");
+
+        useWorkspaceStore.getState().markChatTabFocused("chat-closed");
+
+        const focusedState = useWorkspaceStore.getState();
+        expect(
+            getBestMatchingChatTabId(focusedState, {
+                currentPaneId: "pane-file",
+                lastFocusedChatTabId: focusedState.lastFocusedChatTabId,
+                projectId: "project-1",
+                recentFocusedChatTabIds: focusedState.recentFocusedChatTabIds,
+                worktreeId: null,
+            }),
+        ).toBe("chat-closed");
     });
 
     it("restores unsaved file buffers when reopening a closed dirty tab", async () => {

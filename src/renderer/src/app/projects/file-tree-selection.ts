@@ -39,19 +39,7 @@ export function reconcileFileTreeSelection({
     anchorPath,
     selectedPaths,
 }: ReconcileFileTreeSelectionInput): FileTreeSelectionState {
-    if (activeFileTreePath === null) {
-        return {
-            anchorPath,
-            selectedPaths,
-        };
-    }
-
-    const matchesActiveFile =
-        selectedPaths.length === 1 &&
-        selectedPaths[0] === activeFileTreePath &&
-        anchorPath === activeFileTreePath;
-
-    if (matchesActiveFile) {
+    if (selectedPaths.length > 0 || activeFileTreePath === null) {
         return {
             anchorPath,
             selectedPaths,

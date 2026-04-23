@@ -64,12 +64,12 @@ describe("file tree selection", () => {
         ).toBeNull();
     });
 
-    it("collapses stale tree selection onto the active file", () => {
+    it("uses the active file when there is no manual tree selection", () => {
         expect(
             reconcileFileTreeSelection({
                 activeFileTreePath: "docs/todo.md",
-                anchorPath: "docs/guide.md",
-                selectedPaths: ["docs/guide.md"],
+                anchorPath: null,
+                selectedPaths: [],
             }),
         ).toEqual({
             anchorPath: "docs/todo.md",
@@ -77,17 +77,17 @@ describe("file tree selection", () => {
         });
     });
 
-    it("preserves the current selection when it already matches the active file", () => {
-        const selection = ["docs/todo.md"];
+    it("preserves manual selection while an active file exists", () => {
+        const selection = ["docs/guide.md", "docs/todo.md"];
 
         expect(
             reconcileFileTreeSelection({
                 activeFileTreePath: "docs/todo.md",
-                anchorPath: "docs/todo.md",
+                anchorPath: "docs/guide.md",
                 selectedPaths: selection,
             }),
         ).toEqual({
-            anchorPath: "docs/todo.md",
+            anchorPath: "docs/guide.md",
             selectedPaths: selection,
         });
     });

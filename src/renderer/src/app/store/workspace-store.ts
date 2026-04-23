@@ -171,6 +171,14 @@ interface WorkspaceStore extends WorkspaceTreeState {
         relativePath: string,
         kind: "directory" | "file",
     ) => Promise<void>;
+    closeTabsForProjectPaths: (
+        projectId: string,
+        worktreeId: string | null,
+        entries: readonly {
+            readonly kind: "directory" | "file";
+            readonly relativePath: string;
+        }[],
+    ) => Promise<void>;
     dropTabToSplit: (
         tabId: string,
         sourcePaneId: string,
@@ -306,6 +314,44 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }
 
         const tabIdsToClose = fileTabsToClose.map((tab) => tab.id);
+        await closeTabsWithSideEffects(get, set, tabIdsToClose);
+    },
+
+    closeTabsForProjectPaths: async (
+        projectId: string,
+        worktreeId: string | null,
+        entries: readonly {
+            readonly kind: "directory" | "file";
+            readonly relativePath: string;
+        }[],
+    ) => {
+        if (entries.length === 0) {
+            return;
+        }
+
+        const workspaceState = get();
+        const tabIdsToClose = Object.values(workspaceState.tabsById)
+            .filter((tab): tab is RuntimeWorkspaceFileTab => {
+                if (
+                    tab.kind !== "file" ||
+                    tab.projectId !== projectId ||
+                    normalizeWorktreeId(tab.worktreeId) !==
+                        normalizeWorktreeId(worktreeId)
+                ) {
+                    return false;
+                }
+
+                return entries.some((entry) =>
+                    entry.kind === "file"
+                        ? tab.relativePath === entry.relativePath
+                        : tab.relativePath === entry.relativePath ||
+                          tab.relativePath.startsWith(
+                              `${entry.relativePath}/`,
+                          ),
+                );
+            })
+            .map((tab) => tab.id);
+
         await closeTabsWithSideEffects(get, set, tabIdsToClose);
     },
 
@@ -1906,13 +1952,13 @@ function restoreClosedTabInStore(
             : targetPane.tabIds.length,
     );
     const chatTabId = getWorkspaceChatTabId(restoredTab);
-    const runtimeId = getWorkspaceTabRuntimeId(restoredTab);
+    const runtimeId = chatTabId ? null : getWorkspaceTabRuntimeId(restoredTab);
 
     return {
         ...state,
         ...nextState,
         error: null,
-        lastFocusedChatTabId: chatTabId ?? state.lastFocusedChatTabId,
+        lastFocusedChatTabId: state.lastFocusedChatTabId,
         lastFocusedRuntimeId: runtimeId ?? state.lastFocusedRuntimeId,
         recentActiveTabIds: recordRecentTabActivation(
             state.recentActiveTabIds,
@@ -1921,10 +1967,7 @@ function restoreClosedTabInStore(
         recentClosedTabs: state.recentClosedTabs.filter(
             (entry) => entry.tab.id !== closedEntry.tab.id,
         ),
-        recentFocusedChatTabIds: recordRecentChatFocus(
-            state.recentFocusedChatTabIds,
-            chatTabId,
-        ),
+        recentFocusedChatTabIds: state.recentFocusedChatTabIds,
     };
 }
 

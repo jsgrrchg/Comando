@@ -176,6 +176,9 @@ export function App() {
     const closeTabsForProjectPath = useWorkspaceStore(
         (state) => state.closeTabsForProjectPath,
     );
+    const closeTabsForProjectPaths = useWorkspaceStore(
+        (state) => state.closeTabsForProjectPaths,
+    );
     const closeWorkspaceTab = useWorkspaceStore((state) => state.closeTab);
     const requestCloseWorkspaceTab = useCallback(
         (tabId: string) =>
@@ -1225,187 +1228,6 @@ export function App() {
         ],
     );
 
-    const fileTreeContextMenuEntries = useMemo(() => {
-        if (!fileTreeContextMenu) {
-            return [] satisfies ContextMenuEntry[];
-        }
-
-        if (fileTreeContextMenu.payload.kind === "background") {
-            return [
-                {
-                    label: "New File",
-                    action: () => void handleCreateTreeEntry("file", null),
-                    disabled: !activeProjectId,
-                },
-                {
-                    label: "New Folder",
-                    action: () => void handleCreateTreeEntry("directory", null),
-                    disabled: !activeProjectId,
-                },
-                { type: "separator" },
-                {
-                    label: "Reveal Project Root",
-                    action: () => void handleRevealTreeEntry(null),
-                    disabled: !activeProjectId,
-                },
-                {
-                    label: "Refresh",
-                    action: () =>
-                        activeProjectId
-                            ? void refreshProjectTree(
-                                  activeProjectId,
-                                  activeWorktreeId,
-                              )
-                            : undefined,
-                    disabled: !activeProjectId,
-                },
-            ] satisfies ContextMenuEntry[];
-        }
-
-        const node = fileTreeContextMenu.payload.node;
-        if (node.isProjectRoot) {
-            return [
-                {
-                    label: "New File",
-                    action: () => void handleCreateTreeEntry("file", null),
-                    disabled: !activeProjectId,
-                },
-                {
-                    label: "New Folder",
-                    action: () => void handleCreateTreeEntry("directory", null),
-                    disabled: !activeProjectId,
-                },
-                { type: "separator" },
-                {
-                    label: "Reveal in Finder",
-                    action: () => void handleRevealTreeEntry(null),
-                    disabled: !activeProjectId,
-                },
-                {
-                    label: "Copy Absolute Path",
-                    action: () => void handleCopyTreePath("", "absolute"),
-                    disabled: !activeProject,
-                },
-                {
-                    label: "Refresh",
-                    action: () =>
-                        activeProjectId
-                            ? void refreshProjectTree(
-                                  activeProjectId,
-                                  activeWorktreeId,
-                              )
-                            : undefined,
-                    disabled: !activeProjectId,
-                },
-            ] satisfies ContextMenuEntry[];
-        }
-
-        if (node.kind === "file") {
-            return [
-                {
-                    label: "Open",
-                    action: () =>
-                        activeProjectId
-                            ? void openFileTab(
-                                  activeProjectId,
-                                  node.path,
-                                  activeWorktreeId,
-                              )
-                            : undefined,
-                    disabled: !activeProjectId,
-                },
-                {
-                    label: "Add to Chat",
-                    action: () => void handleAddFileToChat(node),
-                    disabled: !activeProjectId,
-                },
-                { type: "separator" },
-                {
-                    label: "Rename",
-                    action: () => void handleRenameTreeNode(node),
-                    disabled: !activeProjectId,
-                },
-                {
-                    label: "Reveal in Finder",
-                    action: () => void handleRevealTreeEntry(node.path),
-                    disabled: !activeProjectId,
-                },
-                {
-                    label: "Copy Relative Path",
-                    action: () =>
-                        void handleCopyTreePath(node.path, "relative"),
-                },
-                {
-                    label: "Copy Absolute Path",
-                    action: () =>
-                        void handleCopyTreePath(node.path, "absolute"),
-                    disabled: !activeProject,
-                },
-                { type: "separator" },
-                {
-                    label: "Delete",
-                    action: () => void handleDeleteTreeNode(node),
-                    danger: true,
-                    disabled: !activeProjectId,
-                },
-            ] satisfies ContextMenuEntry[];
-        }
-
-        return [
-            {
-                label: "New File",
-                action: () => void handleCreateTreeEntry("file", node.path),
-                disabled: !activeProjectId,
-            },
-            {
-                label: "New Folder",
-                action: () =>
-                    void handleCreateTreeEntry("directory", node.path),
-                disabled: !activeProjectId,
-            },
-            { type: "separator" },
-            {
-                label: "Rename",
-                action: () => void handleRenameTreeNode(node),
-                disabled: !activeProjectId,
-            },
-            {
-                label: "Reveal in Finder",
-                action: () => void handleRevealTreeEntry(node.path),
-                disabled: !activeProjectId,
-            },
-            {
-                label: "Copy Relative Path",
-                action: () => void handleCopyTreePath(node.path, "relative"),
-            },
-            {
-                label: "Copy Absolute Path",
-                action: () => void handleCopyTreePath(node.path, "absolute"),
-                disabled: !activeProject,
-            },
-            { type: "separator" },
-            {
-                label: "Delete",
-                action: () => void handleDeleteTreeNode(node),
-                danger: true,
-                disabled: !activeProjectId,
-            },
-        ] satisfies ContextMenuEntry[];
-    }, [
-        activeProject,
-        activeProjectId,
-        activeWorktreeId,
-        fileTreeContextMenu,
-        handleAddFileToChat,
-        handleCopyTreePath,
-        handleCreateTreeEntry,
-        handleDeleteTreeNode,
-        handleRenameTreeNode,
-        handleRevealTreeEntry,
-        openFileTab,
-        refreshProjectTree,
-    ]);
-
     const sidebarFileNodes = useMemo(
         () =>
             buildGitTreeNodesFromProjectTree(
@@ -1519,8 +1341,11 @@ export function App() {
             }
 
             if (isToggleSelection) {
-                setFileTreeSelectedPaths((currentPaths) =>
-                    toggleGitTreePathSelection(currentPaths, node.path),
+                setFileTreeSelectedPaths(
+                    toggleGitTreePathSelection(
+                        effectiveFileTreeSelectedPaths,
+                        node.path,
+                    ),
                 );
                 setFileTreeSelectionAnchorPath(node.path);
                 return;
@@ -1538,6 +1363,7 @@ export function App() {
         [
             activeProjectId,
             activeWorktreeId,
+            effectiveFileTreeSelectedPaths,
             effectiveFileTreeSelectionAnchorPath,
             openFileTab,
             visibleSidebarNodePaths,
@@ -1603,6 +1429,246 @@ export function App() {
             visibleSidebarNodesByPath,
         ],
     );
+
+    const getFileTreeContextSelection = useCallback(
+        (node: GitTreeNode): readonly GitTreeNode[] => {
+            if (!selectedFileTreePathSet.has(node.path)) {
+                return [node];
+            }
+
+            const selectedNodes = effectiveFileTreeSelectedPaths
+                .map((path) => visibleSidebarNodesByPath.get(path))
+                .filter((entry): entry is GitTreeNode => Boolean(entry));
+
+            return selectedNodes.length > 0 ? selectedNodes : [node];
+        },
+        [
+            effectiveFileTreeSelectedPaths,
+            selectedFileTreePathSet,
+            visibleSidebarNodesByPath,
+        ],
+    );
+
+    const handleCloseFileTreeTabs = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const entries = nodes
+                .filter((node) => !node.isProjectRoot)
+                .map((node) => ({
+                    kind: node.kind,
+                    relativePath: node.path,
+                }));
+            await closeTabsForProjectPaths(
+                activeProjectId,
+                activeWorktreeId,
+                entries,
+            );
+        },
+        [activeProjectId, activeWorktreeId, closeTabsForProjectPaths],
+    );
+
+    const fileTreeContextMenuEntries = useMemo(() => {
+        if (!fileTreeContextMenu) {
+            return [] satisfies ContextMenuEntry[];
+        }
+
+        if (fileTreeContextMenu.payload.kind === "background") {
+            return [
+                {
+                    label: "New File",
+                    action: () => void handleCreateTreeEntry("file", null),
+                    disabled: !activeProjectId,
+                },
+                {
+                    label: "New Folder",
+                    action: () => void handleCreateTreeEntry("directory", null),
+                    disabled: !activeProjectId,
+                },
+                { type: "separator" },
+                {
+                    label: "Reveal Project Root",
+                    action: () => void handleRevealTreeEntry(null),
+                    disabled: !activeProjectId,
+                },
+                {
+                    label: "Refresh",
+                    action: () =>
+                        activeProjectId
+                            ? void refreshProjectTree(
+                                  activeProjectId,
+                                  activeWorktreeId,
+                              )
+                            : undefined,
+                    disabled: !activeProjectId,
+                },
+            ] satisfies ContextMenuEntry[];
+        }
+
+        const node = fileTreeContextMenu.payload.node;
+        const contextSelection = getFileTreeContextSelection(node);
+        const multiSelectionEntries =
+            contextSelection.length > 1
+                ? ([
+                      {
+                          label: `Close ${contextSelection.length} Selected Tabs`,
+                          action: () =>
+                              void handleCloseFileTreeTabs(contextSelection),
+                          disabled: !activeProjectId,
+                      },
+                      { type: "separator" },
+                  ] satisfies ContextMenuEntry[])
+                : ([] satisfies ContextMenuEntry[]);
+
+        if (node.isProjectRoot) {
+            return [
+                ...multiSelectionEntries,
+                {
+                    label: "New File",
+                    action: () => void handleCreateTreeEntry("file", null),
+                    disabled: !activeProjectId,
+                },
+                {
+                    label: "New Folder",
+                    action: () => void handleCreateTreeEntry("directory", null),
+                    disabled: !activeProjectId,
+                },
+                { type: "separator" },
+                {
+                    label: "Reveal in Finder",
+                    action: () => void handleRevealTreeEntry(null),
+                    disabled: !activeProjectId,
+                },
+                {
+                    label: "Copy Absolute Path",
+                    action: () => void handleCopyTreePath("", "absolute"),
+                    disabled: !activeProject,
+                },
+                {
+                    label: "Refresh",
+                    action: () =>
+                        activeProjectId
+                            ? void refreshProjectTree(
+                                  activeProjectId,
+                                  activeWorktreeId,
+                              )
+                            : undefined,
+                    disabled: !activeProjectId,
+                },
+            ] satisfies ContextMenuEntry[];
+        }
+
+        if (node.kind === "file") {
+            return [
+                ...multiSelectionEntries,
+                {
+                    label: "Open",
+                    action: () =>
+                        activeProjectId
+                            ? void openFileTab(
+                                  activeProjectId,
+                                  node.path,
+                                  activeWorktreeId,
+                              )
+                            : undefined,
+                    disabled: !activeProjectId,
+                },
+                {
+                    label: "Add to Chat",
+                    action: () => void handleAddFileToChat(node),
+                    disabled: !activeProjectId,
+                },
+                { type: "separator" },
+                {
+                    label: "Rename",
+                    action: () => void handleRenameTreeNode(node),
+                    disabled: !activeProjectId,
+                },
+                {
+                    label: "Reveal in Finder",
+                    action: () => void handleRevealTreeEntry(node.path),
+                    disabled: !activeProjectId,
+                },
+                {
+                    label: "Copy Relative Path",
+                    action: () =>
+                        void handleCopyTreePath(node.path, "relative"),
+                },
+                {
+                    label: "Copy Absolute Path",
+                    action: () =>
+                        void handleCopyTreePath(node.path, "absolute"),
+                    disabled: !activeProject,
+                },
+                { type: "separator" },
+                {
+                    label: "Delete",
+                    action: () => void handleDeleteTreeNode(node),
+                    danger: true,
+                    disabled: !activeProjectId,
+                },
+            ] satisfies ContextMenuEntry[];
+        }
+
+        return [
+            ...multiSelectionEntries,
+            {
+                label: "New File",
+                action: () => void handleCreateTreeEntry("file", node.path),
+                disabled: !activeProjectId,
+            },
+            {
+                label: "New Folder",
+                action: () =>
+                    void handleCreateTreeEntry("directory", node.path),
+                disabled: !activeProjectId,
+            },
+            { type: "separator" },
+            {
+                label: "Rename",
+                action: () => void handleRenameTreeNode(node),
+                disabled: !activeProjectId,
+            },
+            {
+                label: "Reveal in Finder",
+                action: () => void handleRevealTreeEntry(node.path),
+                disabled: !activeProjectId,
+            },
+            {
+                label: "Copy Relative Path",
+                action: () => void handleCopyTreePath(node.path, "relative"),
+            },
+            {
+                label: "Copy Absolute Path",
+                action: () => void handleCopyTreePath(node.path, "absolute"),
+                disabled: !activeProject,
+            },
+            { type: "separator" },
+            {
+                label: "Delete",
+                action: () => void handleDeleteTreeNode(node),
+                danger: true,
+                disabled: !activeProjectId,
+            },
+        ] satisfies ContextMenuEntry[];
+    }, [
+        activeProject,
+        activeProjectId,
+        activeWorktreeId,
+        fileTreeContextMenu,
+        getFileTreeContextSelection,
+        handleAddFileToChat,
+        handleCloseFileTreeTabs,
+        handleCopyTreePath,
+        handleCreateTreeEntry,
+        handleDeleteTreeNode,
+        handleRenameTreeNode,
+        handleRevealTreeEntry,
+        openFileTab,
+        refreshProjectTree,
+    ]);
 
     const { stickyFolders, stickyFolderPaths } = useStickyFolders({
         scrollContainerRef: sidebarScrollRef,
