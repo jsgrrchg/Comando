@@ -8,6 +8,14 @@ import "./styles.css";
 const windowMode = new URLSearchParams(window.location.search).get("window");
 const RootComponent = windowMode === "settings" ? SettingsApp : App;
 
+const userAgentPlatform = navigator.platform.toLowerCase();
+const detectedPlatform = userAgentPlatform.startsWith("mac")
+    ? "darwin"
+    : userAgentPlatform.includes("win")
+      ? "win32"
+      : "linux";
+document.documentElement.setAttribute("data-platform", detectedPlatform);
+
 document.documentElement.dataset.comandoRenderer = "booted";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

@@ -108,7 +108,7 @@ export function SettingsWindow({
         <div
             style={{
                 height: "100vh",
-                backgroundColor: "var(--color-bg-primary)",
+                backgroundColor: "transparent",
                 color: "var(--color-text-primary)",
                 display: "flex",
                 flexDirection: "column",
@@ -116,10 +116,9 @@ export function SettingsWindow({
         >
             {/* Header */}
             <div
-                className="app-drag"
+                className="app-drag settings-chrome"
                 style={{
                     alignItems: "center",
-                    backgroundColor: "var(--color-bg-secondary)",
                     borderBottom:
                         "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                     display: "flex",
@@ -160,8 +159,8 @@ export function SettingsWindow({
             >
                 {/* Sidebar */}
                 <div
+                    className="settings-chrome"
                     style={{
-                        backgroundColor: "var(--color-bg-secondary)",
                         borderRight:
                             "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                         display: "flex",
@@ -301,6 +300,7 @@ export function SettingsWindow({
                 {/* Content */}
                 <div
                     style={{
+                        backgroundColor: "var(--color-bg-primary)",
                         display: "flex",
                         flex: 1,
                         flexDirection: "column",

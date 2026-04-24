@@ -81,16 +81,10 @@ function createBaseWindow(options: {
     const isMac = process.platform === "darwin";
     const isWindows = process.platform === "win32";
     const restoredState = normalizeRestoredState(options.restoredState);
-    const isAcrylicMain = isWindows && options.kind === "main";
+    const isAcrylic = isWindows;
 
     const titleBarOverlay = isWindows
-        ? isAcrylicMain
-            ? resolveWindowsTitleBarOverlay()
-            : {
-                  color: "#f5f5f5",
-                  height: 44,
-                  symbolColor: "#1c1c1c",
-              }
+        ? resolveWindowsTitleBarOverlay()
         : undefined;
 
     const window = new BrowserWindow({
@@ -101,12 +95,8 @@ function createBaseWindow(options: {
         y: restoredState?.y ?? undefined,
         minWidth: options.minWidth,
         minHeight: options.minHeight,
-        backgroundColor: isMac
-            ? "#00000000"
-            : isAcrylicMain
-              ? "#00000000"
-              : options.backgroundColor,
-        backgroundMaterial: isAcrylicMain ? "acrylic" : undefined,
+        backgroundColor: isMac || isAcrylic ? "#00000000" : options.backgroundColor,
+        backgroundMaterial: isAcrylic ? "acrylic" : undefined,
         titleBarOverlay,
         titleBarStyle: isMac ? "hiddenInset" : isWindows ? "hidden" : "default",
         trafficLightPosition: isMac
@@ -121,7 +111,7 @@ function createBaseWindow(options: {
         },
     });
 
-    if (isAcrylicMain) {
+    if (isAcrylic) {
         acrylicWindows.add(window);
     }
 

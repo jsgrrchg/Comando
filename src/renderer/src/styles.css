@@ -366,7 +366,8 @@
 }
 
 :root[data-platform="win32"] .app-sidebar,
-:root[data-platform="win32"] .windows-titlebar {
+:root[data-platform="win32"] .windows-titlebar,
+:root[data-platform="win32"] .settings-chrome {
     background: var(--windows-acrylic-tint);
 }
 
