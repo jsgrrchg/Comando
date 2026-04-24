@@ -22,8 +22,8 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { setCachedAppEditorSettings } from "./app/settings/client";
 import {
-    buildFlatGitTreeNodesFromProjectEntries,
     buildGitTreeNodesFromProjectTree,
+    buildHierarchicalGitTreeNodesFromProjectEntries,
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
 import {
@@ -803,10 +803,27 @@ export function App() {
     );
     const normalizedFileTreeFilter = fileTreeFilter.trim();
     const isFilteringFileTree = normalizedFileTreeFilter.length > 0;
-    const fileTreeSearchNodes = useMemo(
-        () => buildFlatGitTreeNodesFromProjectEntries(fileTreeSearchResults),
-        [fileTreeSearchResults],
+    // The backend search is fuzzy (subsequence matching) which surfaces noisy
+    // results for the sidebar filter. Enforce a strict substring match here so
+    // it behaves like a plain `name-or-path.includes(query)` filter.
+    const fileTreeSubstringMatches = useMemo(() => {
+        if (!isFilteringFileTree) {
+            return fileTreeSearchResults;
+        }
+        const needle = normalizedFileTreeFilter.toLowerCase();
+        return fileTreeSearchResults.filter((entry) =>
+            entry.relativePath.toLowerCase().includes(needle),
+        );
+    }, [fileTreeSearchResults, isFilteringFileTree, normalizedFileTreeFilter]);
+    const fileTreeSearchTree = useMemo(
+        () =>
+            buildHierarchicalGitTreeNodesFromProjectEntries(
+                fileTreeSubstringMatches,
+            ),
+        [fileTreeSubstringMatches],
     );
+    const fileTreeSearchNodes = fileTreeSearchTree.nodes;
+    const fileTreeSearchExpandedPaths = fileTreeSearchTree.expandedDirectoryPaths;
     const quickOpenResults = useMemo(
         () =>
             searchProjectQuickOpenEntries(
@@ -1698,9 +1715,11 @@ export function App() {
     const { stickyFolders, stickyFolderPaths } = useStickyFolders({
         scrollContainerRef: sidebarScrollRef,
         nodes: isFilteringFileTree ? [] : sidebarTreeNodes,
-        expandedPaths: isFilteringFileTree ? [] : activeExpandedDirectories,
+        expandedPaths: isFilteringFileTree
+            ? fileTreeSearchExpandedPaths
+            : activeExpandedDirectories,
         layout: "tree",
-        enabled: stickyFoldersEnabled,
+        enabled: stickyFoldersEnabled && !isFilteringFileTree,
     });
 
     const handleRevealActiveFileInTree = useCallback(async () => {
@@ -2384,18 +2403,14 @@ export function App() {
                                     }
                                     enableNodeDrag
                                     emptyState={
-                                        isFilteringFileTree
-                                            ? "No matching files or folders."
-                                            : undefined
+                                        isFilteringFileTree ? null : undefined
                                     }
                                     expandedPaths={
                                         isFilteringFileTree
-                                            ? []
+                                            ? fileTreeSearchExpandedPaths
                                             : activeExpandedDirectories
                                     }
-                                    layout={
-                                        isFilteringFileTree ? "list" : "tree"
-                                    }
+                                    layout="tree"
                                     nodes={sidebarTreeNodes}
                                     onEditingCancel={cancelFileTreeInlineEditor}
                                     onEditingDraftNameChange={(value) => {

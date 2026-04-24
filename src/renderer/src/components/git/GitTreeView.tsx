@@ -151,6 +151,10 @@ export function GitTreeView({
     }, [activePath, nodes, scrollToActivePathSignal]);
 
     if (nodes.length === 0) {
+        if (emptyState === null) {
+            return null;
+        }
+
         return (
             <GitEmptyState className={className}>
                 {emptyState ?? "Nothing to show yet."}

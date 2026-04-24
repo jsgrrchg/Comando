@@ -18,18 +18,134 @@ export function buildGitTreeNodesFromProjectTree(
     );
 }
 
-export function buildFlatGitTreeNodesFromProjectEntries(
+interface HierarchicalBuildNode {
+    readonly id: string;
+    readonly kind: "directory" | "file";
+    readonly name: string;
+    readonly path: string;
+    readonly status: GitNodeStatus | null;
+    readonly hasChildren: boolean;
+    children?: HierarchicalBuildNode[];
+}
+
+export interface HierarchicalGitTreeFromEntries {
+    readonly expandedDirectoryPaths: readonly string[];
+    readonly nodes: readonly GitTreeNode[];
+}
+
+export function buildHierarchicalGitTreeNodesFromProjectEntries(
     entries: readonly ProjectTreeNode[],
-): readonly GitTreeNode[] {
-    return entries.map((node) => ({
-        hasChildren: node.hasChildren,
-        id: node.id,
-        kind: node.kind,
-        name: node.name,
-        path: node.relativePath,
-        secondaryText: node.parentRelativePath ?? "Project root",
-        status: mapGitNodeStatus(node.gitStatus),
-    }));
+): HierarchicalGitTreeFromEntries {
+    const byPath = new Map<string, HierarchicalBuildNode>();
+
+    const ensureDirectory = (path: string): HierarchicalBuildNode => {
+        const existing = byPath.get(path);
+        if (existing) {
+            if (existing.kind === "directory" && !existing.children) {
+                existing.children = [];
+            }
+            return existing;
+        }
+
+        const name = path.split("/").at(-1) ?? path;
+        const synthetic: HierarchicalBuildNode = {
+            children: [],
+            hasChildren: true,
+            id: `project-search-dir:${path}`,
+            kind: "directory",
+            name,
+            path,
+            status: null,
+        };
+        byPath.set(path, synthetic);
+        return synthetic;
+    };
+
+    // Ensure every ancestor directory of every entry exists so files
+    // under collapsed folders still reveal their hierarchy.
+    for (const entry of entries) {
+        const segments = entry.relativePath.split("/");
+        let cursor = "";
+        for (let index = 0; index < segments.length - 1; index += 1) {
+            const segment = segments[index] ?? "";
+            cursor = cursor ? `${cursor}/${segment}` : segment;
+            ensureDirectory(cursor);
+        }
+    }
+
+    // Insert/overwrite real entries, preserving any synthetic children list.
+    for (const entry of entries) {
+        const existing = byPath.get(entry.relativePath);
+        const previousChildren =
+            existing?.kind === "directory" ? existing.children : undefined;
+
+        byPath.set(entry.relativePath, {
+            children:
+                entry.kind === "directory"
+                    ? (previousChildren ?? [])
+                    : undefined,
+            hasChildren: entry.hasChildren,
+            id: entry.id,
+            kind: entry.kind,
+            name: entry.name,
+            path: entry.relativePath,
+            status: mapGitNodeStatus(entry.gitStatus),
+        });
+    }
+
+    // Attach each node to its parent directory.
+    const rootNodes: HierarchicalBuildNode[] = [];
+    for (const node of byPath.values()) {
+        const lastSlash = node.path.lastIndexOf("/");
+        if (lastSlash < 0) {
+            rootNodes.push(node);
+            continue;
+        }
+
+        const parentPath = node.path.slice(0, lastSlash);
+        const parent = byPath.get(parentPath);
+        if (parent?.kind === "directory") {
+            parent.children = parent.children ?? [];
+            parent.children.push(node);
+        } else {
+            rootNodes.push(node);
+        }
+    }
+
+    const sortNodes = (nodes: HierarchicalBuildNode[]) => {
+        nodes.sort((left, right) => {
+            if (left.kind !== right.kind) {
+                return left.kind === "directory" ? -1 : 1;
+            }
+            return left.name.localeCompare(right.name, undefined, {
+                sensitivity: "base",
+            });
+        });
+        for (const node of nodes) {
+            if (node.children) {
+                sortNodes(node.children);
+            }
+        }
+    };
+    sortNodes(rootNodes);
+
+    const expandedDirectoryPaths: string[] = [];
+    const collectDirectoryPaths = (nodes: readonly HierarchicalBuildNode[]) => {
+        for (const node of nodes) {
+            if (node.kind === "directory") {
+                expandedDirectoryPaths.push(node.path);
+                if (node.children) {
+                    collectDirectoryPaths(node.children);
+                }
+            }
+        }
+    };
+    collectDirectoryPaths(rootNodes);
+
+    return {
+        expandedDirectoryPaths,
+        nodes: rootNodes,
+    };
 }
 
 export function findProjectTreeNodeByPath(
