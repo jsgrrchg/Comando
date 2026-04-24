@@ -2,6 +2,7 @@ import {
     FALLBACK_CATPPUCCIN_ICON,
     getCatppuccinIcon,
     getCatppuccinViewBox,
+    getThemedCatppuccinIconBody,
     resolveAvailableCatppuccinIcon,
     type CatppuccinIconName,
 } from "./catppuccin-icons";
@@ -50,7 +51,9 @@ export function CatppuccinIcon({
             viewBox={getCatppuccinViewBox(icon)}
             width={dim}
             xmlns="http://www.w3.org/2000/svg"
-            dangerouslySetInnerHTML={{ __html: icon.body }}
+            dangerouslySetInnerHTML={{
+                __html: getThemedCatppuccinIconBody(icon.body),
+            }}
         />
     );
 }
