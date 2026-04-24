@@ -12,6 +12,7 @@ describe("SettingsService", () => {
 
         service.saveSnapshot({
             appearance: {
+                agentsSidebarScale: 1.2,
                 boostCodeContrast: true,
                 fileTreeScale: 1.1,
                 stickyFoldersEnabled: false,
@@ -37,6 +38,7 @@ describe("SettingsService", () => {
             ai: createEmptyAiSettings(),
             aiChat: createDefaultAiChatSettings(),
             appearance: {
+                agentsSidebarScale: 1.2,
                 boostCodeContrast: true,
                 fileTreeScale: 1.1,
                 stickyFoldersEnabled: false,
@@ -62,6 +64,7 @@ describe("SettingsService", () => {
     it("tolerates corrupt settings and returns defaults", () => {
         const connection = createFakeSettingsConnection({
             app: {
+                "appearance.agents_sidebar_scale": "??",
                 "appearance.file_tree_scale": "??",
                 "shell.state": "{invalid json",
                 "appearance.theme_mode": "??",
@@ -94,6 +97,7 @@ describe("SettingsService", () => {
             ai: createEmptyAiSettings(),
             aiChat: createDefaultAiChatSettings(),
             appearance: {
+                agentsSidebarScale: 1,
                 boostCodeContrast: true,
                 fileTreeScale: 1,
                 stickyFoldersEnabled: true,
@@ -240,6 +244,7 @@ describe("SettingsService", () => {
 
         service.saveSnapshot({
             appearance: {
+                agentsSidebarScale: 1.05,
                 boostCodeContrast: false,
                 fileTreeScale: 0.95,
                 stickyFoldersEnabled: true,
@@ -259,6 +264,7 @@ describe("SettingsService", () => {
         });
 
         expect(service.loadSnapshot().appearance).toEqual({
+            agentsSidebarScale: 1.05,
             boostCodeContrast: false,
             fileTreeScale: 0.95,
             stickyFoldersEnabled: true,

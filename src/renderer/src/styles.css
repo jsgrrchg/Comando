@@ -269,6 +269,7 @@
 :root {
     color-scheme: light;
     font-family: var(--font-sans);
+    --agents-sidebar-scale: 1;
     --vibrancy-opacity: 82%;
     background: color-mix(
         in srgb,
@@ -798,9 +799,10 @@ button {
 .sidebar-agents-row {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: calc(2px * var(--agents-sidebar-scale, 1));
     align-items: flex-start;
-    padding: 6px 8px;
+    padding: calc(6px * var(--agents-sidebar-scale, 1))
+        calc(8px * var(--agents-sidebar-scale, 1));
     border-radius: 6px;
     border-left: 2px solid transparent;
     background: transparent;
@@ -819,6 +821,57 @@ button {
 .sidebar-agents-row:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
     outline-offset: 1px;
+}
+
+.sidebar-agents-summary {
+    font-size: calc(11px * var(--agents-sidebar-scale, 1));
+    padding: calc(6px * var(--agents-sidebar-scale, 1))
+        calc(8px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-summary-action {
+    font-size: calc(10px * var(--agents-sidebar-scale, 1));
+    padding: calc(2px * var(--agents-sidebar-scale, 1))
+        calc(6px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-section-header {
+    font-size: calc(9.5px * var(--agents-sidebar-scale, 1));
+    padding: calc(4px * var(--agents-sidebar-scale, 1))
+        calc(8px * var(--agents-sidebar-scale, 1))
+        calc(2px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-main-line {
+    gap: calc(8px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-title,
+.sidebar-agents-rename {
+    font-size: calc(11.5px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-preview {
+    font-size: calc(10.5px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-meta,
+.sidebar-agents-timestamp {
+    font-size: calc(10px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-activity-dot {
+    font-size: calc(9px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-pin-button {
+    width: calc(20px * var(--agents-sidebar-scale, 1));
+    height: calc(20px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-pin-icon {
+    width: calc(11px * var(--agents-sidebar-scale, 1));
+    height: calc(11px * var(--agents-sidebar-scale, 1));
 }
 
 .sidebar-git-scope-trigger {

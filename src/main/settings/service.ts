@@ -1,5 +1,9 @@
 import type Database from "better-sqlite3";
 
+import {
+    AGENTS_SIDEBAR_SCALE_DEFAULT,
+    clampAgentsSidebarScale,
+} from "@shared/agents-sidebar-scale";
 import { clampAppZoomFactor } from "@shared/app-zoom";
 import {
     EDITOR_AUTOSAVE_DELAY_MS_DEFAULT,
@@ -65,6 +69,7 @@ const GEMINI_HAS_GOOGLE_API_KEY_KEY = "ai.gemini.has_google_api_key";
 const KILO_AUTH_INVALIDATED_AT_KEY = "ai.kilo.auth_invalidated_at_ms";
 const KILO_BINARY_PATH_KEY = "ai.kilo.binary_path";
 const APP_BOOST_CODE_CONTRAST_KEY = "appearance.boost_code_contrast";
+const APP_AGENTS_SIDEBAR_SCALE_KEY = "appearance.agents_sidebar_scale";
 const APP_FILE_TREE_SCALE_KEY = "appearance.file_tree_scale";
 const APP_STICKY_FOLDERS_ENABLED_KEY = "appearance.sticky_folders_enabled";
 const APP_THEME_MODE_KEY = "appearance.theme_mode";
@@ -246,6 +251,9 @@ export class SettingsService {
 
     loadAppAppearanceSettings(): AppAppearanceSettings {
         return {
+            agentsSidebarScale: this.#normalizeAgentsSidebarScale(
+                this.#loadNumberSetting(APP_AGENTS_SIDEBAR_SCALE_KEY),
+            ),
             boostCodeContrast:
                 this.#loadBooleanSetting(APP_BOOST_CODE_CONTRAST_KEY) ?? true,
             fileTreeScale: this.#normalizeFileTreeScale(
@@ -267,6 +275,12 @@ export class SettingsService {
     }
 
     saveAppAppearanceSettings(settings: AppAppearanceSettings): void {
+        this.#saveSetting(
+            APP_AGENTS_SIDEBAR_SCALE_KEY,
+            String(
+                this.#normalizeAgentsSidebarScale(settings.agentsSidebarScale),
+            ),
+        );
         this.#saveBooleanSetting(
             APP_BOOST_CODE_CONTRAST_KEY,
             settings.boostCodeContrast,
@@ -727,6 +741,14 @@ export class SettingsService {
 
     #normalizeAppZoomFactor(value: number | null | undefined): number {
         return clampAppZoomFactor(value ?? Number.NaN);
+    }
+
+    #normalizeAgentsSidebarScale(value: number | null | undefined): number {
+        if (typeof value !== "number") {
+            return AGENTS_SIDEBAR_SCALE_DEFAULT;
+        }
+
+        return clampAgentsSidebarScale(value);
     }
 
     #normalizeFileTreeScale(value: number | null | undefined): number {

@@ -1,3 +1,7 @@
+import {
+    AGENTS_SIDEBAR_SCALE_DEFAULT,
+    clampAgentsSidebarScale,
+} from "@shared/agents-sidebar-scale";
 import { APP_ZOOM_FACTOR_DEFAULT, clampAppZoomFactor } from "@shared/app-zoom";
 import {
     EDITOR_AUTOSAVE_DELAY_MS_DEFAULT,
@@ -1747,6 +1751,7 @@ function getThemeTokens(
 
 export function getDefaultAppAppearance(): AppAppearanceSettings {
     return {
+        agentsSidebarScale: AGENTS_SIDEBAR_SCALE_DEFAULT,
         boostCodeContrast: true,
         fileTreeScale: FILE_TREE_SCALE_DEFAULT,
         stickyFoldersEnabled: true,
@@ -1804,6 +1809,9 @@ export function resolveAppearance(
     const defaults = getDefaultAppAppearance();
 
     return {
+        agentsSidebarScale: clampAgentsSidebarScale(
+            appAppearance?.agentsSidebarScale ?? defaults.agentsSidebarScale,
+        ),
         boostCodeContrast:
             appAppearance?.boostCodeContrast ?? defaults.boostCodeContrast,
         fileTreeScale: clampFileTreeScale(
@@ -1962,5 +1970,9 @@ export function applyAppearance(
     root.style.setProperty(
         "--file-tree-scale",
         String(clampFileTreeScale(appearance.fileTreeScale)),
+    );
+    root.style.setProperty(
+        "--agents-sidebar-scale",
+        String(clampAgentsSidebarScale(appearance.agentsSidebarScale)),
     );
 }

@@ -234,6 +234,18 @@ export function SettingsApp() {
         void saveAppAppearanceSettings(nextAppearance);
     };
 
+    const handleAppAgentsSidebarScaleChange = (
+        agentsSidebarScale: number,
+    ) => {
+        const nextAppearance = {
+            ...appAppearance,
+            agentsSidebarScale,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppStickyFoldersEnabledChange = (
         stickyFoldersEnabled: boolean,
     ) => {
@@ -425,9 +437,12 @@ export function SettingsApp() {
                     updateAiChat({ contextUsageBarEnabled: value }),
             }}
             appAppearance={{
+                agentsSidebarScale: appAppearance.agentsSidebarScale,
                 boostCodeContrast: appAppearance.boostCodeContrast,
                 fileTreeScale: appAppearance.fileTreeScale,
                 mode: appAppearance.themeMode,
+                onAgentsSidebarScaleChange:
+                    handleAppAgentsSidebarScaleChange,
                 onBoostCodeContrastChange: handleAppBoostCodeContrastChange,
                 onFileTreeScaleChange: handleAppFileTreeScaleChange,
                 onModeChange: handleAppThemeModeChange,

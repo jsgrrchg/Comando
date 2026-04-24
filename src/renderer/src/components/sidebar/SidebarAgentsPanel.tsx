@@ -524,7 +524,7 @@ export function SidebarAgentsPanel({
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex shrink-0 items-center gap-1 px-2 py-1.5">
+            <div className="sidebar-agents-summary flex shrink-0 items-center gap-1 px-2 py-1.5">
                 <span
                     className={[
                         "min-w-0 flex-1 truncate text-[11px] font-medium",
@@ -536,7 +536,7 @@ export function SidebarAgentsPanel({
                     {statusLine}
                 </span>
                 <button
-                    className="rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                    className="sidebar-agents-summary-action rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
                     onClick={handleOpenHistoryTab}
                     title="Open full history"
                     type="button"
@@ -643,7 +643,9 @@ function SidebarAgentsSection({
     ) => void;
     readonly onOpen: (session: AiHistorySessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
-    readonly onTogglePinned: (session: AiHistorySessionSummary) => void;
+    readonly onTogglePinned: (
+        session: AiHistorySessionSummary,
+    ) => Promise<void> | void;
     readonly renameDraft: string;
     readonly renamingSessionId: string | null;
     readonly sessions: readonly AiHistorySessionSummary[];
@@ -652,7 +654,7 @@ function SidebarAgentsSection({
     return (
         <section className="mt-1 first:mt-0">
             {title ? (
-                <header className="flex items-center gap-1.5 px-2 pb-0.5 pt-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary/80">
+                <header className="sidebar-agents-section-header flex items-center gap-1.5 px-2 pb-0.5 pt-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary/80">
                     <span>{title}</span>
                     <span className="font-normal opacity-70">
                         {sessions.length}
@@ -700,7 +702,9 @@ function SidebarAgentsItem({
     ) => void;
     readonly onOpen: (session: AiHistorySessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
-    readonly onTogglePinned: (session: AiHistorySessionSummary) => void;
+    readonly onTogglePinned: (
+        session: AiHistorySessionSummary,
+    ) => Promise<void> | void;
     readonly renameDraft: string;
     readonly session: AiHistorySessionSummary;
 }) {
@@ -738,12 +742,12 @@ function SidebarAgentsItem({
             tabIndex={isRenaming ? -1 : 0}
             title={session.title}
         >
-            <div className="flex w-full min-w-0 items-center gap-2">
+            <div className="sidebar-agents-main-line flex w-full min-w-0 items-center gap-2">
                 <SidebarAgentActivityDot indicator={activity} />
                 {isRenaming ? (
                     <input
                         autoFocus
-                        className="min-w-0 flex-1 rounded border border-border-strong bg-bg-primary px-1 py-0.5 text-[11.5px] font-medium text-text-primary outline-none focus:border-accent"
+                        className="sidebar-agents-rename min-w-0 flex-1 rounded border border-border-strong bg-bg-primary px-1 py-0.5 text-[11.5px] font-medium text-text-primary outline-none focus:border-accent"
                         onBlur={onCommitRename}
                         onChange={(event) =>
                             onRenameDraftChange(event.target.value)
@@ -763,7 +767,7 @@ function SidebarAgentsItem({
                         value={renameDraft}
                     />
                 ) : (
-                    <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text-primary">
+                    <span className="sidebar-agents-title min-w-0 flex-1 truncate text-[11.5px] font-medium text-text-primary">
                         {title}
                     </span>
                 )}
@@ -776,7 +780,7 @@ function SidebarAgentsItem({
                         }
                         aria-pressed={isPinned}
                         className={[
-                            "flex h-5 w-5 shrink-0 items-center justify-center rounded border text-text-secondary transition-colors",
+                            "sidebar-agents-pin-button flex h-5 w-5 shrink-0 items-center justify-center rounded border text-text-secondary transition-colors",
                             isPinned
                                 ? "border-border bg-bg-elevated text-text-primary"
                                 : "border-transparent hover:border-border hover:bg-bg-elevated hover:text-text-primary",
@@ -800,17 +804,17 @@ function SidebarAgentsItem({
                 )}
                 {isRenaming ? null : (
                     <span
-                        className={`shrink-0 text-[10px] ${timestampClassName}`}
+                        className={`sidebar-agents-timestamp shrink-0 text-[10px] ${timestampClassName}`}
                         title={activity?.title}
                     >
                         {timestampLabel}
                     </span>
                 )}
             </div>
-            <p className="line-clamp-1 w-full text-left text-[10.5px] leading-[1.35] text-text-secondary">
+            <p className="sidebar-agents-preview line-clamp-1 w-full text-left text-[10.5px] leading-[1.35] text-text-secondary">
                 {preview}
             </p>
-            <div className="flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
+            <div className="sidebar-agents-meta flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
                 <span className="shrink-0">
                     {getHistoryRuntimeLabel(session.runtimeId)}
                 </span>
@@ -857,7 +861,7 @@ function SidebarAgentActivityDot({
         <span
             aria-hidden="true"
             className={[
-                "shrink-0 text-[9px] leading-none",
+                "sidebar-agents-activity-dot shrink-0 text-[9px] leading-none",
                 indicator.tone === "danger"
                     ? "text-rose-500"
                     : "text-(--diff-warn)",
@@ -883,6 +887,7 @@ function PinIcon({ active }: { readonly active: boolean }) {
     return (
         <svg
             aria-hidden="true"
+            className="sidebar-agents-pin-icon"
             fill={active ? "currentColor" : "none"}
             height="11"
             stroke="currentColor"

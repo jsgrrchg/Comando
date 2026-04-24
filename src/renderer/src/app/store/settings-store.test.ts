@@ -31,6 +31,7 @@ function createAppearanceSettings(
     overrides: Partial<AppAppearanceSettings> = {},
 ): AppAppearanceSettings {
     return {
+        agentsSidebarScale: 1,
         boostCodeContrast: true,
         fileTreeScale: 1,
         stickyFoldersEnabled: true,

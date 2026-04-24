@@ -1,10 +1,16 @@
 import type { AppUpdateState } from "@shared/ipc";
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
+import {
+    AGENTS_SIDEBAR_SCALE_MAX,
+    AGENTS_SIDEBAR_SCALE_MIN,
+    AGENTS_SIDEBAR_SCALE_STEP,
+    clampAgentsSidebarScale,
+} from "@shared/agents-sidebar-scale";
 import {
     APP_ZOOM_FACTOR_MAX,
     APP_ZOOM_FACTOR_MIN,
     APP_ZOOM_FACTOR_STEP,
-    formatAppZoomPercent,
+    clampAppZoomFactor,
 } from "@shared/app-zoom";
 import {
     EDITOR_AUTOSAVE_DELAY_MS_MAX,
@@ -384,8 +390,8 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
         typeof navigator !== "undefined" &&
         navigator.platform.toLowerCase().startsWith("mac");
     const appZoomShortcut = isMac
-        ? "⌘+Plus / ⌘+- / ⌘+0"
-        : "Ctrl+Plus / Ctrl+- / Ctrl+0";
+        ? "⌘= / ⌘- / ⌘0"
+        : "Ctrl= / Ctrl- / Ctrl0";
 
     return (
         <div>
@@ -401,6 +407,23 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                         step={FILE_TREE_SCALE_STEP}
                         onChange={(v) => state.onFileTreeScaleChange?.(v)}
                         formatValue={(v) => formatFileTreeScalePercent(v)}
+                    />
+                }
+            />
+            <Row
+                label="Agents sidebar size"
+                description="Scale text and rows in the Agents sidebar, in percent."
+                control={
+                    <PercentScaleStepper
+                        label="Agents sidebar size"
+                        value={state.agentsSidebarScale ?? 1}
+                        min={AGENTS_SIDEBAR_SCALE_MIN}
+                        max={AGENTS_SIDEBAR_SCALE_MAX}
+                        step={AGENTS_SIDEBAR_SCALE_STEP}
+                        clampValue={clampAgentsSidebarScale}
+                        onChange={(v) =>
+                            state.onAgentsSidebarScaleChange?.(v)
+                        }
                     />
                 }
             />
@@ -458,18 +481,131 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
             <SectionLabel>Zoom</SectionLabel>
             <Row
                 label="App zoom"
-                description={`Scale the entire app UI. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`}
+                description={`Scale the entire app UI, in percent. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`}
                 control={
-                    <SliderField
+                    <PercentScaleStepper
+                        label="App zoom"
                         value={state.zoomFactor ?? 1}
                         min={APP_ZOOM_FACTOR_MIN}
                         max={APP_ZOOM_FACTOR_MAX}
                         step={APP_ZOOM_FACTOR_STEP}
+                        clampValue={clampAppZoomFactor}
                         onChange={(v) => state.onZoomFactorChange?.(v)}
-                        formatValue={(v) => formatAppZoomPercent(v)}
                     />
                 }
             />
+        </div>
+    );
+}
+
+function PercentScaleStepper({
+    clampValue,
+    label,
+    max,
+    min,
+    step,
+    value,
+    onChange,
+}: {
+    clampValue: (value: number) => number;
+    label: string;
+    max: number;
+    min: number;
+    step: number;
+    value: number;
+    onChange: (value: number) => void;
+}) {
+    const scale = clampValue(value);
+    const scalePercent = Math.round(scale * 100);
+    const canDecrease = scale > min;
+    const canIncrease = scale < max;
+    const changeBy = (direction: -1 | 1) => {
+        onChange(clampValue(scale + step * direction));
+    };
+
+    const buttonStyle = (disabled: boolean): CSSProperties => ({
+        alignItems: "center",
+        background: "transparent",
+        border: "none",
+        color: "var(--color-text-secondary)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        display: "flex",
+        fontFamily: "inherit",
+        fontSize: 13,
+        height: 26,
+        justifyContent: "center",
+        opacity: disabled ? 0.45 : 1,
+        padding: 0,
+        transition: "background-color 100ms ease, color 100ms ease",
+        width: 28,
+    });
+
+    return (
+        <div
+            aria-label={label}
+            role="group"
+            style={{
+                alignItems: "center",
+                backgroundColor: "var(--color-bg-tertiary)",
+                border: "1px solid var(--color-border)",
+                borderRadius: 6,
+                display: "inline-flex",
+                overflow: "hidden",
+            }}
+        >
+            <button
+                aria-label={`Decrease ${label.toLowerCase()}`}
+                disabled={!canDecrease}
+                onClick={() => changeBy(-1)}
+                onMouseEnter={(e) => {
+                    if (canDecrease) {
+                        e.currentTarget.style.backgroundColor =
+                            "var(--color-bg-secondary)";
+                        e.currentTarget.style.color =
+                            "var(--color-text-primary)";
+                    }
+                }}
+                onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.color = "var(--color-text-secondary)";
+                }}
+                style={buttonStyle(!canDecrease)}
+                type="button"
+            >
+                −
+            </button>
+            <span
+                style={{
+                    color: "var(--color-text-primary)",
+                    fontSize: 12,
+                    fontVariantNumeric: "tabular-nums",
+                    minWidth: 32,
+                    textAlign: "center",
+                }}
+            >
+                {scalePercent}
+            </span>
+            <button
+                aria-label={`Increase ${label.toLowerCase()}`}
+                disabled={!canIncrease}
+                onClick={() => changeBy(1)}
+                onMouseEnter={(e) => {
+                    if (canIncrease) {
+                        e.currentTarget.style.backgroundColor =
+                            "var(--color-bg-secondary)";
+                        e.currentTarget.style.color =
+                            "var(--color-text-primary)";
+                    }
+                }}
+                onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.color = "var(--color-text-secondary)";
+                }}
+                style={buttonStyle(!canIncrease)}
+                type="button"
+            >
+                +
+            </button>
         </div>
     );
 }

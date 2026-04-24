@@ -24,6 +24,7 @@ export interface ThemePresetOption {
 }
 
 export interface SettingsThemeControlState {
+    readonly agentsSidebarScale?: number;
     readonly boostCodeContrast: boolean;
     readonly fileTreeScale?: number;
     readonly mode: ThemeMode;
@@ -32,6 +33,7 @@ export interface SettingsThemeControlState {
     readonly stickyFoldersEnabled: boolean;
     readonly zoomFactor?: number;
     readonly disabled?: boolean;
+    readonly onAgentsSidebarScaleChange?: (agentsSidebarScale: number) => void;
     readonly onBoostCodeContrastChange?: (enabled: boolean) => void;
     readonly onFileTreeScaleChange?: (fileTreeScale: number) => void;
     readonly onModeChange?: (mode: ThemeMode) => void;
