@@ -19,7 +19,7 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 | **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today |
 | **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` |
-| **Runtime discovery** | env, settings, vendor JS, embedded bundle, PATH fallback | env, settings, bundled binary, embedded target cache, PATH fallback | env, settings, PATH | env, settings, PATH |
+| **Runtime discovery** | env, settings, vendor JS, embedded bundle, PATH fallback | env, settings, bundled binary, embedded target cache, legacy vendor target cache, PATH fallback | env, settings, PATH | env, settings, PATH |
 | **Notes** | Debug builds prefer vendored JS directly. Gateway auth is supported. | Detects and rejects plain `codex` CLI because current integration still expects ACP. | Login readiness is inferred from `~/.gemini/settings.json`. | Login readiness is inferred from system-level Kilo auth stores (`XDG_DATA_HOME`, `LOCALAPPDATA`, `~/.local/share`). |
 
 Notes:
@@ -30,7 +30,7 @@ Notes:
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - The current Codex vendor also carries compatibility glue for the `rust-v0.124.0` runtime API shape, including updated auth/config wiring, newer event payloads, and local custom prompt handling.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
-- Some compatibility markers still use legacy ACP metadata names inside the session stream.
+- Status metadata currently uses `codexAcp*` names while Comando keeps app-branded `comando*` aliases for compatibility paths it owns.
 
 ---
 
@@ -62,8 +62,9 @@ On packaged macOS builds, Comando also probes architecture-specific bundled path
 2. Custom path from settings
 3. Bundled binary at `resources/ai/binaries/codex-acp` or the packaged resource equivalent
 4. Embedded target cache at `resources/ai/embedded/codex-acp/target/{release|debug}/codex-acp`
-5. `codex-acp` in PATH
-6. `codex` in PATH, but this is treated as **incompatible** and surfaces an error because Comando still expects an ACP runtime rather than the App Server / MCP CLI
+5. Legacy vendor target cache at `vendor/codex-acp/target/{release|debug}/codex-acp`
+6. `codex-acp` in PATH
+7. `codex` in PATH, but this is treated as **incompatible** and surfaces an error because Comando still expects an ACP runtime rather than the App Server / MCP CLI
 
 If no compatible runtime is found, the user-facing message points back to:
 
@@ -131,14 +132,24 @@ It does **not** stage Gemini or Kilo.
 
 ### Codex staging (`scripts/ai/stage-codex-runtime.mjs`)
 
-`stage-codex-runtime` resolves the source binary in this order:
+`stage-codex-runtime` first migrates an old `vendor/codex-acp/target/` cache into `resources/ai/embedded/codex-acp/target/` when the embedded target cache does not exist yet.
+
+It then resolves the source binary in this order:
 
 1. `COMANDO_CODEX_ACP_BUNDLE_BIN`
 2. `COMANDO_CODEX_ACP_BIN`
-3. Existing embedded release binary at `resources/ai/embedded/codex-acp/target/release/codex-acp`
-4. Existing embedded debug binary at `resources/ai/embedded/codex-acp/target/debug/codex-acp`
-5. Legacy vendor target caches under `vendor/codex-acp/target/`
-6. Fresh `cargo build --release --locked` inside `vendor/codex-acp`
+3. Fresh `cargo build --release --locked` inside `vendor/codex-acp` when the embedded release binary is missing or older than vendored source files
+4. Existing embedded release binary at `resources/ai/embedded/codex-acp/target/release/codex-acp`
+5. Existing embedded debug binary at `resources/ai/embedded/codex-acp/target/debug/codex-acp`
+6. Legacy vendor release binary at `vendor/codex-acp/target/release/codex-acp`
+7. Legacy vendor debug binary at `vendor/codex-acp/target/debug/codex-acp`
+8. Fresh `cargo build --release --locked` inside `vendor/codex-acp`
+
+Fresh builds run with:
+
+```text
+CARGO_TARGET_DIR=resources/ai/embedded/codex-acp/target
+```
 
 The resulting binary is copied to:
 
@@ -179,14 +190,17 @@ Current local snapshot note:
 
 ### macOS packaging (`scripts/package-macos-app.mjs`)
 
-The macOS packaging flow builds a packaged AI payload under `build/package-resources/ai/`:
+The macOS packaging flow builds a packaged AI payload under `build/package-resources/ai/`. It does not run `stage:ai`; it packages already staged or prebuilt runtime artifacts.
 
 - **Claude**
   - stages the embedded Claude project from `resources/ai/embedded/claude-agent-acp/`, a previous packaged app on the Desktop, or the vendor tree as fallback
 - **Codex**
-  - stages architecture-specific prebuilt binaries under `build/package-resources/ai/binaries/darwin-{arch}/codex-acp`
+  - stages both `darwin-arm64` and `darwin-x64` binaries under `build/package-resources/ai/binaries/darwin-{arch}/codex-acp`
+  - resolves each architecture from `resources/ai/prebuilt/codex-acp/darwin-{arch}/codex-acp` or a previous packaged app on the Desktop
+  - for `arm64`, also accepts the current staged `resources/ai/binaries/codex-acp` before the prebuilt/desktop fallbacks
 - **Embedded Node**
-  - stages architecture-specific prebuilt Node binaries under `build/package-resources/ai/embedded/node/darwin-{arch}/bin/node`
+  - stages both `darwin-arm64` and `darwin-x64` Node binaries under `build/package-resources/ai/embedded/node/darwin-{arch}/bin/node`
+  - resolves each architecture from `resources/ai/prebuilt/node/darwin-{arch}/bin/node` or a previous packaged app on the Desktop
 
 `electron-builder` then bundles that staged directory through:
 
@@ -389,6 +403,7 @@ For the SQLite store, Comando inspects `account_state`, `account`, and `control_
 - `session/new`
 - `session/load`
 - `session/close` through `unstable_closeSession`
+- `unstable_logout` during Codex ChatGPT logout
 - `prompt`
 - `setSessionMode`
 - `unstable_setSessionModel`
@@ -408,6 +423,12 @@ Comando does **not** currently use:
 - filesystem callbacks:
   - `readTextFile`
   - `writeTextFile`
+- terminal callbacks:
+  - `createTerminal`
+  - `terminalOutput`
+  - `waitForTerminalExit`
+  - `killTerminal`
+  - `releaseTerminal`
 - permission requests
 - runtime user-input requests (`RequestUserInput`)
 - MCP elicitation requests used for MCP tool approval flows
@@ -420,6 +441,7 @@ Comando does **not** currently use:
   - current mode updates
   - config option updates
   - session info updates
+  - usage / token context updates
   - guardian assessment progress / resolution events
 
 Comando also handles runtime-specific user-input requests by parsing tool-call metadata and then answering through a synthesized follow-up prompt payload. The current response prefix is:
@@ -428,13 +450,19 @@ Comando also handles runtime-specific user-input requests by parsing tool-call m
 __codex_acp_user_input_response__:
 ```
 
-Comando also still recognizes legacy status metadata keys such as:
+Comando recognizes the current Codex ACP status metadata key:
 
 ```text
 codexAcpEventType
 ```
 
-These are compatibility shims carried over from the original integration lineage. The current vendored Codex runtime emits codexAcp-prefixed metadata fields and codex-acp status tool-call IDs, while Comando keeps legacy fallbacks for older snapshots during the transition.
+and the Comando-owned compatibility alias:
+
+```text
+comandoEventType
+```
+
+The current vendored Codex runtime emits codexAcp-prefixed metadata fields and codex-acp status tool-call IDs.
 
 ### Protocol version
 
@@ -583,7 +611,7 @@ On Linux and Windows, the Kilo paths vary through `XDG_DATA_HOME` and `LOCALAPPD
 | `GOOGLE_CLOUD_PROJECT` | Gemini process | Google Cloud project hint |
 | `GOOGLE_CLOUD_LOCATION` | Gemini process | Google Cloud location hint |
 | `GEMINI_DEFAULT_AUTH_TYPE` | Gemini process | Default Gemini auth mode |
-| `NO_BROWSER` | Claude auth UX | Forces remote-style Claude auth behavior |
+| `NO_BROWSER` | Claude/Codex auth UX | Forces remote-style Claude auth behavior and hides the Codex ChatGPT browser login option |
 | `SSH_CONNECTION` | Claude auth UX | Marks the environment as remote |
 | `SSH_CLIENT` | Claude auth UX | Marks the environment as remote |
 | `SSH_TTY` | Claude auth UX | Marks the environment as remote |

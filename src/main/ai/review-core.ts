@@ -29,10 +29,10 @@ import {
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
     CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX,
     CODEX_ACP_USER_INPUT_EVENT_TYPE,
-    LEGACY_DIFF_PREVIOUS_PATH_KEY,
-    LEGACY_STATUS_EVENT_ID_PREFIX,
-    LEGACY_STATUS_EVENT_TYPE_KEY,
-    LEGACY_STATUS_TURN_EVENT_ID_PREFIX,
+    COMANDO_DIFF_PREVIOUS_PATH_KEY,
+    COMANDO_STATUS_EVENT_ID_PREFIX,
+    COMANDO_STATUS_EVENT_TYPE_KEY,
+    COMANDO_STATUS_TURN_EVENT_ID_PREFIX,
     SUPPRESSED_STATUS_TITLES,
     type LiveAcpSession,
 } from "./contracts";
@@ -255,10 +255,10 @@ export function shouldSuppressToolActivityUpdate(
 
     const isStatusActivity =
         update.toolCallId.startsWith(CODEX_ACP_STATUS_EVENT_ID_PREFIX) ||
-        update.toolCallId.startsWith(LEGACY_STATUS_EVENT_ID_PREFIX);
+        update.toolCallId.startsWith(COMANDO_STATUS_EVENT_ID_PREFIX);
     const isTurnActivity =
         update.toolCallId.startsWith(CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX) ||
-        update.toolCallId.startsWith(LEGACY_STATUS_TURN_EVENT_ID_PREFIX);
+        update.toolCallId.startsWith(COMANDO_STATUS_TURN_EVENT_ID_PREFIX);
     if (isStatusActivity && !isTurnActivity) {
         return true;
     }
@@ -267,7 +267,7 @@ export function shouldSuppressToolActivityUpdate(
         readDiffMetaString(
             update._meta,
             CODEX_ACP_STATUS_EVENT_TYPE_KEY,
-            LEGACY_STATUS_EVENT_TYPE_KEY,
+            COMANDO_STATUS_EVENT_TYPE_KEY,
         ) === CODEX_ACP_STATUS_EVENT_TYPE
     ) {
         return true;
@@ -285,7 +285,7 @@ export function diffToAiFileDiff(
     const previousPathValue = readDiffMetaString(
         diff._meta,
         CODEX_ACP_DIFF_PREVIOUS_PATH_KEY,
-        LEGACY_DIFF_PREVIOUS_PATH_KEY,
+        COMANDO_DIFF_PREVIOUS_PATH_KEY,
     );
     const path = normalizePath(diff.path);
     const previousPath = previousPathValue
@@ -416,7 +416,7 @@ function parseUserInputRequest(
         readDiffMetaString(
             update._meta,
             CODEX_ACP_STATUS_EVENT_TYPE_KEY,
-            LEGACY_STATUS_EVENT_TYPE_KEY,
+            COMANDO_STATUS_EVENT_TYPE_KEY,
         ) !== CODEX_ACP_USER_INPUT_EVENT_TYPE ||
         !isRecord(update.rawInput)
     ) {

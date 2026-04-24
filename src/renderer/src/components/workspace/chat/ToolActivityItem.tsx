@@ -182,7 +182,7 @@ function isFileToolActivity(
 function isTurnStartedActivity(activity: AiToolActivity): boolean {
     return (
         activity.id.startsWith("codex-acp:status:turn:") ||
-        activity.id.startsWith("neverwrite:status:turn:")
+        activity.id.startsWith("comando:status:turn:")
     );
 }
 

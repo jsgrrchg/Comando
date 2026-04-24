@@ -38,15 +38,15 @@ import type { SecretStoreGateway } from "@main/ai/secret-store";
 import type { AiPersistenceGateway } from "./persistence";
 
 export const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY = "codexAcpPreviousPath";
-export const LEGACY_DIFF_PREVIOUS_PATH_KEY = "neverwritePreviousPath";
+export const COMANDO_DIFF_PREVIOUS_PATH_KEY = "comandoPreviousPath";
 export const CODEX_ACP_STATUS_EVENT_TYPE_KEY = "codexAcpEventType";
-export const LEGACY_STATUS_EVENT_TYPE_KEY = "neverwriteEventType";
+export const COMANDO_STATUS_EVENT_TYPE_KEY = "comandoEventType";
 export const CODEX_ACP_STATUS_EVENT_TYPE = "status";
 export const CODEX_ACP_STATUS_EVENT_ID_PREFIX = "codex-acp:status:";
-export const LEGACY_STATUS_EVENT_ID_PREFIX = "neverwrite:status:";
+export const COMANDO_STATUS_EVENT_ID_PREFIX = "comando:status:";
 export const CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX =
     "codex-acp:status:turn:";
-export const LEGACY_STATUS_TURN_EVENT_ID_PREFIX = "neverwrite:status:turn:";
+export const COMANDO_STATUS_TURN_EVENT_ID_PREFIX = "comando:status:turn:";
 export const CODEX_ACP_USER_INPUT_EVENT_TYPE = "user_input_request";
 export const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX =
     "__codex_acp_user_input_response__:";

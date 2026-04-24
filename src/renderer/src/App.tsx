@@ -96,6 +96,7 @@ type FileTreeContextMenuPayload =
     | {
           readonly kind: "node";
           readonly node: GitTreeNode;
+          readonly transientSelectionPath: string | null;
       };
 
 type FileTreeInlineEditorState = {
@@ -864,6 +865,29 @@ export function App() {
         setFileTreeSelectionAnchorPath(null);
     }, []);
 
+    const closeFileTreeContextMenu = useCallback(() => {
+        const transientSelectionPath =
+            fileTreeContextMenu?.payload.kind === "node"
+                ? fileTreeContextMenu.payload.transientSelectionPath
+                : null;
+
+        setFileTreeContextMenu(null);
+
+        if (!transientSelectionPath) {
+            return;
+        }
+
+        setFileTreeSelectedPaths((currentPaths) =>
+            currentPaths.length === 1 &&
+            currentPaths[0] === transientSelectionPath
+                ? []
+                : currentPaths,
+        );
+        setFileTreeSelectionAnchorPath((currentPath) =>
+            currentPath === transientSelectionPath ? null : currentPath,
+        );
+    }, [fileTreeContextMenu]);
+
     const beginFileTreeInlineRename = useCallback((node: GitTreeNode) => {
         setFileTreeInlineEditor({
             draftName: node.name,
@@ -1351,18 +1375,19 @@ export function App() {
                 return;
             }
 
-            setFileTreeSelectedPaths([node.path]);
-            setFileTreeSelectionAnchorPath(node.path);
-
             if (!activeProjectId || node.kind !== "file") {
+                setFileTreeSelectedPaths([node.path]);
+                setFileTreeSelectionAnchorPath(node.path);
                 return;
             }
 
+            clearFileTreeSelection();
             void openFileTab(activeProjectId, node.path, activeWorktreeId);
         },
         [
             activeProjectId,
             activeWorktreeId,
+            clearFileTreeSelection,
             effectiveFileTreeSelectedPaths,
             effectiveFileTreeSelectionAnchorPath,
             openFileTab,
@@ -2392,31 +2417,34 @@ export function App() {
                                         fileTreeRevealSignal ?? undefined
                                     }
                                     onNodeClick={handleFileTreeNodeClick}
-                                    onNodeContextMenu={(node, { x, y }) =>
-                                        {
-                                            if (
-                                                !selectedFileTreePathSet.has(
-                                                    node.path,
-                                                )
-                                            ) {
-                                                setFileTreeSelectedPaths([
-                                                    node.path,
-                                                ]);
-                                                setFileTreeSelectionAnchorPath(
-                                                    node.path,
-                                                );
-                                            }
+                                    onNodeContextMenu={(node, { x, y }) => {
+                                        const isNodeSelected =
+                                            selectedFileTreePathSet.has(
+                                                node.path,
+                                            );
 
-                                            setFileTreeContextMenu({
-                                                x,
-                                                y,
-                                                payload: {
-                                                    kind: "node",
-                                                    node,
-                                                },
-                                            });
+                                        if (!isNodeSelected) {
+                                            setFileTreeSelectedPaths([
+                                                node.path,
+                                            ]);
+                                            setFileTreeSelectionAnchorPath(
+                                                node.path,
+                                            );
                                         }
-                                    }
+
+                                        setFileTreeContextMenu({
+                                            x,
+                                            y,
+                                            payload: {
+                                                kind: "node",
+                                                node,
+                                                transientSelectionPath:
+                                                    isNodeSelected
+                                                        ? null
+                                                        : node.path,
+                                            },
+                                        });
+                                    }}
                                     onNodeDragStart={handleFileTreeNodeDragStart}
                                     onNodeDrop={(dragData, destinationNode) => {
                                         void handleMoveTreeNode(
@@ -2639,7 +2667,7 @@ export function App() {
                 <ContextMenu
                     entries={fileTreeContextMenuEntries}
                     menu={fileTreeContextMenu}
-                    onClose={() => setFileTreeContextMenu(null)}
+                    onClose={closeFileTreeContextMenu}
                 />
             ) : null}
 
