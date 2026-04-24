@@ -1035,6 +1035,109 @@ describe("ai-store queue", () => {
         });
     });
 
+    it("cancels the active inference before steering a queued prompt", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const cancelAiSession = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "alpha");
+        await useAiStore.getState().sendPrompt(TAB, "beta");
+
+        const betaPromptId =
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[1]?.id ?? "";
+        await useAiStore
+            .getState()
+            .sendQueuedPromptNow(TAB.sessionId, betaPromptId);
+
+        expect(cancelAiSession).toHaveBeenCalledWith(TAB.sessionId);
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.queue.map((item) => item.prompt),
+        ).toEqual(["beta", "alpha"]);
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
+            false,
+        );
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        expect(sendAiPrompt.mock.calls[0][0]).toMatchObject({ prompt: "beta" });
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.queue.map((item) => item.prompt),
+        ).toEqual(["alpha"]);
+    });
+
+    it("keeps the steered prompt queued when cancelling the active inference fails", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const cancelAiSession = vi
+            .fn()
+            .mockResolvedValueOnce(undefined)
+            .mockRejectedValue(new Error("Cancel failed"));
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "alpha");
+        await useAiStore.getState().sendPrompt(TAB, "beta");
+        await useAiStore.getState().cancelSession(TAB.sessionId);
+
+        const betaPromptId =
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[1]?.id ?? "";
+        await useAiStore
+            .getState()
+            .sendQueuedPromptNow(TAB.sessionId, betaPromptId);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(cancelAiSession).toHaveBeenCalledTimes(2);
+        expect(cancelAiSession).toHaveBeenLastCalledWith(TAB.sessionId);
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        expect(session?.localError).toBe("Cancel failed");
+        expect(session?.queuePaused).toBe(true);
+        expect(session?.queue.map((item) => item.prompt)).toEqual([
+            "beta",
+            "alpha",
+        ]);
+    });
+
     it("clearQueuedPrompts resets the paused flag", async () => {
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
         const cancelAiSession = vi.fn().mockResolvedValue(undefined);

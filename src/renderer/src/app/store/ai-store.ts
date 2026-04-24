@@ -1258,12 +1258,42 @@ export const useAiStore = create<AiStore>((set, get) => ({
         );
 
         const latestSession = get().sessions[sessionId];
+        if (!latestSession?.meta || !latestSession.snapshot) {
+            return;
+        }
+
         if (
-            !latestSession?.meta ||
             latestSession.isDispatching ||
-            !latestSession.snapshot ||
             isBusySession(latestSession.snapshot)
         ) {
+            try {
+                await getComandoApi().cancelAiSession(sessionId);
+            } catch (error) {
+                set((state) => {
+                    const session = state.sessions[sessionId];
+                    if (!session) {
+                        return state;
+                    }
+
+                    return {
+                        sessions: {
+                            ...state.sessions,
+                            [sessionId]: {
+                                ...session,
+                                localError:
+                                    error instanceof Error
+                                        ? error.message
+                                        : "Could not cancel the current response before steering.",
+                            },
+                        },
+                    };
+                });
+                return;
+            }
+            // The cancel succeeded, so the steer action becomes the new
+            // intentional queue owner. Resume before draining the selected head.
+            resumeQueue(sessionId, set);
+            await drainQueueIfNeeded(sessionId, get, set);
             return;
         }
 
