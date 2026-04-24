@@ -85,6 +85,29 @@ describe("MarkdownContent", () => {
         expect(markup).toContain("expande");
     });
 
+    it("renders long inline file reference pills without shortening the label", () => {
+        const longPath =
+            "src/renderer/src/components/workspace/chat/ExtraordinarilyLongFileNameForPillRendering.tsx";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: `Review \`${longPath}\` please`,
+                onOpenFile: () => undefined,
+                resolveFileReference: () => ({
+                    endLine: null,
+                    isAbsolute: false,
+                    path: longPath,
+                    relativePath: longPath,
+                    startLine: null,
+                }),
+            }),
+        );
+
+        expect(markup).toContain(longPath);
+        expect(markup).toContain("white-space:normal");
+        expect(markup).not.toContain("ExtraordinarilyLong...");
+        expect(markup).not.toContain("text-overflow:ellipsis");
+    });
+
     it("keeps ordered items grouped when they contain paragraphs and nested bullets", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {

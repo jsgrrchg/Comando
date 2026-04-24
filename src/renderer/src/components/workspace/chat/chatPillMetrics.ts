@@ -9,11 +9,6 @@ export interface ChatPillMetrics {
     offsetY: number;
 }
 
-export function truncatePillLabel(label: string, maxLen = 20): string {
-    if (label.length <= maxLen) return label;
-    return `${label.slice(0, maxLen).trimEnd()}...`;
-}
-
 function clamp(value: number, min: number, max: number) {
     return Math.min(max, Math.max(min, value));
 }

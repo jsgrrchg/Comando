@@ -58,6 +58,16 @@ import { useTextContextMenu } from "../../context-menu/useTextContextMenu";
 const MIN_COMPOSER_HEIGHT = 76;
 const MAX_COMPOSER_HEIGHT = 600;
 
+type ComposerPillLayoutStyle = Pick<
+    CSSProperties,
+    | "maxWidth"
+    | "overflow"
+    | "overflowWrap"
+    | "textOverflow"
+    | "whiteSpace"
+    | "wordBreak"
+>;
+
 export function getComposerShellSizingStyle(
     customHeight: number | null,
 ): Pick<CSSProperties, "height" | "maxHeight" | "minHeight"> {
@@ -70,11 +80,38 @@ export function getComposerShellSizingStyle(
 
 /* ─── DOM pill helpers ─── */
 
+export function getComposerPillLayoutStyle(
+    metrics: ChatPillMetrics,
+    options: { readonly compact?: boolean } = {},
+): ComposerPillLayoutStyle {
+    if (options.compact === true) {
+        return {
+            maxWidth: `${metrics.maxWidth}px`,
+            overflow: "hidden",
+            overflowWrap: "normal",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            wordBreak: "normal",
+        };
+    }
+
+    return {
+        maxWidth: "100%",
+        overflow: "visible",
+        overflowWrap: "anywhere",
+        textOverflow: "clip",
+        whiteSpace: "normal",
+        wordBreak: "break-word",
+    };
+}
+
 function applyComposerPillStyles(
     element: HTMLElement,
     metrics: ChatPillMetrics,
     palette: { background: string; color: string },
+    options: { readonly compact?: boolean } = {},
 ) {
+    const layout = getComposerPillLayoutStyle(metrics, options);
     element.style.display = "inline-flex";
     element.style.alignItems = "center";
     element.style.padding = `${metrics.paddingY}px ${metrics.paddingX}px`;
@@ -86,10 +123,12 @@ function applyComposerPillStyles(
     element.style.lineHeight = `${metrics.lineHeight}`;
     element.style.border = "none";
     element.style.verticalAlign = "baseline";
-    element.style.whiteSpace = "nowrap";
-    element.style.maxWidth = `${metrics.maxWidth}px`;
-    element.style.overflow = "hidden";
-    element.style.textOverflow = "ellipsis";
+    element.style.whiteSpace = String(layout.whiteSpace);
+    element.style.maxWidth = String(layout.maxWidth);
+    element.style.overflow = String(layout.overflow);
+    element.style.overflowWrap = String(layout.overflowWrap);
+    element.style.textOverflow = String(layout.textOverflow);
+    element.style.wordBreak = String(layout.wordBreak);
     element.style.transform = `translateY(${metrics.offsetY}px)`;
 }
 
@@ -154,7 +193,9 @@ function createSelectionMentionNode(
     el.dataset.startLine = String(part.startLine);
     el.dataset.endLine = String(part.endLine);
     el.textContent = part.label;
-    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.accent);
+    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.accent, {
+        compact: true,
+    });
     return el;
 }
 

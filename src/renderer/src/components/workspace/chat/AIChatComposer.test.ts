@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
     appendComposerProjectEntries,
     appendWorkspaceTabComposerItem,
+    getComposerPillLayoutStyle,
     getComposerShellSizingStyle,
     getComposerSubmitKeyboardAction,
     shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
 } from "./AIChatComposer";
+import { getChatPillMetrics } from "./chatPillMetrics";
 
 describe("AIChatComposer", () => {
     it("does not reset on the initial mount nonce", () => {
@@ -185,6 +187,30 @@ describe("AIChatComposer", () => {
             },
             { text: " ", type: "text" },
         ]);
+    });
+
+    it("lets regular composer pills show their full label", () => {
+        expect(getComposerPillLayoutStyle(getChatPillMetrics(14))).toMatchObject({
+            maxWidth: "100%",
+            overflow: "visible",
+            overflowWrap: "anywhere",
+            textOverflow: "clip",
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+        });
+    });
+
+    it("keeps selection composer pills compact", () => {
+        expect(
+            getComposerPillLayoutStyle(getChatPillMetrics(14), { compact: true }),
+        ).toMatchObject({
+            maxWidth: "161px",
+            overflow: "hidden",
+            overflowWrap: "normal",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            wordBreak: "normal",
+        });
     });
 
     it("caps the default composer shell height so large pastes stay scrollable", () => {
