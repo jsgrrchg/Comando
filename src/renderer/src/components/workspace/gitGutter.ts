@@ -39,7 +39,7 @@ export function computeGitGutterMarkers(
 export function getGitGutterLineNumbersMinChars(lineCount: number): number {
     const digits = String(Math.max(1, lineCount)).length;
 
-    return Math.max(3, digits + 1);
+    return Math.max(4, digits + 2);
 }
 
 export function buildGitGutterDecorations(

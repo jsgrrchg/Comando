@@ -4486,7 +4486,7 @@ function FileTabView({
                             lineDecorationsWidth: 0,
                             lineNumbersMinChars: shouldShowGitGutter
                                 ? gitGutterLineNumbersMinChars
-                                : 3,
+                                : 4,
                             ...createComandoEditorFeatureOptions(),
                             largeFileOptimizations: true,
                             maxTokenizationLineLength:
