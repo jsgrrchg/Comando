@@ -13,6 +13,7 @@ import {
 } from "@renderer/app/drag-and-drop";
 
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
+import { FolderTypeIcon } from "@renderer/components/icons/FolderTypeIcon";
 
 import { GitActionButton, GitEmptyState } from "./GitUi";
 import { canDropProjectEntryIntoDirectory } from "./tree-dnd";
@@ -475,7 +476,7 @@ function GitTreeNodeRow({
 
                     {isDirectory ? (
                         <FolderIcon
-                            color={statusTint ?? "var(--color-text-secondary)"}
+                            folderName={node.name}
                             open={isExpanded}
                         />
                     ) : (
@@ -736,51 +737,22 @@ export function ChevronIcon({
 }
 
 export function FolderIcon({
-    color = "var(--color-text-secondary)",
+    folderName = "",
     open,
     size = ICON_MD,
 }: {
     color?: string;
+    folderName?: string;
     open: boolean;
     size?: number | string;
 }) {
-    const fill = color;
-    if (open) {
-        return (
-            <svg
-                width={typeof size === "number" ? scalePx(size) : size}
-                height={typeof size === "number" ? scalePx(size) : size}
-                viewBox="0 0 16 16"
-                fill="none"
-                style={{ flexShrink: 0 }}
-            >
-                <path
-                    d="M1.5 3.5A1 1 0 0 1 2.5 2.5H6l1.5 1.5h5a1 1 0 0 1 1 1V5H2.5V3.5Z"
-                    fill={fill}
-                    opacity="0.85"
-                />
-                <path
-                    d="M1 5.5h13l-1.5 7.5H2.5L1 5.5Z"
-                    fill={fill}
-                    opacity="0.65"
-                />
-            </svg>
-        );
-    }
     return (
-        <svg
-            width={typeof size === "number" ? scalePx(size) : size}
-            height={typeof size === "number" ? scalePx(size) : size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0 }}
-        >
-            <path
-                d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
-                fill={fill}
-                opacity="0.65"
-            />
-        </svg>
+        <FolderTypeIcon
+            folderName={folderName}
+            open={open}
+            scaled={typeof size === "number"}
+            size={size}
+        />
     );
 }
 

@@ -16,7 +16,7 @@ function createFileNode(overrides: Partial<GitTreeNode> = {}): GitTreeNode {
 }
 
 describe("GitTreeView", () => {
-    it("uses git status color on file title and icon without rendering the status letter when disabled", () => {
+    it("uses git status color on file title without rendering the status letter when disabled", () => {
         const markup = renderToStaticMarkup(
             <GitTreeView
                 nodes={[createFileNode()]}

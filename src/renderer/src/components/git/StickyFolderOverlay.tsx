@@ -238,7 +238,7 @@ function StickyFolderRow({
         >
             <TreeIndentGuides depth={depth} />
             <ChevronIcon open />
-            <FolderIcon color="var(--color-text-secondary)" open />
+            <FolderIcon folderName={node.name} open />
             <span
                 style={{
                     whiteSpace: "nowrap",
