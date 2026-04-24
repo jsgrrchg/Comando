@@ -540,4 +540,132 @@ describe("AiService Codex branch", () => {
         );
         expect(saveSessionSnapshot).toHaveBeenCalled();
     });
+
+    it("persists model preferences when updating a stored model config option", async () => {
+        const saveRuntimeModelPreference = vi.fn();
+        const saveRuntimeSelectionPreferenceOption = vi.fn();
+        const saveSessionSnapshot = vi.fn();
+        const persistedSnapshot: AiSessionSnapshot = {
+            availableCommands: [],
+            configOptions: [
+                {
+                    category: "model",
+                    description: null,
+                    id: "model",
+                    label: "Model",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5.4",
+                            value: "gpt-5.4",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5.5",
+                            value: "gpt-5.5",
+                        },
+                    ],
+                    type: "select",
+                    value: "gpt-5.4",
+                },
+            ],
+            lastError: null,
+            messages: [],
+            modeId: null,
+            modes: [],
+            modelId: "gpt-5.4",
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: null,
+            sessionId: "session-1",
+            status: "idle",
+            title: "Codex 1",
+            tokenUsage: null,
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-15T00:00:00.000Z",
+            worktreeId: null,
+        };
+
+        const service = new AiService({
+            onRuntimeStatus: vi.fn(),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                saveRuntimeSelectionPreferenceOption,
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference,
+                saveSessionSnapshot,
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+            } as never,
+            secretStore: {
+                loadSecret: vi.fn(() => null),
+                saveSecret: vi.fn(),
+            } as never,
+            settingsService: {
+                loadClaudeRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    gatewayBaseUrl: null,
+                    hasGatewayAuthToken: false,
+                    hasGatewayCustomHeaders: false,
+                })),
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: null,
+                    binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
+                })),
+                loadGeminiRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    googleCloudLocation: null,
+                    googleCloudProject: null,
+                    hasGeminiApiKey: false,
+                    hasGoogleApiKey: false,
+                })),
+                loadKiloRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    binaryPath: null,
+                })),
+                saveClaudeRuntimeSettings: vi.fn(),
+                saveCodexRuntimeSettings: vi.fn(),
+                saveGeminiRuntimeSettings: vi.fn(),
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        await service.setSessionConfigOption({
+            optionId: "model",
+            sessionId: "session-1",
+            value: "gpt-5.5",
+        });
+
+        expect(saveRuntimeSelectionPreferenceOption).toHaveBeenCalledWith(
+            "codex",
+            "model",
+            "gpt-5.5",
+        );
+        expect(saveRuntimeModelPreference).toHaveBeenCalledWith(
+            "codex",
+            "gpt-5.5",
+        );
+        expect(saveSessionSnapshot).toHaveBeenCalled();
+    });
 });

@@ -3,6 +3,8 @@ use regex_lite::Regex;
 use shlex::Shlex;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -13,6 +15,131 @@ pub struct CustomPrompt {
     pub description: Option<String>,
     pub argument_hint: Option<String>,
     pub content: String,
+}
+
+/// Discover Markdown prompt files in the given directory, returning entries sorted by name.
+pub fn discover_prompts_in(dir: &Path) -> Vec<CustomPrompt> {
+    discover_prompts_in_excluding(dir, &HashSet::new())
+}
+
+/// Discover Markdown prompt files in the given directory, excluding prompt names in `exclude`.
+pub fn discover_prompts_in_excluding(dir: &Path, exclude: &HashSet<String>) -> Vec<CustomPrompt> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_file = fs::metadata(&path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false);
+        if !is_file {
+            continue;
+        }
+
+        let is_markdown = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.eq_ignore_ascii_case("md"))
+            .unwrap_or(false);
+        if !is_markdown {
+            continue;
+        }
+
+        let Some(name) = path
+            .file_stem()
+            .and_then(|file_stem| file_stem.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        if exclude.contains(&name) {
+            continue;
+        }
+
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let (description, argument_hint, body) = parse_frontmatter(&content);
+
+        out.push(CustomPrompt {
+            name,
+            path,
+            description,
+            argument_hint,
+            content: body,
+        });
+    }
+
+    out.sort_by(|left, right| left.name.cmp(&right.name));
+    out
+}
+
+fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String) {
+    let mut segments = content.split_inclusive('\n');
+    let Some(first_segment) = segments.next() else {
+        return (None, None, String::new());
+    };
+    let first_line = first_segment.trim_end_matches(['\r', '\n']);
+    if first_line.trim() != "---" {
+        return (None, None, content.to_string());
+    }
+
+    let mut description = None;
+    let mut argument_hint = None;
+    let mut frontmatter_closed = false;
+    let mut consumed = first_segment.len();
+
+    for segment in segments {
+        let line = segment.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
+
+        if trimmed == "---" {
+            frontmatter_closed = true;
+            consumed += segment.len();
+            break;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            consumed += segment.len();
+            continue;
+        }
+
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim().to_ascii_lowercase();
+            let mut value = value.trim().to_string();
+            if value.len() >= 2 {
+                let bytes = value.as_bytes();
+                let first = bytes[0];
+                let last = bytes[bytes.len() - 1];
+                if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+                    value = value[1..value.len().saturating_sub(1)].to_string();
+                }
+            }
+
+            match key.as_str() {
+                "description" => description = Some(value),
+                "argument-hint" | "argument_hint" => argument_hint = Some(value),
+                _ => {}
+            }
+        }
+
+        consumed += segment.len();
+    }
+
+    if !frontmatter_closed {
+        return (None, None, content.to_string());
+    }
+
+    let body = if consumed >= content.len() {
+        String::new()
+    } else {
+        content[consumed..].to_string()
+    };
+
+    (description, argument_hint, body)
 }
 
 static PROMPT_ARG_REGEX: LazyLock<Regex> =
@@ -231,6 +358,7 @@ pub fn expand_numeric_placeholders(content: &str, args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn expand_arguments_basic() {
@@ -320,5 +448,34 @@ mod tests {
 
         let out = expand_custom_prompt("my-prompt", "", &prompts).unwrap();
         assert_eq!(out, Some("literal $$USER".to_string()));
+    }
+
+    #[test]
+    fn discover_prompts_reads_markdown_frontmatter() {
+        let dir = unique_temp_dir("codex-acp-prompts");
+        fs::create_dir_all(&dir).expect("create prompt dir");
+        fs::write(
+            dir.join("ship.md"),
+            "---\ndescription: Ship branch\nargument-hint: BRANCH=name\n---\nReview $BRANCH",
+        )
+        .expect("write prompt");
+        fs::write(dir.join("notes.txt"), "ignore me").expect("write non-md");
+
+        let prompts = discover_prompts_in(&dir);
+
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].name, "ship");
+        assert_eq!(prompts[0].description.as_deref(), Some("Ship branch"));
+        assert_eq!(prompts[0].argument_hint.as_deref(), Some("BRANCH=name"));
+        assert_eq!(prompts[0].content, "Review $BRANCH");
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }

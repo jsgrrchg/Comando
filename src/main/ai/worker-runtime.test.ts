@@ -54,6 +54,13 @@ let latestClientFactory:
               readonly sessionId: string;
               readonly terminalId: string;
           }) => Promise<Record<string, never>>;
+          sessionUpdate: (params: {
+              readonly sessionId: string;
+              readonly update: {
+                  readonly sessionUpdate: string;
+                  readonly [key: string]: unknown;
+              };
+          }) => Promise<void>;
           terminalOutput: (params: {
               readonly sessionId: string;
               readonly terminalId: string;
@@ -355,6 +362,58 @@ describe("AiWorkerRuntime prepareSession", () => {
                 (event) => event.payload.update.kind === "patch",
             ),
         ).toBe(true);
+    });
+
+    it("does not mark the session streaming for suppressed Codex status updates", async () => {
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: process.cwd(),
+            projectRoot: process.cwd(),
+            title: "Suppressed status test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await client!.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: null,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Drafting response",
+                toolCallId: "codex-acp:status:item:agent-msg-42",
+            },
+        });
+
+        expect(emittedEvents).toHaveLength(0);
+        await expect(
+            runtime.dispatchMethod("ai.sendPrompt", {
+                input: {
+                    attachments: [],
+                    projectId: null,
+                    prompt: "next prompt",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Suppressed status test",
+                    worktreeId: null,
+                },
+                launch,
+            }),
+        ).resolves.toEqual({
+            sessionId: "session-1",
+            stopReason: "completed",
+        });
     });
 
     it("rejects prompts that exceed the image attachment limit", async () => {

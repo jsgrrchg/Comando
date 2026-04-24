@@ -66,6 +66,8 @@ import {
 } from "./contracts";
 import {
     buildAiSessionUpdate,
+    getModeConfigOption,
+    getModelConfigOption,
     getRecentStderrText,
     getRuntimeDisplayName,
     normalizeAdditionalRoots,
@@ -546,17 +548,21 @@ export class AiService {
                         input.value,
                     ),
             );
-            this.#persistRuntimeSelectionPreference(
+            this.#persistRuntimeConfigOptionSelection(
                 snapshot.runtimeId,
+                snapshot,
                 input.optionId,
                 input.value,
             );
             return;
         }
 
+        const runtimeId = this.#getLiveSessionRuntimeId(input.sessionId);
+        const snapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
         await this.#requireAiWorker().setSessionConfigOption(input);
-        this.#persistRuntimeSelectionPreference(
-            this.#getLiveSessionRuntimeId(input.sessionId),
+        this.#persistRuntimeConfigOptionSelection(
+            runtimeId,
+            snapshot,
             input.optionId,
             input.value,
         );
@@ -1234,8 +1240,9 @@ export class AiService {
         };
     }
 
-    #persistRuntimeSelectionPreference(
+    #persistRuntimeConfigOptionSelection(
         runtimeId: AiRuntimeId,
+        snapshot: Pick<AiSessionSnapshot, "configOptions"> | null,
         optionId: string,
         value: boolean | string,
     ): void {
@@ -1244,6 +1251,23 @@ export class AiService {
             optionId,
             value,
         );
+
+        if (typeof value !== "string") {
+            return;
+        }
+
+        const configOptions = snapshot?.configOptions ?? [];
+        const modeConfig = getModeConfigOption(configOptions);
+        const modelConfig = getModelConfigOption(configOptions);
+        const normalizedOptionId = optionId.toLowerCase();
+
+        if (modelConfig?.id === optionId || normalizedOptionId === "model") {
+            this.#persistence.saveRuntimeModelPreference(runtimeId, value);
+        }
+
+        if (modeConfig?.id === optionId || normalizedOptionId === "mode") {
+            this.#persistence.saveRuntimeModePreference(runtimeId, value);
+        }
     }
 
     async #updateSessionSnapshot(

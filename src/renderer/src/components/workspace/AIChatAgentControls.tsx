@@ -484,6 +484,28 @@ export function AIChatAgentControls({
         modelConfig?.type === "select" ? modelConfig.value : modelId;
     const selectedModeId =
         modeConfig?.type === "select" ? modeConfig.value : modeId;
+    const handleModeChange = useCallback(
+        (nextModeId: string) => {
+            if (modeConfig?.type === "select") {
+                onConfigOptionChange(modeConfig.id, nextModeId);
+                return;
+            }
+
+            onModeChange(nextModeId);
+        },
+        [modeConfig, onConfigOptionChange, onModeChange],
+    );
+    const handleModelChange = useCallback(
+        (nextModelId: string) => {
+            if (modelConfig?.type === "select") {
+                onConfigOptionChange(modelConfig.id, nextModelId);
+                return;
+            }
+
+            onModelChange(nextModelId);
+        },
+        [modelConfig, onConfigOptionChange, onModelChange],
+    );
     const visibleModes =
         modeConfig?.type === "select"
             ? mapConfigOption(modeConfig)
@@ -525,7 +547,7 @@ export function AIChatAgentControls({
                 <DropdownField
                     disabled={disabled}
                     label="Approval Preset"
-                    onChange={onModeChange}
+                    onChange={handleModeChange}
                     options={visibleModes}
                     value={selectedModeId}
                 />
@@ -536,7 +558,7 @@ export function AIChatAgentControls({
                     disabled={disabled}
                     emptySearchMessage={`No ${runtimeId} models match that search.`}
                     label="Model"
-                    onChange={onModelChange}
+                    onChange={handleModelChange}
                     options={visibleModels}
                     searchable={visibleModels.length > 12}
                     searchPlaceholder="Search models…"

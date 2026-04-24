@@ -86,7 +86,11 @@ import {
     summarizeUserInputAnswers,
     toPosixPath,
 } from "./session-core";
-import { mapToolCallUpdate, readTextIfExists } from "./review-core";
+import {
+    mapToolCallUpdate,
+    readTextIfExists,
+    shouldSuppressToolActivityUpdate,
+} from "./review-core";
 
 export interface AiWorkerRuntimeOptions {
     readonly debugLogsEnabled?: boolean;
@@ -117,6 +121,29 @@ function setDesiredConfigValue(
     ) {
         values.set(compatibilityId, value);
     }
+}
+
+function shouldSuppressSessionToolActivityUpdate(
+    snapshot: Pick<AiSessionSnapshot, "toolActivity">,
+    update: SessionNotification["update"],
+): boolean {
+    if (
+        update.sessionUpdate !== "tool_call" &&
+        update.sessionUpdate !== "tool_call_update"
+    ) {
+        return false;
+    }
+
+    const existing =
+        snapshot.toolActivity.find(
+            (candidate) => candidate.id === update.toolCallId,
+        ) ?? null;
+    const title =
+        typeof update.title === "string" && update.title.trim().length > 0
+            ? update.title.trim()
+            : (existing?.title ?? null);
+
+    return shouldSuppressToolActivityUpdate(update, title);
 }
 
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
@@ -1099,6 +1126,10 @@ export class AiWorkerRuntime {
                 update.sessionUpdate === "tool_call" ||
                 update.sessionUpdate === "tool_call_update")
         ) {
+            return Promise.resolve();
+        }
+
+        if (shouldSuppressSessionToolActivityUpdate(liveSession.snapshot, update)) {
             return Promise.resolve();
         }
 

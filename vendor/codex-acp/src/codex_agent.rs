@@ -12,19 +12,15 @@ use agent_client_protocol::{
 };
 use codex_config::types::{McpServerConfig, McpServerTransportConfig};
 use codex_core::{
-    NewThread, RolloutRecorder, SortDirection, ThreadManager, ThreadSortKey,
-    config::Config,
-    find_thread_path_by_id_str,
-    parse_cursor,
+    NewThread, RolloutRecorder, SortDirection, ThreadManager, ThreadSortKey, config::Config,
+    find_thread_path_by_id_str, parse_cursor,
 };
 use codex_exec_server::{EnvironmentManager, EnvironmentManagerArgs, ExecServerRuntimePaths};
 use codex_login::{
     AuthManager, CODEX_API_KEY_ENV_VAR, CodexAuth, OPENAI_API_KEY_ENV_VAR, auth,
     auth::{read_codex_api_key_from_env, read_openai_api_key_from_env},
 };
-use codex_models_manager::{
-    bundled_models_response, collaboration_mode_presets::CollaborationModesConfig,
-};
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::{
     ThreadId,
     openai_models::{ModelsResponse, ReasoningEffort, ReasoningEffortPreset},
@@ -732,16 +728,10 @@ fn format_session_title(message: &str) -> Option<String> {
 }
 
 fn augment_model_catalog(mut config: Config) -> Config {
-    let mut catalog = config
-        .model_catalog
-        .take()
-        .or_else(|| bundled_models_response().ok());
-
-    if let Some(catalog) = catalog.as_mut() {
+    if let Some(catalog) = config.model_catalog.as_mut() {
         inject_gpt_5_5_model(catalog);
     }
 
-    config.model_catalog = catalog;
     config
 }
 
@@ -760,9 +750,7 @@ fn inject_gpt_5_5_model(catalog: &mut ModelsResponse) {
         .find(|model| model.slug == GPT_5_4_MODEL_SLUG)
         .cloned()
     else {
-        warn!(
-            "codex-acp could not seed gpt-5.5 because gpt-5.4 is missing from the model catalog"
-        );
+        warn!("codex-acp could not seed gpt-5.5 because gpt-5.4 is missing from the model catalog");
         return;
     };
 
@@ -810,6 +798,7 @@ fn inject_gpt_5_5_model(catalog: &mut ModelsResponse) {
 mod tests {
     use super::*;
     use codex_core::config::ConfigOverrides;
+    use codex_models_manager::bundled_models_response;
     use codex_protocol::{
         config_types::{ApprovalsReviewer, ServiceTier},
         openai_models::ReasoningEffort,
@@ -863,15 +852,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn augment_model_catalog_seeds_gpt_5_5_when_missing() -> anyhow::Result<()> {
-        let config =
-            Config::load_with_cli_overrides_and_harness_overrides(vec![], ConfigOverrides::default())
-                .await?;
+    async fn augment_model_catalog_does_not_freeze_default_catalog() -> anyhow::Result<()> {
+        let config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
         let config = augment_model_catalog(config);
 
+        assert!(
+            config.model_catalog.is_none(),
+            "codex-acp should keep the default catalog dynamic"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn augment_model_catalog_seeds_gpt_5_5_for_custom_catalog() -> anyhow::Result<()> {
+        let mut config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
+        config.model_catalog = Some(bundled_models_response()?);
+
+        let config = augment_model_catalog(config);
         let catalog = config
             .model_catalog
-            .expect("codex-acp should provide an augmented model catalog");
+            .expect("custom catalog should remain configured");
         let model = catalog
             .models
             .iter()

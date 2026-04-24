@@ -53,7 +53,7 @@ use codex_protocol::{
     items::TurnItem,
     mcp::CallToolResult,
     models::{FileSystemPermissions, PermissionProfile, ResponseItem, WebSearchAction},
-    openai_models::{ModelPreset, ReasoningEffort},
+    openai_models::{ModelPreset, ReasoningEffort, ReasoningEffortPreset},
     parse_command::ParsedCommand,
     plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs},
     protocol::{
@@ -77,7 +77,7 @@ use uuid::Uuid;
 
 use crate::{
     ACP_CLIENT,
-    prompt_args::{CustomPrompt, expand_custom_prompt, parse_slash_name},
+    prompt_args::{CustomPrompt, discover_prompts_in, expand_custom_prompt, parse_slash_name},
 };
 
 static APPROVAL_PRESETS: LazyLock<Vec<ApprovalPreset>> = LazyLock::new(builtin_approval_presets);
@@ -91,6 +91,11 @@ const CODEX_ACP_PLAN_DETAIL_KEY: &str = "codexAcpPlanDetail";
 const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY: &str = "codexAcpPreviousPath";
 const CODEX_ACP_DIFF_HUNKS_KEY: &str = "codexAcpHunks";
 const CODEX_ACP_STATUS_EVENT_ID_PREFIX: &str = "codex-acp:status:";
+const GPT_5_4_MODEL_SLUG: &str = "gpt-5.4";
+const GPT_5_5_MODEL_SLUG: &str = "gpt-5.5";
+const GPT_5_5_DISPLAY_NAME: &str = "GPT-5.5";
+const GPT_5_5_DESCRIPTION: &str =
+    "Frontier model for complex coding, research, and real-world work.";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 
 fn approval_preset_matches_config(
@@ -788,10 +793,7 @@ struct CodexAcpUserInputAnswerPayload {
 
 fn codex_acp_status_meta(kind: &str, emphasis: &str) -> Meta {
     let mut meta = Meta::new();
-    meta.insert(
-        CODEX_ACP_STATUS_EVENT_TYPE_KEY.to_string(),
-        json!("status"),
-    );
+    meta.insert(CODEX_ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status"));
     meta.insert(CODEX_ACP_STATUS_KIND_KEY.to_string(), json!(kind));
     meta.insert(CODEX_ACP_STATUS_EMPHASIS_KEY.to_string(), json!(emphasis));
     meta
@@ -1125,9 +1127,7 @@ fn extract_user_input_answer_payload(
         return Ok(None);
     };
 
-    let raw_payload = text
-        .text
-        .strip_prefix(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX);
+    let raw_payload = text.text.strip_prefix(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX);
     let Some(raw_payload) = raw_payload else {
         return Ok(None);
     };
@@ -3542,7 +3542,14 @@ impl<A: Auth> ThreadActor<A> {
 
     async fn load_custom_prompts(&mut self) -> oneshot::Receiver<Result<Vec<CustomPrompt>, Error>> {
         let (response_tx, response_rx) = oneshot::channel();
-        drop(response_tx.send(Ok(self.custom_prompts.borrow().clone())));
+        let configured_prompts = self.custom_prompts.borrow().clone();
+        if !configured_prompts.is_empty() {
+            drop(response_tx.send(Ok(configured_prompts)));
+            return response_rx;
+        }
+
+        let prompts_dir = self.config.codex_home.join("prompts");
+        drop(response_tx.send(Ok(discover_prompts_in(&prompts_dir))));
         response_rx
     }
 
@@ -3584,8 +3591,12 @@ impl<A: Auth> ThreadActor<A> {
         ))
     }
 
+    async fn list_model_presets(&self) -> Vec<ModelPreset> {
+        augment_model_presets(self.models_manager.list_models().await)
+    }
+
     async fn find_current_model(&self) -> Option<ModelId> {
-        let model_presets = self.models_manager.list_models().await;
+        let model_presets = self.list_model_presets().await;
         let config_model = self.get_current_model().await;
         let preset = model_presets
             .iter()
@@ -3653,7 +3664,7 @@ impl<A: Auth> ThreadActor<A> {
             );
         }
 
-        let presets = self.models_manager.list_models().await;
+        let presets = self.list_model_presets().await;
 
         let current_model = self.get_current_model().await;
         let current_preset = presets.iter().find(|p| p.model == current_model).cloned();
@@ -3800,7 +3811,7 @@ impl<A: Auth> ThreadActor<A> {
     async fn handle_set_config_model(&mut self, value: SessionConfigValueId) -> Result<(), Error> {
         let model_id = value.0;
 
-        let presets = self.models_manager.list_models().await;
+        let presets = self.list_model_presets().await;
         let preset = presets.iter().find(|p| p.id.as_str() == &*model_id);
 
         let model_to_use = preset
@@ -3860,7 +3871,7 @@ impl<A: Auth> ThreadActor<A> {
             serde_json::from_value(value.0.as_ref().into()).map_err(|_| Error::invalid_params())?;
 
         let current_model = self.get_current_model().await;
-        let presets = self.models_manager.list_models().await;
+        let presets = self.list_model_presets().await;
         let Some(preset) = presets.iter().find(|p| p.model == current_model) else {
             return Err(Error::invalid_params()
                 .data("Reasoning effort can only be set for known model presets"));
@@ -3947,8 +3958,7 @@ impl<A: Auth> ThreadActor<A> {
         };
 
         available_models.extend(
-            self.models_manager
-                .list_models()
+            self.list_model_presets()
                 .await
                 .iter()
                 .filter(|model| model.show_in_picker || model.model == config_model)
@@ -5233,9 +5243,7 @@ fn guardian_assessment_tool_call_status(status: &GuardianAssessmentStatus) -> To
         GuardianAssessmentStatus::Approved => ToolCallStatus::Completed,
         GuardianAssessmentStatus::Denied
         | GuardianAssessmentStatus::TimedOut
-        | GuardianAssessmentStatus::Aborted => {
-            ToolCallStatus::Failed
-        }
+        | GuardianAssessmentStatus::Aborted => ToolCallStatus::Failed,
     }
 }
 
@@ -5295,13 +5303,13 @@ fn guardian_action_summary(
                 .ok()
                 .or_else(|| Some(parts.join(" ")))
         }
-        codex_protocol::approvals::GuardianAssessmentAction::ApplyPatch { files, .. } => Some(
-            if files.len() == 1 {
+        codex_protocol::approvals::GuardianAssessmentAction::ApplyPatch { files, .. } => {
+            Some(if files.len() == 1 {
                 format!("apply_patch touching {}", files[0].display())
             } else {
                 format!("apply_patch touching {} files", files.len())
-            },
-        ),
+            })
+        }
         codex_protocol::approvals::GuardianAssessmentAction::NetworkAccess { target, .. } => {
             Some(format!("network access to {target}"))
         }
@@ -5365,6 +5373,57 @@ fn generate_fallback_id(prefix: &str) -> String {
     format!("{}_{}", prefix, Uuid::new_v4())
 }
 
+fn augment_model_presets(mut presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
+    if presets
+        .iter()
+        .any(|preset| preset.id == GPT_5_5_MODEL_SLUG || preset.model == GPT_5_5_MODEL_SLUG)
+    {
+        return presets;
+    }
+
+    let Some((template_index, mut template)) = presets
+        .iter()
+        .enumerate()
+        .find(|(_, preset)| preset.id == GPT_5_4_MODEL_SLUG || preset.model == GPT_5_4_MODEL_SLUG)
+        .map(|(index, preset)| (index, preset.clone()))
+    else {
+        warn!("codex-acp could not seed gpt-5.5 because gpt-5.4 is missing from the model presets");
+        return presets;
+    };
+
+    template.id = GPT_5_5_MODEL_SLUG.to_string();
+    template.model = GPT_5_5_MODEL_SLUG.to_string();
+    template.display_name = GPT_5_5_DISPLAY_NAME.to_string();
+    template.description = GPT_5_5_DESCRIPTION.to_string();
+    template.default_reasoning_effort = ReasoningEffort::Medium;
+    template.supported_reasoning_efforts = vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "Fast responses with lighter reasoning".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "Greater reasoning depth for complex problems".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::XHigh,
+            description: "Extra high reasoning depth for complex problems".to_string(),
+        },
+    ];
+    template.is_default = false;
+    template.upgrade = None;
+    template.show_in_picker = true;
+    template.availability_nux = None;
+    template.supported_in_api = true;
+
+    presets.insert(template_index + 1, template);
+    presets
+}
+
 /// Checks if a prompt is slash command
 fn extract_slash_command(content: &[UserInput]) -> Option<(&str, &str)> {
     let line = content.first().and_then(|block| match block {
@@ -5389,6 +5448,34 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn augment_model_presets_seeds_gpt_5_5_from_gpt_5_4() {
+        let presets = augment_model_presets(all_model_presets().to_owned());
+        let model = presets
+            .iter()
+            .find(|preset| preset.id == GPT_5_5_MODEL_SLUG)
+            .expect("gpt-5.5 should be seeded");
+
+        assert_eq!(model.model, GPT_5_5_MODEL_SLUG);
+        assert_eq!(model.display_name, GPT_5_5_DISPLAY_NAME);
+        assert_eq!(model.default_reasoning_effort, ReasoningEffort::Medium);
+        assert_eq!(model.supported_reasoning_efforts.len(), 4);
+        assert!(model.show_in_picker);
+        assert!(model.supported_in_api);
+    }
+
+    #[test]
+    fn augment_model_presets_does_not_duplicate_gpt_5_5() {
+        let once = augment_model_presets(all_model_presets().to_owned());
+        let twice = augment_model_presets(once);
+        let count = twice
+            .iter()
+            .filter(|preset| preset.id == GPT_5_5_MODEL_SLUG)
+            .count();
+
+        assert_eq!(count, 1);
+    }
 
     #[tokio::test]
     async fn test_prompt() -> anyhow::Result<()> {
@@ -6519,16 +6606,16 @@ mod tests {
                         .unwrap();
                     self.op_tx
                         .send(Event {
-                                id: id.to_string(),
-                                msg: EventMsg::TurnComplete(TurnCompleteEvent {
-                                    last_agent_message: None,
-                                    turn_id: id.to_string(),
-                                    completed_at: None,
-                                    duration_ms: None,
-                                    time_to_first_token_ms: None,
-                                }),
-                            })
-                            .unwrap();
+                            id: id.to_string(),
+                            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                last_agent_message: None,
+                                turn_id: id.to_string(),
+                                completed_at: None,
+                                duration_ms: None,
+                                time_to_first_token_ms: None,
+                            }),
+                        })
+                        .unwrap();
                 }
                 Op::Undo => {
                     self.op_tx
@@ -6554,16 +6641,16 @@ mod tests {
                         .unwrap();
                     self.op_tx
                         .send(Event {
-                                id: id.to_string(),
-                                msg: EventMsg::TurnComplete(TurnCompleteEvent {
-                                    last_agent_message: None,
-                                    turn_id: id.to_string(),
-                                    completed_at: None,
-                                    duration_ms: None,
-                                    time_to_first_token_ms: None,
-                                }),
-                            })
-                            .unwrap();
+                            id: id.to_string(),
+                            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                last_agent_message: None,
+                                turn_id: id.to_string(),
+                                completed_at: None,
+                                duration_ms: None,
+                                time_to_first_token_ms: None,
+                            }),
+                        })
+                        .unwrap();
                 }
                 Op::Review { review_request } => {
                     self.op_tx
@@ -6590,16 +6677,16 @@ mod tests {
                         .unwrap();
                     self.op_tx
                         .send(Event {
-                                id: id.to_string(),
-                                msg: EventMsg::TurnComplete(TurnCompleteEvent {
-                                    last_agent_message: None,
-                                    turn_id: id.to_string(),
-                                    completed_at: None,
-                                    duration_ms: None,
-                                    time_to_first_token_ms: None,
-                                }),
-                            })
-                            .unwrap();
+                            id: id.to_string(),
+                            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                last_agent_message: None,
+                                turn_id: id.to_string(),
+                                completed_at: None,
+                                duration_ms: None,
+                                time_to_first_token_ms: None,
+                            }),
+                        })
+                        .unwrap();
                 }
                 Op::OverrideTurnContext { .. } => {}
                 _ => {
