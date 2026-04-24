@@ -244,6 +244,15 @@ interface ParsedList {
     readonly nextIndex: number;
 }
 
+type MarkdownLineBlockKind =
+    | "blank"
+    | "blockquote"
+    | "fence"
+    | "heading"
+    | "horizontal_rule"
+    | "paragraph"
+    | "table";
+
 function getPillVariant(label: string): ChatPillVariant {
     if (label === "@fetch") return "success";
     if (label === "/plan") return "neutral";
@@ -379,6 +388,66 @@ function getIndentWidth(indent: string): number {
     return width;
 }
 
+function getLineIndentWidth(line: string): number {
+    let cursor = 0;
+    while (cursor < line.length && (line[cursor] === " " || line[cursor] === "\t")) {
+        cursor += 1;
+    }
+
+    return getIndentWidth(line.slice(0, cursor));
+}
+
+function getMarkdownLineBlockKind(
+    lines: readonly string[],
+    index: number,
+): MarkdownLineBlockKind {
+    const line = lines[index] ?? "";
+    const trimmed = line.trimStart();
+
+    if (trimmed.length === 0) return "blank";
+    if (/^(#{1,6})\s+(.+)$/.test(trimmed)) return "heading";
+    if (/^---+\s*$/.test(trimmed)) return "horizontal_rule";
+    if (/^>\s/.test(trimmed)) return "blockquote";
+    if (parseMarkdownFenceOpening(line)) return "fence";
+    if (isMarkdownTableStart(lines, index)) return "table";
+
+    return "paragraph";
+}
+
+function isMarkdownTableStart(
+    lines: readonly string[],
+    startIndex: number,
+): boolean {
+    const tableLines: string[] = [];
+
+    for (let index = startIndex; index < lines.length; index++) {
+        const line = lines[index]?.trimStart() ?? "";
+        if (!line.includes("|")) break;
+        tableLines.push(line);
+    }
+
+    return tryParseTable(tableLines) !== null;
+}
+
+function shouldBreakListForBlockStart(
+    lines: readonly string[],
+    index: number,
+    baseIndentWidth: number,
+): boolean {
+    if (getLineIndentWidth(lines[index] ?? "") > baseIndentWidth) {
+        return false;
+    }
+
+    const blockKind = getMarkdownLineBlockKind(lines, index);
+    return (
+        blockKind === "blockquote" ||
+        blockKind === "fence" ||
+        blockKind === "heading" ||
+        blockKind === "horizontal_rule" ||
+        blockKind === "table"
+    );
+}
+
 function findNextNonEmptyLineIndex(
     lines: readonly string[],
     startIndex: number,
@@ -501,6 +570,17 @@ function parseList(
                     break;
                 }
 
+                if (
+                    shouldBreakListForBlockStart(
+                        lines,
+                        nextNonEmptyIndex,
+                        baseIndentWidth,
+                    )
+                ) {
+                    cursor = nextNonEmptyIndex;
+                    break;
+                }
+
                 const nextItem = parseMarkdownListItem(
                     lines[nextNonEmptyIndex] ?? "",
                 );
@@ -514,6 +594,10 @@ function parseList(
 
                 cursor = nextNonEmptyIndex;
                 continue;
+            }
+
+            if (shouldBreakListForBlockStart(lines, cursor, baseIndentWidth)) {
+                break;
             }
 
             const nextItem = parseMarkdownListItem(currentLine);

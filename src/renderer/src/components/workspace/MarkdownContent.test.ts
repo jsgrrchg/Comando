@@ -132,6 +132,73 @@ describe("MarkdownContent", () => {
         expect(markup).toContain("Luego refinar detalles");
     });
 
+    it("closes ordered lists before top-level headings", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: [
+                    "1. Tradeoff a tener presente",
+                    "Re-pintado: cuando cambia el composerFontSize reconstruye todo.",
+                    "## Orden sugerido si lo avanzas",
+                    "1. Helper createIconSvg.",
+                ].join("\n"),
+            }),
+        );
+        const listEnd = markup.indexOf("</ol>");
+        const headingStart = markup.indexOf("Orden sugerido si lo avanzas");
+
+        expect(listEnd).toBeGreaterThan(-1);
+        expect(headingStart).toBeGreaterThan(listEnd);
+        expect(markup).not.toContain("## Orden sugerido");
+    });
+
+    it("closes bullet lists before top-level headings after a blank line", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: [
+                    "- folder_mention: usar FolderTypeIcon.",
+                    "- git_commit_mention: icono git.",
+                    "",
+                    "## Orden sugerido si lo avanzas",
+                    "1. Helper createIconSvg.",
+                ].join("\n"),
+            }),
+        );
+        const listEnd = markup.indexOf("</ul>");
+        const headingStart = markup.indexOf("Orden sugerido si lo avanzas");
+
+        expect(listEnd).toBeGreaterThan(-1);
+        expect(headingStart).toBeGreaterThan(listEnd);
+        expect(markup).not.toContain("## Orden sugerido");
+    });
+
+    it("closes lists before top-level blockquotes and tables", () => {
+        const blockquoteMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: ["1. First point", "> quoted follow-up"].join("\n"),
+            }),
+        );
+        const tableMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: [
+                    "- First point",
+                    "| File | Status |",
+                    "| --- | --- |",
+                    "| app.ts | ok |",
+                ].join("\n"),
+            }),
+        );
+
+        const blockquoteListEnd = blockquoteMarkup.indexOf("</ol>");
+        const blockquoteStart = blockquoteMarkup.indexOf("<blockquote");
+        const tableListEnd = tableMarkup.indexOf("</ul>");
+        const tableStart = tableMarkup.indexOf("<table");
+
+        expect(blockquoteListEnd).toBeGreaterThan(-1);
+        expect(blockquoteStart).toBeGreaterThan(blockquoteListEnd);
+        expect(tableListEnd).toBeGreaterThan(-1);
+        expect(tableStart).toBeGreaterThan(tableListEnd);
+    });
+
     it("renders isolated bullet-like lines as a single-item list", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
