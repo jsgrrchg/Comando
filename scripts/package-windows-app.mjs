@@ -41,6 +41,12 @@ const electronBuilderCli = path.join(
     "electron-builder",
     "cli.js",
 );
+const electronBuilderInstallAppDepsCli = path.join(
+    repoRoot,
+    "node_modules",
+    "electron-builder",
+    "install-app-deps.js",
+);
 const nodeBinDir = path.dirname(process.execPath);
 const pnpmCommand = resolveRequiredCommand("pnpm.cmd");
 
@@ -52,19 +58,26 @@ main();
 
 function main() {
     const electronBuilderArgs = resolveElectronBuilderArgs(process.argv.slice(2));
+    const targetArch = resolveTargetArch(electronBuilderArgs);
+    const toolchainEnv = resolveWindowsBuildEnv();
 
     console.log("[package:win] Building Electron production bundles.");
     prepareWorkspace();
     run(pnpmCommand, ["run", "build"]);
 
-    console.log("[package:win] Staging Windows AI payload.");
-    stageWindowsAiPayload();
+    console.log(`[package:win] Rebuilding native modules for ${targetArch}.`);
+    rebuildNativeModules(targetArch, toolchainEnv);
+
+    console.log(`[package:win] Staging Windows AI payload for ${targetArch}.`);
+    stageWindowsAiPayload(targetArch);
     verifyWindowsAiPayload();
 
     console.log(
         `[package:win] Packaging Windows app with ${electronBuilderArgs.join(" ")}.`,
     );
-    run(process.execPath, [electronBuilderCli, ...electronBuilderArgs]);
+    run(process.execPath, [electronBuilderCli, ...electronBuilderArgs], {
+        env: toolchainEnv,
+    });
 }
 
 function prepareWorkspace() {
@@ -85,40 +98,99 @@ function resolveElectronBuilderArgs(rawArgs) {
     return [...args, process.arch === "arm64" ? "--arm64" : "--x64"];
 }
 
-function stageWindowsAiPayload() {
-    stageCodexBinary();
-    stageEmbeddedNodeBinary();
-    stageClaudeRuntime();
+function resolveTargetArch(electronBuilderArgs) {
+    if (electronBuilderArgs.includes("--arm64")) {
+        return "arm64";
+    }
+
+    if (electronBuilderArgs.includes("--ia32")) {
+        return "ia32";
+    }
+
+    return "x64";
 }
 
-function stageCodexBinary() {
-    if (!isExecutableFile(codexBundledBinary)) {
+function rebuildNativeModules(targetArch, extraEnv) {
+    run(process.execPath, [
+        electronBuilderInstallAppDepsCli,
+        "--platform",
+        "win32",
+        "--arch",
+        targetArch,
+    ], {
+        env: extraEnv,
+    });
+}
+
+function resolveWindowsBuildEnv() {
+    const pythonBinary = resolvePythonBinary();
+    const extraEnv = {
+        GYP_MSVS_VERSION: "2022",
+    };
+
+    if (pythonBinary) {
+        extraEnv.PYTHON = pythonBinary;
+        extraEnv.npm_config_python = pythonBinary;
+        extraEnv.PATH = [
+            path.dirname(pythonBinary),
+            process.env.PATH ?? "",
+        ]
+            .filter(Boolean)
+            .join(path.delimiter);
+    }
+
+    return extraEnv;
+}
+
+function stageWindowsAiPayload(targetArch) {
+    stageCodexBinary(targetArch);
+    stageEmbeddedNodeBinary(targetArch);
+    stageClaudeRuntime(targetArch);
+}
+
+function resolveAiSourceRoot(targetArch) {
+    const bundleRoot = path.join(repoRoot, "build", "windows-acp", `win-${targetArch}`, "ai");
+    if (fs.existsSync(bundleRoot)) {
+        return bundleRoot;
+    }
+
+    return appAiRoot;
+}
+
+function stageCodexBinary(targetArch) {
+    const aiSourceRoot = resolveAiSourceRoot(targetArch);
+    const sourceBinary = path.join(aiSourceRoot, "binaries", "codex-acp.exe");
+
+    if (!isExecutableFile(sourceBinary)) {
         throw new Error(
-            "Missing staged Codex ACP binary at resources/ai/binaries/codex-acp.exe. Run pnpm run stage:ai on the target Windows architecture or provide COMANDO_CODEX_ACP_BUNDLE_BIN before packaging.",
+            `Missing staged Codex ACP binary for ${targetArch}. Expected ${relativeToRepo(sourceBinary)}.`,
         );
     }
 
-    copyExecutable(codexBundledBinary, packagedCodexBinary);
+    copyExecutable(sourceBinary, packagedCodexBinary);
     console.log(
-        `[package:win] Staged Codex ACP from ${relativeToRepo(codexBundledBinary)}.`,
+        `[package:win] Staged Codex ACP from ${relativeToRepo(sourceBinary)}.`,
     );
 }
 
-function stageEmbeddedNodeBinary() {
-    if (!isExecutableFile(embeddedNodeBin)) {
+function stageEmbeddedNodeBinary(targetArch) {
+    const aiSourceRoot = resolveAiSourceRoot(targetArch);
+    const sourceNodeBinary = path.join(aiSourceRoot, "embedded", "node", "bin", "node.exe");
+
+    if (!isExecutableFile(sourceNodeBinary)) {
         throw new Error(
-            "Missing staged embedded Node at resources/ai/embedded/node/bin/node.exe. Run pnpm run stage:ai on the target Windows architecture or provide COMANDO_EMBEDDED_NODE_BIN before packaging.",
+            `Missing staged embedded Node for ${targetArch}. Expected ${relativeToRepo(sourceNodeBinary)}.`,
         );
     }
 
-    copyExecutable(embeddedNodeBin, packagedNodeBinary);
+    copyExecutable(sourceNodeBinary, packagedNodeBinary);
     console.log(
-        `[package:win] Staged embedded Node from ${relativeToRepo(embeddedNodeBin)}.`,
+        `[package:win] Staged embedded Node from ${relativeToRepo(sourceNodeBinary)}.`,
     );
 }
 
-function stageClaudeRuntime() {
-    const sourceRoot = resolveClaudeProjectRoot();
+function stageClaudeRuntime(targetArch) {
+    const sourceRoot = resolveClaudeProjectRoot(targetArch);
     const filesToCopy = ["package.json", "LICENSE", "README.md"];
 
     console.log(
@@ -148,8 +220,10 @@ function stageClaudeRuntime() {
     pruneClaudeCliArtifacts(path.join(packagedClaudeRoot, "node_modules"));
 }
 
-function resolveClaudeProjectRoot() {
-    const candidates = [bundledClaudeRoot, claudeVendorDir];
+function resolveClaudeProjectRoot(targetArch) {
+    const bundleRoot = resolveAiSourceRoot(targetArch);
+    const bundledRoot = path.join(bundleRoot, "embedded", "claude-agent-acp");
+    const candidates = [bundledRoot, bundledClaudeRoot, claudeVendorDir];
 
     for (const candidate of candidates) {
         if (
@@ -216,7 +290,7 @@ function resolveRequiredCommand(command) {
 }
 
 function run(command, args, options = {}) {
-    const result = spawnSync(command, args, {
+    const spawnOptions = {
         cwd: repoRoot,
         env: {
             ...process.env,
@@ -227,7 +301,10 @@ function run(command, args, options = {}) {
         },
         stdio: "inherit",
         ...options,
-    });
+    };
+    const result = isCmdShim(command)
+        ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command, ...args], spawnOptions)
+        : spawnSync(command, args, spawnOptions);
 
     if (result.error) {
         throw result.error;
@@ -236,4 +313,38 @@ function run(command, args, options = {}) {
     if (result.status !== 0) {
         process.exit(result.status ?? 1);
     }
+}
+
+function resolvePythonBinary() {
+    const explicit = process.env.PYTHON?.trim();
+    if (explicit && isExecutableFile(explicit)) {
+        return explicit;
+    }
+
+    const pythonFromPath =
+        resolveFromPath("python.exe") ??
+        resolveFromPath("python") ??
+        resolveFromPath("py.exe") ??
+        resolveFromPath("py");
+    if (pythonFromPath && isExecutableFile(pythonFromPath)) {
+        return pythonFromPath;
+    }
+
+    const localPython = path.join(
+        process.env.LOCALAPPDATA ?? "",
+        "Programs",
+        "Python",
+        "Python312",
+        "python.exe",
+    );
+
+    if (isExecutableFile(localPython)) {
+        return localPython;
+    }
+
+    return null;
+}
+
+function isCmdShim(command) {
+    return /\.cmd$|\.bat$/i.test(command);
 }

@@ -17,7 +17,7 @@ const appBuilderPath = path.join(
     ".pnpm",
     "node_modules",
     "app-builder-bin",
-    process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : "linux",
+    process.platform === "darwin" ? "mac" : process.platform === "win32" ? path.join("win", process.arch) : path.join("linux", process.arch),
     resolveAppBuilderBinaryName(),
 );
 
