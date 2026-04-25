@@ -2031,8 +2031,10 @@ export function App() {
     const sidebarContent = (
         <>
             <div
-                className="app-drag relative px-2 pt-2"
-                style={isMac ? { paddingTop: 42 } : undefined}
+                className="app-drag relative px-2"
+                style={{
+                    paddingTop: isMac ? 42 : isWindows ? 0 : 8,
+                }}
             >
                 {isMac && (
                     <button
@@ -2075,11 +2077,54 @@ export function App() {
                         </svg>
                     </button>
                 )}
-                <div className="mt-1">
-                    <SidebarGitScopePicker
-                        projectId={activeProjectId}
-                        worktreeId={activeWorktreeId}
-                    />
+                <div className="mt-1 flex items-center gap-1">
+                    <div className="min-w-0 flex-1">
+                        <SidebarGitScopePicker
+                            projectId={activeProjectId}
+                            worktreeId={activeWorktreeId}
+                        />
+                    </div>
+                    {isWindows && (
+                        <button
+                            className="sidebar-collapse-toggle sidebar-collapse-toggle--inline app-no-drag"
+                            onClick={() => {
+                                toggleLeftCollapsed();
+                                setSidebarOverlayVisible(false);
+                            }}
+                            title={
+                                leftCollapsed
+                                    ? "Expand sidebar"
+                                    : "Collapse sidebar"
+                            }
+                            type="button"
+                        >
+                            <svg
+                                aria-hidden="true"
+                                fill="none"
+                                height="16"
+                                viewBox="0 0 16 16"
+                                width="16"
+                            >
+                                <rect
+                                    x="1.5"
+                                    y="2.5"
+                                    width="13"
+                                    height="11"
+                                    rx="1.5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.2"
+                                />
+                                <line
+                                    x1="5.5"
+                                    y1="2.5"
+                                    x2="5.5"
+                                    y2="13.5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.2"
+                                />
+                            </svg>
+                        </button>
+                    )}
                 </div>
 
                 <div className="mt-1 flex items-center gap-1">

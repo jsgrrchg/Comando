@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +25,28 @@ function resolveWindowsTitleBarOverlay(): Electron.TitleBarOverlayOptions {
         height: WINDOWS_TITLE_BAR_HEIGHT,
         symbolColor: isDark ? "#e8e8e8" : "#1c1c1c",
     };
+}
+
+function resolveWindowIconPath(): string | undefined {
+    if (process.platform !== "win32") {
+        return undefined;
+    }
+
+    const packagedIconPath = path.join(
+        process.resourcesPath,
+        "icons",
+        "windows.ico",
+    );
+    if (fs.existsSync(packagedIconPath)) {
+        return packagedIconPath;
+    }
+
+    const devIconPath = path.join(rootDir, appIdentity.iconPaths.windows);
+    if (fs.existsSync(devIconPath)) {
+        return devIconPath;
+    }
+
+    return undefined;
 }
 
 function normalizeRestoredState(
@@ -86,9 +109,11 @@ function createBaseWindow(options: {
     const titleBarOverlay = isWindows
         ? resolveWindowsTitleBarOverlay()
         : undefined;
+    const icon = resolveWindowIconPath();
 
     const window = new BrowserWindow({
         title: options.title,
+        icon,
         width: restoredState?.width ?? options.width,
         height: restoredState?.height ?? options.height,
         x: restoredState?.x ?? undefined,

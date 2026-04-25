@@ -35,6 +35,7 @@ const packagedNodeBinary = path.join(
 );
 const appAiRoot = path.join(repoRoot, "resources", "ai");
 const bundledClaudeRoot = path.join(appAiRoot, "embedded", "claude-agent-acp");
+const windowsIconPath = path.join(repoRoot, "resources", "icons", "windows.ico");
 const electronBuilderCli = path.join(
     repoRoot,
     "node_modules",
@@ -75,9 +76,40 @@ function main() {
     console.log(
         `[package:win] Packaging Windows app with ${electronBuilderArgs.join(" ")}.`,
     );
-    run(process.execPath, [electronBuilderCli, ...electronBuilderArgs], {
+    packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv);
+}
+
+function packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv) {
+    const unpackedAppDir = resolveUnpackedAppDir(targetArch);
+    const dirArgs = withoutPublishArgs([
+        ...electronBuilderArgs.filter((arg) => arg !== "--dir"),
+        "--dir",
+    ]);
+
+    run(process.execPath, [electronBuilderCli, ...dirArgs], {
         env: toolchainEnv,
     });
+
+    patchWindowsExecutableIcon(unpackedAppDir);
+
+    if (electronBuilderArgs.includes("--dir")) {
+        return;
+    }
+
+    run(
+        process.execPath,
+        [
+            electronBuilderCli,
+            ...electronBuilderArgs,
+            "--config.win.target.target=nsis",
+            `--config.win.target.arch=${targetArch}`,
+            "--prepackaged",
+            unpackedAppDir,
+        ],
+        {
+            env: toolchainEnv,
+        },
+    );
 }
 
 function prepareWorkspace() {
@@ -108,6 +140,101 @@ function resolveTargetArch(electronBuilderArgs) {
     }
 
     return "x64";
+}
+
+function resolveUnpackedAppDir(targetArch) {
+    const dirName = targetArch === "x64"
+        ? "win-unpacked"
+        : `win-${targetArch}-unpacked`;
+
+    return path.join(repoRoot, "dist", dirName);
+}
+
+function withoutPublishArgs(args) {
+    const result = [];
+
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index];
+        if (arg === "--publish" || arg === "-p") {
+            index += 1;
+            continue;
+        }
+
+        if (arg.startsWith("--publish=") || arg.startsWith("-p=")) {
+            continue;
+        }
+
+        result.push(arg);
+    }
+
+    return result;
+}
+
+function patchWindowsExecutableIcon(unpackedAppDir) {
+    const executablePath = path.join(unpackedAppDir, "Comando.exe");
+    const rceditPath = resolveBundledRcedit();
+
+    if (!isExecutableFile(executablePath)) {
+        throw new Error(
+            `Missing packaged executable. Expected ${relativeToRepo(executablePath)}.`,
+        );
+    }
+
+    if (!isFile(windowsIconPath)) {
+        throw new Error(
+            `Missing Windows icon. Expected ${relativeToRepo(windowsIconPath)}.`,
+        );
+    }
+
+    console.log(
+        `[package:win] Applying ${relativeToRepo(windowsIconPath)} to ${relativeToRepo(executablePath)}.`,
+    );
+    run(rceditPath, [executablePath, "--set-icon", windowsIconPath]);
+}
+
+function resolveBundledRcedit() {
+    const candidates = findFiles(path.join(repoRoot, "node_modules"), "rcedit.exe");
+
+    for (const candidate of candidates) {
+        if (
+            isExecutableFile(candidate) &&
+            candidate.split(path.sep).includes("electron-winstaller")
+        ) {
+            return candidate;
+        }
+    }
+
+    for (const candidate of candidates) {
+        if (isExecutableFile(candidate)) {
+            return candidate;
+        }
+    }
+
+    throw new Error("Required rcedit.exe was not found in node_modules.");
+}
+
+function findFiles(root, fileName) {
+    if (!fs.existsSync(root)) {
+        return [];
+    }
+
+    const matches = [];
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+
+    for (const entry of entries) {
+        const entryPath = path.join(root, entry.name);
+
+        if (entry.isFile() && entry.name === fileName) {
+            matches.push(entryPath);
+            continue;
+        }
+
+        if (entry.isDirectory()) {
+            matches.push(...findFiles(entryPath, fileName));
+        }
+    }
+
+    return matches;
 }
 
 function rebuildNativeModules(targetArch, extraEnv) {

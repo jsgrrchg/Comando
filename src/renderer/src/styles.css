@@ -1212,6 +1212,15 @@ button {
     outline-offset: 1px;
 }
 
+.sidebar-collapse-toggle.sidebar-collapse-toggle--inline {
+    position: static;
+    top: auto;
+    right: auto;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+}
+
 .project-switcher-menu {
     position: absolute;
     bottom: 100%;

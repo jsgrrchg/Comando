@@ -30,6 +30,13 @@ export function configureMainProcessApp(): void {
     process.env.COMANDO_APP_CHANNEL = appChannel;
     app.setName(appIdentity.name);
 
+    if (
+        process.platform === "win32" &&
+        typeof app.setAppUserModelId === "function"
+    ) {
+        app.setAppUserModelId(appIdentity.id);
+    }
+
     if (appChannel === "release") {
         return;
     }

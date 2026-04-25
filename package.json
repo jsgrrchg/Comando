@@ -20,7 +20,7 @@
     "main": "out/main/index.js",
     "scripts": {
         "predev": "pnpm run stage:ai",
-        "dev": "COMANDO_APP_CHANNEL=dev electron-vite dev",
+        "dev": "node scripts/dev.mjs",
         "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
         "build:windows-acp": "node scripts/build-windows-acp-bundles.mjs",
@@ -137,6 +137,10 @@
             "node_modules/node-pty/**/*"
         ],
         "extraResources": [
+            {
+                "from": "resources/icons/windows.ico",
+                "to": "icons/windows.ico"
+            },
             {
                 "from": "build/package-resources/ai",
                 "to": "ai",
