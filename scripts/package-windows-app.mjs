@@ -90,6 +90,7 @@ function packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv) {
         env: toolchainEnv,
     });
 
+    verifyPackagedNodePtyPayload(unpackedAppDir, targetArch);
     patchWindowsExecutableIcon(unpackedAppDir);
 
     if (electronBuilderArgs.includes("--dir")) {
@@ -190,6 +191,35 @@ function patchWindowsExecutableIcon(unpackedAppDir) {
         `[package:win] Applying ${relativeToRepo(windowsIconPath)} to ${relativeToRepo(executablePath)}.`,
     );
     run(rceditPath, [executablePath, "--set-icon", windowsIconPath]);
+}
+
+function verifyPackagedNodePtyPayload(unpackedAppDir, targetArch) {
+    const nodePtyArch = targetArch === "arm64" ? "arm64" : "x64";
+    const nodePtyRoot = path.join(
+        unpackedAppDir,
+        "resources",
+        "app.asar.unpacked",
+        "node_modules",
+        "node-pty",
+        "prebuilds",
+        `win32-${nodePtyArch}`,
+    );
+    const requiredFiles = [
+        path.join(nodePtyRoot, "conpty.node"),
+        path.join(nodePtyRoot, "pty.node"),
+        path.join(nodePtyRoot, "conpty", "conpty.dll"),
+        path.join(nodePtyRoot, "conpty", "OpenConsole.exe"),
+        path.join(nodePtyRoot, "winpty-agent.exe"),
+        path.join(nodePtyRoot, "winpty.dll"),
+    ];
+
+    for (const requiredFile of requiredFiles) {
+        if (!isFile(requiredFile) && !isExecutableFile(requiredFile)) {
+            throw new Error(
+                `The packaged node-pty payload is incomplete: ${relativeToRepo(requiredFile)} is missing.`,
+            );
+        }
+    }
 }
 
 function resolveBundledRcedit() {
