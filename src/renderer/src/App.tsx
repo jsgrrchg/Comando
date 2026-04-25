@@ -858,6 +858,8 @@ export function App() {
     const activeGitError = gitErrors[activeGitContextKey] ?? null;
     const isMac = bootstrap?.platform === "darwin";
     const isWindows = bootstrap?.platform === "win32";
+    const windowsTitleBarTitle =
+        activeProject?.name ?? bootstrap?.app.windowTitle ?? "Comando";
     const topStatus = [
         bootstrapError,
         projectsError,
@@ -2546,7 +2548,9 @@ export function App() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    {isWindows && <WindowsTopBar title="Comando" />}
+                    {isWindows && (
+                        <WindowsTopBar title={windowsTitleBarTitle} />
+                    )}
                     <div
                         className="grid min-h-0 flex-1"
                         style={{
