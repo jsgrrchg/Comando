@@ -7,7 +7,7 @@ The format is based on Keep a Changelog.
 ## [0.1.0] - 2026-04-19
 
 ### Added
-
+tt
 - Added multi-select drag from the file tree to the composer.
 - Added production-ready packaging for macOS universal builds.
 - Added app update wiring in Settings with real updater status.
