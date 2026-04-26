@@ -86,7 +86,9 @@ export function StickyFolderOverlay({
                         ...stickyChrome(scrollLeft),
                         zIndex: 20 - depth,
                         background:
-                            "color-mix(in srgb, var(--color-bg-primary) var(--vibrancy-opacity, 100%), transparent)",
+                            "color-mix(in srgb, var(--color-bg-primary) var(--vibrancy-opacity, 88%), transparent)",
+                        backdropFilter: "blur(10px)",
+                        WebkitBackdropFilter: "blur(10px)",
                         pointerEvents: "auto",
                         ...(i === stickyFolders.length - 1 && {
                             boxShadow: STICKY_EDGE_SHADOW,
@@ -236,7 +238,7 @@ function StickyFolderRow({
                 onDrop(dragData, node);
             }}
         >
-            <TreeIndentGuides depth={depth} />
+            <TreeIndentGuides depth={depth} offsetX={8} />
             <ChevronIcon open />
             <FolderIcon folderName={node.name} open />
             <span

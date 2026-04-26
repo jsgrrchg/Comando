@@ -764,7 +764,13 @@ export function FolderIcon({
 
 // --- Tree guides ---
 
-export function TreeIndentGuides({ depth }: { depth: number }) {
+export function TreeIndentGuides({
+    depth,
+    offsetX = 0,
+}: {
+    readonly depth: number;
+    readonly offsetX?: number;
+}) {
     if (depth <= 0) return null;
 
     return (
@@ -779,7 +785,8 @@ export function TreeIndentGuides({ depth }: { depth: number }) {
             {Array.from({ length: depth }, (_, level) => {
                 const x =
                     BASE_PADDING +
-                    Math.round(level * INDENT_STEP + INDENT_STEP / 2);
+                    Math.round(level * INDENT_STEP + INDENT_STEP / 2) +
+                    offsetX;
                 return (
                     <span
                         key={level}
