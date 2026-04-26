@@ -23,7 +23,8 @@ Current scope in Comando:
     - `vendor/codex-acp/src/prompt_args.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.29.0`
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.31.0`
+  - synced against upstream tag `v0.31.0` (`84e05eecc51f354a35205f7b3f9ab6caf0699927`)
 
 ## Current Codex Delta
 
