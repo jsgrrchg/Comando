@@ -180,6 +180,7 @@ export interface GitTreeViewProps {
     readonly onEditingCancel?: () => void;
     readonly onEditingDraftNameChange?: (value: string) => void;
     readonly onEditingSubmit?: () => void;
+    readonly onScrollToActivePathConsumed?: () => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
     readonly scrollToActivePathSignal?: number;

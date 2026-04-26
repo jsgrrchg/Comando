@@ -71,6 +71,10 @@ import {
     SidebarGitPanel,
     SidebarGitScopePicker,
 } from "./components/sidebar";
+import {
+    useRestorableSidebarScroll,
+    type SidebarScrollPositionStore,
+} from "./components/sidebar/useRestorableSidebarScroll";
 import { SplitHandle } from "./components/SplitHandle";
 import {
     createWorkspaceQuickDirectory,
@@ -86,6 +90,8 @@ type DragState = {
     readonly startWidth: number;
     readonly startX: number;
 } | null;
+
+type SidebarView = "files" | "git" | "agents";
 
 const ROOT_NODE_KEY = "__root__";
 
@@ -287,6 +293,9 @@ export function App() {
     const overlayDismissRef = useRef<number | null>(null);
     const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
+    const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
+        new Map(),
+    );
 
     useEffect(() => {
         let isDisposed = false;
@@ -1322,6 +1331,23 @@ export function App() {
         () => visibleSidebarNodes.map((node) => node.path),
         [visibleSidebarNodes],
     );
+    const fileTreeScrollFilterKey = isFilteringFileTree
+        ? fileTreeFilter.trim().toLowerCase()
+        : "";
+    const fileTreeScrollKey = `files:${activeProjectContextKey}:${
+        isFilteringFileTree ? `filter:${fileTreeScrollFilterKey}` : "tree"
+    }`;
+    const {
+        handleScroll: handleFileTreeScroll,
+        saveScrollPosition: saveFileTreeScrollPosition,
+        setScrollElement: setFileTreeScrollElement,
+    } = useRestorableSidebarScroll({
+        enabled: sidebarView === "files",
+        externalRef: sidebarScrollRef,
+        restoreToken: `${sidebarView}:${fileTreeScrollKey}:${visibleSidebarNodePaths.length}`,
+        scrollKey: fileTreeScrollKey,
+        scrollPositionsRef: sidebarScrollPositionsRef,
+    });
     const visibleSidebarNodePathSet = useMemo(
         () => new Set(visibleSidebarNodePaths),
         [visibleSidebarNodePaths],
@@ -1774,6 +1800,21 @@ export function App() {
         setSidebarView,
     ]);
 
+    const handleSidebarViewChange = useCallback(
+        (nextSidebarView: SidebarView) => {
+            if (sidebarView === nextSidebarView) {
+                return;
+            }
+
+            if (sidebarView === "files") {
+                saveFileTreeScrollPosition();
+            }
+
+            setSidebarView(nextSidebarView);
+        },
+        [saveFileTreeScrollPosition, setSidebarView, sidebarView],
+    );
+
     const closeQuickOpen = useCallback(() => {
         setIsQuickOpenLoading(false);
         setIsQuickOpenOpen(false);
@@ -2139,7 +2180,7 @@ export function App() {
                             .join(" ")}
                         onClick={() => {
                             if (sidebarView !== "files") {
-                                setSidebarView("files");
+                                handleSidebarViewChange("files");
                             }
                         }}
                         type="button"
@@ -2172,7 +2213,7 @@ export function App() {
                         onClick={() => {
                             if (!activeProjectId) return;
                             if (sidebarView !== "git") {
-                                setSidebarView("git");
+                                handleSidebarViewChange("git");
                             }
                         }}
                         type="button"
@@ -2220,7 +2261,7 @@ export function App() {
                             .join(" ")}
                         onClick={() => {
                             if (sidebarView !== "agents") {
-                                setSidebarView("agents");
+                                handleSidebarViewChange("agents");
                             }
                         }}
                         type="button"
@@ -2380,7 +2421,7 @@ export function App() {
             ) : (
                 <>
                     <div
-                        ref={sidebarScrollRef}
+                        ref={setFileTreeScrollElement}
                         className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2"
                         onClick={(event) => {
                             if (
@@ -2392,6 +2433,7 @@ export function App() {
 
                             clearFileTreeSelection();
                         }}
+                        onScroll={handleFileTreeScroll}
                     >
                         {activeProject ? (
                             <>
@@ -2513,6 +2555,9 @@ export function App() {
                                             dragData,
                                             destinationNode,
                                         );
+                                    }}
+                                    onScrollToActivePathConsumed={() => {
+                                        setFileTreeRevealSignal(null);
                                     }}
                                     onToggleDirectory={
                                         isFilteringFileTree

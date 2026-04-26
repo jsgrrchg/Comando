@@ -68,6 +68,7 @@ export function GitTreeView({
     onNodeClick,
     onNodeDrop,
     onNodeDragStart,
+    onScrollToActivePathConsumed,
     onToggleDirectory,
     renderNodeMeta,
     scrollToActivePathSignal,
@@ -143,12 +144,13 @@ export function GitTreeView({
                 block: "nearest",
                 inline: "nearest",
             });
+            onScrollToActivePathConsumed?.();
         });
 
         return () => {
             window.cancelAnimationFrame(frameId);
         };
-    }, [activePath, nodes, scrollToActivePathSignal]);
+    }, [activePath, nodes, onScrollToActivePathConsumed, scrollToActivePathSignal]);
 
     if (nodes.length === 0) {
         if (emptyState === null) {
