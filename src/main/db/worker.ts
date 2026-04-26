@@ -316,6 +316,16 @@ function dispatchMethod(method: string, params: unknown): unknown {
                     PersistenceService["createMainWindowSession"]
                 >[0],
             );
+        case "persistence.findClosedMainWindowSnapshotForProject": {
+            const input = params as {
+                readonly projectId: string;
+                readonly worktreeId?: string | null;
+            };
+            return persistenceService.findClosedMainWindowSnapshotForProject(
+                input.projectId,
+                input.worktreeId,
+            );
+        }
         case "persistence.saveActiveProjectId": {
             const input = params as {
                 readonly projectId: string | null;

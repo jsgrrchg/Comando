@@ -158,6 +158,25 @@ class PersistenceClient implements PersistenceGateway {
         );
     }
 
+    async findClosedMainWindowSnapshotForProject(
+        projectId: string,
+        worktreeId?: string | null,
+    ): Promise<PersistenceSnapshot | null> {
+        const snapshot = await this.#rpc.call<PersistenceSnapshot | null>(
+            "persistence.findClosedMainWindowSnapshotForProject",
+            {
+                projectId,
+                worktreeId,
+            },
+        );
+
+        if (snapshot) {
+            this.#cacheSnapshot(snapshot);
+        }
+
+        return snapshot;
+    }
+
     loadSnapshot(windowId: string): PersistenceSnapshot {
         return (
             this.#snapshotsByWindowId.get(windowId) ?? {
@@ -256,16 +275,26 @@ class PersistenceClient implements PersistenceGateway {
     }
 
     #trackSnapshot(snapshot: PersistenceSnapshot): void {
-        const windowId = snapshot.windowContext?.windowId;
+        const windowId = this.#cacheSnapshot(snapshot);
         if (!windowId) {
             return;
         }
 
-        this.#snapshotsByWindowId.set(windowId, snapshot);
         this.#openWindowIds.add(windowId);
+    }
+
+    #cacheSnapshot(snapshot: PersistenceSnapshot): string | null {
+        const windowId = snapshot.windowContext?.windowId;
+        if (!windowId) {
+            return null;
+        }
+
+        this.#snapshotsByWindowId.set(windowId, snapshot);
         if (!this.#windowOrder.includes(windowId)) {
             this.#windowOrder.push(windowId);
         }
+
+        return windowId;
     }
 
     #setSnapshot(

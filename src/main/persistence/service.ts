@@ -55,6 +55,10 @@ export interface PersistenceGateway {
     createMainWindowSession(
         input?: CreateMainWindowSessionInput,
     ): Awaitable<PersistenceSnapshot>;
+    findClosedMainWindowSnapshotForProject(
+        projectId: string,
+        worktreeId?: string | null,
+    ): Awaitable<PersistenceSnapshot | null>;
     listRestorableMainWindowSnapshots(): readonly PersistenceSnapshot[];
     loadSnapshot(windowId: string): PersistenceSnapshot;
     loadWindowState(windowId: string): PersistedWindowState | null;
@@ -195,6 +199,65 @@ export class PersistenceService {
             .all();
 
         return rows.map((row) => this.#toPersistenceSnapshot(row));
+    }
+
+    findClosedMainWindowSnapshotForProject(
+        projectId: string,
+        worktreeId?: string | null,
+    ): PersistenceSnapshot | null {
+        const baseQuery = `
+            SELECT
+                app_windows.id AS window_id,
+                app_windows.kind AS window_kind,
+                app_windows.x,
+                app_windows.y,
+                app_windows.width,
+                app_windows.height,
+                app_windows.is_maximized,
+                app_windows.is_full_screen,
+                workspace_sessions.id AS workspace_session_id,
+                workspace_sessions.workspace_id,
+                workspace_sessions.active_project_id,
+                workspace_sessions.active_worktree_id,
+                workspace_sessions.shell_state_json
+            FROM workspace_sessions
+            INNER JOIN app_windows
+                ON app_windows.id = workspace_sessions.window_id
+            WHERE app_windows.kind = 'main'
+                AND workspace_sessions.is_open = 0
+                AND workspace_sessions.active_project_id = ?
+        `;
+        const orderBy = `
+            ORDER BY
+                workspace_sessions.updated_at DESC,
+                workspace_sessions.last_opened_at DESC
+            LIMIT 1
+        `;
+
+        const row =
+            worktreeId === undefined
+                ? this.#connection
+                      .prepare<[string], MainWindowSnapshotRow>(
+                          `${baseQuery}${orderBy}`,
+                      )
+                      .get(projectId)
+                : worktreeId === null
+                  ? this.#connection
+                        .prepare<[string], MainWindowSnapshotRow>(
+                            `${baseQuery}
+                            AND workspace_sessions.active_worktree_id IS NULL
+                            ${orderBy}`,
+                        )
+                        .get(projectId)
+                  : this.#connection
+                        .prepare<[string, string], MainWindowSnapshotRow>(
+                            `${baseQuery}
+                            AND workspace_sessions.active_worktree_id = ?
+                            ${orderBy}`,
+                        )
+                        .get(projectId, worktreeId);
+
+        return row ? this.#toPersistenceSnapshot(row) : null;
     }
 
     loadSnapshot(windowId: string): PersistenceSnapshot {

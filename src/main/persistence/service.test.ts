@@ -81,6 +81,95 @@ describe("PersistenceService", () => {
             snapshotB.windowContext!.windowId,
         );
     });
+
+    it("finds the latest closed main session for a project", () => {
+        const connection = createTestConnection();
+        seedProject(connection, "project-1");
+        seedProject(connection, "project-2");
+        const service = new PersistenceService(connection);
+
+        const olderSnapshot = service.createMainWindowSession({
+            projectId: "project-1",
+            shellState: {
+                activeSurface: "workspace",
+                leftWidth: 280,
+            },
+        });
+        const newerSnapshot = service.createMainWindowSession({
+            projectId: "project-1",
+            shellState: {
+                activeSurface: "composer",
+                leftWidth: 320,
+            },
+        });
+        const otherSnapshot = service.createMainWindowSession({
+            projectId: "project-2",
+        });
+
+        service.markWindowClosed(olderSnapshot.windowContext!.windowId);
+        service.markWindowClosed(newerSnapshot.windowContext!.windowId);
+        service.markWindowClosed(otherSnapshot.windowContext!.windowId);
+        setWorkspaceSessionUpdatedAt(
+            connection,
+            olderSnapshot.windowContext!.windowId,
+            "2026-01-01T00:00:00.000Z",
+        );
+        setWorkspaceSessionUpdatedAt(
+            connection,
+            newerSnapshot.windowContext!.windowId,
+            "2026-01-02T00:00:00.000Z",
+        );
+        setWorkspaceSessionUpdatedAt(
+            connection,
+            otherSnapshot.windowContext!.windowId,
+            "2026-01-03T00:00:00.000Z",
+        );
+
+        const snapshot =
+            service.findClosedMainWindowSnapshotForProject("project-1");
+
+        expect(snapshot?.windowContext?.windowId).toBe(
+            newerSnapshot.windowContext!.windowId,
+        );
+        expect(snapshot?.shellState).toEqual({
+            activeSurface: "composer",
+            leftWidth: 320,
+        });
+    });
+
+    it("filters closed main sessions by requested worktree", () => {
+        const connection = createTestConnection();
+        seedProject(connection, "project-1");
+        seedProjectWorktree(connection, {
+            id: "project-1:feature",
+            isPrimary: false,
+            projectId: "project-1",
+        });
+        const service = new PersistenceService(connection);
+
+        const primarySnapshot = service.createMainWindowSession({
+            projectId: "project-1",
+            worktreeId: null,
+        });
+        const worktreeSnapshot = service.createMainWindowSession({
+            projectId: "project-1",
+            worktreeId: "project-1:feature",
+        });
+
+        service.markWindowClosed(primarySnapshot.windowContext!.windowId);
+        service.markWindowClosed(worktreeSnapshot.windowContext!.windowId);
+
+        expect(
+            service.findClosedMainWindowSnapshotForProject(
+                "project-1",
+                "project-1:feature",
+            )?.windowContext?.windowId,
+        ).toBe(worktreeSnapshot.windowContext!.windowId);
+        expect(
+            service.findClosedMainWindowSnapshotForProject("project-1", null)
+                ?.windowContext?.windowId,
+        ).toBe(primarySnapshot.windowContext!.windowId);
+    });
 });
 
 function createTestConnection() {
@@ -112,4 +201,56 @@ function seedProject(
             `,
         )
         .run(projectId, `/tmp/${projectId}`);
+}
+
+function seedProjectWorktree(
+    connection: ReturnType<typeof createTestConnection>,
+    input: {
+        readonly id: string;
+        readonly isPrimary: boolean;
+        readonly projectId: string;
+    },
+): void {
+    const now = new Date().toISOString();
+
+    connection
+        .prepare(
+            `
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)
+            `,
+        )
+        .run(
+            input.id,
+            input.projectId,
+            `/tmp/${input.id}`,
+            input.isPrimary ? 1 : 0,
+            now,
+            now,
+        );
+}
+
+function setWorkspaceSessionUpdatedAt(
+    connection: ReturnType<typeof createTestConnection>,
+    windowId: string,
+    updatedAt: string,
+): void {
+    connection
+        .prepare(
+            `
+            UPDATE workspace_sessions
+            SET updated_at = ?
+            WHERE window_id = ?
+            `,
+        )
+        .run(updatedAt, windowId);
 }

@@ -431,6 +431,18 @@ async function openNewMainWindowWithOptions(input: {
         }
     }
 
+    const closedProjectSnapshot =
+        input.projectId && !input.forceNewWindow
+            ? await persistenceService.findClosedMainWindowSnapshotForProject(
+                  input.projectId,
+                  input.worktreeId,
+              )
+            : null;
+    if (closedProjectSnapshot) {
+        createTrackedMainWindow(closedProjectSnapshot);
+        return;
+    }
+
     const focusedMainWindow = windowRegistry.getFocusedMainWindow();
     const sourceContext = focusedMainWindow
         ? windowRegistry.getContextByBrowserWindow(focusedMainWindow)
