@@ -336,6 +336,7 @@ export class AiWorkerRuntime {
 
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
+            activeTurnStartedAt: now,
             lastError: null,
             messages: [
                 ...liveSession.snapshot.messages,
@@ -377,6 +378,7 @@ export class AiWorkerRuntime {
 
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
+                activeTurnStartedAt: null,
                 pendingPermission: null,
                 pendingUserInput: null,
                 status: "idle",
@@ -396,6 +398,7 @@ export class AiWorkerRuntime {
                     : `${getRuntimeDisplayName(params.input.runtimeId)} could not complete the prompt.`;
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
+                activeTurnStartedAt: null,
                 lastError: message,
                 pendingPermission: null,
                 pendingUserInput: null,
@@ -662,6 +665,7 @@ export class AiWorkerRuntime {
 
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
+            activeTurnStartedAt: liveSession.snapshot.activeTurnStartedAt ?? now,
             lastError: null,
             messages: [
                 ...liveSession.snapshot.messages,
@@ -697,6 +701,7 @@ export class AiWorkerRuntime {
 
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
+                activeTurnStartedAt: null,
                 status: "idle",
                 updatedAt: new Date().toISOString(),
             });
@@ -709,6 +714,7 @@ export class AiWorkerRuntime {
                     : `${getRuntimeDisplayName(liveSession.runtimeId)} ACP could not send the guided response.`;
             liveSession.snapshot = finalizeStreamingMessages({
                 ...liveSession.snapshot,
+                activeTurnStartedAt: null,
                 lastError: message,
                 pendingUserInput,
                 status: "error",

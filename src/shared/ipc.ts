@@ -1342,6 +1342,7 @@ export interface AiTokenUsage {
 }
 
 export interface AiSessionSnapshot {
+    readonly activeTurnStartedAt?: string | null;
     readonly availableCommands: readonly AiAvailableCommand[];
     readonly configOptions: readonly AiSessionConfigOption[];
     readonly lastError: string | null;

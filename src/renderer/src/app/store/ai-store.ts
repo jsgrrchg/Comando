@@ -1559,6 +1559,7 @@ function createEmptySessionSnapshot(
     const now = new Date().toISOString();
 
     return {
+        activeTurnStartedAt: null,
         availableCommands: catalog?.availableCommands ?? [],
         configOptions: catalog?.configOptions ?? [],
         lastError: null,

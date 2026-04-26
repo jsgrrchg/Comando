@@ -771,4 +771,26 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         // The terminal status should have cleared the dedup entry.
         expect(liveSession.processedDiffPaths.has("edit-1")).toBe(false);
     });
+
+    it("records the active turn start from Codex status turn activities", () => {
+        const snapshot = __testing.mapToolCallUpdate(
+            makeLiveSession(),
+            makeSnapshot(),
+            {
+                _meta: {
+                    codexAcpEventType: "status",
+                },
+                kind: "other",
+                status: "completed",
+                title: "New turn",
+                toolCallId: "codex-acp:status:turn:turn-1",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:05.000Z",
+        );
+
+        expect(snapshot.activeTurnStartedAt).toBe(
+            "2026-04-20T12:00:05.000Z",
+        );
+    });
 });

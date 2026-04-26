@@ -158,6 +158,9 @@ export function mapToolCallUpdate(
         title: nextTitle ?? "Tool call",
         updatedAt,
     };
+    const activeTurnStartedAt = isTurnStartedStatusUpdate(update)
+        ? (snapshot.activeTurnStartedAt ?? nextActivity.createdAt)
+        : (snapshot.activeTurnStartedAt ?? null);
 
     const terminalStatus =
         update.status === "completed" || update.status === "failed";
@@ -219,6 +222,7 @@ export function mapToolCallUpdate(
 
     return {
         ...snapshot,
+        activeTurnStartedAt,
         pendingPermission: pendingUserInput ? null : snapshot.pendingPermission,
         pendingUserInput: pendingUserInput ?? snapshot.pendingUserInput,
         status: pendingUserInput ? "waiting_user_input" : snapshot.status,
@@ -230,6 +234,25 @@ export function mapToolCallUpdate(
         ],
         trackedFiles: nextTrackedFiles,
     };
+}
+
+function isTurnStartedStatusUpdate(
+    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
+): boolean {
+    const isTurnActivity =
+        update.toolCallId.startsWith(CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX) ||
+        update.toolCallId.startsWith(COMANDO_STATUS_TURN_EVENT_ID_PREFIX);
+    if (!isTurnActivity) {
+        return false;
+    }
+
+    return (
+        readDiffMetaString(
+            update._meta,
+            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+            COMANDO_STATUS_EVENT_TYPE_KEY,
+        ) === CODEX_ACP_STATUS_EVENT_TYPE
+    );
 }
 
 function collectDiffs(

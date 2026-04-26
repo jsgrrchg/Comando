@@ -504,6 +504,7 @@ export const ChatTabView = memo(function ChatTabView({
     const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
         ? tab.sessionId
         : null;
+    const activeTurnStartedAt = getActiveTurnStartedAt(snapshot);
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const availableCommands =
         snapshot.availableCommands.length > 0
@@ -641,17 +642,23 @@ export const ChatTabView = memo(function ChatTabView({
         pendingReviewCount > 0;
 
     useEffect(() => {
-        if (activeTurnKey === null) {
+        if (activeTurnKey === null || activeTurnStartedAt === null) {
             streamStartTimeRef.current = null;
             setElapsed("");
             return undefined;
         }
 
-        streamStartTimeRef.current = Date.now();
+        const startedAtMs = Date.parse(activeTurnStartedAt);
+        streamStartTimeRef.current = Number.isFinite(startedAtMs)
+            ? startedAtMs
+            : Date.now();
         const updateElapsed = () => {
             const startedAt = streamStartTimeRef.current;
             if (startedAt === null) return;
-            const totalSec = Math.floor((Date.now() - startedAt) / 1000);
+            const totalSec = Math.max(
+                0,
+                Math.floor((Date.now() - startedAt) / 1000),
+            );
             const min = Math.floor(totalSec / 60);
             const sec = totalSec % 60;
             setElapsed(
@@ -660,9 +667,10 @@ export const ChatTabView = memo(function ChatTabView({
                     : `${sec}s`,
             );
         };
+        updateElapsed();
         const interval = window.setInterval(updateElapsed, 500);
         return () => window.clearInterval(interval);
-    }, [activeTurnKey]);
+    }, [activeTurnKey, activeTurnStartedAt]);
 
     const timelineModel = useMemo(() => {
         const previousTimelineModel =
@@ -4055,6 +4063,7 @@ function createEmptySnapshot(
     catalog: AiRuntimeCatalog | null = null,
 ): AiSessionSnapshot {
     return {
+        activeTurnStartedAt: null,
         availableCommands: catalog?.availableCommands ?? [],
         configOptions: catalog?.configOptions ?? [],
         lastError: null,
@@ -4078,6 +4087,33 @@ function createEmptySnapshot(
         updatedAt: new Date().toISOString(),
         worktreeId: tab.worktreeId ?? null,
     };
+}
+
+function getActiveTurnStartedAt(snapshot: AiSessionSnapshot): string | null {
+    if (!isActiveChatTurnStatus(snapshot.status)) {
+        return null;
+    }
+
+    if (snapshot.activeTurnStartedAt) {
+        return snapshot.activeTurnStartedAt;
+    }
+
+    const latestTurnActivity = [...snapshot.toolActivity]
+        .reverse()
+        .find(
+            (activity) =>
+                activity.id.startsWith("codex-acp:status:turn:") ||
+                activity.id.startsWith("comando:status:turn:"),
+        );
+    if (latestTurnActivity) {
+        return latestTurnActivity.createdAt;
+    }
+
+    return (
+        [...snapshot.messages]
+            .reverse()
+            .find((message) => message.kind === "user")?.createdAt ?? null
+    );
 }
 
 function isComposerDraftEmpty(

@@ -200,6 +200,10 @@ export class AiPersistence {
                 }
 
                 const snapshot = {
+                    activeTurnStartedAt:
+                        typeof raw.activeTurnStartedAt === "string"
+                            ? raw.activeTurnStartedAt
+                            : null,
                     availableCommands: normalizeAvailableCommands(
                         raw.availableCommands,
                     ),
@@ -792,6 +796,7 @@ export function createEmptyAiSessionSnapshot(options: {
     const now = options.updatedAt ?? new Date().toISOString();
 
     return {
+        activeTurnStartedAt: null,
         availableCommands: [],
         configOptions: [],
         lastError: null,
@@ -824,6 +829,7 @@ function createPersistedSessionSnapshot(
     "availableCommands" | "configOptions" | "modes" | "models"
 > {
     return {
+        activeTurnStartedAt: snapshot.activeTurnStartedAt ?? null,
         lastError: snapshot.lastError,
         messages: snapshot.messages,
         modeId: snapshot.modeId,
