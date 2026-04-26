@@ -151,7 +151,7 @@
         "mac": {
             "category": "public.app-category.developer-tools",
             "icon": "resources/icons/macos.icon",
-            "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/bin/**/*}",
+            "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/app.asar.unpacked/node_modules/**/*}",
             "target": [
                 {
                     "target": "dmg",
