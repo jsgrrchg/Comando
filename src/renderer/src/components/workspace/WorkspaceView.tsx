@@ -109,6 +109,7 @@ import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/w
 import {
     applyTerminalSurfaceTheme,
     createTerminalSurfaceOptions,
+    refreshTerminalViewport,
     syncTerminalViewport,
     type TerminalSurfaceTheme,
 } from "@renderer/components/workspace/terminalSurface";
@@ -5061,6 +5062,7 @@ function TerminalTabView({
         null,
     );
     const pendingViewportSyncFrameRef = useRef<number | null>(null);
+    const pendingTerminalRepaintFrameRef = useRef<number | null>(null);
     const writeChainRef = useRef<Promise<void>>(Promise.resolve());
     const focusFrameRef = useRef<number | null>(null);
 
@@ -5094,6 +5096,36 @@ function TerminalTabView({
         pendingViewportSyncFrameRef.current = null;
     });
 
+    const cancelScheduledTerminalRepaint = useEffectEvent(() => {
+        if (pendingTerminalRepaintFrameRef.current === null) {
+            return;
+        }
+
+        globalThis.cancelAnimationFrame(pendingTerminalRepaintFrameRef.current);
+        pendingTerminalRepaintFrameRef.current = null;
+    });
+
+    const scheduleTerminalRepaint = useEffectEvent((deferFrames = 0) => {
+        cancelScheduledTerminalRepaint();
+
+        const runAfterFrames = (remainingFrames: number) => {
+            pendingTerminalRepaintFrameRef.current =
+                globalThis.requestAnimationFrame(() => {
+                    if (remainingFrames > 0) {
+                        runAfterFrames(remainingFrames - 1);
+                        return;
+                    }
+
+                    pendingTerminalRepaintFrameRef.current = null;
+                    refreshTerminalViewport(terminalRef.current, {
+                        clearTextureAtlas: true,
+                    });
+                });
+        };
+
+        runAfterFrames(deferFrames);
+    });
+
     const syncViewport = useEffectEvent(() => {
         const fitAddon = fitAddonRef.current;
         const result = syncTerminalViewport({
@@ -5109,6 +5141,7 @@ function TerminalTabView({
 
         lastViewportSizeRef.current = result.nextSize;
         if (result.sizeChanged) {
+            scheduleTerminalRepaint(1);
             void onResize(tab.sessionId, result.nextSize.cols, result.nextSize.rows);
         }
     });
@@ -5181,6 +5214,7 @@ function TerminalTabView({
             globalThis.removeEventListener("focus", handleViewportChange);
             resizeObserver?.disconnect();
             cancelScheduledFocus();
+            cancelScheduledTerminalRepaint();
             cancelScheduledViewportSync();
             terminal.dispose();
             terminalRef.current = null;
@@ -5198,6 +5232,8 @@ function TerminalTabView({
         }
 
         scheduleTerminalFocus();
+        scheduleViewportSync(1);
+        scheduleTerminalRepaint(2);
         return () => {
             cancelScheduledFocus();
         };

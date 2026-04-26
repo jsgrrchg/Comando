@@ -29,6 +29,7 @@ interface TerminalViewportContainer {
 interface TerminalViewportRuntime {
     readonly cols: number;
     readonly rows: number;
+    clearTextureAtlas?: () => void;
     refresh: (start: number, end: number) => void;
 }
 
@@ -37,6 +38,7 @@ interface TerminalThemeRuntime {
         theme?: Partial<TerminalSurfaceTheme>;
     };
     readonly rows: number;
+    clearTextureAtlas?: () => void;
     refresh: (start: number, end: number) => void;
 }
 
@@ -87,10 +89,23 @@ export function applyTerminalSurfaceTheme({
 
     terminal.options.theme = theme;
 
-    if (terminal.rows > 0) {
-        terminal.refresh(0, terminal.rows - 1);
+    refreshTerminalViewport(terminal);
+
+    return true;
+}
+
+export function refreshTerminalViewport(
+    terminal: TerminalViewportRuntime | TerminalThemeRuntime | null | undefined,
+    options: { readonly clearTextureAtlas?: boolean } = {},
+): boolean {
+    if (!terminal || terminal.rows <= 0) {
+        return false;
     }
 
+    if (options.clearTextureAtlas) {
+        terminal.clearTextureAtlas?.();
+    }
+    terminal.refresh(0, terminal.rows - 1);
     return true;
 }
 
@@ -138,7 +153,7 @@ export function syncTerminalViewport({
         rows: terminal.rows,
     };
 
-    terminal.refresh(0, nextSize.rows - 1);
+    refreshTerminalViewport(terminal);
 
     return {
         didSync: true,

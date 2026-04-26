@@ -4,6 +4,7 @@ import {
     applyTerminalSurfaceTheme,
     areTerminalSurfaceThemesEqual,
     createTerminalSurfaceOptions,
+    refreshTerminalViewport,
     syncTerminalViewport,
 } from "./terminalSurface";
 
@@ -71,6 +72,7 @@ describe("syncTerminalViewport", () => {
 
     it("fits and refreshes the terminal when the container is visible", () => {
         const fit = vi.fn();
+        const clearTextureAtlas = vi.fn();
         const refresh = vi.fn();
 
         const result = syncTerminalViewport({
@@ -84,6 +86,7 @@ describe("syncTerminalViewport", () => {
                 rows: 24,
             },
             terminal: {
+                clearTextureAtlas,
                 cols: 120,
                 refresh,
                 rows: 34,
@@ -91,6 +94,7 @@ describe("syncTerminalViewport", () => {
         });
 
         expect(fit).toHaveBeenCalledTimes(1);
+        expect(clearTextureAtlas).not.toHaveBeenCalled();
         expect(refresh).toHaveBeenCalledWith(0, 33);
         expect(result).toEqual({
             didSync: true,
@@ -125,6 +129,59 @@ describe("syncTerminalViewport", () => {
 
         expect(result.sizeChanged).toBe(false);
         expect(refresh).toHaveBeenCalledWith(0, 33);
+    });
+});
+
+describe("refreshTerminalViewport", () => {
+    it("refreshes visible rows", () => {
+        const clearTextureAtlas = vi.fn();
+        const refresh = vi.fn();
+
+        const didRefresh = refreshTerminalViewport({
+            clearTextureAtlas,
+            cols: 100,
+            refresh,
+            rows: 28,
+        });
+
+        expect(didRefresh).toBe(true);
+        expect(clearTextureAtlas).not.toHaveBeenCalled();
+        expect(refresh).toHaveBeenCalledWith(0, 27);
+    });
+
+    it("can clear the renderer texture atlas before refreshing", () => {
+        const clearTextureAtlas = vi.fn();
+        const refresh = vi.fn();
+
+        const didRefresh = refreshTerminalViewport(
+            {
+                clearTextureAtlas,
+                cols: 100,
+                refresh,
+                rows: 28,
+            },
+            { clearTextureAtlas: true },
+        );
+
+        expect(didRefresh).toBe(true);
+        expect(clearTextureAtlas).toHaveBeenCalledTimes(1);
+        expect(refresh).toHaveBeenCalledWith(0, 27);
+    });
+
+    it("skips refresh when the terminal has no visible rows", () => {
+        const clearTextureAtlas = vi.fn();
+        const refresh = vi.fn();
+
+        const didRefresh = refreshTerminalViewport({
+            clearTextureAtlas,
+            cols: 100,
+            refresh,
+            rows: 0,
+        });
+
+        expect(didRefresh).toBe(false);
+        expect(clearTextureAtlas).not.toHaveBeenCalled();
+        expect(refresh).not.toHaveBeenCalled();
     });
 });
 
