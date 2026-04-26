@@ -175,8 +175,15 @@ export function GitCommitFooter({
     readonly summary: NonNullable<GitPanelProps["toolbar"]>["summary"];
     readonly syncActions?: {
         readonly onFetch?: () => void;
+        readonly onFetchAll?: () => void;
+        readonly onFetchPrune?: () => void;
         readonly onPull?: () => void;
+        readonly onPullRebase?: () => void;
         readonly onPush?: () => void;
+        readonly onPublishBranch?: () => void;
+        readonly onForcePushWithLease?: () => void;
+        readonly publishBranchDisabled?: boolean;
+        readonly forcePushWithLeaseDisabled?: boolean;
     } | null;
     readonly syncStatus?: {
         readonly message: string;
@@ -196,6 +203,27 @@ export function GitCommitFooter({
                         } satisfies ContextMenuEntry,
                     ]
                   : []),
+              ...(syncActions.onFetchAll
+                  ? [
+                        {
+                            label: "Fetch All",
+                            action: syncActions.onFetchAll,
+                        } satisfies ContextMenuEntry,
+                    ]
+                  : []),
+              ...(syncActions.onFetchPrune
+                  ? [
+                        {
+                            label: "Fetch Prune",
+                            action: syncActions.onFetchPrune,
+                        } satisfies ContextMenuEntry,
+                    ]
+                  : []),
+              ...(syncActions.onFetch ||
+              syncActions.onFetchAll ||
+              syncActions.onFetchPrune
+                  ? [{ type: "separator" as const } satisfies ContextMenuEntry]
+                  : []),
               ...(syncActions.onPull
                   ? [
                         {
@@ -204,7 +232,15 @@ export function GitCommitFooter({
                         } satisfies ContextMenuEntry,
                     ]
                   : []),
-              ...(syncActions.onFetch || syncActions.onPull
+              ...(syncActions.onPullRebase
+                  ? [
+                        {
+                            label: "Pull with Rebase",
+                            action: syncActions.onPullRebase,
+                        } satisfies ContextMenuEntry,
+                    ]
+                  : []),
+              ...(syncActions.onPull || syncActions.onPullRebase
                   ? [{ type: "separator" as const } satisfies ContextMenuEntry]
                   : []),
               ...(syncActions.onPush
@@ -212,6 +248,25 @@ export function GitCommitFooter({
                         {
                             label: "Push",
                             action: syncActions.onPush,
+                        } satisfies ContextMenuEntry,
+                    ]
+                  : []),
+              ...(syncActions.onPublishBranch
+                  ? [
+                        {
+                            label: "Publish Branch",
+                            action: syncActions.onPublishBranch,
+                            disabled: syncActions.publishBranchDisabled,
+                        } satisfies ContextMenuEntry,
+                    ]
+                  : []),
+              ...(syncActions.onForcePushWithLease
+                  ? [
+                        {
+                            label: "Force Push with Lease",
+                            action: syncActions.onForcePushWithLease,
+                            danger: true,
+                            disabled: syncActions.forcePushWithLeaseDisabled,
                         } satisfies ContextMenuEntry,
                     ]
                   : []),

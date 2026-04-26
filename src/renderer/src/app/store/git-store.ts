@@ -25,6 +25,26 @@ const DEFAULT_CHANGE_GROUPS: readonly GitChangeGroupId[] = [
 const DEFAULT_GIT_HISTORY_LIMIT = 200;
 const GIT_HISTORY_LOAD_MORE_INCREMENT = 200;
 
+type GitFetchRepositoryOptions = {
+    readonly all?: boolean;
+    readonly prune?: boolean;
+    readonly remoteName?: string | null;
+};
+
+type GitPullRepositoryOptions = {
+    readonly rebase?: boolean;
+    readonly remoteName?: string | null;
+    readonly remoteRef?: string | null;
+};
+
+type GitPushRepositoryOptions = {
+    readonly force?: boolean;
+    readonly forceWithLease?: boolean;
+    readonly remoteName?: string | null;
+    readonly remoteRef?: string | null;
+    readonly setUpstream?: boolean;
+};
+
 interface GitStoreState {
     readonly activeWorktreeIds: Record<string, string | null>;
     readonly branchesByProject: Record<string, readonly GitBranchSummary[]>;
@@ -80,6 +100,7 @@ interface GitStoreState {
     fetchRepository: (
         projectId: string,
         worktreeId?: string | null,
+        options?: GitFetchRepositoryOptions,
     ) => Promise<GitRepositorySnapshot>;
     ensureCommitDetail: (
         projectId: string,
@@ -103,10 +124,12 @@ interface GitStoreState {
     pullRepository: (
         projectId: string,
         worktreeId?: string | null,
+        options?: GitPullRepositoryOptions,
     ) => Promise<GitRepositorySnapshot>;
     pushRepository: (
         projectId: string,
         worktreeId?: string | null,
+        options?: GitPushRepositoryOptions,
     ) => Promise<GitRepositorySnapshot>;
     refreshHistory: (
         projectId: string,
@@ -272,9 +295,12 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         return snapshot;
     },
 
-    fetchRepository: async (projectId, worktreeId = null) => {
+    fetchRepository: async (projectId, worktreeId = null, options = {}) => {
         const snapshot = await getComandoApi().fetchGitRepository({
+            all: options.all,
             projectId,
+            prune: options.prune,
+            remoteName: options.remoteName,
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
@@ -445,9 +471,12 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         }
     },
 
-    pullRepository: async (projectId, worktreeId = null) => {
+    pullRepository: async (projectId, worktreeId = null, options = {}) => {
         const snapshot = await getComandoApi().pullGitRepository({
             projectId,
+            rebase: options.rebase,
+            remoteName: options.remoteName,
+            remoteRef: options.remoteRef,
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
@@ -456,9 +485,14 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         return snapshot;
     },
 
-    pushRepository: async (projectId, worktreeId = null) => {
+    pushRepository: async (projectId, worktreeId = null, options = {}) => {
         const snapshot = await getComandoApi().pushGitRepository({
+            force: options.force,
+            forceWithLease: options.forceWithLease,
             projectId,
+            remoteName: options.remoteName,
+            remoteRef: options.remoteRef,
+            setUpstream: options.setUpstream,
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);

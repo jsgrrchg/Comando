@@ -125,6 +125,7 @@ export interface GitGateway {
     fetch(
         inputPath: string,
         options?: {
+            readonly all?: boolean;
             readonly prune?: boolean;
             readonly remoteName?: string | null;
         },
@@ -141,6 +142,7 @@ export interface GitGateway {
         inputPath: string,
         options?: {
             readonly force?: boolean;
+            readonly forceWithLease?: boolean;
             readonly remoteName?: string | null;
             readonly remoteRef?: string | null;
             readonly setUpstream?: boolean;
@@ -711,6 +713,7 @@ export class GitService implements GitGateway {
     async fetch(
         inputPath: string,
         options: {
+            readonly all?: boolean;
             readonly prune?: boolean;
             readonly remoteName?: string | null;
         } = {},
@@ -723,7 +726,9 @@ export class GitService implements GitGateway {
             args.push("--prune");
         }
 
-        if (options.remoteName) {
+        if (options.all) {
+            args.push("--all");
+        } else if (options.remoteName) {
             args.push(options.remoteName);
         }
 
@@ -765,6 +770,7 @@ export class GitService implements GitGateway {
         inputPath: string,
         options: {
             readonly force?: boolean;
+            readonly forceWithLease?: boolean;
             readonly remoteName?: string | null;
             readonly remoteRef?: string | null;
             readonly setUpstream?: boolean;
@@ -774,7 +780,9 @@ export class GitService implements GitGateway {
         const git = simpleGit(rootPath);
         const args = ["push"];
 
-        if (options.force) {
+        if (options.forceWithLease) {
+            args.push("--force-with-lease");
+        } else if (options.force) {
             args.push("--force");
         }
 

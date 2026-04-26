@@ -93,6 +93,17 @@ export function SidebarGitPanel({
         () => summarizeGitRepository(project, snapshot),
         [project, snapshot],
     );
+    const defaultRemoteName = useMemo(
+        () => resolveDefaultRemoteName(snapshot),
+        [snapshot],
+    );
+    const currentBranchName = snapshot?.branch?.name ?? null;
+    const canPublishBranch =
+        currentBranchName !== null &&
+        snapshot?.branch?.isDetached !== true &&
+        defaultRemoteName !== null;
+    const canForcePushWithLease =
+        currentBranchName !== null && snapshot?.branch?.isDetached !== true;
 
     const allChanges = useMemo(
         () => snapshot?.changes ?? [],
@@ -320,14 +331,62 @@ export function SidebarGitPanel({
                         runSyncAction("Fetch", () =>
                             fetchRepository(projectId, worktreeId),
                         ),
+                    onFetchAll: () =>
+                        runSyncAction("Fetch All", () =>
+                            fetchRepository(projectId, worktreeId, {
+                                all: true,
+                            }),
+                        ),
+                    onFetchPrune: () =>
+                        runSyncAction("Fetch Prune", () =>
+                            fetchRepository(projectId, worktreeId, {
+                                prune: true,
+                            }),
+                        ),
                     onPull: () =>
                         runSyncAction("Pull", () =>
                             pullRepository(projectId, worktreeId),
+                        ),
+                    onPullRebase: () =>
+                        runSyncAction("Pull with Rebase", () =>
+                            pullRepository(projectId, worktreeId, {
+                                rebase: true,
+                            }),
                         ),
                     onPush: () =>
                         runSyncAction("Push", () =>
                             pushRepository(projectId, worktreeId),
                         ),
+                    onPublishBranch: () => {
+                        if (!canPublishBranch || !currentBranchName) {
+                            return;
+                        }
+                        runSyncAction("Publish Branch", () =>
+                            pushRepository(projectId, worktreeId, {
+                                remoteName: defaultRemoteName,
+                                remoteRef: currentBranchName,
+                                setUpstream: true,
+                            }),
+                        );
+                    },
+                    onForcePushWithLease: () => {
+                        if (!canForcePushWithLease) {
+                            return;
+                        }
+                        const confirmed = window.confirm(
+                            `Force push "${currentBranchName}" with lease?\n\nThis can overwrite commits on the remote if your local branch is ahead. The lease prevents overwriting remote work that you have not fetched.`,
+                        );
+                        if (!confirmed) {
+                            return;
+                        }
+                        runSyncAction("Force Push with Lease", () =>
+                            pushRepository(projectId, worktreeId, {
+                                forceWithLease: true,
+                            }),
+                        );
+                    },
+                    publishBranchDisabled: !canPublishBranch,
+                    forcePushWithLeaseDisabled: !canForcePushWithLease,
                 }}
                 syncStatus={syncStatus}
             />
@@ -339,18 +398,40 @@ function describeSyncResult(
     label: string,
     snap: GitRepositorySnapshot,
 ): string {
-    if (label === "Fetch" || label === "Pull") {
+    if (label.startsWith("Fetch") || label.startsWith("Pull")) {
         if (snap.syncStatus === "in_sync" && snap.aheadBy === 0) {
             return "Up to date";
         }
-        if (label === "Pull" && snap.aheadBy > 0) {
+        if (label.startsWith("Pull") && snap.aheadBy > 0) {
             return `Pulled · ${snap.aheadBy} ahead`;
         }
     }
-    if (label === "Push" && snap.syncStatus === "in_sync") {
+    if (label === "Publish Branch" && snap.syncStatus === "in_sync") {
+        return "Published";
+    }
+    if (
+        (label === "Push" || label === "Force Push with Lease") &&
+        snap.syncStatus === "in_sync"
+    ) {
         return "Pushed";
     }
     return `${label} done`;
+}
+
+function resolveDefaultRemoteName(
+    snapshot: GitRepositorySnapshot | null,
+): string | null {
+    if (!snapshot) {
+        return null;
+    }
+
+    return (
+        snapshot.selectedRemoteName ??
+        snapshot.remotes.find((remote) => remote.isDefault)?.name ??
+        snapshot.remotes.find((remote) => remote.name === "origin")?.name ??
+        snapshot.remotes[0]?.name ??
+        null
+    );
 }
 
 function StagingCheckbox({

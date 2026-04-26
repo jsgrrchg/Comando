@@ -750,6 +750,7 @@ export interface GitDeleteRemoteBranchInput extends GitRepositoryScopeInput {
 }
 
 export interface GitFetchInput extends GitRepositoryScopeInput {
+    readonly all?: boolean;
     readonly prune?: boolean;
     readonly remoteName?: string | null;
 }
@@ -762,6 +763,7 @@ export interface GitPullInput extends GitRepositoryScopeInput {
 
 export interface GitPushInput extends GitRepositoryScopeInput {
     readonly force?: boolean;
+    readonly forceWithLease?: boolean;
     readonly remoteName?: string | null;
     readonly remoteRef?: string | null;
     readonly setUpstream?: boolean;

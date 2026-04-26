@@ -186,6 +186,40 @@ describe("GitService", () => {
         });
     });
 
+    it("pushes branch publication and force-with-lease updates", async () => {
+        const rootPath = createGitRepositoryFixture();
+        const remotePath = createGitRepositoryFixture();
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        git(remotePath, ["init", "--bare"]);
+
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+        git(rootPath, ["remote", "add", "origin", remotePath]);
+
+        const service = new GitService({ cacheSnapshots: false });
+        await service.push(rootPath, {
+            remoteName: "origin",
+            remoteRef: "main",
+            setUpstream: true,
+        });
+
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\nagain\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "--amend", "-m", "rewritten commit"]);
+
+        await expect(
+            service.push(rootPath, { forceWithLease: true }),
+        ).resolves.toMatchObject({
+            resolution: {
+                state: "ready",
+            },
+        });
+    });
+
     it("lists history and commit details", async () => {
         const rootPath = createGitRepositoryFixture();
 

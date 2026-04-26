@@ -762,6 +762,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 "remote",
                 async (rootPath) =>
                     options.gitService.fetch(rootPath, {
+                        all: input.all,
                         prune: input.prune,
                         remoteName: input.remoteName,
                     }),
@@ -800,6 +801,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 async (rootPath) =>
                     options.gitService.push(rootPath, {
                         force: input.force,
+                        forceWithLease: input.forceWithLease,
                         remoteName: input.remoteName,
                         remoteRef: input.remoteRef,
                         setUpstream: input.setUpstream,
