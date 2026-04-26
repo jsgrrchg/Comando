@@ -2,6 +2,7 @@ import {
     useCallback,
     useLayoutEffect,
     useRef,
+    useState,
     type RefCallback,
     type UIEventHandler,
 } from "react";
@@ -41,6 +42,8 @@ export function useRestorableSidebarScroll({
 }: RestorableSidebarScrollOptions) {
     const elementRef = useRef<HTMLDivElement | null>(null);
     const restoreFrameRef = useRef<number | null>(null);
+    const [scrollElement, setCurrentScrollElement] =
+        useState<HTMLDivElement | null>(null);
 
     const cancelRestore = useCallback(() => {
         if (restoreFrameRef.current !== null) {
@@ -117,6 +120,9 @@ export function useRestorableSidebarScroll({
             }
 
             elementRef.current = node;
+            setCurrentScrollElement((current) =>
+                current === node ? current : node,
+            );
             if (externalRef) {
                 externalRef.current = node;
             }
@@ -157,6 +163,7 @@ export function useRestorableSidebarScroll({
         handleScroll,
         restoreScrollPosition,
         saveScrollPosition,
+        scrollElement,
         setScrollElement,
     };
 }

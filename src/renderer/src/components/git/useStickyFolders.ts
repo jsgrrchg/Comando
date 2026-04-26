@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
     computeFolderLastDescendant,
@@ -23,13 +23,13 @@ export interface UseStickyFoldersResult {
 }
 
 export function useStickyFolders({
-    scrollContainerRef,
+    scrollContainer,
     nodes,
     expandedPaths,
     layout,
     enabled = true,
 }: {
-    readonly scrollContainerRef: RefObject<HTMLElement | null>;
+    readonly scrollContainer: HTMLElement | null;
     readonly nodes: readonly GitTreeNode[];
     readonly expandedPaths: readonly string[] | undefined;
     readonly layout: GitViewLayout;
@@ -40,29 +40,35 @@ export function useStickyFolders({
     const [scale, setScale] = useState(1);
     const [paddingTop, setPaddingTop] = useState(0);
     const rafRef = useRef(0);
-    const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
-    useEffect(() => {
-        const container = scrollContainerRef.current;
-        if (!container) {
+    useLayoutEffect(() => {
+        if (!scrollContainer) {
+            setScrollTop(0);
+            setScrollLeft(0);
+            setScale(1);
+            setPaddingTop(0);
             return;
         }
 
-        const readScale = (): void => {
-            const raw = getComputedStyle(container).getPropertyValue(
-                "--file-tree-scale",
-            );
+        const container = scrollContainer;
+
+        const readMetrics = (): void => {
+            const styles = getComputedStyle(container);
+            const raw = styles.getPropertyValue("--file-tree-scale");
             const parsed = parseFloat(raw);
             if (!Number.isNaN(parsed) && parsed > 0) {
                 setScale(parsed);
             } else {
                 setScale(1);
             }
+            setPaddingTop(parseFloat(styles.paddingTop) || 0);
+            setScrollTop(container.scrollTop);
+            setScrollLeft(container.scrollLeft);
         };
 
-        readScale();
-        // DOM measurement on mount — feeds sticky-folder Y offsets in a useMemo.
-        setPaddingTop(parseFloat(getComputedStyle(container).paddingTop) || 0);
+        // Read immediately so remounts/restored scroll positions do not leave
+        // hidden row placeholders ahead of the overlay.
+        readMetrics();
 
         const onScroll = () => {
             cancelAnimationFrame(rafRef.current);
@@ -72,13 +78,9 @@ export function useStickyFolders({
             });
         };
 
-        // Disconnect any leftover observer from a prior effect run (StrictMode,
-        // container swap) before wiring a new one.
-        resizeObserverRef.current?.disconnect();
         const resizeObserver = new ResizeObserver(() => {
-            readScale();
+            readMetrics();
         });
-        resizeObserverRef.current = resizeObserver;
 
         container.addEventListener("scroll", onScroll, { passive: true });
         resizeObserver.observe(container);
@@ -87,11 +89,8 @@ export function useStickyFolders({
             cancelAnimationFrame(rafRef.current);
             container.removeEventListener("scroll", onScroll);
             resizeObserver.disconnect();
-            if (resizeObserverRef.current === resizeObserver) {
-                resizeObserverRef.current = null;
-            }
         };
-    }, [scrollContainerRef]);
+    }, [scrollContainer]);
 
     const flatRows = useMemo(
         () => flattenVisibleTree(nodes, expandedPaths, layout),

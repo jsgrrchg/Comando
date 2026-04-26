@@ -1,5 +1,4 @@
 import {
-    useRef,
     useState,
     type DragEvent as ReactDragEvent,
     type MouseEvent as ReactMouseEvent,
@@ -22,12 +21,13 @@ export function GitFilesView({
     ...treeProps
 }: GitFilesViewProps) {
     const [isRootDropActive, setIsRootDropActive] = useState(false);
-    const scrollRef = useRef<HTMLDivElement | null>(null);
+    const [scrollElement, setScrollElement] =
+        useState<HTMLDivElement | null>(null);
     const stickyFoldersEnabled = useSettingsStore(
         (state) => state.appearance.stickyFoldersEnabled,
     );
     const { stickyFolders, stickyFolderPaths, scrollLeft } = useStickyFolders({
-        scrollContainerRef: scrollRef,
+        scrollContainer: scrollElement,
         nodes: treeProps.nodes,
         expandedPaths: treeProps.expandedPaths,
         layout: treeProps.layout ?? "tree",
@@ -44,7 +44,7 @@ export function GitFilesView({
 
     return (
         <div
-            ref={scrollRef}
+            ref={setScrollElement}
             className={[
                 "min-h-0 flex-1 overflow-y-auto px-2 py-2",
                 isRootDropActive

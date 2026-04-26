@@ -1340,6 +1340,7 @@ export function App() {
     const {
         handleScroll: handleFileTreeScroll,
         saveScrollPosition: saveFileTreeScrollPosition,
+        scrollElement: fileTreeScrollElement,
         setScrollElement: setFileTreeScrollElement,
     } = useRestorableSidebarScroll({
         enabled: sidebarView === "files",
@@ -1741,7 +1742,7 @@ export function App() {
     ]);
 
     const { stickyFolders, stickyFolderPaths } = useStickyFolders({
-        scrollContainerRef: sidebarScrollRef,
+        scrollContainer: fileTreeScrollElement,
         nodes: isFilteringFileTree ? [] : sidebarTreeNodes,
         expandedPaths: isFilteringFileTree
             ? fileTreeSearchExpandedPaths
