@@ -609,6 +609,17 @@ function verifyPackagedApplication(packagedAppPath) {
             "The packaged app is still missing runtime dependencies inside app.asar.",
         );
     }
+
+    validatePackagedClaudeRuntime(
+        path.join(
+            packagedAppPath,
+            "Contents",
+            "Resources",
+            "ai",
+            "embedded",
+            "claude-agent-acp",
+        ),
+    );
 }
 
 function verifyReleaseArtifacts() {
@@ -748,6 +759,7 @@ function stageClaudeRuntime() {
 
     pruneClaudeCliArtifacts(path.join(packagedClaudeRoot, "node_modules"));
     normalizeTreePermissions(packagedClaudeRoot);
+    validatePackagedClaudeRuntime(packagedClaudeRoot);
 }
 
 function resolveClaudeProjectRoot() {
@@ -926,7 +938,92 @@ function normalizeTreePermissions(rootPath) {
         }
 
         if (entry.isFile()) {
-            fs.chmodSync(entryPath, 0o644);
+            fs.chmodSync(
+                entryPath,
+                shouldKeepExecutablePermission(entryPath) ? 0o755 : 0o644,
+            );
+        }
+    }
+}
+
+function shouldKeepExecutablePermission(filePath) {
+    const mode = fs.statSync(filePath).mode;
+    if ((mode & 0o111) !== 0) {
+        return true;
+    }
+
+    if (isClaudeSdkExecutable(filePath)) {
+        return true;
+    }
+
+    return fileStartsWithShebang(filePath);
+}
+
+function isClaudeSdkExecutable(filePath) {
+    if (path.basename(filePath) !== "claude") {
+        return false;
+    }
+
+    const segments = filePath.split(path.sep);
+    return segments.some((segment, index) => {
+        return (
+            segment.startsWith("claude-agent-sdk-") &&
+            segments[index - 1] === "@anthropic-ai"
+        );
+    });
+}
+
+function fileStartsWithShebang(filePath) {
+    const fd = fs.openSync(filePath, "r");
+    try {
+        const buffer = Buffer.alloc(2);
+        return (
+            fs.readSync(fd, buffer, 0, 2, 0) === 2 &&
+            buffer.toString() === "#!"
+        );
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
+function validatePackagedClaudeRuntime(rootPath) {
+    const claudeExecutables = findClaudeSdkExecutables(rootPath);
+
+    if (claudeExecutables.length === 0) {
+        throw new Error(
+            `Expected a packaged Claude Code binary under ${rootPath}, but none was found.`,
+        );
+    }
+
+    for (const executablePath of claudeExecutables) {
+        if (!isExecutableFile(executablePath)) {
+            throw new Error(
+                `Packaged Claude Code binary is not executable: ${executablePath}`,
+            );
+        }
+    }
+}
+
+function findClaudeSdkExecutables(rootPath) {
+    if (!fs.existsSync(rootPath)) {
+        return [];
+    }
+
+    const matches = [];
+    collectClaudeSdkExecutables(rootPath, matches);
+    return matches;
+}
+
+function collectClaudeSdkExecutables(rootPath, matches) {
+    for (const entry of fs.readdirSync(rootPath, { withFileTypes: true })) {
+        const entryPath = path.join(rootPath, entry.name);
+        if (entry.isDirectory()) {
+            collectClaudeSdkExecutables(entryPath, matches);
+            continue;
+        }
+
+        if (entry.isFile() && isClaudeSdkExecutable(entryPath)) {
+            matches.push(entryPath);
         }
     }
 }
