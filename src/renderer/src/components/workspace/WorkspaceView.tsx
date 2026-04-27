@@ -106,6 +106,7 @@ import { canResolveFileHunks } from "@renderer/components/workspace/review/edite
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import { closeWorkspaceTabsWithConfirmation } from "@renderer/components/workspace/workspaceCloseGuard";
 import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/workspace/workspaceTabActivity";
+import { useActiveWorkspaceTabStripReveal } from "@renderer/components/workspace/workspaceTabStrip";
 import {
     applyTerminalSurfaceTheme,
     createTerminalSurfaceOptions,
@@ -1031,6 +1032,14 @@ function WorkspacePaneView({
         event.preventDefault();
         container.scrollLeft += event.deltaY;
     };
+    const paneTabOrderKey = paneTabIds.join("|");
+    useActiveWorkspaceTabStripReveal({
+        activeTabId: paneActiveTabId,
+        draggingTabId: tabDrag.draggedTab?.tabId ?? null,
+        stripRef: tabStripRef,
+        tabIdAttribute: "data-workspace-tab-id",
+        tabOrderKey: paneTabOrderKey,
+    });
 
     const tabContextMenuEntries: ContextMenuEntry[] = (() => {
         if (!tabContextMenu) {
