@@ -7,7 +7,11 @@ import {
     type MouseEvent as ReactMouseEvent,
 } from "react";
 
-import type { AiHistorySessionSummary, ComandoApi } from "@shared/ipc";
+import type {
+    AiHistorySessionSummary,
+    AiRuntimeId,
+    ComandoApi,
+} from "@shared/ipc";
 import { truncateChatTitle } from "@shared/chatTitle";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -42,6 +46,13 @@ interface SidebarAgentsContextMenuPayload {
 const SIDEBAR_AGENTS_TITLE_MAX_CHARS = 48;
 const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
 
+const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
+    "codex",
+    "claude",
+    "gemini",
+    "kilo",
+];
+
 export function SidebarAgentsPanel({
     filter,
     projectId,
@@ -57,6 +68,7 @@ export function SidebarAgentsPanel({
     const openChatHistoryTab = useWorkspaceStore(
         (state) => state.openChatHistoryTab,
     );
+    const createChatTab = useWorkspaceStore((state) => state.createChatTab);
     const closeTab = useWorkspaceStore((state) => state.closeTab);
     const updateSessionTabTitles = useWorkspaceStore(
         (state) => state.updateSessionTabTitles,
@@ -70,6 +82,9 @@ export function SidebarAgentsPanel({
     const [error, setError] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<
         ContextMenuState<SidebarAgentsContextMenuPayload> | null
+    >(null);
+    const [newAgentMenu, setNewAgentMenu] = useState<
+        ContextMenuState<undefined> | null
     >(null);
     const [renamingSessionId, setRenamingSessionId] = useState<string | null>(
         null,
@@ -200,6 +215,27 @@ export function SidebarAgentsPanel({
     const handleOpenHistoryTab = useCallback(() => {
         void openChatHistoryTab(projectId, worktreeId);
     }, [openChatHistoryTab, projectId, worktreeId]);
+
+    const handleOpenNewAgentMenu = useCallback(
+        (event: ReactMouseEvent<HTMLButtonElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            setNewAgentMenu({
+                payload: undefined,
+                x: rect.right,
+                y: rect.bottom + 4,
+            });
+        },
+        [],
+    );
+
+    const handleCreateNewAgentTab = useCallback(
+        (runtimeId: AiRuntimeId) => {
+            void createChatTab(projectId, worktreeId, runtimeId);
+        },
+        [createChatTab, projectId, worktreeId],
+    );
 
     const handleContextMenu = useCallback(
         (event: ReactMouseEvent, session: AiHistorySessionSummary) => {
@@ -379,6 +415,15 @@ export function SidebarAgentsPanel({
         [],
     );
 
+    const newAgentMenuEntries = useMemo<readonly ContextMenuEntry[]>(
+        () =>
+            SIDEBAR_AGENTS_NEW_RUNTIMES.map((runtimeId) => ({
+                action: () => handleCreateNewAgentTab(runtimeId),
+                label: `New ${getHistoryRuntimeLabel(runtimeId)} thread`,
+            })),
+        [handleCreateNewAgentTab],
+    );
+
     const contextMenuEntries = useMemo<readonly ContextMenuEntry[]>(() => {
         if (!contextMenu) {
             return [];
@@ -536,6 +581,16 @@ export function SidebarAgentsPanel({
                     {statusLine}
                 </span>
                 <button
+                    aria-haspopup="menu"
+                    aria-label="New agent thread"
+                    className="sidebar-agents-summary-action flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                    onClick={handleOpenNewAgentMenu}
+                    title="New agent thread"
+                    type="button"
+                >
+                    <PlusIcon />
+                </button>
+                <button
                     className="sidebar-agents-summary-action rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
                     onClick={handleOpenHistoryTab}
                     title="Open full history"
@@ -617,6 +672,15 @@ export function SidebarAgentsPanel({
                     menu={contextMenu}
                     minWidth={160}
                     onClose={() => setContextMenu(null)}
+                />
+            ) : null}
+
+            {newAgentMenu ? (
+                <ContextMenu
+                    entries={newAgentMenuEntries}
+                    menu={newAgentMenu}
+                    minWidth={180}
+                    onClose={() => setNewAgentMenu(null)}
                 />
             ) : null}
         </div>
@@ -880,6 +944,25 @@ function SidebarAgentsPlaceholder({ body }: { readonly body: string }) {
                 {body}
             </p>
         </div>
+    );
+}
+
+function PlusIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+            width="14"
+        >
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+        </svg>
     );
 }
 
