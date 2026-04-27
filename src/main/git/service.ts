@@ -10,7 +10,7 @@ import type {
     GitDiffStatRecord,
     GitFileDiff,
     GitFileDiffOptions,
-    GitHistoryCommitSummary,
+    GitHistoryListResult,
     GitListBranchesOptions,
     GitListHistoryOptions,
     GitRepositoryResolution,
@@ -54,7 +54,7 @@ export interface GitGateway {
     listHistory(
         inputPath: string,
         options?: GitListHistoryOptions,
-    ): Promise<readonly GitHistoryCommitSummary[]>;
+    ): Promise<GitHistoryListResult>;
     getCommitDetail(
         inputPath: string,
         commitSha: string,
@@ -422,10 +422,14 @@ export class GitService implements GitGateway {
     async listHistory(
         inputPath: string,
         options: GitListHistoryOptions = {},
-    ): Promise<readonly GitHistoryCommitSummary[]> {
+    ): Promise<GitHistoryListResult> {
         const resolution = await this.resolveRepository(inputPath);
         if (resolution.state !== "ready" || !resolution.canonicalRootPath) {
-            return [];
+            return {
+                commits: [],
+                matchedCount: 0,
+                totalCount: 0,
+            };
         }
 
         return listGitHistory(resolution.canonicalRootPath, options);

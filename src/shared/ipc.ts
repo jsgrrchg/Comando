@@ -558,6 +558,12 @@ export interface GitHistoryCommitSummary {
     readonly subject: string;
 }
 
+export interface GitHistoryListResult {
+    readonly commits: readonly GitHistoryCommitSummary[];
+    readonly matchedCount: number;
+    readonly totalCount: number;
+}
+
 export interface GitWorktreeSummary {
     readonly branchName: string | null;
     readonly commitSha: string | null;
@@ -666,7 +672,9 @@ export interface GitBranchListInput extends GitRepositoryScopeInput {
 }
 
 export interface GitHistoryListInput extends GitRepositoryScopeInput {
+    readonly caseSensitive?: boolean;
     readonly limit?: number;
+    readonly query?: string;
 }
 
 export interface GitWorktreeListInput extends GitRepositoryScopeInput {
@@ -1564,7 +1572,7 @@ export interface ComandoApi {
     ) => Promise<readonly GitChangeEntry[]>;
     listGitHistory: (
         input: GitHistoryListInput,
-    ) => Promise<readonly GitHistoryCommitSummary[]>;
+    ) => Promise<GitHistoryListResult>;
     getGitDiff: (input: GitDiffInput) => Promise<GitFileDiff | null>;
     getGitCommitDetail: (
         input: GitCommitDetailInput,

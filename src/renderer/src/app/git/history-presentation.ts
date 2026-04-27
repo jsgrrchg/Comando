@@ -47,7 +47,19 @@ export function filterGitHistory(
 
 export function buildGitHistoryGraphRows(
     commits: readonly GitHistoryCommitSummary[],
+    options: { readonly connectHistory?: boolean } = {},
 ): readonly GitHistoryGraphRow[] {
+    if (options.connectHistory === false) {
+        return buildGitHistoryGraphRows(commits).map((row) => ({
+            bottomLanes: [],
+            colorId: row.colorId,
+            commit: row.commit,
+            laneIndex: 0,
+            parentColumns: [],
+            topLanes: [0],
+        }));
+    }
+
     const rows: GitHistoryGraphRow[] = [];
     let lanes: ActiveLane[] = [];
     let nextColorId = 0;

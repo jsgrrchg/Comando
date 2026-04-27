@@ -55,7 +55,6 @@ const GRAPH_COLORS = [
 ] as const;
 const EMPTY_HISTORY: readonly GitHistoryCommitSummary[] = [];
 const EMPTY_LOADING_SHAS: readonly string[] = [];
-const DEFAULT_GIT_HISTORY_LIMIT = 200;
 const DEFAULT_GIT_HISTORY_COLUMN_WIDTHS = {
     author: 132,
     commit: 92,
@@ -101,11 +100,16 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             ? (state.historyByContext[contextKey] ?? EMPTY_HISTORY)
             : EMPTY_HISTORY,
     );
-    const historyLimit = useGitStore((state) =>
+    const historyMatchedCount = useGitStore((state) =>
         contextKey
-            ? (state.historyLimitsByContext[contextKey] ??
-              DEFAULT_GIT_HISTORY_LIMIT)
-            : DEFAULT_GIT_HISTORY_LIMIT,
+            ? (state.historyMatchedCountsByContext[contextKey] ??
+              history.length)
+            : history.length,
+    );
+    const historyTotalCount = useGitStore((state) =>
+        contextKey
+            ? (state.historyTotalsByContext[contextKey] ?? history.length)
+            : history.length,
     );
     const error = useGitStore((state) =>
         contextKey ? (state.errors[contextKey] ?? null) : null,
@@ -139,22 +143,59 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     }, [projectId, refreshProject, snapshot, worktreeId]);
 
     useEffect(() => {
-        if (!projectId || history.length > 0 || isHistoryLoading) {
+        const timeoutId = window.setTimeout(() => {
+            setSearchQuery(searchDraft);
+        }, 200);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [searchDraft]);
+
+    const lastHistorySearchKeyRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!projectId || isHistoryLoading) {
             return;
         }
 
-        void refreshHistory(projectId, worktreeId);
+        const query = searchQuery.trim();
+        const searchKey = `${worktreeId ?? "primary"}\u0000${query}\u0000${
+            isCaseSensitive ? "case" : "nocase"
+        }`;
+
+        if (lastHistorySearchKeyRef.current === null) {
+            lastHistorySearchKeyRef.current = searchKey;
+            if (!query && history.length > 0) {
+                return;
+            }
+        } else if (lastHistorySearchKeyRef.current === searchKey) {
+            return;
+        } else {
+            lastHistorySearchKeyRef.current = searchKey;
+        }
+
+        void refreshHistory(projectId, worktreeId, {
+            caseSensitive: isCaseSensitive,
+            query,
+            resetLimit: true,
+        });
     }, [
         history.length,
+        isCaseSensitive,
         isHistoryLoading,
         projectId,
         refreshHistory,
+        searchQuery,
         worktreeId,
     ]);
 
+    const hasActiveSearch = searchQuery.trim().length > 0;
+    const canConnectGraphHistory =
+        !hasActiveSearch && historyMatchedCount === historyTotalCount;
     const graphRows = useMemo(
-        () => buildGitHistoryGraphRows(history),
-        [history],
+        () =>
+            buildGitHistoryGraphRows(history, {
+                connectHistory: canConnectGraphHistory,
+            }),
+        [canConnectGraphHistory, history],
     );
     const graphColumnMinWidth = useMemo(() => {
         const maxLaneCount = graphRows.reduce(
@@ -580,7 +621,17 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
 
     const searchHasNoMatches =
         searchQuery.trim().length > 0 && matchedCommitShas.length === 0;
-    const canLoadMoreHistory = history.length > 0 && history.length >= historyLimit;
+    const canLoadMoreHistory =
+        history.length > 0 && history.length < historyMatchedCount;
+    const historyCountLabel = hasActiveSearch
+        ? `${historyMatchedCount} ${
+              historyMatchedCount === 1 ? "match" : "matches"
+          } / ${historyTotalCount} ${
+              historyTotalCount === 1 ? "commit" : "commits"
+          }`
+        : historyTotalCount === 1
+          ? "1 commit"
+          : `${historyTotalCount} commits`;
 
     return (
         <div
@@ -601,9 +652,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                 <IdeBarLabel>Git</IdeBarLabel>
                 <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-text-secondary">
                     <span className="shrink-0">
-                        {history.length === 1
-                            ? "1 commit"
-                            : `${history.length} commits`}
+                        {historyCountLabel}
                     </span>
                     {isHistoryLoading ? (
                         <>

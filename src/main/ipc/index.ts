@@ -44,8 +44,8 @@ import {
     type GitDiscardPathsInput,
     type GitFetchInput,
     type GitFileDiff as SharedGitFileDiff,
-    type GitHistoryCommitSummary as SharedGitHistoryCommitSummary,
     type GitHistoryListInput,
+    type GitHistoryListResult as SharedGitHistoryListResult,
     type GitPullInput,
     type GitPushInput,
     type GitRemoteSummary,
@@ -545,10 +545,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         async (
             _event,
             input: GitHistoryListInput,
-        ): Promise<readonly SharedGitHistoryCommitSummary[]> => {
+        ): Promise<SharedGitHistoryListResult> => {
             const scope = resolveGitScope(options.projectService, input);
             return options.gitService.listHistory(scope.rootPath, {
+                caseSensitive: input.caseSensitive,
                 limit: input.limit,
+                query: input.query,
             });
         },
     );

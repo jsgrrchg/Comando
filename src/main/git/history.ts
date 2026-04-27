@@ -6,6 +6,7 @@ import type {
     GitCommitDiffFile,
     GitCommitReference,
     GitHistoryCommitSummary,
+    GitHistoryListResult,
     GitListHistoryOptions,
 } from "./types";
 
@@ -16,28 +17,102 @@ const DEFAULT_HISTORY_LIMIT = 200;
 export async function listGitHistory(
     rootPath: string,
     options: GitListHistoryOptions = {},
-): Promise<readonly GitHistoryCommitSummary[]> {
+): Promise<GitHistoryListResult> {
     const git = createBackgroundSafeGit(rootPath);
     const limit = normalizeHistoryLimit(options.limit);
     const format = buildHistoryFormat();
+    const query = options.query?.trim() ?? "";
 
     try {
-        const raw = await git.raw([
-            "log",
-            "--all",
-            "--date-order",
-            `--max-count=${limit}`,
-            `--pretty=format:${format}`,
+        if (query) {
+            const raw = await git.raw([
+                "log",
+                "--all",
+                "--date-order",
+                `--pretty=format:${format}`,
+            ]);
+            const commits = parseGitHistory(raw);
+            const matches = commits.filter((commit) =>
+                matchesGitHistoryQuery(
+                    commit,
+                    query,
+                    options.caseSensitive ?? false,
+                ),
+            );
+
+            return {
+                commits: matches.slice(0, limit),
+                matchedCount: matches.length,
+                totalCount: commits.length,
+            };
+        }
+
+        const [raw, totalCount] = await Promise.all([
+            git.raw([
+                "log",
+                "--all",
+                "--date-order",
+                `--max-count=${limit}`,
+                `--pretty=format:${format}`,
+            ]),
+            countGitHistoryCommits(git),
         ]);
 
-        return parseGitHistory(raw);
+        return {
+            commits: parseGitHistory(raw),
+            matchedCount: totalCount,
+            totalCount,
+        };
     } catch (error) {
         if (isEmptyRepositoryHistoryError(error)) {
-            return [];
+            return {
+                commits: [],
+                matchedCount: 0,
+                totalCount: 0,
+            };
         }
 
         throw error;
     }
+}
+
+async function countGitHistoryCommits(
+    git: ReturnType<typeof createBackgroundSafeGit>,
+): Promise<number> {
+    try {
+        const raw = await git.raw(["rev-list", "--all", "--count"]);
+        const count = Number.parseInt(raw.trim(), 10);
+        return Number.isFinite(count) ? count : 0;
+    } catch (error) {
+        if (isEmptyRepositoryHistoryError(error)) {
+            return 0;
+        }
+
+        throw error;
+    }
+}
+
+function matchesGitHistoryQuery(
+    commit: GitHistoryCommitSummary,
+    query: string,
+    caseSensitive: boolean,
+): boolean {
+    const needle = caseSensitive ? query : query.toLowerCase();
+    if (!needle) {
+        return true;
+    }
+
+    const haystack = [
+        commit.sha,
+        commit.shortSha,
+        commit.subject,
+        commit.body,
+        commit.authorName,
+        commit.authorEmail,
+        ...commit.refs.map((reference) => reference.label),
+    ].join("\n");
+    const text = caseSensitive ? haystack : haystack.toLowerCase();
+    return text.includes(needle);
 }
 
 export async function getGitCommitDetail(
@@ -51,7 +126,7 @@ export async function getGitCommitDetail(
         `--format=${buildHistoryFormat()}`,
         commitSha,
     ]);
-    const metadata = parseGitHistory(metadataOutput)[0];
+    const metadata = parseGitHistory(metadataOutput).at(0);
 
     if (!metadata) {
         throw new Error(`Could not read commit "${commitSha}".`);

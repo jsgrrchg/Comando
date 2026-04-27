@@ -238,9 +238,11 @@ describe("GitService", () => {
 
         const service = new GitService({ cacheSnapshots: false });
         const history = await service.listHistory(rootPath, { limit: 10 });
-        const latestCommit = history[0];
+        const latestCommit = history.commits[0];
 
-        expect(history).toHaveLength(2);
+        expect(history.commits).toHaveLength(2);
+        expect(history.matchedCount).toBe(2);
+        expect(history.totalCount).toBe(2);
         expect(latestCommit?.subject).toBe("update docs");
         expect(latestCommit?.shortSha).toMatch(/[0-9a-f]{7}/i);
         expect(
@@ -248,6 +250,11 @@ describe("GitService", () => {
                 reference.label.includes("main"),
             ),
         ).toBe(true);
+
+        const firstPage = await service.listHistory(rootPath, { limit: 1 });
+        expect(firstPage.commits).toHaveLength(1);
+        expect(firstPage.matchedCount).toBe(2);
+        expect(firstPage.totalCount).toBe(2);
 
         const detail = await service.getCommitDetail(
             rootPath,
@@ -260,6 +267,16 @@ describe("GitService", () => {
         expect(detail.files.map((file) => file.path)).toEqual(
             expect.arrayContaining(["README.md", "notes.txt"]),
         );
+
+        const filteredHistory = await service.listHistory(rootPath, {
+            limit: 1,
+            query: "initial",
+        });
+
+        expect(filteredHistory.commits).toHaveLength(1);
+        expect(filteredHistory.commits[0]?.subject).toBe("initial commit");
+        expect(filteredHistory.matchedCount).toBe(1);
+        expect(filteredHistory.totalCount).toBe(2);
     });
 
     it("classifies paths outside a repo as non-repository", async () => {
@@ -288,7 +305,11 @@ describe("GitService", () => {
             isMain: true,
         });
         expect(snapshot.status.hasUntracked).toBe(true);
-        await expect(service.listHistory(rootPath)).resolves.toEqual([]);
+        await expect(service.listHistory(rootPath)).resolves.toEqual({
+            commits: [],
+            matchedCount: 0,
+            totalCount: 0,
+        });
     });
 
     it("runs preflight checks before committing", async () => {

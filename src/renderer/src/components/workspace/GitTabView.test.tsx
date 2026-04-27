@@ -18,6 +18,11 @@ const mockGitStoreState = vi.hoisted(() => ({
             readonly GitHistoryCommitSummary[] | undefined
         >,
         historyLimitsByContext: {} as Record<string, number | undefined>,
+        historyMatchedCountsByContext: {} as Record<
+            string,
+            number | undefined
+        >,
+        historyTotalsByContext: {} as Record<string, number | undefined>,
         loadingCommitShas: {} as Record<string, readonly string[] | undefined>,
         loadingContexts: {} as Record<string, boolean | undefined>,
         loadingHistoryContexts: {} as Record<string, boolean | undefined>,
@@ -87,6 +92,8 @@ function resetStoreState() {
         [CONTEXT_KEY]: [createCommit()],
     };
     mockGitStoreState.current.historyLimitsByContext = {};
+    mockGitStoreState.current.historyMatchedCountsByContext = {};
+    mockGitStoreState.current.historyTotalsByContext = {};
     mockGitStoreState.current.loadingCommitShas = {};
     mockGitStoreState.current.loadingContexts = {};
     mockGitStoreState.current.loadingHistoryContexts = {};
@@ -158,12 +165,34 @@ describe("GitTabView", () => {
                 }),
             ),
         };
+        mockGitStoreState.current.historyMatchedCountsByContext = {
+            [CONTEXT_KEY]: 240,
+        };
+        mockGitStoreState.current.historyTotalsByContext = {
+            [CONTEXT_KEY]: 240,
+        };
 
         const markup = renderToStaticMarkup(
             createElement(GitTabView, { tab: TAB }),
         );
 
         expect(markup).toContain("load more");
+    });
+
+    it("shows the repository total even when only one page is loaded", () => {
+        resetStoreState();
+        mockGitStoreState.current.historyTotalsByContext = {
+            [CONTEXT_KEY]: 325,
+        };
+        mockGitStoreState.current.historyMatchedCountsByContext = {
+            [CONTEXT_KEY]: 325,
+        };
+
+        const markup = renderToStaticMarkup(
+            createElement(GitTabView, { tab: TAB }),
+        );
+
+        expect(markup).toContain("325 commits");
     });
 
     it("keeps the detail panel hidden before any commit is selected", () => {

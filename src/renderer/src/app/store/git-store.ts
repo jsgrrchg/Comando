@@ -45,6 +45,17 @@ type GitPushRepositoryOptions = {
     readonly setUpstream?: boolean;
 };
 
+type GitHistorySearchOptions = {
+    readonly caseSensitive?: boolean;
+    readonly query?: string;
+    readonly resetLimit?: boolean;
+};
+
+type GitHistorySearchState = {
+    readonly caseSensitive: boolean;
+    readonly query: string;
+};
+
 interface GitStoreState {
     readonly activeWorktreeIds: Record<string, string | null>;
     readonly branchesByProject: Record<string, readonly GitBranchSummary[]>;
@@ -65,6 +76,10 @@ interface GitStoreState {
         readonly GitHistoryCommitSummary[]
     >;
     readonly historyLimitsByContext: Record<string, number>;
+    readonly historyMatchedCountsByContext: Record<string, number>;
+    readonly historyRequestKeysByContext: Record<string, string>;
+    readonly historySearchesByContext: Record<string, GitHistorySearchState>;
+    readonly historyTotalsByContext: Record<string, number>;
     readonly loadingCommitShas: Record<string, readonly string[]>;
     readonly loadingContexts: Record<string, boolean>;
     readonly loadingDiffPaths: Record<string, readonly string[]>;
@@ -134,6 +149,7 @@ interface GitStoreState {
     refreshHistory: (
         projectId: string,
         worktreeId?: string | null,
+        options?: GitHistorySearchOptions,
     ) => Promise<readonly GitHistoryCommitSummary[]>;
     refreshProject: (
         projectId: string,
@@ -226,6 +242,10 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     expandedWorktreeSections: {},
     historyByContext: {},
     historyLimitsByContext: {},
+    historyMatchedCountsByContext: {},
+    historyRequestKeysByContext: {},
+    historySearchesByContext: {},
+    historyTotalsByContext: {},
     loadingCommitShas: {},
     loadingContexts: {},
     loadingDiffPaths: {},
@@ -517,15 +537,36 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         return get().refreshHistory(projectId, worktreeId);
     },
 
-    refreshHistory: async (projectId, worktreeId = null) => {
+    refreshHistory: async (projectId, worktreeId = null, options = {}) => {
         const contextKey = getContextKey(projectId, worktreeId);
+        const currentSearch = get().historySearchesByContext[contextKey] ?? {
+            caseSensitive: false,
+            query: "",
+        };
+        const nextSearch = {
+            caseSensitive:
+                options.caseSensitive ?? currentSearch.caseSensitive,
+            query: (options.query ?? currentSearch.query).trim(),
+        };
         const limit =
-            get().historyLimitsByContext[contextKey] ?? DEFAULT_GIT_HISTORY_LIMIT;
+            options.resetLimit === true
+                ? DEFAULT_GIT_HISTORY_LIMIT
+                : (get().historyLimitsByContext[contextKey] ??
+                  DEFAULT_GIT_HISTORY_LIMIT);
+        const requestKey = `${Date.now()}:${Math.random()}`;
         set((state) => ({
             errors: { ...state.errors, [contextKey]: null },
             historyLimitsByContext: {
                 ...state.historyLimitsByContext,
                 [contextKey]: limit,
+            },
+            historyRequestKeysByContext: {
+                ...state.historyRequestKeysByContext,
+                [contextKey]: requestKey,
+            },
+            historySearchesByContext: {
+                ...state.historySearchesByContext,
+                [contextKey]: nextSearch,
             },
             loadingHistoryContexts: {
                 ...state.loadingHistoryContexts,
@@ -534,13 +575,23 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         }));
 
         try {
-            const history = await getComandoApi().listGitHistory({
+            const result = await getComandoApi().listGitHistory({
+                caseSensitive: nextSearch.caseSensitive,
                 limit,
                 projectId,
+                query: nextSearch.query || undefined,
                 worktreeId,
             });
+            const history = result.commits;
 
             set((state) => {
+                if (
+                    state.historyRequestKeysByContext[contextKey] !==
+                    requestKey
+                ) {
+                    return {};
+                }
+
                 const previousSelectedSha =
                     state.selectedCommitShas[contextKey] ?? null;
                 const nextSelectedSha =
@@ -558,6 +609,14 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                         ...state.historyByContext,
                         [contextKey]: history,
                     },
+                    historyMatchedCountsByContext: {
+                        ...state.historyMatchedCountsByContext,
+                        [contextKey]: result.matchedCount,
+                    },
+                    historyTotalsByContext: {
+                        ...state.historyTotalsByContext,
+                        [contextKey]: result.totalCount,
+                    },
                     loadingHistoryContexts: {
                         ...state.loadingHistoryContexts,
                         [contextKey]: false,
@@ -568,6 +627,10 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                     },
                 };
             });
+
+            if (get().historyRequestKeysByContext[contextKey] !== requestKey) {
+                return get().historyByContext[contextKey] ?? [];
+            }
 
             const nextSelectedSha = get().selectedCommitShas[contextKey] ?? null;
             if (nextSelectedSha) {
@@ -580,19 +643,28 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
 
             return history;
         } catch (error) {
-            set((state) => ({
-                errors: {
-                    ...state.errors,
-                    [contextKey]:
-                        error instanceof Error
-                            ? error.message
-                            : "Could not load git history.",
-                },
-                loadingHistoryContexts: {
-                    ...state.loadingHistoryContexts,
-                    [contextKey]: false,
-                },
-            }));
+            set((state) => {
+                if (
+                    state.historyRequestKeysByContext[contextKey] !==
+                    requestKey
+                ) {
+                    return {};
+                }
+
+                return {
+                    errors: {
+                        ...state.errors,
+                        [contextKey]:
+                            error instanceof Error
+                                ? error.message
+                                : "Could not load git history.",
+                    },
+                    loadingHistoryContexts: {
+                        ...state.loadingHistoryContexts,
+                        [contextKey]: false,
+                    },
+                };
+            });
             return [];
         }
     },

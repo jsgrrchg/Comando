@@ -219,5 +219,13 @@ export interface GitCommitDetail extends GitHistoryCommitSummary {
 }
 
 export interface GitListHistoryOptions {
+    readonly caseSensitive?: boolean;
     readonly limit?: number;
+    readonly query?: string;
+}
+
+export interface GitHistoryListResult {
+    readonly commits: readonly GitHistoryCommitSummary[];
+    readonly matchedCount: number;
+    readonly totalCount: number;
 }

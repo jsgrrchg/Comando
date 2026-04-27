@@ -67,8 +67,8 @@ import {
     type GitDiffInput,
     type GitFileDiff,
     type GitFetchInput,
-    type GitHistoryCommitSummary,
     type GitHistoryListInput,
+    type GitHistoryListResult,
     type GitPullInput,
     type GitPushInput,
     type GitRemoveWorktreeInput,
@@ -591,7 +591,7 @@ const comandoApi: ComandoApi = {
             await ipcRenderer.invoke(IPC_CHANNELS.listGitChanges, input),
         ),
     listGitHistory: async (input: GitHistoryListInput) =>
-        assertIpcArray<GitHistoryCommitSummary>(
+        assertIpcObject<GitHistoryListResult>(
             IPC_CHANNELS.listGitHistory,
             await ipcRenderer.invoke(IPC_CHANNELS.listGitHistory, input),
         ),
