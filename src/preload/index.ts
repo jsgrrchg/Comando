@@ -80,6 +80,7 @@ import {
     type GitWorktreeListInput,
     type GitWorktreeSummary,
     type KiloRuntimeSettingsInput,
+    type ListProjectEntriesInput,
     type RenameProjectEntryInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
@@ -673,6 +674,8 @@ const comandoApi: ComandoApi = {
         ) as Promise<GitRepositorySnapshot>,
     listProjectTree: (input: ListProjectTreeInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.listProjectTree, input),
+    listProjectEntries: (input: ListProjectEntriesInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.listProjectEntries, input),
     searchProjectEntries: (input: SearchProjectEntriesInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.searchProjectEntries, input),
     removeProject: (projectId: string) =>

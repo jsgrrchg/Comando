@@ -52,6 +52,20 @@ export function buildFilteredProjectTree(
     };
 }
 
+export function filterProjectEntriesBySubstring(
+    entries: readonly ProjectTreeNode[],
+    query: string,
+): readonly ProjectTreeNode[] {
+    const normalizedQuery = normalizeQuery(query);
+    if (!normalizedQuery) {
+        return [];
+    }
+
+    return entries.filter((entry) =>
+        entry.relativePath.toLowerCase().includes(normalizedQuery),
+    );
+}
+
 function filterChildren(
     parentKey: ParentKey,
     normalizedQuery: string,

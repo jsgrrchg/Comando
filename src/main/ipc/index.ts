@@ -60,6 +60,7 @@ import {
     type GitWorktreeListInput,
     type GitWorktreeSummary as SharedGitWorktreeSummary,
     type ListAiSessionHistoryInput,
+    type ListProjectEntriesInput,
     type ListProjectTreeInput,
     type OpenProjectFileInput,
     type OpenProjectWindowInput,
@@ -202,6 +203,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.renameProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.deleteProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.revealProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.listProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
@@ -910,6 +912,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.listProjectTree,
         12,
     );
+    const listProjectEntriesLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.listProjectEntries,
+        4,
+    );
     const openProjectFileLimiter = createIpcInFlightLimiter(
         IPC_CHANNELS.openProjectFile,
         8,
@@ -935,6 +941,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: ListProjectTreeInput) =>
             listProjectTreeLimiter(() =>
                 options.projectService.listProjectTreeChildren(input),
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listProjectEntries,
+        (_event, input: ListProjectEntriesInput) =>
+            listProjectEntriesLimiter(() =>
+                options.projectService.listProjectEntries(input),
             ),
     );
     ipcMain.handle(

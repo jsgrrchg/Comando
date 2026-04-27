@@ -34,6 +34,7 @@ import {
     searchProjectQuickOpenEntries,
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
+import { filterProjectEntriesBySubstring } from "./app/projects/tree-filter";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
@@ -111,6 +112,16 @@ type FileTreeInlineEditorState = {
     readonly originalName: string;
     readonly path: string;
 };
+
+type FileTreeFilterSource =
+    | {
+          readonly contextKey: string;
+          readonly kind: "full";
+      }
+    | {
+          readonly contextKey: string;
+          readonly kind: "backend";
+      };
 
 function selectActiveWorkspaceTab(
     state: ReturnType<typeof useWorkspaceStore.getState>,
@@ -263,9 +274,10 @@ export function App() {
     const [projectRootExpandedByContext, setProjectRootExpandedByContext] =
         useState<Record<string, boolean>>({});
     const [fileTreeFilter, setFileTreeFilter] = useState("");
-    const [fileTreeSearchResults, setFileTreeSearchResults] = useState<
-        readonly ProjectTreeNode[]
-    >([]);
+    const [fileTreeEntryIndexByContext, setFileTreeEntryIndexByContext] =
+        useState<Record<string, readonly ProjectTreeNode[]>>({});
+    const [fileTreeBackendSearchResults, setFileTreeBackendSearchResults] =
+        useState<readonly ProjectTreeNode[]>([]);
     const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
     const [isQuickOpenLoading, setIsQuickOpenLoading] = useState(false);
     const [quickOpenQuery, setQuickOpenQuery] = useState("");
@@ -289,7 +301,10 @@ export function App() {
     >(null);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const fileTreeInlineSubmitPendingRef = useRef(false);
-    const fileTreeSearchRequestRef = useRef(0);
+    const fileTreeFilterSourceRef = useRef<FileTreeFilterSource | null>(null);
+    const fileTreeEntryIndexGenerationsRef = useRef(new Map<string, number>());
+    const fileTreeEntryIndexRequestsRef = useRef(new Map<string, number>());
+    const fileTreeBackendSearchRequestRef = useRef(0);
     const overlayDismissRef = useRef<number | null>(null);
     const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
@@ -379,6 +394,42 @@ export function App() {
                 payload.worktreeId ??
                 useGitStore.getState().activeWorktreeIds[payload.projectId] ??
                 null;
+            const affectedContextKeys = [
+                getProjectContextKey(
+                    payload.projectId,
+                    payload.worktreeId ?? null,
+                ),
+                getProjectContextKey(payload.projectId, preferredWorktreeId),
+            ];
+            const uniqueAffectedContextKeys = [...new Set(affectedContextKeys)];
+
+            for (const contextKey of uniqueAffectedContextKeys) {
+                const nextGeneration =
+                    (fileTreeEntryIndexGenerationsRef.current.get(contextKey) ??
+                        0) + 1;
+
+                fileTreeEntryIndexGenerationsRef.current.set(
+                    contextKey,
+                    nextGeneration,
+                );
+                fileTreeEntryIndexRequestsRef.current.delete(contextKey);
+            }
+
+            setFileTreeEntryIndexByContext((currentState) => {
+                if (
+                    uniqueAffectedContextKeys.every(
+                        (contextKey) => !currentState[contextKey],
+                    )
+                ) {
+                    return currentState;
+                }
+
+                const nextState = { ...currentState };
+                for (const contextKey of uniqueAffectedContextKeys) {
+                    delete nextState[contextKey];
+                }
+                return nextState;
+            });
 
             void refreshProjectTree(payload.projectId, preferredWorktreeId);
             void refreshProjectTabs(
@@ -618,7 +669,8 @@ export function App() {
 
     useEffect(() => {
         setFileTreeFilter("");
-        setFileTreeSearchResults([]);
+        fileTreeFilterSourceRef.current = null;
+        setFileTreeBackendSearchResults([]);
         setFileTreeContextMenu(null);
         setFileTreeSelectedPaths([]);
         setFileTreeSelectionAnchorPath(null);
@@ -647,44 +699,74 @@ export function App() {
     }, [isFileTreeSearchOpen]);
 
     useEffect(() => {
-        const normalizedFilter = fileTreeFilter.trim();
-
-        if (!activeProjectId || !normalizedFilter || !window.comando) {
-            fileTreeSearchRequestRef.current += 1;
-            setFileTreeSearchResults([]);
+        const comandoApi = getComandoApi();
+        if (!activeProjectId || !comandoApi) {
+            return;
+        }
+        const listProjectEntries = (
+            comandoApi as {
+                readonly listProjectEntries?: ComandoApi["listProjectEntries"];
+            }
+        ).listProjectEntries;
+        if (!listProjectEntries) {
             return;
         }
 
-        const requestId = fileTreeSearchRequestRef.current + 1;
-        fileTreeSearchRequestRef.current = requestId;
-        const timeoutId = window.setTimeout(() => {
-            void window.comando
-                .searchProjectEntries({
-                    limit: 160,
-                    projectId: activeProjectId,
-                    query: normalizedFilter,
-                    worktreeId: activeWorktreeId,
-                })
-                .then((results) => {
-                    if (fileTreeSearchRequestRef.current !== requestId) {
-                        return;
+        const contextKey = activeProjectContextKey;
+        if (fileTreeEntryIndexByContext[contextKey]) {
+            return;
+        }
+
+        const generation =
+            fileTreeEntryIndexGenerationsRef.current.get(contextKey) ?? 0;
+        if (fileTreeEntryIndexRequestsRef.current.get(contextKey) === generation) {
+            return;
+        }
+
+        fileTreeEntryIndexRequestsRef.current.set(contextKey, generation);
+
+        void listProjectEntries({
+            projectId: activeProjectId,
+            worktreeId: activeWorktreeId,
+        })
+            .then((entries) => {
+                if (
+                    fileTreeEntryIndexGenerationsRef.current.get(contextKey) !==
+                        generation
+                ) {
+                    return;
+                }
+
+                setFileTreeEntryIndexByContext((currentState) => {
+                    if (currentState[contextKey]) {
+                        return currentState;
                     }
 
-                    setFileTreeSearchResults(results);
-                })
-                .catch(() => {
-                    if (fileTreeSearchRequestRef.current !== requestId) {
-                        return;
-                    }
+                    return {
+                        ...currentState,
+                        [contextKey]: entries,
+                    };
+                });
+            })
+            .catch(() => {
+                // Keep the existing tree usable; filtering will retry on the
+                // next active project/worktree change or invalidation.
+            })
+            .finally(() => {
+                if (
+                    fileTreeEntryIndexRequestsRef.current.get(contextKey) ===
+                    generation
+                ) {
+                    fileTreeEntryIndexRequestsRef.current.delete(contextKey);
+                }
+            });
 
-                    setFileTreeSearchResults([]);
-                })
-        }, 120);
-
-        return () => {
-            window.clearTimeout(timeoutId);
-        };
-    }, [activeProjectId, activeWorktreeId, fileTreeFilter]);
+    }, [
+        activeProjectContextKey,
+        activeProjectId,
+        activeWorktreeId,
+        fileTreeEntryIndexByContext,
+    ]);
 
     useEffect(() => {
         const normalizedQuery = quickOpenQuery.trim();
@@ -812,18 +894,94 @@ export function App() {
     );
     const normalizedFileTreeFilter = fileTreeFilter.trim();
     const isFilteringFileTree = normalizedFileTreeFilter.length > 0;
-    // The backend search is fuzzy (subsequence matching) which surfaces noisy
-    // results for the sidebar filter. Enforce a strict substring match here so
-    // it behaves like a plain `name-or-path.includes(query)` filter.
-    const fileTreeSubstringMatches = useMemo(() => {
+    const cachedFileTreeEntryIndex =
+        fileTreeEntryIndexByContext[activeProjectContextKey] ?? null;
+    const fileTreeFilterSource = useMemo(() => {
         if (!isFilteringFileTree) {
-            return fileTreeSearchResults;
+            fileTreeFilterSourceRef.current = null;
+            return null;
         }
-        const needle = normalizedFileTreeFilter.toLowerCase();
-        return fileTreeSearchResults.filter((entry) =>
-            entry.relativePath.toLowerCase().includes(needle),
+
+        const currentSource = fileTreeFilterSourceRef.current;
+        if (currentSource?.contextKey === activeProjectContextKey) {
+            return currentSource;
+        }
+
+        const nextSource: FileTreeFilterSource = {
+            contextKey: activeProjectContextKey,
+            kind: cachedFileTreeEntryIndex ? "full" : "backend",
+        };
+        fileTreeFilterSourceRef.current = nextSource;
+        return nextSource;
+    }, [activeProjectContextKey, cachedFileTreeEntryIndex, isFilteringFileTree]);
+
+    useEffect(() => {
+        if (
+            fileTreeFilterSource?.kind !== "backend" ||
+            !activeProjectId ||
+            !window.comando
+        ) {
+            fileTreeBackendSearchRequestRef.current += 1;
+            setFileTreeBackendSearchResults([]);
+            return;
+        }
+
+        const requestId = fileTreeBackendSearchRequestRef.current + 1;
+        fileTreeBackendSearchRequestRef.current = requestId;
+        const timeoutId = window.setTimeout(() => {
+            void window.comando
+                .searchProjectEntries({
+                    limit: 160,
+                    projectId: activeProjectId,
+                    query: normalizedFileTreeFilter,
+                    worktreeId: activeWorktreeId,
+                })
+                .then((results) => {
+                    if (fileTreeBackendSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
+                    setFileTreeBackendSearchResults(results);
+                })
+                .catch(() => {
+                    if (fileTreeBackendSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
+                    setFileTreeBackendSearchResults([]);
+                });
+        }, 120);
+
+        return () => {
+            window.clearTimeout(timeoutId);
+        };
+    }, [
+        activeProjectId,
+        activeWorktreeId,
+        fileTreeFilterSource,
+        normalizedFileTreeFilter,
+    ]);
+
+    const fileTreeSubstringMatches = useMemo(() => {
+        if (!fileTreeFilterSource) {
+            return [];
+        }
+
+        const entriesForFilter =
+            fileTreeFilterSource.kind === "full" && cachedFileTreeEntryIndex
+                ? cachedFileTreeEntryIndex
+                : fileTreeBackendSearchResults;
+
+        return filterProjectEntriesBySubstring(
+            entriesForFilter,
+            normalizedFileTreeFilter,
         );
-    }, [fileTreeSearchResults, isFilteringFileTree, normalizedFileTreeFilter]);
+    }, [
+        cachedFileTreeEntryIndex,
+        fileTreeBackendSearchResults,
+        fileTreeFilterSource,
+        normalizedFileTreeFilter,
+    ]);
     const fileTreeSearchTree = useMemo(
         () =>
             buildHierarchicalGitTreeNodesFromProjectEntries(

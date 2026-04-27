@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
     CreateProjectEntryInput,
     DeleteProjectEntryInput,
+    ListProjectEntriesInput,
     ListProjectTreeInput,
     ProjectAddResult,
     OpenProjectFileInput,
@@ -157,6 +158,42 @@ export class ProjectService {
                 },
             )
             .then((nodes) => [...nodes]);
+    }
+
+    async listProjectEntries(
+        input: ListProjectEntriesInput,
+    ): Promise<ProjectTreeNode[]> {
+        await this.#ensureWorkerRegistry();
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+        const normalizedRootPath = normalizeRootPath(project.rootPath);
+        const listEntries = async () =>
+            await this.#worker.listProjectEntries({
+                projectId: input.projectId,
+                rootPath: project.rootPath,
+                worktreeId: project.worktreeId,
+            });
+        const response = this.#indexedRoots.has(normalizedRootPath)
+            ? await this.#trackFilesystemAccess(project.rootPath, listEntries)
+            : await mainProcessPerformance.measureAsync(
+                  "projects.buildSearchIndex",
+                  async () =>
+                      await this.#trackFilesystemAccess(
+                          project.rootPath,
+                          listEntries,
+                      ),
+                  {
+                      projectId: input.projectId,
+                      rootPath: normalizedRootPath,
+                      transport: "worker",
+                      worktreeId: input.worktreeId ?? "primary",
+                  },
+              );
+
+        this.#indexedRoots.add(normalizedRootPath);
+        return [...response.nodes];
     }
 
     async openProjectFile(

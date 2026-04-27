@@ -192,6 +192,24 @@ describe("ProjectService", () => {
         ]);
         expect(readdirSpy.mock.calls.length).toBe(initialDirectoryReads);
 
+        await expect(
+            projectService.listProjectEntries({
+                projectId: project.id,
+            }),
+        ).resolves.toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    kind: "file",
+                    relativePath: "src/helpers.ts",
+                }),
+                expect.objectContaining({
+                    kind: "file",
+                    relativePath: "src/workspace/WorkspaceView.tsx",
+                }),
+            ]),
+        );
+        expect(readdirSpy.mock.calls.length).toBe(initialDirectoryReads);
+
         fs.writeFileSync(
             path.join(projectRoot, "src", "workspace", "workspace-hints.ts"),
             "export const hints = true;\n",
@@ -223,6 +241,18 @@ describe("ProjectService", () => {
                 relativePath: "src/workspace/workspace-hints.ts",
             }),
         ]);
+        await expect(
+            projectService.listProjectEntries({
+                projectId: project.id,
+            }),
+        ).resolves.toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    kind: "file",
+                    relativePath: "src/workspace/workspace-hints.ts",
+                }),
+            ]),
+        );
         expect(readdirSpy.mock.calls.length).toBeGreaterThan(
             initialDirectoryReads,
         );

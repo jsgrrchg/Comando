@@ -65,6 +65,7 @@ export const IPC_CHANNELS = {
     renameProjectEntry: "projects:rename-entry",
     deleteProjectEntry: "projects:delete-entry",
     revealProjectEntry: "projects:reveal-entry",
+    listProjectEntries: "projects:list-entries",
     searchProjectEntries: "projects:search-entries",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
@@ -819,6 +820,11 @@ export interface SearchProjectEntriesInput {
     readonly limit?: number;
     readonly projectId: string;
     readonly query: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface ListProjectEntriesInput {
+    readonly projectId: string;
     readonly worktreeId?: string | null;
 }
 
@@ -1607,6 +1613,9 @@ export interface ComandoApi {
     ) => () => void;
     listProjectTree: (
         input: ListProjectTreeInput,
+    ) => Promise<ProjectTreeNode[]>;
+    listProjectEntries: (
+        input: ListProjectEntriesInput,
     ) => Promise<ProjectTreeNode[]>;
     searchProjectEntries: (
         input: SearchProjectEntriesInput,

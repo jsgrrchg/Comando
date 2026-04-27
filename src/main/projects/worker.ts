@@ -132,6 +132,10 @@ async function dispatchMethod(method: string, params: unknown): Promise<unknown>
             return await projectRuntime.listProjectTreeChildren(
                 params as Parameters<ProjectRuntime["listProjectTreeChildren"]>[0],
             );
+        case "projects.listProjectEntries":
+            return await projectRuntime.listProjectEntries(
+                params as Parameters<ProjectRuntime["listProjectEntries"]>[0],
+            );
         case "projects.openProjectFile":
             return await projectRuntime.openProjectFile(
                 params as Parameters<ProjectRuntime["openProjectFile"]>[0],

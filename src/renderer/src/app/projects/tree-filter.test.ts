@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { ProjectTreeNode } from "@shared/ipc";
 
-import { buildFilteredProjectTree } from "./tree-filter";
+import {
+    buildFilteredProjectTree,
+    filterProjectEntriesBySubstring,
+} from "./tree-filter";
 
 function makeNode(
     relativePath: string,
@@ -77,5 +80,30 @@ describe("buildFilteredProjectTree", () => {
 
         expect(filtered.rootNodes).toEqual([]);
         expect(filtered.matchCount).toBe(0);
+    });
+});
+
+describe("filterProjectEntriesBySubstring", () => {
+    it("matches file and directory paths case-insensitively", () => {
+        const entries = [
+            makeNode("src/App.tsx", "file", "src"),
+            makeNode("src/components/sidebar/Sidebar.tsx", "file", "src/components/sidebar"),
+            makeNode("docs/README.md", "file", "docs"),
+        ];
+
+        expect(
+            filterProjectEntriesBySubstring(entries, "SIDEBAR").map(
+                (entry) => entry.relativePath,
+            ),
+        ).toEqual(["src/components/sidebar/Sidebar.tsx"]);
+    });
+
+    it("returns no entries for blank filters", () => {
+        expect(
+            filterProjectEntriesBySubstring(
+                [makeNode("src/App.tsx", "file", "src")],
+                "   ",
+            ),
+        ).toEqual([]);
     });
 });

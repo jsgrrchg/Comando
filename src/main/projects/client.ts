@@ -11,6 +11,7 @@ import {
     ProjectRuntime,
     type ProjectRuntimeCreateEntryInput,
     type ProjectRuntimeDeleteEntryInput,
+    type ProjectRuntimeListEntriesInput,
     type ProjectRuntimeOpenFileInput,
     type ProjectRuntimeRegistrySnapshot,
     type ProjectRuntimeRenameEntryInput,
@@ -57,6 +58,9 @@ export interface ProjectWorkerGateway {
     listProjectTreeChildren(
         input: ProjectRuntimeTreeInput,
     ): Promise<readonly ProjectTreeNode[]>;
+    listProjectEntries(
+        input: ProjectRuntimeListEntriesInput,
+    ): Promise<ProjectRuntimeSearchResponse>;
     openProjectFile(
         input: ProjectRuntimeOpenFileInput,
     ): Promise<ProjectFileDocument>;
@@ -121,6 +125,12 @@ class RemoteProjectWorkerClient implements ProjectWorkerGateway {
         input: ProjectRuntimeTreeInput,
     ): Promise<readonly ProjectTreeNode[]> {
         return await this.#rpc.call("projects.listProjectTreeChildren", input);
+    }
+
+    async listProjectEntries(
+        input: ProjectRuntimeListEntriesInput,
+    ): Promise<ProjectRuntimeSearchResponse> {
+        return await this.#rpc.call("projects.listProjectEntries", input);
     }
 
     async openProjectFile(
@@ -195,6 +205,12 @@ class LocalProjectWorkerClient implements ProjectWorkerGateway {
         input: ProjectRuntimeTreeInput,
     ): Promise<readonly ProjectTreeNode[]> {
         return await this.#runtime.listProjectTreeChildren(input);
+    }
+
+    async listProjectEntries(
+        input: ProjectRuntimeListEntriesInput,
+    ): Promise<ProjectRuntimeSearchResponse> {
+        return await this.#runtime.listProjectEntries(input);
     }
 
     async openProjectFile(

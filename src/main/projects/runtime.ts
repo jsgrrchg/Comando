@@ -119,6 +119,8 @@ export interface ProjectRuntimeSearchInput extends ProjectRuntimeScopeInput {
     readonly query: string;
 }
 
+export type ProjectRuntimeListEntriesInput = ProjectRuntimeScopeInput;
+
 export interface ProjectRuntimeSearchResponse {
     readonly nodes: readonly ProjectTreeNode[];
     readonly searchIndexCacheState: "hit" | "miss";
@@ -295,21 +297,11 @@ export class ProjectRuntime {
             }
 
             scoredEntries.push({
-                node: {
-                    id: `${input.projectId}:${entry.relativePath}`,
-                    extension: entry.extension,
-                    gitStatus:
-                        entry.kind === "directory"
-                            ? getDirectoryBadge(entry.relativePath, gitSnapshot)
-                            : (gitSnapshot.exactBadges.get(
-                                  entry.relativePath,
-                              ) ?? null),
-                    hasChildren: entry.hasChildren,
-                    kind: entry.kind,
-                    name: entry.name,
-                    parentRelativePath: entry.parentRelativePath,
-                    relativePath: entry.relativePath,
-                },
+                node: createProjectTreeNodeFromIndexEntry(
+                    input.projectId,
+                    entry,
+                    gitSnapshot,
+                ),
                 score,
             });
         }
@@ -327,6 +319,27 @@ export class ProjectRuntime {
                 )
                 .slice(0, limit)
                 .map((entry) => entry.node),
+            searchIndexCacheState: cacheState,
+        };
+    }
+
+    async listProjectEntries(
+        input: ProjectRuntimeListEntriesInput,
+    ): Promise<ProjectRuntimeSearchResponse> {
+        this.#ensureRootContext(input);
+        const gitSnapshot = await this.#getGitSnapshot(input.rootPath);
+        const { entries, cacheState } = this.#getProjectSearchIndex(
+            input.rootPath,
+        );
+
+        return {
+            nodes: entries.map((entry) =>
+                createProjectTreeNodeFromIndexEntry(
+                    input.projectId,
+                    entry,
+                    gitSnapshot,
+                ),
+            ),
             searchIndexCacheState: cacheState,
         };
     }
@@ -674,6 +687,26 @@ function buildProjectSearchIndex(
         lowerName: entry.name.toLowerCase(),
         lowerPath: entry.relativePath.toLowerCase(),
     }));
+}
+
+function createProjectTreeNodeFromIndexEntry(
+    projectId: string,
+    entry: IndexedProjectEntry,
+    gitSnapshot: GitSnapshot,
+): ProjectTreeNode {
+    return {
+        id: `${projectId}:${entry.relativePath}`,
+        extension: entry.extension,
+        gitStatus:
+            entry.kind === "directory"
+                ? getDirectoryBadge(entry.relativePath, gitSnapshot)
+                : (gitSnapshot.exactBadges.get(entry.relativePath) ?? null),
+        hasChildren: entry.hasChildren,
+        kind: entry.kind,
+        name: entry.name,
+        parentRelativePath: entry.parentRelativePath,
+        relativePath: entry.relativePath,
+    };
 }
 
 function buildRegisteredRootKey(projectId: string, rootPath: string): string {
