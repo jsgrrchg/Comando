@@ -90,7 +90,7 @@ export function workspaceStateFromSnapshot(
 ): WorkspaceTreeState {
     return {
         activePaneId: snapshot.activePaneId,
-        rootNode: snapshot.rootNode,
+        rootNode: normalizeWorkspaceNodeTabs(snapshot.rootNode),
         tabsById,
     };
 }
@@ -223,11 +223,11 @@ export function attachTabToPane(
                 return node;
             }
 
-            return {
+            return normalizeWorkspacePaneNode({
                 ...node,
                 activeTabId: tab.id,
                 tabIds: [...node.tabIds, tab.id],
-            };
+            });
         }),
         tabsById: {
             ...state.tabsById,
@@ -281,17 +281,20 @@ export function attachTabToPaneAtIndex(
                 targetIndex,
                 node.tabIds.length,
             );
+            const pinnedTabIds = getPanePinnedTabIds(node);
+            const pinnedAwareIndex = Math.max(nextIndex, pinnedTabIds.length);
             const nextTabIds = [
-                ...node.tabIds.slice(0, nextIndex),
+                ...node.tabIds.slice(0, pinnedAwareIndex),
                 tab.id,
-                ...node.tabIds.slice(nextIndex),
+                ...node.tabIds.slice(pinnedAwareIndex),
             ];
 
-            return {
+            return normalizeWorkspacePaneNode({
                 ...node,
                 activeTabId: tab.id,
+                pinnedTabIds,
                 tabIds: nextTabIds,
-            };
+            });
         }),
         tabsById: {
             ...state.tabsById,
@@ -375,11 +378,11 @@ export function closeWorkspaceTab(
                 ? (nextTabIds.at(-1) ?? null)
                 : node.activeTabId;
 
-        return {
+        return normalizeWorkspacePaneNode({
             ...node,
             activeTabId: nextActiveTabId,
             tabIds: nextTabIds,
-        };
+        });
     });
 
     const nextState = {
@@ -427,10 +430,18 @@ export function closeWorkspacePane(
         nextState = replacePaneTabs(
             nextState,
             fallbackPane.id,
-            (existingTabIds) => ({
-                activeTabId: pane.activeTabId ?? pane.tabIds.at(-1) ?? null,
-                tabIds: [...existingTabIds, ...pane.tabIds],
-            }),
+            (existingTabIds, _activeTabId, pinnedTabIds) => {
+                const sourcePinnedTabIds = getPanePinnedTabIds(pane);
+                return {
+                    activeTabId:
+                        pane.activeTabId ?? pane.tabIds.at(-1) ?? null,
+                    pinnedTabIds: [
+                        ...pinnedTabIds,
+                        ...sourcePinnedTabIds,
+                    ],
+                    tabIds: [...existingTabIds, ...pane.tabIds],
+                };
+            },
         );
     }
 
@@ -522,13 +533,23 @@ export function reorderTabInPane(
         return state;
     }
 
-    const remainingTabIds = pane.tabIds.filter(
+    const normalizedPane = normalizeWorkspacePaneNode(pane);
+    const pinnedTabIds = getPanePinnedTabIds(normalizedPane);
+    const pinnedTabIdSet = new Set(pinnedTabIds);
+    const remainingTabIds = normalizedPane.tabIds.filter(
         (currentTabId) => currentTabId !== tabId,
     );
-    const nextIndex = normalizeTabInsertionIndex(
+    const requestedIndex = normalizeTabInsertionIndex(
         targetIndex,
         remainingTabIds.length,
     );
+    const isPinned = pinnedTabIdSet.has(tabId);
+    const remainingPinnedCount = pinnedTabIds.filter(
+        (currentTabId) => currentTabId !== tabId,
+    ).length;
+    const nextIndex = isPinned
+        ? Math.min(requestedIndex, remainingPinnedCount)
+        : Math.max(requestedIndex, remainingPinnedCount);
     const nextTabIds = [
         ...remainingTabIds.slice(0, nextIndex),
         tabId,
@@ -542,13 +563,78 @@ export function reorderTabInPane(
                 return node;
             }
 
-            return {
+            return normalizeWorkspacePaneNode({
                 ...node,
                 activeTabId: node.activeTabId ?? tabId,
+                pinnedTabIds: nextTabIds.filter((currentTabId) =>
+                    pinnedTabIdSet.has(currentTabId),
+                ),
                 tabIds: nextTabIds,
-            };
+            });
         }),
         tabsById: state.tabsById,
+    };
+}
+
+export function pinTabInPane(
+    state: WorkspaceTreeState,
+    paneId: string,
+    tabId: string,
+): WorkspaceTreeState {
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane || !pane.tabIds.includes(tabId)) {
+        return state;
+    }
+
+    const pinnedTabIds = getPanePinnedTabIds(pane);
+    if (pinnedTabIds.includes(tabId)) {
+        return state;
+    }
+
+    return {
+        ...state,
+        rootNode: replaceNode(state.rootNode, paneId, (node) => {
+            if (node.type !== "pane") {
+                return node;
+            }
+
+            return normalizeWorkspacePaneNode({
+                ...node,
+                pinnedTabIds: [...pinnedTabIds, tabId],
+            });
+        }),
+    };
+}
+
+export function unpinTabInPane(
+    state: WorkspaceTreeState,
+    paneId: string,
+    tabId: string,
+): WorkspaceTreeState {
+    const pane = findPaneById(state.rootNode, paneId);
+    if (!pane) {
+        return state;
+    }
+
+    const pinnedTabIds = getPanePinnedTabIds(pane);
+    if (!pinnedTabIds.includes(tabId)) {
+        return state;
+    }
+
+    return {
+        ...state,
+        rootNode: replaceNode(state.rootNode, paneId, (node) => {
+            if (node.type !== "pane") {
+                return node;
+            }
+
+            return normalizeWorkspacePaneNode({
+                ...node,
+                pinnedTabIds: pinnedTabIds.filter(
+                    (currentTabId) => currentTabId !== tabId,
+                ),
+            });
+        }),
     };
 }
 
@@ -602,9 +688,16 @@ export function moveTabToPaneAtIndex(
                 const existingTabIds = node.tabIds.filter(
                     (currentTabId) => currentTabId !== tabId,
                 );
-                const nextIndex = normalizeTabInsertionIndex(
+                const pinnedTabIds = getPanePinnedTabIds(node).filter(
+                    (currentTabId) => currentTabId !== tabId,
+                );
+                const requestedIndex = normalizeTabInsertionIndex(
                     targetIndex,
                     existingTabIds.length,
+                );
+                const nextIndex = Math.max(
+                    requestedIndex,
+                    pinnedTabIds.length,
                 );
                 const nextTabIds = [
                     ...existingTabIds.slice(0, nextIndex),
@@ -612,11 +705,12 @@ export function moveTabToPaneAtIndex(
                     ...existingTabIds.slice(nextIndex),
                 ];
 
-                return {
+                return normalizeWorkspacePaneNode({
                     ...node,
                     activeTabId: tabId,
+                    pinnedTabIds,
                     tabIds: nextTabIds,
-                };
+                });
             },
         ),
         tabsById: withoutSourceTab.tabsById,
@@ -1152,8 +1246,10 @@ function replacePaneTabs(
     updater: (
         tabIds: readonly string[],
         activeTabId: string | null,
+        pinnedTabIds: readonly string[],
     ) => {
         readonly activeTabId: string | null;
+        readonly pinnedTabIds?: readonly string[];
         readonly tabIds: readonly string[];
     },
 ): WorkspaceTreeState {
@@ -1164,12 +1260,18 @@ function replacePaneTabs(
                 return node;
             }
 
-            const nextPaneState = updater(node.tabIds, node.activeTabId);
-            return {
+            const nextPaneState = updater(
+                node.tabIds,
+                node.activeTabId,
+                getPanePinnedTabIds(node),
+            );
+            return normalizeWorkspacePaneNode({
                 ...node,
                 activeTabId: nextPaneState.activeTabId,
+                pinnedTabIds:
+                    nextPaneState.pinnedTabIds ?? getPanePinnedTabIds(node),
                 tabIds: nextPaneState.tabIds,
-            };
+            });
         }),
     };
 }
@@ -1330,16 +1432,20 @@ function sanitizeNodeForSnapshot(
 ): WorkspaceNode {
     if (node.type === "pane") {
         const nextTabIds = node.tabIds.filter((tabId) => persistedTabIds.has(tabId));
+        const pinnedTabIds = getPanePinnedTabIds(node).filter((tabId) =>
+            persistedTabIds.has(tabId),
+        );
         const nextActiveTabId =
             node.activeTabId && persistedTabIds.has(node.activeTabId)
                 ? node.activeTabId
                 : (nextTabIds.at(-1) ?? null);
 
-        return {
+        return normalizeWorkspacePaneNode({
             ...node,
             activeTabId: nextActiveTabId,
+            pinnedTabIds,
             tabIds: nextTabIds,
-        };
+        });
     }
 
     return {
@@ -1348,6 +1454,59 @@ function sanitizeNodeForSnapshot(
             sanitizeNodeForSnapshot(child, persistedTabIds),
         ),
     };
+}
+
+function normalizeWorkspaceNodeTabs(node: WorkspaceNode): WorkspaceNode {
+    if (node.type === "pane") {
+        return normalizeWorkspacePaneNode(node);
+    }
+
+    return {
+        ...node,
+        children: node.children.map(normalizeWorkspaceNodeTabs),
+    };
+}
+
+function normalizeWorkspacePaneNode(
+    pane: WorkspacePaneNode,
+): WorkspacePaneNode {
+    const pinnedTabIds = getPanePinnedTabIds(pane);
+    const pinnedTabIdSet = new Set(pinnedTabIds);
+    const orderedTabIds = [
+        ...pinnedTabIds,
+        ...pane.tabIds.filter((tabId) => !pinnedTabIdSet.has(tabId)),
+    ];
+
+    if (pinnedTabIds.length === 0) {
+        return {
+            activeTabId: pane.activeTabId,
+            id: pane.id,
+            tabIds: orderedTabIds,
+            type: "pane",
+        };
+    }
+
+    return {
+        activeTabId: pane.activeTabId,
+        id: pane.id,
+        pinnedTabIds,
+        tabIds: orderedTabIds,
+        type: "pane",
+    };
+}
+
+function getPanePinnedTabIds(pane: WorkspacePaneNode): string[] {
+    const tabIdSet = new Set(pane.tabIds);
+    const seenPinnedTabIds = new Set<string>();
+
+    return (pane.pinnedTabIds ?? []).filter((tabId) => {
+        if (!tabIdSet.has(tabId) || seenPinnedTabIds.has(tabId)) {
+            return false;
+        }
+
+        seenPinnedTabIds.add(tabId);
+        return true;
+    });
 }
 
 function omitTabFromMap(

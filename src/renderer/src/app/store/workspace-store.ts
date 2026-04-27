@@ -30,6 +30,7 @@ import {
     moveTabToPaneAtIndex,
     moveTabToSplit,
     moveWorkspaceTabBetweenPanes,
+    pinTabInPane,
     reorderTabInPane,
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
@@ -45,6 +46,7 @@ import {
     setTerminalLaunchError,
     setTerminalSessionReady,
     splitPaneInDirection,
+    unpinTabInPane,
     updateChatDraft,
     updateFileDraft as applyFileDraft,
     workspaceStateFromSnapshot,
@@ -160,6 +162,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     ) => Promise<void>;
     reopenLastClosedTab: () => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
+    pinPaneTab: (paneId: string, tabId: string) => Promise<void>;
     reorderTab: (
         paneId: string,
         tabId: string,
@@ -213,6 +216,8 @@ interface WorkspaceStore extends WorkspaceTreeState {
     setLastQuickCreateAction: (action: WorkspaceQuickCreateAction) => void;
     setActivePane: (paneId: string) => Promise<void>;
     splitPane: (paneId: string, direction: SplitDirection) => Promise<void>;
+    togglePaneTabPinned: (paneId: string, tabId: string) => Promise<void>;
+    unpinPaneTab: (paneId: string, tabId: string) => Promise<void>;
     updateChatDraft: (tabId: string, draft: string) => Promise<void>;
     updateFileDraft: (tabId: string, draft: string) => void;
     updateFileViewState: (
@@ -1211,6 +1216,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await closeTabsWithSideEffects(get, set, tabIdsToClose);
     },
 
+    pinPaneTab: async (paneId, tabId) => {
+        set((state) => ({
+            ...pinTabInPane(state, paneId, tabId),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
     reorderTab: async (paneId, tabId, targetIndex) => {
         set((state) => ({
             ...reorderTabInPane(state, paneId, tabId, targetIndex),
@@ -1477,6 +1490,28 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 paneId: crypto.randomUUID(),
                 splitId: crypto.randomUUID(),
             }),
+            error: null,
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    togglePaneTabPinned: async (paneId, tabId) => {
+        const pane = findPaneById(get().rootNode, paneId);
+        if (!pane || !pane.tabIds.includes(tabId)) {
+            return;
+        }
+
+        if ((pane.pinnedTabIds ?? []).includes(tabId)) {
+            await get().unpinPaneTab(paneId, tabId);
+            return;
+        }
+
+        await get().pinPaneTab(paneId, tabId);
+    },
+
+    unpinPaneTab: async (paneId, tabId) => {
+        set((state) => ({
+            ...unpinTabInPane(state, paneId, tabId),
             error: null,
         }));
         await persistWorkspaceState(get);

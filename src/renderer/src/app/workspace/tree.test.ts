@@ -12,6 +12,7 @@ import {
     moveTabToSplit,
     moveActiveTabBetweenPanes,
     moveWorkspaceTabBetweenPanes,
+    pinTabInPane,
     reorderTabInPane,
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
@@ -20,9 +21,11 @@ import {
     setFileTabSaving,
     setFileTabViewState,
     splitPaneInDirection,
+    unpinTabInPane,
     updateFileDraft,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
+    workspaceStateFromSnapshot,
     workspaceStateToSnapshot,
 } from "./tree";
 
@@ -500,6 +503,191 @@ describe("workspace tree helpers", () => {
             expect(reordered.rootNode.activeTabId).toBe("tab-3");
         }
         expect(reordered.activePaneId).toBe("pane-root");
+    });
+
+    it("keeps pinned tabs at the front of the pane", () => {
+        const withFirstTab = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeChatTab("tab-1"),
+        );
+        const withSecondTab = attachTabToPane(
+            withFirstTab,
+            "pane-root",
+            makeChatTab("tab-2"),
+        );
+        const withThirdTab = attachTabToPane(
+            withSecondTab,
+            "pane-root",
+            makeChatTab("tab-3"),
+        );
+
+        const withPinnedThird = pinTabInPane(
+            withThirdTab,
+            "pane-root",
+            "tab-3",
+        );
+        const withPinnedSecond = pinTabInPane(
+            withPinnedThird,
+            "pane-root",
+            "tab-2",
+        );
+
+        expect(withPinnedSecond.rootNode.type).toBe("pane");
+        if (withPinnedSecond.rootNode.type === "pane") {
+            expect(withPinnedSecond.rootNode.tabIds).toEqual([
+                "tab-3",
+                "tab-2",
+                "tab-1",
+            ]);
+            expect(withPinnedSecond.rootNode.pinnedTabIds).toEqual([
+                "tab-3",
+                "tab-2",
+            ]);
+        }
+    });
+
+    it("keeps pinned and unpinned tabs inside their reorder regions", () => {
+        const withTabs = ["tab-1", "tab-2", "tab-3", "tab-4"].reduce(
+            (state, tabId) =>
+                attachTabToPane(state, "pane-root", makeChatTab(tabId)),
+            createDefaultWorkspaceState(),
+        );
+        const withPins = pinTabInPane(
+            pinTabInPane(withTabs, "pane-root", "tab-3"),
+            "pane-root",
+            "tab-2",
+        );
+
+        const unpinnedBeforePinned = reorderTabInPane(
+            withPins,
+            "pane-root",
+            "tab-1",
+            0,
+        );
+        const pinnedAfterUnpinned = reorderTabInPane(
+            unpinnedBeforePinned,
+            "pane-root",
+            "tab-3",
+            3,
+        );
+
+        expect(pinnedAfterUnpinned.rootNode.type).toBe("pane");
+        if (pinnedAfterUnpinned.rootNode.type === "pane") {
+            expect(pinnedAfterUnpinned.rootNode.tabIds).toEqual([
+                "tab-2",
+                "tab-3",
+                "tab-1",
+                "tab-4",
+            ]);
+            expect(pinnedAfterUnpinned.rootNode.pinnedTabIds).toEqual([
+                "tab-2",
+                "tab-3",
+            ]);
+        }
+    });
+
+    it("does not carry pinned state when moving a tab to another pane", () => {
+        const splitState = splitPaneInDirection(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            "right",
+            {
+                paneId: "pane-2",
+                splitId: "split-1",
+            },
+        );
+        const withTabs = attachTabToPane(
+            attachTabToPane(splitState, "pane-root", makeChatTab("tab-1")),
+            "pane-2",
+            makeChatTab("tab-2"),
+        );
+        const withPinnedTab = pinTabInPane(withTabs, "pane-root", "tab-1");
+
+        const moved = moveTabToPaneAtIndex(
+            withPinnedTab,
+            "tab-1",
+            "pane-root",
+            "pane-2",
+            0,
+        );
+
+        expect(moved.rootNode.type).toBe("pane");
+        if (moved.rootNode.type === "pane") {
+            expect(moved.rootNode.id).toBe("pane-2");
+            expect(moved.rootNode.tabIds).toEqual(["tab-1", "tab-2"]);
+            expect(moved.rootNode.pinnedTabIds).toBeUndefined();
+        }
+    });
+
+    it("unpinned tabs keep their visual position behind remaining pins", () => {
+        const withTabs = ["tab-1", "tab-2", "tab-3"].reduce(
+            (state, tabId) =>
+                attachTabToPane(state, "pane-root", makeChatTab(tabId)),
+            createDefaultWorkspaceState(),
+        );
+        const withPins = pinTabInPane(
+            pinTabInPane(withTabs, "pane-root", "tab-3"),
+            "pane-root",
+            "tab-2",
+        );
+
+        const unpinned = unpinTabInPane(withPins, "pane-root", "tab-3");
+
+        expect(unpinned.rootNode.type).toBe("pane");
+        if (unpinned.rootNode.type === "pane") {
+            expect(unpinned.rootNode.tabIds).toEqual([
+                "tab-2",
+                "tab-3",
+                "tab-1",
+            ]);
+            expect(unpinned.rootNode.pinnedTabIds).toEqual(["tab-2"]);
+        }
+    });
+
+    it("normalizes pinned tab ids when restoring and serializing snapshots", () => {
+        const firstTab = makeChatTab("tab-1");
+        const pinnedTab = makeChatTab("tab-2");
+        const transientTab: RuntimeWorkspaceTab = {
+            ...makeFileTab("tab-transient", "scratch.ts"),
+            isTransient: true,
+        };
+        const restored = workspaceStateFromSnapshot(
+            {
+                activePaneId: "pane-root",
+                rootNode: {
+                    activeTabId: "tab-1",
+                    id: "pane-root",
+                    pinnedTabIds: ["tab-2", "missing-tab", "tab-2"],
+                    tabIds: ["tab-1", "tab-2", "tab-transient"],
+                    type: "pane",
+                },
+                tabs: [firstTab, pinnedTab, transientTab],
+            },
+            {
+                "tab-1": firstTab,
+                "tab-2": pinnedTab,
+                "tab-transient": transientTab,
+            },
+        );
+
+        expect(restored.rootNode.type).toBe("pane");
+        if (restored.rootNode.type === "pane") {
+            expect(restored.rootNode.tabIds).toEqual([
+                "tab-2",
+                "tab-1",
+                "tab-transient",
+            ]);
+            expect(restored.rootNode.pinnedTabIds).toEqual(["tab-2"]);
+        }
+
+        expect(workspaceStateToSnapshot(restored).rootNode).toEqual({
+            activeTabId: "tab-1",
+            id: "pane-root",
+            pinnedTabIds: ["tab-2"],
+            tabIds: ["tab-2", "tab-1"],
+            type: "pane",
+        });
     });
 
     it("moves a tab to another pane at a specific index", () => {

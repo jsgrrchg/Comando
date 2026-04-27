@@ -939,6 +939,9 @@ function WorkspacePaneView({
         (state) => state.lastFocusedRuntimeId,
     );
     const moveTab = useWorkspaceStore((state) => state.moveTab);
+    const togglePaneTabPinned = useWorkspaceStore(
+        (state) => state.togglePaneTabPinned,
+    );
     const openFileTab: (
         projectId: string,
         relativePath: string,
@@ -953,6 +956,11 @@ function WorkspacePaneView({
     );
     const paneNodeId = node?.id ?? paneId;
     const paneTabIds = node?.tabIds ?? EMPTY_TAB_IDS;
+    const panePinnedTabIds = node?.pinnedTabIds ?? EMPTY_TAB_IDS;
+    const panePinnedTabIdSet = useMemo(
+        () => new Set(panePinnedTabIds),
+        [panePinnedTabIds],
+    );
     const paneActiveTabId = node?.activeTabId ?? null;
     const paneTabs = useWorkspaceStore(
         useShallow(
@@ -1050,8 +1058,17 @@ function WorkspacePaneView({
         if (tabIndex === -1) {
             return [];
         }
+        const isPinned = panePinnedTabIdSet.has(tabContextMenu.payload.tabId);
 
         const entries: ContextMenuEntry[] = [
+            {
+                label: isPinned ? "Unpin Tab" : "Pin Tab",
+                action: () =>
+                    void togglePaneTabPinned(
+                        paneNodeId,
+                        tabContextMenu.payload.tabId,
+                    ),
+            },
             {
                 label: "Close",
                 action: () =>
@@ -1756,13 +1773,17 @@ function WorkspacePaneView({
                         ) : (
                             paneTabs.map((tab, tabIndex) => {
                                 const isActive = tab.id === paneActiveTabId;
+                                const isPinned = panePinnedTabIdSet.has(tab.id);
                                 const tabDisplayTitle =
                                     getWorkspaceTabDisplayTitle(tab);
 
                                 return (
                                     <button
                                         className={[
-                                            "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-border-subtle px-3 text-[12px] transition",
+                                            "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-border-subtle text-[12px] transition",
+                                            isPinned
+                                                ? "w-8 justify-center px-0"
+                                                : "px-3",
                                             tabDrag.draggedTab?.tabId ===
                                                 tab.id && tabDrag.isDragging
                                                 ? "opacity-35"
@@ -1772,7 +1793,11 @@ function WorkspacePaneView({
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
                                         data-workspace-tab-id={tab.id}
+                                        data-workspace-tab-pinned={
+                                            isPinned ? "true" : undefined
+                                        }
                                         key={tab.id}
+                                        aria-label={tabDisplayTitle}
                                         onClick={(event) => {
                                             if (tabDrag.handleTabClick(event)) {
                                                 return;
@@ -1816,6 +1841,11 @@ function WorkspacePaneView({
                                                 event,
                                             )
                                         }
+                                        title={
+                                            isPinned
+                                                ? tabDisplayTitle
+                                                : undefined
+                                        }
                                         type="button"
                                     >
                                         <TabIcon
@@ -1827,16 +1857,18 @@ function WorkspacePaneView({
                                             }
                                             title={tabDisplayTitle}
                                         />
-                                        <span
-                                            className="truncate"
-                                            title={
-                                                "title" in tab
-                                                    ? tab.title
-                                                    : tabDisplayTitle
-                                            }
-                                        >
-                                            {tabDisplayTitle}
-                                        </span>
+                                        {isPinned ? null : (
+                                            <span
+                                                className="truncate"
+                                                title={
+                                                    "title" in tab
+                                                        ? tab.title
+                                                        : tabDisplayTitle
+                                                }
+                                            >
+                                                {tabDisplayTitle}
+                                            </span>
+                                        )}
                                         <WorkspaceTabActivityIndicator
                                             tab={tab}
                                         />
@@ -1849,23 +1881,27 @@ function WorkspacePaneView({
                                                 !
                                             </span>
                                         ) : null}
-                                        <span
-                                            className={[
-                                                "ml-0.5 rounded px-1 text-[13px] transition hover:bg-text-secondary/10 hover:text-text-primary",
-                                                isActive
-                                                    ? "text-text-secondary opacity-70"
-                                                    : "text-text-secondary opacity-0 group-hover:opacity-70",
-                                            ].join(" ")}
-                                            data-workspace-tab-close="true"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                void requestCloseTab(tab.id);
-                                            }}
-                                            role="button"
-                                            tabIndex={-1}
-                                        >
-                                            ×
-                                        </span>
+                                        {isPinned ? null : (
+                                            <span
+                                                className={[
+                                                    "ml-0.5 rounded px-1 text-[13px] transition hover:bg-text-secondary/10 hover:text-text-primary",
+                                                    isActive
+                                                        ? "text-text-secondary opacity-70"
+                                                        : "text-text-secondary opacity-0 group-hover:opacity-70",
+                                                ].join(" ")}
+                                                data-workspace-tab-close="true"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    void requestCloseTab(
+                                                        tab.id,
+                                                    );
+                                                }}
+                                                role="button"
+                                                tabIndex={-1}
+                                            >
+                                                ×
+                                            </span>
+                                        )}
                                     </button>
                                 );
                             })

@@ -951,6 +951,7 @@ export interface WorkspacePaneNode {
     readonly id: string;
     readonly type: "pane";
     readonly tabIds: readonly string[];
+    readonly pinnedTabIds?: readonly string[];
     readonly activeTabId: string | null;
 }
 
