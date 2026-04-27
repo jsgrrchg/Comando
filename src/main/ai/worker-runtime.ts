@@ -857,6 +857,7 @@ export class AiWorkerRuntime {
         }
         if (existing) {
             this.#disposeLiveSession(launch.input.sessionId, existing, {
+                closeRuntimeSession: false,
                 emitClosedEvent: false,
             });
         }
@@ -966,7 +967,12 @@ export class AiWorkerRuntime {
         child.stdout.on("error", swallowStreamError("stdout"));
         child.stderr.on("error", swallowStreamError("stderr"));
         child.on("exit", (code, signal) => {
-            this.#handleProcessExit(launch.input.sessionId, code, signal);
+            this.#handleProcessExit(
+                launch.input.sessionId,
+                liveSession,
+                code,
+                signal,
+            );
         });
         this.#sessions.set(launch.input.sessionId, liveSession);
         this.#queueSnapshotFlush(liveSession);
@@ -2251,11 +2257,12 @@ export class AiWorkerRuntime {
 
     #handleProcessExit(
         sessionId: string,
+        exitingSession: LiveAcpSession,
         code: number | null,
         signal: NodeJS.Signals | null,
     ): void {
         const liveSession = this.#sessions.get(sessionId);
-        if (!liveSession) {
+        if (liveSession !== exitingSession) {
             return;
         }
 
@@ -2289,6 +2296,7 @@ export class AiWorkerRuntime {
         sessionId: string,
         liveSession: LiveAcpSession,
         options: {
+            readonly closeRuntimeSession?: boolean;
             readonly emitClosedEvent: boolean;
         },
     ): void {
@@ -2298,7 +2306,10 @@ export class AiWorkerRuntime {
         this.#resolvePendingPermission(liveSession, null);
         this.#detachChildStreams(liveSession);
         try {
-            if (liveSession.snapshot.runtimeSessionId) {
+            if (
+                options.closeRuntimeSession !== false &&
+                liveSession.snapshot.runtimeSessionId
+            ) {
                 void liveSession.connection
                     .unstable_closeSession({
                         sessionId: liveSession.snapshot.runtimeSessionId,

@@ -31,6 +31,7 @@ const promptMock = vi.fn(() =>
         stopReason: "completed",
     }),
 );
+const closeRuntimeSessionMock = vi.fn(() => Promise.resolve({}));
 let latestClientFactory:
     | (() => {
           createTerminal: (params: {
@@ -143,6 +144,7 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         loadSession = loadSessionMock;
         newSession = newSessionMock;
         prompt = promptMock;
+        unstable_closeSession = closeRuntimeSessionMock;
     },
     PROTOCOL_VERSION: "test-protocol-version",
     ndJsonStream: vi.fn(() => ({})),
@@ -161,6 +163,7 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
         promptMock.mockClear();
         newSessionMock.mockClear();
+        closeRuntimeSessionMock.mockClear();
         spawnMock.mockClear();
         spawnedChildren = [];
         latestClientFactory = null;
@@ -549,6 +552,118 @@ describe("AiWorkerRuntime prepareSession", () => {
         await expect(fs.readFile(targetPath, "utf8")).resolves.toBe(
             "worker-extra-write",
         );
+    });
+
+    it("does not close the runtime session when relaunching with changed additional roots", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const additionalRoot = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-extra-"),
+        );
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Relaunch root test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        const relaunch = {
+            ...launch,
+            additionalRoots: [additionalRoot],
+            input: {
+                ...launch.input,
+                additionalRoots: [additionalRoot],
+            },
+        };
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: relaunch.input,
+            launch: relaunch,
+        });
+
+        expect(spawnMock).toHaveBeenCalledTimes(2);
+        expect(spawnedChildren[0]?.kill).toHaveBeenCalled();
+        expect(closeRuntimeSessionMock).not.toHaveBeenCalled();
+    });
+
+    it("ignores exit events from a disposed wrapper after relaunching the session", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const additionalRoot = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-extra-"),
+        );
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Stale exit test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        const oldChild = spawnedChildren[0];
+        const relaunch = {
+            ...launch,
+            additionalRoots: [additionalRoot],
+            input: {
+                ...launch.input,
+                additionalRoots: [additionalRoot],
+            },
+        };
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: relaunch.input,
+            launch: relaunch,
+        });
+
+        oldChild?.emit("exit", 0, null);
+
+        await expect(
+            runtime.dispatchMethod("ai.sendPrompt", {
+                input: {
+                    attachments: [],
+                    projectId: null,
+                    prompt: "hello after relaunch",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Stale exit test",
+                    worktreeId: null,
+                },
+                launch: relaunch,
+            }),
+        ).resolves.toEqual({
+            sessionId: "session-1",
+            stopReason: "completed",
+        });
+    });
+
+    it("closes the runtime session for explicit session closes", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Explicit close test",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        await runtime.dispatchMethod("ai.closeSession", "session-1");
+
+        expect(closeRuntimeSessionMock).toHaveBeenCalledWith({
+            sessionId: "runtime-session-1",
+        });
     });
 
     it("advertises and handles ACP terminals through the existing permission flow", async () => {
