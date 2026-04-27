@@ -89,6 +89,7 @@ import {
 
 import {
     BrowserWindow,
+    clipboard,
     dialog,
     ipcMain,
     nativeTheme,
@@ -157,6 +158,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.installAppUpdateAndRestart);
     ipcMain.removeHandler(IPC_CHANNELS.getPersistenceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getWindowContext);
+    ipcMain.removeHandler(IPC_CHANNELS.readClipboardText);
+    ipcMain.removeHandler(IPC_CHANNELS.writeClipboardText);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
@@ -285,6 +288,16 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (event): WindowContextSnapshot | null =>
             windowRegistry.getContextByWebContents(event.sender),
     );
+    ipcMain.handle(IPC_CHANNELS.readClipboardText, (): string =>
+        clipboard.readText(),
+    );
+    ipcMain.handle(IPC_CHANNELS.writeClipboardText, (_event, text: string) => {
+        if (typeof text !== "string") {
+            throw new TypeError("Expected clipboard text to be a string.");
+        }
+
+        clipboard.writeText(text);
+    });
     ipcMain.handle(
         IPC_CHANNELS.openProjectWindow,
         (_event, input: OpenProjectWindowInput) => {

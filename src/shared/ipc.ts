@@ -14,6 +14,8 @@ export const IPC_CHANNELS = {
     installAppUpdateAndRestart: "app:install-update-and-restart",
     getPersistenceSnapshot: "app:get-persistence-snapshot",
     getWindowContext: "app:get-window-context",
+    readClipboardText: "app:read-clipboard-text",
+    writeClipboardText: "app:write-clipboard-text",
     openProjectWindow: "app:open-project-window",
     getSettingsSnapshot: "settings:get-snapshot",
     getProjectSettings: "settings:get-project-settings",

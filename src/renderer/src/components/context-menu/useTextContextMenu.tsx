@@ -105,11 +105,19 @@ function moveCaretToPoint(
 
 async function readClipboardText(): Promise<string> {
     if (window.comando?.readClipboardText) {
-        return window.comando.readClipboardText();
+        try {
+            return await window.comando.readClipboardText();
+        } catch {
+            // Fall through to the Web Clipboard API when the native bridge is unavailable.
+        }
     }
 
     if (navigator.clipboard?.readText) {
-        return navigator.clipboard.readText();
+        try {
+            return await navigator.clipboard.readText();
+        } catch {
+            return "";
+        }
     }
 
     return "";
@@ -117,12 +125,20 @@ async function readClipboardText(): Promise<string> {
 
 async function writeClipboardText(text: string): Promise<void> {
     if (window.comando?.writeClipboardText) {
-        await window.comando.writeClipboardText(text);
-        return;
+        try {
+            await window.comando.writeClipboardText(text);
+            return;
+        } catch {
+            // Fall through to the Web Clipboard API when the native bridge is unavailable.
+        }
     }
 
     if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch {
+            // Context menu actions should fail silently rather than surfacing unhandled rejections.
+        }
     }
 }
 
