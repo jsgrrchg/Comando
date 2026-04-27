@@ -350,4 +350,11 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ON chat_sessions(project_id, worktree_id, pinned_at DESC, updated_at DESC);
     `,
     },
+    {
+        id: "0011-ai-history-previews",
+        sql: `
+      ALTER TABLE chat_transcripts
+        ADD COLUMN preview TEXT;
+    `,
+    },
 ];

@@ -45,17 +45,22 @@ interface PersistedAiHistorySessionRow {
     readonly created_at: string;
     readonly message_count: number | null;
     readonly pinned_at: string | null;
+    readonly preview: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
     readonly session_id: string;
     readonly title: string;
-    readonly transcript_json: string | null;
     readonly updated_at: string;
     readonly worktree_id: string | null;
 }
 
 interface PersistedAiTranscriptRow {
     readonly message_count: number | null;
+    readonly transcript_json: string | null;
+}
+
+interface PersistedAiHistoryPreviewBackfillRow {
+    readonly session_id: string;
     readonly transcript_json: string | null;
 }
 
@@ -274,9 +279,16 @@ export class AiPersistence {
                     .all(
                         ...scopedHistoryQuery.params,
                     ) as readonly PersistedAiHistorySessionRow[];
+                const backfilledPreviews =
+                    this.#backfillMissingHistoryPreviews(rows);
 
                 return rows
-                    .map((row) => createHistorySessionSummary(row))
+                    .map((row) =>
+                        createHistorySessionSummary(
+                            row,
+                            backfilledPreviews.get(row.session_id) ?? null,
+                        ),
+                    )
                     .filter((session) => session.messageCount > 0);
             },
         );
@@ -544,7 +556,7 @@ export class AiPersistence {
 
             this.#connection
                 .prepare<
-                    [string, string, string, number, string, string],
+                    [string, string, string, number, string, string, string],
                     void
                 >(
                     `
@@ -553,13 +565,15 @@ export class AiPersistence {
                         session_id,
                         transcript_json,
                         message_count,
+                        preview,
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET
                         transcript_json = excluded.transcript_json,
                         message_count = excluded.message_count,
+                        preview = excluded.preview,
                         updated_at = excluded.updated_at
                     `,
                 )
@@ -568,6 +582,9 @@ export class AiPersistence {
                     snapshot.sessionId,
                     JSON.stringify(createPersistedSessionSnapshot(snapshot)),
                     snapshot.messages.length,
+                    serializePersistedPreview(
+                        deriveSessionPreview(snapshot.messages),
+                    ),
                     now,
                     now,
                 );
@@ -613,6 +630,56 @@ export class AiPersistence {
             .get(sessionId);
 
         return row?.draft ?? "";
+    }
+
+    #backfillMissingHistoryPreviews(
+        rows: readonly PersistedAiHistorySessionRow[],
+    ): ReadonlyMap<string, string> {
+        const missingSessionIds = rows
+            .filter(
+                (row) =>
+                    row.preview === null && Math.max(row.message_count ?? 0, 0) > 0,
+            )
+            .map((row) => row.session_id);
+
+        if (missingSessionIds.length === 0) {
+            return new Map();
+        }
+
+        const loadTranscript = this.#connection.prepare<
+            [string],
+            PersistedAiHistoryPreviewBackfillRow | undefined
+        >(
+            `
+            SELECT
+                session_id,
+                transcript_json
+            FROM chat_transcripts
+            WHERE session_id = ?
+            `,
+        );
+        const updatePreview = this.#connection.prepare<[string, string], void>(
+            `
+            UPDATE chat_transcripts
+            SET preview = ?
+            WHERE session_id = ?
+            `,
+        );
+        const backfilledPreviews = new Map<string, string>();
+
+        for (const sessionId of missingSessionIds) {
+            const row = loadTranscript.get(sessionId);
+            if (!row) {
+                continue;
+            }
+            const messages = extractPersistedMessages(row.transcript_json);
+            const preview = deriveSessionPreview(messages);
+            const storedPreview = serializePersistedPreview(preview);
+            updatePreview.run(storedPreview, sessionId);
+            backfilledPreviews.set(sessionId, storedPreview);
+        }
+
+        return backfilledPreviews;
     }
 }
 
@@ -1704,8 +1771,8 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
                 chat_sessions.created_at,
                 chat_sessions.pinned_at,
                 chat_sessions.updated_at,
-                chat_transcripts.transcript_json,
-                chat_transcripts.message_count
+                chat_transcripts.message_count,
+                chat_transcripts.preview
             FROM chat_sessions
             LEFT JOIN chat_transcripts
                 ON chat_transcripts.session_id = chat_sessions.id
@@ -1771,15 +1838,15 @@ function normalizePreviewText(value: string): string {
 
 function createHistorySessionSummary(
     row: PersistedAiHistorySessionRow,
+    backfilledPreview: string | null,
 ): AiHistorySessionSummary {
-    const messages = extractPersistedMessages(row.transcript_json);
-    const messageCount = Math.max(messages.length, row.message_count ?? 0);
+    const messageCount = Math.max(row.message_count ?? 0, 0);
 
     return {
         createdAt: row.created_at,
         messageCount,
         pinnedAt: row.pinned_at,
-        preview: deriveSessionPreview(messages),
+        preview: deserializePersistedPreview(backfilledPreview ?? row.preview),
         projectId: row.project_id,
         runtimeId: normalizeRuntimeId(row.runtime),
         sessionId: row.session_id,
@@ -1787,6 +1854,18 @@ function createHistorySessionSummary(
         updatedAt: row.updated_at,
         worktreeId: row.worktree_id,
     };
+}
+
+function serializePersistedPreview(value: string | null): string {
+    return value ?? "";
+}
+
+function deserializePersistedPreview(value: string | null): string | null {
+    if (value === null || value.length === 0) {
+        return null;
+    }
+
+    return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

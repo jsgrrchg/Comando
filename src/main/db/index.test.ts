@@ -24,9 +24,10 @@ describe("databaseMigrations", () => {
             projectVisibilityMigration,
             aiHistoryIndexesMigration,
             aiPinnedSessionsMigration,
+            aiHistoryPreviewsMigration,
         ] = databaseMigrations;
 
-        expect(databaseMigrations).toHaveLength(10);
+        expect(databaseMigrations).toHaveLength(11);
         expect(foundationMigration?.id).toBe("0001-foundation");
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
@@ -112,6 +113,10 @@ describe("databaseMigrations", () => {
         expect(aiPinnedSessionsMigration?.sql).toContain(
             "idx_chat_sessions_project_worktree_pinned_at",
         );
+        expect(aiHistoryPreviewsMigration?.id).toBe(
+            "0011-ai-history-previews",
+        );
+        expect(aiHistoryPreviewsMigration?.sql).toContain("preview TEXT");
     });
 
     it("backfills canonical_root_path and worktree_id from a previous schema", () => {

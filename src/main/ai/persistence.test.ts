@@ -183,9 +183,12 @@ describe("AiPersistence", () => {
         persistence.saveSessionSnapshot(snapshot);
 
         const storedTranscript = connection
-            .prepare<[string], { transcript_json: string } | undefined>(
+            .prepare<
+                [string],
+                { preview: string | null; transcript_json: string } | undefined
+            >(
                 `
-                SELECT transcript_json
+                SELECT preview, transcript_json
                 FROM chat_transcripts
                 WHERE session_id = ?
                 `,
@@ -193,6 +196,7 @@ describe("AiPersistence", () => {
             .get(snapshot.sessionId);
 
         expect(storedTranscript).toBeDefined();
+        expect(storedTranscript?.preview).toBe("hello");
         expect(storedTranscript?.transcript_json).toBeTruthy();
         expect(
             JSON.parse(storedTranscript?.transcript_json ?? "{}"),
@@ -280,6 +284,49 @@ describe("AiPersistence", () => {
                 runtimeId: "codex",
                 sessionId: "session-main",
                 worktreeId: "worktree-a",
+            }),
+        ]);
+        expect(loadStoredPreview(connection, "session-main")).toBe(
+            "Assistant returns the final summary for the branch.",
+        );
+    });
+
+    it("uses persisted history previews without parsing transcripts", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            preview: "Persisted summary wins",
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-main",
+            transcript: createTranscriptWithMessages([
+                "This transcript should not be parsed.",
+            ]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+        connection
+            .prepare(
+                `
+                UPDATE chat_transcripts
+                SET transcript_json = 'not json'
+                WHERE session_id = ?
+                `,
+            )
+            .run("session-main");
+
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(history).toEqual([
+            expect.objectContaining({
+                messageCount: 1,
+                preview: "Persisted summary wins",
+                sessionId: "session-main",
             }),
         ]);
     });
@@ -482,10 +529,10 @@ describe("AiPersistence", () => {
 
         expect(history).toEqual([
             expect.objectContaining({
-                pinnedAt: expect.any(String),
                 sessionId: "session-pin",
             }),
         ]);
+        expect(typeof history[0]?.pinnedAt).toBe("string");
 
         persistence.setSessionPinned("session-pin", false);
 
@@ -716,6 +763,7 @@ function seedChatSession(
     connection: ReturnType<typeof createTestConnection>,
     input: {
         readonly pinnedAt?: string | null;
+        readonly preview?: string | null;
         readonly projectId?: string | null;
         readonly runtimeId: "claude" | "codex" | "gemini" | "kilo";
         readonly sessionId: string;
@@ -776,10 +824,11 @@ function seedChatSession(
                 session_id,
                 transcript_json,
                 message_count,
+                preview,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             `,
         )
         .run(
@@ -789,9 +838,27 @@ function seedChatSession(
             Array.isArray(input.transcript.messages)
                 ? input.transcript.messages.length
                 : 0,
+            input.preview ?? null,
             input.updatedAt,
             input.updatedAt,
         );
+}
+
+function loadStoredPreview(
+    connection: ReturnType<typeof createSqliteCompatConnection>,
+    sessionId: string,
+): string | null {
+    return (
+        connection
+            .prepare<[string], { preview: string | null } | undefined>(
+                `
+                SELECT preview
+                FROM chat_transcripts
+                WHERE session_id = ?
+                `,
+            )
+            .get(sessionId)?.preview ?? null
+    );
 }
 
 function seedProject(
