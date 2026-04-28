@@ -43,7 +43,7 @@ The remaining Comando-specific delta exists to preserve desktop product behavior
 
 When updating Codex again, treat `ee9418a` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
-Comando's ACP client lives in TypeScript/Electron under `src/main/ai/` and currently uses `@agentclientprotocol/sdk` from npm. Do not copy reference app's Rust workspace ACP client migration unless Comando gains an equivalent Rust backend.
+Comando's ACP client lives in TypeScript/Electron under `src/main/ai/` and currently uses `@agentclientprotocol/sdk` from npm. Do not copy a Rust workspace ACP client migration unless Comando gains an equivalent Rust backend.
 
 ## Updating Vendored Runtimes
 

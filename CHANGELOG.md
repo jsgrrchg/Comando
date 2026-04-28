@@ -21,13 +21,3 @@ tt
 
 - Fixed live AI session renames being overwritten.
 - Improved sidebar session history updates for newly seeded sessions.
-
-## [0.0.9] - 2026-04-05
-
-### Changed
-
-- Improved sidebar agent updates and history query indexing.
-
-### Added
-
-- Added production app icons for macOS and Windows.
