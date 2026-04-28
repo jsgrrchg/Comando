@@ -168,7 +168,7 @@ function main() {
 
 function resolveElectronBuilderArgs(rawArgs) {
     const normalizedArgs = rawArgs.filter(
-        (arg) => !["--mac", "--universal"].includes(arg),
+        (arg) => !["--", "--mac", "--universal"].includes(arg),
     );
 
     if (!normalizedArgs.includes("--publish")) {

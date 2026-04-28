@@ -76,6 +76,37 @@ jobs:
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
+            - name: Prepare macOS AI runtime inputs
+              run: |
+                  npm ci --prefix vendor/Claude-agent-acp-upstream
+                  npm run build --prefix vendor/Claude-agent-acp-upstream
+
+                  rustup target add aarch64-apple-darwin x86_64-apple-darwin
+                  export CARGO_TARGET_DIR="$PWD/resources/ai/embedded/codex-acp/target"
+                  cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target aarch64-apple-darwin
+                  cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target x86_64-apple-darwin
+
+                  mkdir -p resources/ai/prebuilt/codex-acp/darwin-arm64
+                  mkdir -p resources/ai/prebuilt/codex-acp/darwin-x64
+                  cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/codex-acp" resources/ai/prebuilt/codex-acp/darwin-arm64/codex-acp
+                  cp "$CARGO_TARGET_DIR/x86_64-apple-darwin/release/codex-acp" resources/ai/prebuilt/codex-acp/darwin-x64/codex-acp
+                  chmod +x resources/ai/prebuilt/codex-acp/darwin-arm64/codex-acp
+                  chmod +x resources/ai/prebuilt/codex-acp/darwin-x64/codex-acp
+
+                  node_version="$(node -p 'process.version')"
+                  node_tmp="$RUNNER_TEMP/comando-node-prebuilt"
+                  rm -rf "$node_tmp"
+                  mkdir -p "$node_tmp"
+
+                  for arch in arm64 x64; do
+                    archive="node-${node_version}-darwin-${arch}.tar.gz"
+                    curl -fsSL "https://nodejs.org/dist/${node_version}/${archive}" -o "$node_tmp/$archive"
+                    tar -xzf "$node_tmp/$archive" -C "$node_tmp"
+                    mkdir -p "resources/ai/prebuilt/node/darwin-${arch}/bin"
+                    cp "$node_tmp/node-${node_version}-darwin-${arch}/bin/node" "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
+                    chmod +x "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
+                  done
+
             - name: Publish macOS artifacts
               run: pnpm run release:mac -- --config.forceCodeSigning=true
 
