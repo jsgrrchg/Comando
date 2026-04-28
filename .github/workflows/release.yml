@@ -24,6 +24,7 @@ jobs:
             APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
             CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
             CSC_LINK: ${{ secrets.CSC_LINK }}
+            NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
               with:
@@ -122,6 +123,7 @@ jobs:
         runs-on: windows-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
               with:
@@ -156,6 +158,7 @@ jobs:
         runs-on: windows-11-arm
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
               with:
