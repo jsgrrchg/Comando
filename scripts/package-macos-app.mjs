@@ -548,7 +548,6 @@ function createPackagerEnvironment() {
     return {
         AR: wrappedCommand("ar"),
         CC: wrappedCommand("clang"),
-        CSC_IDENTITY_AUTO_DISCOVERY: "false",
         CXX: wrappedCommand("clang++"),
         MAKE: wrappedCommand("make"),
         NODE: wrappedCommand("node"),

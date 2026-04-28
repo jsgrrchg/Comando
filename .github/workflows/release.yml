@@ -20,11 +20,8 @@ jobs:
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-            APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+            APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY }}
             APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-            APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-            APPLE_ID: ${{ secrets.APPLE_ID }}
-            APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
             CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
             CSC_LINK: ${{ secrets.CSC_LINK }}
         steps:
@@ -41,11 +38,46 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
+            - name: Validate macOS release secrets
+              run: |
+                  required=(
+                    APPLE_API_ISSUER
+                    APPLE_API_KEY_P8
+                    APPLE_API_KEY_ID
+                    CSC_KEY_PASSWORD
+                    CSC_LINK
+                  )
+
+                  missing=()
+                  for name in "${required[@]}"; do
+                    if [[ -z "${!name:-}" ]]; then
+                      missing+=("$name")
+                    fi
+                  done
+
+                  if (( ${#missing[@]} > 0 )); then
+                    printf 'Missing required macOS release secrets: %s\n' "${missing[*]}" >&2
+                    exit 1
+                  fi
+
+            - name: Materialize App Store Connect API key
+              run: |
+                  api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+                  printf '%s\n' "$APPLE_API_KEY_P8" > "$api_key_path"
+                  chmod 600 "$api_key_path"
+
+                  if ! grep -q 'BEGIN PRIVATE KEY' "$api_key_path"; then
+                    echo 'APPLE_API_KEY does not look like a valid .p8 private key.' >&2
+                    exit 1
+                  fi
+
+                  echo "APPLE_API_KEY=$api_key_path" >> "$GITHUB_ENV"
+
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
             - name: Publish macOS artifacts
-              run: pnpm run release:mac
+              run: pnpm run release:mac -- --config.forceCodeSigning=true
 
             - name: Upload macOS workflow artifacts
               uses: actions/upload-artifact@v4
