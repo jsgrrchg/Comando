@@ -127,7 +127,11 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
-import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
+import {
+    getViewportSafeMenuPosition,
+    getViewportSafeSubmenuPosition,
+    type MenuAnchorRect,
+} from "@renderer/app/utils/menu-position";
 import type { WorkspaceQuickCreateAction } from "@renderer/app/store/workspace-store";
 
 interface WorkspaceViewProps {
@@ -166,9 +170,8 @@ type QuickCreateMenuSeparator = {
 type QuickCreateMenuEntry = QuickCreateMenuItem | QuickCreateMenuSeparator;
 
 type QuickCreateSubmenuState = {
+    readonly anchorRect: MenuAnchorRect;
     readonly entries: readonly QuickCreateMenuEntry[];
-    readonly x: number;
-    readonly y: number;
 } | null;
 
 type WorkspaceReviewTabHandle = {
@@ -2177,9 +2180,8 @@ function QuickCreateMenu({
 
         const rect = submenuRef.current.getBoundingClientRect();
         setSubmenuPosition(
-            getViewportSafeMenuPosition(
-                submenu.x,
-                submenu.y,
+            getViewportSafeSubmenuPosition(
+                submenu.anchorRect,
                 rect.width,
                 rect.height,
             ),
@@ -2229,9 +2231,12 @@ function QuickCreateMenu({
     ) => {
         const rect = event.currentTarget.getBoundingClientRect();
         setSubmenu({
+            anchorRect: {
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+            },
             entries: children,
-            x: rect.right + 4,
-            y: rect.top,
         });
     };
 
@@ -2324,9 +2329,9 @@ function QuickCreateMenu({
                     className="fixed rounded-lg border border-border bg-bg-panel p-1 opacity-0 pointer-events-none"
                     ref={submenuRef}
                     style={{
-                        left: submenu.x,
+                        left: submenu.anchorRect.right + 4,
                         minWidth: 176,
-                        top: submenu.y,
+                        top: submenu.anchorRect.top,
                         zIndex: 10021,
                     }}
                 >
