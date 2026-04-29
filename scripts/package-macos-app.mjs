@@ -323,8 +323,9 @@ function materializeRuntimePackage(
     packageName,
     sourceManifestPath,
     copiedPackages,
+    options = {},
 ) {
-    if (builtinModuleNames.has(packageName)) {
+    if (!options.allowBuiltinPackage && builtinModuleNames.has(packageName)) {
         return;
     }
 
@@ -332,7 +333,9 @@ function materializeRuntimePackage(
         manifest: sourceManifest,
         manifestPath: resolvedManifestPath,
         packageRoot,
-    } = resolvePackage(packageName, sourceManifestPath);
+    } = resolvePackage(packageName, sourceManifestPath, {
+        preferPackageManifest: options.allowBuiltinPackage === true,
+    });
     const existingPackage = copiedPackages.get(packageName);
     if (existingPackage) {
         if (existingPackage.version !== sourceManifest.version) {
@@ -361,6 +364,7 @@ function materializeRuntimePackage(
                 dependencyName,
                 resolvedManifestPath,
                 copiedPackages,
+                { allowBuiltinPackage: true },
             );
         } catch (error) {
             const isOptionalDependency =
@@ -379,7 +383,19 @@ function materializeRuntimePackage(
     }
 }
 
-function resolvePackage(packageName, sourceManifestPath) {
+function resolvePackage(packageName, sourceManifestPath, options = {}) {
+    const preferredManifestPath = options.preferPackageManifest
+        ? findNodeModulesPackageManifest(packageName, sourceManifestPath)
+        : null;
+
+    if (preferredManifestPath) {
+        return {
+            manifest: readJson(preferredManifestPath),
+            manifestPath: preferredManifestPath,
+            packageRoot: path.dirname(preferredManifestPath),
+        };
+    }
+
     const resolver = createRequire(sourceManifestPath);
     const resolvedEntryPath = resolver.resolve(packageName);
     const manifestPath = findPackageManifestPath(resolvedEntryPath);
@@ -389,6 +405,28 @@ function resolvePackage(packageName, sourceManifestPath) {
         manifestPath,
         packageRoot: path.dirname(manifestPath),
     };
+}
+
+function findNodeModulesPackageManifest(packageName, sourceManifestPath) {
+    const packagePathParts = packageName.split("/");
+    let currentDirectory = path.dirname(sourceManifestPath);
+
+    while (currentDirectory !== path.dirname(currentDirectory)) {
+        const manifestPath = path.join(
+            currentDirectory,
+            "node_modules",
+            ...packagePathParts,
+            "package.json",
+        );
+
+        if (isFile(manifestPath)) {
+            return manifestPath;
+        }
+
+        currentDirectory = path.dirname(currentDirectory);
+    }
+
+    return null;
 }
 
 function findPackageManifestPath(resolvedEntryPath) {
@@ -428,12 +466,6 @@ function getRuntimeDependencies(manifest) {
     }
 
     dependencyNames.delete("electron");
-
-    for (const dependencyName of [...dependencyNames]) {
-        if (builtinModuleNames.has(dependencyName)) {
-            dependencyNames.delete(dependencyName);
-        }
-    }
 
     return [...dependencyNames].sort();
 }
@@ -546,6 +578,7 @@ function createPackagerEnvironment() {
         path.join(packageToolsRoot, commandName);
 
     return {
+        ...process.env,
         AR: wrappedCommand("ar"),
         CC: wrappedCommand("clang"),
         CXX: wrappedCommand("clang++"),

@@ -994,6 +994,34 @@ export function replaceFileDocument(
     }));
 }
 
+export function completeFileSave(
+    state: WorkspaceTreeState,
+    tabId: string,
+    document: ProjectFileDocument,
+    savedDraftContent: string,
+): WorkspaceTreeState {
+    return updateMatchingFileTabs(state, tabId, (tab) => {
+        const draftContent =
+            tab.draftContent === savedDraftContent
+                ? document.content
+                : tab.draftContent;
+
+        return {
+            ...tab,
+            document,
+            draftContent,
+            hasExternalChange: false,
+            isDirty: draftContent !== document.content,
+            isLoading: false,
+            isSaving: false,
+            loadError: null,
+            saveError: null,
+            savedContent: document.content,
+            title: document.name,
+        };
+    });
+}
+
 export function setFileTabSaving(
     state: WorkspaceTreeState,
     tabId: string,

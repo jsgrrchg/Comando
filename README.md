@@ -2,7 +2,7 @@
 
 > A local-first workspace for coding with AI on real codebases. Spawn as many agent chats as you need — the app is built for it.
 
-Comando is a multi-pane workspace designed to let AI operate as a first-class collaborator inside your development flow, without sacrificing control, privacy, or proximity to the code.
+Comando is a multi-pane workspace designed to let AI operate as a first-class collaborator inside your development flow, without sacrificing control, or proximity to the code.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-41-47848F)](https://www.electronjs.org/)

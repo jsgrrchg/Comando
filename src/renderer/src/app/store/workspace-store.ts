@@ -23,6 +23,7 @@ import {
     collectPaneNodes,
     closeWorkspacePane,
     closeWorkspaceTab,
+    completeFileSave,
     createDefaultWorkspaceState,
     findPaneById,
     markTerminalExited,
@@ -1303,9 +1304,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             error: null,
         }));
 
+        const savedDraftContent = tab.draftContent;
+
         try {
             const document = await getComandoApi().saveProjectFile({
-                content: tab.draftContent,
+                content: savedDraftContent,
                 expectedModifiedAtMs: options?.force
                     ? null
                     : tab.document.modifiedAtMs,
@@ -1315,12 +1318,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             });
 
             set((state) => ({
-                ...replaceFileDocument(state, tabId, document),
+                ...completeFileSave(state, tabId, document, savedDraftContent),
                 error: null,
             }));
+            const currentTab = get().tabsById[tabId];
+            const currentBufferContent =
+                currentTab?.kind === "file" &&
+                currentTab.document?.absolutePath === document.absolutePath &&
+                currentTab.isDirty
+                    ? currentTab.draftContent
+                    : null;
             void getComandoApi().notifyFileBuffer({
                 absolutePath: document.absolutePath,
-                content: null,
+                content: currentBufferContent,
             });
         } catch (error) {
             const message =

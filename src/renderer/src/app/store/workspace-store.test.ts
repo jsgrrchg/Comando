@@ -31,6 +31,16 @@ const openProjectFileMock =
             readonly worktreeId?: string | null;
         }) => Promise<ProjectFileDocument>
     >();
+const saveProjectFileMock =
+    vi.fn<
+        (input: {
+            readonly content: string;
+            readonly expectedModifiedAtMs?: number | null;
+            readonly projectId: string;
+            readonly relativePath: string;
+            readonly worktreeId?: string | null;
+        }) => Promise<ProjectFileDocument>
+    >();
 const originalEnsureSession = useAiStore.getState().ensureSession;
 
 function createWorkspaceFileTab(id: string, relativePath: string) {
@@ -100,6 +110,7 @@ describe("workspace file opening", () => {
         ensureSessionMock.mockClear();
         notifyFileBufferMock.mockClear();
         openProjectFileMock.mockReset();
+        saveProjectFileMock.mockReset();
         openProjectFileMock.mockImplementation((input) =>
             Promise.resolve({
                 absolutePath: `/tmp/${input.relativePath}`,
@@ -119,6 +130,25 @@ describe("workspace file opening", () => {
                 sizeBytes: 24,
             }),
         );
+        saveProjectFileMock.mockImplementation((input) =>
+            Promise.resolve({
+                absolutePath: `/tmp/${input.relativePath}`,
+                content: input.content,
+                imageDataBase64: null,
+                isBinary: false,
+                isTooLarge: false,
+                kind: "text",
+                languageId: "typescript",
+                languageLabel: "TypeScript",
+                mimeType: "text/typescript",
+                modifiedAtMs: 2,
+                name:
+                    input.relativePath.split("/").at(-1) ?? input.relativePath,
+                projectId: input.projectId,
+                relativePath: input.relativePath,
+                sizeBytes: input.content.length,
+            }),
+        );
 
         Object.defineProperty(globalThis, "window", {
             configurable: true,
@@ -128,6 +158,7 @@ describe("workspace file opening", () => {
                     closeTerminalSession: closeTerminalSessionMock,
                     notifyFileBuffer: notifyFileBufferMock,
                     openProjectFile: openProjectFileMock,
+                    saveProjectFile: saveProjectFileMock,
                     saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
                 },
             },
@@ -821,6 +852,91 @@ describe("workspace file opening", () => {
             hasExternalChange: false,
             isDirty: true,
             saveError: null,
+        });
+    });
+
+    it("preserves edits made while a file save is in flight", async () => {
+        const originalDocument: ProjectFileDocument = {
+            absolutePath: "/tmp/notes.md",
+            content: "Hello\n",
+            imageDataBase64: null,
+            isBinary: false,
+            isTooLarge: false,
+            kind: "text",
+            languageId: "markdown",
+            languageLabel: "Markdown",
+            mimeType: "text/markdown",
+            modifiedAtMs: 1,
+            name: "notes.md",
+            projectId: "project-1",
+            relativePath: "notes.md",
+            sizeBytes: 6,
+        };
+        let resolveSave!: (document: ProjectFileDocument) => void;
+        saveProjectFileMock.mockImplementationOnce(
+            () =>
+                new Promise<ProjectFileDocument>((resolve) => {
+                    resolveSave = resolve;
+                }),
+        );
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": {
+                    ...createWorkspaceFileTab("file-1", "notes.md"),
+                    document: originalDocument,
+                    draftContent: "Hello world\n",
+                    isDirty: true,
+                    savedContent: "Hello\n",
+                    title: "notes.md",
+                },
+            },
+        }));
+
+        const savePromise = useWorkspaceStore
+            .getState()
+            .saveFileTab("file-1");
+
+        expect(saveProjectFileMock).toHaveBeenCalledWith({
+            content: "Hello world\n",
+            expectedModifiedAtMs: 1,
+            projectId: "project-1",
+            relativePath: "notes.md",
+            worktreeId: null,
+        });
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            isSaving: true,
+        });
+
+        useWorkspaceStore.getState().updateFileDraft("file-1", "Hello\n");
+        resolveSave({
+            ...originalDocument,
+            content: "Hello world\n",
+            modifiedAtMs: 2,
+            sizeBytes: "Hello world\n".length,
+        });
+        await savePromise;
+
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            document: expect.objectContaining({
+                content: "Hello world\n",
+                modifiedAtMs: 2,
+            }),
+            draftContent: "Hello\n",
+            isDirty: true,
+            isSaving: false,
+            savedContent: "Hello world\n",
+        });
+        expect(notifyFileBufferMock).toHaveBeenLastCalledWith({
+            absolutePath: "/tmp/notes.md",
+            content: "Hello\n",
         });
     });
 
