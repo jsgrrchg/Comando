@@ -37,6 +37,11 @@ import {
 import { filterProjectEntriesBySubstring } from "./app/projects/tree-filter";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
+    edgePeekConfig,
+    isPointInsideInflatedRect,
+    type EdgePeekPointerPosition,
+} from "./app/layout/edge-peek";
+import {
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
     serializeComposerProjectEntryListDragData,
@@ -292,6 +297,7 @@ export function App() {
         useState<FileTreeInlineEditorState | null>(null);
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
+    const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
     const [gitChangesFilter, setGitChangesFilter] = useState("");
     const [agentsFilter, setAgentsFilter] = useState("");
     const [fileTreeSelectedPaths, setFileTreeSelectedPaths] = useState<
@@ -308,7 +314,8 @@ export function App() {
     const fileTreeEntryIndexGenerationsRef = useRef(new Map<string, number>());
     const fileTreeEntryIndexRequestsRef = useRef(new Map<string, number>());
     const fileTreeBackendSearchRequestRef = useRef(0);
-    const overlayDismissRef = useRef<number | null>(null);
+    const sidebarOverlayRef = useRef<HTMLDivElement | null>(null);
+    const sidebarPointerRef = useRef<EdgePeekPointerPosition | null>(null);
     const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
     const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
@@ -893,6 +900,81 @@ export function App() {
             window.removeEventListener("pointerup", stopDragging);
         };
     }, [dragState]);
+
+    const cancelSidebarOverlayClose = useCallback(() => {
+        setSidebarOverlayClosing(false);
+    }, []);
+
+    const hideSidebarOverlayImmediately = useCallback(() => {
+        setSidebarOverlayClosing(false);
+        setSidebarOverlayVisible(false);
+    }, []);
+
+    const rememberSidebarPointer = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>) => {
+            sidebarPointerRef.current = {
+                x: event.clientX,
+                y: event.clientY,
+            };
+        },
+        [],
+    );
+
+    const isSidebarPointerInSafeZone = useCallback(() => {
+        const rect = sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
+        return isPointInsideInflatedRect(
+            sidebarPointerRef.current,
+            rect,
+            edgePeekConfig.safeGap,
+        );
+    }, []);
+
+    const showSidebarOverlay = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>) => {
+            rememberSidebarPointer(event);
+            cancelSidebarOverlayClose();
+            setSidebarOverlayVisible(true);
+        },
+        [cancelSidebarOverlayClose, rememberSidebarPointer],
+    );
+
+    const hideSidebarOverlayWithAnimation = useCallback(() => {
+        if (sidebarOverlayClosing || isSidebarPointerInSafeZone()) {
+            return;
+        }
+
+        setSidebarOverlayClosing(true);
+    }, [isSidebarPointerInSafeZone, sidebarOverlayClosing]);
+
+    useEffect(() => {
+        if (!sidebarOverlayVisible) {
+            return;
+        }
+
+        const handlePointerMove = (event: PointerEvent) => {
+            sidebarPointerRef.current = {
+                x: event.clientX,
+                y: event.clientY,
+            };
+
+            if (isSidebarPointerInSafeZone()) {
+                cancelSidebarOverlayClose();
+                return;
+            }
+
+            hideSidebarOverlayWithAnimation();
+        };
+
+        window.addEventListener("pointermove", handlePointerMove);
+        return () => {
+            window.removeEventListener("pointermove", handlePointerMove);
+        };
+    }, [
+        cancelSidebarOverlayClose,
+        hideSidebarOverlayWithAnimation,
+        isSidebarPointerInSafeZone,
+        sidebarOverlayVisible,
+    ]);
 
     const gridTemplateColumns = useMemo(() => {
         const leftCol = leftCollapsed ? 0 : leftWidth;
@@ -1951,7 +2033,7 @@ export function App() {
 
         setLeftCollapsed(false);
         setSidebarView("files");
-        setSidebarOverlayVisible(false);
+        hideSidebarOverlayImmediately();
         setFileTreeFilter("");
         setProjectRootExpandedByContext((currentState) => ({
             ...currentState,
@@ -1976,6 +2058,7 @@ export function App() {
     }, [
         activeProjectId,
         activeWorkspaceTab,
+        hideSidebarOverlayImmediately,
         revealPathInTree,
         setActiveProject,
         setActiveWorktree,
@@ -2178,16 +2261,20 @@ export function App() {
             if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
                 toggleLeftCollapsed();
-                setSidebarOverlayVisible(false);
+                hideSidebarOverlayImmediately();
             }
             if (event.key === "Escape") {
-                if (sidebarOverlayVisible) setSidebarOverlayVisible(false);
+                if (sidebarOverlayVisible) hideSidebarOverlayImmediately();
             }
         };
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [sidebarOverlayVisible, toggleLeftCollapsed]);
+    }, [
+        hideSidebarOverlayImmediately,
+        sidebarOverlayVisible,
+        toggleLeftCollapsed,
+    ]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -2265,7 +2352,7 @@ export function App() {
                         className="sidebar-collapse-toggle app-no-drag"
                         onClick={() => {
                             toggleLeftCollapsed();
-                            setSidebarOverlayVisible(false);
+                            hideSidebarOverlayImmediately();
                         }}
                         title={
                             leftCollapsed
@@ -2313,7 +2400,7 @@ export function App() {
                             className="sidebar-collapse-toggle sidebar-collapse-toggle--inline app-no-drag"
                             onClick={() => {
                                 toggleLeftCollapsed();
-                                setSidebarOverlayVisible(false);
+                                hideSidebarOverlayImmediately();
                             }}
                             title={
                                 leftCollapsed
@@ -2908,16 +2995,23 @@ export function App() {
                             left: 0,
                             top: 0,
                             bottom: 0,
-                            width: sidebarOverlayVisible ? 0 : 8,
+                            width: sidebarOverlayVisible
+                                ? 0
+                                : edgePeekConfig.hotspotWidth,
                             zIndex: 10,
                         }}
-                        onMouseEnter={() => setSidebarOverlayVisible(true)}
+                        onMouseEnter={showSidebarOverlay}
                     />
                 )}
 
                 {leftCollapsed && sidebarOverlayVisible && (
                     <div
+                        ref={sidebarOverlayRef}
                         className="flex min-h-0 flex-col bg-bg-panel"
+                        data-edge-peek-overlay="left"
+                        data-edge-peek-state={
+                            sidebarOverlayClosing ? "closing" : "opening"
+                        }
                         style={{
                             position: "absolute",
                             left: 0,
@@ -2928,20 +3022,25 @@ export function App() {
                             boxShadow: "var(--shadow-soft)",
                             borderRight: "1px solid var(--color-border)",
                         }}
-                        onMouseEnter={() => {
-                            if (overlayDismissRef.current) {
-                                clearTimeout(overlayDismissRef.current);
-                                overlayDismissRef.current = null;
-                            }
+                        onMouseEnter={(event) => {
+                            rememberSidebarPointer(event);
+                            cancelSidebarOverlayClose();
                         }}
-                        onMouseLeave={() => {
-                            overlayDismissRef.current = window.setTimeout(
-                                () => {
-                                    setSidebarOverlayVisible(false);
-                                    overlayDismissRef.current = null;
-                                },
-                                200,
-                            );
+                        onMouseMove={rememberSidebarPointer}
+                        onMouseLeave={(event) => {
+                            rememberSidebarPointer(event);
+                            hideSidebarOverlayWithAnimation();
+                        }}
+                        onAnimationEnd={(event) => {
+                            if (
+                                event.currentTarget !== event.target ||
+                                !sidebarOverlayClosing
+                            ) {
+                                return;
+                            }
+
+                            setSidebarOverlayClosing(false);
+                            setSidebarOverlayVisible(false);
                         }}
                     >
                         {sidebarContent}
