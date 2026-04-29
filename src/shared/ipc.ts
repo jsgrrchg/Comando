@@ -58,6 +58,9 @@ export const IPC_CHANNELS = {
     openProjects: "projects:open",
     cloneRepository: "projects:clone-repository",
     addProjectPaths: "projects:add-paths",
+    clearProjectAppData: "projects:clear-app-data",
+    getProjectAppDataSummary: "projects:get-app-data-summary",
+    relocateProject: "projects:relocate",
     removeProject: "projects:remove",
     touchProject: "projects:touch",
     listProjectTree: "projects:list-tree",
@@ -107,6 +110,8 @@ export const IPC_CHANNELS = {
 export const IPC_EVENTS = {
     appUpdateState: "app:update-state",
     appPrivacyAccessState: "app:privacy-access-state",
+    projectAppDataCleared: "projects:app-data-cleared",
+    projectsUpdated: "projects:updated",
     projectTreeInvalidated: "projects:tree-invalidated",
     projectWindowRequested: "app:project-window-requested",
     themeUpdated: "app:theme-updated",
@@ -801,6 +806,35 @@ export interface ProjectAddResult {
     readonly projectIdsToOpen: readonly string[];
     readonly projects: readonly ProjectSummary[];
 }
+
+export interface ProjectAppDataSummary {
+    readonly chatSessionCount: number;
+    readonly projectSettingsCount: number;
+    readonly recentProjectCount: number;
+    readonly workspaceLayoutCount: number;
+    readonly workspaceSessionCount: number;
+    readonly workspaceTabCount: number;
+}
+
+export interface ClearProjectAppDataInput {
+    readonly projectId: string;
+}
+
+export interface ClearProjectAppDataResult {
+    readonly cleared: ProjectAppDataSummary;
+    readonly projects: readonly ProjectSummary[];
+}
+
+export type ProjectRelocateResult =
+    | {
+          readonly kind: "canceled";
+          readonly projects: readonly ProjectSummary[];
+      }
+    | {
+          readonly kind: "relocated";
+          readonly project: ProjectSummary;
+          readonly projects: readonly ProjectSummary[];
+      };
 
 export interface CloneRepositoryInput {
     readonly repositoryUrl: string;
@@ -1616,8 +1650,19 @@ export interface ComandoApi {
         input: CloneRepositoryInput,
     ) => Promise<CloneRepositoryResult>;
     addProjectPaths: (paths: string[]) => Promise<ProjectAddResult>;
+    clearProjectAppData: (
+        input: ClearProjectAppDataInput,
+    ) => Promise<ClearProjectAppDataResult>;
+    getProjectAppDataSummary: (
+        projectId: string,
+    ) => Promise<ProjectAppDataSummary>;
+    relocateProject: (projectId: string) => Promise<ProjectRelocateResult>;
     removeProject: (projectId: string) => Promise<void>;
     touchProject: (projectId: string) => Promise<void>;
+    onProjectAppDataCleared: (listener: (projectId: string) => void) => () => void;
+    onProjectsUpdated: (
+        listener: (projects: readonly ProjectSummary[]) => void,
+    ) => () => void;
     onProjectWindowRequested: (
         listener: (payload: OpenProjectWindowInput) => void,
     ) => () => void;

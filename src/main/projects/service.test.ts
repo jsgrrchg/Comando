@@ -137,6 +137,148 @@ describe("ProjectService", () => {
         });
     });
 
+    it("clears app-specific project data without removing project files or other projects", async () => {
+        const connection = createTestConnection();
+        const projectService = createProjectService(connection);
+        const projectRoot = createTempProject(tempDirs, "clear-alpha");
+        const otherRoot = createTempProject(tempDirs, "clear-beta");
+        const projectFilePath = path.join(projectRoot, "README.md");
+
+        fs.writeFileSync(projectFilePath, "keep me\n");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        const [otherProject] = (
+            await projectService.addProjectPaths([otherRoot])
+        ).projects.filter((candidate) => candidate.rootPath === otherRoot);
+        if (!project || !otherProject) {
+            throw new Error("Expected both projects to be created.");
+        }
+
+        seedProjectAppData(connection, project.id, `${project.id}:primary`);
+        seedProjectAppData(
+            connection,
+            otherProject.id,
+            `${otherProject.id}:primary`,
+        );
+
+        await expect(
+            projectService.getProjectAppDataSummary(project.id),
+        ).resolves.toEqual({
+            chatSessionCount: 1,
+            projectSettingsCount: 1,
+            recentProjectCount: 1,
+            workspaceLayoutCount: 1,
+            workspaceSessionCount: 1,
+            workspaceTabCount: 1,
+        });
+
+        const result = await projectService.clearProjectAppData(project.id);
+
+        expect(result.cleared).toEqual({
+            chatSessionCount: 1,
+            projectSettingsCount: 1,
+            recentProjectCount: 1,
+            workspaceLayoutCount: 1,
+            workspaceSessionCount: 1,
+            workspaceTabCount: 1,
+        });
+        expect(fs.existsSync(projectFilePath)).toBe(true);
+        expect(result.projects.some((candidate) => candidate.id === project.id))
+            .toBe(true);
+        expect(countRows(connection, "chat_sessions", project.id)).toBe(0);
+        expect(countRows(connection, "chat_transcripts", project.id)).toBe(0);
+        expect(countRows(connection, "project_settings", project.id)).toBe(0);
+        expect(countRows(connection, "recent_projects", project.id)).toBe(0);
+        expect(countRows(connection, "workspace_layouts", project.id)).toBe(0);
+        expect(countRows(connection, "workspace_sessions", project.id)).toBe(0);
+        expect(countRows(connection, "workspace_tabs", project.id)).toBe(0);
+        expect(
+            result.projects.find((candidate) => candidate.id === project.id)
+                ?.lastOpenedAt,
+        ).toBeNull();
+        expect(countRows(connection, "chat_sessions", otherProject.id)).toBe(1);
+        expect(countRows(connection, "project_settings", otherProject.id)).toBe(
+            1,
+        );
+        expect(countRows(connection, "recent_projects", otherProject.id)).toBe(
+            1,
+        );
+        expect(countRows(connection, "workspace_layouts", otherProject.id)).toBe(
+            1,
+        );
+        expect(countRows(connection, "workspace_tabs", otherProject.id)).toBe(1);
+    });
+
+    it("relocates a project path while preserving the project id and chat history", async () => {
+        const connection = createTestConnection();
+        const invalidations: string[] = [];
+        const projectService = createProjectService(connection, (payload) => {
+            invalidations.push(payload.projectId);
+        });
+        const projectRoot = createTempProject(tempDirs, "relocate-old");
+        const nextRoot = createTempProject(tempDirs, "relocate-new");
+        const nextFilePath = path.join(nextRoot, "src", "index.ts");
+
+        fs.mkdirSync(path.dirname(nextFilePath), { recursive: true });
+        fs.writeFileSync(nextFilePath, "export const relocated = true;\n");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+        seedProjectAppData(connection, project.id, `${project.id}:primary`);
+
+        const result = await projectService.relocateProject(
+            project.id,
+            nextRoot,
+        );
+
+        expect(result.project.id).toBe(project.id);
+        expect(result.project.rootPath).toBe(nextRoot);
+        expect(invalidations).toContain(project.id);
+        expect(countRows(connection, "chat_sessions", project.id)).toBe(1);
+        await expect(
+            projectService.openProjectFile({
+                projectId: project.id,
+                relativePath: "src/index.ts",
+                worktreeId: `${project.id}:primary`,
+            }),
+        ).resolves.toMatchObject({
+            absolutePath: nextFilePath,
+            projectId: project.id,
+        });
+    });
+
+    it("can relocate to a path previously owned by a hidden project", async () => {
+        const connection = createTestConnection();
+        const projectService = createProjectService(connection);
+        const hiddenRoot = createTempProject(tempDirs, "relocate-hidden");
+        const visibleRoot = createTempProject(tempDirs, "relocate-visible");
+
+        const [hiddenProject] = (
+            await projectService.addProjectPaths([hiddenRoot])
+        ).projects;
+        const [visibleProject] = (
+            await projectService.addProjectPaths([visibleRoot])
+        ).projects.filter((candidate) => candidate.rootPath === visibleRoot);
+        if (!hiddenProject || !visibleProject) {
+            throw new Error("Expected both projects to be created.");
+        }
+
+        await projectService.removeProject(hiddenProject.id);
+        const result = await projectService.relocateProject(
+            visibleProject.id,
+            hiddenRoot,
+        );
+
+        expect(result.project.id).toBe(visibleProject.id);
+        expect(result.project.rootPath).toBe(hiddenRoot);
+    });
+
     it("reuses the cached search index until project contents change", async () => {
         const connection = createTestConnection();
         const projectService = createProjectService(connection);
@@ -325,9 +467,12 @@ function createTestConnection() {
 
 function createProjectService(
     connection: ReturnType<typeof createTestConnection>,
+    onProjectTreeInvalidated: ConstructorParameters<
+        typeof ProjectService
+    >[0]["onProjectTreeInvalidated"] = () => {},
 ) {
     return new ProjectService({
-        onProjectTreeInvalidated: () => {},
+        onProjectTreeInvalidated,
         store: new SqliteProjectStore(connection),
     });
 }
@@ -338,4 +483,239 @@ function createTempProject(tempDirs: string[], name: string): string {
     fs.mkdirSync(projectRoot, { recursive: true });
     tempDirs.push(tempDir);
     return projectRoot;
+}
+
+function seedProjectAppData(
+    connection: ReturnType<typeof createTestConnection>,
+    projectId: string,
+    worktreeId: string,
+): void {
+    const now = new Date().toISOString();
+    const sessionId = `session:${projectId}`;
+    const workspaceId = `workspace:${projectId}`;
+    const windowId = `window:${projectId}`;
+
+    connection
+        .prepare(
+            `
+            INSERT INTO project_settings (project_id, key, value, updated_at)
+            VALUES (?, 'ai.model', 'codex', ?)
+            `,
+        )
+        .run(projectId, now);
+    connection
+        .prepare(
+            `
+            INSERT INTO chat_sessions (
+                id,
+                project_id,
+                worktree_id,
+                title,
+                runtime,
+                status,
+                draft,
+                created_at,
+                updated_at,
+                last_opened_at
+            )
+            VALUES (?, ?, ?, 'History', 'codex', 'idle', '', ?, ?, ?)
+            `,
+        )
+        .run(sessionId, projectId, worktreeId, now, now, now);
+    connection
+        .prepare(
+            `
+            INSERT INTO chat_transcripts (
+                id,
+                session_id,
+                transcript_json,
+                message_count,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, '{}', 1, ?, ?)
+            `,
+        )
+        .run(`transcript:${projectId}`, sessionId, now, now);
+    connection
+        .prepare(
+            `
+            INSERT INTO chat_session_events (
+                id,
+                session_id,
+                sequence,
+                event_type,
+                payload_json,
+                created_at
+            )
+            VALUES (?, ?, 1, 'message', '{}', ?)
+            `,
+        )
+        .run(`event:${projectId}`, sessionId, now);
+    connection
+        .prepare(
+            `
+            INSERT INTO review_artifacts (
+                id,
+                session_id,
+                artifact_type,
+                title,
+                payload_json,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, 'review', 'Review', '{}', ?, ?)
+            `,
+        )
+        .run(`artifact:${projectId}`, sessionId, now, now);
+    connection
+        .prepare(
+            `
+            INSERT INTO workspace_layouts (
+                id,
+                root_node_json,
+                active_pane_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, '{}', 'pane-root', ?, ?)
+            `,
+        )
+        .run(workspaceId, now, now);
+    connection
+        .prepare(
+            `
+            INSERT INTO workspace_tabs (
+                id,
+                workspace_id,
+                kind,
+                title,
+                payload_json,
+                created_at,
+                position,
+                worktree_id
+            )
+            VALUES (?, ?, 'chat', 'History', ?, ?, 0, ?)
+            `,
+        )
+        .run(
+            `tab:${projectId}`,
+            workspaceId,
+            JSON.stringify({ projectId }),
+            now,
+            worktreeId,
+        );
+    connection
+        .prepare(
+            `
+            INSERT INTO app_windows (
+                id,
+                kind,
+                title,
+                width,
+                height,
+                created_at,
+                updated_at,
+                last_seen_at
+            )
+            VALUES (?, 'main', 'Comando', 1200, 800, ?, ?, ?)
+            `,
+        )
+        .run(windowId, now, now, now);
+    connection
+        .prepare(
+            `
+            INSERT INTO workspace_sessions (
+                id,
+                window_id,
+                workspace_id,
+                active_project_id,
+                active_worktree_id,
+                created_at,
+                updated_at,
+                last_opened_at,
+                shell_state_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')
+            `,
+        )
+        .run(
+            `workspace-session:${projectId}`,
+            windowId,
+            workspaceId,
+            projectId,
+            worktreeId,
+            now,
+            now,
+            now,
+        );
+}
+
+function countRows(
+    connection: ReturnType<typeof createTestConnection>,
+    tableName:
+        | "chat_sessions"
+        | "chat_transcripts"
+        | "project_settings"
+        | "recent_projects"
+        | "workspace_layouts"
+        | "workspace_sessions"
+        | "workspace_tabs",
+    projectId: string,
+): number {
+    if (tableName === "workspace_layouts") {
+        const row = connection
+            .prepare(
+                `
+                SELECT COUNT(*) AS count
+                FROM workspace_layouts
+                WHERE id = ?
+                `,
+            )
+            .get(`workspace:${projectId}`) as { count: number } | undefined;
+        return row?.count ?? 0;
+    }
+
+    if (tableName === "workspace_sessions") {
+        const row = connection
+            .prepare(
+                `
+                SELECT COUNT(*) AS count
+                FROM workspace_sessions
+                WHERE active_project_id = ?
+                `,
+            )
+            .get(projectId) as { count: number } | undefined;
+        return row?.count ?? 0;
+    }
+
+    if (tableName === "workspace_tabs") {
+        const row = connection
+            .prepare(
+                `
+                SELECT COUNT(*) AS count
+                FROM workspace_tabs
+                WHERE json_valid(payload_json)
+                  AND json_extract(payload_json, '$.projectId') = ?
+                `,
+            )
+            .get(projectId) as { count: number } | undefined;
+        return row?.count ?? 0;
+    }
+
+    const row = connection
+        .prepare(
+            tableName === "chat_transcripts"
+                ? `
+                  SELECT COUNT(*) AS count
+                  FROM chat_transcripts
+                  INNER JOIN chat_sessions
+                    ON chat_sessions.id = chat_transcripts.session_id
+                  WHERE chat_sessions.project_id = ?
+                `
+                : `SELECT COUNT(*) AS count FROM ${tableName} WHERE project_id = ?`,
+        )
+        .get(projectId) as { count: number } | undefined;
+
+    return row?.count ?? 0;
 }

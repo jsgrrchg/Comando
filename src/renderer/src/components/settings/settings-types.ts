@@ -1,5 +1,6 @@
 import type {
     AppChangelogRelease,
+    ProjectAppDataSummary,
     AppPrivacyAccessState,
     AppUpdateState,
 } from "@shared/ipc";
@@ -118,10 +119,32 @@ export interface SettingsWindowProps {
     readonly appEditor: SettingsEditorControlState;
     readonly aiChat: SettingsAiChatState;
     readonly privacy: SettingsPrivacyState;
+    readonly projects: SettingsProjectsState;
     readonly updates: SettingsUpdatesState;
     readonly shortcuts?: readonly ShortcutEntryOption[];
     readonly runtimes?: readonly RuntimeCardOption[];
     readonly onRuntimeAction?: (runtimeId: string, actionId: string) => void;
+}
+
+export interface SettingsProjectOption {
+    readonly id: string;
+    readonly name: string;
+    readonly rootPath: string;
+    readonly lastOpenedAt: string | null;
+}
+
+export interface SettingsProjectsState {
+    readonly error: string | null;
+    readonly loading: boolean;
+    readonly projects: readonly SettingsProjectOption[];
+    readonly onAddProject?: () => void;
+    readonly onClearAppData?: (projectId: string) => void;
+    readonly onGetAppDataSummary?: (
+        projectId: string,
+    ) => Promise<ProjectAppDataSummary>;
+    readonly onRelocateProject?: (projectId: string) => void;
+    readonly onRemoveProject?: (projectId: string) => void;
+    readonly onRevealProject?: (projectId: string) => void;
 }
 
 export interface SettingsPrivacyState {

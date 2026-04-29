@@ -21,6 +21,7 @@ import {
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
     type ClaudeRuntimeSettingsInput,
+    type ClearProjectAppDataInput,
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type CodexRuntimeSettingsInput,
@@ -197,6 +198,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openProjects);
     ipcMain.removeHandler(IPC_CHANNELS.cloneRepository);
     ipcMain.removeHandler(IPC_CHANNELS.addProjectPaths);
+    ipcMain.removeHandler(IPC_CHANNELS.clearProjectAppData);
+    ipcMain.removeHandler(IPC_CHANNELS.getProjectAppDataSummary);
+    ipcMain.removeHandler(IPC_CHANNELS.relocateProject);
     ipcMain.removeHandler(IPC_CHANNELS.removeProject);
     ipcMain.removeHandler(IPC_CHANNELS.touchProject);
     ipcMain.removeHandler(IPC_CHANNELS.listProjectTree);
@@ -837,6 +841,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             window.webContents.send(IPC_EVENTS.themeUpdated, theme);
         });
     });
+    const broadcastProjectsUpdated = () => {
+        const projects = options.projectService.listProjects();
+        forEachLiveWindow((window) => {
+            window.webContents.send(IPC_EVENTS.projectsUpdated, projects);
+        });
+        return projects;
+    };
+
     ipcMain.handle(IPC_CHANNELS.listProjects, () =>
         options.projectService.listProjects(),
     );
@@ -861,7 +873,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             };
         }
 
-        return options.projectService.addProjectPaths(result.filePaths);
+        const addResult = await options.projectService.addProjectPaths(
+            result.filePaths,
+        );
+        broadcastProjectsUpdated();
+        return addResult;
     });
     ipcMain.handle(
         IPC_CHANNELS.cloneRepository,
@@ -908,15 +924,80 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
             const result =
                 await options.projectService.addProjectPaths([targetPath]);
+            broadcastProjectsUpdated();
             return { kind: "added", result };
         },
     );
-    ipcMain.handle(IPC_CHANNELS.addProjectPaths, (_event, paths: string[]) =>
-        options.projectService.addProjectPaths(paths),
+    ipcMain.handle(IPC_CHANNELS.addProjectPaths, async (_event, paths: string[]) => {
+        const result = await options.projectService.addProjectPaths(paths);
+        broadcastProjectsUpdated();
+        return result;
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.getProjectAppDataSummary,
+        (_event, projectId: string) =>
+            options.projectService.getProjectAppDataSummary(projectId),
     );
-    ipcMain.handle(IPC_CHANNELS.removeProject, (_event, projectId: string) =>
-        options.projectService.removeProject(projectId),
+    ipcMain.handle(
+        IPC_CHANNELS.clearProjectAppData,
+        async (_event, input: ClearProjectAppDataInput) => {
+            const result = await options.projectService.clearProjectAppData(
+                input.projectId,
+            );
+            forEachLiveWindow((window) => {
+                window.webContents.send(
+                    IPC_EVENTS.projectAppDataCleared,
+                    input.projectId,
+                );
+            });
+            broadcastProjectsUpdated();
+            return result;
+        },
     );
+    ipcMain.handle(IPC_CHANNELS.relocateProject, async (event, projectId: string) => {
+        const ownerWindow =
+            BrowserWindow.fromWebContents(event.sender) ??
+            BrowserWindow.getFocusedWindow();
+        const dialogOptions: OpenDialogOptions = {
+            buttonLabel: "Use This Folder",
+            message:
+                "Choose the new folder for this project. Chat history will be preserved.",
+            properties: ["openDirectory"],
+            title: "Change project location",
+        };
+        const selection = ownerWindow
+            ? await dialog.showOpenDialog(ownerWindow, dialogOptions)
+            : await dialog.showOpenDialog(dialogOptions);
+
+        if (selection.canceled || selection.filePaths.length === 0) {
+            return {
+                kind: "canceled",
+                projects: options.projectService.listProjects(),
+            };
+        }
+
+        const projectPath = selection.filePaths[0];
+        if (!projectPath) {
+            return {
+                kind: "canceled",
+                projects: options.projectService.listProjects(),
+            };
+        }
+
+        const result = await options.projectService.relocateProject(
+            projectId,
+            projectPath,
+        );
+        broadcastProjectsUpdated();
+        return {
+            kind: "relocated",
+            ...result,
+        };
+    });
+    ipcMain.handle(IPC_CHANNELS.removeProject, async (_event, projectId: string) => {
+        await options.projectService.removeProject(projectId);
+        broadcastProjectsUpdated();
+    });
     ipcMain.handle(IPC_CHANNELS.touchProject, (_event, projectId: string) => {
         options.projectService.touchProject(projectId);
     });

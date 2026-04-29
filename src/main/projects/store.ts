@@ -5,7 +5,7 @@ import path from "node:path";
 
 import type Database from "better-sqlite3";
 
-import type { ProjectSummary } from "@shared/ipc";
+import type { ProjectAppDataSummary, ProjectSummary } from "@shared/ipc";
 
 import type { Awaitable } from "../db/awaitable";
 import { debugBenignError } from "../observability/logging";
@@ -61,13 +61,21 @@ export interface ProjectStore {
     addProjectPaths(
         projectPaths: readonly string[],
     ): Awaitable<ProjectStoreAddPathsResult>;
+    clearProjectAppData(projectId: string): Awaitable<ProjectAppDataSummary>;
     getProject(projectId: string): ProjectRecord | null;
+    getProjectAppDataSummary(
+        projectId: string,
+    ): Awaitable<ProjectAppDataSummary>;
     getProjectWorktree(worktreeId: string): ProjectStoreWorktreeRecord | null;
     listProjects(): readonly ProjectSummary[];
     listProjectWorktrees(
         projectId: string,
     ): readonly ProjectStoreWorktreeRecord[];
     removeProject(projectId: string): void;
+    relocateProject(
+        projectId: string,
+        projectPath: string,
+    ): Awaitable<ProjectSummary>;
     syncProjectWorktrees(
         projectId: string,
         worktrees: readonly {
@@ -294,6 +302,172 @@ export class SqliteProjectStore implements ProjectStore {
         };
     }
 
+    clearProjectAppData(projectId: string): ProjectAppDataSummary {
+        const summary = this.getProjectAppDataSummary(projectId);
+        const worktreeIds = this.#listProjectWorktreeIds(projectId);
+        const workspaceLayoutIds = this.#listProjectWorkspaceLayoutIds(
+            projectId,
+            worktreeIds,
+        );
+        const deleteReviewArtifacts = this.#connection.prepare<
+            [string],
+            void
+        >(
+            `
+            DELETE FROM review_artifacts
+            WHERE session_id IN (
+                SELECT id
+                FROM chat_sessions
+                WHERE project_id = ?
+            )
+            `,
+        );
+        const deleteSessionEvents = this.#connection.prepare<[string], void>(
+            `
+            DELETE FROM chat_session_events
+            WHERE session_id IN (
+                SELECT id
+                FROM chat_sessions
+                WHERE project_id = ?
+            )
+            `,
+        );
+        const deleteTranscripts = this.#connection.prepare<[string], void>(
+            `
+            DELETE FROM chat_transcripts
+            WHERE session_id IN (
+                SELECT id
+                FROM chat_sessions
+                WHERE project_id = ?
+            )
+            `,
+        );
+        const deleteSessions = this.#connection.prepare<[string], void>(
+            "DELETE FROM chat_sessions WHERE project_id = ?",
+        );
+        const deleteProjectSettings = this.#connection.prepare<[string], void>(
+            "DELETE FROM project_settings WHERE project_id = ?",
+        );
+        const deleteRecentProject = this.#connection.prepare<[string], void>(
+            "DELETE FROM recent_projects WHERE project_id = ?",
+        );
+        const deleteWorkspaceTabsByProject = this.#connection.prepare<
+            [string],
+            void
+        >(
+            `
+            DELETE FROM workspace_tabs
+            WHERE json_valid(payload_json)
+              AND json_extract(payload_json, '$.projectId') = ?
+            `,
+        );
+        const clearWorkspaceSessionsByProject = this.#connection.prepare<
+            [string],
+            void
+        >(
+            `
+            UPDATE workspace_sessions
+            SET active_project_id = NULL,
+                active_worktree_id = NULL,
+                shell_state_json = NULL
+            WHERE active_project_id = ?
+            `,
+        );
+        const deleteWorkspaceTabsByWorktree =
+            worktreeIds.length > 0
+                ? this.#connection.prepare(
+                      `
+                      DELETE FROM workspace_tabs
+                      WHERE worktree_id IN (${createPlaceholders(worktreeIds.length)})
+                      `,
+                  )
+                : null;
+        const clearWorkspaceSessionsByWorktree =
+            worktreeIds.length > 0
+                ? this.#connection.prepare(
+                      `
+                      UPDATE workspace_sessions
+                      SET active_project_id = NULL,
+                          active_worktree_id = NULL,
+                          shell_state_json = NULL
+                      WHERE active_worktree_id IN (${createPlaceholders(worktreeIds.length)})
+                      `,
+                  )
+                : null;
+        const deleteWorkspaceLayouts =
+            workspaceLayoutIds.length > 0
+                ? this.#connection.prepare(
+                      `
+                      DELETE FROM workspace_layouts
+                      WHERE id IN (${createPlaceholders(workspaceLayoutIds.length)})
+                      `,
+                  )
+                : null;
+
+        const transaction = this.#connection.transaction(() => {
+            deleteReviewArtifacts.run(projectId);
+            deleteSessionEvents.run(projectId);
+            deleteTranscripts.run(projectId);
+            deleteSessions.run(projectId);
+            deleteProjectSettings.run(projectId);
+            deleteRecentProject.run(projectId);
+            deleteWorkspaceTabsByProject.run(projectId);
+            deleteWorkspaceTabsByWorktree?.run(...worktreeIds);
+            deleteWorkspaceLayouts?.run(...workspaceLayoutIds);
+            clearWorkspaceSessionsByProject.run(projectId);
+            clearWorkspaceSessionsByWorktree?.run(...worktreeIds);
+        });
+
+        transaction();
+        return summary;
+    }
+
+    getProjectAppDataSummary(projectId: string): ProjectAppDataSummary {
+        const worktreeIds = this.#listProjectWorktreeIds(projectId);
+        const chatSessionCount = getCount(
+            this.#connection
+                .prepare<[string], { count: number }>(
+                    "SELECT COUNT(*) AS count FROM chat_sessions WHERE project_id = ?",
+                )
+                .get(projectId),
+        );
+        const projectSettingsCount = getCount(
+            this.#connection
+                .prepare<[string], { count: number }>(
+                    "SELECT COUNT(*) AS count FROM project_settings WHERE project_id = ?",
+                )
+                .get(projectId),
+        );
+        const recentProjectCount = getCount(
+            this.#connection
+                .prepare<[string], { count: number }>(
+                    "SELECT COUNT(*) AS count FROM recent_projects WHERE project_id = ?",
+                )
+                .get(projectId),
+        );
+        const workspaceTabCount = this.#countWorkspaceTabs(
+            projectId,
+            worktreeIds,
+        );
+        const workspaceSessionCount = this.#countWorkspaceSessions(
+            projectId,
+            worktreeIds,
+        );
+        const workspaceLayoutCount = this.#listProjectWorkspaceLayoutIds(
+            projectId,
+            worktreeIds,
+        ).length;
+
+        return {
+            chatSessionCount,
+            projectSettingsCount,
+            recentProjectCount,
+            workspaceLayoutCount,
+            workspaceSessionCount,
+            workspaceTabCount,
+        };
+    }
+
     removeProject(projectId: string): void {
         this.#connection
             .prepare<[string], void>(
@@ -310,6 +484,240 @@ export class SqliteProjectStore implements ProjectStore {
                 void
             >("DELETE FROM recent_projects WHERE project_id = ?")
             .run(projectId);
+    }
+
+    relocateProject(projectId: string, projectPath: string): ProjectSummary {
+        const project = this.getProject(projectId);
+        if (!project) {
+            throw new Error("The requested project does not exist anymore.");
+        }
+
+        const normalizedPath = path.resolve(projectPath);
+        if (!isDirectoryPath(normalizedPath)) {
+            throw new Error("Choose an existing folder for this project.");
+        }
+
+        const projectPathMeta = resolveProjectPathMetadata(normalizedPath);
+        this.#assertRelocationDoesNotConflict(projectId, projectPathMeta);
+
+        const updateProject = this.#connection.prepare<
+            [string, string, string, string],
+            void
+        >(
+            `
+            UPDATE projects
+            SET name = ?,
+                canonical_root_path = ?,
+                updated_at = ?,
+                is_hidden = 0
+            WHERE id = ?
+            `,
+        );
+        const deleteRoots = this.#connection.prepare<[string], void>(
+            "DELETE FROM project_roots WHERE project_id = ?",
+        );
+        const releaseHiddenProjectRoots = this.#connection.prepare<
+            [string, string, string],
+            void
+        >(
+            `
+            DELETE FROM project_roots
+            WHERE root_path IN (?, ?)
+              AND project_id IN (
+                  SELECT id
+                  FROM projects
+                  WHERE is_hidden = 1
+                    AND id <> ?
+              )
+            `,
+        );
+        const releaseHiddenProjectWorktrees = this.#connection.prepare<
+            [string, string, string],
+            void
+        >(
+            `
+            DELETE FROM project_worktrees
+            WHERE root_path IN (?, ?)
+              AND project_id IN (
+                  SELECT id
+                  FROM projects
+                  WHERE is_hidden = 1
+                    AND id <> ?
+              )
+            `,
+        );
+        const retireHiddenCanonicalProject = this.#connection.prepare<
+            [string, string, string],
+            void
+        >(
+            `
+            UPDATE projects
+            SET canonical_root_path = 'hidden:' || id || ':' || canonical_root_path,
+                updated_at = ?
+            WHERE canonical_root_path = ?
+              AND id <> ?
+              AND is_hidden = 1
+            `,
+        );
+        const insertRoot = this.#connection.prepare<
+            [string, string, number],
+            void
+        >(
+            `
+            INSERT INTO project_roots (project_id, root_path, is_primary)
+            VALUES (?, ?, ?)
+            `,
+        );
+        const deleteDuplicatePrimaryRootWorktree = this.#connection.prepare<
+            [string, string, string],
+            void
+        >(
+            `
+            DELETE FROM project_worktrees
+            WHERE project_id = ?
+              AND root_path = ?
+              AND id <> ?
+            `,
+        );
+        const upsertPrimaryWorktree = this.#connection.prepare<
+            [string, string, string, string, string],
+            void
+        >(
+            `
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, NULL, NULL, 1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                root_path = excluded.root_path,
+                branch_name = excluded.branch_name,
+                head_sha = excluded.head_sha,
+                is_primary = 1,
+                updated_at = excluded.updated_at
+            `,
+        );
+        const findExistingWorktree = this.#connection.prepare<
+            [string],
+            { id: string } | undefined
+        >(
+            `
+            SELECT id
+            FROM project_worktrees
+            WHERE root_path = ?
+            `,
+        );
+        const insertWorktree = this.#connection.prepare<
+            [
+                string,
+                string,
+                string,
+                string | null,
+                string | null,
+                number,
+                string,
+                string,
+            ],
+            void
+        >(
+            `
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+        );
+        const touchRecent = this.#connection.prepare<[string, string], void>(
+            `
+            INSERT INTO recent_projects (project_id, last_opened_at)
+            VALUES (?, ?)
+            ON CONFLICT(project_id) DO UPDATE SET
+                last_opened_at = excluded.last_opened_at
+            `,
+        );
+        const now = new Date().toISOString();
+
+        const transaction = this.#connection.transaction(() => {
+            releaseHiddenProjectRoots.run(
+                projectPathMeta.canonicalRootPath,
+                projectPathMeta.worktreeRootPath,
+                projectId,
+            );
+            releaseHiddenProjectWorktrees.run(
+                projectPathMeta.canonicalRootPath,
+                projectPathMeta.worktreeRootPath,
+                projectId,
+            );
+            retireHiddenCanonicalProject.run(
+                now,
+                projectPathMeta.canonicalRootPath,
+                projectId,
+            );
+            updateProject.run(
+                path.basename(projectPathMeta.canonicalRootPath),
+                projectPathMeta.canonicalRootPath,
+                now,
+                projectId,
+            );
+            deleteRoots.run(projectId);
+            ensureProjectRoots({
+                canonicalRootPath: projectPathMeta.canonicalRootPath,
+                insertRoot,
+                projectId,
+                selectedRootPath: projectPathMeta.worktreeRootPath,
+            });
+            deleteDuplicatePrimaryRootWorktree.run(
+                projectId,
+                projectPathMeta.canonicalRootPath,
+                `${projectId}:primary`,
+            );
+            upsertPrimaryWorktree.run(
+                `${projectId}:primary`,
+                projectId,
+                projectPathMeta.canonicalRootPath,
+                now,
+                now,
+            );
+
+            if (
+                projectPathMeta.worktreeRootPath !==
+                projectPathMeta.canonicalRootPath
+            ) {
+                ensureProjectWorktree({
+                    findExistingWorktree,
+                    insertWorktree,
+                    now,
+                    projectId,
+                    rootPath: projectPathMeta.worktreeRootPath,
+                });
+            }
+
+            touchRecent.run(projectId, now);
+        });
+
+        transaction();
+
+        const relocated = this.listProjects().find(
+            (candidate) => candidate.id === projectId,
+        );
+        if (!relocated) {
+            throw new Error("The relocated project could not be loaded.");
+        }
+
+        return relocated;
     }
 
     touchProject(projectId: string): void {
@@ -618,6 +1026,147 @@ export class SqliteProjectStore implements ProjectStore {
                 updatedAt: row.updated_at,
             }));
     }
+
+    #assertRelocationDoesNotConflict(
+        projectId: string,
+        projectPathMeta: {
+            readonly canonicalRootPath: string;
+            readonly worktreeRootPath: string;
+        },
+    ): void {
+        const conflictingProject = this.#connection
+            .prepare<
+                [string, string],
+                { id: string; name: string } | undefined
+            >(
+                `
+                SELECT id, name
+                FROM projects
+                WHERE canonical_root_path = ?
+                  AND id <> ?
+                  AND is_hidden = 0
+                LIMIT 1
+                `,
+            )
+            .get(projectPathMeta.canonicalRootPath, projectId);
+
+        if (conflictingProject) {
+            throw new Error(
+                `This folder is already registered as "${conflictingProject.name}".`,
+            );
+        }
+
+        const pathsToCheck = [
+            projectPathMeta.canonicalRootPath,
+            projectPathMeta.worktreeRootPath,
+        ];
+        const conflictingWorktree = this.#connection.prepare<
+            [string, string],
+            { project_id: string } | undefined
+        >(
+            `
+            SELECT project_worktrees.project_id
+            FROM project_worktrees
+            INNER JOIN projects
+                ON projects.id = project_worktrees.project_id
+            WHERE root_path = ?
+              AND project_worktrees.project_id <> ?
+              AND projects.is_hidden = 0
+            LIMIT 1
+            `,
+        );
+
+        for (const rootPath of pathsToCheck) {
+            if (conflictingWorktree.get(rootPath, projectId)) {
+                throw new Error(
+                    "This folder is already used by another project.",
+                );
+            }
+        }
+    }
+
+    #countWorkspaceSessions(
+        projectId: string,
+        worktreeIds: readonly string[],
+    ): number {
+        const worktreeFilter =
+            worktreeIds.length > 0
+                ? `OR active_worktree_id IN (${createPlaceholders(worktreeIds.length)})`
+                : "";
+        const row = this.#connection
+            .prepare(
+                `
+                SELECT COUNT(*) AS count
+                FROM workspace_sessions
+                WHERE active_project_id = ?
+                   ${worktreeFilter}
+                `,
+            )
+            .get(projectId, ...worktreeIds) as { count: number } | undefined;
+
+        return getCount(row);
+    }
+
+    #countWorkspaceTabs(
+        projectId: string,
+        worktreeIds: readonly string[],
+    ): number {
+        const worktreeFilter =
+            worktreeIds.length > 0
+                ? `OR worktree_id IN (${createPlaceholders(worktreeIds.length)})`
+                : "";
+        const row = this.#connection
+            .prepare(
+                `
+                SELECT COUNT(*) AS count
+                FROM workspace_tabs
+                WHERE (
+                    json_valid(payload_json)
+                    AND json_extract(payload_json, '$.projectId') = ?
+                )
+                ${worktreeFilter}
+                `,
+            )
+            .get(projectId, ...worktreeIds) as { count: number } | undefined;
+
+        return getCount(row);
+    }
+
+    #listProjectWorkspaceLayoutIds(
+        projectId: string,
+        worktreeIds: readonly string[],
+    ): readonly string[] {
+        const worktreeFilter =
+            worktreeIds.length > 0
+                ? `OR workspace_sessions.active_worktree_id IN (${createPlaceholders(worktreeIds.length)})`
+                : "";
+        return this.#connection
+            .prepare(
+                `
+                SELECT DISTINCT workspace_sessions.workspace_id AS id
+                FROM workspace_sessions
+                INNER JOIN workspace_layouts
+                    ON workspace_layouts.id = workspace_sessions.workspace_id
+                WHERE workspace_sessions.active_project_id = ?
+                   ${worktreeFilter}
+                `,
+            )
+            .all(projectId, ...worktreeIds)
+            .map((row) => (row as { id: string }).id);
+    }
+
+    #listProjectWorktreeIds(projectId: string): readonly string[] {
+        return this.#connection
+            .prepare<[string], { id: string }>(
+                `
+                SELECT id
+                FROM project_worktrees
+                WHERE project_id = ?
+                `,
+            )
+            .all(projectId)
+            .map((row) => row.id);
+    }
 }
 
 function mapWorktreeRow(
@@ -736,4 +1285,12 @@ function isDirectoryPath(projectPath: string): boolean {
         debugBenignError("projects.store.isDirectoryPath", error);
         return false;
     }
+}
+
+function createPlaceholders(count: number): string {
+    return Array.from({ length: count }, () => "?").join(", ");
+}
+
+function getCount(row: { readonly count: number } | undefined): number {
+    return Math.max(0, row?.count ?? 0);
 }

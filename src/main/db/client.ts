@@ -20,7 +20,9 @@ import type {
     GeminiRuntimeSettings,
     KiloRuntimeSettings,
     PersistedShellState,
+    ProjectAppDataSummary,
     ProjectSettingsSnapshot,
+    ProjectSummary,
 } from "@shared/ipc";
 
 import {
@@ -762,6 +764,17 @@ class ProjectStoreClient implements ProjectStore {
         };
     }
 
+    async clearProjectAppData(
+        projectId: string,
+    ): Promise<ProjectAppDataSummary> {
+        const result = await this.#rpc.call<{
+            readonly state: ProjectStoreStateSnapshot;
+            readonly summary: ProjectAppDataSummary;
+        }>("projects.clearProjectAppData", projectId);
+        this.#hydrate(result.state);
+        return result.summary;
+    }
+
     getProject(projectId: string): ProjectRecord | null {
         const project = this.#projectsById.get(projectId);
         if (!project) {
@@ -773,6 +786,15 @@ class ProjectStoreClient implements ProjectStore {
             id: project.id,
             rootPath: project.rootPath,
         };
+    }
+
+    async getProjectAppDataSummary(
+        projectId: string,
+    ): Promise<ProjectAppDataSummary> {
+        return await this.#rpc.call<ProjectAppDataSummary>(
+            "projects.getProjectAppDataSummary",
+            projectId,
+        );
     }
 
     getProjectWorktree(worktreeId: string): ProjectStoreWorktreeRecord | null {
@@ -803,6 +825,21 @@ class ProjectStoreClient implements ProjectStore {
         void this.#rpc
             .call("projects.removeProject", projectId)
             .catch(() => undefined);
+    }
+
+    async relocateProject(
+        projectId: string,
+        projectPath: string,
+    ): Promise<ProjectSummary> {
+        const result = await this.#rpc.call<{
+            readonly project: ProjectSummary;
+            readonly state: ProjectStoreStateSnapshot;
+        }>("projects.relocateProject", {
+            projectId,
+            projectPath,
+        });
+        this.#hydrate(result.state);
+        return result.project;
     }
 
     touchProject(projectId: string): void {

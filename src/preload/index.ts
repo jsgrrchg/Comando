@@ -27,6 +27,8 @@ import {
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
     type ClaudeRuntimeSettingsInput,
+    type ClearProjectAppDataInput,
+    type ClearProjectAppDataResult,
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type ComandoApi,
@@ -46,6 +48,8 @@ import {
     type PrepareAiSessionInput,
     type ProjectSettingsSnapshot,
     type ProjectSettingsUpdatedEvent,
+    type ProjectAppDataSummary,
+    type ProjectRelocateResult,
     type ProjectSummary,
     type ProjectTreeInvalidation,
     type ThemeMode,
@@ -299,11 +303,60 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.addProjectPaths,
             await ipcRenderer.invoke(IPC_CHANNELS.addProjectPaths, paths),
         ),
+    clearProjectAppData: async (input: ClearProjectAppDataInput) =>
+        assertIpcObject<ClearProjectAppDataResult>(
+            IPC_CHANNELS.clearProjectAppData,
+            await ipcRenderer.invoke(IPC_CHANNELS.clearProjectAppData, input),
+        ),
+    getProjectAppDataSummary: async (projectId: string) =>
+        assertIpcObject<ProjectAppDataSummary>(
+            IPC_CHANNELS.getProjectAppDataSummary,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getProjectAppDataSummary,
+                projectId,
+            ),
+        ),
     listProjects: async () =>
         assertIpcArray<ProjectSummary>(
             IPC_CHANNELS.listProjects,
             await ipcRenderer.invoke(IPC_CHANNELS.listProjects),
         ),
+    relocateProject: async (projectId: string) =>
+        assertIpcObject<ProjectRelocateResult>(
+            IPC_CHANNELS.relocateProject,
+            await ipcRenderer.invoke(IPC_CHANNELS.relocateProject, projectId),
+        ),
+    onProjectAppDataCleared: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            projectId: string,
+        ) => {
+            listener(projectId);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.projectAppDataCleared, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.projectAppDataCleared,
+                handleEvent,
+            );
+        };
+    },
+    onProjectsUpdated: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            projects: readonly ProjectSummary[],
+        ) => {
+            listener(projects);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.projectsUpdated, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(IPC_EVENTS.projectsUpdated, handleEvent);
+        };
+    },
     onProjectTreeInvalidated: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,

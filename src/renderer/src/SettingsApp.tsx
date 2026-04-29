@@ -7,6 +7,7 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppPrivacyAccessState,
+    ProjectSummary,
     AppUpdateState,
     AppEditorSettings,
     ChatFontFamily,
@@ -85,6 +86,9 @@ export function SettingsApp() {
             message: "Loading privacy access status...",
             status: "not-applicable",
         });
+    const [projects, setProjects] = useState<readonly ProjectSummary[]>([]);
+    const [projectsError, setProjectsError] = useState<string | null>(null);
+    const [projectsLoading, setProjectsLoading] = useState(true);
     const availableFontFamilyIds = useAvailableFontFamilyIds();
     const hydrateSettings = useSettingsStore((state) => state.hydrate);
     const settingsRevision = useSettingsStore((state) => state.revision);
@@ -142,6 +146,27 @@ export function SettingsApp() {
         setAppPrivacyAccessState(nextState);
     }, []);
 
+    const loadProjects = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        setProjectsLoading(true);
+        try {
+            const nextProjects = await window.comando.listProjects();
+            setProjects(nextProjects);
+            setProjectsError(null);
+        } catch (error) {
+            setProjectsError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not load projects.",
+            );
+        } finally {
+            setProjectsLoading(false);
+        }
+    }, []);
+
     useEffect(() => {
         const timeout = window.setTimeout(() => {
             void Promise.all([
@@ -150,6 +175,7 @@ export function SettingsApp() {
                 loadAppUpdateState(),
                 loadAppChangelog(),
                 loadAppPrivacyAccessState(),
+                loadProjects(),
             ]);
         }, 0);
 
@@ -162,7 +188,20 @@ export function SettingsApp() {
         loadAppPrivacyAccessState,
         loadAppUpdateState,
         loadRuntimeStatuses,
+        loadProjects,
     ]);
+
+    useEffect(() => {
+        if (!window.comando) {
+            return undefined;
+        }
+
+        return window.comando.onProjectsUpdated((nextProjects) => {
+            setProjects(nextProjects);
+            setProjectsError(null);
+            setProjectsLoading(false);
+        });
+    }, []);
 
     useEffect(() => {
         if (!window.comando) {
@@ -402,6 +441,27 @@ export function SettingsApp() {
         [],
     );
 
+    const runProjectAction = useCallback(
+        async (action: () => Promise<void>, fallbackMessage: string) => {
+            if (!window.comando) {
+                return;
+            }
+
+            setProjectsLoading(true);
+            try {
+                await action();
+                await loadProjects();
+            } catch (error) {
+                setProjectsError(
+                    error instanceof Error ? error.message : fallbackMessage,
+                );
+            } finally {
+                setProjectsLoading(false);
+            }
+        },
+        [loadProjects],
+    );
+
     return (
         <SettingsWindow
             aiChat={{
@@ -492,6 +552,62 @@ export function SettingsApp() {
                     void window.comando.openMacOsFullDiskAccessSettings();
                 },
                 state: appPrivacyAccessState,
+            }}
+            projects={{
+                error: projectsError,
+                loading: projectsLoading,
+                onAddProject: () => {
+                    void runProjectAction(async () => {
+                        await window.comando?.openProjects();
+                    }, "Could not add projects.");
+                },
+                onClearAppData: (projectId) => {
+                    void runProjectAction(async () => {
+                        await window.comando?.clearProjectAppData({
+                            projectId,
+                        });
+                    }, "Could not clear this project's app data.");
+                },
+                onGetAppDataSummary: async (projectId) => {
+                    if (!window.comando) {
+                        return {
+                            chatSessionCount: 0,
+                            projectSettingsCount: 0,
+                            recentProjectCount: 0,
+                            workspaceLayoutCount: 0,
+                            workspaceSessionCount: 0,
+                            workspaceTabCount: 0,
+                        };
+                    }
+
+                    return await window.comando.getProjectAppDataSummary(
+                        projectId,
+                    );
+                },
+                onRelocateProject: (projectId) => {
+                    void runProjectAction(async () => {
+                        await window.comando?.relocateProject(projectId);
+                    }, "Could not change this project's location.");
+                },
+                onRemoveProject: (projectId) => {
+                    void runProjectAction(async () => {
+                        await window.comando?.removeProject(projectId);
+                    }, "Could not remove this project.");
+                },
+                onRevealProject: (projectId) => {
+                    void runProjectAction(async () => {
+                        await window.comando?.revealProjectEntry({
+                            projectId,
+                            relativePath: null,
+                        });
+                    }, "Could not reveal this project.");
+                },
+                projects: projects.map((project) => ({
+                    id: project.id,
+                    lastOpenedAt: project.lastOpenedAt,
+                    name: project.name,
+                    rootPath: project.rootPath,
+                })),
             }}
             onRuntimeAction={(runtimeId, actionId) =>
                 void handleRuntimeAction({

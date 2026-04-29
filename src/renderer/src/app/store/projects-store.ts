@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type {
+    ProjectAppDataSummary,
     ProjectEntryKind,
     ProjectEntryMutationResult,
     ProjectSummary,
@@ -24,6 +25,7 @@ interface ProjectsState {
     >;
     addProjectPath: (projectPath: string) => Promise<void>;
     addProjects: () => Promise<void>;
+    clearProjectAppData: (projectId: string) => Promise<void>;
     cloneRepository: (repositoryUrl: string) => Promise<boolean>;
     createEntry: (
         projectId: string,
@@ -37,6 +39,9 @@ interface ProjectsState {
         relativePath: string,
         worktreeId?: string | null,
     ) => Promise<void>;
+    getProjectAppDataSummary: (
+        projectId: string,
+    ) => Promise<ProjectAppDataSummary>;
     hydrate: (preferredProjectId?: string | null) => Promise<void>;
     loadEntireProjectTree: (
         projectId: string,
@@ -59,6 +64,7 @@ interface ProjectsState {
         worktreeId?: string | null,
     ) => Promise<ProjectEntryMutationResult>;
     removeProject: (projectId: string) => Promise<void>;
+    relocateProject: (projectId: string) => Promise<boolean>;
     revealEntry: (
         projectId: string,
         relativePath: string | null,
@@ -91,7 +97,7 @@ interface ProjectTreeRefreshEntry {
 }
 
 interface ProjectTreeRefreshResolution {
-    readonly error: unknown | null;
+    readonly error: Error | null;
     readonly expandedDirectories: readonly string[];
     readonly treeNodes: Record<ParentKey, readonly ProjectTreeNode[]>;
 }
@@ -176,6 +182,36 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
+    clearProjectAppData: async (projectId) => {
+        try {
+            const { projects } = await getComandoApi().clearProjectAppData({
+                projectId,
+            });
+
+            set((state) => ({
+                error: null,
+                expandedDirectories: omitProjectContexts(
+                    state.expandedDirectories,
+                    projectId,
+                ),
+                fullyLoadedTreeProjects: omitProjectContexts(
+                    state.fullyLoadedTreeProjects,
+                    projectId,
+                ),
+                projects,
+                treeNodes: omitProjectContexts(state.treeNodes, projectId),
+            }));
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not clear this project's app data.",
+            });
+            throw error;
+        }
+    },
+
     cloneRepository: async (repositoryUrl) => {
         const normalizedUrl = repositoryUrl.trim();
         if (!normalizedUrl) {
@@ -220,6 +256,23 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         : "Could not clone the repository.",
             });
             return false;
+        }
+    },
+
+    getProjectAppDataSummary: async (projectId) => {
+        try {
+            const summary =
+                await getComandoApi().getProjectAppDataSummary(projectId);
+            set({ error: null });
+            return summary;
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not inspect this project's app data.",
+            });
+            throw error;
         }
     },
 
@@ -506,6 +559,53 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
+    relocateProject: async (projectId) => {
+        try {
+            const response = await getComandoApi().relocateProject(projectId);
+            const projects = response.projects;
+
+            set((state) => ({
+                activeProjectId:
+                    state.activeProjectId &&
+                    projects.some(
+                        (project) => project.id === state.activeProjectId,
+                    )
+                        ? state.activeProjectId
+                        : null,
+                error: null,
+                expandedDirectories: omitProjectContexts(
+                    state.expandedDirectories,
+                    projectId,
+                ),
+                fullyLoadedTreeProjects: omitProjectContexts(
+                    state.fullyLoadedTreeProjects,
+                    projectId,
+                ),
+                projects,
+                treeNodes: omitProjectContexts(state.treeNodes, projectId),
+            }));
+
+            if (response.kind !== "relocated") {
+                return false;
+            }
+
+            const nextProjectId = get().activeProjectId;
+            if (nextProjectId === projectId) {
+                await loadDirectory(projectId, null, set, get);
+            }
+
+            return true;
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not change this project's location.",
+            });
+            throw error;
+        }
+    },
+
     removeProject: async (projectId) => {
         try {
             await getComandoApi().removeProject(projectId);
@@ -762,7 +862,7 @@ export function resolveProjectTreeRefresh(input: {
     let nextExpandedDirectories: readonly string[] = [
         ...input.expandedDirectories,
     ];
-    let nextError: unknown | null = null;
+    let nextError: Error | null = null;
 
     for (const [index, result] of input.results.entries()) {
         if (result.status === "fulfilled") {
@@ -772,7 +872,10 @@ export function resolveProjectTreeRefresh(input: {
         }
 
         if (!isMissingProjectTreePathError(result.reason)) {
-            nextError ??= result.reason;
+            nextError ??=
+                result.reason instanceof Error
+                    ? result.reason
+                    : new Error("Could not refresh the project tree.");
             continue;
         }
 

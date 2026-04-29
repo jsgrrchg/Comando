@@ -197,6 +197,9 @@ export function App() {
     const closeTabsForProjectPaths = useWorkspaceStore(
         (state) => state.closeTabsForProjectPaths,
     );
+    const removeProjectTabs = useWorkspaceStore(
+        (state) => state.removeProjectTabs,
+    );
     const closeWorkspaceTab = useWorkspaceStore((state) => state.closeTab);
     const requestCloseWorkspaceTab = useCallback(
         (tabId: string) =>
@@ -382,6 +385,27 @@ export function App() {
         refreshProjectTree,
         workspaceHydrate,
     ]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        const unsubscribeProjectsUpdated = comandoApi.onProjectsUpdated(() => {
+            void hydrateProjects();
+        });
+        const unsubscribeProjectAppDataCleared =
+            comandoApi.onProjectAppDataCleared((projectId) => {
+                void removeProjectTabs(projectId);
+                void hydrateProjects();
+            });
+
+        return () => {
+            unsubscribeProjectsUpdated();
+            unsubscribeProjectAppDataCleared();
+        };
+    }, [hydrateProjects, removeProjectTabs]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();

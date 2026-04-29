@@ -5,6 +5,7 @@ import type {
     DeleteProjectEntryInput,
     ListProjectEntriesInput,
     ListProjectTreeInput,
+    ProjectAppDataSummary,
     ProjectAddResult,
     OpenProjectFileInput,
     ProjectEntryMutationResult,
@@ -101,6 +102,63 @@ export class ProjectService {
         return {
             projectIdsToOpen: [...result.touchedProjectIds],
             projects: [...result.projects],
+        };
+    }
+
+    async clearProjectAppData(projectId: string): Promise<{
+        readonly cleared: ProjectAppDataSummary;
+        readonly projects: readonly ProjectSummary[];
+    }> {
+        this.#getProjectById(projectId);
+        const cleared = await this.#store.clearProjectAppData(projectId);
+
+        return {
+            cleared,
+            projects: this.listProjects(),
+        };
+    }
+
+    async getProjectAppDataSummary(
+        projectId: string,
+    ): Promise<ProjectAppDataSummary> {
+        this.#getProjectById(projectId);
+        return await this.#store.getProjectAppDataSummary(projectId);
+    }
+
+    async relocateProject(
+        projectId: string,
+        projectPath: string,
+    ): Promise<{
+        readonly project: ProjectSummary;
+        readonly projects: readonly ProjectSummary[];
+    }> {
+        const rootPaths = this.listProjectWorktrees(projectId).map(
+            (worktree) => worktree.rootPath,
+        );
+        rootPaths.push(this.#getProjectById(projectId).rootPath);
+        for (const rootPath of rootPaths) {
+            this.#indexedRoots.delete(normalizeRootPath(rootPath));
+        }
+
+        const project = await this.#store.relocateProject(
+            projectId,
+            projectPath,
+        );
+        await this.#worker.removeProject(projectId);
+        this.#indexedRoots.delete(normalizeRootPath(project.rootPath));
+        this.#markWorkerRegistryDirty();
+        await this.#ensureWorkerRegistry();
+        this.#onProjectTouched?.(project.rootPath);
+        this.#onProjectTreeInvalidated({
+            projectId,
+            occurredAt: new Date().toISOString(),
+            relativePaths: null,
+            worktreeId: null,
+        });
+
+        return {
+            project,
+            projects: this.listProjects(),
         };
     }
 

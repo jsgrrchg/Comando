@@ -370,6 +370,29 @@ function dispatchMethod(method: string, params: unknown): unknown {
                 touchedRootPaths: result.touchedRootPaths,
             };
         }
+        case "projects.clearProjectAppData": {
+            const summary = projectStore.clearProjectAppData(params as string);
+            return {
+                state: projectStore.loadState(),
+                summary,
+            };
+        }
+        case "projects.getProjectAppDataSummary":
+            return projectStore.getProjectAppDataSummary(params as string);
+        case "projects.relocateProject": {
+            const input = params as {
+                readonly projectId: string;
+                readonly projectPath: string;
+            };
+            const project = projectStore.relocateProject(
+                input.projectId,
+                input.projectPath,
+            );
+            return {
+                project,
+                state: projectStore.loadState(),
+            };
+        }
         case "projects.removeProject":
             projectStore.removeProject(params as string);
             return null;

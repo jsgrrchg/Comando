@@ -56,6 +56,8 @@ import type {
     SettingsAiChatState,
     SettingsEditorControlState,
     SettingsPrivacyState,
+    SettingsProjectOption,
+    SettingsProjectsState,
     SettingsThemeControlState,
     SettingsUpdatesState,
     SettingsWindowProps,
@@ -66,6 +68,7 @@ import type {
 type Category =
     | "appearance"
     | "editor"
+    | "projects"
     | "ai"
     | "privacy"
     | "shortcuts"
@@ -75,6 +78,7 @@ type Category =
 const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "editor", label: "Editor" },
+    { id: "projects", label: "Projects" },
     { id: "ai", label: "AI" },
     { id: "privacy", label: "Privacy" },
     { id: "shortcuts", label: "Shortcuts" },
@@ -85,6 +89,7 @@ const CATEGORIES: { id: Category; label: string }[] = [
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     appearance: "Theme mode and visual presets",
     editor: "Typography and editor behavior",
+    projects: "Project locations and saved app data",
     ai: "Chat, composer, and AI behavior",
     privacy: "Protected folders and macOS permission guidance",
     shortcuts: "Keyboard shortcuts reference",
@@ -104,6 +109,7 @@ interface SettingsSearchContext {
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly privacy: SettingsPrivacyState;
+    readonly projects: SettingsProjectsState;
     readonly shortcuts: readonly ShortcutEntryOption[];
     readonly runtimes: readonly RuntimeCardOption[];
     readonly updates: SettingsUpdatesState;
@@ -151,6 +157,18 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Show Monaco code minimap on the side of the editor.",
         "Autocomplete suggestions",
         "Show Monaco suggestions automatically while typing trigger manually.",
+    ],
+    projects: [
+        "Projects",
+        "Project locations",
+        "Saved app data",
+        "Add project",
+        "Change location",
+        "Clear app data",
+        "Remove from Comando",
+        "Reveal in Finder",
+        "Reveal in Explorer",
+        "Chat history transcripts review artifacts workspace tabs",
     ],
     ai: [
         "Chat",
@@ -299,6 +317,16 @@ function getDynamicCategorySearchValues(
                 font.description,
                 font.preview,
             ]);
+        case "projects":
+            return [
+                context.projects.error,
+                ...context.projects.projects.flatMap((project) => [
+                    project.id,
+                    project.name,
+                    project.rootPath,
+                    project.lastOpenedAt,
+                ]),
+            ];
         case "ai":
             return [
                 ...context.aiChat.chatFontFamilies.flatMap((font) => [
@@ -362,6 +390,7 @@ export function SettingsWindow({
     appAppearance,
     appEditor,
     privacy,
+    projects,
     onRuntimeAction,
     shortcuts = [],
     runtimes = [],
@@ -375,6 +404,7 @@ export function SettingsWindow({
         appAppearance,
         appEditor,
         privacy,
+        projects,
         shortcuts,
         runtimes,
         updates,
@@ -665,6 +695,13 @@ export function SettingsWindow({
                                     />
                                 )}
                             {filteredCategories.length > 0 &&
+                                activeCategory === "projects" && (
+                                    <ProjectsContent
+                                        searchQuery={activeSearchQuery}
+                                        state={projects}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
                                 activeCategory === "ai" && (
                                     <AiChatContent
                                         searchQuery={activeSearchQuery}
@@ -787,6 +824,299 @@ function sectionHasMatches(
     rows: readonly (readonly SearchValue[])[],
 ): boolean {
     return rows.some((row) => matchesSearch(searchQuery, section, ...row));
+}
+
+function ProjectsContent({
+    searchQuery,
+    state,
+}: {
+    searchQuery: SettingsSearchQuery;
+    state: SettingsProjectsState;
+}) {
+    const isMac =
+        typeof navigator !== "undefined" &&
+        navigator.platform.toLowerCase().startsWith("mac");
+    const revealLabel = isMac ? "Reveal in Finder" : "Reveal in Explorer";
+    const visibleProjects = state.projects.filter((project) =>
+        matchesSearch(
+            searchQuery,
+            "Projects",
+            project.id,
+            project.name,
+            project.rootPath,
+            project.lastOpenedAt,
+            revealLabel,
+            "Move",
+            "Change location",
+            "Clear data",
+            "Clear app data",
+            "Remove",
+            "Remove from Comando",
+        ),
+    );
+
+    return (
+        <div>
+            <SectionLabel>Library</SectionLabel>
+            <div
+                style={{
+                    alignItems: "center",
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    display: "flex",
+                    gap: 16,
+                    justifyContent: "space-between",
+                    padding: "11px 0",
+                }}
+            >
+                <div>
+                    <div
+                        style={{
+                            color: "var(--color-text-primary)",
+                            fontSize: 13,
+                            fontWeight: 500,
+                            lineHeight: 1.3,
+                        }}
+                    >
+                        Add projects
+                    </div>
+                    <div
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontSize: 11,
+                            lineHeight: 1.4,
+                            marginTop: 2,
+                        }}
+                    >
+                        Choose folders to add to Comando.
+                    </div>
+                </div>
+                <IdeActionButton
+                    disabled={state.loading}
+                    onClick={() => state.onAddProject?.()}
+                >
+                    Add Project...
+                </IdeActionButton>
+            </div>
+
+            <SectionLabel>Projects</SectionLabel>
+            {state.error ? (
+                <div
+                    style={{
+                        background:
+                            "color-mix(in srgb, var(--color-danger, #f87171) 10%, transparent)",
+                        border:
+                            "1px solid color-mix(in srgb, var(--color-danger, #f87171) 35%, transparent)",
+                        borderRadius: 6,
+                        color: "var(--color-text-primary)",
+                        fontSize: 11,
+                        lineHeight: 1.5,
+                        marginBottom: 10,
+                        padding: "8px 10px",
+                    }}
+                >
+                    {state.error}
+                </div>
+            ) : null}
+            {visibleProjects.length === 0 ? (
+                searchQuery.terms.length > 0 ? (
+                    <EmptyPanelSearchResult />
+                ) : (
+                    <div
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontSize: 11,
+                            lineHeight: 1.5,
+                            padding: "10px 0",
+                        }}
+                    >
+                        No projects added yet.
+                    </div>
+                )
+            ) : (
+                <div style={{ display: "flex", flexDirection: "column" }}>
+                    {visibleProjects.map((project, index) => (
+                        <ProjectSettingsRow
+                            isFirst={index === 0}
+                            key={project.id}
+                            project={project}
+                            revealLabel={revealLabel}
+                            state={state}
+                        />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function ProjectSettingsRow({
+    isFirst,
+    project,
+    revealLabel,
+    state,
+}: {
+    isFirst: boolean;
+    project: SettingsProjectOption;
+    revealLabel: string;
+    state: SettingsProjectsState;
+}) {
+    const disabled = state.loading;
+    const lastOpened = formatProjectLastOpened(project.lastOpenedAt);
+    const subtleBorder =
+        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)";
+
+    return (
+        <div
+            style={{
+                alignItems: "center",
+                borderBottom: subtleBorder,
+                borderTop: isFirst ? subtleBorder : undefined,
+                display: "flex",
+                gap: 16,
+                justifyContent: "space-between",
+                padding: "10px 0",
+            }}
+        >
+            <div style={{ minWidth: 0 }}>
+                <div
+                    style={{
+                        color: "var(--color-text-primary)",
+                        fontSize: 13,
+                        fontWeight: 500,
+                        lineHeight: 1.3,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                    }}
+                >
+                    {project.name}
+                </div>
+                <div
+                    title={project.rootPath}
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: 11,
+                        lineHeight: 1.4,
+                        marginTop: 2,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                    }}
+                >
+                    <span style={{ fontFamily: "var(--font-mono)" }}>
+                        {project.rootPath}
+                    </span>
+                    {lastOpened ? (
+                        <span
+                            style={{
+                                color: "var(--color-text-tertiary, var(--color-text-secondary))",
+                                opacity: 0.75,
+                            }}
+                        >
+                            {"  ·  "}
+                            {`Opened ${lastOpened}`}
+                        </span>
+                    ) : null}
+                </div>
+            </div>
+            <div
+                style={{
+                    display: "flex",
+                    flexShrink: 0,
+                    gap: 4,
+                }}
+            >
+                <IdeActionButton
+                    disabled={disabled}
+                    onClick={() => state.onRevealProject?.(project.id)}
+                    title={revealLabel}
+                >
+                    {revealLabel}
+                </IdeActionButton>
+                <IdeActionButton
+                    disabled={disabled}
+                    onClick={() => state.onRelocateProject?.(project.id)}
+                    title="Change project location"
+                >
+                    Move...
+                </IdeActionButton>
+                <IdeActionButton
+                    disabled={disabled}
+                    onClick={() => {
+                        void confirmClearProjectAppData(state, project);
+                    }}
+                    title="Clear saved app data for this project"
+                >
+                    Clear Data...
+                </IdeActionButton>
+                <IdeActionButton
+                    disabled={disabled}
+                    onClick={() => {
+                        if (
+                            window.confirm(
+                                `Remove "${project.name}" from Comando?\n\nThis will hide the project from the app, but it will not delete project files or saved chat history.`,
+                            )
+                        ) {
+                            state.onRemoveProject?.(project.id);
+                        }
+                    }}
+                    title="Remove project from Comando"
+                >
+                    Remove
+                </IdeActionButton>
+            </div>
+        </div>
+    );
+}
+
+async function confirmClearProjectAppData(
+    state: SettingsProjectsState,
+    project: SettingsProjectOption,
+): Promise<void> {
+    const summary = state.onGetAppDataSummary
+        ? await state.onGetAppDataSummary(project.id).catch(() => null)
+        : null;
+    const details = summary
+        ? [
+              `- ${summary.chatSessionCount} chat history session(s) and transcripts`,
+              "- AI review artifacts linked to those sessions",
+              `- ${summary.projectSettingsCount} project-specific setting(s)`,
+              `- ${summary.workspaceTabCount} restored workspace tab(s)`,
+              `- ${summary.workspaceLayoutCount} workspace layout(s) linked to this project`,
+              `- ${summary.workspaceSessionCount} workspace session reference(s)`,
+              `- ${summary.recentProjectCount} recent project activity record(s)`,
+          ].join("\n")
+        : [
+              "- chat history and transcripts",
+              "- AI review artifacts",
+              "- project-specific settings",
+              "- recent project activity",
+              "- restored workspace tabs and layout state linked to this project",
+          ].join("\n");
+    const confirmed = window.confirm(
+        `Clear saved app data for "${project.name}"?\n\nThis will delete:\n\n${details}\n\nProject files on disk will not be deleted.`,
+    );
+
+    if (confirmed) {
+        state.onClearAppData?.(project.id);
+    }
+}
+
+function formatProjectLastOpened(value: string | null): string | null {
+    if (!value) {
+        return null;
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    return date.toLocaleString(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+    });
 }
 
 function AppearanceContent({
