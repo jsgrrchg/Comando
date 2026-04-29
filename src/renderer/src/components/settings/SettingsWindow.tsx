@@ -1,5 +1,5 @@
 import type { AppUpdateState } from "@shared/ipc";
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
     AGENTS_SIDEBAR_SCALE_MAX,
     AGENTS_SIDEBAR_SCALE_MIN,
@@ -92,6 +92,271 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     updates: "App version and changelog",
 };
 
+type SearchValue = string | number | null | undefined;
+
+interface SettingsSearchQuery {
+    readonly normalized: string;
+    readonly terms: readonly string[];
+}
+
+interface SettingsSearchContext {
+    readonly aiChat: SettingsAiChatState;
+    readonly appAppearance: SettingsThemeControlState;
+    readonly appEditor: SettingsEditorControlState;
+    readonly privacy: SettingsPrivacyState;
+    readonly shortcuts: readonly ShortcutEntryOption[];
+    readonly runtimes: readonly RuntimeCardOption[];
+    readonly updates: SettingsUpdatesState;
+}
+
+const EMPTY_SEARCH_QUERY: SettingsSearchQuery = {
+    normalized: "",
+    terms: [],
+};
+
+const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = {
+    appearance: [
+        "Workspace",
+        "File tree size",
+        "Scale the rows, icons, and labels in the file tree.",
+        "Agents sidebar size",
+        "Scale text and rows in the Agents sidebar, in percent.",
+        "Sticky folders",
+        "Keep parent folders pinned while scrolling the file tree.",
+        "Mode",
+        "System theme",
+        "Choose how the app looks. System follows your OS preference.",
+        "Light",
+        "Dark",
+        "Theme",
+        "Visual presets",
+        "Accessibility",
+        "Boost code contrast",
+        "WCAG AA contrast ratio syntax colors editor background palette",
+        "Zoom",
+        "App zoom",
+        "Scale the entire app UI View menu keyboard shortcut",
+    ],
+    editor: [
+        "Typography",
+        "Autosave delay",
+        "Delay after the last edit before dirty files are saved automatically.",
+        "Font size",
+        "Text size in the editor pixels shortcut zoom",
+        "Font family",
+        "Font used in the editor.",
+        "Line spacing",
+        "Line height multiplier for the editor.",
+        "Minimap",
+        "Show Monaco code minimap on the side of the editor.",
+        "Autocomplete suggestions",
+        "Show Monaco suggestions automatically while typing trigger manually.",
+    ],
+    ai: [
+        "Chat",
+        "Chat font family",
+        "Font used for messages in the chat.",
+        "Chat font size",
+        "Font size of messages in the chat.",
+        "Review",
+        "Chat history retention",
+        "How long saved chat histories stay on disk before automatic deletion.",
+        "Forever",
+        "Composer",
+        "Require command enter control enter to send",
+        "Press shortcut to send messages Enter adds new line.",
+        "Context window indicator",
+        "Show a thin bar below the composer indicating context window usage.",
+        "Screenshot retention",
+        "How long pasted screenshots stay in the composer before automatic removal.",
+        "Composer font family",
+        "Font used in the message input box.",
+        "Composer font size",
+        "Font size of the message input box.",
+    ],
+    privacy: [
+        "Protected folders",
+        "macOS filesystem access",
+        "Last blocked path",
+        "Full Disk Access",
+        "Privacy & Security",
+        "Documents Desktop protected folders",
+    ],
+    shortcuts: [
+        "Keyboard shortcuts",
+        "Keyboard shortcuts reference",
+        "Hotkeys",
+        "Keys",
+        "Commands",
+    ],
+    runtimes: [
+        "Runtimes",
+        "AI runtimes",
+        "Authentication",
+        "Wiring",
+        "Actions",
+        "Configured runtimes",
+    ],
+    updates: [
+        "Version",
+        "Current version",
+        "Last checked",
+        "Check for updates",
+        "Restart and install",
+        "Automatic updates",
+        "Update status",
+        "Changelog",
+        "Latest",
+        "Available",
+        "Downloading",
+        "Ready",
+        "Up to date",
+        "Unavailable",
+    ],
+};
+
+function createSettingsSearchQuery(value: string): SettingsSearchQuery {
+    const normalized = normalizeSearchText(value);
+
+    if (!normalized) {
+        return EMPTY_SEARCH_QUERY;
+    }
+
+    return {
+        normalized,
+        terms: normalized.split(" ").filter(Boolean),
+    };
+}
+
+function normalizeSearchText(value: SearchValue): string {
+    return String(value ?? "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function matchesSearch(
+    query: SettingsSearchQuery,
+    ...values: readonly SearchValue[]
+): boolean {
+    if (query.terms.length === 0) {
+        return true;
+    }
+
+    const haystack = normalizeSearchText(
+        values
+            .filter((value) => value !== null && value !== undefined)
+            .join(" "),
+    );
+    return query.terms.every((term) => haystack.includes(term));
+}
+
+function categoryHeaderMatchesSearch(
+    category: Category,
+    query: SettingsSearchQuery,
+): boolean {
+    const info = CATEGORIES.find((candidate) => candidate.id === category);
+    return matchesSearch(
+        query,
+        info?.label,
+        CATEGORY_DESCRIPTIONS[category],
+    );
+}
+
+function categoryMatchesSearch(
+    category: Category,
+    query: SettingsSearchQuery,
+    context: SettingsSearchContext,
+): boolean {
+    return (
+        categoryHeaderMatchesSearch(category, query) ||
+        matchesSearch(
+            query,
+            ...STATIC_CATEGORY_SEARCH_VALUES[category],
+            ...getDynamicCategorySearchValues(category, context),
+        )
+    );
+}
+
+function getDynamicCategorySearchValues(
+    category: Category,
+    context: SettingsSearchContext,
+): readonly SearchValue[] {
+    switch (category) {
+        case "appearance":
+            return context.appAppearance.presets.flatMap((preset) => [
+                preset.id,
+                preset.label,
+                preset.description,
+            ]);
+        case "editor":
+            return context.appEditor.fontFamilies.flatMap((font) => [
+                font.id,
+                font.group,
+                font.label,
+                font.description,
+                font.preview,
+            ]);
+        case "ai":
+            return [
+                ...context.aiChat.chatFontFamilies.flatMap((font) => [
+                    font.id,
+                    font.group,
+                    font.label,
+                ]),
+                ...context.aiChat.composerFontFamilies.flatMap((font) => [
+                    font.id,
+                    font.group,
+                    font.label,
+                ]),
+            ];
+        case "privacy":
+            return [
+                context.privacy.state.message,
+                context.privacy.state.lastDeniedPath,
+                context.privacy.state.status,
+            ];
+        case "shortcuts":
+            return context.shortcuts.flatMap((shortcut) => [
+                shortcut.id,
+                shortcut.section,
+                shortcut.label,
+                shortcut.description,
+                shortcut.keys,
+            ]);
+        case "runtimes":
+            return context.runtimes.flatMap((runtime) => [
+                runtime.id,
+                runtime.name,
+                runtime.description,
+                runtime.status,
+                runtime.source,
+                runtime.details,
+                ...(runtime.actions?.flatMap((action) => [
+                    action.id,
+                    action.label,
+                    action.hint,
+                    action.tone,
+                ]) ?? []),
+            ]);
+        case "updates":
+            return [
+                context.updates.state.status,
+                context.updates.state.message,
+                context.updates.state.currentVersion,
+                context.updates.state.availableVersion,
+                context.updates.state.lastCheckedAt,
+                ...context.updates.changelog.flatMap((entry) => [
+                    entry.version,
+                    entry.date,
+                    ...entry.highlights,
+                ]),
+            ];
+    }
+}
+
 export function SettingsWindow({
     aiChat,
     appAppearance,
@@ -104,11 +369,39 @@ export function SettingsWindow({
 }: SettingsWindowProps) {
     const [active, setActive] = useState<Category>("appearance");
     const [search, setSearch] = useState("");
-
-    const filteredCategories = CATEGORIES.filter(
-        (c) => !search || c.label.toLowerCase().includes(search.toLowerCase()),
+    const searchQuery = createSettingsSearchQuery(search);
+    const searchContext: SettingsSearchContext = {
+        aiChat,
+        appAppearance,
+        appEditor,
+        privacy,
+        shortcuts,
+        runtimes,
+        updates,
+    };
+    const filteredCategories = CATEGORIES.filter((category) =>
+        categoryMatchesSearch(category.id, searchQuery, searchContext),
     );
-    const activeInfo = CATEGORIES.find((c) => c.id === active)!;
+    const activeCategory =
+        filteredCategories.find((category) => category.id === active)?.id ??
+        filteredCategories[0]?.id ??
+        active;
+    const activeInfo =
+        CATEGORIES.find((category) => category.id === activeCategory) ??
+        CATEGORIES[0];
+    const activeSearchQuery = categoryHeaderMatchesSearch(
+        activeCategory,
+        searchQuery,
+    )
+        ? EMPTY_SEARCH_QUERY
+        : searchQuery;
+    const hasSearch = searchQuery.terms.length > 0;
+
+    useEffect(() => {
+        if (activeCategory !== active) {
+            setActive(activeCategory);
+        }
+    }, [active, activeCategory]);
 
     return (
         <div
@@ -255,7 +548,7 @@ export function SettingsWindow({
                         }}
                     >
                         {filteredCategories.map((cat) => {
-                            const isActive = cat.id === active;
+                            const isActive = cat.id === activeCategory;
                             return (
                                 <button
                                     className="app-no-drag"
@@ -300,6 +593,19 @@ export function SettingsWindow({
                                 </button>
                             );
                         })}
+                        {filteredCategories.length === 0 ? (
+                            <div
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: 11,
+                                    lineHeight: 1.4,
+                                    padding: "8px 8px",
+                                }}
+                            >
+                                No settings found.
+                            </div>
+                        ) : null}
                     </div>
                 </div>
 
@@ -327,7 +633,7 @@ export function SettingsWindow({
                                 whiteSpace: "nowrap",
                             }}
                         >
-                            {CATEGORY_DESCRIPTIONS[active]}
+                            {CATEGORY_DESCRIPTIONS[activeCategory]}
                         </span>
                     </IdeBarHeader>
 
@@ -341,42 +647,69 @@ export function SettingsWindow({
                         }}
                     >
                         <div style={{ maxWidth: 600 }}>
-                            {active === "appearance" && (
-                                <AppearanceContent state={appAppearance} />
-                            )}
-                            {active === "editor" && (
-                                <EditorContent state={appEditor} />
-                            )}
-                            {active === "ai" && (
-                                <AiChatContent state={aiChat} />
-                            )}
-                            {active === "privacy" && (
-                                <PrivacyContent
-                                    onOpenFullDiskAccessSettings={
-                                        privacy.onOpenFullDiskAccessSettings
-                                    }
-                                    state={privacy.state}
-                                />
-                            )}
-                            {active === "shortcuts" && (
-                                <ShortcutsContent shortcuts={shortcuts} />
-                            )}
-                            {active === "runtimes" && (
-                                <RuntimesContent
-                                    runtimes={runtimes}
-                                    onAction={onRuntimeAction}
-                                />
-                            )}
-                            {active === "updates" && (
-                                <UpdatesContent
-                                    changelog={updates.changelog}
-                                    onCheckForUpdates={
-                                        updates.onCheckForUpdates
-                                    }
-                                    onInstallUpdate={updates.onInstallUpdate}
-                                    state={updates.state}
-                                />
-                            )}
+                            {filteredCategories.length === 0 && hasSearch ? (
+                                <EmptySettingsSearch search={search} />
+                            ) : null}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "appearance" && (
+                                    <AppearanceContent
+                                        searchQuery={activeSearchQuery}
+                                        state={appAppearance}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "editor" && (
+                                    <EditorContent
+                                        searchQuery={activeSearchQuery}
+                                        state={appEditor}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "ai" && (
+                                    <AiChatContent
+                                        searchQuery={activeSearchQuery}
+                                        state={aiChat}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "privacy" && (
+                                    <PrivacyContent
+                                        onOpenFullDiskAccessSettings={
+                                            privacy.onOpenFullDiskAccessSettings
+                                        }
+                                        searchQuery={activeSearchQuery}
+                                        state={privacy.state}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "shortcuts" && (
+                                    <ShortcutsContent
+                                        searchQuery={activeSearchQuery}
+                                        shortcuts={shortcuts}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "runtimes" && (
+                                    <RuntimesContent
+                                        runtimes={runtimes}
+                                        onAction={onRuntimeAction}
+                                        searchQuery={activeSearchQuery}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "updates" && (
+                                    <UpdatesContent
+                                        changelog={updates.changelog}
+                                        onCheckForUpdates={
+                                            updates.onCheckForUpdates
+                                        }
+                                        onInstallUpdate={
+                                            updates.onInstallUpdate
+                                        }
+                                        searchQuery={activeSearchQuery}
+                                        state={updates.state}
+                                    />
+                                )}
                         </div>
                     </div>
                 </div>
@@ -385,18 +718,141 @@ export function SettingsWindow({
     );
 }
 
-function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
+function EmptySettingsSearch({ search }: { search: string }) {
+    return (
+        <div
+            style={{
+                color: "var(--color-text-secondary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                lineHeight: 1.5,
+                padding: "24px 0",
+            }}
+        >
+            No settings match "{search.trim()}".
+        </div>
+    );
+}
+
+function EmptyPanelSearchResult() {
+    return (
+        <div
+            style={{
+                color: "var(--color-text-secondary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                lineHeight: 1.5,
+                padding: "24px 0",
+            }}
+        >
+            No matching settings in this panel.
+        </div>
+    );
+}
+
+function SearchableRow({
+    control,
+    description,
+    disabled,
+    keywords = [],
+    label,
+    searchQuery,
+    section,
+}: {
+    readonly control: React.ReactNode;
+    readonly description?: string;
+    readonly disabled?: boolean;
+    readonly keywords?: readonly SearchValue[];
+    readonly label: string;
+    readonly searchQuery: SettingsSearchQuery;
+    readonly section: string;
+}) {
+    if (!matchesSearch(searchQuery, section, label, description, ...keywords)) {
+        return null;
+    }
+
+    return (
+        <Row
+            control={control}
+            description={description}
+            disabled={disabled}
+            label={label}
+        />
+    );
+}
+
+function sectionHasMatches(
+    searchQuery: SettingsSearchQuery,
+    section: string,
+    rows: readonly (readonly SearchValue[])[],
+): boolean {
+    return rows.some((row) => matchesSearch(searchQuery, section, ...row));
+}
+
+function AppearanceContent({
+    searchQuery,
+    state,
+}: {
+    searchQuery: SettingsSearchQuery;
+    state: SettingsThemeControlState;
+}) {
     const isMac =
         typeof navigator !== "undefined" &&
         navigator.platform.toLowerCase().startsWith("mac");
     const appZoomShortcut = isMac
         ? "⌘= / ⌘- / ⌘0"
         : "Ctrl= / Ctrl- / Ctrl0";
+    const showWorkspace = sectionHasMatches(searchQuery, "Workspace", [
+        [
+            "File tree size",
+            "Scale the rows, icons, and labels in the file tree.",
+        ],
+        [
+            "Agents sidebar size",
+            "Scale text and rows in the Agents sidebar, in percent.",
+        ],
+        [
+            "Sticky folders",
+            "Keep parent folders pinned while scrolling the file tree.",
+        ],
+    ]);
+    const showMode = sectionHasMatches(searchQuery, "Mode", [
+        [
+            "System theme",
+            "Choose how the app looks. System follows your OS preference.",
+            "Light",
+            "Dark",
+        ],
+    ]);
+    const showTheme = matchesSearch(
+        searchQuery,
+        "Theme",
+        "Visual presets",
+        ...state.presets.flatMap((preset) => [
+            preset.id,
+            preset.label,
+            preset.description,
+        ]),
+    );
+    const showAccessibility = sectionHasMatches(searchQuery, "Accessibility", [
+        [
+            "Boost code contrast",
+            "Darken or lighten syntax colors that fall below the WCAG AA contrast ratio against the editor background. Turn this off to see each preset's exact original palette.",
+        ],
+    ]);
+    const showZoom = sectionHasMatches(searchQuery, "Zoom", [
+        [
+            "App zoom",
+            `Scale the entire app UI, in percent. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`,
+        ],
+    ]);
 
     return (
         <div>
-            <SectionLabel>Workspace</SectionLabel>
-            <Row
+            {showWorkspace ? <SectionLabel>Workspace</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Workspace"
                 label="File tree size"
                 description="Scale the rows, icons, and labels in the file tree."
                 control={
@@ -410,7 +866,9 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Workspace"
                 label="Agents sidebar size"
                 description="Scale text and rows in the Agents sidebar, in percent."
                 control={
@@ -427,7 +885,9 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Workspace"
                 label="Sticky folders"
                 description="Keep parent folders pinned while scrolling the file tree."
                 control={
@@ -440,10 +900,13 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                 }
             />
 
-            <SectionLabel>Mode</SectionLabel>
-            <Row
+            {showMode ? <SectionLabel>Mode</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Mode"
                 label="System theme"
                 description="Choose how the app looks. 'System' follows your OS preference."
+                keywords={["Light", "Dark"]}
                 control={
                     <SegmentedControl
                         value={state.mode}
@@ -457,15 +920,23 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                 }
             />
 
-            <SectionLabel>Theme</SectionLabel>
-            <ThemePicker
-                value={state.presetId}
-                presets={state.presets}
-                onChange={(id) => state.onPresetChange?.(id)}
-            />
+            {showTheme ? (
+                <>
+                    <SectionLabel>Theme</SectionLabel>
+                    <ThemePicker
+                        value={state.presetId}
+                        presets={state.presets}
+                        onChange={(id) => state.onPresetChange?.(id)}
+                    />
+                </>
+            ) : null}
 
-            <SectionLabel>Accessibility</SectionLabel>
-            <Row
+            {showAccessibility ? (
+                <SectionLabel>Accessibility</SectionLabel>
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Accessibility"
                 label="Boost code contrast"
                 description="Darken or lighten syntax colors that fall below the WCAG AA contrast ratio against the editor background. Turn this off to see each preset's exact original palette."
                 control={
@@ -478,8 +949,10 @@ function AppearanceContent({ state }: { state: SettingsThemeControlState }) {
                 }
             />
 
-            <SectionLabel>Zoom</SectionLabel>
-            <Row
+            {showZoom ? <SectionLabel>Zoom</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Zoom"
                 label="App zoom"
                 description={`Scale the entire app UI, in percent. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`}
                 control={
@@ -610,20 +1083,57 @@ function PercentScaleStepper({
     );
 }
 
-function EditorContent({ state }: { state: SettingsEditorControlState }) {
+function EditorContent({
+    searchQuery,
+    state,
+}: {
+    searchQuery: SettingsSearchQuery;
+    state: SettingsEditorControlState;
+}) {
     const isMac =
         typeof navigator !== "undefined" &&
         navigator.platform.toLowerCase().startsWith("mac");
     const editorZoomShortcut = isMac
         ? "⌘+⌥+Plus / ⌘+⌥+- / ⌘+⌥+0"
         : "Ctrl+Alt+Plus / Ctrl+Alt+- / Ctrl+Alt+0";
+    const showTypography = sectionHasMatches(searchQuery, "Typography", [
+        [
+            "Autosave delay",
+            "Delay after the last edit before dirty files are saved automatically, in milliseconds.",
+            "save files",
+        ],
+        [
+            "Font size",
+            `Text size in the editor, in pixels. This does not change the overall app zoom. Shortcut: ${editorZoomShortcut}.`,
+        ],
+        [
+            "Font family",
+            "Font used in the editor.",
+            ...state.fontFamilies.flatMap((font) => [
+                font.id,
+                font.group,
+                font.label,
+                font.description,
+                font.preview,
+            ]),
+        ],
+        ["Line spacing", "Line height multiplier for the editor."],
+        ["Minimap", "Show Monaco's code minimap on the side of the editor."],
+        [
+            "Autocomplete suggestions",
+            "Show Monaco suggestions automatically while typing. You can still trigger them manually.",
+        ],
+    ]);
 
     return (
         <div>
-            <SectionLabel>Typography</SectionLabel>
-            <Row
+            {showTypography ? <SectionLabel>Typography</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Autosave delay"
                 description="Delay after the last edit before dirty files are saved automatically, in milliseconds."
+                keywords={["save files"]}
                 control={
                     <NumberStepper
                         value={state.autoSaveDelayMs}
@@ -634,7 +1144,9 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Font size"
                 description={`Text size in the editor, in pixels. This does not change the overall app zoom. Shortcut: ${editorZoomShortcut}.`}
                 control={
@@ -646,9 +1158,18 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Font family"
                 description="Font used in the editor."
+                keywords={state.fontFamilies.flatMap((font) => [
+                    font.id,
+                    font.group,
+                    font.label,
+                    font.description,
+                    font.preview,
+                ])}
                 control={
                     <SelectField
                         value={state.fontFamilyId}
@@ -662,7 +1183,9 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Line spacing"
                 description="Line height multiplier for the editor."
                 control={
@@ -676,7 +1199,9 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Minimap"
                 description="Show Monaco's code minimap on the side of the editor."
                 control={
@@ -686,7 +1211,9 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Autocomplete suggestions"
                 description="Show Monaco suggestions automatically while typing. You can still trigger them manually."
                 control={
@@ -700,18 +1227,82 @@ function EditorContent({ state }: { state: SettingsEditorControlState }) {
     );
 }
 
-function AiChatContent({ state }: { state: SettingsAiChatState }) {
+function AiChatContent({
+    searchQuery,
+    state,
+}: {
+    searchQuery: SettingsSearchQuery;
+    state: SettingsAiChatState;
+}) {
     const isMac =
         typeof navigator !== "undefined" &&
         navigator.platform.startsWith("Mac");
     const sendShortcut = isMac ? "⌘+Enter" : "Ctrl+Enter";
+    const chatFontKeywords = state.chatFontFamilies.flatMap((font) => [
+        font.id,
+        font.group,
+        font.label,
+    ]);
+    const composerFontKeywords = state.composerFontFamilies.flatMap((font) => [
+        font.id,
+        font.group,
+        font.label,
+    ]);
+    const showChat = sectionHasMatches(searchQuery, "Chat", [
+        [
+            "Chat font family",
+            "Font used for messages in the chat.",
+            ...chatFontKeywords,
+        ],
+        ["Chat font size", "Font size of messages in the chat, in pixels."],
+    ]);
+    const showReview = sectionHasMatches(searchQuery, "Review", [
+        [
+            "Chat history retention",
+            "How long saved chat histories stay on disk before automatic deletion.",
+            "Forever",
+            "1 day",
+            "7 days",
+            "30 days",
+            "90 days",
+            "1 year",
+        ],
+    ]);
+    const showComposer = sectionHasMatches(searchQuery, "Composer", [
+        [
+            `Require ${sendShortcut} to send`,
+            `Press ${sendShortcut} to send messages. Enter alone adds a new line.`,
+            "command enter control enter keyboard shortcut",
+        ],
+        [
+            "Context window indicator",
+            "Show a thin bar below the composer indicating how much of the context window is in use.",
+            "token usage",
+        ],
+        [
+            "Screenshot retention",
+            "How long pasted screenshots stay in the composer before automatic removal.",
+            "Forever",
+            "seconds",
+            "minutes",
+        ],
+        [
+            "Composer font family",
+            "Font used in the message input box.",
+            ...composerFontKeywords,
+        ],
+        ["Composer font size", "Font size of the message input box, in pixels."],
+    ]);
 
     return (
         <div>
-            <SectionLabel>Chat</SectionLabel>
-            <Row
+            {showChat ? <SectionLabel>Chat</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
                 label="Chat font family"
                 description="Font used for messages in the chat."
+                keywords={chatFontKeywords}
                 control={
                     <SelectField
                         value={state.chatFontFamily}
@@ -725,7 +1316,9 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
                 label="Chat font size"
                 description="Font size of messages in the chat, in pixels."
                 control={
@@ -737,10 +1330,20 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     />
                 }
             />
-            <SectionLabel>Review</SectionLabel>
-            <Row
+            {showReview ? <SectionLabel>Review</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Review"
                 label="Chat history retention"
                 description="How long saved chat histories stay on disk before automatic deletion."
+                keywords={[
+                    "Forever",
+                    "1 day",
+                    "7 days",
+                    "30 days",
+                    "90 days",
+                    "1 year",
+                ]}
                 control={
                     <SelectField
                         value={state.historyRetentionDays}
@@ -759,10 +1362,17 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                 }
             />
 
-            <SectionLabel>Composer</SectionLabel>
-            <Row
+            {showComposer ? <SectionLabel>Composer</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label={`Require ${sendShortcut} to send`}
                 description={`Press ${sendShortcut} to send messages. Enter alone adds a new line.`}
+                keywords={[
+                    "command enter",
+                    "control enter",
+                    "keyboard shortcut",
+                ]}
                 control={
                     <Toggle
                         value={state.requireCmdEnterToSend}
@@ -770,9 +1380,12 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Context window indicator"
                 description="Show a thin bar below the composer indicating how much of the context window is in use."
+                keywords={["token usage"]}
                 control={
                     <Toggle
                         value={state.contextUsageBarEnabled}
@@ -782,9 +1395,12 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Screenshot retention"
                 description="How long pasted screenshots stay in the composer before automatic removal."
+                keywords={["Forever", "seconds", "minutes"]}
                 control={
                     <SelectField
                         value={state.screenshotRetentionSeconds}
@@ -802,9 +1418,12 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Composer font family"
                 description="Font used in the message input box."
+                keywords={composerFontKeywords}
                 control={
                     <SelectField
                         value={state.composerFontFamily}
@@ -818,7 +1437,9 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Composer font size"
                 description="Font size of the message input box, in pixels."
                 control={
@@ -836,28 +1457,50 @@ function AiChatContent({ state }: { state: SettingsAiChatState }) {
 
 function PrivacyContent({
     onOpenFullDiskAccessSettings,
+    searchQuery,
     state,
-}: SettingsPrivacyState) {
+}: SettingsPrivacyState & { readonly searchQuery: SettingsSearchQuery }) {
     const canOpenSettings =
         state.canOpenFullDiskAccessSettings &&
         onOpenFullDiskAccessSettings !== undefined;
+    const showProtectedFolders = sectionHasMatches(
+        searchQuery,
+        "Protected folders",
+        [
+            ["macOS filesystem access", state.message, state.status],
+            ["Last blocked path", state.lastDeniedPath],
+            [
+                "Full Disk Access",
+                "If macOS blocks Comando from opening projects in Documents, Desktop, or other protected folders, add Comando to Privacy & Security > Full Disk Access.",
+            ],
+        ],
+    );
 
     return (
         <div>
-            <SectionLabel>Protected folders</SectionLabel>
-            <Row
+            {showProtectedFolders ? (
+                <SectionLabel>Protected folders</SectionLabel>
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Protected folders"
                 label="macOS filesystem access"
                 description={state.message}
+                keywords={[state.status]}
                 control={<PrivacyStatusBadge status={state.status} />}
             />
             {state.lastDeniedPath ? (
-                <Row
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Protected folders"
                     label="Last blocked path"
                     description={state.lastDeniedPath}
                     control={null}
                 />
             ) : null}
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Protected folders"
                 label="Full Disk Access"
                 description="If macOS blocks Comando from opening projects in Documents, Desktop, or other protected folders, add Comando to Privacy & Security > Full Disk Access."
                 control={
@@ -875,11 +1518,25 @@ function PrivacyContent({
 }
 
 function ShortcutsContent({
+    searchQuery,
     shortcuts,
 }: {
+    searchQuery: SettingsSearchQuery;
     shortcuts: readonly ShortcutEntryOption[];
 }) {
-    const grouped = shortcuts.reduce<Record<string, ShortcutEntryOption[]>>(
+    const filteredShortcuts = shortcuts.filter((shortcut) =>
+        matchesSearch(
+            searchQuery,
+            shortcut.section,
+            shortcut.label,
+            shortcut.description,
+            shortcut.keys,
+            shortcut.id,
+        ),
+    );
+    const grouped = filteredShortcuts.reduce<
+        Record<string, ShortcutEntryOption[]>
+    >(
         (acc, shortcut) => {
             const section = shortcut.section || "General";
             if (!acc[section]) acc[section] = [];
@@ -888,6 +1545,27 @@ function ShortcutsContent({
         },
         {},
     );
+
+    if (shortcuts.length === 0) {
+        return (
+            <div>
+                <SectionLabel>Shortcuts</SectionLabel>
+                <p
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: 12,
+                        padding: "12px 0",
+                    }}
+                >
+                    No shortcuts registered yet.
+                </p>
+            </div>
+        );
+    }
+
+    if (filteredShortcuts.length === 0) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
@@ -929,10 +1607,30 @@ function ShortcutsContent({
 function RuntimesContent({
     runtimes,
     onAction,
+    searchQuery,
 }: {
     runtimes: readonly RuntimeCardOption[];
     onAction?: (runtimeId: string, actionId: string) => void;
+    searchQuery: SettingsSearchQuery;
 }) {
+    const filteredRuntimes = runtimes.filter((runtime) =>
+        matchesSearch(
+            searchQuery,
+            runtime.id,
+            runtime.name,
+            runtime.description,
+            runtime.status,
+            runtime.source,
+            runtime.details,
+            ...(runtime.actions?.flatMap((action) => [
+                action.id,
+                action.label,
+                action.hint,
+                action.tone,
+            ]) ?? []),
+        ),
+    );
+
     if (runtimes.length === 0) {
         return (
             <div>
@@ -950,10 +1648,14 @@ function RuntimesContent({
         );
     }
 
+    if (filteredRuntimes.length === 0) {
+        return <EmptyPanelSearchResult />;
+    }
+
     return (
         <div>
             <SectionLabel>Runtimes</SectionLabel>
-            {runtimes.map((runtime) => (
+            {filteredRuntimes.map((runtime) => (
                 <RuntimeCard
                     key={runtime.id}
                     runtime={runtime}
@@ -1130,8 +1832,9 @@ function UpdatesContent({
     changelog,
     onCheckForUpdates,
     onInstallUpdate,
+    searchQuery,
     state,
-}: SettingsUpdatesState) {
+}: SettingsUpdatesState & { readonly searchQuery: SettingsSearchQuery }) {
     const currentVersionLabel = formatVersionPillLabel(state.currentVersion);
     const lastCheckedLabel = formatLastCheckedLabel(state.lastCheckedAt);
     const primaryAction =
@@ -1146,13 +1849,64 @@ function UpdatesContent({
                   label: getCheckForUpdatesLabel(state),
                   onClick: onCheckForUpdates ?? (() => {}),
               };
+    const filteredChangelog = changelog.filter((entry) =>
+        matchesSearch(
+            searchQuery,
+            "Changelog",
+            entry.version,
+            entry.date,
+            entry.version === state.currentVersion ? "Latest" : undefined,
+            ...entry.highlights,
+        ),
+    );
+    const showVersion = sectionHasMatches(searchQuery, "Version", [
+        [
+            "Current version",
+            `You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`,
+            primaryAction.label,
+            state.currentVersion,
+            state.availableVersion,
+        ],
+        [
+            "Automatic updates",
+            state.autoUpdatesEnabled
+                ? "Enabled for packaged release builds. Updates download in the background and apply after restart."
+                : "Unavailable on this build, channel, or packaging configuration.",
+        ],
+        [
+            "Update status",
+            state.message,
+            state.status,
+            state.availableVersion,
+            state.progressPercent,
+        ],
+    ]);
+    const showChangelog =
+        filteredChangelog.length > 0 ||
+        (changelog.length === 0 &&
+            matchesSearch(
+                searchQuery,
+                "Changelog",
+                "No changelog entries found in CHANGELOG.md.",
+            ));
+
+    if (!showVersion && !showChangelog) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
-            <SectionLabel>Version</SectionLabel>
-            <Row
+            {showVersion ? <SectionLabel>Version</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Version"
                 label="Current version"
                 description={`You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`}
+                keywords={[
+                    primaryAction.label,
+                    state.currentVersion,
+                    state.availableVersion,
+                ]}
                 control={
                     <div
                         style={{
@@ -1187,7 +1941,9 @@ function UpdatesContent({
                     </div>
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Version"
                 label="Automatic updates"
                 description={
                     state.autoUpdatesEnabled
@@ -1202,9 +1958,16 @@ function UpdatesContent({
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Version"
                 label="Update status"
                 description={state.message}
+                keywords={[
+                    state.status,
+                    state.availableVersion,
+                    state.progressPercent,
+                ]}
                 control={
                     <div
                         style={{
@@ -1242,29 +2005,35 @@ function UpdatesContent({
                 }
             />
 
-            <SectionLabel>Changelog</SectionLabel>
-            <div style={{ paddingTop: 4 }}>
-                {changelog.length > 0 ? (
-                    changelog.map((entry) => (
-                        <ChangelogItem
-                            entry={entry}
-                            isLatest={entry.version === state.currentVersion}
-                            key={entry.version}
-                        />
-                    ))
-                ) : (
-                    <div
-                        style={{
-                            color: "var(--color-text-secondary)",
-                            fontFamily: "var(--font-mono)",
-                            fontSize: 11,
-                            padding: "8px 0",
-                        }}
-                    >
-                        No changelog entries found in CHANGELOG.md.
+            {showChangelog ? (
+                <>
+                    <SectionLabel>Changelog</SectionLabel>
+                    <div style={{ paddingTop: 4 }}>
+                        {changelog.length > 0 ? (
+                            filteredChangelog.map((entry) => (
+                                <ChangelogItem
+                                    entry={entry}
+                                    isLatest={
+                                        entry.version === state.currentVersion
+                                    }
+                                    key={entry.version}
+                                />
+                            ))
+                        ) : (
+                            <div
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: 11,
+                                    padding: "8px 0",
+                                }}
+                            >
+                                No changelog entries found in CHANGELOG.md.
+                            </div>
+                        )}
                     </div>
-                )}
-            </div>
+                </>
+            ) : null}
         </div>
     );
 }
