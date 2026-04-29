@@ -198,11 +198,11 @@ describe("buildGitGutterDecorations", () => {
 });
 
 describe("getGitGutterLineNumbersMinChars", () => {
-    it("reserves one extra digit worth of space for the git marker gap", () => {
-        expect(getGitGutterLineNumbersMinChars(9)).toBe(3);
-        expect(getGitGutterLineNumbersMinChars(87)).toBe(3);
-        expect(getGitGutterLineNumbersMinChars(120)).toBe(4);
-        expect(getGitGutterLineNumbersMinChars(2048)).toBe(5);
+    it("reserves breathing room for the git marker gap", () => {
+        expect(getGitGutterLineNumbersMinChars(9)).toBe(4);
+        expect(getGitGutterLineNumbersMinChars(87)).toBe(4);
+        expect(getGitGutterLineNumbersMinChars(120)).toBe(5);
+        expect(getGitGutterLineNumbersMinChars(2048)).toBe(6);
     });
 });
 
