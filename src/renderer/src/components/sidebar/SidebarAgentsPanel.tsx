@@ -16,6 +16,7 @@ import { truncateChatTitle } from "@shared/chatTitle";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import { collectPaneNodes } from "@renderer/app/workspace/tree";
 
 import {
     ContextMenu,
@@ -74,6 +75,18 @@ export function SidebarAgentsPanel({
         (state) => state.updateSessionTabTitles,
     );
     const tabsById = useWorkspaceStore((state) => state.tabsById);
+    const activePaneSessionId = useWorkspaceStore((state) => {
+        const activePane = collectPaneNodes(state.rootNode).find(
+            (pane) => pane.id === state.activePaneId,
+        );
+        const activeTab = activePane?.activeTabId
+            ? state.tabsById[activePane.activeTabId]
+            : null;
+
+        return activeTab?.kind === "chat" || activeTab?.kind === "review"
+            ? activeTab.sessionId
+            : null;
+    });
 
     const [sessions, setSessions] = useState<readonly AiHistorySessionSummary[]>(
         [],
@@ -628,6 +641,7 @@ export function SidebarAgentsPanel({
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
                         onTogglePinned={handleTogglePinned}
+                        activeSessionId={activePaneSessionId}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         sessions={pinnedSessions}
@@ -643,6 +657,7 @@ export function SidebarAgentsPanel({
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
                         onTogglePinned={handleTogglePinned}
+                        activeSessionId={activePaneSessionId}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         sessions={openSessions}
@@ -658,6 +673,7 @@ export function SidebarAgentsPanel({
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
                         onTogglePinned={handleTogglePinned}
+                        activeSessionId={activePaneSessionId}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         sessions={otherSessions}
@@ -688,6 +704,7 @@ export function SidebarAgentsPanel({
 }
 
 function SidebarAgentsSection({
+    activeSessionId,
     cancelRename,
     commitRename,
     onContextMenu,
@@ -699,6 +716,7 @@ function SidebarAgentsSection({
     sessions,
     title,
 }: {
+    readonly activeSessionId: string | null;
     readonly cancelRename: () => void;
     readonly commitRename: () => void;
     readonly onContextMenu: (
@@ -729,6 +747,7 @@ function SidebarAgentsSection({
                 {sessions.map((session) => (
                     <li key={session.sessionId}>
                         <SidebarAgentsItem
+                            isActive={activeSessionId === session.sessionId}
                             isRenaming={renamingSessionId === session.sessionId}
                             onCancelRename={cancelRename}
                             onCommitRename={commitRename}
@@ -747,6 +766,7 @@ function SidebarAgentsSection({
 }
 
 function SidebarAgentsItem({
+    isActive,
     isRenaming,
     onCancelRename,
     onCommitRename,
@@ -757,6 +777,7 @@ function SidebarAgentsItem({
     renameDraft,
     session,
 }: {
+    readonly isActive: boolean;
     readonly isRenaming: boolean;
     readonly onCancelRename: () => void;
     readonly onCommitRename: () => void;
@@ -790,6 +811,8 @@ function SidebarAgentsItem({
     return (
         <div
             className="sidebar-agents-row app-no-drag w-full"
+            aria-current={isActive ? "true" : undefined}
+            data-active={isActive ? "true" : "false"}
             onClick={() => {
                 if (isRenaming) return;
                 onOpen(session);

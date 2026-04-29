@@ -818,6 +818,16 @@ button {
     border-left-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
+.sidebar-agents-row[data-active="true"] {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    border-left-color: var(--color-accent);
+}
+
+.sidebar-agents-row[data-active="true"]:hover {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    border-left-color: var(--color-accent);
+}
+
 .sidebar-agents-row:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
     outline-offset: 1px;
