@@ -226,6 +226,62 @@ describe("AiPersistence", () => {
         );
     });
 
+    it("persists generated image messages and derives a history preview", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot: AiSessionSnapshot = {
+            availableCommands: [],
+            configOptions: [],
+            lastError: null,
+            messages: [
+                {
+                    attachments: [],
+                    content: "",
+                    createdAt: "2026-04-15T10:00:00.000Z",
+                    generatedImage: {
+                        error: null,
+                        mimeType: "image/png",
+                        path: "/Users/example/.codex/generated_images/image.png",
+                        result: "created image",
+                        revisedPrompt: "A tiny brass robot",
+                        status: "completed",
+                        title: "Generated image",
+                    },
+                    id: "image:codex-acp:image:image-1",
+                    kind: "image",
+                    status: "completed",
+                },
+            ],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: null,
+            sessionId: "session-image",
+            status: "idle",
+            title: "Image session",
+            tokenUsage: null,
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-15T10:00:00.000Z",
+            worktreeId: null,
+        };
+
+        persistence.saveSessionSnapshot(snapshot);
+
+        expect(persistence.loadSessionSnapshot(snapshot.sessionId)?.messages).toEqual(
+            snapshot.messages,
+        );
+        expect(loadStoredPreview(connection, snapshot.sessionId)).toBe(
+            "Generated image",
+        );
+    });
+
     it("lists session history scoped by project and worktree with previews", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);

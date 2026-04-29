@@ -10,6 +10,7 @@ import {
     forgetOpenFileBuffer,
     recordOpenFileBuffer,
 } from "./openFileBuffers";
+import { mapImageGenerationToolUpdate } from "./review-core";
 import { __testing } from "./service";
 
 function createTrackedFile(
@@ -792,5 +793,107 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         expect(snapshot.activeTurnStartedAt).toBe(
             "2026-04-20T12:00:05.000Z",
         );
+    });
+
+    it("upserts Codex image generation updates as a single image message", () => {
+        const started = mapImageGenerationToolUpdate(
+            makeSnapshot(),
+            {
+                _meta: {
+                    codexAcpEventType: "image_generation",
+                },
+                kind: "other",
+                rawInput: {
+                    status: "in_progress",
+                },
+                status: "in_progress",
+                title: "Generating image",
+                toolCallId: "codex-acp:image:image-1",
+            } as never,
+            "2026-04-20T12:00:10.000Z",
+        );
+
+        expect(started.messages).toHaveLength(1);
+        expect(started.messages[0]).toMatchObject({
+            content: "Generating image...",
+            id: "image:codex-acp:image:image-1",
+            kind: "image",
+            status: "streaming",
+        });
+        expect(started.messages[0]?.generatedImage).toMatchObject({
+            path: null,
+            status: "in_progress",
+            title: "Generating image",
+        });
+
+        const completed = mapImageGenerationToolUpdate(
+            started,
+            {
+                _meta: {
+                    codexAcpEventType: "image_generation",
+                },
+                kind: "other",
+                rawInput: {
+                    path: "/Users/example/.codex/generated_images/image.png",
+                    result: "created image",
+                    revised_prompt: "A tiny brass robot",
+                    status: "completed",
+                },
+                status: "completed",
+                title: "Generated image",
+                toolCallId: "codex-acp:image:image-1",
+            } as never,
+            "2026-04-20T12:00:11.000Z",
+        );
+
+        expect(completed.messages).toHaveLength(1);
+        expect(completed.toolActivity).toHaveLength(0);
+        expect(completed.messages[0]).toMatchObject({
+            content: "Generated image",
+            createdAt: "2026-04-20T12:00:10.000Z",
+            id: "image:codex-acp:image:image-1",
+            kind: "image",
+            status: "completed",
+        });
+        expect(completed.messages[0]?.generatedImage).toMatchObject({
+            mimeType: "image/png",
+            path: "/Users/example/.codex/generated_images/image.png",
+            result: "created image",
+            revisedPrompt: "A tiny brass robot",
+            status: "completed",
+            title: "Generated image",
+        });
+    });
+
+    it("maps failed image generation updates to completed error messages", () => {
+        const snapshot = mapImageGenerationToolUpdate(
+            makeSnapshot(),
+            {
+                _meta: {
+                    codexAcpEventType: "image_generation",
+                },
+                kind: "other",
+                rawInput: {
+                    error: "policy denied",
+                    result: "policy denied",
+                    status: "failed",
+                },
+                status: "failed",
+                title: "Image generation failed",
+                toolCallId: "codex-acp:image:image-2",
+            } as never,
+            "2026-04-20T12:00:12.000Z",
+        );
+
+        expect(snapshot.messages[0]).toMatchObject({
+            content: "Image generation failed",
+            kind: "image",
+            status: "completed",
+        });
+        expect(snapshot.messages[0]?.generatedImage).toMatchObject({
+            error: "policy denied",
+            status: "failed",
+            title: "Image generation failed",
+        });
     });
 });

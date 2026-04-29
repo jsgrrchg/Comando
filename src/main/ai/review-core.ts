@@ -8,6 +8,7 @@ import type {
     ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
 import type {
+    AiGeneratedImage,
     AiFileDiff,
     AiSessionSnapshot,
     AiTrackedFile,
@@ -20,10 +21,13 @@ import {
     syncTrackedFile,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
+import { inferCodexGeneratedImageMimeType } from "@shared/file-preview";
 
 import { readOpenFileBuffer } from "./openFileBuffers";
 import {
     CODEX_ACP_DIFF_PREVIOUS_PATH_KEY,
+    CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX,
+    CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_ID_PREFIX,
     CODEX_ACP_STATUS_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
@@ -233,6 +237,98 @@ export function mapToolCallUpdate(
             nextActivity,
         ],
         trackedFiles: nextTrackedFiles,
+    };
+}
+
+export function isImageGenerationToolUpdate(
+    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
+): boolean {
+    if (
+        update.toolCallId.startsWith(CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX)
+    ) {
+        return true;
+    }
+
+    return (
+        readDiffMetaString(
+            update._meta,
+            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+            COMANDO_STATUS_EVENT_TYPE_KEY,
+        ) === CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE
+    );
+}
+
+export function mapImageGenerationToolUpdate(
+    snapshot: AiSessionSnapshot,
+    update: ToolCall | ToolCallUpdate,
+    updatedAt: string,
+): AiSessionSnapshot {
+    const messageId = `image:${update.toolCallId}`;
+    const existing =
+        snapshot.messages.find((candidate) => candidate.id === messageId) ??
+        null;
+    const existingImage = existing?.generatedImage ?? null;
+    const rawInput = isRecord(update.rawInput) ? update.rawInput : null;
+    const rawStatus =
+        readRecordString(rawInput, "status") ??
+        mapToolStatusToImageStatus(update.status) ??
+        existingImage?.status ??
+        "in_progress";
+    const imageStatus = normalizeImageGenerationStatus(rawStatus);
+    const imagePath =
+        readRecordString(rawInput, "path") ?? existingImage?.path ?? null;
+    const result =
+        readRecordString(rawInput, "result") ?? existingImage?.result ?? null;
+    const revisedPrompt =
+        readRecordString(rawInput, "revised_prompt") ??
+        readRecordString(rawInput, "revisedPrompt") ??
+        existingImage?.revisedPrompt ??
+        null;
+    const mimeType =
+        readRecordString(rawInput, "mime_type") ??
+        readRecordString(rawInput, "mimeType") ??
+        (imagePath ? inferCodexGeneratedImageMimeType(imagePath) : null) ??
+        existingImage?.mimeType ??
+        null;
+    const isFailure = isTerminalImageFailureStatus(imageStatus);
+    const error =
+        readRecordString(rawInput, "error") ??
+        (isFailure ? result : null) ??
+        existingImage?.error ??
+        null;
+    const title =
+        typeof update.title === "string" && update.title.trim().length > 0
+            ? update.title.trim()
+            : imageGenerationTitle(imageStatus, error);
+    const generatedImage: AiGeneratedImage = {
+        error,
+        mimeType,
+        path: imagePath,
+        result,
+        revisedPrompt,
+        status: imageStatus,
+        title,
+    };
+    const nextMessage = {
+        attachments: existing?.attachments ?? [],
+        content: imageGenerationContent(generatedImage),
+        createdAt: existing?.createdAt ?? updatedAt,
+        generatedImage,
+        id: messageId,
+        kind: "image" as const,
+        status: isActiveImageGenerationStatus(imageStatus)
+            ? ("streaming" as const)
+            : ("completed" as const),
+    };
+    const nextMessages = existing
+        ? snapshot.messages.map((message) =>
+              message.id === messageId ? nextMessage : message,
+          )
+        : [...snapshot.messages, nextMessage];
+
+    return {
+        ...snapshot,
+        messages: nextMessages,
     };
 }
 
@@ -553,6 +649,82 @@ function readDiffMetaString(
     }
 
     return null;
+}
+
+function readRecordString(
+    record: Record<string, unknown> | null,
+    key: string,
+): string | null {
+    const value = record?.[key];
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : null;
+}
+
+function mapToolStatusToImageStatus(
+    status: ToolCall["status"] | ToolCallUpdate["status"] | null | undefined,
+): string | null {
+    switch (status) {
+        case "completed":
+            return "completed";
+        case "failed":
+            return "failed";
+        case "in_progress":
+            return "in_progress";
+        case "pending":
+            return "pending";
+        case null:
+        case undefined:
+            return null;
+        default:
+            return null;
+    }
+}
+
+function normalizeImageGenerationStatus(status: string): string {
+    const normalized = status.trim().toLowerCase();
+    return normalized.length > 0 ? normalized : "in_progress";
+}
+
+function isActiveImageGenerationStatus(status: string): boolean {
+    return (
+        status === "pending" ||
+        status === "in_progress" ||
+        status === "running"
+    );
+}
+
+function isTerminalImageFailureStatus(status: string): boolean {
+    return (
+        status === "failed" ||
+        status === "error" ||
+        status === "cancelled" ||
+        status === "canceled"
+    );
+}
+
+function imageGenerationTitle(status: string, error: string | null): string {
+    if (isActiveImageGenerationStatus(status)) {
+        return "Generating image";
+    }
+
+    if (isTerminalImageFailureStatus(status) || error) {
+        return "Image generation failed";
+    }
+
+    return "Generated image";
+}
+
+function imageGenerationContent(image: AiGeneratedImage): string {
+    if (isActiveImageGenerationStatus(image.status)) {
+        return "Generating image...";
+    }
+
+    if (isTerminalImageFailureStatus(image.status) || image.error) {
+        return "Image generation failed";
+    }
+
+    return "Generated image";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -2,6 +2,10 @@ import { Fragment, memo, useState, type ReactNode } from "react";
 
 import type { AiImageAttachment, AiSessionSnapshot } from "@shared/ipc";
 
+import {
+    buildCodexGeneratedImagePreviewUrl,
+    isCodexGeneratedImagePath,
+} from "@renderer/app/utils/filePreviewUrl";
 import type { ResolvedProjectFileReference } from "../projectFileReferences";
 
 import { MarkdownContent } from "../MarkdownContent";
@@ -65,6 +69,14 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 resolveFileReference={resolveFileReference}
             />
         );
+    if (message.kind === "image") {
+        return (
+            <GeneratedImageMessage
+                chatFontSize={chatFontSize}
+                message={message}
+            />
+        );
+    }
     return (
         <AssistantMessage
             attachments={message.attachments}
@@ -94,6 +106,342 @@ function areChatMessageRowPropsEqual(
         previous.resolveFileReference === next.resolveFileReference &&
         areMessagesEquivalent(previous.message, next.message)
     );
+}
+
+function GeneratedImageMessage({
+    chatFontSize,
+    message,
+}: {
+    readonly chatFontSize?: number;
+    readonly message: AiSessionSnapshot["messages"][number];
+}) {
+    const image = message.generatedImage ?? null;
+    const imagePath = image?.path?.trim() || null;
+    const previewUrl =
+        imagePath && isCodexGeneratedImagePath(imagePath)
+            ? buildCodexGeneratedImagePreviewUrl(imagePath)
+            : null;
+    const [loadFailed, setLoadFailed] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const status = (image?.status ?? "").toLowerCase();
+    const isActive =
+        message.status === "streaming" ||
+        status === "pending" ||
+        status === "in_progress" ||
+        status === "running";
+    const isFailed =
+        Boolean(image?.error) ||
+        status === "failed" ||
+        status === "error" ||
+        status === "cancelled" ||
+        status === "canceled";
+    const subtitle = image?.revisedPrompt ?? image?.result ?? "";
+    const title = image?.title ?? imageMessageTitle(isActive, isFailed);
+
+    const copyPath = async () => {
+        if (!imagePath) {
+            return;
+        }
+
+        await window.comando.writeClipboardText(imagePath);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+    };
+    const openImage = async () => {
+        if (imagePath) {
+            await window.comando.openGeneratedImage(imagePath);
+        }
+    };
+    const revealImage = async () => {
+        if (imagePath) {
+            await window.comando.revealGeneratedImage(imagePath);
+        }
+    };
+
+    if (isActive) {
+        return (
+            <div
+                className="min-w-0 max-w-full rounded-xl px-3 py-2"
+                style={{
+                    border: "1px solid color-mix(in srgb, var(--color-accent) 25%, var(--color-border))",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--color-accent) 5%, var(--color-bg-panel))",
+                    fontSize: chatFontSize,
+                }}
+            >
+                <div
+                    className="flex items-center gap-2"
+                    style={{ color: "var(--color-text-primary)" }}
+                >
+                    <GeneratedImageIcon stroke="var(--color-accent)" />
+                    <span
+                        className="font-medium"
+                        style={{ fontSize: "0.84em" }}
+                    >
+                        Generating image...
+                    </span>
+                </div>
+            </div>
+        );
+    }
+
+    const unavailable = !previewUrl || loadFailed;
+    const accent = isFailed ? "#ef4444" : "var(--color-accent)";
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-xl"
+            style={{
+                maxWidth: "min(520px, 100%)",
+                border: `1px solid color-mix(in srgb, ${accent} 22%, var(--color-border))`,
+                backgroundColor: `color-mix(in srgb, ${accent} 3%, var(--color-bg-panel))`,
+                color: "var(--color-text-primary)",
+                fontSize: chatFontSize,
+            }}
+        >
+            <div
+                className="flex items-center gap-2 px-3 py-2"
+                style={{
+                    borderBottom: `1px solid color-mix(in srgb, ${accent} 14%, var(--color-border))`,
+                }}
+            >
+                <GeneratedImageIcon stroke={accent} />
+                <div className="min-w-0 flex-1">
+                    <div
+                        className="font-medium"
+                        style={{
+                            color: isFailed
+                                ? "#f87171"
+                                : "var(--color-text-primary)",
+                            fontSize: "0.84em",
+                        }}
+                    >
+                        {title}
+                    </div>
+                    {subtitle ? (
+                        <div
+                            className="truncate"
+                            title={imagePath ?? subtitle}
+                            style={{
+                                color: "var(--color-text-secondary)",
+                                fontSize: "0.74em",
+                                opacity: 0.85,
+                            }}
+                        >
+                            {subtitle}
+                        </div>
+                    ) : null}
+                </div>
+            </div>
+
+            {unavailable || isFailed ? (
+                <div className="px-3 py-3">
+                    <div
+                        style={{
+                            color: isFailed
+                                ? "#f87171"
+                                : "var(--color-text-secondary)",
+                            fontSize: "0.84em",
+                        }}
+                    >
+                        {isFailed
+                            ? (image?.error ??
+                              message.content ??
+                              "Image generation failed")
+                            : previewUrl
+                              ? "Image file could not be loaded"
+                              : "Image path is unavailable"}
+                    </div>
+                    {!isFailed ? (
+                        <div
+                            className="mt-1"
+                            style={{
+                                color: "var(--color-text-secondary)",
+                                fontSize: "0.76em",
+                                opacity: 0.7,
+                            }}
+                        >
+                            This generated image may have been moved or deleted.
+                        </div>
+                    ) : null}
+                </div>
+            ) : (
+                <div style={{ backgroundColor: "var(--color-bg-primary)" }}>
+                    <img
+                        alt={subtitle || "Generated image"}
+                        className="block w-full"
+                        onError={() => setLoadFailed(true)}
+                        src={previewUrl ?? undefined}
+                        style={{
+                            backgroundColor: "var(--color-bg-primary)",
+                            maxHeight: 420,
+                            objectFit: "contain",
+                        }}
+                        title={imagePath ?? undefined}
+                    />
+                </div>
+            )}
+
+            {imagePath ? (
+                <div
+                    className="flex flex-wrap items-center gap-1.5 px-2.5 py-1.5"
+                    style={{
+                        borderTop: `1px solid color-mix(in srgb, ${accent} 12%, var(--color-border))`,
+                    }}
+                >
+                    <ImageActionButton
+                        icon="open"
+                        onClick={() => {
+                            void openImage();
+                        }}
+                    >
+                        Open Externally
+                    </ImageActionButton>
+                    <ImageActionButton
+                        icon="reveal"
+                        onClick={() => {
+                            void revealImage();
+                        }}
+                    >
+                        {revealGeneratedImageLabel()}
+                    </ImageActionButton>
+                    <ImageActionButton
+                        icon={copied ? "check" : "copy"}
+                        onClick={() => {
+                            void copyPath();
+                        }}
+                    >
+                        {copied ? "Copied" : "Copy Path"}
+                    </ImageActionButton>
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function GeneratedImageIcon({ stroke = "currentColor" }: { stroke?: string }) {
+    return (
+        <svg
+            aria-hidden="true"
+            className="shrink-0"
+            fill="none"
+            height="13"
+            stroke={stroke}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.4"
+            viewBox="0 0 14 14"
+            width="13"
+        >
+            <rect x="1.5" y="2.5" width="11" height="9" rx="1.5" />
+            <circle cx="5" cy="5.75" r="0.9" />
+            <path d="M2 10l3-3 2.2 2.2L9.5 7l2.5 2.5" />
+        </svg>
+    );
+}
+
+type ImageActionIcon = "open" | "reveal" | "copy" | "check";
+
+function ImageActionGlyph({ icon }: { icon: ImageActionIcon }) {
+    const common = {
+        fill: "none",
+        height: 12,
+        stroke: "currentColor",
+        strokeLinecap: "round" as const,
+        strokeLinejoin: "round" as const,
+        strokeWidth: 1.4,
+        viewBox: "0 0 12 12",
+        width: 12,
+    };
+    if (icon === "open") {
+        return (
+            <svg {...common} aria-hidden="true">
+                <path d="M7 2h3v3" />
+                <path d="M10 2L5.5 6.5" />
+                <path d="M9 7v2.5a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6a.5.5 0 0 1 .5-.5H5" />
+            </svg>
+        );
+    }
+    if (icon === "reveal") {
+        return (
+            <svg {...common} aria-hidden="true">
+                <path d="M1.5 4.2a.7.7 0 0 1 .7-.7h2.3l1 1.2h4.8a.7.7 0 0 1 .7.7v3.9a.7.7 0 0 1-.7.7H2.2a.7.7 0 0 1-.7-.7Z" />
+            </svg>
+        );
+    }
+    if (icon === "check") {
+        return (
+            <svg {...common} aria-hidden="true">
+                <path d="M2.5 6.4L4.7 8.6L9.5 3.8" />
+            </svg>
+        );
+    }
+    return (
+        <svg {...common} aria-hidden="true">
+            <rect x="3.5" y="3.5" width="6" height="7" rx="1" />
+            <path d="M5 3.5V2.4a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5V3.5" />
+        </svg>
+    );
+}
+
+function ImageActionButton({
+    children,
+    icon,
+    onClick,
+}: {
+    readonly children: ReactNode;
+    readonly icon: ImageActionIcon;
+    readonly onClick: () => void;
+}) {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors"
+            onClick={onClick}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            style={{
+                backgroundColor: hovered
+                    ? "color-mix(in srgb, var(--color-text-primary) 6%, var(--color-bg-panel))"
+                    : "transparent",
+                border: `1px solid color-mix(in srgb, var(--color-border) ${
+                    hovered ? "100%" : "70%"
+                }, transparent)`,
+                color: hovered
+                    ? "var(--color-text-primary)"
+                    : "var(--color-text-secondary)",
+                fontSize: "0.74em",
+            }}
+            type="button"
+        >
+            <ImageActionGlyph icon={icon} />
+            {children}
+        </button>
+    );
+}
+
+function imageMessageTitle(isActive: boolean, isFailed: boolean): string {
+    if (isActive) {
+        return "Generating image...";
+    }
+
+    return isFailed ? "Image generation failed" : "Generated image";
+}
+
+function revealGeneratedImageLabel(): string {
+    if (typeof navigator === "undefined") {
+        return "Reveal in Folder";
+    }
+
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes("mac")) {
+        return "Reveal in Finder";
+    }
+    if (userAgent.includes("windows")) {
+        return "Reveal in Explorer";
+    }
+
+    return "Reveal in Folder";
 }
 
 function HighlightedPlainText({

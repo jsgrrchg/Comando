@@ -102,6 +102,7 @@ import { simpleGit } from "simple-git";
 import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
 import { debugBenignError } from "@main/observability/logging";
+import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol";
 
 import type { AiWorkerClient } from "@main/ai/client";
 import type { AiService } from "@main/ai/service";
@@ -161,6 +162,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getWindowContext);
     ipcMain.removeHandler(IPC_CHANNELS.readClipboardText);
     ipcMain.removeHandler(IPC_CHANNELS.writeClipboardText);
+    ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
+    ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
@@ -302,6 +305,25 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
         clipboard.writeText(text);
     });
+    ipcMain.handle(
+        IPC_CHANNELS.openGeneratedImage,
+        async (_event, imagePath: string) => {
+            const resolvedPath =
+                await resolveGeneratedImageIpcPath(imagePath);
+            const errorMessage = await shell.openPath(resolvedPath);
+            if (errorMessage) {
+                throw new Error(errorMessage);
+            }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.revealGeneratedImage,
+        async (_event, imagePath: string) => {
+            const resolvedPath =
+                await resolveGeneratedImageIpcPath(imagePath);
+            shell.showItemInFolder(resolvedPath);
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.openProjectWindow,
         (_event, input: OpenProjectWindowInput) => {
@@ -1325,6 +1347,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, settings: CodexRuntimeSettingsInput) =>
             options.aiService.verifyCodexRuntimeSettings(settings),
     );
+}
+
+async function resolveGeneratedImageIpcPath(imagePath: string): Promise<string> {
+    if (typeof imagePath !== "string" || imagePath.trim().length === 0) {
+        throw new TypeError("Expected generated image path to be a string.");
+    }
+
+    const resolvedPath = await resolveCodexGeneratedImageFilePath(imagePath);
+    if (!resolvedPath) {
+        throw new Error("Generated image path is not authorized.");
+    }
+
+    return resolvedPath;
 }
 
 function broadcastProjectSettingsUpdated(

@@ -16,6 +16,8 @@ export const IPC_CHANNELS = {
     getWindowContext: "app:get-window-context",
     readClipboardText: "app:read-clipboard-text",
     writeClipboardText: "app:write-clipboard-text",
+    openGeneratedImage: "app:open-generated-image",
+    revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
     getSettingsSnapshot: "settings:get-snapshot",
     getProjectSettings: "settings:get-project-settings",
@@ -1144,6 +1146,7 @@ export type AiSessionStatus =
 
 export type AiMessageKind =
     | "assistant"
+    | "image"
     | "thinking"
     | "user"
     | "user_input_request";
@@ -1154,6 +1157,16 @@ export interface AiImageAttachment {
     readonly mimeType: string;
     readonly name: string | null;
     readonly sizeBytes: number | null;
+}
+
+export interface AiGeneratedImage {
+    readonly error: string | null;
+    readonly mimeType: string | null;
+    readonly path: string | null;
+    readonly result: string | null;
+    readonly revisedPrompt: string | null;
+    readonly status: string;
+    readonly title: string;
 }
 
 export interface AiFileContextAttachment {
@@ -1208,6 +1221,7 @@ export interface AiMessage {
     readonly attachments: readonly AiImageAttachment[];
     readonly content: string;
     readonly createdAt: string;
+    readonly generatedImage?: AiGeneratedImage | null;
     readonly id: string;
     readonly kind: AiMessageKind;
     readonly status: "completed" | "streaming";
@@ -1575,6 +1589,8 @@ export interface ComandoApi {
     readClipboardText: () => Promise<string>;
     resolveDroppedFilePath: (file: File | null) => string | null;
     writeClipboardText: (text: string) => Promise<void>;
+    openGeneratedImage: (path: string) => Promise<void>;
+    revealGeneratedImage: (path: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getProjectSettings: (

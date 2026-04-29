@@ -42,7 +42,9 @@ export const COMANDO_DIFF_PREVIOUS_PATH_KEY = "comandoPreviousPath";
 export const CODEX_ACP_STATUS_EVENT_TYPE_KEY = "codexAcpEventType";
 export const COMANDO_STATUS_EVENT_TYPE_KEY = "comandoEventType";
 export const CODEX_ACP_STATUS_EVENT_TYPE = "status";
+export const CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE = "image_generation";
 export const CODEX_ACP_STATUS_EVENT_ID_PREFIX = "codex-acp:status:";
+export const CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX = "codex-acp:image:";
 export const COMANDO_STATUS_EVENT_ID_PREFIX = "comando:status:";
 export const CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX =
     "codex-acp:status:turn:";

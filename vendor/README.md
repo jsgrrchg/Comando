@@ -39,6 +39,7 @@ The remaining Comando-specific delta exists to preserve desktop product behavior
 - custom slash-prompt discovery and expansion from the user's Codex prompts directory
 - local `gpt-5.5` model-catalog seed while upstream Codex metadata catches up
 - Fast service-tier controls exposed to the desktop UI
+- generated-image bridge that emits Codex image generation events as ACP `image_generation` tool updates for inline chat rendering
 - session-config synchronization from Codex `SessionConfiguredEvent` back into the ACP session config
 
 When updating Codex again, treat `ee9418a` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.

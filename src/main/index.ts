@@ -30,6 +30,10 @@ import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
 import { createGitWorkerClient, type GitWorkerClient } from "./git";
+import {
+    installFilePreviewProtocol,
+    registerFilePreviewSchemes,
+} from "./file-preview-protocol";
 import { installApplicationMenu } from "./menu";
 import { debugBenignError } from "./observability/logging";
 import { mainProcessPerformance } from "./observability/performance";
@@ -66,6 +70,7 @@ let pendingShutdown: Promise<void> | null = null;
 const aiSessionStreamPorts = new Map<string, MessagePortMain>();
 
 configureMainProcessApp();
+registerFilePreviewSchemes();
 
 const shouldUseSingleInstanceLock = appChannel === "release";
 const hasSingleInstanceLock = shouldUseSingleInstanceLock
@@ -94,6 +99,7 @@ if (!hasSingleInstanceLock) {
         .whenReady()
         .then(async () => {
             mainProcessPerformance.markAppWhenReady();
+            installFilePreviewProtocol();
             dbWorkerClient = await createDbWorkerClient({
                 appWindowTitle: appIdentity.windowTitle,
                 dataDir: app.getPath("userData"),

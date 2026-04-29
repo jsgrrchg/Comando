@@ -4,6 +4,7 @@ import type {
     AiAvailableCommand,
     AiHistorySessionSummary,
     AiDiffHunk,
+    AiGeneratedImage,
     AiImageAttachment,
     AiMessage,
     AiPermissionRequest,
@@ -1186,6 +1187,7 @@ function normalizeMessages(value: unknown): readonly AiMessage[] {
 
         const kind =
             entry.kind === "assistant" ||
+            entry.kind === "image" ||
             entry.kind === "thinking" ||
             entry.kind === "user" ||
             entry.kind === "user_input_request"
@@ -1195,6 +1197,7 @@ function normalizeMessages(value: unknown): readonly AiMessage[] {
             entry.status === "completed" || entry.status === "streaming"
                 ? entry.status
                 : "completed";
+        const generatedImage = normalizeGeneratedImage(entry.generatedImage);
 
         return [
             {
@@ -1204,6 +1207,7 @@ function normalizeMessages(value: unknown): readonly AiMessage[] {
                     typeof entry.createdAt === "string"
                         ? entry.createdAt
                         : new Date().toISOString(),
+                ...(generatedImage ? { generatedImage } : {}),
                 id:
                     typeof entry.id === "string"
                         ? entry.id
@@ -1213,6 +1217,28 @@ function normalizeMessages(value: unknown): readonly AiMessage[] {
             } satisfies AiMessage,
         ];
     });
+}
+
+function normalizeGeneratedImage(value: unknown): AiGeneratedImage | null {
+    if (!isRecord(value)) {
+        return null;
+    }
+
+    return {
+        error: typeof value.error === "string" ? value.error : null,
+        mimeType: typeof value.mimeType === "string" ? value.mimeType : null,
+        path: typeof value.path === "string" ? value.path : null,
+        result: typeof value.result === "string" ? value.result : null,
+        revisedPrompt:
+            typeof value.revisedPrompt === "string"
+                ? value.revisedPrompt
+                : null,
+        status: typeof value.status === "string" ? value.status : "completed",
+        title:
+            typeof value.title === "string" && value.title.trim().length > 0
+                ? value.title
+                : "Generated image",
+    };
 }
 
 function normalizeImageAttachments(
@@ -1818,18 +1844,49 @@ function deriveSessionPreview(messages: readonly AiMessage[]): string | null {
     const message =
         [...messages]
             .reverse()
-            .find((entry) => normalizePreviewText(entry.content).length > 0) ??
-        messages.find(
-            (entry) => normalizePreviewText(entry.content).length > 0,
-        ) ??
+            .find((entry) => messagePreviewText(entry).length > 0) ??
+        messages.find((entry) => messagePreviewText(entry).length > 0) ??
         null;
 
     if (!message) {
         return null;
     }
 
-    const preview = normalizePreviewText(message.content);
+    const preview = messagePreviewText(message);
     return preview.length > 280 ? `${preview.slice(0, 277)}...` : preview;
+}
+
+function messagePreviewText(message: AiMessage): string {
+    const content = normalizePreviewText(message.content);
+    if (content.length > 0) {
+        return content;
+    }
+
+    if (message.kind !== "image" || !message.generatedImage) {
+        return "";
+    }
+
+    const status = message.generatedImage.status.toLowerCase();
+    if (
+        message.status === "streaming" ||
+        status === "pending" ||
+        status === "in_progress" ||
+        status === "running"
+    ) {
+        return "Generating image...";
+    }
+
+    if (
+        message.generatedImage.error ||
+        status === "failed" ||
+        status === "error" ||
+        status === "cancelled" ||
+        status === "canceled"
+    ) {
+        return "Image generation failed";
+    }
+
+    return "Generated image";
 }
 
 function normalizePreviewText(value: string): string {

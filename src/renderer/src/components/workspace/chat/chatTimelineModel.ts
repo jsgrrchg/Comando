@@ -1,4 +1,8 @@
-import type { AiImageAttachment, AiSessionSnapshot } from "@shared/ipc";
+import type {
+    AiGeneratedImage,
+    AiImageAttachment,
+    AiSessionSnapshot,
+} from "@shared/ipc";
 
 import {
     deriveToolActivityReviewEntries,
@@ -60,7 +64,33 @@ export function areMessagesEquivalent(
         previous.kind === next.kind &&
         previous.status === next.status &&
         previous.content === next.content &&
+        areGeneratedImagesEquivalent(
+            previous.generatedImage ?? null,
+            next.generatedImage ?? null,
+        ) &&
         areImageAttachmentsEquivalent(previous.attachments, next.attachments)
+    );
+}
+
+function areGeneratedImagesEquivalent(
+    previous: AiGeneratedImage | null,
+    next: AiGeneratedImage | null,
+): boolean {
+    if (previous === next) {
+        return true;
+    }
+    if (!previous || !next) {
+        return false;
+    }
+
+    return (
+        previous.error === next.error &&
+        previous.mimeType === next.mimeType &&
+        previous.path === next.path &&
+        previous.result === next.result &&
+        previous.revisedPrompt === next.revisedPrompt &&
+        previous.status === next.status &&
+        previous.title === next.title
     );
 }
 

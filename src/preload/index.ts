@@ -271,6 +271,10 @@ const comandoApi: ComandoApi = {
     },
     writeClipboardText: (text: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.writeClipboardText, text),
+    openGeneratedImage: (path: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openGeneratedImage, path),
+    revealGeneratedImage: (path: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.revealGeneratedImage, path),
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
     getSettingsSnapshot: async () =>

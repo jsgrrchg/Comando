@@ -15,7 +15,7 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini | Kilo |
 |---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.29.2` + local vendored patches) | Rust (`codex-acp` `0.11.1`, vendored on top of `openai/codex` `rust-v0.124.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.29.2` + local vendored patches) | Rust (`codex-acp` `0.12.0`, vendored on top of `openai/codex` `rust-v0.124.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
 | **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today |
 | **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` |
@@ -26,8 +26,9 @@ Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
 - The vendored Claude ACP snapshot follows upstream effort-level support. Comando maps the upstream `effort` config option into the UI's reasoning controls and keeps compatibility with older saved `effort_level` preferences.
-- The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.11.1`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.124.0`.
+- The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.12.0`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.124.0` and `agent-client-protocol` `0.11.1`.
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
+- The vendored Codex ACP snapshot also carries a local image-generation bridge: Codex `ImageGenerationBegin` / `ImageGenerationEnd` and `TurnItem::ImageGeneration` are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity.
 - The current Codex vendor also carries compatibility glue for the `rust-v0.124.0` runtime API shape, including updated auth/config wiring, newer event payloads, and local custom prompt handling.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Status metadata currently uses `codexAcp*` names while Comando keeps app-branded `comando*` aliases for compatibility paths it owns.
@@ -165,8 +166,9 @@ resources/ai/embedded/codex-acp/target/
 
 Current local snapshot note:
 
-- `vendor/codex-acp/` stays at `codex-acp` `0.11.1`, but its vendored Rust runtime dependencies are pinned to `openai/codex` `rust-v0.124.0`.
+- `vendor/codex-acp/` stays at `codex-acp` `0.12.0`, but its vendored Rust runtime dependencies are pinned to `openai/codex` `rust-v0.124.0` and `agent-client-protocol` `0.11.1`.
 - `vendor/codex-acp/` includes a local Fast Mode patch carried over into Comando, adding ACP `service_tier` config handling, `/fast` command support, and session `service_tier` rehydration.
+- `vendor/codex-acp/` includes a local generated-image patch. Image generation begin/end events are converted into structured ACP tool call updates with `image_generation` metadata, preserving `status`, `path`, `result`, `revised_prompt`, and `error` fields for the Comando chat pipeline.
 - The local vendor was adapted to the newer Codex runtime API so `cargo build --release --locked`, `cargo test --locked`, and staging continue to work from the vendored tree.
 - This local divergence should be reevaluated once the official upstream `codex-acp` ships equivalent support, so Comando can reduce vendor drift.
 

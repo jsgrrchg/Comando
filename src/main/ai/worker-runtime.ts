@@ -87,6 +87,8 @@ import {
     toPosixPath,
 } from "./session-core";
 import {
+    isImageGenerationToolUpdate,
+    mapImageGenerationToolUpdate,
     mapToolCallUpdate,
     readTextIfExists,
     shouldSuppressToolActivityUpdate,
@@ -1186,30 +1188,34 @@ export class AiWorkerRuntime {
                 break;
             case "tool_call":
                 nextSnapshot = finalizeStreamingMessages(nextSnapshot);
-                nextSnapshot = mapToolCallUpdate(
-                    liveSession,
-                    nextSnapshot,
-                    update,
-                    "tool_call",
-                    now,
-                    {
-                        readOpenFileBuffer: (absolutePath) =>
-                            this.#fileBuffers.get(absolutePath) ?? null,
-                    },
-                );
+                nextSnapshot = isImageGenerationToolUpdate(update)
+                    ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
+                    : mapToolCallUpdate(
+                          liveSession,
+                          nextSnapshot,
+                          update,
+                          "tool_call",
+                          now,
+                          {
+                              readOpenFileBuffer: (absolutePath) =>
+                                  this.#fileBuffers.get(absolutePath) ?? null,
+                          },
+                      );
                 break;
             case "tool_call_update":
-                nextSnapshot = mapToolCallUpdate(
-                    liveSession,
-                    nextSnapshot,
-                    update,
-                    "tool_call_update",
-                    now,
-                    {
-                        readOpenFileBuffer: (absolutePath) =>
-                            this.#fileBuffers.get(absolutePath) ?? null,
-                    },
-                );
+                nextSnapshot = isImageGenerationToolUpdate(update)
+                    ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
+                    : mapToolCallUpdate(
+                          liveSession,
+                          nextSnapshot,
+                          update,
+                          "tool_call_update",
+                          now,
+                          {
+                              readOpenFileBuffer: (absolutePath) =>
+                                  this.#fileBuffers.get(absolutePath) ?? null,
+                          },
+                      );
                 break;
             case "plan":
                 nextSnapshot = {
