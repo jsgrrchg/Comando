@@ -45,6 +45,11 @@ import {
     SIDEBAR_AGENTS_HISTORY_LIMIT,
     type SidebarAgentsHistoryUnknownSessionSeed,
 } from "./sidebarAgentsHistory";
+import {
+    getSidebarAgentsCollapseStorageKey,
+    persistSidebarAgentsCollapsedSessionIds,
+    readSidebarAgentsCollapsedSessionIds,
+} from "./sidebarAgentsCollapseState";
 
 interface SidebarAgentsContextMenuPayload {
     readonly sessionId: string;
@@ -112,11 +117,18 @@ export function SidebarAgentsPanel({
     const [renameDraft, setRenameDraft] = useState("");
     const [collapsedSessionIds, setCollapsedSessionIds] = useState<
         ReadonlySet<string>
-    >(() => new Set());
+    >(() => readSidebarAgentsCollapsedSessionIds(projectId, worktreeId));
+    const [loadedHistoryScopeKey, setLoadedHistoryScopeKey] = useState<
+        string | null
+    >(null);
     const requestIdRef = useRef(0);
     const refreshTimerRef = useRef<number | null>(null);
     const normalizedFilter = (filter ?? "").trim().toLowerCase();
     const hasQuery = normalizedFilter.length > 0;
+    const collapseStorageKey = useMemo(
+        () => getSidebarAgentsCollapseStorageKey(projectId, worktreeId),
+        [projectId, worktreeId],
+    );
 
     const loadSessions = useCallback(async () => {
         const api = getComandoApi();
@@ -139,6 +151,7 @@ export function SidebarAgentsPanel({
                 return;
             }
             setSessions(nextSessions);
+            setLoadedHistoryScopeKey(collapseStorageKey);
         } catch (err) {
             if (requestIdRef.current !== requestId) {
                 return;
@@ -153,7 +166,7 @@ export function SidebarAgentsPanel({
                 setIsLoading(false);
             }
         }
-    }, [projectId, worktreeId]);
+    }, [collapseStorageKey, projectId, worktreeId]);
 
     const clearRefreshTimer = useCallback(() => {
         if (refreshTimerRef.current !== null) {
@@ -176,11 +189,18 @@ export function SidebarAgentsPanel({
     useEffect(() => {
         setSessions([]);
         setError(null);
+        setLoadedHistoryScopeKey(null);
         clearRefreshTimer();
         void loadSessions();
     }, [clearRefreshTimer, loadSessions]);
 
     useEffect(() => clearRefreshTimer, [clearRefreshTimer]);
+
+    useEffect(() => {
+        setCollapsedSessionIds(
+            readSidebarAgentsCollapsedSessionIds(projectId, worktreeId),
+        );
+    }, [projectId, worktreeId]);
 
     useEffect(() => {
         const api = getComandoApi();
@@ -577,6 +597,10 @@ export function SidebarAgentsPanel({
     }, [aiSessions]);
 
     useEffect(() => {
+        if (hasQuery || loadedHistoryScopeKey !== collapseStorageKey) {
+            return;
+        }
+
         setCollapsedSessionIds((current) => {
             const next = new Set(
                 [...current].filter((sessionId) =>
@@ -586,9 +610,25 @@ export function SidebarAgentsPanel({
             const unchanged =
                 next.size === current.size &&
                 [...next].every((sessionId) => current.has(sessionId));
-            return unchanged ? current : next;
+            if (unchanged) {
+                return current;
+            }
+
+            persistSidebarAgentsCollapsedSessionIds(
+                projectId,
+                worktreeId,
+                next,
+            );
+            return next;
         });
-    }, [collapsibleSessionIds]);
+    }, [
+        collapseStorageKey,
+        collapsibleSessionIds,
+        hasQuery,
+        loadedHistoryScopeKey,
+        projectId,
+        worktreeId,
+    ]);
 
     const pinnedGroups = useMemo(
         () =>
@@ -642,17 +682,25 @@ export function SidebarAgentsPanel({
     const showUnpinnedSectionHeaders =
         pinnedGroups.length > 0 ||
         (openGroups.length > 0 && otherGroups.length > 0);
-    const handleToggleCollapsed = useCallback((sessionId: string) => {
-        setCollapsedSessionIds((current) => {
-            const next = new Set(current);
-            if (next.has(sessionId)) {
-                next.delete(sessionId);
-            } else {
-                next.add(sessionId);
-            }
-            return next;
-        });
-    }, []);
+    const handleToggleCollapsed = useCallback(
+        (sessionId: string) => {
+            setCollapsedSessionIds((current) => {
+                const next = new Set(current);
+                if (next.has(sessionId)) {
+                    next.delete(sessionId);
+                } else {
+                    next.add(sessionId);
+                }
+                persistSidebarAgentsCollapsedSessionIds(
+                    projectId,
+                    worktreeId,
+                    next,
+                );
+                return next;
+            });
+        },
+        [projectId, worktreeId],
+    );
 
     const statusLine = isLoading
         ? "Loading..."
