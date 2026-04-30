@@ -127,6 +127,7 @@ export function mapToolCallUpdate(
     const normalizeDiffPath = (candidatePath: string) =>
         normalizeTrackedDiffPath(liveSession, candidatePath);
     const nextActivity = {
+        ...(existing?.action ? { action: existing.action } : {}),
         createdAt: existing?.createdAt ?? updatedAt,
         diffs: content
             ? collectDiffs(content, toolKind, normalizeDiffPath)

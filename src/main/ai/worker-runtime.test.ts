@@ -609,6 +609,88 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("attaches open-session actions to Codex subagent breadcrumbs", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+
+        emittedEvents.length = 0;
+        const breadcrumbMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "spawn_end",
+        };
+        await client!.sessionUpdate({
+            _meta: breadcrumbMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: breadcrumbMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Spawned Galileo",
+                toolCallId: "codex-acp:subagent:spawn-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const toolActivity = getLatestToolActivity(emittedEvents);
+            expect(toolActivity).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        action: {
+                            kind: "open_session",
+                            sessionId: childSnapshot!.sessionId,
+                        },
+                        id: "codex-acp:subagent:spawn-1",
+                    }),
+                ]),
+            );
+        });
+    });
+
     it("rejects prompts that exceed the image attachment limit", async () => {
         const runtime = createRuntime();
         const launch = createLaunch({

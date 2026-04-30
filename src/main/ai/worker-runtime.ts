@@ -62,6 +62,7 @@ import {
     CODEX_ACP_CWD_KEY,
     CODEX_ACP_PARENT_SESSION_ID_KEY,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+    CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
     CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
     type LiveAcpConnection,
     type LiveAcpSession,
@@ -1550,6 +1551,11 @@ export class AiWorkerRuntime {
                 break;
         }
 
+        nextSnapshot = attachSubagentOpenSessionAction(
+            liveSession,
+            nextSnapshot,
+            params,
+        );
         liveSession.snapshot = nextSnapshot;
         this.#queueSnapshotFlush(liveSession);
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
@@ -2733,6 +2739,69 @@ export class AiWorkerRuntime {
             type: "event",
         });
     }
+}
+
+function attachSubagentOpenSessionAction(
+    liveSession: LiveAcpSession,
+    snapshot: AiSessionSnapshot,
+    params: SessionNotification,
+): AiSessionSnapshot {
+    const update = params.update;
+    if (
+        update.sessionUpdate !== "tool_call" &&
+        update.sessionUpdate !== "tool_call_update"
+    ) {
+        return snapshot;
+    }
+
+    const meta = getSessionNotificationMeta(params);
+    if (
+        readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) !==
+        CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE
+    ) {
+        return snapshot;
+    }
+
+    const runtimeChildSessionId = readMetaString(
+        meta,
+        CODEX_ACP_CHILD_SESSION_ID_KEY,
+    );
+    if (!runtimeChildSessionId) {
+        return snapshot;
+    }
+
+    const childAppSessionId =
+        liveSession.runtimeConnection.appSessionIdByRuntimeSessionId.get(
+            runtimeChildSessionId,
+        ) ?? null;
+    if (!childAppSessionId) {
+        return snapshot;
+    }
+
+    let changed = false;
+    const toolActivity = snapshot.toolActivity.map((activity) => {
+        if (activity.id !== update.toolCallId) {
+            return activity;
+        }
+
+        if (
+            activity.action?.kind === "open_session" &&
+            activity.action.sessionId === childAppSessionId
+        ) {
+            return activity;
+        }
+
+        changed = true;
+        return {
+            ...activity,
+            action: {
+                kind: "open_session" as const,
+                sessionId: childAppSessionId,
+            },
+        };
+    });
+
+    return changed ? { ...snapshot, toolActivity } : snapshot;
 }
 
 function getSessionNotificationMeta(

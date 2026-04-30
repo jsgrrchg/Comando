@@ -25,9 +25,10 @@ describe("databaseMigrations", () => {
             aiHistoryIndexesMigration,
             aiPinnedSessionsMigration,
             aiHistoryPreviewsMigration,
+            aiSessionParentMigration,
         ] = databaseMigrations;
 
-        expect(databaseMigrations).toHaveLength(11);
+        expect(databaseMigrations).toHaveLength(12);
         expect(foundationMigration?.id).toBe("0001-foundation");
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
@@ -117,6 +118,11 @@ describe("databaseMigrations", () => {
             "0011-ai-history-previews",
         );
         expect(aiHistoryPreviewsMigration?.sql).toContain("preview TEXT");
+        expect(aiSessionParentMigration?.id).toBe("0012-ai-session-parent");
+        expect(aiSessionParentMigration?.sql).toContain("parent_session_id");
+        expect(aiSessionParentMigration?.sql).toContain(
+            "idx_chat_sessions_parent_session_id",
+        );
     });
 
     it("backfills canonical_root_path and worktree_id from a previous schema", () => {
@@ -233,6 +239,93 @@ describe("databaseMigrations", () => {
                 expect(runtimeIndexRow?.name).toBe(
                     "idx_chat_sessions_runtime_updated_at",
                 );
+            } finally {
+                migratedDb.close();
+            }
+        } finally {
+            fs.rmSync(dataDir, { recursive: true, force: true });
+        }
+    });
+
+    it("backfills AI session parent links without cascading child deletion", () => {
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-db-"));
+        const databaseFile = path.join(dataDir, "comando.sqlite3");
+
+        try {
+            const legacyDb = createSqliteCompatConnection(databaseFile);
+            legacyDb.pragma("foreign_keys = ON");
+            applyMigrations(legacyDb, databaseMigrations.slice(0, 11));
+
+            legacyDb.exec(`
+                INSERT INTO chat_sessions (id, project_id, worktree_id, pinned_at, title, runtime, status, draft, created_at, updated_at, last_opened_at)
+                VALUES
+                  ('parent-session', NULL, NULL, NULL, 'Parent', 'codex', 'idle', '', '2026-04-16T12:00:00.000Z', '2026-04-16T12:00:00.000Z', '2026-04-16T12:00:00.000Z'),
+                  ('child-session', NULL, NULL, NULL, 'Galileo', 'codex', 'idle', '', '2026-04-16T12:01:00.000Z', '2026-04-16T12:01:00.000Z', '2026-04-16T12:01:00.000Z'),
+                  ('orphan-session', NULL, NULL, NULL, 'Orphan', 'codex', 'idle', '', '2026-04-16T12:02:00.000Z', '2026-04-16T12:02:00.000Z', '2026-04-16T12:02:00.000Z');
+
+                INSERT INTO chat_transcripts (id, session_id, transcript_json, message_count, preview, created_at, updated_at)
+                VALUES
+                  ('transcript:parent-session', 'parent-session', '{"version":1,"sessionId":"parent-session","messages":[]}', 0, NULL, '2026-04-16T12:00:00.000Z', '2026-04-16T12:00:00.000Z'),
+                  ('transcript:child-session', 'child-session', '{"version":1,"sessionId":"child-session","parentSessionId":"parent-session","messages":[]}', 0, NULL, '2026-04-16T12:01:00.000Z', '2026-04-16T12:01:00.000Z'),
+                  ('transcript:orphan-session', 'orphan-session', '{"version":1,"sessionId":"orphan-session","parentSessionId":"missing-parent","messages":[]}', 0, NULL, '2026-04-16T12:02:00.000Z', '2026-04-16T12:02:00.000Z');
+            `);
+
+            legacyDb.close();
+
+            const migratedDb = createSqliteCompatConnection(databaseFile);
+            migratedDb.pragma("foreign_keys = ON");
+
+            try {
+                applyMigrations(migratedDb, databaseMigrations.slice(11));
+
+                const childRow = migratedDb
+                    .prepare<
+                        [],
+                        { parent_session_id: string | null }
+                    >(
+                        "SELECT parent_session_id FROM chat_sessions WHERE id = 'child-session'",
+                    )
+                    .get();
+                expect(childRow?.parent_session_id).toBe("parent-session");
+
+                const orphanRow = migratedDb
+                    .prepare<
+                        [],
+                        { parent_session_id: string | null }
+                    >(
+                        "SELECT parent_session_id FROM chat_sessions WHERE id = 'orphan-session'",
+                    )
+                    .get();
+                expect(orphanRow?.parent_session_id).toBeNull();
+
+                const parentIndexRow = migratedDb
+                    .prepare<
+                        [],
+                        { name: string } | undefined
+                    >(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_chat_sessions_parent_session_id'",
+                    )
+                    .get();
+                expect(parentIndexRow?.name).toBe(
+                    "idx_chat_sessions_parent_session_id",
+                );
+
+                migratedDb
+                    .prepare("DELETE FROM chat_sessions WHERE id = ?")
+                    .run("parent-session");
+
+                const remainingChildRow = migratedDb
+                    .prepare<
+                        [],
+                        { id: string; parent_session_id: string | null }
+                    >(
+                        "SELECT id, parent_session_id FROM chat_sessions WHERE id = 'child-session'",
+                    )
+                    .get();
+                expect(remainingChildRow).toEqual({
+                    id: "child-session",
+                    parent_session_id: null,
+                });
             } finally {
                 migratedDb.close();
             }

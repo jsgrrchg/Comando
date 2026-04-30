@@ -33,6 +33,7 @@ import {
 
 interface PersistedAiSessionRow {
     readonly draft: string;
+    readonly parent_session_id: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
     readonly status: string;
@@ -45,6 +46,7 @@ interface PersistedAiSessionRow {
 interface PersistedAiHistorySessionRow {
     readonly created_at: string;
     readonly message_count: number | null;
+    readonly parent_session_id: string | null;
     readonly pinned_at: string | null;
     readonly preview: string | null;
     readonly project_id: string | null;
@@ -167,6 +169,7 @@ export class AiPersistence {
                         SELECT
                             chat_sessions.project_id,
                             chat_sessions.worktree_id,
+                            chat_sessions.parent_session_id,
                             chat_sessions.title,
                             chat_sessions.runtime,
                             chat_sessions.status,
@@ -187,6 +190,9 @@ export class AiPersistence {
 
                 const fallback = createEmptyAiSessionSnapshot({
                     projectId: row.project_id,
+                    parentSessionId: normalizeParentSessionId(
+                        row.parent_session_id,
+                    ),
                     runtimeId: normalizeRuntimeId(row.runtime),
                     sessionId,
                     status: normalizeSessionStatus(row.status),
@@ -232,10 +238,9 @@ export class AiPersistence {
                         raw.pendingUserInput,
                     ),
                     plan: normalizePlan(raw.plan),
-                    parentSessionId:
-                        typeof raw.parentSessionId === "string"
-                            ? raw.parentSessionId
-                            : null,
+                    parentSessionId: normalizeParentSessionId(
+                        row.parent_session_id,
+                    ),
                     projectId: row.project_id,
                     runtimeId: normalizeRuntimeId(raw.runtimeId),
                     runtimeSessionId:
@@ -491,11 +496,24 @@ export class AiPersistence {
             const draftToPersist =
                 draft ?? this.#loadCurrentDraft(snapshot.sessionId);
             const runtimeCatalog = extractRuntimeCatalog(snapshot);
+            const parentSessionId = normalizeParentSessionId(
+                snapshot.parentSessionId,
+            );
+            const persistedParentSessionId =
+                parentSessionId === snapshot.sessionId ? null : parentSessionId;
+            const snapshotToPersist =
+                (snapshot.parentSessionId ?? null) === persistedParentSessionId
+                    ? snapshot
+                    : {
+                          ...snapshot,
+                          parentSessionId: persistedParentSessionId,
+                      };
 
             this.#connection
                 .prepare<
                     [
                         string,
+                        string | null,
                         string | null,
                         string | null,
                         string,
@@ -513,6 +531,7 @@ export class AiPersistence {
                         id,
                         project_id,
                         worktree_id,
+                        parent_session_id,
                         title,
                         runtime,
                         status,
@@ -521,10 +540,11 @@ export class AiPersistence {
                         updated_at,
                         last_opened_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         project_id = excluded.project_id,
                         worktree_id = excluded.worktree_id,
+                        parent_session_id = excluded.parent_session_id,
                         title = excluded.title,
                         runtime = excluded.runtime,
                         status = excluded.status,
@@ -537,6 +557,7 @@ export class AiPersistence {
                     snapshot.sessionId,
                     snapshot.projectId,
                     snapshot.worktreeId ?? null,
+                    persistedParentSessionId,
                     snapshot.title,
                     snapshot.runtimeId,
                     snapshot.status,
@@ -590,10 +611,12 @@ export class AiPersistence {
                 .run(
                     `transcript:${snapshot.sessionId}`,
                     snapshot.sessionId,
-                    JSON.stringify(createPersistedSessionSnapshot(snapshot)),
-                    snapshot.messages.length,
+                    JSON.stringify(
+                        createPersistedSessionSnapshot(snapshotToPersist),
+                    ),
+                    snapshotToPersist.messages.length,
                     serializePersistedPreview(
-                        deriveSessionPreview(snapshot.messages),
+                        deriveSessionPreview(snapshotToPersist.messages),
                     ),
                     now,
                     now,
@@ -1425,9 +1448,11 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
             typeof entry.updatedAt === "string"
                 ? entry.updatedAt
                 : new Date().toISOString();
+        const action = normalizeToolActivityAction(entry.action);
 
         return [
             {
+                ...(action ? { action } : {}),
                 createdAt:
                     typeof entry.createdAt === "string"
                         ? entry.createdAt
@@ -1472,6 +1497,24 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
             } satisfies AiToolActivity,
         ];
     });
+}
+
+function normalizeToolActivityAction(
+    value: unknown,
+): AiToolActivity["action"] {
+    if (!isRecord(value) || value.kind !== "open_session") {
+        return undefined;
+    }
+
+    const sessionId = normalizeParentSessionId(value.sessionId);
+    if (!sessionId) {
+        return undefined;
+    }
+
+    return {
+        kind: "open_session",
+        sessionId,
+    };
 }
 
 function normalizeTokenUsage(value: unknown): AiTokenUsage | null {
@@ -1758,6 +1801,15 @@ function normalizeRuntimeId(
         : "codex";
 }
 
+function normalizeParentSessionId(value: unknown): string | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const parentSessionId = value.trim();
+    return parentSessionId.length > 0 ? parentSessionId : null;
+}
+
 function normalizeHistoryLimit(value: number | null | undefined): number | null {
     if (value === null) {
         return null;
@@ -1804,6 +1856,7 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
                 chat_sessions.id AS session_id,
                 chat_sessions.project_id,
                 chat_sessions.worktree_id,
+                chat_sessions.parent_session_id,
                 chat_sessions.title,
                 chat_sessions.runtime,
                 chat_sessions.created_at,
@@ -1851,22 +1904,6 @@ function extractPersistedMessages(
     }
 
     return normalizeMessages(raw.messages);
-}
-
-function extractPersistedParentSessionId(
-    transcriptJson: string | null,
-): string | null {
-    const raw = parseJsonWithFallback<Record<string, unknown> | null>(
-        transcriptJson,
-        null,
-    );
-
-    if (!raw || typeof raw.parentSessionId !== "string") {
-        return null;
-    }
-
-    const parentSessionId = raw.parentSessionId.trim();
-    return parentSessionId.length > 0 ? parentSessionId : null;
 }
 
 function deriveSessionPreview(messages: readonly AiMessage[]): string | null {
@@ -1931,7 +1968,7 @@ function createHistorySessionSummary(
     return {
         createdAt: row.created_at,
         messageCount,
-        parentSessionId: extractPersistedParentSessionId(row.transcript_json),
+        parentSessionId: normalizeParentSessionId(row.parent_session_id),
         pinnedAt: row.pinned_at,
         preview: deserializePersistedPreview(backfilledPreview ?? row.preview),
         projectId: row.project_id,

@@ -1258,7 +1258,13 @@ export interface AiFileDiff {
     readonly reversible: boolean;
 }
 
+export type AiToolActivityAction = {
+    readonly kind: "open_session";
+    readonly sessionId: string;
+};
+
 export interface AiToolActivity {
+    readonly action?: AiToolActivityAction | null;
     readonly createdAt: string;
     readonly diffs: readonly AiFileDiff[];
     readonly exitCode: number | null;

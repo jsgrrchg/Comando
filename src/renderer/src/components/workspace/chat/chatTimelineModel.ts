@@ -108,9 +108,25 @@ export function areToolActivitiesEquivalent(
         previous.rawInputJson === next.rawInputJson &&
         previous.rawOutputJson === next.rawOutputJson &&
         previous.terminalOutput === next.terminalOutput &&
+        areToolActivityActionsEquivalent(previous.action, next.action) &&
         previous.locations.length === next.locations.length &&
         previous.diffs.length === next.diffs.length
     );
+}
+
+function areToolActivityActionsEquivalent(
+    previous: ToolActivityReviewEntry["activity"]["action"],
+    next: ToolActivityReviewEntry["activity"]["action"],
+): boolean {
+    if (previous === next) {
+        return true;
+    }
+
+    if (!previous || !next) {
+        return false;
+    }
+
+    return previous.kind === next.kind && previous.sessionId === next.sessionId;
 }
 
 export function areToolActivityReviewEntriesEquivalent(

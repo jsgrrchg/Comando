@@ -226,6 +226,122 @@ describe("AiPersistence", () => {
         );
     });
 
+    it("persists AI session parent links as structured data", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const parentSnapshot = createSnapshot({
+            messages: ["Parent prompt"],
+            sessionId: "session-parent",
+            title: "Parent",
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+        const childSnapshot = createSnapshot({
+            messages: ["Child response"],
+            parentSessionId: "session-parent",
+            sessionId: "session-child",
+            title: "Galileo",
+            toolActivity: [
+                {
+                    action: {
+                        kind: "open_session",
+                        sessionId: "session-child",
+                    },
+                    createdAt: "2026-04-16T12:01:00.000Z",
+                    diffs: [],
+                    exitCode: null,
+                    id: "tool-open-child",
+                    kind: "subagent",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: "session-parent",
+                    status: "completed",
+                    summary: null,
+                    terminalOutput: null,
+                    title: "Open Galileo",
+                    updatedAt: "2026-04-16T12:01:00.000Z",
+                },
+            ],
+            updatedAt: "2026-04-16T12:01:00.000Z",
+        });
+
+        persistence.saveSessionSnapshot(parentSnapshot);
+        persistence.saveSessionSnapshot(childSnapshot);
+
+        const childRow = connection
+            .prepare<
+                [string],
+                { parent_session_id: string | null } | undefined
+            >(
+                `
+                SELECT parent_session_id
+                FROM chat_sessions
+                WHERE id = ?
+                `,
+            )
+            .get(childSnapshot.sessionId);
+        expect(childRow?.parent_session_id).toBe("session-parent");
+
+        const storedTranscript = connection
+            .prepare<
+                [string],
+                { transcript_json: string } | undefined
+            >(
+                `
+                SELECT transcript_json
+                FROM chat_transcripts
+                WHERE session_id = ?
+                `,
+            )
+            .get(childSnapshot.sessionId);
+        const storedSnapshot = JSON.parse(
+            storedTranscript?.transcript_json ?? "{}",
+        );
+        expect(storedSnapshot.parentSessionId).toBe("session-parent");
+        expect(storedSnapshot.toolActivity?.[0]?.action).toEqual({
+            kind: "open_session",
+            sessionId: "session-child",
+        });
+
+        expect(persistence.loadSessionSnapshot(childSnapshot.sessionId)).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-parent",
+                toolActivity: expect.arrayContaining([
+                    expect.objectContaining({
+                        action: {
+                            kind: "open_session",
+                            sessionId: "session-child",
+                        },
+                    }),
+                ]),
+            }),
+        );
+
+        persistence.deleteSession(parentSnapshot.sessionId);
+
+        const remainingChildRow = connection
+            .prepare<
+                [string],
+                { id: string; parent_session_id: string | null } | undefined
+            >(
+                `
+                SELECT id, parent_session_id
+                FROM chat_sessions
+                WHERE id = ?
+                `,
+            )
+            .get(childSnapshot.sessionId);
+        expect(remainingChildRow).toEqual({
+            id: "session-child",
+            parent_session_id: null,
+        });
+        expect(persistence.loadSessionSnapshot(childSnapshot.sessionId)).toEqual(
+            expect.objectContaining({
+                parentSessionId: null,
+            }),
+        );
+    });
+
     it("persists generated image messages and derives a history preview", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
@@ -416,6 +532,15 @@ describe("AiPersistence", () => {
         seedChatSession(connection, {
             projectId: "project-1",
             runtimeId: "codex",
+            sessionId: "session-parent",
+            transcript: createTranscriptWithMessages(["Parent message"]),
+            updatedAt: "2026-04-16T11:59:00.000Z",
+            worktreeId: "worktree-a",
+        });
+        seedChatSession(connection, {
+            parentSessionId: "session-parent",
+            projectId: "project-1",
+            runtimeId: "codex",
             sessionId: "session-child",
             transcript: {
                 ...createTranscriptWithMessages([]),
@@ -439,6 +564,11 @@ describe("AiPersistence", () => {
                 parentSessionId: "session-parent",
                 preview: null,
                 sessionId: "session-child",
+            }),
+            expect.objectContaining({
+                messageCount: 1,
+                parentSessionId: null,
+                sessionId: "session-parent",
             }),
         ]);
     });
@@ -849,9 +979,52 @@ function createTranscriptWithMessages(
     };
 }
 
+function createSnapshot(input: {
+    readonly messages?: readonly string[];
+    readonly parentSessionId?: string | null;
+    readonly sessionId: string;
+    readonly title: string;
+    readonly toolActivity?: AiSessionSnapshot["toolActivity"];
+    readonly updatedAt: string;
+}): AiSessionSnapshot {
+    return {
+        availableCommands: [],
+        configOptions: [],
+        lastError: null,
+        messages: (input.messages ?? []).map((content, index) => ({
+            attachments: [],
+            content,
+            createdAt: `2026-04-16T12:00:0${index}.000Z`,
+            id: `${input.sessionId}:message-${index + 1}`,
+            kind: "assistant",
+            status: "completed",
+        })),
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        parentSessionId: input.parentSessionId ?? null,
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: null,
+        runtimeId: "codex",
+        runtimeSessionId: null,
+        sessionId: input.sessionId,
+        status: "idle",
+        title: input.title,
+        tokenUsage: null,
+        toolActivity: input.toolActivity ?? [],
+        trackedFiles: [],
+        updatedAt: input.updatedAt,
+        worktreeId: null,
+    };
+}
+
 function seedChatSession(
     connection: ReturnType<typeof createTestConnection>,
     input: {
+        readonly parentSessionId?: string | null;
         readonly pinnedAt?: string | null;
         readonly preview?: string | null;
         readonly projectId?: string | null;
@@ -882,6 +1055,7 @@ function seedChatSession(
                 id,
                 project_id,
                 worktree_id,
+                parent_session_id,
                 pinned_at,
                 title,
                 runtime,
@@ -891,13 +1065,14 @@ function seedChatSession(
                 updated_at,
                 last_opened_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'idle', '', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', '', ?, ?, ?)
             `,
         )
         .run(
             input.sessionId,
             input.projectId ?? null,
             input.worktreeId ?? null,
+            input.parentSessionId ?? null,
             input.pinnedAt ?? null,
             input.sessionId,
             input.runtimeId,

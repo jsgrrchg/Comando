@@ -357,4 +357,49 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ADD COLUMN preview TEXT;
     `,
     },
+    {
+        id: "0012-ai-session-parent",
+        sql: `
+      ALTER TABLE chat_sessions
+        ADD COLUMN parent_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL;
+
+      WITH parent_links AS (
+        SELECT
+          session_id,
+          NULLIF(TRIM(CAST(
+            CASE
+              WHEN json_valid(transcript_json) THEN
+                CASE
+                  WHEN json_type(transcript_json, '$.parentSessionId') = 'text'
+                    THEN json_extract(transcript_json, '$.parentSessionId')
+                  ELSE NULL
+                END
+              ELSE NULL
+            END AS TEXT
+          )), '') AS parent_session_id
+        FROM chat_transcripts
+      )
+      UPDATE chat_sessions
+      SET parent_session_id = (
+        SELECT parent_links.parent_session_id
+        FROM parent_links
+        INNER JOIN chat_sessions AS parent
+          ON parent.id = parent_links.parent_session_id
+        WHERE parent_links.session_id = chat_sessions.id
+          AND parent.id <> chat_sessions.id
+        LIMIT 1
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM parent_links
+        INNER JOIN chat_sessions AS parent
+          ON parent.id = parent_links.parent_session_id
+        WHERE parent_links.session_id = chat_sessions.id
+          AND parent.id <> chat_sessions.id
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chat_sessions_parent_session_id
+        ON chat_sessions(parent_session_id);
+    `,
+    },
 ];
