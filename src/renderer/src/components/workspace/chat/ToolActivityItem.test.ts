@@ -205,6 +205,31 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Context window: 128000");
     });
 
+    it("renders open-session actions for subagent breadcrumbs", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    action: {
+                        kind: "open_session",
+                        sessionId: "child-session",
+                    },
+                    kind: "unknown",
+                    locations: [],
+                    summary: null,
+                    title: "Spawned Galileo",
+                }),
+                onOpenFile: async () => {},
+                onOpenSession: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Open Galileo");
+        expect(markup).toContain("app-no-drag");
+    });
+
     it("highlights structured payloads and terminal output in details", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {

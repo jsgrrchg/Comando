@@ -1970,7 +1970,7 @@ describe("workspace runtime focus helpers", () => {
         });
     });
 
-    it("reopens a closed chat tab after closing its live session", async () => {
+    it("reopens a closed chat tab without closing its live session", async () => {
         closeAiSessionMock.mockClear();
 
         useWorkspaceStore.setState((state) => ({
@@ -2000,7 +2000,7 @@ describe("workspace runtime focus helpers", () => {
         await useWorkspaceStore.getState().closeTab("chat-1");
         await useWorkspaceStore.getState().reopenLastClosedTab();
 
-        expect(closeAiSessionMock).toHaveBeenCalledWith("session-1");
+        expect(closeAiSessionMock).not.toHaveBeenCalled();
         expect(useWorkspaceStore.getState().tabsById["chat-1"]).toMatchObject({
             id: "chat-1",
             sessionId: "session-1",

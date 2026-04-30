@@ -306,4 +306,72 @@ describe("applySessionUpdateToSidebarHistory", () => {
         expect(result.needsReload).toBe(true);
         expect(result.sessions).toBe(sessions);
     });
+
+    it("keeps empty child snapshots visible in the sidebar history", () => {
+        const sessions = [createSummary({ sessionId: "parent" })] as const;
+        const update: AiSessionUpdate = {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                messages: [],
+                parentSessionId: "parent",
+                sessionId: "child",
+                title: "Galileo",
+                updatedAt: "2026-04-19T12:00:00.000Z",
+            }),
+        };
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions,
+            update,
+        });
+
+        expect(result.needsReload).toBe(false);
+        expect(result.sessions[0]).toMatchObject({
+            messageCount: 0,
+            parentSessionId: "parent",
+            sessionId: "child",
+            title: "Galileo",
+        });
+    });
+
+    it("inserts an unknown empty child patch when seed metadata has a parent", () => {
+        const update: AiSessionUpdate = {
+            kind: "patch",
+            patch: {
+                changes: {
+                    parentSessionId: "parent",
+                    title: "Ada",
+                    updatedAt: "2026-04-19T12:00:00.000Z",
+                },
+                runtimeId: "codex",
+                sessionId: "child",
+            },
+        };
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions: [],
+            unknownSessionSeed: {
+                parentSessionId: "parent",
+                projectId: DEFAULT_SCOPE.projectId,
+                title: "Ada",
+                updatedAt: "2026-04-19T11:59:00.000Z",
+                worktreeId: DEFAULT_SCOPE.worktreeId,
+            },
+            update,
+        });
+
+        expect(result.needsReload).toBe(false);
+        expect(result.sessions).toEqual([
+            expect.objectContaining({
+                messageCount: 0,
+                parentSessionId: "parent",
+                preview: null,
+                sessionId: "child",
+            }),
+        ]);
+    });
 });

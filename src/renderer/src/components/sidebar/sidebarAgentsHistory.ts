@@ -19,6 +19,7 @@ export interface SidebarAgentsHistoryUpdateResult {
 
 export interface SidebarAgentsHistoryUnknownSessionSeed {
     readonly messages?: readonly AiMessage[] | null;
+    readonly parentSessionId?: string | null;
     readonly pinnedAt?: string | null;
     readonly projectId: string | null;
     readonly title: string;
@@ -79,7 +80,7 @@ function applySnapshotToSidebarHistory({
 
     if (
         !isHistorySummaryVisibleInScope(nextSummary, scope) ||
-        nextSummary.messageCount === 0
+        !shouldShowHistorySummary(nextSummary)
     ) {
         if (existingIndex === -1) {
             return {
@@ -131,7 +132,7 @@ function applyPatchToSidebarHistory({
         if (seededSummary) {
             if (
                 !isHistorySummaryVisibleInScope(seededSummary, scope) ||
-                seededSummary.messageCount === 0
+                !shouldShowHistorySummary(seededSummary)
             ) {
                 return {
                     needsReload: false,
@@ -154,7 +155,7 @@ function applyPatchToSidebarHistory({
     const nextSummary = applyPatchToHistorySummary(existing, patch);
     if (
         !isHistorySummaryVisibleInScope(nextSummary, scope) ||
-        nextSummary.messageCount === 0
+        !shouldShowHistorySummary(nextSummary)
     ) {
         return {
             needsReload: false,
@@ -184,6 +185,7 @@ function createHistorySummaryFromSnapshot(
     return {
         createdAt: existing?.createdAt ?? snapshot.updatedAt,
         messageCount: snapshot.messages.length,
+        parentSessionId: snapshot.parentSessionId ?? null,
         pinnedAt: existing?.pinnedAt ?? null,
         preview: deriveSessionPreview(snapshot.messages),
         projectId: snapshot.projectId,
@@ -208,6 +210,10 @@ function applyPatchToHistorySummary(
             nextMessages?.length !== undefined
                 ? nextMessages.length
                 : existing.messageCount,
+        parentSessionId:
+            changes.parentSessionId === undefined
+                ? existing.parentSessionId ?? null
+                : changes.parentSessionId,
         pinnedAt: existing.pinnedAt ?? null,
         preview:
             nextMessages !== null
@@ -236,8 +242,13 @@ function createHistorySummaryFromUnknownPatch(
     patch: AiSessionPatch,
     seed: SidebarAgentsHistoryUnknownSessionSeed | null,
 ): AiHistorySessionSummary | null {
-    const nextMessages = resolvePatchedMessages(patch.changes) ?? seed?.messages ?? null;
-    if (!nextMessages || nextMessages.length === 0) {
+    const nextMessages =
+        resolvePatchedMessages(patch.changes) ?? seed?.messages ?? [];
+    const parentSessionId =
+        patch.changes.parentSessionId === undefined
+            ? seed?.parentSessionId ?? null
+            : patch.changes.parentSessionId;
+    if (nextMessages.length === 0 && !parentSessionId) {
         return null;
     }
 
@@ -271,8 +282,10 @@ function createHistorySummaryFromUnknownPatch(
     return {
         createdAt,
         messageCount: nextMessages.length,
+        parentSessionId,
         pinnedAt: seed?.pinnedAt ?? null,
-        preview: deriveSessionPreview(nextMessages),
+        preview:
+            nextMessages.length > 0 ? deriveSessionPreview(nextMessages) : null,
         projectId,
         runtimeId: patch.runtimeId,
         sessionId: patch.sessionId,
@@ -317,6 +330,13 @@ function isHistorySummaryVisibleInScope(
     return (
         session.projectId === scope.projectId &&
         (session.worktreeId ?? null) === scope.worktreeId
+    );
+}
+
+function shouldShowHistorySummary(session: AiHistorySessionSummary): boolean {
+    return (
+        session.messageCount > 0 ||
+        normalizeParentSessionId(session.parentSessionId) !== null
     );
 }
 
@@ -365,6 +385,8 @@ function areHistorySummariesEqual(
     return (
         left.createdAt === right.createdAt &&
         left.messageCount === right.messageCount &&
+        normalizeParentSessionId(left.parentSessionId) ===
+            normalizeParentSessionId(right.parentSessionId) &&
         (left.pinnedAt ?? null) === (right.pinnedAt ?? null) &&
         left.preview === right.preview &&
         left.projectId === right.projectId &&
@@ -374,4 +396,9 @@ function areHistorySummariesEqual(
         left.updatedAt === right.updatedAt &&
         (left.worktreeId ?? null) === (right.worktreeId ?? null)
     );
+}
+
+function normalizeParentSessionId(value: string | null | undefined): string | null {
+    const trimmed = (value ?? "").trim();
+    return trimmed.length > 0 ? trimmed : null;
 }

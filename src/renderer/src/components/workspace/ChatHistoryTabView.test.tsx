@@ -231,4 +231,27 @@ describe("ChatHistoryTabLayout", () => {
         expect(markup).toContain("open in chat");
         expect(markup).toContain("Load More");
     });
+
+    it("renders child agents under their parent without rename actions", () => {
+        const parent = createSession({
+            sessionId: "parent-session",
+            title: "Parent thread",
+        });
+        const child = createSession({
+            parentSessionId: "parent-session",
+            sessionId: "child-session",
+            title: "Galileo",
+        });
+
+        const markup = renderLayout({
+            selectedSession: child,
+            sessions: [parent, child],
+        });
+
+        expect(markup).toContain('data-subagent="true"');
+        expect(markup).toContain("Agent");
+        expect(markup).toContain("Subagent of");
+        expect(markup).toContain("Parent thread");
+        expect(markup.match(/>rename</g)).toHaveLength(1);
+    });
 });

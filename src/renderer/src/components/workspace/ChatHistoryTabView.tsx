@@ -55,6 +55,7 @@ import {
     getHistoryRuntimeLabel,
 } from "./chat-history/historyPresentation";
 import { getHistoryPreviewText } from "./chat-history/historyPreview";
+import { buildAiSessionHierarchyGroups } from "./chat-history/sessionHierarchy";
 
 const HISTORY_PAGE_SIZE = 100;
 const EMPTY_MESSAGES: readonly AiMessage[] = [];
@@ -104,6 +105,7 @@ export interface ChatHistoryTabLayoutProps {
     readonly handleOpenResolvedFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly handleOpenSessionById?: (sessionId: string) => Promise<void>;
     readonly hasMoreMessages: boolean;
     readonly isBusy: boolean;
     readonly isLoadingSessions: boolean;
@@ -592,9 +594,40 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
         },
         [openChatSessionTab],
     );
+    const handleOpenSessionById = useCallback(
+        async (sessionId: string) => {
+            const session =
+                sessions.find((candidate) => candidate.sessionId === sessionId) ??
+                null;
+            if (session) {
+                await handleOpenInChat(session);
+                return;
+            }
+
+            const snapshot = await getComandoApi().getAiSessionSnapshot(
+                sessionId,
+            );
+            if (!snapshot) {
+                return;
+            }
+
+            await openChatSessionTab({
+                projectId: snapshot.projectId,
+                runtimeId: snapshot.runtimeId,
+                sessionId: snapshot.sessionId,
+                title: snapshot.title,
+                worktreeId: snapshot.worktreeId ?? null,
+            });
+        },
+        [handleOpenInChat, openChatSessionTab, sessions],
+    );
 
     const handleRename = useCallback(
         async (session: AiHistorySessionSummary, nextTitle: string) => {
+            if (isSubagentSession(session)) {
+                return;
+            }
+
             const trimmedTitle = nextTitle.trim();
             if (trimmedTitle.length === 0 || trimmedTitle === session.title) {
                 return;
@@ -676,8 +709,13 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 
     const handleDelete = useCallback(
         async (session: AiHistorySessionSummary) => {
+            const childCount = sessions.filter(
+                (candidate) => candidate.parentSessionId === session.sessionId,
+            ).length;
             const confirmed = window.confirm(
-                `Delete "${session.title}" from chat history? This cannot be undone.`,
+                childCount > 0
+                    ? `Delete "${session.title}" from chat history? ${childCount} child agent${childCount === 1 ? "" : "s"} will stay in history as detached. This cannot be undone.`
+                    : `Delete "${session.title}" from chat history? This cannot be undone.`,
             );
             if (!confirmed) {
                 return;
@@ -691,9 +729,13 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
                 transcriptsBySessionId[session.sessionId] ?? null;
             const previousSnapshotState =
                 snapshotsBySessionId[session.sessionId] ?? null;
-            const remainingSessions = sessions.filter(
-                (candidate) => candidate.sessionId !== session.sessionId,
-            );
+            const remainingSessions = sessions
+                .filter((candidate) => candidate.sessionId !== session.sessionId)
+                .map((candidate) =>
+                    candidate.parentSessionId === session.sessionId
+                        ? { ...candidate, parentSessionId: null }
+                        : candidate,
+                );
             const nextSelectedSessionId =
                 selectedSessionId === session.sessionId
                     ? (remainingSessions[0]?.sessionId ?? null)
@@ -777,8 +819,16 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             return sessions;
         }
 
+        const matchingSessionIds = new Set(
+            buildAiSessionHierarchyGroups(sessions, {
+                filterQuery: query,
+            }).flatMap((group) =>
+                group.rows.map((row) => row.session.sessionId),
+            ),
+        );
+
         return sessions.filter((session) =>
-            session.title.toLowerCase().includes(query),
+            matchingSessionIds.has(session.sessionId),
         );
     }, [searchQuery, sessions]);
 
@@ -791,6 +841,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             handleOpenImage={handleOpenImage}
             handleOpenInChat={handleOpenInChat}
             handleOpenResolvedFileReference={handleOpenResolvedFileReference}
+            handleOpenSessionById={handleOpenSessionById}
             handleRefresh={handleRefresh}
             handleRename={handleRename}
             hasMoreMessages={hasMoreMessages}
@@ -833,6 +884,7 @@ export function ChatHistoryTabLayout({
     handleOpenImage,
     handleOpenInChat,
     handleOpenResolvedFileReference,
+    handleOpenSessionById,
     handleRefresh,
     handleRename,
     hasMoreMessages,
@@ -922,6 +974,10 @@ export function ChatHistoryTabLayout({
 
     const startRename = useCallback(
         (session: AiHistorySessionSummary) => {
+            if (isSubagentSession(session)) {
+                return;
+            }
+
             setSelectedSessionId(session.sessionId);
             setRenamingSessionId(session.sessionId);
             setRenameDraft(session.title);
@@ -953,6 +1009,18 @@ export function ChatHistoryTabLayout({
 
         void handleRename(session, draftValue);
     }, [handleRename, renameDraft, renamingSessionId, sessions]);
+    const sessionGroups = useMemo(
+        () => buildAiSessionHierarchyGroups(sessions),
+        [sessions],
+    );
+    const selectedParentSession =
+        selectedSession?.parentSessionId &&
+        selectedSession.parentSessionId !== selectedSession.sessionId
+            ? (sessions.find(
+                  (session) =>
+                      session.sessionId === selectedSession.parentSessionId,
+              ) ?? null)
+            : null;
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-bg-primary">
@@ -1075,7 +1143,10 @@ export function ChatHistoryTabLayout({
 
                         {sessions.length > 0 ? (
                             <div className="flex flex-col">
-                                {sessions.map((session) => {
+                                {sessionGroups.flatMap((group) =>
+                                    group.rows.map((row) => {
+                                    const session = row.session;
+                                    const isSubagent = row.isSubagent;
                                     const isSelected =
                                         session.sessionId === selectedSessionId;
                                     const isSessionBusy =
@@ -1092,8 +1163,12 @@ export function ChatHistoryTabLayout({
                                                 isSelected
                                                     ? "border-accent bg-bg-secondary"
                                                     : "border-transparent hover:bg-bg-secondary",
+                                                row.depth > 0 ? "ml-3" : "",
                                             ].join(" ")}
                                             key={session.sessionId}
+                                            data-subagent={
+                                                isSubagent ? "true" : "false"
+                                            }
                                         >
                                             <div
                                                 className="flex w-full cursor-pointer flex-col items-start gap-0.5 px-2.5 py-1.5 text-left"
@@ -1183,6 +1258,19 @@ export function ChatHistoryTabLayout({
                                                     )}
                                                 </p>
                                                 <div className="flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
+                                                    {isSubagent ? (
+                                                        <>
+                                                            <span className="shrink-0 rounded-[3px] border border-border/70 px-1 text-[8.5px] font-medium uppercase tracking-[0.08em]">
+                                                                Agent
+                                                            </span>
+                                                            <span
+                                                                aria-hidden="true"
+                                                                className="shrink-0"
+                                                            >
+                                                                ·
+                                                            </span>
+                                                        </>
+                                                    ) : null}
                                                     <span className="shrink-0">
                                                         {getHistoryRuntimeLabel(
                                                             session.runtimeId,
@@ -1233,23 +1321,25 @@ export function ChatHistoryTabLayout({
                                                     >
                                                         open
                                                     </button>
-                                                    <button
-                                                        className={
-                                                            CARD_ACTION_CLASS_NAME +
-                                                            " pointer-events-auto"
-                                                        }
-                                                        disabled={
-                                                            isSessionBusy
-                                                        }
-                                                        onClick={() =>
-                                                            startRename(
-                                                                session,
-                                                            )
-                                                        }
-                                                        type="button"
-                                                    >
-                                                        rename
-                                                    </button>
+                                                    {isSubagent ? null : (
+                                                        <button
+                                                            className={
+                                                                CARD_ACTION_CLASS_NAME +
+                                                                " pointer-events-auto"
+                                                            }
+                                                            disabled={
+                                                                isSessionBusy
+                                                            }
+                                                            onClick={() =>
+                                                                startRename(
+                                                                    session,
+                                                                )
+                                                            }
+                                                            type="button"
+                                                        >
+                                                            rename
+                                                        </button>
+                                                    )}
                                                     <button
                                                         className={
                                                             CARD_ACTION_DANGER_CLASS_NAME +
@@ -1271,7 +1361,8 @@ export function ChatHistoryTabLayout({
                                             )}
                                         </div>
                                     );
-                                })}
+                                }),
+                                )}
                             </div>
                         ) : null}
                     </div>
@@ -1307,6 +1398,32 @@ export function ChatHistoryTabLayout({
                                             selectedSession.runtimeId,
                                         )}
                                     </span>
+                                    {isSubagentSession(selectedSession) ? (
+                                        <>
+                                            <IdeBarDotSeparator />
+                                            {selectedParentSession ? (
+                                                <button
+                                                    className="shrink min-w-0 truncate rounded px-1 text-left transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                                                    onClick={() =>
+                                                        setSelectedSessionId(
+                                                            selectedParentSession.sessionId,
+                                                        )
+                                                    }
+                                                    title={`Select parent ${selectedParentSession.title}`}
+                                                    type="button"
+                                                >
+                                                    Subagent of{" "}
+                                                    {
+                                                        selectedParentSession.title
+                                                    }
+                                                </button>
+                                            ) : (
+                                                <span className="shrink-0">
+                                                    Detached agent
+                                                </span>
+                                            )}
+                                        </>
+                                    ) : null}
                                     {selectedSnapshotStatus ? (
                                         <>
                                             <IdeBarDotSeparator />
@@ -1502,6 +1619,9 @@ export function ChatHistoryTabLayout({
                                             onOpenResolvedFileReference={
                                                 handleOpenResolvedFileReference
                                             }
+                                            onOpenSession={
+                                                handleOpenSessionById
+                                            }
                                             projectId={
                                                 selectedSession.projectId
                                             }
@@ -1589,6 +1709,10 @@ const NOOP_OPEN_FILE_REFERENCE = (
 ) => {
     void args;
 };
+const NOOP_OPEN_SESSION = (...args: [string]) => {
+    void args;
+    return Promise.resolve();
+};
 const NOOP_RESOLVE_FILE_REFERENCE = (
     ...args: [string]
 ): ResolvedProjectFileReference | null => {
@@ -1609,6 +1733,7 @@ interface HistoryTimelineHandlers {
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession: (sessionId: string) => Promise<void> | void;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -1621,6 +1746,7 @@ function HistoryTranscriptTimeline({
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
+    onOpenSession,
     projectId,
     resolveFileReference,
     snapshot,
@@ -1639,6 +1765,7 @@ function HistoryTranscriptTimeline({
     readonly onOpenResolvedFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly projectId: string | null;
     readonly resolveFileReference?: (
         reference: string,
@@ -1670,6 +1797,7 @@ function HistoryTranscriptTimeline({
             onOpenImage: onOpenImage ?? NOOP_OPEN_IMAGE,
             onOpenResolvedFileReference:
                 onOpenResolvedFileReference ?? NOOP_OPEN_FILE_REFERENCE,
+            onOpenSession: onOpenSession ?? NOOP_OPEN_SESSION,
             resolveFileReference:
                 resolveFileReference ?? NOOP_RESOLVE_FILE_REFERENCE,
         }),
@@ -1680,6 +1808,7 @@ function HistoryTranscriptTimeline({
             onOpenFile,
             onOpenImage,
             onOpenResolvedFileReference,
+            onOpenSession,
             resolveFileReference,
         ],
     );
@@ -1729,6 +1858,7 @@ function HistoryTimelineRow({
             activity={row.reviewEntry.activity}
             onOpenFile={handlers.onOpenFile}
             onOpenFileReference={handlers.onOpenResolvedFileReference}
+            onOpenSession={handlers.onOpenSession}
             projectId={projectId}
             resolveFileReference={handlers.resolveFileReference}
             trackedFiles={row.reviewEntry.trackedFiles}
@@ -1767,6 +1897,11 @@ function HistoryPlaceholder({
 
 function formatSessionCount(count: number): string {
     return count === 1 ? "1 session" : `${count} sessions`;
+}
+
+function isSubagentSession(session: AiHistorySessionSummary): boolean {
+    const parentSessionId = (session.parentSessionId ?? "").trim();
+    return parentSessionId.length > 0 && parentSessionId !== session.sessionId;
 }
 
 function mergeTranscriptMessages(

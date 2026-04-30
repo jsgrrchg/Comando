@@ -2387,22 +2387,9 @@ async function safeCloseTerminal(sessionId: string): Promise<void> {
     }
 }
 
-async function safeCloseAiSession(sessionId: string): Promise<void> {
-    try {
-        await getComandoApi().closeAiSession(sessionId);
-    } catch {
-        return;
-    }
-}
-
 async function closeTabSideEffects(tab: RuntimeWorkspaceTab): Promise<void> {
     if (tab.kind === "terminal") {
         await safeCloseTerminal(tab.sessionId);
-        return;
-    }
-
-    if (tab.kind === "chat") {
-        await safeCloseAiSession(tab.sessionId);
         return;
     }
 

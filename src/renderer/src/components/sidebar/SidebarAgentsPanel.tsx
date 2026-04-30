@@ -30,6 +30,10 @@ import {
 } from "@renderer/components/workspace/chat-history/historyPresentation";
 import { getHistoryPreviewText } from "@renderer/components/workspace/chat-history/historyPreview";
 import {
+    buildAiSessionHierarchyGroups,
+    type AiSessionHierarchyGroup,
+} from "@renderer/components/workspace/chat-history/sessionHierarchy";
+import {
     resolveWorkspaceChatTabActivityIndicator,
     type WorkspaceChatTabActivityIndicator,
 } from "@renderer/components/workspace/workspaceTabActivity";
@@ -265,6 +269,10 @@ export function SidebarAgentsPanel({
 
     const startRename = useCallback(
         (session: AiHistorySessionSummary) => {
+            if (isSubagentSession(session)) {
+                return;
+            }
+
             setRenamingSessionId(session.sessionId);
             setRenameDraft(session.title);
         },
@@ -335,8 +343,13 @@ export function SidebarAgentsPanel({
 
     const handleDelete = useCallback(
         async (session: AiHistorySessionSummary) => {
+            const childCount = sessions.filter(
+                (candidate) => candidate.parentSessionId === session.sessionId,
+            ).length;
             const confirmed = window.confirm(
-                `Delete "${session.title}" from threads? This cannot be undone.`,
+                childCount > 0
+                    ? `Delete "${session.title}" from threads? ${childCount} child agent${childCount === 1 ? "" : "s"} will stay in history as detached. This cannot be undone.`
+                    : `Delete "${session.title}" from threads? This cannot be undone.`,
             );
             if (!confirmed) {
                 return;
@@ -349,9 +362,16 @@ export function SidebarAgentsPanel({
 
             const previousSessions = sessions;
             setSessions((current) =>
-                current.filter(
-                    (candidate) => candidate.sessionId !== session.sessionId,
-                ),
+                current
+                    .filter(
+                        (candidate) =>
+                            candidate.sessionId !== session.sessionId,
+                    )
+                    .map((candidate) =>
+                        candidate.parentSessionId === session.sessionId
+                            ? { ...candidate, parentSessionId: null }
+                            : candidate,
+                    ),
             );
 
             try {
@@ -450,46 +470,32 @@ export function SidebarAgentsPanel({
             return [];
         }
 
-        return [
+        const entries: ContextMenuEntry[] = [
             {
                 label: isSessionPinned(session)
                     ? "Unpin from Sidebar"
                     : "Pin to Sidebar",
                 action: () => void handleTogglePinned(session),
             },
-            {
+        ];
+
+        if (!isSubagentSession(session)) {
+            entries.push({
                 label: "Rename",
                 action: () => startRename(session),
-            },
+            });
+        }
+
+        entries.push(
             {
                 label: "Delete",
                 danger: true,
                 action: () => void handleDelete(session),
             },
-        ];
+        );
+
+        return entries;
     }, [contextMenu, handleDelete, handleTogglePinned, sessions, startRename]);
-
-    const filteredSessions = useMemo(() => {
-        if (!hasQuery) {
-            return sessions;
-        }
-
-        return sessions.filter((session) => {
-            const preview = (session.preview ?? "").toLowerCase();
-            return (
-                session.title.toLowerCase().includes(normalizedFilter) ||
-                preview.includes(normalizedFilter)
-            );
-        });
-    }, [hasQuery, normalizedFilter, sessions]);
-
-    const pinnedSessions = useMemo(
-        () =>
-            [...filteredSessions.filter((session) => isSessionPinned(session))].sort(
-                comparePinnedSessions,
-            ),
-        [filteredSessions],
-    );
 
     const openSessionIds = useMemo(() => {
         const ids = new Set<string>();
@@ -500,6 +506,18 @@ export function SidebarAgentsPanel({
         }
         return ids;
     }, [tabsById]);
+
+    const hierarchyGroups = useMemo(
+        () =>
+            buildAiSessionHierarchyGroups(sessions, {
+                filterQuery: normalizedFilter,
+            }),
+        [normalizedFilter, sessions],
+    );
+    const filteredSessionCount = useMemo(
+        () => countHierarchyGroupRows(hierarchyGroups),
+        [hierarchyGroups],
+    );
 
     const aiSessions = useAiStore((state) => state.sessions);
     const workingOrderRef = useRef<Map<string, number>>(new Map());
@@ -535,18 +553,31 @@ export function SidebarAgentsPanel({
         }
     }, [aiSessions]);
 
-    const unpinnedSessions = useMemo(
-        () => filteredSessions.filter((session) => !isSessionPinned(session)),
-        [filteredSessions],
+    const pinnedGroups = useMemo(
+        () =>
+            hierarchyGroups
+                .filter((group) =>
+                    group.rows.some((row) => isSessionPinned(row.session)),
+                )
+                .sort(comparePinnedHierarchyGroups),
+        [hierarchyGroups],
     );
-    const openSessions = useMemo(() => {
-        const list = unpinnedSessions.filter((session) =>
-            openSessionIds.has(session.sessionId),
+    const unpinnedGroups = useMemo(
+        () =>
+            hierarchyGroups.filter(
+                (group) =>
+                    !group.rows.some((row) => isSessionPinned(row.session)),
+            ),
+        [hierarchyGroups],
+    );
+    const openGroups = useMemo(() => {
+        const list = unpinnedGroups.filter((group) =>
+            group.rows.some((row) => openSessionIds.has(row.session.sessionId)),
         );
         const workingOrder = workingOrderRef.current;
         return [...list].sort((a, b) => {
-            const aOrder = workingOrder.get(a.sessionId);
-            const bOrder = workingOrder.get(b.sessionId);
+            const aOrder = getHierarchyGroupWorkingOrder(a, workingOrder);
+            const bOrder = getHierarchyGroupWorkingOrder(b, workingOrder);
             const aWorking = aOrder !== undefined;
             const bWorking = bOrder !== undefined;
             if (aWorking && bWorking) {
@@ -560,24 +591,27 @@ export function SidebarAgentsPanel({
         });
         // workingOrderRevision keeps this memo in sync with the ref-backed map.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [openSessionIds, unpinnedSessions, workingOrderRevision]);
-    const otherSessions = useMemo(
+    }, [openSessionIds, unpinnedGroups, workingOrderRevision]);
+    const otherGroups = useMemo(
         () =>
-            unpinnedSessions.filter(
-                (session) => !openSessionIds.has(session.sessionId),
+            unpinnedGroups.filter(
+                (group) =>
+                    !group.rows.some((row) =>
+                        openSessionIds.has(row.session.sessionId),
+                    ),
             ),
-        [openSessionIds, unpinnedSessions],
+        [openSessionIds, unpinnedGroups],
     );
     const showUnpinnedSectionHeaders =
-        pinnedSessions.length > 0 ||
-        (openSessions.length > 0 && otherSessions.length > 0);
+        pinnedGroups.length > 0 ||
+        (openGroups.length > 0 && otherGroups.length > 0);
 
     const statusLine = isLoading
         ? "Loading..."
         : error
           ? error
           : hasQuery
-            ? `${filteredSessions.length} of ${sessions.length}`
+            ? `${filteredSessionCount} of ${sessions.length}`
             : formatSessionCount(sessions.length);
 
     return (
@@ -627,13 +661,13 @@ export function SidebarAgentsPanel({
                 {!isLoading &&
                 !error &&
                 sessions.length > 0 &&
-                filteredSessions.length === 0 ? (
+                filteredSessionCount === 0 ? (
                     <SidebarAgentsPlaceholder
                         body={`No threads match "${(filter ?? "").trim()}".`}
                     />
                 ) : null}
 
-                {pinnedSessions.length > 0 ? (
+                {pinnedGroups.length > 0 ? (
                     <SidebarAgentsSection
                         cancelRename={cancelRename}
                         commitRename={() => void commitRename()}
@@ -644,12 +678,12 @@ export function SidebarAgentsPanel({
                         activeSessionId={activePaneSessionId}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
-                        sessions={pinnedSessions}
+                        groups={pinnedGroups}
                         title="Pinned"
                     />
                 ) : null}
 
-                {openSessions.length > 0 ? (
+                {openGroups.length > 0 ? (
                     <SidebarAgentsSection
                         cancelRename={cancelRename}
                         commitRename={() => void commitRename()}
@@ -660,12 +694,12 @@ export function SidebarAgentsPanel({
                         activeSessionId={activePaneSessionId}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
-                        sessions={openSessions}
+                        groups={openGroups}
                         title={showUnpinnedSectionHeaders ? "Open" : null}
                     />
                 ) : null}
 
-                {otherSessions.length > 0 ? (
+                {otherGroups.length > 0 ? (
                     <SidebarAgentsSection
                         cancelRename={cancelRename}
                         commitRename={() => void commitRename()}
@@ -676,7 +710,7 @@ export function SidebarAgentsPanel({
                         activeSessionId={activePaneSessionId}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
-                        sessions={otherSessions}
+                        groups={otherGroups}
                         title={showUnpinnedSectionHeaders ? "All" : null}
                     />
                 ) : null}
@@ -707,18 +741,19 @@ function SidebarAgentsSection({
     activeSessionId,
     cancelRename,
     commitRename,
+    groups,
     onContextMenu,
     onOpen,
     onRenameDraftChange,
     onTogglePinned,
     renameDraft,
     renamingSessionId,
-    sessions,
     title,
 }: {
     readonly activeSessionId: string | null;
     readonly cancelRename: () => void;
     readonly commitRename: () => void;
+    readonly groups: readonly AiSessionHierarchyGroup[];
     readonly onContextMenu: (
         event: ReactMouseEvent,
         session: AiHistorySessionSummary,
@@ -730,44 +765,59 @@ function SidebarAgentsSection({
     ) => Promise<void> | void;
     readonly renameDraft: string;
     readonly renamingSessionId: string | null;
-    readonly sessions: readonly AiHistorySessionSummary[];
     readonly title: string | null;
 }) {
+    const sessionCount = countHierarchyGroupRows(groups);
+
     return (
         <section className="mt-1 first:mt-0">
             {title ? (
                 <header className="sidebar-agents-section-header flex items-center gap-1.5 px-2 pb-0.5 pt-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary/80">
                     <span>{title}</span>
                     <span className="font-normal opacity-70">
-                        {sessions.length}
+                        {sessionCount}
                     </span>
                 </header>
             ) : null}
             <ul className="flex flex-col gap-0.5">
-                {sessions.map((session) => (
-                    <li key={session.sessionId}>
-                        <SidebarAgentsItem
-                            isActive={activeSessionId === session.sessionId}
-                            isRenaming={renamingSessionId === session.sessionId}
-                            onCancelRename={cancelRename}
-                            onCommitRename={commitRename}
-                            onContextMenu={onContextMenu}
-                            onOpen={onOpen}
-                            onRenameDraftChange={onRenameDraftChange}
-                            onTogglePinned={onTogglePinned}
-                            renameDraft={renameDraft}
-                            session={session}
-                        />
-                    </li>
-                ))}
+                {groups.flatMap((group) =>
+                    group.rows.map((row) => (
+                        <li
+                            className={row.depth > 0 ? "pl-3" : undefined}
+                            key={row.session.sessionId}
+                        >
+                            <SidebarAgentsItem
+                                depth={row.depth}
+                                isActive={
+                                    activeSessionId === row.session.sessionId
+                                }
+                                isRenaming={
+                                    renamingSessionId ===
+                                    row.session.sessionId
+                                }
+                                isSubagent={row.isSubagent}
+                                onCancelRename={cancelRename}
+                                onCommitRename={commitRename}
+                                onContextMenu={onContextMenu}
+                                onOpen={onOpen}
+                                onRenameDraftChange={onRenameDraftChange}
+                                onTogglePinned={onTogglePinned}
+                                renameDraft={renameDraft}
+                                session={row.session}
+                            />
+                        </li>
+                    )),
+                )}
             </ul>
         </section>
     );
 }
 
 function SidebarAgentsItem({
+    depth,
     isActive,
     isRenaming,
+    isSubagent,
     onCancelRename,
     onCommitRename,
     onContextMenu,
@@ -777,8 +827,10 @@ function SidebarAgentsItem({
     renameDraft,
     session,
 }: {
+    readonly depth: number;
     readonly isActive: boolean;
     readonly isRenaming: boolean;
+    readonly isSubagent: boolean;
     readonly onCancelRename: () => void;
     readonly onCommitRename: () => void;
     readonly onContextMenu: (
@@ -807,12 +859,15 @@ function SidebarAgentsItem({
             ? "text-rose-500"
             : "text-(--diff-warn)"
         : "text-text-secondary";
+    const indentStyle =
+        depth > 1 ? { marginLeft: `${Math.min(depth - 1, 3) * 10}px` } : undefined;
 
     return (
         <div
             className="sidebar-agents-row app-no-drag w-full"
             aria-current={isActive ? "true" : undefined}
             data-active={isActive ? "true" : "false"}
+            data-subagent={isSubagent ? "true" : "false"}
             onClick={() => {
                 if (isRenaming) return;
                 onOpen(session);
@@ -826,6 +881,7 @@ function SidebarAgentsItem({
                 }
             }}
             role="button"
+            style={indentStyle}
             tabIndex={isRenaming ? -1 : 0}
             title={session.title}
         >
@@ -902,6 +958,16 @@ function SidebarAgentsItem({
                 {preview}
             </p>
             <div className="sidebar-agents-meta flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
+                {isSubagent ? (
+                    <>
+                        <span className="shrink-0 rounded-[3px] border border-border/70 px-1 text-[8.5px] font-medium uppercase tracking-[0.08em]">
+                            Agent
+                        </span>
+                        <span aria-hidden="true" className="shrink-0">
+                            ·
+                        </span>
+                    </>
+                ) : null}
                 <span className="shrink-0">
                     {getHistoryRuntimeLabel(session.runtimeId)}
                 </span>
@@ -1036,6 +1102,7 @@ function buildUnknownSessionSeed(
 
     return {
         messages: entry.snapshot?.messages ?? null,
+        parentSessionId: entry.snapshot?.parentSessionId ?? null,
         pinnedAt: null,
         projectId: entry.snapshot?.projectId ?? entry.meta?.projectId ?? null,
         title,
@@ -1048,18 +1115,67 @@ function isSessionPinned(session: AiHistorySessionSummary): boolean {
     return (session.pinnedAt ?? null) !== null;
 }
 
-function comparePinnedSessions(
-    left: AiHistorySessionSummary,
-    right: AiHistorySessionSummary,
+function isSubagentSession(session: AiHistorySessionSummary): boolean {
+    const parentSessionId = (session.parentSessionId ?? "").trim();
+    return parentSessionId.length > 0 && parentSessionId !== session.sessionId;
+}
+
+function countHierarchyGroupRows(
+    groups: readonly AiSessionHierarchyGroup[],
 ): number {
-    const pinnedComparison = (right.pinnedAt ?? "").localeCompare(
-        left.pinnedAt ?? "",
+    return groups.reduce((count, group) => count + group.rows.length, 0);
+}
+
+function comparePinnedHierarchyGroups(
+    left: AiSessionHierarchyGroup,
+    right: AiSessionHierarchyGroup,
+): number {
+    const pinnedComparison = getLatestPinnedAt(right).localeCompare(
+        getLatestPinnedAt(left),
     );
     if (pinnedComparison !== 0) {
         return pinnedComparison;
     }
 
-    return right.updatedAt.localeCompare(left.updatedAt);
+    return getLatestUpdatedAt(right).localeCompare(getLatestUpdatedAt(left));
+}
+
+function getLatestPinnedAt(group: AiSessionHierarchyGroup): string {
+    return group.rows.reduce(
+        (latest, row) =>
+            (row.session.pinnedAt ?? "").localeCompare(latest) > 0
+                ? (row.session.pinnedAt ?? "")
+                : latest,
+        "",
+    );
+}
+
+function getLatestUpdatedAt(group: AiSessionHierarchyGroup): string {
+    return group.rows.reduce(
+        (latest, row) =>
+            row.session.updatedAt.localeCompare(latest) > 0
+                ? row.session.updatedAt
+                : latest,
+        "",
+    );
+}
+
+function getHierarchyGroupWorkingOrder(
+    group: AiSessionHierarchyGroup,
+    workingOrder: ReadonlyMap<string, number>,
+): number | undefined {
+    let order: number | undefined;
+    for (const row of group.rows) {
+        const candidateOrder = workingOrder.get(row.session.sessionId);
+        if (candidateOrder === undefined) {
+            continue;
+        }
+        order =
+            order === undefined
+                ? candidateOrder
+                : Math.min(order, candidateOrder);
+    }
+    return order;
 }
 
 function formatSessionCount(count: number): string {

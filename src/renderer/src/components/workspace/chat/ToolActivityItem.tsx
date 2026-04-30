@@ -885,15 +885,29 @@ function formatRawJson(raw: string): string {
     }
 }
 
+function getOpenSessionActionLabel(activity: AiToolActivity): string {
+    const name = activity.title
+        .replace(/^(spawned|started|opened)\s+/i, "")
+        .trim();
+    return name.length > 0 && name.length <= 28 ? `Open ${name}` : "Open";
+}
+
+function getOpenSessionActionTitle(activity: AiToolActivity): string {
+    const label = getOpenSessionActionLabel(activity);
+    return label === "Open" ? "Open session" : label;
+}
+
 function GenericToolMessage({
     activity,
     onOpenFileReference,
+    onOpenSession,
     resolveFileReference,
 }: {
     readonly activity: AiToolActivity;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly resolveFileReference?: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -904,6 +918,8 @@ function GenericToolMessage({
     const isCompleted = activity.status === "completed";
     const rawInputJson = activity.rawInputJson;
     const rawOutputJson = activity.rawOutputJson;
+    const openSessionAction =
+        activity.action?.kind === "open_session" ? activity.action : null;
     const hasRawInput = rawInputJson !== null;
     const hasRawOutput = rawOutputJson !== null;
     const hasDetail = !!activity.summary || hasRawInput || hasRawOutput;
@@ -918,33 +934,49 @@ function GenericToolMessage({
                 transition: "opacity 0.2s ease",
             }}
         >
-            <button
-                className="flex w-full items-center gap-2 py-0.5 text-left"
-                onClick={() => hasDetail && setExpanded(!expanded)}
-                style={{
-                    background: "none",
-                    border: "none",
-                    color: "inherit",
-                    cursor: hasDetail ? "pointer" : "default",
-                }}
-                type="button"
-            >
-                <span className="shrink-0">{getToolIcon(activity.kind)}</span>
-                <span className="min-w-0 flex-1 truncate">
-                    {activity.title}
-                </span>
-                {isInProgress ? (
-                    <span
-                        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
-                        style={{ backgroundColor: "var(--color-accent)" }}
-                    />
-                ) : null}
-                {hasDetail ? (
+            <div className="flex w-full items-center gap-2">
+                <button
+                    className="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left"
+                    onClick={() => hasDetail && setExpanded(!expanded)}
+                    style={{
+                        background: "none",
+                        border: "none",
+                        color: "inherit",
+                        cursor: hasDetail ? "pointer" : "default",
+                    }}
+                    type="button"
+                >
                     <span className="shrink-0">
-                        <Chevron expanded={expanded} />
+                        {getToolIcon(activity.kind)}
                     </span>
+                    <span className="min-w-0 flex-1 truncate">
+                        {activity.title}
+                    </span>
+                    {isInProgress ? (
+                        <span
+                            className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                            style={{ backgroundColor: "var(--color-accent)" }}
+                        />
+                    ) : null}
+                    {hasDetail ? (
+                        <span className="shrink-0">
+                            <Chevron expanded={expanded} />
+                        </span>
+                    ) : null}
+                </button>
+                {openSessionAction && onOpenSession ? (
+                    <button
+                        className="app-no-drag shrink-0 rounded border border-border/70 px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                        onClick={() =>
+                            void onOpenSession(openSessionAction.sessionId)
+                        }
+                        title={getOpenSessionActionTitle(activity)}
+                        type="button"
+                    >
+                        {getOpenSessionActionLabel(activity)}
+                    </button>
                 ) : null}
-            </button>
+            </div>
 
             {expanded ? (
                 <div className="mt-1 space-y-1" style={{ fontSize: "0.82em" }}>
@@ -997,6 +1029,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     activity,
     onOpenFile,
     onOpenFileReference,
+    onOpenSession,
     trackedFiles = [],
     projectId,
     resolveFileReference,
@@ -1012,6 +1045,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly trackedFiles?: readonly AiTrackedFile[];
     readonly projectId: string | null;
     readonly resolveFileReference?: (
@@ -1072,6 +1106,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         <GenericToolMessage
             activity={activity}
             onOpenFileReference={onOpenFileReference}
+            onOpenSession={onOpenSession}
             resolveFileReference={resolveFileReference}
         />
     );
@@ -1091,6 +1126,7 @@ function areToolActivityItemPropsEqual(
         readonly onOpenFileReference?: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly trackedFiles?: readonly AiTrackedFile[];
         readonly projectId: string | null;
         readonly resolveFileReference?: (
@@ -1109,6 +1145,7 @@ function areToolActivityItemPropsEqual(
         readonly onOpenFileReference?: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly trackedFiles?: readonly AiTrackedFile[];
         readonly projectId: string | null;
         readonly resolveFileReference?: (
@@ -1119,6 +1156,7 @@ function areToolActivityItemPropsEqual(
 ) {
     return (
         previous.activity === next.activity &&
+        previous.onOpenSession === next.onOpenSession &&
         previous.projectId === next.projectId &&
         previous.trackedFiles === next.trackedFiles &&
         previous.worktreeId === next.worktreeId

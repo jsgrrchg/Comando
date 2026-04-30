@@ -22,7 +22,7 @@ function createChatTab(
 }
 
 describe("getWorkspaceTabCloseConfirmationMessage", () => {
-    it("returns a confirmation message for a busy chat tab", () => {
+    it("does not ask for confirmation when closing a busy chat tab", () => {
         expect(
             getWorkspaceTabCloseConfirmationMessage({
                 sessions: {
@@ -36,10 +36,10 @@ describe("getWorkspaceTabCloseConfirmationMessage", () => {
                     "chat-1": createChatTab("chat-1", "session-1"),
                 },
             }),
-        ).toBe("This thread is working. Stop the agent and close anyway?");
+        ).toBeNull();
     });
 
-    it("counts only busy chat tabs when closing multiple tabs", () => {
+    it("does not treat closing multiple tabs as stopping live agents", () => {
         expect(
             getWorkspaceTabCloseConfirmationMessage({
                 sessions: {
@@ -77,7 +77,7 @@ describe("getWorkspaceTabCloseConfirmationMessage", () => {
                     },
                 },
             }),
-        ).toBe("This thread is working. Stop the agent and close anyway?");
+        ).toBeNull();
     });
 
     it("returns null when no busy chat tabs are being closed", () => {

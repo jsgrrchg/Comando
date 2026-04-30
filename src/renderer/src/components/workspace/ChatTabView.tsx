@@ -216,6 +216,9 @@ export const ChatTabView = memo(function ChatTabView({
     const markChatTabFocused = useWorkspaceStore(
         (state) => state.markChatTabFocused,
     );
+    const openChatSessionTab = useWorkspaceStore(
+        (state) => state.openChatSessionTab,
+    );
     const setSessionConfigOption = useAiStore((s) => s.setSessionConfigOption);
     const setSessionMode = useAiStore((s) => s.setSessionMode);
     const setSessionModel = useAiStore((s) => s.setSessionModel);
@@ -342,6 +345,17 @@ export const ChatTabView = memo(function ChatTabView({
             skipTitleCommitRef.current = false;
             return;
         }
+        const currentParentSessionId =
+            useAiStore.getState().sessions[tab.sessionId]?.snapshot
+                ?.parentSessionId ?? null;
+        if (
+            currentParentSessionId &&
+            currentParentSessionId !== tab.sessionId
+        ) {
+            setIsEditingTitle(false);
+            return;
+        }
+
         const trimmed = titleDraft.trim();
         setIsEditingTitle(false);
         if (trimmed && trimmed !== tab.title) {
@@ -528,6 +542,72 @@ export const ChatTabView = memo(function ChatTabView({
         ? snapshot.plan
         : null;
     const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
+    const parentSessionId =
+        snapshot.parentSessionId && snapshot.parentSessionId !== tab.sessionId
+            ? snapshot.parentSessionId
+            : null;
+    const parentSessionContext = useAiStore(
+        useShallow((state) => {
+            if (!parentSessionId) {
+                return null;
+            }
+
+            const parent = state.sessions[parentSessionId];
+            return {
+                projectId:
+                    parent?.snapshot?.projectId ??
+                    parent?.meta?.projectId ??
+                    tab.projectId,
+                runtimeId:
+                    parent?.snapshot?.runtimeId ??
+                    parent?.meta?.runtimeId ??
+                    tab.runtimeId,
+                title:
+                    parent?.snapshot?.title ??
+                    parent?.meta?.title ??
+                    "parent thread",
+                worktreeId:
+                    parent?.snapshot?.worktreeId ??
+                    parent?.meta?.worktreeId ??
+                    tab.worktreeId ??
+                    null,
+            };
+        }),
+    );
+    const openAiSessionById = useCallback(
+        async (sessionId: string) => {
+            const session = useAiStore.getState().sessions[sessionId];
+            let snapshot = session?.snapshot ?? null;
+
+            if (!snapshot && window.comando) {
+                snapshot = await window.comando.getAiSessionSnapshot(sessionId);
+            }
+
+            if (!snapshot && !session?.meta) {
+                return;
+            }
+
+            await openChatSessionTab({
+                projectId:
+                    snapshot?.projectId ??
+                    session?.meta?.projectId ??
+                    tab.projectId,
+                runtimeId:
+                    snapshot?.runtimeId ??
+                    session?.meta?.runtimeId ??
+                    tab.runtimeId,
+                sessionId,
+                title: snapshot?.title ?? session?.meta?.title ?? "Chat",
+                worktreeId:
+                    snapshot?.worktreeId ??
+                    session?.meta?.worktreeId ??
+                    tab.worktreeId ??
+                    null,
+            });
+        },
+        [openChatSessionTab, tab.projectId, tab.runtimeId, tab.worktreeId],
+    );
+
     useEffect(() => {
         if (lastSeenDraftComposerPartsSerializedRef.current.length > 0) {
             return;
@@ -1339,7 +1419,7 @@ export const ChatTabView = memo(function ChatTabView({
                         fontFamily: "var(--font-mono)",
                     }}
                 >
-                    {isEditingTitle ? (
+                    {isEditingTitle && !parentSessionId ? (
                         <input
                             ref={titleInputRef}
                             className="min-w-0 flex-1 rounded bg-transparent outline-none"
@@ -1365,20 +1445,44 @@ export const ChatTabView = memo(function ChatTabView({
                             onBlur={() => commitTitleEdit()}
                         />
                     ) : (
-                        <span
-                            className="flex-1 cursor-default truncate"
-                            style={{
-                                color: "var(--color-text-primary)",
-                            }}
-                            onDoubleClick={() => {
-                                skipTitleCommitRef.current = false;
-                                setTitleDraft(snapshot.title || "");
-                                setIsEditingTitle(true);
-                            }}
-                            title="Double-click to rename"
-                        >
-                            {snapshot.title || "Chat"}
-                        </span>
+                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span
+                                className="min-w-0 cursor-default truncate"
+                                style={{
+                                    color: "var(--color-text-primary)",
+                                }}
+                                onDoubleClick={() => {
+                                    if (parentSessionId) {
+                                        return;
+                                    }
+
+                                    skipTitleCommitRef.current = false;
+                                    setTitleDraft(snapshot.title || "");
+                                    setIsEditingTitle(true);
+                                }}
+                                title={
+                                    parentSessionId
+                                        ? "Subagent names are managed by Codex"
+                                        : "Double-click to rename"
+                                }
+                            >
+                                {snapshot.title || "Chat"}
+                            </span>
+                            {parentSessionId ? (
+                                <button
+                                    className="app-no-drag min-w-0 shrink truncate rounded px-1 text-[10px] text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                                    onClick={() =>
+                                        void openAiSessionById(parentSessionId)
+                                    }
+                                    title={`Open parent ${parentSessionContext?.title ?? "thread"}`}
+                                    type="button"
+                                >
+                                    Subagent of{" "}
+                                    {parentSessionContext?.title ??
+                                        "parent thread"}
+                                </button>
+                            ) : null}
+                        </div>
                     )}
                 </div>
                 {showRuntimeConfig
@@ -1999,6 +2103,7 @@ export const ChatTabView = memo(function ChatTabView({
                     onOpenResolvedFileReference={
                         handleOpenResolvedFileReference
                     }
+                    onOpenSession={openAiSessionById}
                     onScroll={handleScroll}
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
@@ -3123,6 +3228,7 @@ const ChatTimeline = memo(function ChatTimeline({
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
+    onOpenSession,
     onScroll,
     projectId,
     resolveFileReference,
@@ -3146,6 +3252,7 @@ const ChatTimeline = memo(function ChatTimeline({
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly onScroll: () => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
@@ -3179,6 +3286,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     onOpenFile={onOpenFile}
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={onOpenResolvedFileReference}
+                    onOpenSession={onOpenSession}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     worktreeId={worktreeId}
@@ -3189,6 +3297,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     onOpenFile={onOpenFile}
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={onOpenResolvedFileReference}
+                    onOpenSession={onOpenSession}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     row={liveTailRow}
@@ -3209,6 +3318,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
+    onOpenSession,
     projectId,
     resolveFileReference,
     worktreeId,
@@ -3226,6 +3336,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -3240,6 +3351,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
+            onOpenSession={onOpenSession}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
@@ -3256,6 +3368,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
+    onOpenSession,
     projectId,
     resolveFileReference,
     row,
@@ -3273,6 +3386,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -3292,6 +3406,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
+            onOpenSession={onOpenSession}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
@@ -3308,6 +3423,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
+    onOpenSession,
     projectId,
     resolveFileReference,
     row,
@@ -3325,6 +3441,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     readonly onOpenResolvedFileReference: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -3350,6 +3467,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
             activity={row.reviewEntry.activity}
             onOpenFile={onOpenFile}
             onOpenFileReference={onOpenResolvedFileReference}
+            onOpenSession={onOpenSession}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             trackedFiles={row.reviewEntry.trackedFiles}
@@ -3378,6 +3496,7 @@ function areChatTimelinePropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly onScroll: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
@@ -3404,6 +3523,7 @@ function areChatTimelinePropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly onScroll: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
@@ -3422,6 +3542,7 @@ function areChatTimelinePropsEqual(
         previous.isStreaming === next.isStreaming &&
         previous.liveTailRow === next.liveTailRow &&
         previous.onOpenImage === next.onOpenImage &&
+        previous.onOpenSession === next.onOpenSession &&
         previous.projectId === next.projectId &&
         previous.scrollRef === next.scrollRef &&
         previous.timelineContentRef === next.timelineContentRef &&
@@ -3444,6 +3565,7 @@ function areChatTimelineHistoryPropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3464,6 +3586,7 @@ function areChatTimelineHistoryPropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3479,6 +3602,7 @@ function areChatTimelineHistoryPropsEqual(
         previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
+        previous.onOpenSession === next.onOpenSession &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.worktreeId === next.worktreeId
@@ -3499,6 +3623,7 @@ function areChatTimelineLiveTailPropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3519,6 +3644,7 @@ function areChatTimelineLiveTailPropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3534,6 +3660,7 @@ function areChatTimelineLiveTailPropsEqual(
         previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
+        previous.onOpenSession === next.onOpenSession &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.row === next.row &&
@@ -3555,6 +3682,7 @@ function areChatTimelineRowViewPropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3575,6 +3703,7 @@ function areChatTimelineRowViewPropsEqual(
         readonly onOpenResolvedFileReference: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3590,6 +3719,7 @@ function areChatTimelineRowViewPropsEqual(
         previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
+        previous.onOpenSession === next.onOpenSession &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.row === next.row &&
