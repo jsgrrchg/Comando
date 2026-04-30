@@ -81,6 +81,7 @@ use uuid::Uuid;
 use crate::prompt_args::{
     CustomPrompt, discover_prompts_in, expand_custom_prompt, parse_slash_name,
 };
+use crate::subagents::{self, SubagentProjection};
 
 /// Abstraction over the ACP connection for sending notifications and requests
 /// back to the client.
@@ -814,6 +815,7 @@ struct PromptState {
     response_tx: Option<oneshot::Sender<Result<StopReason, Error>>>,
     seen_message_deltas: bool,
     seen_reasoning_deltas: bool,
+    project_user_messages: bool,
 }
 #[derive(Debug, serde::Deserialize)]
 struct CodexAcpUserInputAnswerPayload {
@@ -1210,6 +1212,29 @@ impl PromptState {
             response_tx: Some(response_tx),
             seen_message_deltas: false,
             seen_reasoning_deltas: false,
+            project_user_messages: false,
+        }
+    }
+
+    fn projection(
+        submission_id: String,
+        thread: Arc<dyn CodexThreadImpl>,
+        resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
+    ) -> Self {
+        Self {
+            submission_id,
+            active_commands: HashMap::new(),
+            active_web_search: None,
+            active_guardian_assessments: HashSet::new(),
+            active_plan_text: HashMap::new(),
+            thread,
+            resolution_tx,
+            pending_permission_interactions: HashMap::new(),
+            event_count: 0,
+            response_tx: None,
+            seen_message_deltas: false,
+            seen_reasoning_deltas: false,
+            project_user_messages: true,
         }
     }
 
@@ -1257,6 +1282,12 @@ impl PromptState {
     fn abort_pending_interactions(&mut self) {
         for (_, interaction) in self.pending_permission_interactions.drain() {
             interaction.task.abort();
+        }
+    }
+
+    fn fail(&mut self, err: Error) {
+        if let Some(response_tx) = self.response_tx.take() {
+            drop(response_tx.send(Err(err)));
         }
     }
 
@@ -1532,6 +1563,11 @@ impl PromptState {
     async fn handle_event(&mut self, client: &SessionClient, event: EventMsg) {
         self.event_count += 1;
 
+        if let Some(projection) = subagents::projection_for_collab_event(&event) {
+            send_subagent_projection(client, projection).await;
+            return;
+        }
+
         // Complete any previous web search before starting a new one
         match &event {
             EventMsg::Error(..)
@@ -1629,6 +1665,9 @@ impl PromptState {
                 local_images: _,
             }) => {
                 info!("User message: {message:?}");
+                if self.project_user_messages {
+                    client.send_user_message(message).await;
+                }
             }
             EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
                 thread_id,
@@ -2145,22 +2184,22 @@ impl PromptState {
             | EventMsg::AgentReasoningRawContentDelta(..)
             | EventMsg::RawResponseItem(..)
             | EventMsg::SessionConfigured(..)
-            // TODO: Subagent UI?
+            // Collab events are projected before the main match.
             | EventMsg::CollabAgentSpawnBegin(..)
             | EventMsg::CollabAgentSpawnEnd(..)
             | EventMsg::CollabAgentInteractionBegin(..)
             | EventMsg::CollabAgentInteractionEnd(..)
-            | EventMsg::RealtimeConversationStarted(..)
-            | EventMsg::RealtimeConversationSdp(..)
-            | EventMsg::RealtimeConversationRealtime(..)
-            | EventMsg::RealtimeConversationClosed(..)
-            | EventMsg::RealtimeConversationListVoicesResponse(..)
             | EventMsg::CollabWaitingBegin(..)
             | EventMsg::CollabWaitingEnd(..)
             | EventMsg::CollabResumeBegin(..)
             | EventMsg::CollabResumeEnd(..)
             | EventMsg::CollabCloseBegin(..)
             | EventMsg::CollabCloseEnd(..)
+            | EventMsg::RealtimeConversationStarted(..)
+            | EventMsg::RealtimeConversationSdp(..)
+            | EventMsg::RealtimeConversationRealtime(..)
+            | EventMsg::RealtimeConversationClosed(..)
+            | EventMsg::RealtimeConversationListVoicesResponse(..)
             | EventMsg::ModelVerification(..)
             | EventMsg::GuardianWarning(..)
             | EventMsg::HookStarted(..)
@@ -3492,6 +3531,8 @@ struct ThreadActor<A> {
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     /// A sender for each interested `Op` submission that needs events routed.
     submissions: HashMap<String, SubmissionState>,
+    /// Drain-only projections for Codex turns created outside ACP prompt calls.
+    event_projections: HashMap<String, PromptState>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     /// A receiver for spawned interaction results.
@@ -3521,6 +3562,7 @@ impl<A: Auth> ThreadActor<A> {
             models_manager,
             resolution_tx,
             submissions: HashMap::new(),
+            event_projections: HashMap::new(),
             message_rx,
             resolution_rx,
             last_sent_config_options: None,
@@ -3650,19 +3692,30 @@ impl<A: Auth> ThreadActor<A> {
                 request_key,
                 response,
             } => {
-                let Some(submission) = self.submissions.get_mut(&submission_id) else {
+                if let Some(submission) = self.submissions.get_mut(&submission_id) {
+                    if let Err(err) = submission
+                        .handle_permission_request_resolved(&self.client, request_key, response)
+                        .await
+                    {
+                        submission.abort_pending_interactions();
+                        submission.fail(err);
+                    }
+                    return;
+                }
+
+                let Some(projection) = self.event_projections.get_mut(&submission_id) else {
                     warn!(
                         "Ignoring permission response for unknown submission ID: {submission_id}"
                     );
                     return;
                 };
 
-                if let Err(err) = submission
+                if let Err(err) = projection
                     .handle_permission_request_resolved(&self.client, request_key, response)
                     .await
                 {
-                    submission.abort_pending_interactions();
-                    submission.fail(err);
+                    projection.abort_pending_interactions();
+                    projection.fail(err);
                 }
             }
         }
@@ -4858,9 +4911,36 @@ impl<A: Auth> ThreadActor<A> {
         if let Some(submission) = self.submissions.get_mut(&id) {
             submission.handle_event(&self.client, msg).await;
         } else {
-            warn!("Received event for unknown submission ID: {id} {msg:?}");
+            let is_terminal = is_projection_terminal_event(&msg);
+            let thread = self.thread.clone();
+            let resolution_tx = self.resolution_tx.clone();
+            let projection = self
+                .event_projections
+                .entry(id.clone())
+                .or_insert_with(|| PromptState::projection(id.clone(), thread, resolution_tx));
+            projection.handle_event(&self.client, msg).await;
+            if is_terminal {
+                self.event_projections.remove(&id);
+            }
         }
     }
+}
+
+async fn send_subagent_projection(client: &SessionClient, projection: SubagentProjection) {
+    match projection {
+        SubagentProjection::ToolCall(tool_call) => client.send_tool_call(tool_call).await,
+        SubagentProjection::ToolCallUpdate(update) => client.send_tool_call_update(update).await,
+    }
+}
+
+fn is_projection_terminal_event(event: &EventMsg) -> bool {
+    matches!(
+        event,
+        EventMsg::TurnComplete(..)
+            | EventMsg::TurnAborted(..)
+            | EventMsg::ShutdownComplete
+            | EventMsg::Error(..)
+    )
 }
 
 fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<UserInput> {
@@ -6524,6 +6604,171 @@ mod tests {
             PlanEntryStatus::InProgress
         );
         assert_eq!(plan_updates[1].entries[1].status, PlanEntryStatus::Pending);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_submission_events_are_projected_drain_only() -> anyhow::Result<()> {
+        let (_session_id, client, thread, message_tx, local_set) = setup(vec![]).await?;
+        let submission_id = "child-submission".to_string();
+
+        thread.op_tx.send(Event {
+            id: submission_id.clone(),
+            msg: EventMsg::UserMessage(UserMessageEvent {
+                message: "child prompt".to_string(),
+                images: None,
+                text_elements: vec![],
+                local_images: vec![],
+            }),
+        })?;
+        thread.op_tx.send(Event {
+            id: submission_id.clone(),
+            msg: EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
+                thread_id: "child-thread".into(),
+                turn_id: "turn-1".into(),
+                item_id: "item-1".into(),
+                delta: "child answer".to_string(),
+            }),
+        })?;
+        thread.op_tx.send(Event {
+            id: submission_id.clone(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "child answer".to_string(),
+                phase: None,
+                memory_citation: None,
+            }),
+        })?;
+        thread.op_tx.send(Event {
+            id: submission_id,
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                last_agent_message: None,
+                turn_id: "turn-1".into(),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        })?;
+
+        for _ in 0..20 {
+            if client.notifications.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        drop(message_tx);
+        local_set.await?;
+
+        let notifications = client.notifications.lock().unwrap();
+        let user_chunks = notifications
+            .iter()
+            .filter(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::UserMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "child prompt"
+                )
+            })
+            .count();
+        let agent_chunks = notifications
+            .iter()
+            .filter(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "child answer"
+                )
+            })
+            .count();
+
+        assert_eq!(user_chunks, 1, "notifications={notifications:?}");
+        assert_eq!(
+            agent_chunks, 1,
+            "delta and final message should not duplicate: {notifications:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collab_events_project_subagent_breadcrumbs() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client =
+            SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut prompt_state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+        let parent_thread_id = codex_protocol::ThreadId::new();
+        let child_thread_id = codex_protocol::ThreadId::new();
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::CollabAgentSpawnBegin(
+                    codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                        call_id: "spawn-1".to_string(),
+                        sender_thread_id: parent_thread_id,
+                        prompt: "inspect the renderer".to_string(),
+                        model: "gpt-5.5".to_string(),
+                        reasoning_effort: ReasoningEffort::Medium,
+                    },
+                ),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                    call_id: "spawn-1".to_string(),
+                    sender_thread_id: parent_thread_id,
+                    new_thread_id: Some(child_thread_id),
+                    new_agent_nickname: Some("Galileo".to_string()),
+                    new_agent_role: Some("explorer".to_string()),
+                    prompt: "inspect the renderer".to_string(),
+                    model: "gpt-5.5".to_string(),
+                    reasoning_effort: ReasoningEffort::Medium,
+                    status: codex_protocol::protocol::AgentStatus::Running,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let child_thread_id_string = child_thread_id.to_string();
+        assert_eq!(notifications.len(), 2, "notifications={notifications:?}");
+        assert!(matches!(
+            &notifications[0].update,
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.title == "Spawning subagent"
+                    && tool_call
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get(CODEX_ACP_STATUS_EVENT_TYPE_KEY))
+                        .and_then(|value| value.as_str())
+                        == Some("subagent_breadcrumb")
+        ));
+        assert!(matches!(
+            &notifications[1].update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.fields.title.as_deref() == Some("Spawned Galileo")
+                    && update
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("codexAcpChildThreadId"))
+                        .and_then(|value| value.as_str())
+                        == Some(child_thread_id_string.as_str())
+        ));
 
         Ok(())
     }
