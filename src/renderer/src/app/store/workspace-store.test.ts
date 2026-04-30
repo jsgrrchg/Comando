@@ -1089,6 +1089,77 @@ describe("workspace file opening", () => {
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });
 
+    it("focuses the requested child chat tab without selecting the parent", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "chat-parent",
+                        id: "pane-left",
+                        tabIds: ["chat-parent"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: ["chat-child"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "chat-child": createWorkspaceChatTab(
+                    "chat-child",
+                    "child-session",
+                    "codex",
+                ),
+                "chat-parent": createWorkspaceChatTab(
+                    "chat-parent",
+                    "parent-session",
+                    "codex",
+                ),
+            },
+        }));
+
+        await useWorkspaceStore.getState().openChatSessionTab({
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "child-session",
+            title: "Galileo",
+            worktreeId: "worktree-9",
+        });
+
+        const state = useWorkspaceStore.getState();
+        const leftPane =
+            state.rootNode.type === "split" ? state.rootNode.children[0] : null;
+        const rightPane =
+            state.rootNode.type === "split" ? state.rootNode.children[1] : null;
+
+        if (leftPane?.type !== "pane" || rightPane?.type !== "pane") {
+            throw new Error("Expected a split workspace with pane children.");
+        }
+
+        expect(Object.keys(state.tabsById).sort()).toEqual([
+            "chat-child",
+            "chat-parent",
+        ]);
+        expect(state.activePaneId).toBe("pane-right");
+        expect(leftPane.activeTabId).toBe("chat-parent");
+        expect(rightPane.activeTabId).toBe("chat-child");
+        expect(state.tabsById["chat-child"]).toMatchObject({
+            kind: "chat",
+            sessionId: "child-session",
+            title: "Galileo",
+            worktreeId: "worktree-9",
+        });
+    });
+
     it("creates a chat tab and hydrates it when opening a persisted session that is not open yet", async () => {
         await useWorkspaceStore.getState().openChatSessionTab({
             projectId: "project-1",
@@ -2006,6 +2077,42 @@ describe("workspace runtime focus helpers", () => {
             sessionId: "session-1",
             title: "Codex 1",
         });
+    });
+
+    it("opens child review tabs with the child session and inherited worktree", async () => {
+        await useWorkspaceStore.getState().openReviewTab({
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "parent-session",
+            title: "Parent",
+            worktreeId: "worktree-9",
+        });
+        await useWorkspaceStore.getState().openReviewTab({
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "child-session",
+            title: "Galileo",
+            worktreeId: "worktree-9",
+        });
+
+        const reviewTabs = Object.values(
+            useWorkspaceStore.getState().tabsById,
+        ).filter((tab) => tab.kind === "review");
+        const childReviewTab = reviewTabs.find(
+            (tab) => tab.sessionId === "child-session",
+        );
+
+        expect(reviewTabs).toHaveLength(2);
+        expect(childReviewTab).toEqual(
+            expect.objectContaining({
+                kind: "review",
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "child-session",
+                title: "Review · Galileo",
+                worktreeId: "worktree-9",
+            }),
+        );
     });
 
     it("closes the live terminal session when a terminal tab is closed", async () => {

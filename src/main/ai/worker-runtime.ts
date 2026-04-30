@@ -63,6 +63,7 @@ import {
     CODEX_ACP_PARENT_SESSION_ID_KEY,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
     CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
+    CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY,
     CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
     type LiveAcpConnection,
     type LiveAcpSession,
@@ -110,6 +111,7 @@ export interface AiWorkerRuntimeOptions {
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
 const TERMINAL_PERMISSION_REJECT_OPTION_ID = "comando.terminal.reject_once";
+const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE = "close_end";
 
 function setDesiredConfigValue(
     values: Map<string, boolean | string>,
@@ -430,9 +432,17 @@ export class AiWorkerRuntime {
         }
 
         this.#resolvePendingPermission(liveSession, null);
-        await liveSession.connection.cancel({
-            sessionId: liveSession.snapshot.runtimeSessionId,
-        });
+        try {
+            await liveSession.connection.cancel({
+                sessionId: liveSession.snapshot.runtimeSessionId,
+            });
+        } catch (error) {
+            debugBenignError("ai.worker.cancelSession", error);
+        } finally {
+            if (this.#sessions.get(sessionId) === liveSession) {
+                this.#markLiveSessionIdle(liveSession);
+            }
+        }
     }
 
     async #closeSession(sessionId: string): Promise<void> {
@@ -444,6 +454,28 @@ export class AiWorkerRuntime {
         this.#disposeLiveSession(sessionId, liveSession, {
             emitClosedEvent: true,
         });
+    }
+
+    #markLiveSessionIdle(liveSession: LiveAcpSession): void {
+        if (
+            liveSession.snapshot.status !== "streaming" &&
+            liveSession.snapshot.status !== "starting" &&
+            liveSession.snapshot.status !== "waiting_permission" &&
+            liveSession.snapshot.status !== "waiting_user_input"
+        ) {
+            return;
+        }
+
+        liveSession.snapshot = finalizeStreamingMessages({
+            ...liveSession.snapshot,
+            activeTurnStartedAt: null,
+            pendingPermission: null,
+            pendingUserInput: null,
+            status: "idle",
+            updatedAt: new Date().toISOString(),
+        });
+        this.#queueSnapshotFlush(liveSession);
+        this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
     }
 
     async #closeOwnedByWindow(ownerWindowId: string): Promise<void> {
@@ -1556,10 +1588,57 @@ export class AiWorkerRuntime {
             nextSnapshot,
             params,
         );
+        this.#handleSubagentLifecycleBreadcrumb(liveSession, params);
         liveSession.snapshot = nextSnapshot;
         this.#queueSnapshotFlush(liveSession);
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
         return Promise.resolve();
+    }
+
+    #handleSubagentLifecycleBreadcrumb(
+        liveSession: LiveAcpSession,
+        params: SessionNotification,
+    ): void {
+        const update = params.update;
+        if (
+            update.sessionUpdate !== "tool_call" &&
+            update.sessionUpdate !== "tool_call_update"
+        ) {
+            return;
+        }
+
+        const meta = getSessionNotificationMeta(params);
+        if (
+            readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) !==
+                CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE ||
+            readMetaString(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY) !==
+                CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE
+        ) {
+            return;
+        }
+
+        const runtimeChildSessionId = readMetaString(
+            meta,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        );
+        if (!runtimeChildSessionId) {
+            return;
+        }
+
+        const childAppSessionId =
+            liveSession.runtimeConnection.appSessionIdByRuntimeSessionId.get(
+                runtimeChildSessionId,
+            ) ?? null;
+        const childSession = childAppSessionId
+            ? (liveSession.runtimeConnection.sessionsByAppSessionId.get(
+                  childAppSessionId,
+              ) ?? null)
+            : null;
+        if (!childSession || childSession === liveSession) {
+            return;
+        }
+
+        this.#markLiveSessionIdle(childSession);
     }
 
     async #readTextFile(

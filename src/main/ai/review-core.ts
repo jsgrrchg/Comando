@@ -32,6 +32,7 @@ import {
     CODEX_ACP_STATUS_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
     CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX,
+    CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
     CODEX_ACP_USER_INPUT_EVENT_TYPE,
     COMANDO_DIFF_PREVIOUS_PATH_KEY,
     COMANDO_STATUS_EVENT_ID_PREFIX,
@@ -126,10 +127,11 @@ export function mapToolCallUpdate(
 
     const normalizeDiffPath = (candidatePath: string) =>
         normalizeTrackedDiffPath(liveSession, candidatePath);
+    const shouldCollectReviewDiffs = !isSubagentBreadcrumbToolUpdate(update);
     const nextActivity = {
         ...(existing?.action ? { action: existing.action } : {}),
         createdAt: existing?.createdAt ?? updatedAt,
-        diffs: content
+        diffs: content && shouldCollectReviewDiffs
             ? collectDiffs(content, toolKind, normalizeDiffPath)
             : (existing?.diffs ?? []),
         exitCode,
@@ -170,7 +172,7 @@ export function mapToolCallUpdate(
     const terminalStatus =
         update.status === "completed" || update.status === "failed";
 
-    const nextTrackedFiles = content
+    const nextTrackedFiles = content && shouldCollectReviewDiffs
         ? content.reduce((acc, entry) => {
               if (entry.type !== "diff") {
                   return acc;
@@ -394,6 +396,18 @@ export function shouldSuppressToolActivityUpdate(
     }
 
     return false;
+}
+
+function isSubagentBreadcrumbToolUpdate(
+    update: Pick<ToolCall | ToolCallUpdate, "_meta">,
+): boolean {
+    return (
+        readDiffMetaString(
+            update._meta,
+            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+            COMANDO_STATUS_EVENT_TYPE_KEY,
+        ) === CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE
+    );
 }
 
 export function diffToAiFileDiff(

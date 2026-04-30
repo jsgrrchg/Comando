@@ -53,6 +53,41 @@ describe("buildAiSessionHierarchyGroups", () => {
         expect(groups[1]?.rootSession.sessionId).toBe("other");
     });
 
+    it("keeps children visually under their parent even when the child is newer", () => {
+        const groups = buildAiSessionHierarchyGroups([
+            createSession({
+                parentSessionId: "parent",
+                sessionId: "child",
+                title: "Galileo",
+                updatedAt: "2026-04-20T10:10:00.000Z",
+            }),
+            createSession({
+                sessionId: "parent",
+                title: "Parent",
+                updatedAt: "2026-04-20T10:05:00.000Z",
+            }),
+            createSession({
+                sessionId: "other",
+                title: "Other",
+                updatedAt: "2026-04-20T10:09:00.000Z",
+            }),
+        ]);
+
+        expect(groups.map((group) => group.rootSession.sessionId)).toEqual([
+            "parent",
+            "other",
+        ]);
+        expect(
+            groups[0]?.rows.map((row) => ({
+                depth: row.depth,
+                sessionId: row.session.sessionId,
+            })),
+        ).toEqual([
+            { depth: 0, sessionId: "parent" },
+            { depth: 1, sessionId: "child" },
+        ]);
+    });
+
     it("keeps the parent as context when a child matches the filter", () => {
         const groups = buildAiSessionHierarchyGroups(
             [
@@ -66,6 +101,32 @@ describe("buildAiSessionHierarchyGroups", () => {
                 createSession({ sessionId: "other", title: "Other" }),
             ],
             { filterQuery: "galileo" },
+        );
+
+        expect(groups).toHaveLength(1);
+        expect(groups[0]?.rows.map((row) => row.session.sessionId)).toEqual([
+            "parent",
+            "child",
+        ]);
+    });
+
+    it("keeps children visible when the parent matches the filter", () => {
+        const groups = buildAiSessionHierarchyGroups(
+            [
+                createSession({
+                    preview: "Main planning thread.",
+                    sessionId: "parent",
+                    title: "Build plan",
+                }),
+                createSession({
+                    parentSessionId: "parent",
+                    preview: "Specialized review agent output.",
+                    sessionId: "child",
+                    title: "Galileo",
+                }),
+                createSession({ sessionId: "other", title: "Other" }),
+            ],
+            { filterQuery: "build" },
         );
 
         expect(groups).toHaveLength(1);

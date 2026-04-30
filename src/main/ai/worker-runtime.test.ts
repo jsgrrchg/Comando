@@ -33,6 +33,7 @@ const promptMock = vi.fn(() =>
     }),
 );
 const closeRuntimeSessionMock = vi.fn(() => Promise.resolve({}));
+const cancelRuntimeSessionMock = vi.fn(() => Promise.resolve({}));
 let latestClientFactory:
     | (() => {
           createTerminal: (params: {
@@ -173,6 +174,7 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         }
 
         initialize = initializeMock;
+        cancel = cancelRuntimeSessionMock;
         loadSession = loadSessionMock;
         newSession = newSessionMock;
         prompt = promptMock;
@@ -196,6 +198,7 @@ describe("AiWorkerRuntime prepareSession", () => {
         promptMock.mockClear();
         newSessionMock.mockClear();
         closeRuntimeSessionMock.mockClear();
+        cancelRuntimeSessionMock.mockClear();
         spawnMock.mockClear();
         spawnedChildren = [];
         latestClientFactory = null;
@@ -668,6 +671,14 @@ describe("AiWorkerRuntime prepareSession", () => {
             _meta: breadcrumbMeta,
             sessionId: "runtime-session-1",
             update: {
+                content: [
+                    {
+                        newText: "child breadcrumb text\n",
+                        oldText: "parent text\n",
+                        path: path.join(tempDir, "src/breadcrumb.ts"),
+                        type: "diff",
+                    },
+                ],
                 _meta: breadcrumbMeta,
                 sessionUpdate: "tool_call_update",
                 status: "completed",
@@ -689,6 +700,317 @@ describe("AiWorkerRuntime prepareSession", () => {
                     }),
                 ]),
             );
+        });
+        expect(
+            hasTrackedFileEvent(emittedEvents, "session-1", "src/breadcrumb.ts"),
+        ).toBe(false);
+    });
+
+    it("keeps subagent diffs isolated from parent tracked files", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        await fs.mkdir(path.join(tempDir, "src"), { recursive: true });
+        await fs.writeFile(
+            path.join(tempDir, "src/only-child.ts"),
+            "child before\n",
+            "utf8",
+        );
+        await fs.writeFile(
+            path.join(tempDir, "src/shared.ts"),
+            "shared before\n",
+            "utf8",
+        );
+
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent diff parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+        emittedEvents.length = 0;
+
+        await client!.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: [
+                    {
+                        newText: "child after\n",
+                        oldText: "child before\n",
+                        path: path.join(tempDir, "src/only-child.ts"),
+                        type: "diff",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Edit only child",
+                toolCallId: "child-edit",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                getLatestTrackedFiles(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                ),
+            ).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        path: "src/only-child.ts",
+                        sessionId: childSnapshot!.sessionId,
+                    }),
+                ]),
+            );
+        });
+        expect(
+            hasTrackedFileEvent(emittedEvents, "session-1", "src/only-child.ts"),
+        ).toBe(false);
+
+        emittedEvents.length = 0;
+        const sharedDiffContent = [
+            {
+                newText: "shared parent after\n",
+                oldText: "shared before\n",
+                path: path.join(tempDir, "src/shared.ts"),
+                type: "diff",
+            },
+        ];
+        await client!.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: sharedDiffContent,
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "pending",
+                title: "Edit shared parent",
+                toolCallId: "shared-tool",
+            },
+        });
+        await client!.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: [
+                    {
+                        ...sharedDiffContent[0],
+                        newText: "shared child after\n",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "pending",
+                title: "Edit shared child",
+                toolCallId: "shared-tool",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(getLatestTrackedFiles(emittedEvents, "session-1")).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        path: "src/shared.ts",
+                        sessionId: "session-1",
+                    }),
+                ]),
+            );
+            expect(
+                getLatestTrackedFiles(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                ),
+            ).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        path: "src/shared.ts",
+                        sessionId: childSnapshot!.sessionId,
+                    }),
+                ]),
+            );
+        });
+    });
+
+    it("marks a subagent idle when the parent receives a close breadcrumb", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent close parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+        emittedEvents.length = 0;
+
+        const closeBreadcrumbMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "close_end",
+        };
+        await client!.sessionUpdate({
+            _meta: closeBreadcrumbMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: closeBreadcrumbMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Closed Galileo",
+                toolCallId: "codex-acp:subagent:close-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                getLatestPatchChanges(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                ),
+            ).toMatchObject({
+                activeTurnStartedAt: null,
+                status: "idle",
+            });
+        });
+    });
+
+    it("marks a subagent idle when cancel is requested", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent cancel parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+        emittedEvents.length = 0;
+
+        await runtime.dispatchMethod(
+            "ai.cancelSession",
+            childSnapshot!.sessionId,
+        );
+
+        expect(cancelRuntimeSessionMock).toHaveBeenLastCalledWith({
+            sessionId: "runtime-subagent-1",
+        });
+        await vi.waitFor(() => {
+            expect(
+                getLatestPatchChanges(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                ),
+            ).toMatchObject({
+                activeTurnStartedAt: null,
+                status: "idle",
+            });
         });
     });
 
@@ -1543,6 +1865,62 @@ function getLatestPatchMessages(
     }
 
     return null;
+}
+
+function getLatestTrackedFiles(
+    events: readonly AiWorkerEventMessage[],
+    sessionId: string,
+): readonly AiTrackedFile[] | null {
+    for (const event of [...events].reverse()) {
+        if (event.event !== "ai.snapshot.updated") {
+            continue;
+        }
+
+        const update = event.payload.update;
+        if (
+            update.kind === "snapshot" &&
+            update.snapshot.sessionId === sessionId
+        ) {
+            return update.snapshot.trackedFiles;
+        }
+
+        if (
+            update.kind === "patch" &&
+            update.patch.sessionId === sessionId &&
+            "trackedFiles" in update.patch.changes
+        ) {
+            return update.patch.changes.trackedFiles ?? null;
+        }
+    }
+
+    return null;
+}
+
+function hasTrackedFileEvent(
+    events: readonly AiWorkerEventMessage[],
+    sessionId: string,
+    filePath: string,
+): boolean {
+    return events.some((event) => {
+        if (event.event !== "ai.snapshot.updated") {
+            return false;
+        }
+
+        const update = event.payload.update;
+        const trackedFiles =
+            update.kind === "snapshot" && update.snapshot.sessionId === sessionId
+                ? update.snapshot.trackedFiles
+                : update.kind === "patch" &&
+                    update.patch.sessionId === sessionId &&
+                    "trackedFiles" in update.patch.changes
+                  ? update.patch.changes.trackedFiles
+                  : null;
+
+        return (
+            trackedFiles?.some((trackedFile) => trackedFile.path === filePath) ??
+            false
+        );
+    });
 }
 
 function createLaunch(

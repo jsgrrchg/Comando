@@ -6745,30 +6745,78 @@ mod tests {
             .await;
 
         let notifications = client.notifications.lock().unwrap();
+        let parent_thread_id_string = parent_thread_id.to_string();
         let child_thread_id_string = child_thread_id.to_string();
         assert_eq!(notifications.len(), 2, "notifications={notifications:?}");
-        assert!(matches!(
-            &notifications[0].update,
-            SessionUpdate::ToolCall(tool_call)
-                if tool_call.title == "Spawning subagent"
-                    && tool_call
-                        .meta
-                        .as_ref()
-                        .and_then(|meta| meta.get(CODEX_ACP_STATUS_EVENT_TYPE_KEY))
-                        .and_then(|value| value.as_str())
-                        == Some("subagent_breadcrumb")
-        ));
-        assert!(matches!(
-            &notifications[1].update,
-            SessionUpdate::ToolCallUpdate(update)
-                if update.fields.title.as_deref() == Some("Spawned Galileo")
-                    && update
-                        .meta
-                        .as_ref()
-                        .and_then(|meta| meta.get("codexAcpChildThreadId"))
-                        .and_then(|value| value.as_str())
-                        == Some(child_thread_id_string.as_str())
-        ));
+        let SessionUpdate::ToolCall(spawn_begin) = &notifications[0].update else {
+            panic!("expected spawn begin breadcrumb, got {notifications:?}");
+        };
+        assert_eq!(spawn_begin.title, "Spawning subagent");
+        let begin_meta = spawn_begin
+            .meta
+            .as_ref()
+            .expect("spawn begin should include metadata");
+        assert_eq!(
+            begin_meta
+                .get(CODEX_ACP_STATUS_EVENT_TYPE_KEY)
+                .and_then(|value| value.as_str()),
+            Some("subagent_breadcrumb")
+        );
+        assert_eq!(
+            begin_meta
+                .get("codexAcpSubagentEventType")
+                .and_then(|value| value.as_str()),
+            Some("spawn_begin")
+        );
+        assert_eq!(
+            begin_meta
+                .get("codexAcpParentSessionId")
+                .and_then(|value| value.as_str()),
+            Some(parent_thread_id_string.as_str())
+        );
+        assert!(
+            begin_meta.get("codexAcpChildSessionId").is_none(),
+            "spawn begin should not invent a child before Codex returns it"
+        );
+
+        let SessionUpdate::ToolCallUpdate(spawn_end) = &notifications[1].update else {
+            panic!("expected spawn end breadcrumb, got {notifications:?}");
+        };
+        assert_eq!(spawn_end.fields.title.as_deref(), Some("Spawned Galileo"));
+        let end_meta = spawn_end
+            .meta
+            .as_ref()
+            .expect("spawn end should include metadata");
+        assert_eq!(
+            end_meta
+                .get(CODEX_ACP_STATUS_EVENT_TYPE_KEY)
+                .and_then(|value| value.as_str()),
+            Some("subagent_breadcrumb")
+        );
+        assert_eq!(
+            end_meta
+                .get("codexAcpSubagentEventType")
+                .and_then(|value| value.as_str()),
+            Some("spawn_end")
+        );
+        assert_eq!(
+            end_meta
+                .get("codexAcpChildThreadId")
+                .and_then(|value| value.as_str()),
+            Some(child_thread_id_string.as_str())
+        );
+        assert_eq!(
+            end_meta
+                .get("codexAcpAgentNickname")
+                .and_then(|value| value.as_str()),
+            Some("Galileo")
+        );
+        assert_eq!(
+            end_meta
+                .get("codexAcpAgentRole")
+                .and_then(|value| value.as_str()),
+            Some("explorer")
+        );
 
         Ok(())
     }

@@ -254,4 +254,29 @@ describe("ChatHistoryTabLayout", () => {
         expect(markup).toContain("Parent thread");
         expect(markup.match(/>rename</g)).toHaveLength(1);
     });
+
+    it("renders a newer child below its parent in hierarchical history", () => {
+        const parent = createSession({
+            sessionId: "parent-session",
+            title: "Parent thread",
+            updatedAt: "2026-04-17T10:05:00.000Z",
+        });
+        const child = createSession({
+            parentSessionId: "parent-session",
+            sessionId: "child-session",
+            title: "Galileo",
+            updatedAt: "2026-04-17T10:06:00.000Z",
+        });
+
+        const markup = renderLayout({
+            selectedSession: child,
+            sessions: [child, parent],
+        });
+
+        expect(markup.indexOf("Parent thread")).toBeLessThan(
+            markup.indexOf("Galileo"),
+        );
+        expect(markup).toContain('data-subagent="true"');
+        expect(markup).toContain("ml-3");
+    });
 });
