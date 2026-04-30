@@ -81,6 +81,7 @@ import {
 } from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
+import { getStopAgentConfirmationMessage } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
     resolveProjectFileReference,
@@ -1294,6 +1295,18 @@ export const ChatTabView = memo(function ChatTabView({
     const handleOpenReviewTab = useCallback(() => {
         void onOpenReview();
     }, [onOpenReview]);
+    const handleStopSession = useCallback(() => {
+        const message = getStopAgentConfirmationMessage({
+            sessionId: tab.sessionId,
+            sessions: useAiStore.getState().sessions,
+            title: snapshot.title || tab.title || "Chat",
+        });
+        if (message && !window.confirm(message)) {
+            return;
+        }
+
+        void useAiStore.getState().cancelSession(tab.sessionId);
+    }, [snapshot.title, tab.sessionId, tab.title]);
 
     useEffect(() => {
         composerPartsRef.current = composerParts;
@@ -2231,11 +2244,7 @@ export const ChatTabView = memo(function ChatTabView({
                             removeDraftFileContext(tab.sessionId, contextId)
                         }
                         onSearchProjectEntries={handleSearchProjectEntries}
-                        onStop={() =>
-                            void useAiStore
-                                .getState()
-                                .cancelSession(tab.sessionId)
-                        }
+                        onStop={handleStopSession}
                         onSubmit={() => {
                             void handleSubmit();
                         }}

@@ -500,7 +500,10 @@ export class AiPersistence {
                 snapshot.parentSessionId,
             );
             const persistedParentSessionId =
-                parentSessionId === snapshot.sessionId ? null : parentSessionId;
+                parentSessionId === snapshot.sessionId ||
+                !this.#hasPersistedSession(parentSessionId)
+                    ? null
+                    : parentSessionId;
             const snapshotToPersist =
                 (snapshot.parentSessionId ?? null) === persistedParentSessionId
                     ? snapshot
@@ -635,6 +638,25 @@ export class AiPersistence {
                 )
                 .run(sessionId);
         });
+    }
+
+    #hasPersistedSession(sessionId: string | null): boolean {
+        if (!sessionId) {
+            return false;
+        }
+
+        const row = this.#connection
+            .prepare<[string], { readonly id: string }>(
+                `
+                SELECT id
+                FROM chat_sessions
+                WHERE id = ?
+                LIMIT 1
+                `,
+            )
+            .get(sessionId);
+
+        return row !== undefined;
     }
 
     setSessionPinned(sessionId: string, pinned: boolean): void {

@@ -340,6 +340,13 @@ describe("AiPersistence", () => {
                 parentSessionId: null,
             }),
         );
+
+        persistence.saveSessionSnapshot(childSnapshot);
+        expect(persistence.loadSessionSnapshot(childSnapshot.sessionId)).toEqual(
+            expect.objectContaining({
+                parentSessionId: null,
+            }),
+        );
     });
 
     it("persists generated image messages and derives a history preview", () => {

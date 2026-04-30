@@ -10,6 +10,7 @@ import { MAX_IMAGE_ATTACHMENTS } from "@shared/ai-attachments";
 import type {
     AiPermissionRequest,
     AiRuntimeStatus,
+    AiSessionPatchChanges,
     AiSessionSnapshot,
     AiToolActivity,
     AiTrackedFile,
@@ -689,6 +690,82 @@ describe("AiWorkerRuntime prepareSession", () => {
                 ]),
             );
         });
+    });
+
+    it("marks every session on a dead ACP connection as errored", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Dead connection parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+        emittedEvents.length = 0;
+
+        spawnedChildren[0]?.stderr.write("connection died\n");
+        spawnedChildren[0]?.emit("exit", 1, null);
+
+        await vi.waitFor(() => {
+            expect(
+                getLatestPatchChanges(emittedEvents, "session-1"),
+            ).toMatchObject({
+                lastError: expect.stringContaining("connection died"),
+                status: "error",
+            });
+            expect(
+                getLatestPatchChanges(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                ),
+            ).toMatchObject({
+                lastError: expect.stringContaining("connection died"),
+                status: "error",
+            });
+        });
+
+        const closedSessionIds = emittedEvents
+            .filter((event) => event.event === "ai.session.closed")
+            .map((event) => event.payload.sessionId);
+        expect(closedSessionIds).toEqual(
+            expect.arrayContaining(["session-1", childSnapshot!.sessionId]),
+        );
     });
 
     it("rejects prompts that exceed the image attachment limit", async () => {
@@ -1423,6 +1500,25 @@ function getLatestSnapshot(
         ) {
             return event.payload.update.snapshot;
         }
+    }
+
+    return null;
+}
+
+function getLatestPatchChanges(
+    events: readonly AiWorkerEventMessage[],
+    sessionId: string,
+): AiSessionPatchChanges | null {
+    for (const event of [...events].reverse()) {
+        if (
+            event.event !== "ai.snapshot.updated" ||
+            event.payload.update.kind !== "patch" ||
+            event.payload.update.patch.sessionId !== sessionId
+        ) {
+            continue;
+        }
+
+        return event.payload.update.patch.changes;
     }
 
     return null;
