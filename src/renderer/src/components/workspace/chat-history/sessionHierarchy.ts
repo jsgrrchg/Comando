@@ -13,9 +13,15 @@ export interface AiSessionHierarchyGroup {
     readonly rootSession: AiHistorySessionSummary;
 }
 
+export type AiSessionHierarchySiblingComparator = (
+    left: AiHistorySessionSummary,
+    right: AiHistorySessionSummary,
+) => number;
+
 export function buildAiSessionHierarchyGroups(
     sessions: readonly AiHistorySessionSummary[],
     options: {
+        readonly compareSiblings?: AiSessionHierarchySiblingComparator | null;
         readonly filterQuery?: string | null;
     } = {},
 ): readonly AiSessionHierarchyGroup[] {
@@ -29,6 +35,10 @@ export function buildAiSessionHierarchyGroups(
     );
     const indexBySessionId = new Map(
         sessions.map((session, index) => [session.sessionId, index] as const),
+    );
+    const compareSiblings = createSiblingComparator(
+        options.compareSiblings,
+        indexBySessionId,
     );
     const childrenByParentId = new Map<string, AiHistorySessionSummary[]>();
     const roots: AiHistorySessionSummary[] = [];
@@ -52,9 +62,7 @@ export function buildAiSessionHierarchyGroups(
     }
 
     for (const children of childrenByParentId.values()) {
-        children.sort((left, right) =>
-            compareByInputOrder(left, right, indexBySessionId),
-        );
+        children.sort(compareSiblings);
     }
 
     const appendedSessionIds = new Set<string>();
@@ -68,6 +76,7 @@ export function buildAiSessionHierarchyGroups(
         appendHierarchyRows({
             appendedSessionIds,
             childrenByParentId,
+            compareSiblings,
             depth: 0,
             rows,
             session: rootSession,
@@ -88,9 +97,7 @@ export function buildAiSessionHierarchyGroups(
         }
     };
 
-    roots
-        .sort((left, right) => compareByInputOrder(left, right, indexBySessionId))
-        .forEach(appendGroup);
+    roots.sort(compareSiblings).forEach(appendGroup);
 
     // Cycles should not happen, but treating leftovers as roots keeps history
     // renderable even if old data has an invalid parent chain.
@@ -101,9 +108,46 @@ export function buildAiSessionHierarchyGroups(
     return groups;
 }
 
+export function filterAiSessionHierarchyRowsForCollapsedParents(
+    rows: readonly AiSessionHierarchyRow[],
+    collapsedSessionIds: ReadonlySet<string>,
+): readonly AiSessionHierarchyRow[] {
+    if (rows.length === 0 || collapsedSessionIds.size === 0) {
+        return rows;
+    }
+
+    const visibleRows: AiSessionHierarchyRow[] = [];
+    const collapsedAncestorDepths: number[] = [];
+
+    for (const row of rows) {
+        while (
+            collapsedAncestorDepths.length > 0 &&
+            row.depth <= collapsedAncestorDepths[collapsedAncestorDepths.length - 1]
+        ) {
+            collapsedAncestorDepths.pop();
+        }
+
+        const hiddenByAncestor = collapsedAncestorDepths.length > 0;
+        if (!hiddenByAncestor) {
+            visibleRows.push(row);
+        }
+
+        if (
+            !hiddenByAncestor &&
+            row.hasChildren &&
+            collapsedSessionIds.has(row.session.sessionId)
+        ) {
+            collapsedAncestorDepths.push(row.depth);
+        }
+    }
+
+    return visibleRows;
+}
+
 function appendHierarchyRows({
     appendedSessionIds,
     childrenByParentId,
+    compareSiblings,
     depth,
     rows,
     session,
@@ -111,6 +155,7 @@ function appendHierarchyRows({
 }: {
     readonly appendedSessionIds: Set<string>;
     readonly childrenByParentId: Map<string, AiHistorySessionSummary[]>;
+    readonly compareSiblings: AiSessionHierarchySiblingComparator;
     readonly depth: number;
     readonly rows: AiSessionHierarchyRow[];
     readonly session: AiHistorySessionSummary;
@@ -141,6 +186,7 @@ function appendHierarchyRows({
         appendHierarchyRows({
             appendedSessionIds,
             childrenByParentId,
+            compareSiblings,
             depth: depth + 1,
             rows,
             session: child,
@@ -149,19 +195,25 @@ function appendHierarchyRows({
     }
 }
 
-function compareByInputOrder(
-    left: AiHistorySessionSummary,
-    right: AiHistorySessionSummary,
-    indexBySessionId: ReadonlyMap<string, number>,
-): number {
-    return (
-        (indexBySessionId.get(left.sessionId) ?? Number.MAX_SAFE_INTEGER) -
-        (indexBySessionId.get(right.sessionId) ?? Number.MAX_SAFE_INTEGER)
-    );
-}
-
 function normalizeHierarchyQuery(value: string | null | undefined): string {
     return (value ?? "").trim().toLowerCase();
+}
+
+function createSiblingComparator(
+    compareSiblings: AiSessionHierarchySiblingComparator | null | undefined,
+    indexBySessionId: ReadonlyMap<string, number>,
+): AiSessionHierarchySiblingComparator {
+    return (left, right) => {
+        const customComparison = compareSiblings?.(left, right) ?? 0;
+        if (customComparison !== 0) {
+            return customComparison;
+        }
+
+        return (
+            (indexBySessionId.get(left.sessionId) ?? Number.MAX_SAFE_INTEGER) -
+            (indexBySessionId.get(right.sessionId) ?? Number.MAX_SAFE_INTEGER)
+        );
+    };
 }
 
 function normalizeParentSessionId(value: string | null | undefined): string | null {

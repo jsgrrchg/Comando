@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { AiHistorySessionSummary } from "@shared/ipc";
 
-import { buildAiSessionHierarchyGroups } from "./sessionHierarchy";
+import {
+    buildAiSessionHierarchyGroups,
+    filterAiSessionHierarchyRowsForCollapsedParents,
+} from "./sessionHierarchy";
 
 function createSession(
     overrides: Partial<AiHistorySessionSummary> = {},
@@ -88,6 +91,41 @@ describe("buildAiSessionHierarchyGroups", () => {
         ]);
     });
 
+    it("allows callers to stabilize sibling order independently from updatedAt order", () => {
+        const workingOrder = new Map([
+            ["child-a", 1],
+            ["child-b", 2],
+        ]);
+        const groups = buildAiSessionHierarchyGroups(
+            [
+                createSession({ sessionId: "parent", title: "Parent" }),
+                createSession({
+                    parentSessionId: "parent",
+                    sessionId: "child-b",
+                    title: "Ada",
+                    updatedAt: "2026-04-20T10:12:00.000Z",
+                }),
+                createSession({
+                    parentSessionId: "parent",
+                    sessionId: "child-a",
+                    title: "Galileo",
+                    updatedAt: "2026-04-20T10:10:00.000Z",
+                }),
+            ],
+            {
+                compareSiblings: (left, right) =>
+                    (workingOrder.get(left.sessionId) ?? 0) -
+                    (workingOrder.get(right.sessionId) ?? 0),
+            },
+        );
+
+        expect(groups[0]?.rows.map((row) => row.session.sessionId)).toEqual([
+            "parent",
+            "child-a",
+            "child-b",
+        ]);
+    });
+
     it("keeps the parent as context when a child matches the filter", () => {
         const groups = buildAiSessionHierarchyGroups(
             [
@@ -151,5 +189,69 @@ describe("buildAiSessionHierarchyGroups", () => {
             isSubagent: true,
             parentSession: null,
         });
+    });
+
+    it("filters descendants of collapsed parents without hiding later siblings", () => {
+        const groups = buildAiSessionHierarchyGroups([
+            createSession({ sessionId: "parent-a", title: "Parent A" }),
+            createSession({
+                parentSessionId: "parent-a",
+                sessionId: "child-a",
+                title: "Galileo",
+            }),
+            createSession({
+                parentSessionId: "child-a",
+                sessionId: "grandchild-a",
+                title: "Ada",
+            }),
+            createSession({
+                parentSessionId: "parent-a",
+                sessionId: "child-b",
+                title: "Wegener",
+            }),
+            createSession({ sessionId: "parent-b", title: "Parent B" }),
+        ]);
+
+        const visibleRows = filterAiSessionHierarchyRowsForCollapsedParents(
+            groups.flatMap((group) => group.rows),
+            new Set(["parent-a"]),
+        );
+
+        expect(visibleRows.map((row) => row.session.sessionId)).toEqual([
+            "parent-a",
+            "parent-b",
+        ]);
+    });
+
+    it("filters nested descendants when only a child parent is collapsed", () => {
+        const groups = buildAiSessionHierarchyGroups([
+            createSession({ sessionId: "parent", title: "Parent" }),
+            createSession({
+                parentSessionId: "parent",
+                sessionId: "child-a",
+                title: "Galileo",
+            }),
+            createSession({
+                parentSessionId: "child-a",
+                sessionId: "grandchild-a",
+                title: "Ada",
+            }),
+            createSession({
+                parentSessionId: "parent",
+                sessionId: "child-b",
+                title: "Wegener",
+            }),
+        ]);
+
+        const visibleRows = filterAiSessionHierarchyRowsForCollapsedParents(
+            groups[0]?.rows ?? [],
+            new Set(["child-a"]),
+        );
+
+        expect(visibleRows.map((row) => row.session.sessionId)).toEqual([
+            "parent",
+            "child-a",
+            "child-b",
+        ]);
     });
 });

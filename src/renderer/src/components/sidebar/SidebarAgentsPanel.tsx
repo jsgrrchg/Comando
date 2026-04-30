@@ -31,7 +31,9 @@ import {
 import { getHistoryPreviewText } from "@renderer/components/workspace/chat-history/historyPreview";
 import {
     buildAiSessionHierarchyGroups,
+    filterAiSessionHierarchyRowsForCollapsedParents,
     type AiSessionHierarchyGroup,
+    type AiSessionHierarchyRow,
 } from "@renderer/components/workspace/chat-history/sessionHierarchy";
 import {
     resolveWorkspaceChatTabActivityIndicator,
@@ -50,6 +52,7 @@ interface SidebarAgentsContextMenuPayload {
 
 const SIDEBAR_AGENTS_TITLE_MAX_CHARS = 48;
 const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
+const EMPTY_COLLAPSED_IDS: ReadonlySet<string> = new Set();
 
 const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
     "codex",
@@ -107,6 +110,9 @@ export function SidebarAgentsPanel({
         null,
     );
     const [renameDraft, setRenameDraft] = useState("");
+    const [collapsedSessionIds, setCollapsedSessionIds] = useState<
+        ReadonlySet<string>
+    >(() => new Set());
     const requestIdRef = useRef(0);
     const refreshTimerRef = useRef<number | null>(null);
     const normalizedFilter = (filter ?? "").trim().toLowerCase();
@@ -507,22 +513,39 @@ export function SidebarAgentsPanel({
         return ids;
     }, [tabsById]);
 
+    const aiSessions = useAiStore((state) => state.sessions);
+    const workingOrderRef = useRef<Map<string, number>>(new Map());
+    const workingCounterRef = useRef(0);
+    const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
+
     const hierarchyGroups = useMemo(
-        () =>
-            buildAiSessionHierarchyGroups(sessions, {
+        () => {
+            const workingOrder = workingOrderRef.current;
+            return buildAiSessionHierarchyGroups(sessions, {
+                compareSiblings: (left, right) =>
+                    compareSidebarHierarchySiblings(left, right, workingOrder),
                 filterQuery: normalizedFilter,
-            }),
-        [normalizedFilter, sessions],
+            });
+        },
+        // workingOrderRevision keeps this memo in sync with the ref-backed map.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [normalizedFilter, sessions, workingOrderRevision],
     );
     const filteredSessionCount = useMemo(
         () => countHierarchyGroupRows(hierarchyGroups),
         [hierarchyGroups],
     );
-
-    const aiSessions = useAiStore((state) => state.sessions);
-    const workingOrderRef = useRef<Map<string, number>>(new Map());
-    const workingCounterRef = useRef(0);
-    const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
+    const collapsibleSessionIds = useMemo(() => {
+        const ids = new Set<string>();
+        for (const group of hierarchyGroups) {
+            for (const row of group.rows) {
+                if (row.hasChildren) {
+                    ids.add(row.session.sessionId);
+                }
+            }
+        }
+        return ids;
+    }, [hierarchyGroups]);
 
     useEffect(() => {
         const map = workingOrderRef.current;
@@ -552,6 +575,20 @@ export function SidebarAgentsPanel({
             setWorkingOrderRevision((value) => value + 1);
         }
     }, [aiSessions]);
+
+    useEffect(() => {
+        setCollapsedSessionIds((current) => {
+            const next = new Set(
+                [...current].filter((sessionId) =>
+                    collapsibleSessionIds.has(sessionId),
+                ),
+            );
+            const unchanged =
+                next.size === current.size &&
+                [...next].every((sessionId) => current.has(sessionId));
+            return unchanged ? current : next;
+        });
+    }, [collapsibleSessionIds]);
 
     const pinnedGroups = useMemo(
         () =>
@@ -605,6 +642,17 @@ export function SidebarAgentsPanel({
     const showUnpinnedSectionHeaders =
         pinnedGroups.length > 0 ||
         (openGroups.length > 0 && otherGroups.length > 0);
+    const handleToggleCollapsed = useCallback((sessionId: string) => {
+        setCollapsedSessionIds((current) => {
+            const next = new Set(current);
+            if (next.has(sessionId)) {
+                next.delete(sessionId);
+            } else {
+                next.add(sessionId);
+            }
+            return next;
+        });
+    }, []);
 
     const statusLine = isLoading
         ? "Loading..."
@@ -674,8 +722,11 @@ export function SidebarAgentsPanel({
                         onContextMenu={handleContextMenu}
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
+                        onToggleCollapsed={handleToggleCollapsed}
                         onTogglePinned={handleTogglePinned}
                         activeSessionId={activePaneSessionId}
+                        collapsedSessionIds={collapsedSessionIds}
+                        collapseEnabled={!hasQuery}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         groups={pinnedGroups}
@@ -690,8 +741,11 @@ export function SidebarAgentsPanel({
                         onContextMenu={handleContextMenu}
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
+                        onToggleCollapsed={handleToggleCollapsed}
                         onTogglePinned={handleTogglePinned}
                         activeSessionId={activePaneSessionId}
+                        collapsedSessionIds={collapsedSessionIds}
+                        collapseEnabled={!hasQuery}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         groups={openGroups}
@@ -706,8 +760,11 @@ export function SidebarAgentsPanel({
                         onContextMenu={handleContextMenu}
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
+                        onToggleCollapsed={handleToggleCollapsed}
                         onTogglePinned={handleTogglePinned}
                         activeSessionId={activePaneSessionId}
+                        collapsedSessionIds={collapsedSessionIds}
+                        collapseEnabled={!hasQuery}
                         renameDraft={renameDraft}
                         renamingSessionId={renamingSessionId}
                         groups={otherGroups}
@@ -740,11 +797,14 @@ export function SidebarAgentsPanel({
 function SidebarAgentsSection({
     activeSessionId,
     cancelRename,
+    collapsedSessionIds,
+    collapseEnabled,
     commitRename,
     groups,
     onContextMenu,
     onOpen,
     onRenameDraftChange,
+    onToggleCollapsed,
     onTogglePinned,
     renameDraft,
     renamingSessionId,
@@ -752,6 +812,8 @@ function SidebarAgentsSection({
 }: {
     readonly activeSessionId: string | null;
     readonly cancelRename: () => void;
+    readonly collapsedSessionIds: ReadonlySet<string>;
+    readonly collapseEnabled: boolean;
     readonly commitRename: () => void;
     readonly groups: readonly AiSessionHierarchyGroup[];
     readonly onContextMenu: (
@@ -760,6 +822,7 @@ function SidebarAgentsSection({
     ) => void;
     readonly onOpen: (session: AiHistorySessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
+    readonly onToggleCollapsed: (sessionId: string) => void;
     readonly onTogglePinned: (
         session: AiHistorySessionSummary,
     ) => Promise<void> | void;
@@ -780,16 +843,25 @@ function SidebarAgentsSection({
                 </header>
             ) : null}
             <ul className="flex flex-col gap-0.5">
-                {groups.flatMap((group) =>
-                    group.rows.map((row) => (
+                {groups.flatMap((group) => {
+                    const rows = getVisibleSidebarHierarchyRows(
+                        group,
+                        collapseEnabled ? collapsedSessionIds : EMPTY_COLLAPSED_IDS,
+                    );
+                    return rows.map((row) => (
                         <li
                             className={row.depth > 0 ? "pl-3" : undefined}
                             key={row.session.sessionId}
                         >
                             <SidebarAgentsItem
                                 depth={row.depth}
+                                hasChildren={row.hasChildren}
                                 isActive={
                                     activeSessionId === row.session.sessionId
+                                }
+                                isCollapsed={
+                                    collapseEnabled &&
+                                    collapsedSessionIds.has(row.session.sessionId)
                                 }
                                 isRenaming={
                                     renamingSessionId ===
@@ -801,13 +873,14 @@ function SidebarAgentsSection({
                                 onContextMenu={onContextMenu}
                                 onOpen={onOpen}
                                 onRenameDraftChange={onRenameDraftChange}
+                                onToggleCollapsed={onToggleCollapsed}
                                 onTogglePinned={onTogglePinned}
                                 renameDraft={renameDraft}
                                 session={row.session}
                             />
                         </li>
-                    )),
-                )}
+                    ));
+                })}
             </ul>
         </section>
     );
@@ -815,7 +888,9 @@ function SidebarAgentsSection({
 
 function SidebarAgentsItem({
     depth,
+    hasChildren,
     isActive,
+    isCollapsed,
     isRenaming,
     isSubagent,
     onCancelRename,
@@ -823,12 +898,15 @@ function SidebarAgentsItem({
     onContextMenu,
     onOpen,
     onRenameDraftChange,
+    onToggleCollapsed,
     onTogglePinned,
     renameDraft,
     session,
 }: {
     readonly depth: number;
+    readonly hasChildren: boolean;
     readonly isActive: boolean;
+    readonly isCollapsed: boolean;
     readonly isRenaming: boolean;
     readonly isSubagent: boolean;
     readonly onCancelRename: () => void;
@@ -839,6 +917,7 @@ function SidebarAgentsItem({
     ) => void;
     readonly onOpen: (session: AiHistorySessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
+    readonly onToggleCollapsed: (sessionId: string) => void;
     readonly onTogglePinned: (
         session: AiHistorySessionSummary,
     ) => Promise<void> | void;
@@ -886,6 +965,37 @@ function SidebarAgentsItem({
             title={session.title}
         >
             <div className="sidebar-agents-main-line flex w-full min-w-0 items-center gap-2">
+                {hasChildren ? (
+                    <button
+                        aria-expanded={!isCollapsed}
+                        aria-label={
+                            isCollapsed
+                                ? "Expand subagents"
+                                : "Collapse subagents"
+                        }
+                        className="sidebar-agents-collapse-button -ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleCollapsed(session.sessionId);
+                        }}
+                        onKeyDown={(event) => {
+                            event.stopPropagation();
+                        }}
+                        title={
+                            isCollapsed
+                                ? "Expand subagents"
+                                : "Collapse subagents"
+                        }
+                        type="button"
+                    >
+                        <ChevronIcon collapsed={isCollapsed} />
+                    </button>
+                ) : (
+                    <span
+                        aria-hidden="true"
+                        className="h-4 w-4 shrink-0"
+                    />
+                )}
                 <SidebarAgentActivityDot indicator={activity} />
                 {isRenaming ? (
                     <input
@@ -1055,6 +1165,24 @@ function PlusIcon() {
     );
 }
 
+function ChevronIcon({ collapsed }: { readonly collapsed: boolean }) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="11"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.8"
+            viewBox="0 0 24 24"
+            width="11"
+        >
+            {collapsed ? <path d="m9 6 6 6-6 6" /> : <path d="m6 9 6 6 6-6" />}
+        </svg>
+    );
+}
+
 function PinIcon({ active }: { readonly active: boolean }) {
     return (
         <svg
@@ -1126,6 +1254,16 @@ function countHierarchyGroupRows(
     return groups.reduce((count, group) => count + group.rows.length, 0);
 }
 
+function getVisibleSidebarHierarchyRows(
+    group: AiSessionHierarchyGroup,
+    collapsedSessionIds: ReadonlySet<string>,
+): readonly AiSessionHierarchyRow[] {
+    return filterAiSessionHierarchyRowsForCollapsedParents(
+        group.rows,
+        collapsedSessionIds,
+    );
+}
+
 function comparePinnedHierarchyGroups(
     left: AiSessionHierarchyGroup,
     right: AiSessionHierarchyGroup,
@@ -1158,6 +1296,26 @@ function getLatestUpdatedAt(group: AiSessionHierarchyGroup): string {
                 : latest,
         "",
     );
+}
+
+function compareSidebarHierarchySiblings(
+    left: AiHistorySessionSummary,
+    right: AiHistorySessionSummary,
+    workingOrder: ReadonlyMap<string, number>,
+): number {
+    const leftOrder = workingOrder.get(left.sessionId);
+    const rightOrder = workingOrder.get(right.sessionId);
+    const leftWorking = leftOrder !== undefined;
+    const rightWorking = rightOrder !== undefined;
+
+    if (leftWorking && rightWorking) {
+        return leftOrder - rightOrder;
+    }
+    if (leftWorking !== rightWorking) {
+        return leftWorking ? -1 : 1;
+    }
+
+    return 0;
 }
 
 function getHierarchyGroupWorkingOrder(

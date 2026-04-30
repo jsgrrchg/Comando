@@ -706,6 +706,492 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(false);
     });
 
+    it("mirrors Codex subagent interaction breadcrumbs into the child thread", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent interaction parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+        emittedEvents.length = 0;
+
+        const closeBreadcrumbMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "close_end",
+        };
+        await client!.sessionUpdate({
+            _meta: closeBreadcrumbMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: closeBreadcrumbMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Closed Galileo",
+                toolCallId: "codex-acp:subagent:close-1",
+            },
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+        emittedEvents.length = 0;
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client!.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Add a final hola line to ACTORES/Gabriel Boric.md",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            getLatestPatchMessages(emittedEvents, childSnapshot!.sessionId),
+        ).toEqual([
+            expect.objectContaining({
+                content: "Add a final hola line to ACTORES/Gabriel Boric.md",
+                kind: "user",
+            }),
+        ]);
+
+        const interactionEndMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_end",
+        };
+        await client!.sessionUpdate({
+            _meta: interactionEndMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionEndMeta,
+                rawOutput: {
+                    status: {
+                        completed: "ACTORES/Gabriel Boric.md",
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Galileo responded",
+                toolCallId: "codex-acp:subagent:interaction-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) =>
+                        changes.activeTurnStartedAt === null &&
+                        changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            getLatestPatchMessages(emittedEvents, childSnapshot!.sessionId),
+        ).toEqual([
+            expect.objectContaining({
+                content: "Add a final hola line to ACTORES/Gabriel Boric.md",
+                kind: "user",
+            }),
+            expect.objectContaining({
+                content: "ACTORES/Gabriel Boric.md",
+                kind: "assistant",
+            }),
+        ]);
+    });
+
+    it("mirrors Codex subagent resume breadcrumbs after an explicit close", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent resume parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+        emittedEvents.length = 0;
+
+        const closeBreadcrumbMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "close_end",
+        };
+        await client!.sessionUpdate({
+            _meta: closeBreadcrumbMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: closeBreadcrumbMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Closed Galileo",
+                toolCallId: "codex-acp:subagent:close-1",
+            },
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+        emittedEvents.length = 0;
+
+        const resumeBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "resume_begin",
+        };
+        await client!.sessionUpdate({
+            _meta: resumeBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: resumeBeginMeta,
+                kind: "other",
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Resuming Galileo",
+                toolCallId: "codex-acp:subagent:resume-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+
+        const resumeEndMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "resume_end",
+        };
+        await client!.sessionUpdate({
+            _meta: resumeEndMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: resumeEndMeta,
+                content: [
+                    {
+                        text: "Status: completed: reopened and reported",
+                        type: "content",
+                    },
+                ],
+                rawOutput: {
+                    status: {
+                        completed: "reopened and reported",
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Resumed Galileo",
+                toolCallId: "codex-acp:subagent:resume-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) =>
+                        changes.activeTurnStartedAt === null &&
+                        changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            getLatestPatchMessages(emittedEvents, childSnapshot!.sessionId),
+        ).toEqual([
+            expect.objectContaining({
+                content: "reopened and reported",
+                kind: "assistant",
+            }),
+        ]);
+    });
+
+    it("marks child threads idle when the parent receives a waiting-end summary", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent waiting parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot?.sessionId).toBeTruthy();
+        emittedEvents.length = 0;
+
+        const closeBreadcrumbMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "close_end",
+        };
+        await client!.sessionUpdate({
+            _meta: closeBreadcrumbMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: closeBreadcrumbMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Closed Galileo",
+                toolCallId: "codex-acp:subagent:close-1",
+            },
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+        emittedEvents.length = 0;
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client!.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Report back without closing.",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-1",
+            },
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+        emittedEvents.length = 0;
+
+        const waitingEndMeta = {
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "waiting_end",
+        };
+        await client!.sessionUpdate({
+            _meta: waitingEndMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: waitingEndMeta,
+                content: [
+                    {
+                        text: "Galileo: completed: report complete",
+                        type: "content",
+                    },
+                ],
+                rawOutput: {
+                    agent_statuses: [
+                        {
+                            agent_nickname: "Galileo",
+                            status: {
+                                completed: "report complete",
+                            },
+                            thread_id: "runtime-subagent-1",
+                        },
+                    ],
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Subagents finished",
+                toolCallId: "codex-acp:subagent:waiting-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) =>
+                        changes.activeTurnStartedAt === null &&
+                        changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            getLatestPatchMessages(emittedEvents, childSnapshot!.sessionId),
+        ).toEqual([
+            expect.objectContaining({
+                content: "Report back without closing.",
+                kind: "user",
+            }),
+            expect.objectContaining({
+                content: "report complete",
+                kind: "assistant",
+            }),
+        ]);
+    });
+
     it("keeps subagent diffs isolated from parent tracked files", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -1844,6 +2330,24 @@ function getLatestPatchChanges(
     }
 
     return null;
+}
+
+function hasPatchChangesMatching(
+    events: readonly AiWorkerEventMessage[],
+    sessionId: string,
+    predicate: (changes: AiSessionPatchChanges) => boolean,
+): boolean {
+    return events.some((event) => {
+        if (
+            event.event !== "ai.snapshot.updated" ||
+            event.payload.update.kind !== "patch" ||
+            event.payload.update.patch.sessionId !== sessionId
+        ) {
+            return false;
+        }
+
+        return predicate(event.payload.update.patch.changes);
+    });
 }
 
 function getLatestPatchMessages(
