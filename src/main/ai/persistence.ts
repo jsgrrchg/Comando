@@ -51,6 +51,7 @@ interface PersistedAiHistorySessionRow {
     readonly runtime: string;
     readonly session_id: string;
     readonly title: string;
+    readonly transcript_json: string | null;
     readonly updated_at: string;
     readonly worktree_id: string | null;
 }
@@ -231,6 +232,10 @@ export class AiPersistence {
                         raw.pendingUserInput,
                     ),
                     plan: normalizePlan(raw.plan),
+                    parentSessionId:
+                        typeof raw.parentSessionId === "string"
+                            ? raw.parentSessionId
+                            : null,
                     projectId: row.project_id,
                     runtimeId: normalizeRuntimeId(raw.runtimeId),
                     runtimeSessionId:
@@ -290,7 +295,11 @@ export class AiPersistence {
                             backfilledPreviews.get(row.session_id) ?? null,
                         ),
                     )
-                    .filter((session) => session.messageCount > 0);
+                    .filter(
+                        (session) =>
+                            session.messageCount > 0 ||
+                            session.parentSessionId !== null,
+                    );
             },
         );
     }
@@ -852,6 +861,7 @@ function applyRuntimeSelectionPreferencesToCatalog(
 }
 
 export function createEmptyAiSessionSnapshot(options: {
+    readonly parentSessionId?: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiSessionSnapshot["runtimeId"];
     readonly runtimeSessionId?: string | null;
@@ -876,6 +886,7 @@ export function createEmptyAiSessionSnapshot(options: {
         pendingPermission: null,
         pendingUserInput: null,
         plan: null,
+        parentSessionId: options.parentSessionId ?? null,
         projectId: options.projectId,
         runtimeId: options.runtimeId,
         runtimeSessionId: options.runtimeSessionId ?? null,
@@ -905,6 +916,7 @@ function createPersistedSessionSnapshot(
         pendingPermission: snapshot.pendingPermission,
         pendingUserInput: snapshot.pendingUserInput,
         plan: snapshot.plan,
+        parentSessionId: snapshot.parentSessionId ?? null,
         projectId: snapshot.projectId,
         runtimeId: snapshot.runtimeId,
         runtimeSessionId: snapshot.runtimeSessionId,
@@ -1798,7 +1810,8 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
                 chat_sessions.pinned_at,
                 chat_sessions.updated_at,
                 chat_transcripts.message_count,
-                chat_transcripts.preview
+                chat_transcripts.preview,
+                chat_transcripts.transcript_json
             FROM chat_sessions
             LEFT JOIN chat_transcripts
                 ON chat_transcripts.session_id = chat_sessions.id
@@ -1838,6 +1851,22 @@ function extractPersistedMessages(
     }
 
     return normalizeMessages(raw.messages);
+}
+
+function extractPersistedParentSessionId(
+    transcriptJson: string | null,
+): string | null {
+    const raw = parseJsonWithFallback<Record<string, unknown> | null>(
+        transcriptJson,
+        null,
+    );
+
+    if (!raw || typeof raw.parentSessionId !== "string") {
+        return null;
+    }
+
+    const parentSessionId = raw.parentSessionId.trim();
+    return parentSessionId.length > 0 ? parentSessionId : null;
 }
 
 function deriveSessionPreview(messages: readonly AiMessage[]): string | null {
@@ -1902,6 +1931,7 @@ function createHistorySessionSummary(
     return {
         createdAt: row.created_at,
         messageCount,
+        parentSessionId: extractPersistedParentSessionId(row.transcript_json),
         pinnedAt: row.pinned_at,
         preview: deserializePersistedPreview(backfilledPreview ?? row.preview),
         projectId: row.project_id,

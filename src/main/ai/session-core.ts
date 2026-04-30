@@ -89,6 +89,7 @@ function createAiSessionPatchChanges(
         "pendingPermission",
         "pendingUserInput",
         "plan",
+        "parentSessionId",
         "projectId",
         "runtimeSessionId",
         "status",

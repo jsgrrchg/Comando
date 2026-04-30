@@ -50,14 +50,44 @@ let latestClientFactory:
               readonly limit?: number;
               readonly line?: number;
               readonly path: string;
+              readonly sessionId?: string;
           }) => Promise<{ content: string }>;
+          requestPermission: (params: {
+              readonly options: readonly {
+                  readonly kind:
+                      | "allow_always"
+                      | "allow_once"
+                      | "reject_always"
+                      | "reject_once";
+                  readonly name: string;
+                  readonly optionId: string;
+              }[];
+              readonly sessionId: string;
+              readonly toolCall: {
+                  readonly rawInput?: Record<string, unknown> | null;
+                  readonly status: string;
+                  readonly title?: string | null;
+                  readonly toolCallId: string;
+              };
+          }) => Promise<{
+              readonly outcome:
+                  | {
+                        readonly optionId: string;
+                        readonly outcome: "selected";
+                    }
+                  | {
+                        readonly outcome: "cancelled";
+                    };
+          }>;
           releaseTerminal: (params: {
               readonly sessionId: string;
               readonly terminalId: string;
           }) => Promise<Record<string, never>>;
           sessionUpdate: (params: {
+              readonly _meta?: Record<string, unknown> | null;
               readonly sessionId: string;
               readonly update: {
+                  readonly _meta?: Record<string, unknown> | null;
                   readonly sessionUpdate: string;
                   readonly [key: string]: unknown;
               };
@@ -83,6 +113,7 @@ let latestClientFactory:
           writeTextFile: (params: {
               readonly content: string;
               readonly path: string;
+              readonly sessionId?: string;
           }) => Promise<Record<string, never>>;
       })
     | null = null;
@@ -409,6 +440,165 @@ describe("AiWorkerRuntime prepareSession", () => {
                     runtimeId: "codex",
                     sessionId: "session-1",
                     title: "Suppressed status test",
+                    worktreeId: null,
+                },
+                launch,
+            }),
+        ).resolves.toEqual({
+            sessionId: "session-1",
+            stopReason: "completed",
+        });
+    });
+
+    it("registers Codex subagent updates as separate live sessions", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-1",
+                projectId: null,
+                runtimeId: "codex",
+                runtimeSessionId: "runtime-subagent-1",
+                status: "streaming",
+                title: "Galileo",
+                worktreeId: null,
+            }),
+        );
+        expect(childSnapshot?.sessionId).not.toBe("session-1");
+
+        emittedEvents.length = 0;
+        await client!.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "child output",
+                    type: "text",
+                },
+                messageId: "child-message-1",
+                sessionUpdate: "agent_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot!.sessionId,
+            );
+            expect(messages).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        content: "child output",
+                        id: "child-message-1",
+                    }),
+                ]),
+            );
+        });
+
+        emittedEvents.length = 0;
+        const permissionPromise = client!.requestPermission({
+            options: [
+                {
+                    kind: "allow_once",
+                    name: "Allow",
+                    optionId: "allow",
+                },
+                {
+                    kind: "reject_once",
+                    name: "Reject",
+                    optionId: "reject",
+                },
+            ],
+            sessionId: "runtime-subagent-1",
+            toolCall: {
+                rawInput: {
+                    command: "echo child",
+                },
+                status: "pending",
+                title: "Child permission",
+                toolCallId: "child-tool",
+            },
+        });
+        await vi.waitFor(() => {
+            expect(getLatestPendingPermission(emittedEvents)).toEqual(
+                expect.objectContaining({
+                    sessionId: childSnapshot!.sessionId,
+                    title: "Child permission",
+                }),
+            );
+        });
+        const pendingPermission = getLatestPendingPermission(emittedEvents);
+        expect(pendingPermission).not.toBeNull();
+        await runtime.dispatchMethod("ai.respondPermission", {
+            input: {
+                optionId: "allow",
+                requestId: pendingPermission!.requestId,
+                sessionId: childSnapshot!.sessionId,
+            },
+        });
+        await expect(permissionPromise).resolves.toMatchObject({
+            outcome: {
+                optionId: "allow",
+                outcome: "selected",
+            },
+        });
+
+        await runtime.dispatchMethod("ai.closeSession", childSnapshot!.sessionId);
+
+        expect(closeRuntimeSessionMock).toHaveBeenLastCalledWith({
+            sessionId: "runtime-subagent-1",
+        });
+        expect(spawnedChildren[0]?.kill).not.toHaveBeenCalled();
+        await expect(
+            runtime.dispatchMethod("ai.sendPrompt", {
+                input: {
+                    attachments: [],
+                    projectId: null,
+                    prompt: "parent is still alive",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Subagent parent",
                     worktreeId: null,
                 },
                 launch,
@@ -1133,6 +1323,44 @@ function getLatestToolActivity(
 
         if ("toolActivity" in update.patch.changes) {
             return update.patch.changes.toolActivity ?? null;
+        }
+    }
+
+    return null;
+}
+
+function getLatestSnapshot(
+    events: readonly AiWorkerEventMessage[],
+    predicate: (snapshot: AiSessionSnapshot) => boolean,
+): AiSessionSnapshot | null {
+    for (const event of [...events].reverse()) {
+        if (
+            event.event === "ai.snapshot.updated" &&
+            event.payload.update.kind === "snapshot" &&
+            predicate(event.payload.update.snapshot)
+        ) {
+            return event.payload.update.snapshot;
+        }
+    }
+
+    return null;
+}
+
+function getLatestPatchMessages(
+    events: readonly AiWorkerEventMessage[],
+    sessionId: string,
+): AiSessionSnapshot["messages"] | null {
+    for (const event of [...events].reverse()) {
+        if (
+            event.event !== "ai.snapshot.updated" ||
+            event.payload.update.kind !== "patch" ||
+            event.payload.update.patch.sessionId !== sessionId
+        ) {
+            continue;
+        }
+
+        if ("messages" in event.payload.update.patch.changes) {
+            return event.payload.update.patch.changes.messages ?? null;
         }
     }
 

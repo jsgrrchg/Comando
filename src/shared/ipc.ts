@@ -1421,6 +1421,7 @@ export interface AiSessionSnapshot {
     readonly pendingPermission: AiPermissionRequest | null;
     readonly pendingUserInput: AiUserInputRequest | null;
     readonly plan: AiPlan | null;
+    readonly parentSessionId?: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly runtimeSessionId: string | null;
@@ -1514,6 +1515,7 @@ export interface ListAiSessionHistoryInput {
 export interface AiHistorySessionSummary {
     readonly createdAt: string;
     readonly messageCount: number;
+    readonly parentSessionId?: string | null;
     readonly pinnedAt?: string | null;
     readonly preview: string | null;
     readonly projectId: string | null;

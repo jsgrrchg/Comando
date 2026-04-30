@@ -57,6 +57,13 @@ import {
     type AiWorkerReviewSessionContext,
     type AiWorkerRpcMethodMap,
     type AiWorkerSessionLaunchInput,
+    CODEX_ACP_AGENT_NICKNAME_KEY,
+    CODEX_ACP_CHILD_SESSION_ID_KEY,
+    CODEX_ACP_CWD_KEY,
+    CODEX_ACP_PARENT_SESSION_ID_KEY,
+    CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+    CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+    type LiveAcpConnection,
     type LiveAcpSession,
     type LiveAcpTerminal,
 } from "./contracts";
@@ -159,6 +166,7 @@ function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
 export class AiWorkerRuntime {
     readonly #debugLogsEnabled: boolean;
     readonly #emitEvent: (message: AiWorkerEventMessage) => void;
+    readonly #connections = new Map<string, LiveAcpConnection>();
     readonly #fileBuffers = new Map<string, string>();
     readonly #sessions = new Map<string, LiveAcpSession>();
     readonly #startedAt = new Date().toISOString();
@@ -277,11 +285,12 @@ export class AiWorkerRuntime {
     }
 
     shutdown(): void {
-        for (const [sessionId, liveSession] of this.#sessions.entries()) {
-            this.#disposeLiveSession(sessionId, liveSession, {
+        for (const liveConnection of [...this.#connections.values()]) {
+            this.#disposeLiveConnection(liveConnection, {
                 emitClosedEvent: false,
             });
         }
+        this.#connections.clear();
         this.#sessions.clear();
         this.#fileBuffers.clear();
         this.#emitLog("info", "AI worker shutting down.", {
@@ -852,6 +861,7 @@ export class AiWorkerRuntime {
             sameAdditionalRoots(existing.additionalRoots, launch.additionalRoots)
         ) {
             existing.ownerWindowId = launch.ownerWindowId;
+            existing.runtimeConnection.ownerWindowId = launch.ownerWindowId;
             existing.desiredSelections = launch.desiredSelections;
             existing.projectRoot = launch.projectRoot;
             existing.cwd = launch.cwd;
@@ -873,26 +883,81 @@ export class AiWorkerRuntime {
                 stdio: ["pipe", "pipe", "pipe"],
             },
         );
+        const liveConnection = {} as LiveAcpConnection;
         const liveSession = {} as LiveAcpSession;
         const client: Client = {
             createTerminal: (params) =>
-                this.#createTerminal(liveSession, params),
+                this.#createTerminal(
+                    this.#requireLiveSessionForRuntimeRequest(
+                        liveConnection,
+                        params.sessionId,
+                    ),
+                    params,
+                ),
             killTerminal: (params) =>
-                Promise.resolve(this.#killTerminal(liveSession, params)),
+                Promise.resolve(
+                    this.#killTerminal(
+                        this.#requireLiveSessionForRuntimeRequest(
+                            liveConnection,
+                            params.sessionId,
+                        ),
+                        params,
+                    ),
+                ),
             readTextFile: async (params) =>
-                this.#readTextFile(liveSession, params),
+                this.#readTextFile(
+                    this.#requireLiveSessionForRuntimeRequest(
+                        liveConnection,
+                        params.sessionId,
+                    ),
+                    params,
+                ),
             requestPermission: async (params) =>
-                this.#requestPermission(liveSession, params),
+                this.#requestPermission(
+                    this.#requireLiveSessionForRuntimeRequest(
+                        liveConnection,
+                        params.sessionId,
+                    ),
+                    params,
+                ),
             releaseTerminal: (params) =>
-                Promise.resolve(this.#releaseTerminal(liveSession, params)),
+                Promise.resolve(
+                    this.#releaseTerminal(
+                        this.#requireLiveSessionForRuntimeRequest(
+                            liveConnection,
+                            params.sessionId,
+                        ),
+                        params,
+                    ),
+                ),
             sessionUpdate: async (params) =>
-                this.#handleSessionUpdate(liveSession, params),
+                this.#handleRuntimeSessionUpdate(liveConnection, params),
             terminalOutput: (params) =>
-                Promise.resolve(this.#terminalOutput(liveSession, params)),
+                Promise.resolve(
+                    this.#terminalOutput(
+                        this.#requireLiveSessionForRuntimeRequest(
+                            liveConnection,
+                            params.sessionId,
+                        ),
+                        params,
+                    ),
+                ),
             waitForTerminalExit: async (params) =>
-                this.#waitForTerminalExit(liveSession, params),
+                this.#waitForTerminalExit(
+                    this.#requireLiveSessionForRuntimeRequest(
+                        liveConnection,
+                        params.sessionId,
+                    ),
+                    params,
+                ),
             writeTextFile: async (params) =>
-                this.#writeTextFile(liveSession, params),
+                this.#writeTextFile(
+                    this.#requireLiveSessionForRuntimeRequest(
+                        liveConnection,
+                        params.sessionId,
+                    ),
+                    params,
+                ),
         };
         const stream = ndJsonStream(
             toWebByteWritable(child.stdin),
@@ -900,6 +965,19 @@ export class AiWorkerRuntime {
         );
         const connection = new ClientSideConnection(() => client, stream);
         const persistedSnapshot = launch.persistedSnapshot;
+        Object.assign(liveConnection, {
+            appSessionIdByRuntimeSessionId: new Map(),
+            child,
+            closing: false,
+            connection,
+            connectionId: randomUUID(),
+            ownerWindowId: launch.ownerWindowId,
+            resolvedRuntime: launch.resolvedRuntime,
+            runtimeId: launch.input.runtimeId,
+            sessionsByAppSessionId: new Map(),
+            stderrChunks: [],
+            stderrHandler: null,
+        } satisfies LiveAcpConnection);
 
         Object.assign(liveSession, {
             additionalRoots: launch.additionalRoots,
@@ -918,6 +996,7 @@ export class AiWorkerRuntime {
             processedDiffPaths: new Map(),
             projectRoot: launch.projectRoot,
             resolvedRuntime: launch.resolvedRuntime,
+            runtimeConnection: liveConnection,
             runtimeId: launch.input.runtimeId,
             snapshot: {
                 ...persistedSnapshot,
@@ -941,12 +1020,12 @@ export class AiWorkerRuntime {
         const stderrHandler = (chunk: Buffer | string) => {
             const text =
                 typeof chunk === "string" ? chunk : chunk.toString("utf8");
-            liveSession.stderrChunks.push(text);
-            if (liveSession.stderrChunks.length > 20) {
-                liveSession.stderrChunks.shift();
+            liveConnection.stderrChunks.push(text);
+            if (liveConnection.stderrChunks.length > 20) {
+                liveConnection.stderrChunks.shift();
             }
         };
-        liveSession.stderrHandler = stderrHandler;
+        liveConnection.stderrHandler = stderrHandler;
         child.stderr.on("data", stderrHandler);
         // Attach no-crash listeners for any 'error' event on the child process
         // and its stdio streams. Without these, an EPIPE or spawn/kill failure
@@ -969,14 +1048,14 @@ export class AiWorkerRuntime {
         child.stdout.on("error", swallowStreamError("stdout"));
         child.stderr.on("error", swallowStreamError("stderr"));
         child.on("exit", (code, signal) => {
-            this.#handleProcessExit(
-                launch.input.sessionId,
-                liveSession,
-                code,
-                signal,
-            );
+            this.#handleProcessExit(liveConnection, code, signal);
         });
         this.#sessions.set(launch.input.sessionId, liveSession);
+        this.#connections.set(liveConnection.connectionId, liveConnection);
+        liveConnection.sessionsByAppSessionId.set(
+            launch.input.sessionId,
+            liveSession,
+        );
         this.#queueSnapshotFlush(liveSession);
 
         try {
@@ -1005,6 +1084,11 @@ export class AiWorkerRuntime {
                 lastError: null,
                 runtimeSessionId: openedSession.runtimeSessionId,
             };
+            this.#registerRuntimeSessionMapping(
+                liveConnection,
+                launch.input.sessionId,
+                openedSession.runtimeSessionId,
+            );
             await this.#applyStoredSessionSelections(liveSession);
             liveSession.snapshot = {
                 ...liveSession.snapshot,
@@ -1015,7 +1099,7 @@ export class AiWorkerRuntime {
             this.#queueSnapshotFlush(liveSession);
             return liveSession;
         } catch (error) {
-            const stderrText = getRecentStderrText(liveSession.stderrChunks);
+            const stderrText = getRecentStderrText(liveConnection.stderrChunks);
             const message =
                 stderrText ||
                 (error instanceof Error
@@ -1124,6 +1208,171 @@ export class AiWorkerRuntime {
                 resolve,
             };
         });
+    }
+
+    #handleRuntimeSessionUpdate(
+        liveConnection: LiveAcpConnection,
+        params: SessionNotification,
+    ): Promise<void> {
+        const liveSession = this.#resolveLiveSessionForRuntimeSessionId(
+            liveConnection,
+            params.sessionId,
+        );
+        if (liveSession) {
+            return this.#handleSessionUpdate(liveSession, params);
+        }
+
+        const subagentSession = this.#createSubagentLiveSessionFromNotification(
+            liveConnection,
+            params,
+        );
+        if (subagentSession) {
+            const result = this.#handleSessionUpdate(subagentSession, params);
+            this.#flushSnapshotEvent(subagentSession);
+            return result;
+        }
+
+        this.#emitLog("warn", "Ignoring ACP update for unknown runtime session.", {
+            runtimeId: liveConnection.runtimeId,
+            runtimeSessionId: params.sessionId,
+        });
+        return Promise.resolve();
+    }
+
+    #createSubagentLiveSessionFromNotification(
+        liveConnection: LiveAcpConnection,
+        params: SessionNotification,
+    ): LiveAcpSession | null {
+        const meta = getSessionNotificationMeta(params);
+        if (
+            readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) !==
+            CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
+        ) {
+            return null;
+        }
+
+        const runtimeChildSessionId =
+            readMetaString(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) ??
+            params.sessionId;
+        const runtimeParentSessionId = readMetaString(
+            meta,
+            CODEX_ACP_PARENT_SESSION_ID_KEY,
+        );
+        if (!runtimeParentSessionId) {
+            this.#emitLog("warn", "Ignoring subagent session without parent.", {
+                runtimeChildSessionId,
+                runtimeId: liveConnection.runtimeId,
+            });
+            return null;
+        }
+
+        const parentAppSessionId =
+            liveConnection.appSessionIdByRuntimeSessionId.get(
+                runtimeParentSessionId,
+            ) ?? null;
+        const parentSession = parentAppSessionId
+            ? liveConnection.sessionsByAppSessionId.get(parentAppSessionId) ??
+              null
+            : null;
+        if (!parentAppSessionId || !parentSession) {
+            this.#emitLog(
+                "warn",
+                "Ignoring subagent session for unknown parent runtime session.",
+                {
+                    runtimeChildSessionId,
+                    runtimeId: liveConnection.runtimeId,
+                    runtimeParentSessionId,
+                },
+            );
+            return null;
+        }
+
+        const existingAppSessionId =
+            liveConnection.appSessionIdByRuntimeSessionId.get(
+                runtimeChildSessionId,
+            ) ?? null;
+        if (existingAppSessionId) {
+            return (
+                liveConnection.sessionsByAppSessionId.get(existingAppSessionId) ??
+                null
+            );
+        }
+
+        const now = new Date().toISOString();
+        const appSessionId = randomUUID();
+        const title =
+            readMetaString(meta, CODEX_ACP_AGENT_NICKNAME_KEY) ??
+            readSessionInfoTitle(params.update) ??
+            "Subagent";
+        const cwd =
+            readMetaString(meta, CODEX_ACP_CWD_KEY)?.trim() ||
+            parentSession.cwd;
+        const snapshot: AiSessionSnapshot = {
+            activeTurnStartedAt: now,
+            availableCommands: parentSession.snapshot.availableCommands,
+            configOptions: parentSession.snapshot.configOptions,
+            lastError: null,
+            messages: [],
+            modeId: parentSession.snapshot.modeId,
+            modes: parentSession.snapshot.modes,
+            modelId: parentSession.snapshot.modelId,
+            models: parentSession.snapshot.models,
+            parentSessionId: parentAppSessionId,
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: parentSession.snapshot.projectId,
+            runtimeId: liveConnection.runtimeId,
+            runtimeSessionId: runtimeChildSessionId,
+            sessionId: appSessionId,
+            status: "streaming",
+            title,
+            tokenUsage: null,
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: now,
+            worktreeId: parentSession.snapshot.worktreeId ?? null,
+        };
+        const subagentSession: LiveAcpSession = {
+            additionalRoots: parentSession.additionalRoots,
+            child: liveConnection.child,
+            closing: false,
+            connection: liveConnection.connection,
+            cwd,
+            desiredSelections: parentSession.desiredSelections,
+            isRestoring: false,
+            lastBroadcastSnapshot: null,
+            ownerWindowId: liveConnection.ownerWindowId,
+            pendingAdditionalRoots: null,
+            pendingLaunch: null,
+            pendingPermission: null,
+            pendingPersistTimer: null,
+            processedDiffPaths: new Map(),
+            projectRoot: parentSession.projectRoot,
+            resolvedRuntime: liveConnection.resolvedRuntime,
+            runtimeConnection: liveConnection,
+            runtimeId: liveConnection.runtimeId,
+            snapshot,
+            stderrChunks: liveConnection.stderrChunks,
+            stderrHandler: null,
+            terminalOutputBuffers: new Map(),
+            terminals: new Map(),
+        };
+
+        this.#sessions.set(appSessionId, subagentSession);
+        liveConnection.sessionsByAppSessionId.set(appSessionId, subagentSession);
+        this.#registerRuntimeSessionMapping(
+            liveConnection,
+            appSessionId,
+            runtimeChildSessionId,
+        );
+        this.#emitLog("debug", "Registered ACP subagent session.", {
+            parentSessionId: parentAppSessionId,
+            runtimeChildSessionId,
+            runtimeId: liveConnection.runtimeId,
+            sessionId: appSessionId,
+        });
+        return subagentSession;
     }
 
     #handleSessionUpdate(
@@ -1652,6 +1901,7 @@ export class AiWorkerRuntime {
                     state: "ready",
                 },
             },
+            runtimeConnection: null as never,
             runtimeId: snapshot.runtimeId,
             snapshot,
             stderrChunks: [],
@@ -2182,6 +2432,65 @@ export class AiWorkerRuntime {
         liveSession.pendingPermission = null;
     }
 
+    #registerRuntimeSessionMapping(
+        liveConnection: LiveAcpConnection,
+        appSessionId: string,
+        runtimeSessionId: string,
+    ): void {
+        liveConnection.appSessionIdByRuntimeSessionId.set(
+            runtimeSessionId,
+            appSessionId,
+        );
+    }
+
+    #resolveLiveSessionForRuntimeSessionId(
+        liveConnection: LiveAcpConnection,
+        runtimeSessionId: string | undefined,
+    ): LiveAcpSession | null {
+        if (!runtimeSessionId) {
+            return null;
+        }
+
+        const appSessionId =
+            liveConnection.appSessionIdByRuntimeSessionId.get(
+                runtimeSessionId,
+            ) ??
+            (liveConnection.sessionsByAppSessionId.has(runtimeSessionId)
+                ? runtimeSessionId
+                : null);
+        if (!appSessionId) {
+            return null;
+        }
+
+        return liveConnection.sessionsByAppSessionId.get(appSessionId) ?? null;
+    }
+
+    #requireLiveSessionForRuntimeRequest(
+        liveConnection: LiveAcpConnection,
+        runtimeSessionId: string | undefined,
+    ): LiveAcpSession {
+        const liveSession = this.#resolveLiveSessionForRuntimeSessionId(
+            liveConnection,
+            runtimeSessionId,
+        );
+        if (liveSession) {
+            return liveSession;
+        }
+
+        if (
+            !runtimeSessionId &&
+            liveConnection.sessionsByAppSessionId.size === 1
+        ) {
+            const onlySession =
+                liveConnection.sessionsByAppSessionId.values().next().value;
+            if (onlySession) {
+                return onlySession;
+            }
+        }
+
+        throw new Error("The ACP request targets an unknown session.");
+    }
+
     #requireRuntimeSessionId(liveSession: LiveAcpSession): string {
         if (!liveSession.snapshot.runtimeSessionId) {
             throw new Error("The ACP session is not initialized yet.");
@@ -2262,40 +2571,42 @@ export class AiWorkerRuntime {
     }
 
     #handleProcessExit(
-        sessionId: string,
-        exitingSession: LiveAcpSession,
+        liveConnection: LiveAcpConnection,
         code: number | null,
         signal: NodeJS.Signals | null,
     ): void {
-        const liveSession = this.#sessions.get(sessionId);
-        if (liveSession !== exitingSession) {
+        if (this.#connections.get(liveConnection.connectionId) !== liveConnection) {
             return;
         }
 
-        this.#sessions.delete(sessionId);
-        this.#detachChildStreams(liveSession);
-        this.#releaseAllTerminals(liveSession);
-        if (liveSession.closing) {
-            return;
-        }
-
-        const stderrText = liveSession.stderrChunks
-            ? getRecentStderrText(liveSession.stderrChunks)
-            : "";
+        this.#connections.delete(liveConnection.connectionId);
+        this.#detachChildStreams(liveConnection);
+        const stderrText = getRecentStderrText(liveConnection.stderrChunks);
         const lastError =
             stderrText ||
-            `${getRuntimeDisplayName(liveSession.runtimeId)} ACP ended unexpectedly (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
-        liveSession.snapshot = finalizeStreamingMessages({
-            ...liveSession.snapshot,
-            lastError,
-            pendingPermission: null,
-            pendingUserInput: null,
-            status: "error",
-            updatedAt: new Date().toISOString(),
-        });
-        this.#queueSnapshotFlush(liveSession);
-        this.#resolvePendingPermission(liveSession, null);
-        this.#emitSessionClosed(liveSession);
+            `${getRuntimeDisplayName(liveConnection.runtimeId)} ACP ended unexpectedly (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
+
+        for (const liveSession of liveConnection.sessionsByAppSessionId.values()) {
+            this.#sessions.delete(liveSession.snapshot.sessionId);
+            this.#releaseAllTerminals(liveSession);
+            if (liveSession.closing || liveConnection.closing) {
+                continue;
+            }
+
+            liveSession.snapshot = finalizeStreamingMessages({
+                ...liveSession.snapshot,
+                lastError,
+                pendingPermission: null,
+                pendingUserInput: null,
+                status: "error",
+                updatedAt: new Date().toISOString(),
+            });
+            this.#queueSnapshotFlush(liveSession);
+            this.#resolvePendingPermission(liveSession, null);
+            this.#emitSessionClosed(liveSession);
+        }
+        liveConnection.sessionsByAppSessionId.clear();
+        liveConnection.appSessionIdByRuntimeSessionId.clear();
     }
 
     #disposeLiveSession(
@@ -2306,17 +2617,23 @@ export class AiWorkerRuntime {
             readonly emitClosedEvent: boolean;
         },
     ): void {
+        const liveConnection = liveSession.runtimeConnection;
         this.#sessions.delete(sessionId);
+        liveConnection.sessionsByAppSessionId.delete(sessionId);
+        if (liveSession.snapshot.runtimeSessionId) {
+            liveConnection.appSessionIdByRuntimeSessionId.delete(
+                liveSession.snapshot.runtimeSessionId,
+            );
+        }
         liveSession.closing = true;
         this.#flushSnapshotEvent(liveSession);
         this.#resolvePendingPermission(liveSession, null);
-        this.#detachChildStreams(liveSession);
         try {
             if (
                 options.closeRuntimeSession !== false &&
                 liveSession.snapshot.runtimeSessionId
             ) {
-                void liveSession.connection
+                void liveConnection.connection
                     .unstable_closeSession({
                         sessionId: liveSession.snapshot.runtimeSessionId,
                     })
@@ -2330,22 +2647,55 @@ export class AiWorkerRuntime {
         } catch (error) {
             debugBenignError("ai.worker.unstableCloseSession", error);
         }
-        liveSession.child.kill();
-        liveSession.child.stdin?.destroy();
-        liveSession.child.stdout?.destroy();
-        liveSession.child.stderr?.destroy();
         this.#releaseAllTerminals(liveSession);
         liveSession.terminalOutputBuffers.clear();
         if (options.emitClosedEvent) {
             this.#emitSessionClosed(liveSession);
         }
+        if (liveConnection.sessionsByAppSessionId.size === 0) {
+            this.#disposeLiveConnection(liveConnection, {
+                emitClosedEvent: false,
+            });
+        }
     }
 
-    #detachChildStreams(liveSession: LiveAcpSession): void {
-        const handler = liveSession.stderrHandler;
+    #disposeLiveConnection(
+        liveConnection: LiveAcpConnection,
+        options: {
+            readonly emitClosedEvent: boolean;
+        },
+    ): void {
+        if (liveConnection.closing) {
+            return;
+        }
+
+        liveConnection.closing = true;
+        this.#connections.delete(liveConnection.connectionId);
+        for (const liveSession of liveConnection.sessionsByAppSessionId.values()) {
+            this.#sessions.delete(liveSession.snapshot.sessionId);
+            liveSession.closing = true;
+            this.#flushSnapshotEvent(liveSession);
+            this.#resolvePendingPermission(liveSession, null);
+            this.#releaseAllTerminals(liveSession);
+            liveSession.terminalOutputBuffers.clear();
+            if (options.emitClosedEvent) {
+                this.#emitSessionClosed(liveSession);
+            }
+        }
+        liveConnection.sessionsByAppSessionId.clear();
+        liveConnection.appSessionIdByRuntimeSessionId.clear();
+        this.#detachChildStreams(liveConnection);
+        liveConnection.child.kill();
+        liveConnection.child.stdin?.destroy();
+        liveConnection.child.stdout?.destroy();
+        liveConnection.child.stderr?.destroy();
+    }
+
+    #detachChildStreams(liveConnection: LiveAcpConnection): void {
+        const handler = liveConnection.stderrHandler;
         if (handler) {
-            liveSession.child.stderr?.off("data", handler);
-            liveSession.stderrHandler = null;
+            liveConnection.child.stderr?.off("data", handler);
+            liveConnection.stderrHandler = null;
         }
     }
 
@@ -2383,6 +2733,42 @@ export class AiWorkerRuntime {
             type: "event",
         });
     }
+}
+
+function getSessionNotificationMeta(
+    params: SessionNotification,
+): Record<string, unknown> {
+    const updateMeta = isRecordValue(params.update._meta)
+        ? params.update._meta
+        : {};
+    const notificationMeta = isRecordValue(params._meta) ? params._meta : {};
+
+    return {
+        ...notificationMeta,
+        ...updateMeta,
+    };
+}
+
+function readMetaString(
+    meta: Record<string, unknown>,
+    key: string,
+): string | null {
+    const value = meta[key];
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : null;
+}
+
+function readSessionInfoTitle(
+    update: SessionNotification["update"],
+): string | null {
+    if (update.sessionUpdate !== "session_info_update") {
+        return null;
+    }
+
+    return typeof update.title === "string" && update.title.trim().length > 0
+        ? update.title.trim()
+        : null;
 }
 
 function buildTerminalEnv(

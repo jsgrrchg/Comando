@@ -136,6 +136,7 @@ export class AiService {
         {
             readonly additionalRoots: readonly string[];
             ownerWindowId: string;
+            readonly parentSessionId: string | null;
             readonly projectId: string | null;
             readonly runtimeId: AiRuntimeId;
             readonly sessionId: string;
@@ -882,6 +883,7 @@ export class AiService {
         this.#liveSessionContexts.set(input.sessionId, {
             additionalRoots,
             ownerWindowId,
+            parentSessionId: null,
             projectId: input.projectId,
             runtimeId: input.runtimeId,
             sessionId: input.sessionId,
@@ -897,7 +899,26 @@ export class AiService {
         const context = this.#liveSessionContexts.get(snapshot.sessionId);
         if (context) {
             context.ownerWindowId = ownerWindowId;
+            return;
         }
+
+        const parentSessionId = snapshot.parentSessionId ?? null;
+        const parentContext = parentSessionId
+            ? this.#liveSessionContexts.get(parentSessionId)
+            : null;
+        if (!parentContext) {
+            return;
+        }
+
+        this.#liveSessionContexts.set(snapshot.sessionId, {
+            additionalRoots: parentContext.additionalRoots,
+            ownerWindowId,
+            parentSessionId,
+            projectId: snapshot.projectId,
+            runtimeId: snapshot.runtimeId,
+            sessionId: snapshot.sessionId,
+            worktreeId: snapshot.worktreeId ?? null,
+        });
     }
 
     #clearLiveSession(sessionId: string): void {
@@ -1109,7 +1130,7 @@ export class AiService {
         result: AiWorkerReviewMutationResult,
     ): void {
         this.#persistence.saveSessionSnapshot(result.snapshot);
-        if (this.#liveSessionContexts.has(result.snapshot.sessionId)) {
+        if (this.#liveSnapshots.has(result.snapshot.sessionId)) {
             this.#liveSnapshots.set(result.snapshot.sessionId, result.snapshot);
         }
         this.#onSessionSnapshot(

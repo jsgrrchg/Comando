@@ -43,6 +43,21 @@ export const CODEX_ACP_STATUS_EVENT_TYPE_KEY = "codexAcpEventType";
 export const COMANDO_STATUS_EVENT_TYPE_KEY = "comandoEventType";
 export const CODEX_ACP_STATUS_EVENT_TYPE = "status";
 export const CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE = "image_generation";
+export const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE =
+    "subagent_session_created";
+export const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE = "subagent_breadcrumb";
+export const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY =
+    "codexAcpSubagentEventType";
+export const CODEX_ACP_PARENT_SESSION_ID_KEY = "codexAcpParentSessionId";
+export const CODEX_ACP_PARENT_THREAD_ID_KEY = "codexAcpParentThreadId";
+export const CODEX_ACP_CHILD_SESSION_ID_KEY = "codexAcpChildSessionId";
+export const CODEX_ACP_CHILD_THREAD_ID_KEY = "codexAcpChildThreadId";
+export const CODEX_ACP_AGENT_NICKNAME_KEY = "codexAcpAgentNickname";
+export const CODEX_ACP_AGENT_ROLE_KEY = "codexAcpAgentRole";
+export const CODEX_ACP_AGENT_STATUS_KEY = "codexAcpAgentStatus";
+export const CODEX_ACP_MODEL_KEY = "codexAcpModel";
+export const CODEX_ACP_REASONING_EFFORT_KEY = "codexAcpReasoningEffort";
+export const CODEX_ACP_CWD_KEY = "codexAcpCwd";
 export const CODEX_ACP_STATUS_EVENT_ID_PREFIX = "codex-acp:status:";
 export const CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX = "codex-acp:image:";
 export const COMANDO_STATUS_EVENT_ID_PREFIX = "comando:status:";
@@ -141,6 +156,20 @@ export interface AiWorkerReviewSessionRpcInput<TInput> {
     readonly input: TInput;
 }
 
+export interface LiveAcpConnection {
+    appSessionIdByRuntimeSessionId: Map<string, string>;
+    child: ChildProcessWithoutNullStreams;
+    closing: boolean;
+    connection: ClientSideConnection;
+    connectionId: string;
+    ownerWindowId: string;
+    resolvedRuntime: ResolvedAcpRuntime;
+    runtimeId: AiRuntimeId;
+    sessionsByAppSessionId: Map<string, LiveAcpSession>;
+    stderrChunks: string[];
+    stderrHandler: ((chunk: Buffer | string) => void) | null;
+}
+
 export interface LiveAcpSession {
     additionalRoots: readonly string[];
     child: ChildProcessWithoutNullStreams;
@@ -160,6 +189,7 @@ export interface LiveAcpSession {
     processedDiffPaths: Map<string, Set<string>>;
     projectRoot: string | null;
     resolvedRuntime: ResolvedAcpRuntime;
+    runtimeConnection: LiveAcpConnection;
     runtimeId: AiRuntimeId;
     snapshot: AiSessionSnapshot;
     terminals: Map<string, LiveAcpTerminal>;

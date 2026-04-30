@@ -409,6 +409,40 @@ describe("AiPersistence", () => {
         expect(history).toEqual([]);
     });
 
+    it("keeps empty subagent sessions visible in history", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-child",
+            transcript: {
+                ...createTranscriptWithMessages([]),
+                parentSessionId: "session-parent",
+                sessionId: "session-child",
+                title: "Galileo",
+            },
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(history).toEqual([
+            expect.objectContaining({
+                messageCount: 0,
+                parentSessionId: "session-parent",
+                preview: null,
+                sessionId: "session-child",
+            }),
+        ]);
+    });
+
     it("lists unscoped history using null project and worktree filters", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
