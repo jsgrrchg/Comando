@@ -110,6 +110,19 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("font-size:17px");
     });
 
+    it("sizes non-wrapping hunks to their scrollable content", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[createDiffFile()]}
+                lineWrapping={false}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain('class="min-w-full w-max"');
+        expect(markup).toContain("grid-template-columns:44px max-content");
+    });
+
     it("keeps the message for binary files", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
