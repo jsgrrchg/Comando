@@ -87,8 +87,9 @@ export function deriveTrackedFilesForToolActivity(
     for (const candidatePath of candidatePaths) {
         const pathMatches = trackedFiles.filter(
             (trackedFile) =>
-                trackedFile.path === candidatePath ||
-                trackedFile.previousPath === candidatePath,
+                trackedFile.toolCallId === null &&
+                (trackedFile.path === candidatePath ||
+                    trackedFile.previousPath === candidatePath),
         );
 
         if (pathMatches.length === 1) {

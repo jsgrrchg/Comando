@@ -215,4 +215,66 @@ describe("chatTimelineModel", () => {
         expect(nextModel.orderedRows[0]).toBe(initialModel.orderedRows[0]);
         expect(nextModel.orderedRows[1]).not.toBe(initialModel.orderedRows[1]);
     });
+
+    it("does not attach a pending tracked file to older edits with the same path", () => {
+        const oldActivity = createActivity({
+            createdAt: "2026-04-14T00:00:00.000Z",
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "old activity preview",
+                    oldText: "before",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-old",
+            title: "Edit src/app.ts",
+        });
+        const currentActivity = createActivity({
+            createdAt: "2026-04-14T00:00:01.000Z",
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "current tracked file",
+                    oldText: "before",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-current",
+            title: "Edit src/app.ts",
+            updatedAt: "2026-04-14T00:00:01.000Z",
+        });
+
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [oldActivity, currentActivity],
+            trackedFiles: [
+                createTrackedFile({
+                    toolCallId: "tool-current",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                }),
+            ],
+        });
+
+        const oldRow = model.rowById.get("tool:tool-old");
+        const currentRow = model.rowById.get("tool:tool-current");
+
+        expect(oldRow?.kind).toBe("tool");
+        expect(currentRow?.kind).toBe("tool");
+        if (oldRow?.kind !== "tool" || currentRow?.kind !== "tool") {
+            throw new Error("Expected tool rows.");
+        }
+
+        expect(oldRow.reviewEntry.trackedFiles).toHaveLength(0);
+        expect(currentRow.reviewEntry.trackedFiles).toHaveLength(1);
+    });
 });

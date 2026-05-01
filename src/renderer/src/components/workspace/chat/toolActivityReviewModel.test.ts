@@ -99,6 +99,31 @@ describe("toolActivityReviewModel", () => {
         ).toEqual(["tracked-1"]);
     });
 
+    it("does not use path fallback for tracked files owned by another tool call", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-old",
+        });
+        const trackedFile = createTrackedFile({
+            toolCallId: "tool-new",
+        });
+
+        expect(
+            deriveTrackedFilesForToolActivity(activity, [trackedFile]),
+        ).toEqual([]);
+    });
+
     it("omits ambiguous path fallback", () => {
         const activity = createActivity({
             id: "tool-without-link",
