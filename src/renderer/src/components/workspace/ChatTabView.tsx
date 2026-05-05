@@ -285,9 +285,8 @@ export const ChatTabView = memo(function ChatTabView({
         model: null,
         sessionId: tab.sessionId,
     });
-    const composerPartsRef = useRef<AIComposerPart[]>(
-        createEmptyComposerParts(),
-    );
+    const initialComposerParts = readInitialComposerPartsForTab(tab);
+    const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
     const persistedDraftRef = useRef(tab.draft);
     const lastSeenDraftComposerPartsSerializedRef = useRef("");
 
@@ -406,9 +405,19 @@ export const ChatTabView = memo(function ChatTabView({
         geminiSettings.googleCloudLocation ?? "",
     );
     const [composerParts, setComposerParts] = useState<AIComposerPart[]>(
-        createEmptyComposerParts,
+        () => cloneComposerPartsForDraft(initialComposerParts),
     );
     const [composerResetNonce, setComposerResetNonce] = useState(0);
+    const commitComposerParts = useCallback(
+        (nextParts: readonly AIComposerPart[]) => {
+            const clonedParts = cloneComposerPartsForDraft(nextParts);
+            composerPartsRef.current = clonedParts;
+            setComposerParts(clonedParts);
+            flushChatDraft(composerPartsToPlainText(clonedParts));
+            flushDraftComposerParts(clonedParts);
+        },
+        [flushChatDraft, flushDraftComposerParts],
+    );
     const showRuntimeConfig = false;
     const [isSavingRuntime, setIsSavingRuntime] = useState(false);
     const [isLaunchingRuntimeAuth, setIsLaunchingRuntimeAuth] = useState(false);
@@ -1097,10 +1106,8 @@ export const ChatTabView = memo(function ChatTabView({
         const submittedAttachments = [...draftAttachments];
         const submittedFileContexts = [...draftFileContexts];
 
-        flushChatDraft("");
-        setComposerParts(createEmptyComposerParts());
+        commitComposerParts(createEmptyComposerParts());
         setComposerResetNonce((current) => current + 1);
-        flushDraftComposerParts(createEmptyComposerParts());
         clearDraftAttachments(tab.sessionId);
         clearDraftFileContexts(tab.sessionId);
         setComposerError(null);
@@ -1127,9 +1134,7 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
 
-            setComposerParts(submittedParts);
-            flushChatDraft(composerPartsToPlainText(submittedParts));
-            flushDraftComposerParts(submittedParts);
+            commitComposerParts(submittedParts);
             setDraftAttachments(tab.sessionId, submittedAttachments);
             for (const fileContext of submittedFileContexts) {
                 addDraftFileContext(tab.sessionId, fileContext);
@@ -1139,9 +1144,9 @@ export const ChatTabView = memo(function ChatTabView({
 
     const handleComposerPartsChange = useCallback(
         (newParts: AIComposerPart[]) => {
-            setComposerParts(newParts);
+            commitComposerParts(newParts);
         },
-        [],
+        [commitComposerParts],
     );
 
     const handleEditQueuedPrompt = useCallback(
@@ -1155,15 +1160,12 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
 
-            setComposerParts([...restoredParts]);
-            flushChatDraft(composerPartsToPlainText(restoredParts));
-            flushDraftComposerParts(restoredParts);
+            commitComposerParts(restoredParts);
             setComposerError(null);
         },
         [
+            commitComposerParts,
             editQueuedPrompt,
-            flushChatDraft,
-            flushDraftComposerParts,
             tab.sessionId,
         ],
     );
@@ -1174,15 +1176,12 @@ export const ChatTabView = memo(function ChatTabView({
             return;
         }
 
-        setComposerParts([...restoredParts]);
+        commitComposerParts(restoredParts);
         setComposerResetNonce((current) => current + 1);
-        flushChatDraft(composerPartsToPlainText(restoredParts));
-        flushDraftComposerParts(restoredParts);
         setComposerError(null);
     }, [
         cancelQueuedPromptEdit,
-        flushChatDraft,
-        flushDraftComposerParts,
+        commitComposerParts,
         tab.sessionId,
     ]);
 
@@ -1201,7 +1200,9 @@ export const ChatTabView = memo(function ChatTabView({
             return;
         }
 
-        setComposerParts(cloneComposerPartsForDraft(draftComposerParts));
+        const clonedParts = cloneComposerPartsForDraft(draftComposerParts);
+        composerPartsRef.current = clonedParts;
+        setComposerParts(clonedParts);
         flushChatDraft(composerPartsToPlainText(draftComposerParts));
     }, [composerParts, draftComposerParts, flushChatDraft]);
 
@@ -1316,13 +1317,16 @@ export const ChatTabView = memo(function ChatTabView({
         return registerComposerSelectionMentionHandler(
             tab.sessionId,
             (selection) => {
-                setComposerParts((currentParts) =>
-                    appendSelectionMentionPart(currentParts, selection),
+                commitComposerParts(
+                    appendSelectionMentionPart(
+                        composerPartsRef.current,
+                        selection,
+                    ),
                 );
                 setComposerError(null);
             },
         );
-    }, [tab.sessionId]);
+    }, [commitComposerParts, tab.sessionId]);
 
     const handlePasteImage = useCallback(
         (file: File) => {
@@ -4328,6 +4332,24 @@ function cloneComposerPartsForDraft(
     parts: readonly AIComposerPart[],
 ): AIComposerPart[] {
     return parts.map((part) => ({ ...part }));
+}
+
+function readInitialComposerPartsForTab(
+    tab: RuntimeWorkspaceChatTab,
+): AIComposerPart[] {
+    const draftParts =
+        useAiStore.getState().sessions[tab.sessionId]?.draftComposerParts ??
+        null;
+
+    if (draftParts && !isComposerDraftEmpty(draftParts, [], [])) {
+        return cloneComposerPartsForDraft(draftParts);
+    }
+
+    if (tab.draft.length > 0) {
+        return [{ type: "text", text: tab.draft }];
+    }
+
+    return createEmptyComposerParts();
 }
 
 function formatAttachmentSize(sizeBytes: number | null): string {
