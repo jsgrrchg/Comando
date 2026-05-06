@@ -9,6 +9,7 @@ import type {
     LoadSessionResponse,
     NewSessionResponse,
     RequestPermissionResponse,
+    SessionNotification,
     TerminalExitStatus,
 } from "@agentclientprotocol/sdk";
 import type {
@@ -163,6 +164,7 @@ export interface LiveAcpConnection {
     connection: ClientSideConnection;
     connectionId: string;
     ownerWindowId: string;
+    pendingSessionUpdatesByRuntimeSessionId: Map<string, SessionNotification[]>;
     resolvedRuntime: ResolvedAcpRuntime;
     runtimeId: AiRuntimeId;
     sessionsByAppSessionId: Map<string, LiveAcpSession>;

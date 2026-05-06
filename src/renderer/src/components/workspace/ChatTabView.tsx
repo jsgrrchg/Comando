@@ -533,6 +533,8 @@ export const ChatTabView = memo(function ChatTabView({
     const availableCommands =
         snapshot.availableCommands.length > 0
             ? snapshot.availableCommands
+            : runtimeCatalog?.availableCommands.length
+              ? runtimeCatalog.availableCommands
             : FALLBACK_COMMANDS;
     const draftAttachments =
         sessionState?.draftAttachments ?? EMPTY_DRAFT_ATTACHMENTS;

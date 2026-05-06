@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
     AiFileContextAttachment,
     AiImageAttachment,
+    AiRuntimeStatus,
     AiSessionSnapshot,
     AiSessionUpdate,
     WorkspaceChatTab,
@@ -64,6 +65,27 @@ function createSnapshot(
     };
 }
 
+function createRuntimeStatus(
+    overrides: Partial<AiRuntimeStatus> = {},
+): AiRuntimeStatus {
+    return {
+        authMethod: null,
+        authMethods: [],
+        authReady: true,
+        checkedAt: "2026-04-14T00:00:00.000Z",
+        command: "codex",
+        hasCustomBinaryPath: false,
+        hasGatewayConfig: false,
+        hasGatewayUrl: false,
+        message: null,
+        onboardingRequired: false,
+        runtimeId: TAB.runtimeId,
+        source: null,
+        state: "ready",
+        ...overrides,
+    };
+}
+
 function createImageAttachment(
     overrides: Partial<AiImageAttachment> = {},
 ): AiImageAttachment {
@@ -120,10 +142,154 @@ describe("ai-store queue", () => {
         });
         useAiStore.setState((state) => ({
             ...state,
+            runtimeCatalogById: {},
             runtimeStatusById: {},
             sessions: {},
         }));
         vi.restoreAllMocks();
+    });
+
+    it("keeps a command-only runtime catalog from status updates", () => {
+        const availableCommands = [
+            {
+                description: "Review changes",
+                id: "review",
+                insertText: "/review ",
+                label: "/review",
+            },
+        ];
+
+        useAiStore.getState().applyRuntimeStatus(
+            createRuntimeStatus({
+                availableCommands,
+            }),
+        );
+
+        expect(
+            useAiStore.getState().runtimeCatalogById.codex?.availableCommands,
+        ).toEqual(availableCommands);
+    });
+
+    it("preserves runtime commands when session hydration returns an empty snapshot catalog", async () => {
+        const availableCommands = [
+            {
+                description: "Review changes",
+                id: "review",
+                insertText: "/review ",
+                label: "/review",
+            },
+            {
+                description: "Summarize conversation",
+                id: "compact",
+                insertText: "/compact ",
+                label: "/compact",
+            },
+        ];
+        const getAiRuntimeStatus = vi.fn().mockResolvedValue(
+            createRuntimeStatus({
+                availableCommands,
+            }),
+        );
+        const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus,
+                    prepareAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(TAB);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.availableCommands,
+        ).toEqual(availableCommands);
+    });
+
+    it("keeps commands from an early catalog patch even before the session is registered", () => {
+        const availableCommands = [
+            {
+                description: "Review changes",
+                id: "review",
+                insertText: "/review ",
+                label: "/review",
+            },
+        ];
+
+        useAiStore.getState().applySessionUpdate({
+            kind: "patch",
+            patch: {
+                changes: {
+                    availableCommands,
+                },
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+            },
+        });
+
+        expect(
+            useAiStore.getState().runtimeCatalogById.codex?.availableCommands,
+        ).toEqual(availableCommands);
+    });
+
+    it("preserves catalog commands when later config patches arrive for an empty session snapshot", () => {
+        const availableCommands = [
+            {
+                description: "Review changes",
+                id: "review",
+                insertText: "/review ",
+                label: "/review",
+            },
+        ];
+        const configOptions = [
+            {
+                category: "reasoning" as const,
+                description: null,
+                id: "reasoning_effort",
+                label: "Reasoning",
+                options: [
+                    {
+                        description: null,
+                        groupLabel: null,
+                        label: "High",
+                        value: "high",
+                    },
+                ],
+                type: "select" as const,
+                value: "high",
+            },
+        ];
+
+        useAiStore.getState().applyRuntimeStatus(
+            createRuntimeStatus({
+                availableCommands,
+            }),
+        );
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+        useAiStore.getState().applySessionUpdate({
+            kind: "patch",
+            patch: {
+                changes: {
+                    configOptions,
+                },
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+            },
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.availableCommands,
+        ).toEqual(availableCommands);
+        expect(
+            useAiStore.getState().runtimeCatalogById.codex?.availableCommands,
+        ).toEqual(availableCommands);
     });
 
     it("requeues the prompt when main still reports the session as busy", async () => {

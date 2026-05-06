@@ -297,6 +297,127 @@ describe("AiWorkerRuntime prepareSession", () => {
         );
     });
 
+    it("replays early session updates after the runtime session mapping is registered", async () => {
+        const readyStatus: AiRuntimeStatus = {
+            authMethod: "chatgpt",
+            authMethods: [],
+            authReady: true,
+            checkedAt: "2026-04-15T00:00:00.000Z",
+            command: "mock-codex-acp",
+            hasCustomBinaryPath: false,
+            hasGatewayConfig: false,
+            hasGatewayUrl: false,
+            message: null,
+            onboardingRequired: false,
+            runtimeId: "codex",
+            source: "bundled",
+            state: "ready",
+        };
+        const persistedSnapshot: AiSessionSnapshot = {
+            availableCommands: [],
+            configOptions: [],
+            lastError: null,
+            messages: [],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: null,
+            sessionId: "session-1",
+            status: "idle",
+            title: "Codex 1",
+            tokenUsage: null,
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            worktreeId: null,
+        };
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch: AiWorkerSessionLaunchInput = {
+            additionalRoots: [],
+            cwd: process.cwd(),
+            desiredSelections: {
+                configOptions: [],
+                modeId: null,
+                modelId: null,
+                preferredConfigOptions: {},
+            },
+            input: {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            ownerWindowId: "window-1",
+            persistedSnapshot,
+            projectRoot: null,
+            resolvedRuntime: {
+                args: [],
+                command: "mock-codex-acp",
+                env: process.env,
+                executable: "mock-codex-acp",
+                status: readyStatus,
+            },
+        };
+
+        newSessionMock.mockImplementationOnce(async () => {
+            const client = latestClientFactory?.();
+            await client?.sessionUpdate({
+                sessionId: "runtime-session-2",
+                update: {
+                    availableCommands: [
+                        {
+                            description: "Review changes",
+                            input: null,
+                            name: "review",
+                        },
+                    ],
+                    sessionUpdate: "available_commands_update",
+                },
+            });
+
+            return {
+                configOptions: [],
+                modes: [],
+                models: [],
+                sessionId: "runtime-session-2",
+            };
+        });
+
+        const snapshot = (await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        })) as AiSessionSnapshot;
+
+        expect(snapshot.availableCommands).toEqual([
+            {
+                description: "Review changes",
+                id: "review",
+                insertText: "/review ",
+                label: "/review",
+            },
+        ]);
+        expect(
+            emittedEvents.some(
+                (event) =>
+                    event.event === "ai.snapshot.updated" &&
+                    event.payload.update.kind === "patch" &&
+                    event.payload.update.patch.changes.availableCommands,
+            ),
+        ).toBe(true);
+    });
+
     it("emits patch updates after the initial snapshot when the session changes", async () => {
         const readyStatus: AiRuntimeStatus = {
             authMethod: "chatgpt",

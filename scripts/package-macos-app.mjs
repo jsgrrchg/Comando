@@ -216,6 +216,7 @@ function stagePackagedApplication() {
             copiedPackages,
         );
     }
+    materializeNestedRuntimeDependencies(copiedPackages);
 
     patchNodePtyBindingGyp(packageAppRoot);
     writePackagedAppPackageJson(copiedPackages);
@@ -381,6 +382,136 @@ function materializeRuntimePackage(
             throw error;
         }
     }
+}
+
+function materializeNestedRuntimeDependencies(copiedPackages) {
+    for (const [parentPackageName, parentPackage] of copiedPackages) {
+        const parentManifest = readJson(parentPackage.manifestPath);
+        const dependencyRanges = {
+            ...parentManifest.dependencies,
+            ...parentManifest.optionalDependencies,
+        };
+
+        for (const [dependencyName, dependencyRange] of Object.entries(
+            dependencyRanges,
+        )) {
+            const rootDependency = copiedPackages.get(dependencyName);
+            if (
+                rootDependency &&
+                versionSatisfiesRange(rootDependency.version, dependencyRange)
+            ) {
+                continue;
+            }
+
+            const dependencyPackage =
+                resolvePnpmPackageMatchingRange(
+                    dependencyName,
+                    dependencyRange,
+                ) ?? resolvePackage(dependencyName, parentPackage.manifestPath);
+            const destinationPackageRoot = path.join(
+                packageAppNodeModulesRoot,
+                ...parentPackageName.split("/"),
+                "node_modules",
+                ...dependencyName.split("/"),
+            );
+            const destinationManifestPath = path.join(
+                destinationPackageRoot,
+                "package.json",
+            );
+
+            if (
+                isFile(destinationManifestPath) &&
+                readJson(destinationManifestPath).version ===
+                    dependencyPackage.manifest.version
+            ) {
+                continue;
+            }
+
+            copyPackageTree(
+                dependencyPackage.packageRoot,
+                destinationPackageRoot,
+            );
+        }
+    }
+}
+
+function resolvePnpmPackageMatchingRange(packageName, range) {
+    const pnpmStoreRoot = path.join(repoRoot, "node_modules", ".pnpm");
+    if (!fs.existsSync(pnpmStoreRoot)) {
+        return null;
+    }
+
+    const encodedPackageName = packageName.replace("/", "+");
+    const packageDirectoryPrefix = `${encodedPackageName}@`;
+    const candidates = fs
+        .readdirSync(pnpmStoreRoot)
+        .filter((entryName) => entryName.startsWith(packageDirectoryPrefix))
+        .map((entryName) => {
+            const version = entryName
+                .slice(packageDirectoryPrefix.length)
+                .split("_")[0];
+            const manifestPath = path.join(
+                pnpmStoreRoot,
+                entryName,
+                "node_modules",
+                ...packageName.split("/"),
+                "package.json",
+            );
+            return {
+                manifestPath,
+                packageRoot: path.dirname(manifestPath),
+                version,
+            };
+        })
+        .filter(
+            (candidate) =>
+                isFile(candidate.manifestPath) &&
+                versionSatisfiesRange(candidate.version, range),
+        )
+        .sort((left, right) => compareSemver(right.version, left.version));
+
+    const [candidate] = candidates;
+    if (!candidate) {
+        return null;
+    }
+
+    return {
+        manifest: readJson(candidate.manifestPath),
+        manifestPath: candidate.manifestPath,
+        packageRoot: candidate.packageRoot,
+    };
+}
+
+function versionSatisfiesRange(version, range) {
+    if (range.startsWith("^")) {
+        const minimumVersion = range.slice(1);
+        const [major] = parseSemver(minimumVersion);
+        const [candidateMajor] = parseSemver(version);
+        return (
+            candidateMajor === major &&
+            compareSemver(version, minimumVersion) >= 0
+        );
+    }
+
+    return version === range;
+}
+
+function compareSemver(leftVersion, rightVersion) {
+    const left = parseSemver(leftVersion);
+    const right = parseSemver(rightVersion);
+
+    for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+        const difference = (left[index] ?? 0) - (right[index] ?? 0);
+        if (difference !== 0) {
+            return difference;
+        }
+    }
+
+    return 0;
+}
+
+function parseSemver(version) {
+    return version.split(".").map((part) => Number.parseInt(part, 10) || 0);
 }
 
 function resolvePackage(packageName, sourceManifestPath, options = {}) {

@@ -117,6 +117,7 @@ const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE = "interaction_end";
 const CODEX_ACP_SUBAGENT_RESUME_BEGIN_EVENT_TYPE = "resume_begin";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE = "resume_end";
 const CODEX_ACP_SUBAGENT_WAITING_END_EVENT_TYPE = "waiting_end";
+const MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION = 16;
 
 function setDesiredConfigValue(
     values: Map<string, boolean | string>,
@@ -1010,6 +1011,7 @@ export class AiWorkerRuntime {
             connection,
             connectionId: randomUUID(),
             ownerWindowId: launch.ownerWindowId,
+            pendingSessionUpdatesByRuntimeSessionId: new Map(),
             resolvedRuntime: launch.resolvedRuntime,
             runtimeId: launch.input.runtimeId,
             sessionsByAppSessionId: new Map(),
@@ -1270,10 +1272,9 @@ export class AiWorkerRuntime {
             return result;
         }
 
-        this.#emitLog("warn", "Ignoring ACP update for unknown runtime session.", {
-            runtimeId: liveConnection.runtimeId,
-            runtimeSessionId: params.sessionId,
-        });
+        // Some fast runtimes can emit session updates before newSession/loadSession
+        // unwinds and gives us the runtime session ID to map.
+        this.#bufferPendingSessionUpdate(liveConnection, params);
         return Promise.resolve();
     }
 
@@ -2678,6 +2679,63 @@ export class AiWorkerRuntime {
             runtimeSessionId,
             appSessionId,
         );
+        this.#drainPendingSessionUpdates(liveConnection, runtimeSessionId);
+    }
+
+    #bufferPendingSessionUpdate(
+        liveConnection: LiveAcpConnection,
+        params: SessionNotification,
+    ): void {
+        const pending =
+            liveConnection.pendingSessionUpdatesByRuntimeSessionId.get(
+                params.sessionId,
+            ) ?? [];
+
+        if (pending.length >= MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION) {
+            pending.shift();
+            this.#emitLog(
+                "warn",
+                "Dropping the oldest pending ACP update for an unmapped runtime session.",
+                {
+                    runtimeId: liveConnection.runtimeId,
+                    runtimeSessionId: params.sessionId,
+                },
+            );
+        }
+
+        pending.push(params);
+        liveConnection.pendingSessionUpdatesByRuntimeSessionId.set(
+            params.sessionId,
+            pending,
+        );
+    }
+
+    #drainPendingSessionUpdates(
+        liveConnection: LiveAcpConnection,
+        runtimeSessionId: string,
+    ): void {
+        const pending =
+            liveConnection.pendingSessionUpdatesByRuntimeSessionId.get(
+                runtimeSessionId,
+            );
+        if (!pending?.length) {
+            return;
+        }
+
+        liveConnection.pendingSessionUpdatesByRuntimeSessionId.delete(
+            runtimeSessionId,
+        );
+        const liveSession = this.#resolveLiveSessionForRuntimeSessionId(
+            liveConnection,
+            runtimeSessionId,
+        );
+        if (!liveSession) {
+            return;
+        }
+
+        for (const update of pending) {
+            void this.#handleSessionUpdate(liveSession, update);
+        }
     }
 
     #resolveLiveSessionForRuntimeSessionId(
@@ -2844,6 +2902,7 @@ export class AiWorkerRuntime {
         }
         liveConnection.sessionsByAppSessionId.clear();
         liveConnection.appSessionIdByRuntimeSessionId.clear();
+        liveConnection.pendingSessionUpdatesByRuntimeSessionId.clear();
     }
 
     #disposeLiveSession(
@@ -2921,6 +2980,7 @@ export class AiWorkerRuntime {
         }
         liveConnection.sessionsByAppSessionId.clear();
         liveConnection.appSessionIdByRuntimeSessionId.clear();
+        liveConnection.pendingSessionUpdatesByRuntimeSessionId.clear();
         this.#detachChildStreams(liveConnection);
         liveConnection.child.kill();
         liveConnection.child.stdin?.destroy();
