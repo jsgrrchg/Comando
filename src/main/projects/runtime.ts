@@ -45,6 +45,11 @@ interface IndexedProjectEntry extends ProjectSearchCandidate {
     readonly relativePath: string;
 }
 
+interface ScoredProjectSearchEntry {
+    readonly entry: IndexedProjectEntry;
+    readonly score: number;
+}
+
 interface PendingProjectInvalidation {
     readonly relativePaths: ReadonlySet<string> | null;
     readonly timeout: NodeJS.Timeout;
@@ -280,45 +285,33 @@ export class ProjectRuntime {
         }
 
         this.#ensureRootContext(input);
-        const gitSnapshot = await this.#getGitSnapshot(input.rootPath);
         const limit = Math.max(1, input.limit ?? 20);
         const { entries, cacheState } = this.#getProjectSearchIndex(
             input.rootPath,
         );
-        const scoredEntries: {
-            readonly node: ProjectTreeNode;
-            readonly score: number;
-        }[] = [];
+        const scoredEntries = collectTopProjectSearchEntries(
+            entries,
+            normalizedQuery,
+            limit,
+        );
 
-        for (const entry of entries) {
-            const score = scoreProjectSearchCandidate(entry, normalizedQuery);
-            if (score < 0) {
-                continue;
-            }
-
-            scoredEntries.push({
-                node: createProjectTreeNodeFromIndexEntry(
-                    input.projectId,
-                    entry,
-                    gitSnapshot,
-                ),
-                score,
-            });
+        if (scoredEntries.length === 0) {
+            return {
+                nodes: [],
+                searchIndexCacheState: cacheState,
+            };
         }
 
+        const gitSnapshot = await this.#getGitSnapshot(input.rootPath);
+
         return {
-            nodes: scoredEntries
-                .sort(
-                    (left, right) =>
-                        right.score - left.score ||
-                        left.node.relativePath.length -
-                            right.node.relativePath.length ||
-                        left.node.relativePath.localeCompare(
-                            right.node.relativePath,
-                        ),
-                )
-                .slice(0, limit)
-                .map((entry) => entry.node),
+            nodes: scoredEntries.map((match) =>
+                createProjectTreeNodeFromIndexEntry(
+                    input.projectId,
+                    match.entry,
+                    gitSnapshot,
+                ),
+            ),
             searchIndexCacheState: cacheState,
         };
     }
@@ -687,6 +680,78 @@ function buildProjectSearchIndex(
         lowerName: entry.name.toLowerCase(),
         lowerPath: entry.relativePath.toLowerCase(),
     }));
+}
+
+function collectTopProjectSearchEntries(
+    entries: readonly IndexedProjectEntry[],
+    normalizedQuery: string,
+    limit: number,
+): readonly ScoredProjectSearchEntry[] {
+    const topEntries: ScoredProjectSearchEntry[] = [];
+
+    for (const entry of entries) {
+        const score = scoreProjectSearchCandidate(entry, normalizedQuery);
+        if (score < 0) {
+            continue;
+        }
+
+        const scoredEntry = { entry, score };
+        const worstEntry = topEntries.at(-1);
+
+        if (
+            topEntries.length >= limit &&
+            worstEntry &&
+            compareScoredProjectSearchEntries(scoredEntry, worstEntry) >= 0
+        ) {
+            continue;
+        }
+
+        const insertIndex = findProjectSearchInsertIndex(
+            topEntries,
+            scoredEntry,
+        );
+        topEntries.splice(insertIndex, 0, scoredEntry);
+
+        if (topEntries.length > limit) {
+            topEntries.pop();
+        }
+    }
+
+    return topEntries;
+}
+
+function findProjectSearchInsertIndex(
+    entries: readonly ScoredProjectSearchEntry[],
+    candidate: ScoredProjectSearchEntry,
+): number {
+    let low = 0;
+    let high = entries.length;
+
+    while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        const current = entries[middle];
+        if (
+            current &&
+            compareScoredProjectSearchEntries(candidate, current) < 0
+        ) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+
+    return low;
+}
+
+function compareScoredProjectSearchEntries(
+    left: ScoredProjectSearchEntry,
+    right: ScoredProjectSearchEntry,
+): number {
+    return (
+        right.score - left.score ||
+        left.entry.relativePath.length - right.entry.relativePath.length ||
+        left.entry.relativePath.localeCompare(right.entry.relativePath)
+    );
 }
 
 function createProjectTreeNodeFromIndexEntry(

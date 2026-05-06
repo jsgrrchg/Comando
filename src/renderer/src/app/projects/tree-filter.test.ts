@@ -4,6 +4,7 @@ import type { ProjectTreeNode } from "@shared/ipc";
 
 import {
     buildFilteredProjectTree,
+    filterProjectEntriesForTreeFilter,
     filterProjectEntriesBySubstring,
 } from "./tree-filter";
 
@@ -87,7 +88,11 @@ describe("filterProjectEntriesBySubstring", () => {
     it("matches file and directory paths case-insensitively", () => {
         const entries = [
             makeNode("src/App.tsx", "file", "src"),
-            makeNode("src/components/sidebar/Sidebar.tsx", "file", "src/components/sidebar"),
+            makeNode(
+                "src/components/sidebar/Sidebar.tsx",
+                "file",
+                "src/components/sidebar",
+            ),
             makeNode("docs/README.md", "file", "docs"),
         ];
 
@@ -104,6 +109,53 @@ describe("filterProjectEntriesBySubstring", () => {
                 [makeNode("src/App.tsx", "file", "src")],
                 "   ",
             ),
+        ).toEqual([]);
+    });
+});
+
+describe("filterProjectEntriesForTreeFilter", () => {
+    it("preserves backend-ranked fuzzy matches that do not contain the literal query", () => {
+        const entries = [
+            makeNode(
+                "src/workspace/WorkspaceView.tsx",
+                "file",
+                "src/workspace",
+            ),
+        ];
+
+        expect(
+            filterProjectEntriesForTreeFilter(
+                entries,
+                "wsv",
+                "backend-ranked",
+            ).map((entry) => entry.relativePath),
+        ).toEqual(["src/workspace/WorkspaceView.tsx"]);
+    });
+
+    it("keeps local substring filtering behavior", () => {
+        const entries = [
+            makeNode(
+                "src/workspace/WorkspaceView.tsx",
+                "file",
+                "src/workspace",
+            ),
+            makeNode("src/workspace/sidebar.ts", "file", "src/workspace"),
+        ];
+
+        expect(
+            filterProjectEntriesForTreeFilter(
+                entries,
+                "sidebar",
+                "substring",
+            ).map((entry) => entry.relativePath),
+        ).toEqual(["src/workspace/sidebar.ts"]);
+
+        expect(
+            filterProjectEntriesForTreeFilter(
+                entries,
+                "wsv",
+                "substring",
+            ).map((entry) => entry.relativePath),
         ).toEqual([]);
     });
 });

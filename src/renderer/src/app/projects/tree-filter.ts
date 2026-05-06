@@ -4,6 +4,8 @@ const ROOT_NODE_KEY = "__root__";
 
 type ParentKey = string;
 
+export type ProjectEntriesFilterStrategy = "backend-ranked" | "substring";
+
 export interface FilteredProjectTree {
     readonly expandedDirectories: readonly string[];
     readonly matchCount: number;
@@ -56,9 +58,21 @@ export function filterProjectEntriesBySubstring(
     entries: readonly ProjectTreeNode[],
     query: string,
 ): readonly ProjectTreeNode[] {
+    return filterProjectEntriesForTreeFilter(entries, query, "substring");
+}
+
+export function filterProjectEntriesForTreeFilter(
+    entries: readonly ProjectTreeNode[],
+    query: string,
+    strategy: ProjectEntriesFilterStrategy,
+): readonly ProjectTreeNode[] {
     const normalizedQuery = normalizeQuery(query);
     if (!normalizedQuery) {
         return [];
+    }
+
+    if (strategy === "backend-ranked") {
+        return entries;
     }
 
     return entries.filter((entry) =>

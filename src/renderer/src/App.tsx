@@ -34,7 +34,7 @@ import {
     searchProjectQuickOpenEntries,
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
-import { filterProjectEntriesBySubstring } from "./app/projects/tree-filter";
+import { filterProjectEntriesForTreeFilter } from "./app/projects/tree-filter";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
     edgePeekConfig,
@@ -100,6 +100,7 @@ type DragState = {
 type SidebarView = "files" | "git" | "agents";
 
 const ROOT_NODE_KEY = "__root__";
+const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 
 type FileTreeContextMenuPayload =
     | {
@@ -117,6 +118,10 @@ type FileTreeInlineEditorState = {
     readonly originalName: string;
     readonly path: string;
 };
+
+function getProjectSearchDelayMs(query: string): number {
+    return query.trim().length <= 1 ? 0 : PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS;
+}
 
 type FileTreeFilterSource =
     | {
@@ -817,7 +822,7 @@ export function App() {
         setIsQuickOpenLoading(true);
         const requestId = quickOpenSearchRequestRef.current + 1;
         quickOpenSearchRequestRef.current = requestId;
-        const timeoutId = window.setTimeout(() => {
+        const search = () => {
             void window.comando
                 .searchProjectEntries({
                     limit: 120,
@@ -846,7 +851,15 @@ export function App() {
 
                     setIsQuickOpenLoading(false);
                 });
-        }, 100);
+        };
+
+        const delayMs = getProjectSearchDelayMs(normalizedQuery);
+        if (delayMs === 0) {
+            search();
+            return;
+        }
+
+        const timeoutId = window.setTimeout(search, delayMs);
 
         return () => {
             window.clearTimeout(timeoutId);
@@ -1034,7 +1047,7 @@ export function App() {
 
         const requestId = fileTreeBackendSearchRequestRef.current + 1;
         fileTreeBackendSearchRequestRef.current = requestId;
-        const timeoutId = window.setTimeout(() => {
+        const search = () => {
             void window.comando
                 .searchProjectEntries({
                     limit: 160,
@@ -1056,7 +1069,15 @@ export function App() {
 
                     setFileTreeBackendSearchResults([]);
                 });
-        }, 120);
+        };
+
+        const delayMs = getProjectSearchDelayMs(normalizedFileTreeFilter);
+        if (delayMs === 0) {
+            search();
+            return;
+        }
+
+        const timeoutId = window.setTimeout(search, delayMs);
 
         return () => {
             window.clearTimeout(timeoutId);
@@ -1068,7 +1089,7 @@ export function App() {
         normalizedFileTreeFilter,
     ]);
 
-    const fileTreeSubstringMatches = useMemo(() => {
+    const fileTreeFilterMatches = useMemo(() => {
         if (!fileTreeFilterSource) {
             return [];
         }
@@ -1078,9 +1099,12 @@ export function App() {
                 ? cachedFileTreeEntryIndex
                 : fileTreeBackendSearchResults;
 
-        return filterProjectEntriesBySubstring(
+        return filterProjectEntriesForTreeFilter(
             entriesForFilter,
             normalizedFileTreeFilter,
+            fileTreeFilterSource.kind === "backend"
+                ? "backend-ranked"
+                : "substring",
         );
     }, [
         cachedFileTreeEntryIndex,
@@ -1091,9 +1115,9 @@ export function App() {
     const fileTreeSearchTree = useMemo(
         () =>
             buildHierarchicalGitTreeNodesFromProjectEntries(
-                fileTreeSubstringMatches,
+                fileTreeFilterMatches,
             ),
-        [fileTreeSubstringMatches],
+        [fileTreeFilterMatches],
     );
     const fileTreeSearchNodes = fileTreeSearchTree.nodes;
     const fileTreeSearchExpandedPaths = fileTreeSearchTree.expandedDirectoryPaths;

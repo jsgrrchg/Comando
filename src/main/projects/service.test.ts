@@ -400,6 +400,55 @@ describe("ProjectService", () => {
         );
     });
 
+    it("returns the highest-ranked search entries when limiting broad matches", async () => {
+        const connection = createTestConnection();
+        const projectService = createProjectService(connection);
+        const projectRoot = createTempProject(tempDirs, "search-top-k");
+
+        fs.mkdirSync(path.join(projectRoot, "src", "a"), {
+            recursive: true,
+        });
+        fs.mkdirSync(path.join(projectRoot, "src", "z"), {
+            recursive: true,
+        });
+        for (let index = 0; index < 20; index += 1) {
+            fs.writeFileSync(
+                path.join(projectRoot, "src", "a", `target-${index}.ts`),
+                `export const value${index} = true;\n`,
+            );
+        }
+        fs.writeFileSync(
+            path.join(projectRoot, "target.ts"),
+            "export const rootTarget = true;\n",
+        );
+        fs.writeFileSync(
+            path.join(projectRoot, "src", "z", "target.ts"),
+            "export const nestedTarget = true;\n",
+        );
+
+        const addResult = await projectService.addProjectPaths([projectRoot]);
+        const [project] = addResult.projects;
+        expect(project).toBeDefined();
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 2,
+                projectId: project.id,
+                query: "target.ts",
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                relativePath: "target.ts",
+            }),
+            expect.objectContaining({
+                relativePath: "src/z/target.ts",
+            }),
+        ]);
+    });
+
     it("rebuilds worker registry and search caches after a worker restart", async () => {
         const connection = createTestConnection();
         const projectService = createProjectService(connection);

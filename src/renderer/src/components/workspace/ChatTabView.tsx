@@ -126,6 +126,7 @@ const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
+const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 
 type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
 
@@ -1376,7 +1377,7 @@ export const ChatTabView = memo(function ChatTabView({
                     window.clearTimeout(projectSearchTimeoutRef.current);
                 }
 
-                projectSearchTimeoutRef.current = window.setTimeout(() => {
+                const search = () => {
                     projectSearchTimeoutRef.current = null;
                     const pendingResolvers =
                         pendingProjectSearchResolversRef.current.splice(0);
@@ -1410,7 +1411,21 @@ export const ChatTabView = memo(function ChatTabView({
                                 callback([]),
                             );
                         });
-                }, 120);
+                };
+
+                const delayMs =
+                    normalizedQuery.length <= 1
+                        ? 0
+                        : PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS;
+                if (delayMs === 0) {
+                    search();
+                    return;
+                }
+
+                projectSearchTimeoutRef.current = window.setTimeout(
+                    search,
+                    delayMs,
+                );
             });
         },
         [tab.projectId, tab.worktreeId],
