@@ -25,7 +25,7 @@ import {
 } from "@renderer/components/context-menu/ContextMenu";
 import {
     formatHistoryMessageCount,
-    formatHistoryRelativeDate,
+    formatHistoryRelativeDateCompact,
     getHistoryRuntimeLabel,
 } from "@renderer/components/workspace/chat-history/historyPresentation";
 import { getHistoryPreviewText } from "@renderer/components/workspace/chat-history/historyPreview";
@@ -881,16 +881,16 @@ function SidebarAgentsSection({
     const sessionCount = countHierarchyGroupRows(groups);
 
     return (
-        <section className="mt-1 first:mt-0">
+        <section className="sidebar-agents-section mt-3 first:mt-0">
             {title ? (
-                <header className="sidebar-agents-section-header flex items-center gap-1.5 px-2 pb-0.5 pt-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary/80">
+                <header className="sidebar-agents-section-header flex items-center gap-2 px-2 pb-1 pt-1 font-semibold uppercase tracking-[0.09em] text-text-secondary/80">
                     <span>{title}</span>
-                    <span className="font-normal opacity-70">
+                    <span className="sidebar-agents-section-count font-normal text-text-secondary/60">
                         {sessionCount}
                     </span>
                 </header>
             ) : null}
-            <ul className="flex flex-col gap-0.5">
+            <ul className="flex flex-col gap-px">
                 {groups.flatMap((group) => {
                     const rows = getVisibleSidebarHierarchyRows(
                         group,
@@ -980,7 +980,7 @@ function SidebarAgentsItem({
         ? activity.tone === "danger"
             ? "Error"
             : "Working…"
-        : formatHistoryRelativeDate(session.updatedAt);
+        : formatHistoryRelativeDateCompact(session.updatedAt);
     const timestampClassName = activity
         ? activity.tone === "danger"
             ? "text-rose-500"
@@ -1080,12 +1080,8 @@ function SidebarAgentsItem({
                                 : "Pin thread to sidebar"
                         }
                         aria-pressed={isPinned}
-                        className={[
-                            "sidebar-agents-pin-button flex h-5 w-5 shrink-0 items-center justify-center rounded border text-text-secondary transition-colors",
-                            isPinned
-                                ? "border-border bg-bg-elevated text-text-primary"
-                                : "border-transparent hover:border-border hover:bg-bg-elevated hover:text-text-primary",
-                        ].join(" ")}
+                        className="sidebar-agents-pin-button flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-secondary transition-colors hover:text-text-primary"
+                        data-pinned={isPinned ? "true" : "false"}
                         onClick={(event) => {
                             event.stopPropagation();
                             void onTogglePinned(session);

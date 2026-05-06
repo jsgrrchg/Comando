@@ -61,6 +61,46 @@ export function formatHistoryRelativeDate(
     return formatter.format(new Date(timestamp));
 }
 
+export function formatHistoryRelativeDateCompact(
+    value: string,
+    nowMs: number = Date.now(),
+): string {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) {
+        return "—";
+    }
+
+    const deltaMs = nowMs - timestamp;
+    const deltaSeconds = Math.round(deltaMs / 1000);
+
+    if (Math.abs(deltaSeconds) < 60) {
+        return "now";
+    }
+
+    const deltaMinutes = Math.round(deltaSeconds / 60);
+    if (Math.abs(deltaMinutes) < 60) {
+        return `${Math.abs(deltaMinutes)}m`;
+    }
+
+    const deltaHours = Math.round(deltaMinutes / 60);
+    if (Math.abs(deltaHours) < 24) {
+        return `${Math.abs(deltaHours)}h`;
+    }
+
+    const deltaDays = Math.round(deltaHours / 24);
+    if (Math.abs(deltaDays) < 7) {
+        return `${Math.abs(deltaDays)}d`;
+    }
+
+    const date = new Date(timestamp);
+    const sameYear = date.getFullYear() === new Date(nowMs).getFullYear();
+    return new Intl.DateTimeFormat("en", {
+        day: "numeric",
+        month: "short",
+        year: sameYear ? undefined : "2-digit",
+    }).format(date);
+}
+
 export function formatHistoryMessageCount(count: number): string {
     return count === 1 ? "1 message" : `${count} messages`;
 }
