@@ -879,10 +879,15 @@ export class AiService {
         ownerWindowId: string,
         additionalRoots: readonly string[],
     ): void {
+        const existingContext = this.#liveSessionContexts.get(input.sessionId);
+        const snapshotParentSessionId =
+            this.#liveSnapshots.get(input.sessionId)?.parentSessionId ?? null;
+        const parentSessionId =
+            existingContext?.parentSessionId ?? snapshotParentSessionId ?? null;
         this.#liveSessionContexts.set(input.sessionId, {
             additionalRoots,
             ownerWindowId,
-            parentSessionId: null,
+            parentSessionId,
             projectId: input.projectId,
             runtimeId: input.runtimeId,
             sessionId: input.sessionId,

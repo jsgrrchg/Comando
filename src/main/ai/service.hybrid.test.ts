@@ -245,6 +245,71 @@ describe("AiService hybrid persistence", () => {
         expect(prepareSessionCall[0].input.sessionId).toBe("session-1");
     });
 
+    it("keeps subagent parent ownership after sending a prompt to the child", async () => {
+        const parentSnapshot = createSnapshot({
+            projectId: "project-1",
+            runtimeSessionId: "runtime-parent",
+            sessionId: "session-1",
+            title: "Parent",
+        });
+        const childSnapshot = createSnapshot({
+            parentSessionId: "session-1",
+            projectId: "project-1",
+            runtimeSessionId: "runtime-child",
+            sessionId: "session-child",
+            title: "Child",
+        });
+        const prepareSession = vi.fn(() => Promise.resolve(parentSnapshot));
+        const sendPrompt = vi.fn(() => Promise.resolve({
+            sessionId: "session-child",
+            stopReason: "completed",
+        }));
+        const service = createService({
+            aiWorker: createMockWorker({ prepareSession, sendPrompt }),
+            loadSessionSnapshot: vi.fn((sessionId: string) =>
+                sessionId === "session-child" ? childSnapshot : parentSnapshot,
+            ),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Parent",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        service.handleWorkerSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: childSnapshot,
+        });
+
+        await service.sendPrompt(
+            {
+                attachments: [],
+                projectId: "project-1",
+                prompt: "hello child",
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        prepareSession.mockClear();
+
+        await service.handleWorkerRestarted();
+
+        expect(sendPrompt).toHaveBeenCalledTimes(1);
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+        const [prepareSessionCall] = prepareSession.mock.calls as unknown as [
+            [{ input: { sessionId: string } }],
+        ];
+        expect(prepareSessionCall[0].input.sessionId).toBe("session-1");
+    });
+
     it("does not refresh project scopes for live subagents owned by a live parent", async () => {
         const parentSnapshot = createSnapshot({
             projectId: "project-1",
