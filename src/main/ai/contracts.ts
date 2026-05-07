@@ -43,6 +43,13 @@ export const COMANDO_DIFF_PREVIOUS_PATH_KEY = "comandoPreviousPath";
 export const CODEX_ACP_STATUS_EVENT_TYPE_KEY = "codexAcpEventType";
 export const COMANDO_STATUS_EVENT_TYPE_KEY = "comandoEventType";
 export const CODEX_ACP_STATUS_EVENT_TYPE = "status";
+export const CODEX_ACP_TURN_EVENT_TYPE_KEY = "codexAcpTurnEventType";
+export const CODEX_ACP_TURN_ID_KEY = "codexAcpTurnId";
+export const CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE = "turn_lifecycle";
+export const CODEX_ACP_TURN_STARTED_EVENT_TYPE = "turn_started";
+export const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE = "turn_complete";
+export const CODEX_ACP_TURN_ABORTED_EVENT_TYPE = "turn_aborted";
+export const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE = "shutdown_complete";
 export const CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE = "image_generation";
 export const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE =
     "subagent_session_created";
@@ -56,6 +63,7 @@ export const CODEX_ACP_CHILD_THREAD_ID_KEY = "codexAcpChildThreadId";
 export const CODEX_ACP_AGENT_NICKNAME_KEY = "codexAcpAgentNickname";
 export const CODEX_ACP_AGENT_ROLE_KEY = "codexAcpAgentRole";
 export const CODEX_ACP_AGENT_STATUS_KEY = "codexAcpAgentStatus";
+export const CODEX_ACP_AGENT_STATUSES_KEY = "codexAcpAgentStatuses";
 export const CODEX_ACP_MODEL_KEY = "codexAcpModel";
 export const CODEX_ACP_REASONING_EFFORT_KEY = "codexAcpReasoningEffort";
 export const CODEX_ACP_CWD_KEY = "codexAcpCwd";
@@ -174,6 +182,7 @@ export interface LiveAcpConnection {
 
 export interface LiveAcpSession {
     additionalRoots: readonly string[];
+    activeTurnId: string | null;
     child: ChildProcessWithoutNullStreams;
     closing: boolean;
     connection: ClientSideConnection;

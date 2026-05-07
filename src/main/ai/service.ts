@@ -129,20 +129,19 @@ function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
     return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
 }
 
+type LiveSessionContext = {
+    readonly additionalRoots: readonly string[];
+    ownerWindowId: string;
+    readonly parentSessionId: string | null;
+    readonly projectId: string | null;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
+    readonly worktreeId: string | null;
+};
+
 export class AiService {
     #aiWorker: AiWorkerGateway | null;
-    readonly #liveSessionContexts = new Map<
-        string,
-        {
-            readonly additionalRoots: readonly string[];
-            ownerWindowId: string;
-            readonly parentSessionId: string | null;
-            readonly projectId: string | null;
-            readonly runtimeId: AiRuntimeId;
-            readonly sessionId: string;
-            readonly worktreeId: string | null;
-        }
-    >();
+    readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionSnapshot: (
@@ -208,7 +207,7 @@ export class AiService {
                 await worker.notifyFileBuffer(buffer);
             }),
         );
-        const relaunches = [...this.#liveSessionContexts.values()].map(
+        const relaunches = this.#listRelaunchableLiveSessionContexts().map(
             async (context) => {
                 const snapshot =
                     this.#liveSnapshots.get(context.sessionId) ??
@@ -1047,7 +1046,7 @@ export class AiService {
         projectId: string,
     ): Promise<readonly AiWorkerSessionLaunchInput[]> {
         const launches = await Promise.all(
-            [...this.#liveSessionContexts.values()]
+            this.#listRelaunchableLiveSessionContexts()
                 .filter((context) => context.projectId === projectId)
                 .map(async (context) => {
                     const snapshot =
@@ -1078,6 +1077,14 @@ export class AiService {
             (
                 launch,
             ): launch is AiWorkerSessionLaunchInput => launch !== null,
+        );
+    }
+
+    #listRelaunchableLiveSessionContexts(): readonly LiveSessionContext[] {
+        return [...this.#liveSessionContexts.values()].filter(
+            (context) =>
+                !context.parentSessionId ||
+                !this.#liveSessionContexts.has(context.parentSessionId),
         );
     }
 

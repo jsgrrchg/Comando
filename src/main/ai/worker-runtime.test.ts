@@ -34,91 +34,92 @@ const promptMock = vi.fn(() =>
 );
 const closeRuntimeSessionMock = vi.fn(() => Promise.resolve({}));
 const cancelRuntimeSessionMock = vi.fn(() => Promise.resolve({}));
-let latestClientFactory:
-    | (() => {
-          createTerminal: (params: {
-              readonly args?: readonly string[];
-              readonly command: string;
-              readonly cwd?: string | null;
-              readonly env?: readonly { readonly name: string; readonly value: string }[];
-              readonly outputByteLimit?: number | null;
-              readonly sessionId: string;
-          }) => Promise<{ terminalId: string }>;
-          killTerminal: (params: {
-              readonly sessionId: string;
-              readonly terminalId: string;
-          }) => Promise<Record<string, never>>;
-          readTextFile: (params: {
-              readonly limit?: number;
-              readonly line?: number;
-              readonly path: string;
-              readonly sessionId?: string;
-          }) => Promise<{ content: string }>;
-          requestPermission: (params: {
-              readonly options: readonly {
-                  readonly kind:
-                      | "allow_always"
-                      | "allow_once"
-                      | "reject_always"
-                      | "reject_once";
-                  readonly name: string;
+type MockAcpClient = {
+    createTerminal: (params: {
+        readonly args?: readonly string[];
+        readonly command: string;
+        readonly cwd?: string | null;
+        readonly env?: readonly { readonly name: string; readonly value: string }[];
+        readonly outputByteLimit?: number | null;
+        readonly sessionId: string;
+    }) => Promise<{ terminalId: string }>;
+    killTerminal: (params: {
+        readonly sessionId: string;
+        readonly terminalId: string;
+    }) => Promise<Record<string, never>>;
+    readTextFile: (params: {
+        readonly limit?: number;
+        readonly line?: number;
+        readonly path: string;
+        readonly sessionId?: string;
+    }) => Promise<{ content: string }>;
+    requestPermission: (params: {
+        readonly options: readonly {
+            readonly kind:
+                | "allow_always"
+                | "allow_once"
+                | "reject_always"
+                | "reject_once";
+            readonly name: string;
+            readonly optionId: string;
+        }[];
+        readonly sessionId: string;
+        readonly toolCall: {
+            readonly rawInput?: Record<string, unknown> | null;
+            readonly status: string;
+            readonly title?: string | null;
+            readonly toolCallId: string;
+        };
+    }) => Promise<{
+        readonly outcome:
+            | {
                   readonly optionId: string;
-              }[];
-              readonly sessionId: string;
-              readonly toolCall: {
-                  readonly rawInput?: Record<string, unknown> | null;
-                  readonly status: string;
-                  readonly title?: string | null;
-                  readonly toolCallId: string;
+                  readonly outcome: "selected";
+              }
+            | {
+                  readonly outcome: "cancelled";
               };
-          }) => Promise<{
-              readonly outcome:
-                  | {
-                        readonly optionId: string;
-                        readonly outcome: "selected";
-                    }
-                  | {
-                        readonly outcome: "cancelled";
-                    };
-          }>;
-          releaseTerminal: (params: {
-              readonly sessionId: string;
-              readonly terminalId: string;
-          }) => Promise<Record<string, never>>;
-          sessionUpdate: (params: {
-              readonly _meta?: Record<string, unknown> | null;
-              readonly sessionId: string;
-              readonly update: {
-                  readonly _meta?: Record<string, unknown> | null;
-                  readonly sessionUpdate: string;
-                  readonly [key: string]: unknown;
-              };
-          }) => Promise<void>;
-          terminalOutput: (params: {
-              readonly sessionId: string;
-              readonly terminalId: string;
-          }) => Promise<{
-              exitStatus?: {
-                  readonly exitCode?: number | null;
-                  readonly signal?: string | null;
-              } | null;
-              output: string;
-              truncated: boolean;
-          }>;
-          waitForTerminalExit: (params: {
-              readonly sessionId: string;
-              readonly terminalId: string;
-          }) => Promise<{
-              readonly exitCode?: number | null;
-              readonly signal?: string | null;
-          }>;
-          writeTextFile: (params: {
-              readonly content: string;
-              readonly path: string;
-              readonly sessionId?: string;
-          }) => Promise<Record<string, never>>;
-      })
-    | null = null;
+    }>;
+    releaseTerminal: (params: {
+        readonly sessionId: string;
+        readonly terminalId: string;
+    }) => Promise<Record<string, never>>;
+    sessionUpdate: (params: {
+        readonly _meta?: Record<string, unknown> | null;
+        readonly sessionId: string;
+        readonly update: {
+            readonly _meta?: Record<string, unknown> | null;
+            readonly sessionUpdate: string;
+            readonly [key: string]: unknown;
+        };
+    }) => Promise<void>;
+    terminalOutput: (params: {
+        readonly sessionId: string;
+        readonly terminalId: string;
+    }) => Promise<{
+        exitStatus?: {
+            readonly exitCode?: number | null;
+            readonly signal?: string | null;
+        } | null;
+        output: string;
+        truncated: boolean;
+    }>;
+    waitForTerminalExit: (params: {
+        readonly sessionId: string;
+        readonly terminalId: string;
+    }) => Promise<{
+        readonly exitCode?: number | null;
+        readonly signal?: string | null;
+    }>;
+    writeTextFile: (params: {
+        readonly content: string;
+        readonly path: string;
+        readonly sessionId?: string;
+    }) => Promise<Record<string, never>>;
+};
+
+type MockAcpClientFactory = () => MockAcpClient;
+let latestClientFactory: MockAcpClientFactory | null = null;
 const newSessionMock = vi.fn(() =>
     Promise.resolve({
         configOptions: [],
@@ -626,7 +627,7 @@ describe("AiWorkerRuntime prepareSession", () => {
                 projectId: null,
                 runtimeId: "codex",
                 runtimeSessionId: "runtime-subagent-1",
-                status: "streaming",
+                status: "idle",
                 title: "Galileo",
                 worktreeId: null,
             }),
@@ -734,6 +735,171 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("uses Codex turn lifecycle as the primary subagent streaming state", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent lifecycle parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+
+        emittedEvents.length = 0;
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+
+        emittedEvents.length = 0;
+        await sendTurnLifecycle(client, {
+            eventType: "turn_complete",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+    });
+
+    it("ignores stale subagent turn lifecycle completions", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent stale lifecycle parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-2",
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+
+        emittedEvents.length = 0;
+        await sendTurnLifecycle(client, {
+            eventType: "turn_complete",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (changes) => changes.status === "idle",
+            ),
+        ).toBe(false);
+
+        const staleBreadcrumbMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_end",
+        };
+        await client.sessionUpdate({
+            _meta: staleBreadcrumbMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: staleBreadcrumbMeta,
+                rawOutput: {
+                    status: {
+                        completed: "old result",
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Galileo responded",
+                toolCallId: "codex-acp:subagent:interaction-stale",
+            },
+        });
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (changes) => changes.status === "idle",
+            ),
+        ).toBe(false);
+
+        await sendTurnLifecycle(client, {
+            eventType: "turn_complete",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-2",
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+    });
+
+    it("ignores Codex turn lifecycle for root sessions", async () => {
+        const { client, emittedEvents } =
+            await setupPreparedRuntimeWithClient("Root lifecycle parent");
+
+        emittedEvents.length = 0;
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-session-1",
+            turnId: "turn-root",
+        });
+        await sendTurnLifecycle(client, {
+            eventType: "turn_complete",
+            runtimeSessionId: "runtime-session-1",
+            turnId: "turn-root",
+        });
+
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                "session-1",
+                (changes) => changes.status === "streaming" || changes.status === "idle",
+            ),
+        ).toBe(false);
+    });
+
     it("attaches open-session actions to Codex subagent breadcrumbs", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -827,6 +993,97 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(false);
     });
 
+    it("keeps open-session actions when a breadcrumb arrives before child registration", async () => {
+        const { client, emittedEvents } =
+            await setupPreparedRuntimeWithClient("Subagent action race parent");
+
+        const breadcrumbMeta = {
+            codexAcpAgentNickname: "Cicero",
+            codexAcpChildSessionId: "runtime-subagent-early",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "spawn_end",
+        };
+        await client.sessionUpdate({
+            _meta: breadcrumbMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: breadcrumbMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Spawned Cicero",
+                toolCallId: "codex-acp:subagent:spawn-early",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) =>
+                snapshot.runtimeSessionId === "runtime-subagent-early" &&
+                snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot).toEqual(
+            expect.objectContaining({
+                status: "idle",
+                title: "Cicero",
+            }),
+        );
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                "session-1",
+                (activity) =>
+                    activity.id === "codex-acp:subagent:spawn-early" &&
+                    activity.action?.kind === "open_session" &&
+                    activity.action.sessionId === childSnapshot!.sessionId,
+            ),
+        ).toBe(true);
+
+        emittedEvents.length = 0;
+        const registrationMeta = {
+            codexAcpAgentNickname: "Cicero",
+            codexAcpChildSessionId: "runtime-subagent-early",
+            codexAcpCwd: process.cwd(),
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client.sessionUpdate({
+            _meta: registrationMeta,
+            sessionId: "runtime-subagent-early",
+            update: {
+                _meta: registrationMeta,
+                sessionUpdate: "session_info_update",
+                title: "Cicero",
+            },
+        });
+
+        const registeredSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) =>
+                snapshot.runtimeSessionId === "runtime-subagent-early" &&
+                snapshot.parentSessionId === "session-1",
+        );
+        expect(registeredSnapshot?.sessionId ?? childSnapshot!.sessionId).toBe(
+            childSnapshot!.sessionId,
+        );
+
+        emittedEvents.length = 0;
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-early",
+            turnId: "turn-early",
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+    });
+
     it("mirrors Codex subagent interaction breadcrumbs into the child thread", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -873,34 +1130,6 @@ describe("AiWorkerRuntime prepareSession", () => {
             (snapshot) => snapshot.parentSessionId === "session-1",
         );
         expect(childSnapshot?.sessionId).toBeTruthy();
-        emittedEvents.length = 0;
-
-        const closeBreadcrumbMeta = {
-            codexAcpChildSessionId: "runtime-subagent-1",
-            codexAcpEventType: "subagent_breadcrumb",
-            codexAcpParentSessionId: "runtime-session-1",
-            codexAcpSubagentEventType: "close_end",
-        };
-        await client!.sessionUpdate({
-            _meta: closeBreadcrumbMeta,
-            sessionId: "runtime-session-1",
-            update: {
-                _meta: closeBreadcrumbMeta,
-                sessionUpdate: "tool_call_update",
-                status: "completed",
-                title: "Closed Galileo",
-                toolCallId: "codex-acp:subagent:close-1",
-            },
-        });
-        await vi.waitFor(() => {
-            expect(
-                hasPatchChangesMatching(
-                    emittedEvents,
-                    childSnapshot!.sessionId,
-                    (changes) => changes.status === "idle",
-                ),
-            ).toBe(true);
-        });
         emittedEvents.length = 0;
 
         const interactionBeginMeta = {
@@ -1037,6 +1266,20 @@ describe("AiWorkerRuntime prepareSession", () => {
             (snapshot) => snapshot.parentSessionId === "session-1",
         );
         expect(childSnapshot?.sessionId).toBeTruthy();
+        await markRuntimeSessionStreaming(
+            client!,
+            "runtime-subagent-1",
+            "resume-before-close",
+        );
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
         emittedEvents.length = 0;
 
         const closeBreadcrumbMeta = {
@@ -1138,12 +1381,94 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
         expect(
             getLatestPatchMessages(emittedEvents, childSnapshot!.sessionId),
-        ).toEqual([
-            expect.objectContaining({
-                content: "reopened and reported",
-                kind: "assistant",
-            }),
-        ]);
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    content: "reopened and reported",
+                    kind: "assistant",
+                }),
+            ]),
+        );
+    });
+
+    it("does not mark subagents idle for running interaction or resume breadcrumbs", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent running breadcrumb parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+
+        for (const [beginType, endType, toolCallId] of [
+            ["interaction_begin", "interaction_end", "interaction-running"],
+            ["resume_begin", "resume_end", "resume-running"],
+        ] as const) {
+            const beginMeta = {
+                codexAcpChildSessionId: "runtime-subagent-1",
+                codexAcpEventType: "subagent_breadcrumb",
+                codexAcpParentSessionId: "runtime-session-1",
+                codexAcpSubagentEventType: beginType,
+            };
+            await client.sessionUpdate({
+                _meta: beginMeta,
+                sessionId: "runtime-session-1",
+                update: {
+                    _meta: beginMeta,
+                    kind: "other",
+                    sessionUpdate: "tool_call",
+                    status: "in_progress",
+                    title: "Contacting subagent",
+                    toolCallId,
+                },
+            });
+            if (beginType === "interaction_begin") {
+                await vi.waitFor(() => {
+                    expect(
+                        hasPatchChangesMatching(
+                            emittedEvents,
+                            childSnapshot.sessionId,
+                            (changes) => changes.status === "streaming",
+                        ),
+                    ).toBe(true);
+                });
+            }
+
+            emittedEvents.length = 0;
+            const endMeta = {
+                codexAcpAgentStatus: "running",
+                codexAcpChildSessionId: "runtime-subagent-1",
+                codexAcpEventType: "subagent_breadcrumb",
+                codexAcpParentSessionId: "runtime-session-1",
+                codexAcpSubagentEventType: endType,
+            };
+            await client.sessionUpdate({
+                _meta: endMeta,
+                sessionId: "runtime-session-1",
+                update: {
+                    _meta: endMeta,
+                    rawOutput: {
+                        status: "running",
+                    },
+                    sessionUpdate: "tool_call_update",
+                    status: "completed",
+                    title: "Galileo still running",
+                    toolCallId,
+                },
+            });
+
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(false);
+        }
     });
 
     it("marks child threads idle when the parent receives a waiting-end summary", async () => {
@@ -1192,34 +1517,6 @@ describe("AiWorkerRuntime prepareSession", () => {
             (snapshot) => snapshot.parentSessionId === "session-1",
         );
         expect(childSnapshot?.sessionId).toBeTruthy();
-        emittedEvents.length = 0;
-
-        const closeBreadcrumbMeta = {
-            codexAcpChildSessionId: "runtime-subagent-1",
-            codexAcpEventType: "subagent_breadcrumb",
-            codexAcpParentSessionId: "runtime-session-1",
-            codexAcpSubagentEventType: "close_end",
-        };
-        await client!.sessionUpdate({
-            _meta: closeBreadcrumbMeta,
-            sessionId: "runtime-session-1",
-            update: {
-                _meta: closeBreadcrumbMeta,
-                sessionUpdate: "tool_call_update",
-                status: "completed",
-                title: "Closed Galileo",
-                toolCallId: "codex-acp:subagent:close-1",
-            },
-        });
-        await vi.waitFor(() => {
-            expect(
-                hasPatchChangesMatching(
-                    emittedEvents,
-                    childSnapshot!.sessionId,
-                    (changes) => changes.status === "idle",
-                ),
-            ).toBe(true);
-        });
         emittedEvents.length = 0;
 
         const interactionBeginMeta = {
@@ -1293,9 +1590,7 @@ describe("AiWorkerRuntime prepareSession", () => {
                 hasPatchChangesMatching(
                     emittedEvents,
                     childSnapshot!.sessionId,
-                    (changes) =>
-                        changes.activeTurnStartedAt === null &&
-                        changes.status === "idle",
+                    (changes) => changes.status === "idle",
                 ),
             ).toBe(true);
         });
@@ -1311,6 +1606,180 @@ describe("AiWorkerRuntime prepareSession", () => {
                 kind: "assistant",
             }),
         ]);
+    });
+
+    it("does not idle all subagents when waiting-end has no child statuses", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent waiting no-status parent");
+        const firstChild = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        const secondChild = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Curie",
+                runtimeSessionId: "runtime-subagent-2",
+            },
+        );
+
+        await markRuntimeSessionStreaming(client, "runtime-subagent-1", "first");
+        await markRuntimeSessionStreaming(client, "runtime-subagent-2", "second");
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    firstChild.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    secondChild.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+        emittedEvents.length = 0;
+
+        const waitingEndMeta = {
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "waiting_end",
+        };
+        await client.sessionUpdate({
+            _meta: waitingEndMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: waitingEndMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Subagents finished",
+                toolCallId: "codex-acp:subagent:waiting-empty",
+            },
+        });
+
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                firstChild.sessionId,
+                (changes) => changes.status === "idle",
+            ),
+        ).toBe(false);
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                secondChild.sessionId,
+                (changes) => changes.status === "idle",
+            ),
+        ).toBe(false);
+    });
+
+    it("idles only terminal subagents from structured waiting-end statuses", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent waiting mixed parent");
+        const firstChild = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        const secondChild = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Curie",
+                runtimeSessionId: "runtime-subagent-2",
+            },
+        );
+
+        await markRuntimeSessionStreaming(client, "runtime-subagent-1", "first");
+        await markRuntimeSessionStreaming(client, "runtime-subagent-2", "second");
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    firstChild.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    secondChild.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+        emittedEvents.length = 0;
+
+        const waitingEndMeta = {
+            codexAcpAgentStatuses: [
+                {
+                    codexAcpAgentStatus: {
+                        completed: "first report complete",
+                    },
+                    codexAcpChildSessionId: "runtime-subagent-1",
+                },
+                {
+                    codexAcpAgentStatus: "running",
+                    codexAcpChildSessionId: "runtime-subagent-2",
+                },
+            ],
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "waiting_end",
+        };
+        await client.sessionUpdate({
+            _meta: waitingEndMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: waitingEndMeta,
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Subagents finished",
+                toolCallId: "codex-acp:subagent:waiting-mixed",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    firstChild.sessionId,
+                    (changes) =>
+                        changes.activeTurnStartedAt === null &&
+                        changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                secondChild.sessionId,
+                (changes) => changes.status === "idle",
+            ),
+        ).toBe(false);
+        expect(getLatestPatchMessages(emittedEvents, firstChild.sessionId)).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    content: "first report complete",
+                    kind: "assistant",
+                }),
+            ]),
+        );
     });
 
     it("keeps subagent diffs isolated from parent tracked files", async () => {
@@ -1519,6 +1988,20 @@ describe("AiWorkerRuntime prepareSession", () => {
             (snapshot) => snapshot.parentSessionId === "session-1",
         );
         expect(childSnapshot?.sessionId).toBeTruthy();
+        await markRuntimeSessionStreaming(
+            client!,
+            "runtime-subagent-1",
+            "close-before-idle",
+        );
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
         emittedEvents.length = 0;
 
         const closeBreadcrumbMeta = {
@@ -1546,7 +2029,6 @@ describe("AiWorkerRuntime prepareSession", () => {
                     childSnapshot!.sessionId,
                 ),
             ).toMatchObject({
-                activeTurnStartedAt: null,
                 status: "idle",
             });
         });
@@ -1598,6 +2080,20 @@ describe("AiWorkerRuntime prepareSession", () => {
             (snapshot) => snapshot.parentSessionId === "session-1",
         );
         expect(childSnapshot?.sessionId).toBeTruthy();
+        await markRuntimeSessionStreaming(
+            client!,
+            "runtime-subagent-1",
+            "cancel-before-idle",
+        );
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot!.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
         emittedEvents.length = 0;
 
         await runtime.dispatchMethod(
@@ -1615,7 +2111,6 @@ describe("AiWorkerRuntime prepareSession", () => {
                     childSnapshot!.sessionId,
                 ),
             ).toMatchObject({
-                activeTurnStartedAt: null,
                 status: "idle",
             });
         });
@@ -2375,6 +2870,127 @@ function createRuntime() {
     });
 }
 
+async function setupPreparedRuntimeWithClient(title: string): Promise<{
+    readonly client: MockAcpClient;
+    readonly emittedEvents: AiWorkerEventMessage[];
+    readonly tempDir: string;
+}> {
+    const tempDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "comando-ai-worker-"),
+    );
+    const emittedEvents: AiWorkerEventMessage[] = [];
+    const runtime = new AiWorkerRuntime({
+        emitEvent: (event) => {
+            emittedEvents.push(event);
+        },
+    });
+    const launch = createLaunch({
+        cwd: tempDir,
+        projectRoot: tempDir,
+        title,
+    });
+
+    await runtime.dispatchMethod("ai.prepareSession", {
+        input: launch.input,
+        launch,
+    });
+    emittedEvents.length = 0;
+
+    const client = latestClientFactory?.();
+    expect(client).toBeDefined();
+    return {
+        client: client!,
+        emittedEvents,
+        tempDir,
+    };
+}
+
+async function registerSubagentSession(
+    client: MockAcpClient,
+    emittedEvents: AiWorkerEventMessage[],
+    tempDir: string,
+    input: {
+        readonly nickname: string;
+        readonly runtimeSessionId: string;
+    },
+): Promise<AiSessionSnapshot> {
+    const subagentMeta = {
+        codexAcpAgentNickname: input.nickname,
+        codexAcpChildSessionId: input.runtimeSessionId,
+        codexAcpCwd: tempDir,
+        codexAcpEventType: "subagent_session_created",
+        codexAcpParentSessionId: "runtime-session-1",
+    };
+    await client.sessionUpdate({
+        _meta: subagentMeta,
+        sessionId: input.runtimeSessionId,
+        update: {
+            _meta: subagentMeta,
+            sessionUpdate: "session_info_update",
+            title: input.nickname,
+        },
+    });
+
+    const childSnapshot = getLatestSnapshot(
+        emittedEvents,
+        (snapshot) =>
+            snapshot.parentSessionId === "session-1" &&
+            snapshot.runtimeSessionId === input.runtimeSessionId,
+    );
+    expect(childSnapshot).toEqual(
+        expect.objectContaining({
+            parentSessionId: "session-1",
+            runtimeSessionId: input.runtimeSessionId,
+            title: input.nickname,
+        }),
+    );
+    return childSnapshot!;
+}
+
+async function sendTurnLifecycle(
+    client: MockAcpClient,
+    input: {
+        readonly eventType: string;
+        readonly runtimeSessionId: string;
+        readonly turnId?: string;
+    },
+): Promise<void> {
+    const meta: Record<string, unknown> = {
+        codexAcpEventType: "turn_lifecycle",
+        codexAcpTurnEventType: input.eventType,
+    };
+    if (input.turnId) {
+        meta.codexAcpTurnId = input.turnId;
+    }
+
+    await client.sessionUpdate({
+        _meta: meta,
+        sessionId: input.runtimeSessionId,
+        update: {
+            _meta: meta,
+            sessionUpdate: "session_info_update",
+        },
+    });
+}
+
+async function markRuntimeSessionStreaming(
+    client: MockAcpClient,
+    runtimeSessionId: string,
+    messageId: string,
+): Promise<void> {
+    await client.sessionUpdate({
+        sessionId: runtimeSessionId,
+        update: {
+            content: {
+                text: "working",
+                type: "text",
+            },
+            messageId,
+            sessionUpdate: "agent_thought_chunk",
+        },
+    });
+}
+
 function getLatestPendingPermission(
     events: readonly AiWorkerEventMessage[],
 ): AiPermissionRequest | null {
@@ -2415,6 +3031,30 @@ function getLatestToolActivity(
     }
 
     return null;
+}
+
+function hasToolActivityMatching(
+    events: readonly AiWorkerEventMessage[],
+    sessionId: string,
+    predicate: (activity: AiToolActivity) => boolean,
+): boolean {
+    return events.some((event) => {
+        if (event.event !== "ai.snapshot.updated") {
+            return false;
+        }
+
+        const update = event.payload.update;
+        const toolActivity =
+            update.kind === "snapshot" && update.snapshot.sessionId === sessionId
+                ? update.snapshot.toolActivity
+                : update.kind === "patch" &&
+                    update.patch.sessionId === sessionId &&
+                    "toolActivity" in update.patch.changes
+                  ? update.patch.changes.toolActivity
+                  : null;
+
+        return toolActivity?.some(predicate) ?? false;
+    });
 }
 
 function getLatestSnapshot(

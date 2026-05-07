@@ -112,6 +112,13 @@ static APPROVAL_PRESETS: LazyLock<Vec<ApprovalPreset>> = LazyLock::new(builtin_a
 const INIT_COMMAND_PROMPT: &str = include_str!("./prompt_for_init_command.md");
 const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX: &str = "__codex_acp_user_input_response__:";
 const CODEX_ACP_STATUS_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+const CODEX_ACP_TURN_EVENT_TYPE_KEY: &str = "codexAcpTurnEventType";
+const CODEX_ACP_TURN_ID_KEY: &str = "codexAcpTurnId";
+const CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE: &str = "turn_lifecycle";
+const CODEX_ACP_TURN_STARTED_EVENT_TYPE: &str = "turn_started";
+const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE: &str = "turn_complete";
+const CODEX_ACP_TURN_ABORTED_EVENT_TYPE: &str = "turn_aborted";
+const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
 const CODEX_ACP_STATUS_KIND_KEY: &str = "codexAcpStatusKind";
 const CODEX_ACP_STATUS_EMPHASIS_KEY: &str = "codexAcpStatusEmphasis";
 const CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
@@ -862,6 +869,19 @@ fn codex_acp_user_input_meta() -> Meta {
     meta
 }
 
+fn codex_turn_lifecycle_meta(event_type: &str, turn_id: Option<&str>) -> Meta {
+    let mut meta = Meta::new();
+    meta.insert(
+        CODEX_ACP_STATUS_EVENT_TYPE_KEY.to_string(),
+        json!(CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE),
+    );
+    meta.insert(CODEX_ACP_TURN_EVENT_TYPE_KEY.to_string(), json!(event_type));
+    if let Some(turn_id) = turn_id {
+        meta.insert(CODEX_ACP_TURN_ID_KEY.to_string(), json!(turn_id));
+    }
+    meta
+}
+
 fn codex_acp_plan_meta(title: Option<&str>, detail: Option<&str>) -> Option<Meta> {
     let mut meta = Meta::new();
     if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
@@ -1604,6 +1624,9 @@ impl PromptState {
                 ..
             }) => {
                 info!("Task started with context window of {turn_id} {model_context_window:?} {collaboration_mode_kind:?}");
+                client
+                    .send_turn_lifecycle(CODEX_ACP_TURN_STARTED_EVENT_TYPE, Some(&turn_id))
+                    .await;
                 let detail = model_context_window.map(|size| format!("Context window: {size}"));
                 self.send_status_tool_call(
                     client,
@@ -1960,6 +1983,9 @@ impl PromptState {
                     "Task {turn_id} completed successfully after {} events. Last agent message: {last_agent_message:?}",
                     self.event_count
                 );
+                client
+                    .send_turn_lifecycle(CODEX_ACP_TURN_COMPLETE_EVENT_TYPE, Some(&turn_id))
+                    .await;
                 self.abort_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::EndTurn)).ok();
@@ -2024,6 +2050,9 @@ impl PromptState {
                 ..
             }) => {
                 info!("Turn {turn_id:?} aborted: {reason:?}");
+                client
+                    .send_turn_lifecycle(CODEX_ACP_TURN_ABORTED_EVENT_TYPE, turn_id.as_deref())
+                    .await;
                 self.abort_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
@@ -2031,6 +2060,9 @@ impl PromptState {
             }
             EventMsg::ShutdownComplete => {
                 info!("Agent shutting down");
+                client
+                    .send_turn_lifecycle(CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE, None)
+                    .await;
                 self.abort_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
@@ -3413,6 +3445,13 @@ impl SessionClient {
         {
             error!("Failed to send session notification: {:?}", e);
         }
+    }
+
+    async fn send_turn_lifecycle(&self, event_type: &str, turn_id: Option<&str>) {
+        self.send_notification(SessionUpdate::SessionInfoUpdate(
+            SessionInfoUpdate::new().meta(codex_turn_lifecycle_meta(event_type, turn_id)),
+        ))
+        .await;
     }
 
     async fn send_user_message(&self, text: impl Into<String>) {
@@ -6604,6 +6643,81 @@ mod tests {
             PlanEntryStatus::InProgress
         );
         assert_eq!(plan_updates[1].entries[1].status, PlanEntryStatus::Pending);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turn_lifecycle_events_are_projected_as_session_info_updates() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client =
+            SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, response_rx) = oneshot::channel();
+        let mut prompt_state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::TurnStarted(TurnStartedEvent {
+                    model_context_window: None,
+                    collaboration_mode_kind: ModeKind::default(),
+                    turn_id: "turn-1".to_string(),
+                    started_at: None,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    last_agent_message: None,
+                    turn_id: "turn-1".to_string(),
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                }),
+            )
+            .await;
+
+        assert_eq!(response_rx.await??, StopReason::EndTurn);
+        let notifications = client.notifications.lock().unwrap();
+        let lifecycle_events = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::SessionInfoUpdate(update)
+                    if update
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get(CODEX_ACP_STATUS_EVENT_TYPE_KEY))
+                        .and_then(|value| value.as_str())
+                        == Some(CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE) =>
+                {
+                    update
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get(CODEX_ACP_TURN_EVENT_TYPE_KEY))
+                        .and_then(|value| value.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            lifecycle_events,
+            vec![
+                CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+                CODEX_ACP_TURN_COMPLETE_EVENT_TYPE
+            ],
+            "notifications={notifications:?}"
+        );
 
         Ok(())
     }

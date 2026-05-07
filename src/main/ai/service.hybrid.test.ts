@@ -198,6 +198,113 @@ describe("AiService hybrid persistence", () => {
         }
     });
 
+    it("does not relaunch live subagents as root sessions when the worker restarts", async () => {
+        const parentSnapshot = createSnapshot({
+            projectId: "project-1",
+            runtimeSessionId: "runtime-parent",
+            sessionId: "session-1",
+            title: "Parent",
+        });
+        const childSnapshot = createSnapshot({
+            parentSessionId: "session-1",
+            projectId: "project-1",
+            runtimeSessionId: "runtime-child",
+            sessionId: "session-child",
+            title: "Child",
+        });
+        const prepareSession = vi.fn(async () => parentSnapshot);
+        const service = createService({
+            aiWorker: createMockWorker({ prepareSession }),
+            loadSessionSnapshot: vi.fn((sessionId: string) =>
+                sessionId === "session-child" ? childSnapshot : parentSnapshot,
+            ),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Parent",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        service.handleWorkerSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: childSnapshot,
+        });
+        prepareSession.mockClear();
+
+        await service.handleWorkerRestarted();
+
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+        const [prepareSessionCall] = prepareSession.mock.calls as unknown as [
+            [{ input: { sessionId: string } }],
+        ];
+        expect(prepareSessionCall[0].input.sessionId).toBe("session-1");
+    });
+
+    it("does not refresh project scopes for live subagents owned by a live parent", async () => {
+        const parentSnapshot = createSnapshot({
+            projectId: "project-1",
+            runtimeSessionId: "runtime-parent",
+            sessionId: "session-1",
+            title: "Parent",
+        });
+        const childSnapshot = createSnapshot({
+            parentSessionId: "session-1",
+            projectId: "project-1",
+            runtimeSessionId: "runtime-child",
+            sessionId: "session-child",
+            title: "Child",
+        });
+        const refreshProjectScopes = vi.fn(async () => undefined);
+        const service = createService({
+            aiWorker: createMockWorker({
+                prepareSession: vi.fn(async () => parentSnapshot),
+                refreshProjectScopes,
+            }),
+            loadSessionSnapshot: vi.fn((sessionId: string) =>
+                sessionId === "session-child" ? childSnapshot : parentSnapshot,
+            ),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Parent",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        service.handleWorkerSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: childSnapshot,
+        });
+
+        await service.refreshProjectScopes("project-1");
+
+        expect(refreshProjectScopes).toHaveBeenCalledTimes(1);
+        const [refreshProjectScopesCall] = refreshProjectScopes.mock
+            .calls as unknown as [
+            [
+                {
+                    sessions: readonly {
+                        input: { sessionId: string };
+                    }[];
+                },
+            ],
+        ];
+        expect(
+            refreshProjectScopesCall[0].sessions.map(
+                (launch) => launch.input.sessionId,
+            ),
+        ).toEqual(["session-1"]);
+    });
+
     it("delegates persisted review mutations to the worker and persists the returned snapshot", async () => {
         const persistedSnapshot = createSnapshot({
             sessionId: "session-1",
@@ -285,6 +392,31 @@ describe("AiService hybrid persistence", () => {
         );
     });
 });
+
+function createMockWorker(overrides: Record<string, unknown> = {}) {
+    return {
+        cancelSession: vi.fn(),
+        close: vi.fn(),
+        closeOwnedByWindow: vi.fn(),
+        closeSession: vi.fn(),
+        keepAllTrackedFiles: vi.fn(),
+        keepTrackedFile: vi.fn(),
+        keepTrackedFileHunks: vi.fn(),
+        notifyFileBuffer: vi.fn(),
+        prepareSession: vi.fn(),
+        rejectAllTrackedFiles: vi.fn(),
+        rejectTrackedFile: vi.fn(),
+        rejectTrackedFileHunks: vi.fn(),
+        refreshProjectScopes: vi.fn(),
+        respondPermission: vi.fn(),
+        respondUserInput: vi.fn(),
+        sendPrompt: vi.fn(),
+        setSessionConfigOption: vi.fn(),
+        setSessionMode: vi.fn(),
+        setSessionModel: vi.fn(),
+        ...overrides,
+    };
+}
 
 function createService(overrides: {
     readonly aiWorker?: object;
