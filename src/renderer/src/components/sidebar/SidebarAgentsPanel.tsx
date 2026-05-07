@@ -5,7 +5,9 @@ import {
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 
 import type {
     AiHistorySessionSummary,
@@ -50,10 +52,19 @@ import {
     persistSidebarAgentsCollapsedSessionIds,
     readSidebarAgentsCollapsedSessionIds,
 } from "./sidebarAgentsCollapseState";
+import { emitSidebarAgentDrag } from "./sidebarAgentDragEvents";
 
 interface SidebarAgentsContextMenuPayload {
     readonly sessionId: string;
 }
+
+type SidebarAgentDragPreview = {
+    readonly activity: WorkspaceChatTabActivityIndicator;
+    readonly runtimeLabel: string;
+    readonly title: string;
+    readonly x: number;
+    readonly y: number;
+};
 
 const SIDEBAR_AGENTS_TITLE_MAX_CHARS = 48;
 const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
@@ -65,6 +76,7 @@ const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
     "gemini",
     "kilo",
 ];
+const SIDEBAR_AGENT_DRAG_THRESHOLD_PX = 6;
 
 export function SidebarAgentsPanel({
     filter,
@@ -898,7 +910,11 @@ function SidebarAgentsSection({
                     );
                     return rows.map((row) => (
                         <li
-                            className={row.depth > 0 ? "pl-3" : undefined}
+                            className={
+                                row.depth > 0
+                                    ? "sidebar-agents-subitem"
+                                    : undefined
+                            }
                             key={row.session.sessionId}
                         >
                             <SidebarAgentsItem
@@ -972,6 +988,15 @@ function SidebarAgentsItem({
     readonly renameDraft: string;
     readonly session: AiHistorySessionSummary;
 }) {
+    const dragStateRef = useRef<{
+        readonly pointerId: number;
+        readonly startX: number;
+        readonly startY: number;
+        active: boolean;
+    } | null>(null);
+    const suppressClickRef = useRef(false);
+    const [dragPreview, setDragPreview] =
+        useState<SidebarAgentDragPreview | null>(null);
     const preview = getHistoryPreviewText(session);
     const title = truncateChatTitle(session.title, SIDEBAR_AGENTS_TITLE_MAX_CHARS);
     const isPinned = isSessionPinned(session);
@@ -989,13 +1014,47 @@ function SidebarAgentsItem({
     const indentStyle =
         depth > 1 ? { marginLeft: `${Math.min(depth - 1, 3) * 10}px` } : undefined;
 
+    const emitDrag = useCallback(
+        (
+            phase: "cancel" | "end" | "move" | "start",
+            event?: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">,
+        ) => {
+            emitSidebarAgentDrag({
+                phase,
+                projectId: session.projectId,
+                runtimeId: session.runtimeId,
+                sessionId: session.sessionId,
+                title: session.title,
+                worktreeId: session.worktreeId ?? null,
+                x: event?.clientX ?? 0,
+                y: event?.clientY ?? 0,
+            });
+        },
+        [session],
+    );
+
+    const updateDragPreview = useCallback(
+        (event: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">) => {
+            setDragPreview({
+                activity,
+                runtimeLabel: getHistoryRuntimeLabel(session.runtimeId),
+                title: session.title,
+                x: event.clientX,
+                y: event.clientY,
+            });
+        },
+        [activity, session.runtimeId, session.title],
+    );
+
     return (
-        <div
+        <>
+            <div
             className="sidebar-agents-row app-no-drag w-full"
             aria-current={isActive ? "true" : undefined}
             data-active={isActive ? "true" : "false"}
             data-subagent={isSubagent ? "true" : "false"}
             onClick={() => {
+                if (suppressClickRef.current) return;
                 if (isRenaming) return;
                 onOpen(session);
             }}
@@ -1006,6 +1065,84 @@ function SidebarAgentsItem({
                     event.preventDefault();
                     onOpen(session);
                 }
+            }}
+            onPointerCancel={(event) => {
+                const dragState = dragStateRef.current;
+                if (!dragState || dragState.pointerId !== event.pointerId) {
+                    return;
+                }
+
+                dragStateRef.current = null;
+                event.currentTarget.releasePointerCapture?.(event.pointerId);
+                setDragPreview(null);
+                emitDrag("cancel", event);
+            }}
+            onPointerDown={(event) => {
+                if (
+                    isRenaming ||
+                    event.button !== 0 ||
+                    isInteractiveSidebarAgentDragTarget(
+                        event.target,
+                        event.currentTarget,
+                    )
+                ) {
+                    return;
+                }
+
+                dragStateRef.current = {
+                    active: false,
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                };
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+                const dragState = dragStateRef.current;
+                if (!dragState || dragState.pointerId !== event.pointerId) {
+                    return;
+                }
+
+                if (!dragState.active) {
+                    const deltaX = event.clientX - dragState.startX;
+                    const deltaY = event.clientY - dragState.startY;
+                    if (
+                        Math.hypot(deltaX, deltaY) <
+                        SIDEBAR_AGENT_DRAG_THRESHOLD_PX
+                    ) {
+                        return;
+                    }
+
+                    dragState.active = true;
+                    updateDragPreview(event);
+                    emitDrag("start", event);
+                } else {
+                    updateDragPreview(event);
+                    emitDrag("move", event);
+                }
+
+                event.preventDefault();
+            }}
+            onPointerUp={(event) => {
+                const dragState = dragStateRef.current;
+                if (!dragState || dragState.pointerId !== event.pointerId) {
+                    return;
+                }
+
+                dragStateRef.current = null;
+                event.currentTarget.releasePointerCapture?.(event.pointerId);
+                if (!dragState.active) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                setDragPreview(null);
+                suppressClickRef.current = true;
+                window.requestAnimationFrame(() => {
+                    suppressClickRef.current = false;
+                });
+                emitDrag("end", event);
             }}
             role="button"
             style={indentStyle}
@@ -1038,12 +1175,12 @@ function SidebarAgentsItem({
                     >
                         <ChevronIcon collapsed={isCollapsed} />
                     </button>
-                ) : (
+                ) : depth === 0 ? (
                     <span
                         aria-hidden="true"
                         className="h-4 w-4 shrink-0"
                     />
-                )}
+                ) : null}
                 <SidebarAgentActivityDot indicator={activity} />
                 {isRenaming ? (
                     <input
@@ -1132,8 +1269,82 @@ function SidebarAgentsItem({
                     {formatHistoryMessageCount(session.messageCount)}
                 </span>
             </div>
+            </div>
+            {dragPreview && typeof document !== "undefined"
+                ? createPortal(
+                      <SidebarAgentDragGhost preview={dragPreview} />,
+                      document.body,
+                  )
+                : null}
+        </>
+    );
+}
+
+function SidebarAgentDragGhost({
+    preview,
+}: {
+    readonly preview: SidebarAgentDragPreview;
+}) {
+    const toneClassName =
+        preview.activity?.tone === "danger"
+            ? "text-rose-500"
+            : preview.activity?.tone === "working"
+              ? "text-(--diff-warn)"
+              : "text-accent";
+
+    return (
+        <div
+            aria-hidden="true"
+            className="pointer-events-none fixed min-w-40 max-w-72 rounded-lg border border-accent/30 bg-bg-panel/96 px-2.5 py-2 text-text-primary shadow-[0_14px_34px_rgba(15,23,42,0.28)] backdrop-blur-sm"
+            style={{
+                left: preview.x + 14,
+                top: preview.y + 14,
+                transform: "translate3d(0, 0, 0) scale(1.02)",
+                zIndex: 10050,
+            }}
+        >
+            <div className="flex min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/10 text-[10px] font-semibold ${toneClassName}`}
+                >
+                    AI
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-[11.5px] font-medium leading-tight">
+                        {preview.title}
+                    </div>
+                    <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] leading-tight text-text-secondary">
+                        {preview.activity ? (
+                            <span
+                                aria-hidden="true"
+                                className={`text-[8px] leading-none ${toneClassName}`}
+                            >
+                                ●
+                            </span>
+                        ) : null}
+                        <span className="truncate">
+                            Drag to open in pane · {preview.runtimeLabel}
+                        </span>
+                    </div>
+                </div>
+            </div>
         </div>
     );
+}
+
+function isInteractiveSidebarAgentDragTarget(
+    target: EventTarget | null,
+    currentTarget: HTMLElement,
+): boolean {
+    if (!(target instanceof Element)) {
+        return false;
+    }
+
+    const interactive = target.closest(
+        "button,input,textarea,select,a,[role='button']",
+    );
+    return Boolean(interactive && interactive !== currentTarget);
 }
 
 function useAgentActivityIndicator(

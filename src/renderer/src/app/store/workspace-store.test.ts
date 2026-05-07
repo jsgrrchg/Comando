@@ -291,6 +291,36 @@ describe("workspace file opening", () => {
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });
 
+    it("opens a file in a new split target", async () => {
+        const paneId = await useWorkspaceStore.getState().openFileTabAtTarget({
+            projectId: "project-1",
+            relativePath: "src/split-target.ts",
+            target: {
+                direction: "right",
+                paneId: "pane-root",
+                type: "split",
+            },
+            worktreeId: null,
+        });
+
+        const state = useWorkspaceStore.getState();
+        expect(paneId).toBeTruthy();
+        expect(state.rootNode.type).toBe("split");
+        expect(state.activePaneId).toBe(paneId);
+
+        const targetPane = paneId
+            ? findWorkspacePane(state.rootNode, paneId)
+            : null;
+        expect(targetPane?.tabIds).toHaveLength(1);
+        expect(targetPane?.activeTabId).toBe(targetPane?.tabIds[0]);
+
+        const openedTabId = targetPane?.tabIds[0] ?? null;
+        expect(openedTabId ? state.tabsById[openedTabId] : null).toMatchObject({
+            kind: "file",
+            relativePath: "src/split-target.ts",
+        });
+    });
+
     it("duplicates an existing file tab into the requested pane when the file is already open elsewhere", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,
@@ -928,7 +958,7 @@ describe("workspace file opening", () => {
             document: expect.objectContaining({
                 content: "Hello world\n",
                 modifiedAtMs: 2,
-            }),
+            }) as ProjectFileDocument,
             draftContent: "Hello\n",
             isDirty: true,
             isSaving: false,
@@ -1157,6 +1187,54 @@ describe("workspace file opening", () => {
             sessionId: "child-session",
             title: "Galileo",
             worktreeId: "worktree-9",
+        });
+    });
+
+    it("moves an existing chat tab to a split target without duplicating it", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                activeTabId: "chat-alpha",
+                id: "pane-a",
+                tabIds: ["chat-alpha"],
+                type: "pane",
+            },
+            tabsById: {
+                "chat-alpha": createWorkspaceChatTab(
+                    "chat-alpha",
+                    "session-alpha",
+                    "codex",
+                ),
+            },
+        }));
+
+        await useWorkspaceStore.getState().openChatSessionTabAtTarget({
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-alpha",
+            target: {
+                direction: "right",
+                paneId: "pane-a",
+                type: "split",
+            },
+            title: "Alpha moved",
+            worktreeId: null,
+        });
+
+        const state = useWorkspaceStore.getState();
+        const chatTabs = Object.values(state.tabsById).filter(
+            (tab) => tab.kind === "chat" && tab.sessionId === "session-alpha",
+        );
+        expect(chatTabs).toHaveLength(1);
+        expect(state.rootNode.type).toBe("split");
+        expect(state.activePaneId).not.toBe("pane-a");
+
+        const targetPane = findWorkspacePane(state.rootNode, state.activePaneId);
+        expect(targetPane?.tabIds).toEqual(["chat-alpha"]);
+        expect(targetPane?.activeTabId).toBe("chat-alpha");
+        expect(state.tabsById["chat-alpha"]).toMatchObject({
+            title: "Alpha moved",
         });
     });
 

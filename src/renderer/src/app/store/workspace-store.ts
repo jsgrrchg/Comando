@@ -81,6 +81,19 @@ export type WorkspaceQuickCreateAction =
     | "file"
     | "terminal";
 
+export type WorkspaceOpenTarget =
+    | {
+          readonly insertIndex?: number;
+          readonly paneId: string;
+          readonly type: "pane";
+      }
+    | {
+          readonly direction: SplitDirection;
+          readonly insertIndex?: number;
+          readonly paneId: string;
+          readonly type: "split";
+      };
+
 interface WorkspaceStore extends WorkspaceTreeState {
     closeOtherTabs: (tabId: string) => Promise<void>;
     readonly error: string | null;
@@ -105,13 +118,23 @@ interface WorkspaceStore extends WorkspaceTreeState {
         worktreeId?: string | null,
     ) => Promise<void>;
     openChatSessionTab: (input: {
+        readonly preserveSourcePaneOnMove?: boolean;
         readonly projectId: string | null;
         readonly runtimeId: AiRuntimeId;
         readonly sessionId: string;
+        readonly targetIndex?: number;
         readonly targetPaneId?: string | null;
         readonly title: string;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    openChatSessionTabAtTarget: (input: {
+        readonly projectId: string | null;
+        readonly runtimeId: AiRuntimeId;
+        readonly sessionId: string;
+        readonly target: WorkspaceOpenTarget;
+        readonly title: string;
+        readonly worktreeId?: string | null;
+    }) => Promise<string | null>;
     openGitTab: (
         projectId: string,
         worktreeId?: string | null,
@@ -143,7 +166,15 @@ interface WorkspaceStore extends WorkspaceTreeState {
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
+        targetIndex?: number,
     ) => Promise<void>;
+    openFileTabAtTarget: (input: {
+        readonly projectId: string;
+        readonly relativePath: string;
+        readonly reviewContext?: RuntimeWorkspaceFileReviewContext | null;
+        readonly target: WorkspaceOpenTarget;
+        readonly worktreeId?: string | null;
+    }) => Promise<string | null>;
     openChatImageTab: (input: {
         readonly attachment: AiImageAttachment;
         readonly targetPaneId?: string | null;
@@ -476,19 +507,42 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             if (!paneId) {
                 return;
             }
+            const requestedPaneId = getValidPaneId(
+                get(),
+                input.targetPaneId ?? null,
+            );
+            const targetPaneId = requestedPaneId ?? paneId;
+            const shouldMoveToTarget =
+                requestedPaneId !== null &&
+                (targetPaneId !== paneId || input.targetIndex !== undefined);
 
             set((state) => ({
-                ...selectPaneTab(
-                    {
-                        ...state,
-                        tabsById: {
-                            ...state.tabsById,
-                            [existingTab.id]: nextTab,
-                        },
-                    },
-                    paneId,
-                    existingTab.id,
-                ),
+                ...(shouldMoveToTarget
+                    ? moveExistingTabToTarget(
+                          {
+                              ...state,
+                              tabsById: {
+                                  ...state.tabsById,
+                                  [existingTab.id]: nextTab,
+                              },
+                          },
+                          existingTab.id,
+                          paneId,
+                          targetPaneId,
+                          input.targetIndex ?? Number.POSITIVE_INFINITY,
+                          input.preserveSourcePaneOnMove === true,
+                      )
+                    : selectPaneTab(
+                          {
+                              ...state,
+                              tabsById: {
+                                  ...state.tabsById,
+                                  [existingTab.id]: nextTab,
+                              },
+                          },
+                          paneId,
+                          existingTab.id,
+                      )),
                 error: null,
                 lastFocusedChatTabId: existingTab.id,
                 lastFocusedRuntimeId: input.runtimeId,
@@ -526,7 +580,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         };
 
         set((state) => ({
-            ...attachTabToPane(state, resolvedPaneId, tab),
+            ...(input.targetIndex === undefined
+                ? attachTabToPane(state, resolvedPaneId, tab)
+                : attachTabToPaneAtIndex(
+                      state,
+                      resolvedPaneId,
+                      tab,
+                      input.targetIndex,
+                  )),
             error: null,
             lastFocusedChatTabId: tab.id,
             lastFocusedRuntimeId: input.runtimeId,
@@ -541,6 +602,26 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         void useAiStore.getState().ensureSession(tab);
         await persistWorkspaceState(get);
+    },
+
+    openChatSessionTabAtTarget: async (input) => {
+        const paneId = ensureWorkspaceOpenTargetPane(get, set, input.target);
+        if (!paneId) {
+            return null;
+        }
+
+        await get().openChatSessionTab({
+            projectId: input.projectId,
+            runtimeId: input.runtimeId,
+            sessionId: input.sessionId,
+            preserveSourcePaneOnMove: input.target.type === "split",
+            targetIndex: getWorkspaceOpenTargetInsertIndex(input.target),
+            targetPaneId: paneId,
+            title: input.title,
+            worktreeId: input.worktreeId ?? null,
+        });
+
+        return findExistingChatTabBySessionId(get(), input.sessionId)?.id ?? null;
     },
 
     openGitTab: async (projectId, worktreeId = null) => {
@@ -853,6 +934,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         worktreeId: string | null = null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
+        targetIndex?: number,
     ) => {
         try {
             const trackedFiles = collectPendingTrackedFilesFromSessions(
@@ -959,7 +1041,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 };
 
                 set((state) => ({
-                    ...attachTabToPane(state, resolvedPaneId, duplicatedTab),
+                    ...(targetIndex === undefined
+                        ? attachTabToPane(state, resolvedPaneId, duplicatedTab)
+                        : attachTabToPaneAtIndex(
+                              state,
+                              resolvedPaneId,
+                              duplicatedTab,
+                              targetIndex,
+                          )),
                     error: null,
                     recentActiveTabIds: recordRecentTabActivation(
                         state.recentActiveTabIds,
@@ -1001,7 +1090,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             };
 
             set((state) => ({
-                ...attachTabToPane(state, resolvedPaneId, tab),
+                ...(targetIndex === undefined
+                    ? attachTabToPane(state, resolvedPaneId, tab)
+                    : attachTabToPaneAtIndex(
+                          state,
+                          resolvedPaneId,
+                          tab,
+                          targetIndex,
+                      )),
                 error: null,
                 recentActiveTabIds: recordRecentTabActivation(
                     state.recentActiveTabIds,
@@ -1018,6 +1114,24 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                         : "Could not open the selected file in the workspace.",
             });
         }
+    },
+
+    openFileTabAtTarget: async (input) => {
+        const paneId = ensureWorkspaceOpenTargetPane(get, set, input.target);
+        if (!paneId) {
+            return null;
+        }
+
+        await get().openFileTab(
+            input.projectId,
+            input.relativePath,
+            input.worktreeId ?? null,
+            input.reviewContext ?? null,
+            paneId,
+            getWorkspaceOpenTargetInsertIndex(input.target),
+        );
+
+        return paneId;
     },
 
     openChatImageTab: async ({ attachment, targetPaneId }) => {
@@ -1777,6 +1891,87 @@ function recordRecentChatFocus(
             (recentChatTabId) => recentChatTabId !== chatTabId,
         ),
     ];
+}
+
+function ensureWorkspaceOpenTargetPane(
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    target: WorkspaceOpenTarget,
+): string | null {
+    if (target.type === "pane") {
+        return getValidPaneId(get(), target.paneId);
+    }
+
+    if (!getValidPaneId(get(), target.paneId)) {
+        return null;
+    }
+
+    const nextPaneId = crypto.randomUUID();
+    set((state) => ({
+        ...splitPaneInDirection(state, target.paneId, target.direction, {
+            paneId: nextPaneId,
+            splitId: crypto.randomUUID(),
+        }),
+        error: null,
+    }));
+    return nextPaneId;
+}
+
+function getWorkspaceOpenTargetInsertIndex(
+    target: WorkspaceOpenTarget,
+): number | undefined {
+    if (target.type === "split") {
+        return target.insertIndex ?? 0;
+    }
+
+    return target.insertIndex;
+}
+
+function getValidPaneId(
+    state: WorkspaceTreeState,
+    paneId: string | null,
+): string | null {
+    if (!paneId) {
+        return null;
+    }
+
+    return collectPaneNodes(state.rootNode).some((pane) => pane.id === paneId)
+        ? paneId
+        : null;
+}
+
+function moveExistingTabToTarget(
+    state: WorkspaceStore,
+    tabId: string,
+    sourcePaneId: string,
+    targetPaneId: string,
+    targetIndex: number,
+    preserveEmptySourcePane: boolean,
+): WorkspaceTreeState {
+    const sourcePaneFallbackTabId = getSourcePaneFallbackTabIdAfterMove(
+        state,
+        sourcePaneId,
+        tabId,
+    );
+    const movedState = moveTabToPaneAtIndex(
+        state,
+        tabId,
+        sourcePaneId,
+        targetPaneId,
+        targetIndex,
+        {
+            preserveEmptySourcePane:
+                preserveEmptySourcePane || sourcePaneId === targetPaneId,
+        },
+    );
+
+    return sourcePaneId === targetPaneId || preserveEmptySourcePane
+        ? movedState
+        : restoreSourcePaneActiveTabAfterMove(
+              movedState,
+              sourcePaneId,
+              sourcePaneFallbackTabId,
+          );
 }
 
 function recordRecentTabActivation(

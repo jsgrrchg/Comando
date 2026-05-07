@@ -32,9 +32,8 @@ import {
     shouldWrapEditorLanguage,
 } from "@shared/editor-language";
 import {
-    COMPOSER_PROJECT_ENTRY_MIME,
     isPointOverComposerDropZone,
-    parseComposerProjectEntryDragData,
+    type ComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
 import {
     clampRoundedInt,
@@ -123,6 +122,17 @@ import {
     type WorkspaceTabDropTarget,
 } from "@renderer/components/workspace/useWorkspaceTabDrag";
 import {
+    isWorkspacePaneDropTarget,
+    type WorkspacePaneDropTarget,
+} from "@renderer/components/workspace/workspaceDropTargets";
+import {
+    createWorkspaceDropTargetPreviewScheduler,
+    getNextProjectFileOpenTarget,
+    getWorkspacePaneFileDropEntries,
+    resolveWorkspacePaneFileDragOverIntent,
+    workspacePaneDropTargetToOpenTarget,
+} from "@renderer/components/workspace/workspaceExternalDrop";
+import {
     ContextMenu,
     type ContextMenuEntry,
     type ContextMenuState,
@@ -133,6 +143,10 @@ import {
     type MenuAnchorRect,
 } from "@renderer/app/utils/menu-position";
 import type { WorkspaceQuickCreateAction } from "@renderer/app/store/workspace-store";
+import {
+    SIDEBAR_AGENT_DRAG_EVENT,
+    type SidebarAgentDragDetail,
+} from "@renderer/components/sidebar/sidebarAgentDragEvents";
 
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
@@ -479,8 +493,21 @@ export function WorkspaceView({
     const closeTab = useWorkspaceStore((state) => state.closeTab);
     const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
     const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
+    const openChatSessionTabAtTarget = useWorkspaceStore(
+        (state) => state.openChatSessionTabAtTarget,
+    );
+    const openFileTabAtTarget = useWorkspaceStore(
+        (state) => state.openFileTabAtTarget,
+    );
+    const defaultDropRootPath = useWorkspaceProjectRootPath(
+        defaultProjectId,
+        defaultWorktreeId,
+    );
     const reorderTab = useWorkspaceStore((state) => state.reorderTab);
     const rootNodeId = useWorkspaceStore((state) => state.rootNode.id);
+    const [externalDropTarget, setExternalDropTarget] =
+        useState<WorkspacePaneDropTarget | null>(null);
+    const workspaceRootRef = useRef<HTMLDivElement | null>(null);
     const reviewTabKeys = useWorkspaceStore(
         useShallow(selectWorkspaceReviewTabHandleKeys),
     );
@@ -524,6 +551,224 @@ export function WorkspaceView({
                 : null,
     });
 
+    const resolveExternalPaneDropTarget = useCallback(
+        (x: number, y: number): WorkspacePaneDropTarget | null => {
+            if (isPointOverComposerDropZone(x, y)) {
+                return null;
+            }
+
+            const target = tabDrag.resolveDropTarget(
+                { x, y },
+                { skipExternal: true },
+            );
+            return isWorkspacePaneDropTarget(target) ? target : null;
+        },
+        [tabDrag],
+    );
+
+    const isPointInsideWorkspaceRoot = useCallback((x: number, y: number) => {
+        const root = workspaceRootRef.current;
+        if (!root) {
+            return false;
+        }
+
+        const rect = root.getBoundingClientRect();
+        return (
+            x >= rect.left &&
+            x <= rect.right &&
+            y >= rect.top &&
+            y <= rect.bottom
+        );
+    }, []);
+
+    const applyExternalDropTarget = useCallback(
+        (target: WorkspacePaneDropTarget | null) => {
+            setExternalDropTarget((current) =>
+                areWorkspacePaneDropTargetsEqual(current, target)
+                    ? current
+                    : target,
+            );
+        },
+        [],
+    );
+
+    const externalDropTargetScheduler = useMemo(
+        () =>
+            createWorkspaceDropTargetPreviewScheduler<WorkspacePaneDropTarget>({
+                applyTarget: applyExternalDropTarget,
+                cancelFrame: (frameId) => {
+                    window.cancelAnimationFrame(frameId);
+                },
+                requestFrame: (callback) =>
+                    window.requestAnimationFrame(callback),
+            }),
+        [applyExternalDropTarget],
+    );
+
+    const scheduleExternalDropTarget = useCallback(
+        (target: WorkspacePaneDropTarget | null) => {
+            externalDropTargetScheduler.schedule(target);
+        },
+        [externalDropTargetScheduler],
+    );
+
+    const clearExternalDropTarget = useCallback(() => {
+        externalDropTargetScheduler.clear();
+    }, [externalDropTargetScheduler]);
+
+    useEffect(() => {
+        return () => {
+            externalDropTargetScheduler.dispose();
+        };
+    }, [externalDropTargetScheduler]);
+
+    const handleWorkspaceDragOver = useCallback(
+        (event: ReactDragEvent<HTMLDivElement>) => {
+            if (!defaultProjectId) {
+                scheduleExternalDropTarget(null);
+                return;
+            }
+
+            if (isPointOverComposerDropZone(event.clientX, event.clientY)) {
+                scheduleExternalDropTarget(null);
+                return;
+            }
+
+            const target = resolveExternalPaneDropTarget(
+                event.clientX,
+                event.clientY,
+            );
+            if (!target) {
+                scheduleExternalDropTarget(null);
+                return;
+            }
+
+            const dragIntent = resolveWorkspacePaneFileDragOverIntent({
+                dataTransfer: event.dataTransfer,
+                projectRootPath: defaultDropRootPath,
+                target,
+            });
+            scheduleExternalDropTarget(dragIntent.previewTarget);
+            if (!dragIntent.acceptsDrop) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = "copy";
+        },
+        [
+            defaultDropRootPath,
+            defaultProjectId,
+            resolveExternalPaneDropTarget,
+            scheduleExternalDropTarget,
+        ],
+    );
+
+    const handleWorkspaceDragLeave = useCallback(
+        (event: ReactDragEvent<HTMLDivElement>) => {
+            if (
+                event.currentTarget.contains(event.relatedTarget as Node | null)
+            ) {
+                return;
+            }
+
+            clearExternalDropTarget();
+        },
+        [clearExternalDropTarget],
+    );
+
+    const handleWorkspaceDrop = useCallback(
+        (event: ReactDragEvent<HTMLDivElement>) => {
+            if (!defaultProjectId) {
+                clearExternalDropTarget();
+                return;
+            }
+
+            const target = resolveExternalPaneDropTarget(
+                event.clientX,
+                event.clientY,
+            );
+            const fileEntries = getWorkspacePaneFileDropEntries({
+                dataTransfer: event.dataTransfer,
+                projectRootPath: defaultDropRootPath,
+            });
+            clearExternalDropTarget();
+            if (!target || fileEntries.length === 0) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            void openProjectFileEntriesAtTarget({
+                entries: fileEntries,
+                openFileTabAtTarget,
+                projectId: defaultProjectId,
+                target,
+                worktreeId: defaultWorktreeId ?? null,
+            });
+        },
+        [
+            defaultDropRootPath,
+            defaultProjectId,
+            defaultWorktreeId,
+            openFileTabAtTarget,
+            clearExternalDropTarget,
+            resolveExternalPaneDropTarget,
+        ],
+    );
+
+    const handleSidebarAgentDrag = useEffectEvent((event: Event) => {
+        const detail = (event as CustomEvent<SidebarAgentDragDetail>).detail;
+
+        if (detail.phase === "cancel") {
+            clearExternalDropTarget();
+            return;
+        }
+
+        const target = resolveExternalPaneDropTarget(detail.x, detail.y);
+        if (!target) {
+            if (detail.phase === "end") {
+                clearExternalDropTarget();
+                return;
+            }
+
+            if (
+                isPointOverComposerDropZone(detail.x, detail.y) ||
+                !isPointInsideWorkspaceRoot(detail.x, detail.y)
+            ) {
+                scheduleExternalDropTarget(null);
+            }
+            return;
+        }
+
+        if (detail.phase === "end") {
+            clearExternalDropTarget();
+            void openChatSessionTabAtTarget({
+                projectId: detail.projectId,
+                runtimeId: detail.runtimeId,
+                sessionId: detail.sessionId,
+                target: workspacePaneDropTargetToOpenTarget(target),
+                title: detail.title,
+                worktreeId: detail.worktreeId,
+            });
+            return;
+        }
+
+        scheduleExternalDropTarget(target);
+    });
+
+    useEffect(() => {
+        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleSidebarAgentDrag);
+        return () => {
+            externalDropTargetScheduler.dispose();
+            window.removeEventListener(
+                SIDEBAR_AGENT_DRAG_EVENT,
+                handleSidebarAgentDrag,
+            );
+        };
+    }, [externalDropTargetScheduler]);
+
     useRenderProbe("WorkspaceView", {});
 
     useEffect(() => {
@@ -556,7 +801,14 @@ export function WorkspaceView({
     }, [closeTab, reviewTabAutoCloseCandidates, reviewTabs]);
 
     return (
-        <div className="h-full min-h-0 bg-bg-primary">
+        <div
+            className="h-full min-h-0 bg-bg-primary"
+            onDragEndCapture={clearExternalDropTarget}
+            onDragLeaveCapture={handleWorkspaceDragLeave}
+            onDragOverCapture={handleWorkspaceDragOver}
+            onDropCapture={handleWorkspaceDrop}
+            ref={workspaceRootRef}
+        >
             <WorkspaceNodeView
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
@@ -564,6 +816,12 @@ export function WorkspaceView({
                 onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
+            {!tabDrag.isDragging ? (
+                <WorkspaceDropTargetOverlay
+                    target={externalDropTarget}
+                    visible={externalDropTarget !== null}
+                />
+            ) : null}
             <WorkspaceTabDragOverlay
                 draggedTab={tabDrag.draggedTab}
                 pointerCurrent={tabDrag.pointerCurrent}
@@ -620,6 +878,107 @@ function WorkspaceNodeView({
             tabDrag={tabDrag}
         />
     );
+}
+
+function useWorkspaceProjectRootPath(
+    projectId: string | null,
+    worktreeId: string | null,
+): string | null {
+    const projectRootPath = useProjectsStore(
+        useCallback(
+            (state) =>
+                projectId
+                    ? (state.projects.find((project) => project.id === projectId)
+                          ?.rootPath ?? null)
+                    : null,
+            [projectId],
+        ),
+    );
+    const worktreeRootPath = useGitStore(
+        useCallback(
+            (state) => {
+                if (!projectId || !worktreeId) {
+                    return null;
+                }
+
+                const snapshot =
+                    state.snapshots[
+                        getWorkspaceGitContextKey(projectId, worktreeId)
+                    ] ??
+                    state.snapshots[getWorkspaceGitContextKey(projectId, null)] ??
+                    null;
+                return (
+                    snapshot?.worktrees.find(
+                        (worktree) => worktree.id === worktreeId,
+                    )?.rootPath ?? null
+                );
+            },
+            [projectId, worktreeId],
+        ),
+    );
+
+    return worktreeRootPath ?? projectRootPath;
+}
+
+function areWorkspacePaneDropTargetsEqual(
+    left: WorkspacePaneDropTarget | null,
+    right: WorkspacePaneDropTarget | null,
+): boolean {
+    return (
+        getWorkspacePaneDropTargetKey(left) ===
+        getWorkspacePaneDropTargetKey(right)
+    );
+}
+
+function getWorkspacePaneDropTargetKey(
+    target: WorkspacePaneDropTarget | null,
+): string {
+    if (!target) {
+        return "none";
+    }
+
+    if (target.type === "strip") {
+        return `${target.type}:${target.paneId}:${target.index}`;
+    }
+
+    if (target.type === "split") {
+        return `${target.type}:${target.paneId}:${target.direction}`;
+    }
+
+    return `${target.type}:${target.paneId}`;
+}
+
+function getWorkspaceGitContextKey(
+    projectId: string,
+    worktreeId: string | null,
+): string {
+    return `${projectId}::${worktreeId ?? "primary"}`;
+}
+
+async function openProjectFileEntriesAtTarget(input: {
+    readonly entries: readonly ComposerProjectEntryDragData[];
+    readonly openFileTabAtTarget: ReturnType<
+        typeof useWorkspaceStore.getState
+    >["openFileTabAtTarget"];
+    readonly projectId: string;
+    readonly target: WorkspacePaneDropTarget;
+    readonly worktreeId: string | null;
+}): Promise<void> {
+    let openTarget = workspacePaneDropTargetToOpenTarget(input.target);
+
+    for (const entry of input.entries) {
+        const paneId = await input.openFileTabAtTarget({
+            projectId: input.projectId,
+            relativePath: entry.relativePath,
+            target: openTarget,
+            worktreeId: input.worktreeId,
+        });
+        if (!paneId) {
+            continue;
+        }
+
+        openTarget = getNextProjectFileOpenTarget(openTarget, paneId);
+    }
 }
 
 function WorkspaceSplitView({
@@ -951,6 +1310,7 @@ function WorkspacePaneView({
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
+        targetIndex?: number,
     ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
     const openChatImageTab = useWorkspaceStore((state) => state.openChatImageTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
@@ -997,13 +1357,10 @@ function WorkspacePaneView({
         (state) => state.updateTerminalSize,
     );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
-    const paneDragCounterRef = useRef(0);
     const [tabContextMenu, setTabContextMenu] =
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
     const [quickCreateMenu, setQuickCreateMenu] =
         useState<QuickCreateMenuState>(null);
-    const [isProjectFileDragOverPane, setIsProjectFileDragOverPane] =
-        useState(false);
     const contextTabId = tabContextMenu?.payload.tabId ?? null;
     const contextTab = useWorkspaceStore(
         useCallback(
@@ -1224,111 +1581,6 @@ function WorkspacePaneView({
             });
         },
         [openChatImageTab, paneNodeId],
-    );
-
-    const canAcceptPaneProjectFileDrag = useCallback(
-        (event: ReactDragEvent<HTMLElement>) => {
-            if (!defaultProjectId) {
-                return false;
-            }
-
-            if (isPointOverComposerDropZone(event.clientX, event.clientY)) {
-                return false;
-            }
-
-            return Array.from(event.dataTransfer.types).includes(
-                COMPOSER_PROJECT_ENTRY_MIME,
-            );
-        },
-        [defaultProjectId],
-    );
-
-    const resetPaneProjectFileDrag = useCallback(() => {
-        paneDragCounterRef.current = 0;
-        setIsProjectFileDragOverPane(false);
-    }, []);
-
-    const handlePaneDragEnter = useCallback(
-        (event: ReactDragEvent<HTMLElement>) => {
-            if (!canAcceptPaneProjectFileDrag(event)) {
-                return;
-            }
-
-            event.preventDefault();
-            paneDragCounterRef.current += 1;
-            if (paneDragCounterRef.current === 1) {
-                setIsProjectFileDragOverPane(true);
-            }
-        },
-        [canAcceptPaneProjectFileDrag],
-    );
-
-    const handlePaneDragOver = useCallback(
-        (event: ReactDragEvent<HTMLElement>) => {
-            if (!canAcceptPaneProjectFileDrag(event)) {
-                if (isProjectFileDragOverPane) {
-                    setIsProjectFileDragOverPane(false);
-                }
-                return;
-            }
-
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
-            if (!isProjectFileDragOverPane) {
-                setIsProjectFileDragOverPane(true);
-            }
-        },
-        [canAcceptPaneProjectFileDrag, isProjectFileDragOverPane],
-    );
-
-    const handlePaneDragLeave = useCallback(
-        (event: ReactDragEvent<HTMLElement>) => {
-            if (
-                event.currentTarget.contains(event.relatedTarget as Node | null)
-            ) {
-                return;
-            }
-
-            resetPaneProjectFileDrag();
-        },
-        [resetPaneProjectFileDrag],
-    );
-
-    const handlePaneDrop = useCallback(
-        (event: ReactDragEvent<HTMLElement>) => {
-            const isComposerTarget = isPointOverComposerDropZone(
-                event.clientX,
-                event.clientY,
-            );
-            resetPaneProjectFileDrag();
-
-            if (isComposerTarget || !defaultProjectId) {
-                return;
-            }
-
-            const dragData = parseComposerProjectEntryDragData(
-                event.dataTransfer.getData(COMPOSER_PROJECT_ENTRY_MIME),
-            );
-            if (!dragData || dragData.kind !== "file") {
-                return;
-            }
-
-            event.preventDefault();
-            void openFileTab(
-                defaultProjectId,
-                dragData.relativePath,
-                defaultWorktreeId ?? null,
-                undefined,
-                paneNodeId,
-            );
-        },
-        [
-            defaultProjectId,
-            defaultWorktreeId,
-            openFileTab,
-            paneNodeId,
-            resetPaneProjectFileDrag,
-        ],
     );
 
     const handleCreateAgentFromFocusedProvider = useCallback(() => {
@@ -1747,18 +1999,11 @@ function WorkspacePaneView({
                         ? "border-border-strong"
                         : "border-transparent",
                 ].join(" ")}
-                onDragEnter={handlePaneDragEnter}
-                onDragLeave={handlePaneDragLeave}
-                onDragOver={handlePaneDragOver}
-                onDrop={handlePaneDrop}
                 onMouseDown={() => void setActivePane(paneNodeId)}
                 ref={(element) => {
                     tabDrag.setPaneElement(paneNodeId, element);
                 }}
             >
-                {isProjectFileDragOverPane ? (
-                    <div className="pointer-events-none absolute inset-0 z-20 bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]" />
-                ) : null}
                 <div className="app-drag flex items-center justify-between border-b border-border bg-bg-chrome px-0">
                     <div
                         className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
@@ -2020,6 +2265,62 @@ function WorkspacePaneView({
     );
 }
 
+function WorkspaceDropTargetOverlay({
+    target,
+    visible,
+}: {
+    readonly target: WorkspaceTabDropTarget | null;
+    readonly visible: boolean;
+}) {
+    if (!visible || !target || typeof document === "undefined") {
+        return null;
+    }
+
+    return createPortal(
+        <>
+            {target.type === "strip" ? (
+                <div
+                    className="pointer-events-none fixed rounded-full bg-accent shadow-[0_0_0_1px_var(--color-accent)]"
+                    style={{
+                        height: target.lineRect.height,
+                        left: target.lineRect.left,
+                        top: target.lineRect.top,
+                        width: target.lineRect.width,
+                        zIndex: 10030,
+                    }}
+                />
+            ) : null}
+
+            {target.type === "pane-center" ? (
+                <div
+                    className="pointer-events-none fixed rounded-xl border-2 border-accent/90 bg-accent/8 shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                    style={{
+                        height: target.rect.height,
+                        left: target.rect.left,
+                        top: target.rect.top,
+                        width: target.rect.width,
+                        zIndex: 10029,
+                    }}
+                />
+            ) : null}
+
+            {target.type === "split" ? (
+                <div
+                    className="pointer-events-none fixed rounded-xl border border-accent/90 bg-accent/12 shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                    style={{
+                        height: target.rect.height,
+                        left: target.rect.left,
+                        top: target.rect.top,
+                        width: target.rect.width,
+                        zIndex: 10029,
+                    }}
+                />
+            ) : null}
+        </>,
+        document.body,
+    );
+}
+
 function WorkspaceTabDragOverlay({
     draggedTab,
     pointerCurrent,
@@ -2052,45 +2353,7 @@ function WorkspaceTabDragOverlay({
 
     return createPortal(
         <>
-            {target?.type === "strip" ? (
-                <div
-                    className="pointer-events-none fixed rounded-full bg-accent shadow-[0_0_0_1px_var(--color-accent)]"
-                    style={{
-                        height: target.lineRect.height,
-                        left: target.lineRect.left,
-                        top: target.lineRect.top,
-                        width: target.lineRect.width,
-                        zIndex: 10030,
-                    }}
-                />
-            ) : null}
-
-            {target?.type === "pane-center" ? (
-                <div
-                    className="pointer-events-none fixed rounded-xl border-2 border-accent/90 bg-accent/8 shadow-[inset_0_0_0_1px_var(--color-accent)]"
-                    style={{
-                        height: target.rect.height,
-                        left: target.rect.left,
-                        top: target.rect.top,
-                        width: target.rect.width,
-                        zIndex: 10029,
-                    }}
-                />
-            ) : null}
-
-            {target?.type === "split" ? (
-                <div
-                    className="pointer-events-none fixed rounded-xl border border-accent/90 bg-accent/12 shadow-[inset_0_0_0_1px_var(--color-accent)]"
-                    style={{
-                        height: target.rect.height,
-                        left: target.rect.left,
-                        top: target.rect.top,
-                        width: target.rect.width,
-                        zIndex: 10029,
-                    }}
-                />
-            ) : null}
-
+            <WorkspaceDropTargetOverlay target={target} visible={true} />
             <div
                 className="pointer-events-none fixed"
                 style={{

@@ -911,6 +911,23 @@ button {
     height: calc(11px * var(--agents-sidebar-scale, 1));
 }
 
+.sidebar-agents-subitem {
+    position: relative;
+    padding-left: calc(22px * var(--agents-sidebar-scale, 1));
+}
+
+.sidebar-agents-subitem::before {
+    content: "";
+    position: absolute;
+    left: calc(11px * var(--agents-sidebar-scale, 1));
+    top: 2px;
+    bottom: 2px;
+    width: 1px;
+    background: color-mix(in srgb, var(--color-border) 70%, transparent);
+    border-radius: 1px;
+    pointer-events: none;
+}
+
 .sidebar-git-scope-trigger {
     display: flex;
     align-items: center;
