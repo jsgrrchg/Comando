@@ -4,6 +4,8 @@ import type { AIComposerPart } from "./composerParts";
 import {
     appendFileAttachmentPart,
     appendGitCommitMentionPart,
+    appendGitHubIssueMentionPart,
+    appendGitHubPullRequestMentionPart,
     appendSelectionMentionPart,
     collectExternalComposerRoots,
     composerPartsToPlainText,
@@ -119,6 +121,48 @@ describe("composerParts", () => {
             "Review commit: abcdef1234567890 ",
         );
         expect(composerPartsToPlainText(parts)).toBe("Review commit: abcdef1 ");
+    });
+
+    it("serializes GitHub issue pills as useful prompt references", () => {
+        const parts = appendGitHubIssueMentionPart(
+            [{ type: "text", text: "Investigate" }],
+            {
+                host: "github.com",
+                label: "#123",
+                number: 123,
+                owner: "comando",
+                repo: "app",
+                title: "Crash on launch",
+                type: "github_issue_mention",
+                url: "https://github.com/comando/app/issues/123",
+            },
+        );
+
+        expect(composerPartsToPlainText(parts)).toBe("Investigate #123 ");
+        expect(serializeComposerPartsForPrompt(parts)).toBe(
+            "Investigate GitHub issue comando/app#123: Crash on launch (https://github.com/comando/app/issues/123) ",
+        );
+    });
+
+    it("serializes GitHub PR pills as useful prompt references", () => {
+        const parts = appendGitHubPullRequestMentionPart(
+            [{ type: "text", text: "Review" }],
+            {
+                host: "github.com",
+                label: "PR #456",
+                number: 456,
+                owner: "comando",
+                repo: "app",
+                title: "Add GitHub API integration",
+                type: "github_pull_request_mention",
+                url: "https://github.com/comando/app/pull/456",
+            },
+        );
+
+        expect(composerPartsToPlainText(parts)).toBe("Review PR #456 ");
+        expect(serializeComposerPartsForPrompt(parts)).toBe(
+            "Review GitHub PR comando/app#456: Add GitHub API integration (https://github.com/comando/app/pull/456) ",
+        );
     });
 
     it("collects additional roots for external file and folder pills", () => {

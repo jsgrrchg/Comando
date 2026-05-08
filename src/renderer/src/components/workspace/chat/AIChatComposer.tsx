@@ -38,6 +38,8 @@ import {
     appendFileMentionPart,
     appendFolderMentionPart,
     appendGitCommitMentionPart,
+    appendGitHubIssueMentionPart,
+    appendGitHubPullRequestMentionPart,
     composerPartsToPlainText,
     normalizeComposerParts,
 } from "./composerParts";
@@ -228,6 +230,50 @@ function createGitCommitMentionNode(
     return el;
 }
 
+function createGitHubIssueMentionNode(
+    part: Extract<AIComposerPart, { type: "github_issue_mention" }>,
+    metrics: ChatPillMetrics,
+): HTMLSpanElement {
+    const el = document.createElement("span");
+    el.contentEditable = "false";
+    el.dataset.kind = "github_issue_mention";
+    el.dataset.host = part.host;
+    el.dataset.owner = part.owner;
+    el.dataset.repo = part.repo;
+    el.dataset.number = String(part.number);
+    el.dataset.label = part.label;
+    el.dataset.title = part.title;
+    el.dataset.url = part.url;
+    el.textContent = part.label;
+    el.title = `${part.owner}/${part.repo} ${part.label}: ${part.title}`;
+    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.accent, {
+        compact: true,
+    });
+    return el;
+}
+
+function createGitHubPullRequestMentionNode(
+    part: Extract<AIComposerPart, { type: "github_pull_request_mention" }>,
+    metrics: ChatPillMetrics,
+): HTMLSpanElement {
+    const el = document.createElement("span");
+    el.contentEditable = "false";
+    el.dataset.kind = "github_pull_request_mention";
+    el.dataset.host = part.host;
+    el.dataset.owner = part.owner;
+    el.dataset.repo = part.repo;
+    el.dataset.number = String(part.number);
+    el.dataset.label = part.label;
+    el.dataset.title = part.title;
+    el.dataset.url = part.url;
+    el.textContent = part.label;
+    el.title = `${part.owner}/${part.repo} ${part.label}: ${part.title}`;
+    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.success, {
+        compact: true,
+    });
+    return el;
+}
+
 /* ─── DOM → parts extraction ─── */
 
 function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
@@ -305,6 +351,34 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]): void {
                     });
                 }
                 return;
+            case "github_issue_mention":
+                if (isValidGitHubMentionDataset(el.dataset)) {
+                    parts.push({
+                        type: "github_issue_mention",
+                        host: el.dataset.host,
+                        label: el.dataset.label,
+                        number: Number(el.dataset.number),
+                        owner: el.dataset.owner,
+                        repo: el.dataset.repo,
+                        title: el.dataset.title,
+                        url: el.dataset.url,
+                    });
+                }
+                return;
+            case "github_pull_request_mention":
+                if (isValidGitHubMentionDataset(el.dataset)) {
+                    parts.push({
+                        type: "github_pull_request_mention",
+                        host: el.dataset.host,
+                        label: el.dataset.label,
+                        number: Number(el.dataset.number),
+                        owner: el.dataset.owner,
+                        repo: el.dataset.repo,
+                        title: el.dataset.title,
+                        url: el.dataset.url,
+                    });
+                }
+                return;
         }
     }
 
@@ -340,6 +414,27 @@ function readPartsFromDom(root: HTMLElement): AIComposerPart[] {
     return normalized;
 }
 
+function isValidGitHubMentionDataset(dataset: DOMStringMap): dataset is {
+    readonly host: string;
+    readonly label: string;
+    readonly number: string;
+    readonly owner: string;
+    readonly repo: string;
+    readonly title: string;
+    readonly url: string;
+} {
+    return Boolean(
+        dataset.host &&
+            dataset.owner &&
+            dataset.repo &&
+            dataset.number &&
+            Number.isFinite(Number(dataset.number)) &&
+            dataset.label &&
+            dataset.title &&
+            dataset.url,
+    );
+}
+
 export function appendComposerProjectEntries(
     parts: readonly AIComposerPart[],
     entries: readonly ComposerProjectEntryDragData[],
@@ -372,6 +467,32 @@ export function appendWorkspaceTabComposerItem(
         return appendGitCommitMentionPart(parts, {
             commitSha: item.commitSha,
             label: item.label,
+        });
+    }
+
+    if (item.kind === "github_issue_mention") {
+        return appendGitHubIssueMentionPart(parts, {
+            type: "github_issue_mention",
+            host: item.host,
+            label: item.label,
+            number: item.number,
+            owner: item.owner,
+            repo: item.repo,
+            title: item.title,
+            url: item.url,
+        });
+    }
+
+    if (item.kind === "github_pull_request_mention") {
+        return appendGitHubPullRequestMentionPart(parts, {
+            type: "github_pull_request_mention",
+            host: item.host,
+            label: item.label,
+            number: item.number,
+            owner: item.owner,
+            repo: item.repo,
+            title: item.title,
+            url: item.url,
         });
     }
 
@@ -416,6 +537,14 @@ function syncComposerDom(
                 break;
             case "git_commit_mention":
                 root.appendChild(createGitCommitMentionNode(part, metrics));
+                break;
+            case "github_issue_mention":
+                root.appendChild(createGitHubIssueMentionNode(part, metrics));
+                break;
+            case "github_pull_request_mention":
+                root.appendChild(
+                    createGitHubPullRequestMentionNode(part, metrics),
+                );
                 break;
             default:
                 break;
@@ -875,6 +1004,12 @@ export function AIChatComposer({
                     break;
                 case "git_commit_mention":
                     node = createGitCommitMentionNode(part, metrics);
+                    break;
+                case "github_issue_mention":
+                    node = createGitHubIssueMentionNode(part, metrics);
+                    break;
+                case "github_pull_request_mention":
+                    node = createGitHubPullRequestMentionNode(part, metrics);
                     break;
             }
 

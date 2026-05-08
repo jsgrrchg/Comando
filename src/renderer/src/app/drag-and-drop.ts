@@ -62,6 +62,24 @@ export type WorkspaceTabComposerDragItem = {
     readonly kind: "git_commit_mention";
     readonly commitSha: string;
     readonly label: string;
+} | {
+    readonly host: string;
+    readonly kind: "github_issue_mention";
+    readonly label: string;
+    readonly number: number;
+    readonly owner: string;
+    readonly repo: string;
+    readonly title: string;
+    readonly url: string;
+} | {
+    readonly host: string;
+    readonly kind: "github_pull_request_mention";
+    readonly label: string;
+    readonly number: number;
+    readonly owner: string;
+    readonly repo: string;
+    readonly title: string;
+    readonly url: string;
 };
 
 export type WorkspaceTabComposerDragPhase = "start" | "move" | "end" | "cancel";

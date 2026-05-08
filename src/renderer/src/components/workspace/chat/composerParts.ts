@@ -59,6 +59,10 @@ export function serializeComposerParts(
                     return `${PILL_OPEN}📎${p.label}${PILL_CLOSE}`;
                 case "git_commit_mention":
                     return `${PILL_OPEN}commit: ${p.label}${PILL_CLOSE}`;
+                case "github_issue_mention":
+                    return `${PILL_OPEN}${p.label}${PILL_CLOSE}`;
+                case "github_pull_request_mention":
+                    return `${PILL_OPEN}${p.label}${PILL_CLOSE}`;
             }
         })
         .join("");
@@ -96,6 +100,10 @@ export function composerPartsToPlainText(
                     return `[${p.label}]`;
                 case "git_commit_mention":
                     return `commit: ${p.label}`;
+                case "github_issue_mention":
+                    return p.label;
+                case "github_pull_request_mention":
+                    return p.label;
             }
         })
         .join("");
@@ -125,6 +133,10 @@ export function serializeComposerPartsForPrompt(
                     return part.filePath;
                 case "git_commit_mention":
                     return `commit: ${part.commitSha}`;
+                case "github_issue_mention":
+                    return `GitHub issue ${part.owner}/${part.repo}#${part.number}: ${part.title} (${part.url})`;
+                case "github_pull_request_mention":
+                    return `GitHub PR ${part.owner}/${part.repo}#${part.number}: ${part.title} (${part.url})`;
             }
         })
         .join("");
@@ -240,6 +252,29 @@ export function appendGitCommitMentionPart(
         commitSha: commit.commitSha,
         label: commit.label,
     });
+    withSpace.push({ type: "text", text: " " });
+    return normalizeComposerParts(withSpace);
+}
+
+export function appendGitHubIssueMentionPart(
+    parts: readonly AIComposerPart[],
+    issue: Extract<AIComposerPart, { type: "github_issue_mention" }>,
+): AIComposerPart[] {
+    const withSpace = ensureTrailingSpace(parts);
+    withSpace.push(issue);
+    withSpace.push({ type: "text", text: " " });
+    return normalizeComposerParts(withSpace);
+}
+
+export function appendGitHubPullRequestMentionPart(
+    parts: readonly AIComposerPart[],
+    pullRequest: Extract<
+        AIComposerPart,
+        { type: "github_pull_request_mention" }
+    >,
+): AIComposerPart[] {
+    const withSpace = ensureTrailingSpace(parts);
+    withSpace.push(pullRequest);
     withSpace.push({ type: "text", text: " " });
     return normalizeComposerParts(withSpace);
 }

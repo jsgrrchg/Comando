@@ -189,6 +189,68 @@ describe("AIChatComposer", () => {
         ]);
     });
 
+    it("appends dropped GitHub issue tabs as inline issue pills", () => {
+        expect(
+            appendWorkspaceTabComposerItem(
+                [{ text: "", type: "text" }],
+                {
+                    host: "github.com",
+                    kind: "github_issue_mention",
+                    label: "#123",
+                    number: 123,
+                    owner: "comando",
+                    repo: "app",
+                    title: "Crash on launch",
+                    url: "https://github.com/comando/app/issues/123",
+                },
+            ),
+        ).toEqual([
+            { text: "", type: "text" },
+            {
+                host: "github.com",
+                label: "#123",
+                number: 123,
+                owner: "comando",
+                repo: "app",
+                title: "Crash on launch",
+                type: "github_issue_mention",
+                url: "https://github.com/comando/app/issues/123",
+            },
+            { text: " ", type: "text" },
+        ]);
+    });
+
+    it("appends dropped GitHub PR tabs as inline PR pills", () => {
+        expect(
+            appendWorkspaceTabComposerItem(
+                [{ text: "", type: "text" }],
+                {
+                    host: "github.com",
+                    kind: "github_pull_request_mention",
+                    label: "PR #456",
+                    number: 456,
+                    owner: "comando",
+                    repo: "app",
+                    title: "Add GitHub API integration",
+                    url: "https://github.com/comando/app/pull/456",
+                },
+            ),
+        ).toEqual([
+            { text: "", type: "text" },
+            {
+                host: "github.com",
+                label: "PR #456",
+                number: 456,
+                owner: "comando",
+                repo: "app",
+                title: "Add GitHub API integration",
+                type: "github_pull_request_mention",
+                url: "https://github.com/comando/app/pull/456",
+            },
+            { text: " ", type: "text" },
+        ]);
+    });
+
     it("lets regular composer pills show their full label", () => {
         expect(getComposerPillLayoutStyle(getChatPillMetrics(14))).toMatchObject({
             maxWidth: "100%",

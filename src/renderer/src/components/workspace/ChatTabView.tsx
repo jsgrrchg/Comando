@@ -1097,6 +1097,7 @@ export const ChatTabView = memo(function ChatTabView({
         const prompt = serializePromptWithContexts(
             plainText,
             draftFileContexts,
+            composerParts,
         );
         if (
             !prompt &&

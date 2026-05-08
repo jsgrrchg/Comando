@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AiFileContextAttachment } from "@shared/ipc";
 import {
+    buildGitHubComposerReferences,
     buildFileContextLabel,
     buildFileContextReference,
     buildFileContextTitle,
@@ -83,5 +84,67 @@ describe("promptContextReferences", () => {
         ).toBe(
             "Please inspect this\n\nContext references:\n- src/app.ts:12-18\n- src/other.ts",
         );
+    });
+
+    it("serializes GitHub composer references in a dedicated prompt block", () => {
+        expect(
+            serializePromptWithContexts(
+                "Compare these",
+                [],
+                [
+                    {
+                        host: "github.com",
+                        label: "#123",
+                        number: 123,
+                        owner: "comando",
+                        repo: "app",
+                        title: "Crash on launch",
+                        type: "github_issue_mention",
+                        url: "https://github.com/comando/app/issues/123",
+                    },
+                    {
+                        host: "github.com",
+                        label: "PR #456",
+                        number: 456,
+                        owner: "comando",
+                        repo: "app",
+                        title: "Fix launch crash",
+                        type: "github_pull_request_mention",
+                        url: "https://github.com/comando/app/pull/456",
+                    },
+                ],
+            ),
+        ).toBe(
+            "Compare these\n\nGitHub references:\n- Issue comando/app#123: Crash on launch (https://github.com/comando/app/issues/123)\n- Pull request comando/app#456: Fix launch crash (https://github.com/comando/app/pull/456)",
+        );
+    });
+
+    it("deduplicates repeated GitHub composer references", () => {
+        expect(
+            buildGitHubComposerReferences([
+                {
+                    host: "github.com",
+                    label: "#123",
+                    number: 123,
+                    owner: "comando",
+                    repo: "app",
+                    title: "Crash on launch",
+                    type: "github_issue_mention",
+                    url: "https://github.com/comando/app/issues/123",
+                },
+                {
+                    host: "github.com",
+                    label: "#123",
+                    number: 123,
+                    owner: "comando",
+                    repo: "app",
+                    title: "Crash on launch",
+                    type: "github_issue_mention",
+                    url: "https://github.com/comando/app/issues/123",
+                },
+            ]),
+        ).toEqual([
+            "Issue comando/app#123: Crash on launch (https://github.com/comando/app/issues/123)",
+        ]);
     });
 });
