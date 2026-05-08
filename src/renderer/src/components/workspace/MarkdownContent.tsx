@@ -269,7 +269,7 @@ function renderInline(
 ): Array<ReactElement | string> {
     const parts: Array<ReactElement | string> = [];
     const re =
-        /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\u200B\u00AB[^\u00BB]*\u00BB\u200B)/g;
+        /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\u200B\u00AB[^\u00BB]*\u00BB\u200B)|(!\[[^\]]*\]\([^)]+\))|(<img\b[^>]*?\/?>)|(https?:\/\/[^\s<>"')\]]+)/g;
     let lastIndex = 0;
     let key = 0;
 
@@ -368,6 +368,74 @@ function renderInline(
                     </a>,
                 );
             }
+        } else if (match[6]) {
+            const imageMatch = match[6].match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+            const src = imageMatch?.[2] ?? "";
+            if (imageMatch && /^(https?:\/\/|data:)/i.test(src)) {
+                parts.push(
+                    <img
+                        alt={imageMatch[1] ?? ""}
+                        key={key++}
+                        src={src}
+                        style={{
+                            borderRadius: 6,
+                            display: "block",
+                            height: "auto",
+                            margin: "8px 0",
+                            maxWidth: "100%",
+                        }}
+                    />,
+                );
+            } else {
+                parts.push(match[6]);
+            }
+        } else if (match[7]) {
+            const tag = match[7];
+            const srcMatch = tag.match(/src\s*=\s*["']([^"']+)["']/i);
+            const src = srcMatch?.[1] ?? "";
+            if (src && /^(https?:\/\/|data:)/i.test(src)) {
+                const widthMatch = tag.match(/width\s*=\s*["']?(\d+)["']?/i);
+                const heightMatch = tag.match(/height\s*=\s*["']?(\d+)["']?/i);
+                const altMatch = tag.match(/alt\s*=\s*["']([^"']*)["']/i);
+                const widthValue = widthMatch ? Number(widthMatch[1]) : undefined;
+                const heightValue = heightMatch
+                    ? Number(heightMatch[1])
+                    : undefined;
+                parts.push(
+                    <img
+                        alt={altMatch?.[1] ?? ""}
+                        height={heightValue}
+                        key={key++}
+                        src={src}
+                        style={{
+                            borderRadius: 6,
+                            display: "block",
+                            height: "auto",
+                            margin: "8px 0",
+                            maxWidth: "100%",
+                        }}
+                        width={widthValue}
+                    />,
+                );
+            } else {
+                parts.push(tag);
+            }
+        } else if (match[8]) {
+            const url = match[8];
+            const trimmedUrl = url.replace(/[.,;:!?]+$/, "");
+            const trailing = url.slice(trimmedUrl.length);
+            parts.push(
+                <a
+                    key={key++}
+                    href={trimmedUrl}
+                    rel="noopener noreferrer"
+                    style={{ color: "var(--color-accent)" }}
+                    target="_blank"
+                >
+                    {trimmedUrl}
+                </a>,
+            );
+            if (trailing) parts.push(trailing);
         }
         lastIndex = (match.index ?? 0) + match[0].length;
     }
