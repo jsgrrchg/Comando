@@ -1,4 +1,4 @@
-import type { GitRemoteSummary } from "@shared/ipc";
+import type { GitHubRepositoryRef, GitRemoteSummary } from "@shared/ipc";
 
 export interface GitRemoteCommitLink {
     readonly label: string;
@@ -51,6 +51,32 @@ export function buildGitRemoteCommitLink(
     return {
         label: "View on Remote",
         url: `${baseUrl}/${owner}/${repo}/commit/${commitSha}`,
+    };
+}
+
+export function resolveGitHubRepositoryRef(
+    remotes: readonly GitRemoteSummary[],
+): GitHubRepositoryRef | null {
+    const remote =
+        remotes.find((candidate) => candidate.isDefault) ?? remotes[0] ?? null;
+    if (!remote) {
+        return null;
+    }
+
+    const rawUrl = remote.fetchUrl ?? remote.pushUrl;
+    if (!rawUrl) {
+        return null;
+    }
+
+    const parsed = parseGitRemoteUrl(rawUrl);
+    if (!parsed || !parsed.host.toLowerCase().includes("github")) {
+        return null;
+    }
+
+    return {
+        host: parsed.host.toLowerCase(),
+        owner: parsed.owner,
+        repo: parsed.repo,
     };
 }
 
