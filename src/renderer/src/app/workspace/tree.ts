@@ -7,6 +7,10 @@ import type {
     WorkspaceChatTab,
     WorkspaceFileTab,
     WorkspaceGitCommitTab,
+    WorkspaceGitHubIssueTab,
+    WorkspaceGitHubIssuesTab,
+    WorkspaceGitHubPullRequestTab,
+    WorkspaceGitHubPullRequestsTab,
     WorkspaceGitTab,
     WorkspaceNode,
     WorkspacePaneNode,
@@ -44,6 +48,12 @@ export type RuntimeWorkspaceChatTab = WorkspaceChatTab;
 export type RuntimeWorkspaceChatHistoryTab = WorkspaceChatHistoryTab;
 export type RuntimeWorkspaceReviewTab = WorkspaceReviewTab;
 export type RuntimeWorkspaceGitCommitTab = WorkspaceGitCommitTab;
+export type RuntimeWorkspaceGitHubIssueTab = WorkspaceGitHubIssueTab;
+export type RuntimeWorkspaceGitHubIssuesTab = WorkspaceGitHubIssuesTab;
+export type RuntimeWorkspaceGitHubPullRequestTab =
+    WorkspaceGitHubPullRequestTab;
+export type RuntimeWorkspaceGitHubPullRequestsTab =
+    WorkspaceGitHubPullRequestsTab;
 
 export interface RuntimeWorkspaceTerminalTab extends WorkspaceTerminalTab {
     readonly exitCode: number | null;
@@ -61,6 +71,10 @@ export type RuntimeWorkspaceTab =
     | RuntimeWorkspaceChatTab
     | RuntimeWorkspaceChatHistoryTab
     | RuntimeWorkspaceGitCommitTab
+    | RuntimeWorkspaceGitHubIssueTab
+    | RuntimeWorkspaceGitHubIssuesTab
+    | RuntimeWorkspaceGitHubPullRequestTab
+    | RuntimeWorkspaceGitHubPullRequestsTab
     | RuntimeWorkspaceGitTab
     | RuntimeWorkspaceReviewTab
     | RuntimeWorkspaceTerminalTab;

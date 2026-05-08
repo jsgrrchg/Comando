@@ -4,12 +4,17 @@ import { create } from "zustand";
 import type {
     AiImageAttachment,
     AiRuntimeId,
+    GitHubRepositoryRef,
     ProjectFileDocument,
     TerminalDataEvent,
     TerminalExitEvent,
     WorkspaceChatHistoryTab,
     WorkspaceChatTab,
     WorkspaceGitCommitTab,
+    WorkspaceGitHubIssueTab,
+    WorkspaceGitHubIssuesTab,
+    WorkspaceGitHubPullRequestTab,
+    WorkspaceGitHubPullRequestsTab,
     WorkspaceGitTab,
     WorkspaceReviewTab,
     WorkspaceSnapshot,
@@ -54,6 +59,10 @@ import {
     workspaceStateToSnapshot,
     type RuntimeWorkspaceChatHistoryTab,
     type RuntimeWorkspaceGitCommitTab,
+    type RuntimeWorkspaceGitHubIssueTab,
+    type RuntimeWorkspaceGitHubIssuesTab,
+    type RuntimeWorkspaceGitHubPullRequestTab,
+    type RuntimeWorkspaceGitHubPullRequestsTab,
     type MoveDirection,
     type RuntimeWorkspaceGitTab,
     type RuntimeWorkspaceFileReviewContext,
@@ -147,6 +156,28 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly commitSha: string;
         readonly projectId: string | null;
         readonly subject: string;
+        readonly worktreeId?: string | null;
+    }) => Promise<void>;
+    openGitHubIssuesTab: (input: {
+        readonly projectId: string | null;
+        readonly ref: GitHubRepositoryRef;
+        readonly worktreeId?: string | null;
+    }) => Promise<void>;
+    openGitHubIssueTab: (input: {
+        readonly issueNumber: number;
+        readonly projectId: string | null;
+        readonly ref: GitHubRepositoryRef;
+        readonly worktreeId?: string | null;
+    }) => Promise<void>;
+    openGitHubPullRequestsTab: (input: {
+        readonly projectId: string | null;
+        readonly ref: GitHubRepositoryRef;
+        readonly worktreeId?: string | null;
+    }) => Promise<void>;
+    openGitHubPullRequestTab: (input: {
+        readonly projectId: string | null;
+        readonly pullRequestNumber: number;
+        readonly ref: GitHubRepositoryRef;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
     handleTerminalExit: (event: TerminalExitEvent) => void;
@@ -762,6 +793,48 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ),
         }));
         await persistWorkspaceState(get);
+    },
+
+    openGitHubIssuesTab: async (input) => {
+        await openGitHubWorkspaceTab(get, set, {
+            kind: "github_issues",
+            projectId: input.projectId,
+            ref: input.ref,
+            title: "Issues",
+            worktreeId: input.worktreeId ?? null,
+        });
+    },
+
+    openGitHubIssueTab: async (input) => {
+        await openGitHubWorkspaceTab(get, set, {
+            issueNumber: input.issueNumber,
+            kind: "github_issue",
+            projectId: input.projectId,
+            ref: input.ref,
+            title: `#${input.issueNumber}`,
+            worktreeId: input.worktreeId ?? null,
+        });
+    },
+
+    openGitHubPullRequestsTab: async (input) => {
+        await openGitHubWorkspaceTab(get, set, {
+            kind: "github_pull_requests",
+            projectId: input.projectId,
+            ref: input.ref,
+            title: "Pull Requests",
+            worktreeId: input.worktreeId ?? null,
+        });
+    },
+
+    openGitHubPullRequestTab: async (input) => {
+        await openGitHubWorkspaceTab(get, set, {
+            kind: "github_pull_request",
+            projectId: input.projectId,
+            pullRequestNumber: input.pullRequestNumber,
+            ref: input.ref,
+            title: `PR #${input.pullRequestNumber}`,
+            worktreeId: input.worktreeId ?? null,
+        });
     },
 
     handleTerminalExit: (event) => {
@@ -2245,6 +2318,54 @@ function recordRecentlyClosedTab(
     ].slice(0, MAX_RECENTLY_CLOSED_TABS);
 }
 
+type GitHubWorkspaceTabInput =
+    | Omit<WorkspaceGitHubIssuesTab, "createdAt" | "id">
+    | Omit<WorkspaceGitHubIssueTab, "createdAt" | "id">
+    | Omit<WorkspaceGitHubPullRequestsTab, "createdAt" | "id">
+    | Omit<WorkspaceGitHubPullRequestTab, "createdAt" | "id">;
+
+async function openGitHubWorkspaceTab(
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    input: GitHubWorkspaceTabInput,
+): Promise<void> {
+    const existingTab = findExistingGitHubTab(get(), input);
+    if (existingTab) {
+        const paneId = findPaneIdByTabId(get(), existingTab.id);
+        if (!paneId) {
+            return;
+        }
+
+        set((state) => ({
+            ...selectPaneTab(state, paneId, existingTab.id),
+            error: null,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                existingTab.id,
+            ),
+        }));
+        await persistWorkspaceState(get);
+        return;
+    }
+
+    const tab = {
+        ...input,
+        createdAt: new Date().toISOString(),
+        id: crypto.randomUUID(),
+        worktreeId: input.worktreeId ?? null,
+    } as RuntimeWorkspaceTab;
+
+    set((state) => ({
+        ...attachTabToPane(state, state.activePaneId, tab),
+        error: null,
+        recentActiveTabIds: recordRecentTabActivation(
+            state.recentActiveTabIds,
+            tab.id,
+        ),
+    }));
+    await persistWorkspaceState(get);
+}
+
 function createHydratedRuntimeTabs(
     snapshot: WorkspaceSnapshot,
 ): Record<string, RuntimeWorkspaceTab> {
@@ -2263,6 +2384,15 @@ function createHydratedRuntimeTabs(
             }
 
             if (tab.kind === "git_commit") {
+                return [tab.id, tab] as const;
+            }
+
+            if (
+                tab.kind === "github_issues" ||
+                tab.kind === "github_issue" ||
+                tab.kind === "github_pull_requests" ||
+                tab.kind === "github_pull_request"
+            ) {
                 return [tab.id, tab] as const;
             }
 
@@ -2354,6 +2484,15 @@ async function hydrateRuntimeTabs(
             }
 
             if (tab.kind === "git_commit") {
+                return;
+            }
+
+            if (
+                tab.kind === "github_issues" ||
+                tab.kind === "github_issue" ||
+                tab.kind === "github_pull_requests" ||
+                tab.kind === "github_pull_request"
+            ) {
                 return;
             }
 
@@ -2856,6 +2995,77 @@ function findExistingGitCommitTab(
                     normalizeWorktreeId(worktreeId) &&
                 tab.commitSha === commitSha,
         ) ?? null
+    );
+}
+
+function findExistingGitHubTab(
+    state: WorkspaceTreeState,
+    input: GitHubWorkspaceTabInput,
+):
+    | RuntimeWorkspaceGitHubIssueTab
+    | RuntimeWorkspaceGitHubIssuesTab
+    | RuntimeWorkspaceGitHubPullRequestTab
+    | RuntimeWorkspaceGitHubPullRequestsTab
+    | null {
+    return (
+        Object.values(state.tabsById).find((tab): tab is
+            | RuntimeWorkspaceGitHubIssueTab
+            | RuntimeWorkspaceGitHubIssuesTab
+            | RuntimeWorkspaceGitHubPullRequestTab
+            | RuntimeWorkspaceGitHubPullRequestsTab => {
+            if (
+                tab.kind !== input.kind ||
+                !isGitHubTabKind(tab.kind) ||
+                tab.projectId !== input.projectId ||
+                normalizeWorktreeId(tab.worktreeId) !==
+                    normalizeWorktreeId(input.worktreeId) ||
+                !matchesGitHubRepositoryRef(tab.ref, input.ref)
+            ) {
+                return false;
+            }
+
+            if (tab.kind === "github_issue") {
+                return (
+                    input.kind === "github_issue" &&
+                    tab.issueNumber === input.issueNumber
+                );
+            }
+
+            if (tab.kind === "github_pull_request") {
+                return (
+                    input.kind === "github_pull_request" &&
+                    tab.pullRequestNumber === input.pullRequestNumber
+                );
+            }
+
+            return true;
+        }) ?? null
+    );
+}
+
+function isGitHubTabKind(
+    kind: RuntimeWorkspaceTab["kind"],
+): kind is
+    | "github_issue"
+    | "github_issues"
+    | "github_pull_request"
+    | "github_pull_requests" {
+    return (
+        kind === "github_issues" ||
+        kind === "github_issue" ||
+        kind === "github_pull_requests" ||
+        kind === "github_pull_request"
+    );
+}
+
+function matchesGitHubRepositoryRef(
+    left: GitHubRepositoryRef,
+    right: GitHubRepositoryRef,
+): boolean {
+    return (
+        left.host.toLowerCase() === right.host.toLowerCase() &&
+        left.owner === right.owner &&
+        left.repo === right.repo
     );
 }
 

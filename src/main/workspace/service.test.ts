@@ -194,6 +194,76 @@ describe("WorkspaceService", () => {
         expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
     });
 
+    it("persists and reloads GitHub workspace tabs", () => {
+        const connection = createTestConnection();
+        const service = new WorkspaceService(connection);
+        const workspaceId = "workspace-github";
+        const ref = {
+            host: "github.com",
+            owner: "octocat",
+            repo: "hello-world",
+        };
+
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "github-pr-tab-1",
+                id: "pane-root",
+                tabIds: [
+                    "github-issues-tab-1",
+                    "github-issue-tab-1",
+                    "github-prs-tab-1",
+                    "github-pr-tab-1",
+                ],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-05-07T00:01:00.000Z",
+                    id: "github-issues-tab-1",
+                    kind: "github_issues",
+                    projectId: "project-1",
+                    ref,
+                    title: "Issues",
+                    worktreeId: null,
+                },
+                {
+                    createdAt: "2026-05-07T00:02:00.000Z",
+                    id: "github-issue-tab-1",
+                    issueNumber: 123,
+                    kind: "github_issue",
+                    projectId: "project-1",
+                    ref,
+                    title: "#123",
+                    worktreeId: null,
+                },
+                {
+                    createdAt: "2026-05-07T00:03:00.000Z",
+                    id: "github-prs-tab-1",
+                    kind: "github_pull_requests",
+                    projectId: "project-1",
+                    ref,
+                    title: "Pull Requests",
+                    worktreeId: null,
+                },
+                {
+                    createdAt: "2026-05-07T00:04:00.000Z",
+                    id: "github-pr-tab-1",
+                    kind: "github_pull_request",
+                    projectId: "project-1",
+                    pullRequestNumber: 456,
+                    ref,
+                    title: "PR #456",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        service.saveSnapshot(workspaceId, snapshot);
+
+        expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
+    });
+
     it("updates only the rows that changed when saving the same workspace again", () => {
         const connection = createTestConnection();
         const service = new WorkspaceService(connection);

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ProjectFileDocument, WorkspacePaneNode } from "@shared/ipc";
+import type {
+    ProjectFileDocument,
+    WorkspacePaneNode,
+    WorkspaceSnapshot,
+} from "@shared/ipc";
 
 import {
     createDefaultWorkspaceState,
@@ -18,7 +22,9 @@ import {
     useWorkspaceStore,
 } from "./workspace-store";
 
-const saveWorkspaceSnapshotMock = vi.fn(async () => {});
+const saveWorkspaceSnapshotMock = vi.fn<
+    (snapshot: WorkspaceSnapshot) => Promise<void>
+>(async () => {});
 const closeAiSessionMock = vi.fn(async () => {});
 const closeTerminalSessionMock = vi.fn(async () => {});
 const ensureSessionMock = vi.fn(async () => {});
@@ -289,6 +295,90 @@ describe("workspace file opening", () => {
         });
         await flushWorkspacePersistenceForTests();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+    });
+
+    it("opens unique GitHub workspace tabs and reselects existing detail tabs", async () => {
+        const ref = {
+            host: "github.com",
+            owner: "octocat",
+            repo: "hello-world",
+        };
+
+        await useWorkspaceStore.getState().openGitHubIssuesTab({
+            projectId: "project-1",
+            ref,
+            worktreeId: "worktree-1",
+        });
+        await useWorkspaceStore.getState().openGitHubIssueTab({
+            issueNumber: 123,
+            projectId: "project-1",
+            ref,
+            worktreeId: "worktree-1",
+        });
+        await useWorkspaceStore.getState().openGitHubPullRequestsTab({
+            projectId: "project-1",
+            ref,
+            worktreeId: "worktree-1",
+        });
+        await useWorkspaceStore.getState().openGitHubPullRequestTab({
+            projectId: "project-1",
+            pullRequestNumber: 456,
+            ref,
+            worktreeId: "worktree-1",
+        });
+        await useWorkspaceStore.getState().openGitHubPullRequestTab({
+            projectId: "project-1",
+            pullRequestNumber: 456,
+            ref,
+            worktreeId: "worktree-1",
+        });
+
+        const state = useWorkspaceStore.getState();
+        const tabs = Object.values(state.tabsById);
+        const pane = state.rootNode.type === "pane" ? state.rootNode : null;
+
+        expect(tabs.map((tab) => tab.kind)).toEqual([
+            "github_issues",
+            "github_issue",
+            "github_pull_requests",
+            "github_pull_request",
+        ]);
+        expect(tabs.map((tab) => tab.title)).toEqual([
+            "Issues",
+            "#123",
+            "Pull Requests",
+            "PR #456",
+        ]);
+        expect(pane?.tabIds).toHaveLength(4);
+        expect(pane?.activeTabId).toBe(
+            tabs.find((tab) => tab.kind === "github_pull_request")?.id,
+        );
+
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        const persistedSnapshot =
+            saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+        if (!persistedSnapshot) {
+            throw new Error("Expected workspace snapshot to be persisted.");
+        }
+        expect(persistedSnapshot.tabs).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    issueNumber: 123,
+                    kind: "github_issue",
+                    ref,
+                    title: "#123",
+                    worktreeId: "worktree-1",
+                }),
+                expect.objectContaining({
+                    kind: "github_pull_request",
+                    pullRequestNumber: 456,
+                    ref,
+                    title: "PR #456",
+                    worktreeId: "worktree-1",
+                }),
+            ]),
+        );
     });
 
     it("opens a file in a new split target", async () => {

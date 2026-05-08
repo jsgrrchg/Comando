@@ -4,10 +4,15 @@ import type Database from "better-sqlite3";
 
 import type {
     PersistedChatSessionState,
+    GitHubRepositoryRef,
     WorkspaceChatHistoryTab,
     WorkspaceChatTab,
     WorkspaceFileTab,
     WorkspaceGitCommitTab,
+    WorkspaceGitHubIssueTab,
+    WorkspaceGitHubIssuesTab,
+    WorkspaceGitHubPullRequestTab,
+    WorkspaceGitHubPullRequestsTab,
     WorkspaceGitTab,
     WorkspaceNode,
     WorkspaceReviewTab,
@@ -69,6 +74,22 @@ type WorkspaceChatHistoryPayload = Omit<
 >;
 type WorkspaceGitCommitPayload = Omit<
     WorkspaceGitCommitTab,
+    "createdAt" | "id" | "title"
+>;
+type WorkspaceGitHubIssuesPayload = Omit<
+    WorkspaceGitHubIssuesTab,
+    "createdAt" | "id" | "title"
+>;
+type WorkspaceGitHubIssuePayload = Omit<
+    WorkspaceGitHubIssueTab,
+    "createdAt" | "id" | "title"
+>;
+type WorkspaceGitHubPullRequestsPayload = Omit<
+    WorkspaceGitHubPullRequestsTab,
+    "createdAt" | "id" | "title"
+>;
+type WorkspaceGitHubPullRequestPayload = Omit<
+    WorkspaceGitHubPullRequestTab,
     "createdAt" | "id" | "title"
 >;
 type WorkspaceGitPayload = Omit<WorkspaceGitTab, "createdAt" | "id" | "title">;
@@ -393,6 +414,10 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
         | WorkspaceChatPayload
         | WorkspaceChatHistoryPayload
         | WorkspaceGitCommitPayload
+        | WorkspaceGitHubIssuePayload
+        | WorkspaceGitHubIssuesPayload
+        | WorkspaceGitHubPullRequestPayload
+        | WorkspaceGitHubPullRequestsPayload
         | WorkspaceGitPayload
         | WorkspaceReviewPayload
         | WorkspaceTerminalPayload
@@ -536,6 +561,98 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
         };
     }
 
+    if (row.kind === "github_commit_tree") {
+        return null;
+    }
+
+    if (row.kind === "github_issues") {
+        const githubPayload = payload as Partial<WorkspaceGitHubIssuesPayload>;
+        const ref = parseGitHubRepositoryRef(githubPayload.ref);
+        if (!ref) {
+            return null;
+        }
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "github_issues",
+            projectId: parseNullableString(githubPayload.projectId),
+            ref,
+            title: row.title,
+            worktreeId: parseNullableString(
+                githubPayload.worktreeId,
+                row.worktree_id,
+            ),
+        };
+    }
+
+    if (row.kind === "github_issue") {
+        const githubPayload = payload as Partial<WorkspaceGitHubIssuePayload>;
+        const ref = parseGitHubRepositoryRef(githubPayload.ref);
+        if (!ref || typeof githubPayload.issueNumber !== "number") {
+            return null;
+        }
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            issueNumber: githubPayload.issueNumber,
+            kind: "github_issue",
+            projectId: parseNullableString(githubPayload.projectId),
+            ref,
+            title: row.title,
+            worktreeId: parseNullableString(
+                githubPayload.worktreeId,
+                row.worktree_id,
+            ),
+        };
+    }
+
+    if (row.kind === "github_pull_requests") {
+        const githubPayload =
+            payload as Partial<WorkspaceGitHubPullRequestsPayload>;
+        const ref = parseGitHubRepositoryRef(githubPayload.ref);
+        if (!ref) {
+            return null;
+        }
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "github_pull_requests",
+            projectId: parseNullableString(githubPayload.projectId),
+            ref,
+            title: row.title,
+            worktreeId: parseNullableString(
+                githubPayload.worktreeId,
+                row.worktree_id,
+            ),
+        };
+    }
+
+    if (row.kind === "github_pull_request") {
+        const githubPayload =
+            payload as Partial<WorkspaceGitHubPullRequestPayload>;
+        const ref = parseGitHubRepositoryRef(githubPayload.ref);
+        if (!ref || typeof githubPayload.pullRequestNumber !== "number") {
+            return null;
+        }
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "github_pull_request",
+            projectId: parseNullableString(githubPayload.projectId),
+            pullRequestNumber: githubPayload.pullRequestNumber,
+            ref,
+            title: row.title,
+            worktreeId: parseNullableString(
+                githubPayload.worktreeId,
+                row.worktree_id,
+            ),
+        };
+    }
+
     return {
         ...payload,
         createdAt: row.created_at,
@@ -556,6 +673,10 @@ function serializeTab(
     | WorkspaceChatPayload
     | WorkspaceChatHistoryPayload
     | WorkspaceGitCommitPayload
+    | WorkspaceGitHubIssuePayload
+    | WorkspaceGitHubIssuesPayload
+    | WorkspaceGitHubPullRequestPayload
+    | WorkspaceGitHubPullRequestsPayload
     | WorkspaceGitPayload
     | WorkspaceReviewPayload
     | WorkspaceTerminalPayload {
@@ -614,11 +735,87 @@ function serializeTab(
         };
     }
 
+    if (tab.kind === "github_issues") {
+        return {
+            kind: tab.kind,
+            projectId: tab.projectId,
+            ref: tab.ref,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
+    if (tab.kind === "github_issue") {
+        return {
+            issueNumber: tab.issueNumber,
+            kind: tab.kind,
+            projectId: tab.projectId,
+            ref: tab.ref,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
+    if (tab.kind === "github_pull_requests") {
+        return {
+            kind: tab.kind,
+            projectId: tab.projectId,
+            ref: tab.ref,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
+    if (tab.kind === "github_pull_request") {
+        return {
+            kind: tab.kind,
+            projectId: tab.projectId,
+            pullRequestNumber: tab.pullRequestNumber,
+            ref: tab.ref,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
     return {
         kind: tab.kind,
         projectId: tab.projectId,
         sessionId: tab.sessionId,
         worktreeId: tab.worktreeId ?? null,
+    };
+}
+
+function parseNullableString(
+    value: unknown,
+    fallback: string | null = null,
+): string | null {
+    if (typeof value === "string" || value === null) {
+        return value;
+    }
+
+    return fallback;
+}
+
+function parseGitHubRepositoryRef(
+    value: unknown,
+): GitHubRepositoryRef | null {
+    if (typeof value !== "object" || value === null) {
+        return null;
+    }
+
+    const candidate = value as {
+        readonly host?: unknown;
+        readonly owner?: unknown;
+        readonly repo?: unknown;
+    };
+    if (
+        typeof candidate.host !== "string" ||
+        typeof candidate.owner !== "string" ||
+        typeof candidate.repo !== "string"
+    ) {
+        return null;
+    }
+
+    return {
+        host: candidate.host,
+        owner: candidate.owner,
+        repo: candidate.repo,
     };
 }
 
