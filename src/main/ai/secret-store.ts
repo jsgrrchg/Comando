@@ -6,7 +6,11 @@ import { debugBenignError } from "@main/observability/logging";
 
 export interface SecretStoreGateway {
     loadSecret(namespace: string, secretId: string): string | null;
-    saveSecret(namespace: string, secretId: string, value: string | null): void;
+    saveSecret(
+        namespace: string,
+        secretId: string,
+        value: string | null,
+    ): Promise<void> | void;
 }
 
 interface SettingRow {

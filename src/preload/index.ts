@@ -71,6 +71,50 @@ import {
     type GitDiffInput,
     type GitFileDiff,
     type GitFetchInput,
+    type GitHubAuthStatus,
+    type GitHubAuthStatusInput,
+    type GitHubClearTokenInput,
+    type GitHubCommentIssueInput,
+    type GitHubCommentPullRequestInput,
+    type GitHubCommentSummary,
+    type GitHubCreateIssueInput,
+    type GitHubCreatePullRequestInput,
+    type GitHubGetIssueInput,
+    type GitHubGetPullRequestInput,
+    type GitHubIssueDetail,
+    type GitHubListIssuesInput,
+    type GitHubListIssuesResult,
+    type GitHubListMilestonesInput,
+    type GitHubListMilestonesResult,
+    type GitHubListPullRequestsInput,
+    type GitHubListPullRequestsResult,
+    type GitHubListReleasesInput,
+    type GitHubListReleasesResult,
+    type GitHubNotificationsInput,
+    type GitHubNotificationsResult,
+    type GitHubPullRequestChecksInput,
+    type GitHubPullRequestChecksResult,
+    type GitHubPullRequestDetail,
+    type GitHubCreateReleaseInput,
+    type GitHubGeneratedReleaseNotes,
+    type GitHubGenerateReleaseNotesInput,
+    type GitHubPublishReleaseInput,
+    type GitHubReleaseSummary,
+    type GitHubRequestPullRequestReviewInput,
+    type GitHubSaveTokenInput,
+    type GitHubSetIssueStateInput,
+    type GitHubSetPullRequestDraftStateInput,
+    type GitHubCheckRunAnnotationsInput,
+    type GitHubCheckRunAnnotationsResult,
+    type GitHubWorkflowJobLogsInput,
+    type GitHubWorkflowJobLogsResult,
+    type GitHubWorkflowRunArtifactsInput,
+    type GitHubWorkflowRunArtifactsResult,
+    type GitHubWorkflowRunJobsInput,
+    type GitHubWorkflowRunJobsResult,
+    type GitHubWorkflowRunMutationInput,
+    type GitHubWorkflowRunsInput,
+    type GitHubWorkflowRunsResult,
     type GitHistoryListInput,
     type GitHistoryListResult,
     type GitPullInput,
@@ -477,6 +521,20 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onGitHubAuthUpdated: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            payload: GitHubAuthStatus,
+        ) => {
+            listener(payload);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.githubAuthUpdated, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(IPC_EVENTS.githubAuthUpdated, handleEvent);
+        };
+    },
     onThemeUpdated: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -727,6 +785,200 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.pushGitRepository,
             input,
         ) as Promise<GitRepositorySnapshot>,
+    getGitHubAuthStatus: async (input: GitHubAuthStatusInput) =>
+        assertIpcObject<GitHubAuthStatus>(
+            IPC_CHANNELS.getGitHubAuthStatus,
+            await ipcRenderer.invoke(IPC_CHANNELS.getGitHubAuthStatus, input),
+        ),
+    saveGitHubToken: async (input: GitHubSaveTokenInput) =>
+        assertIpcObject<GitHubAuthStatus>(
+            IPC_CHANNELS.saveGitHubToken,
+            await ipcRenderer.invoke(IPC_CHANNELS.saveGitHubToken, input),
+        ),
+    clearGitHubToken: async (input: GitHubClearTokenInput) =>
+        assertIpcObject<GitHubAuthStatus>(
+            IPC_CHANNELS.clearGitHubToken,
+            await ipcRenderer.invoke(IPC_CHANNELS.clearGitHubToken, input),
+        ),
+    listGitHubIssues: async (input: GitHubListIssuesInput) =>
+        assertIpcObject<GitHubListIssuesResult>(
+            IPC_CHANNELS.listGitHubIssues,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitHubIssues, input),
+        ),
+    getGitHubIssue: async (input: GitHubGetIssueInput) =>
+        assertIpcObjectOrNull<GitHubIssueDetail>(
+            IPC_CHANNELS.getGitHubIssue,
+            await ipcRenderer.invoke(IPC_CHANNELS.getGitHubIssue, input),
+        ),
+    createGitHubIssue: async (input: GitHubCreateIssueInput) =>
+        assertIpcObject<GitHubIssueDetail>(
+            IPC_CHANNELS.createGitHubIssue,
+            await ipcRenderer.invoke(IPC_CHANNELS.createGitHubIssue, input),
+        ),
+    commentGitHubIssue: async (input: GitHubCommentIssueInput) =>
+        assertIpcObject<GitHubCommentSummary>(
+            IPC_CHANNELS.commentGitHubIssue,
+            await ipcRenderer.invoke(IPC_CHANNELS.commentGitHubIssue, input),
+        ),
+    closeGitHubIssue: async (input: GitHubSetIssueStateInput) =>
+        assertIpcObject<GitHubIssueDetail>(
+            IPC_CHANNELS.closeGitHubIssue,
+            await ipcRenderer.invoke(IPC_CHANNELS.closeGitHubIssue, input),
+        ),
+    reopenGitHubIssue: async (input: GitHubSetIssueStateInput) =>
+        assertIpcObject<GitHubIssueDetail>(
+            IPC_CHANNELS.reopenGitHubIssue,
+            await ipcRenderer.invoke(IPC_CHANNELS.reopenGitHubIssue, input),
+        ),
+    listGitHubPullRequests: async (input: GitHubListPullRequestsInput) =>
+        assertIpcObject<GitHubListPullRequestsResult>(
+            IPC_CHANNELS.listGitHubPullRequests,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.listGitHubPullRequests,
+                input,
+            ),
+        ),
+    getGitHubPullRequest: async (input: GitHubGetPullRequestInput) =>
+        assertIpcObjectOrNull<GitHubPullRequestDetail>(
+            IPC_CHANNELS.getGitHubPullRequest,
+            await ipcRenderer.invoke(IPC_CHANNELS.getGitHubPullRequest, input),
+        ),
+    listGitHubPullRequestChecks: async (
+        input: GitHubPullRequestChecksInput,
+    ) =>
+        assertIpcObject<GitHubPullRequestChecksResult>(
+            IPC_CHANNELS.listGitHubPullRequestChecks,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.listGitHubPullRequestChecks,
+                input,
+            ),
+        ),
+    createGitHubPullRequest: async (input: GitHubCreatePullRequestInput) =>
+        assertIpcObject<GitHubPullRequestDetail>(
+            IPC_CHANNELS.createGitHubPullRequest,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.createGitHubPullRequest,
+                input,
+            ),
+        ),
+    commentGitHubPullRequest: async (input: GitHubCommentPullRequestInput) =>
+        assertIpcObject<GitHubCommentSummary>(
+            IPC_CHANNELS.commentGitHubPullRequest,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.commentGitHubPullRequest,
+                input,
+            ),
+        ),
+    markGitHubPullRequestReady: async (
+        input: GitHubSetPullRequestDraftStateInput,
+    ) =>
+        assertIpcObject<GitHubPullRequestDetail>(
+            IPC_CHANNELS.markGitHubPullRequestReady,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.markGitHubPullRequestReady,
+                input,
+            ),
+        ),
+    convertGitHubPullRequestToDraft: async (
+        input: GitHubSetPullRequestDraftStateInput,
+    ) =>
+        assertIpcObject<GitHubPullRequestDetail>(
+            IPC_CHANNELS.convertGitHubPullRequestToDraft,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.convertGitHubPullRequestToDraft,
+                input,
+            ),
+        ),
+    requestGitHubPullRequestReviewers: async (
+        input: GitHubRequestPullRequestReviewInput,
+    ) =>
+        assertIpcObject<GitHubPullRequestDetail>(
+            IPC_CHANNELS.requestGitHubPullRequestReviewers,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.requestGitHubPullRequestReviewers,
+                input,
+            ),
+        ),
+    listGitHubWorkflowRuns: async (input: GitHubWorkflowRunsInput) =>
+        assertIpcObject<GitHubWorkflowRunsResult>(
+            IPC_CHANNELS.listGitHubWorkflowRuns,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitHubWorkflowRuns, input),
+        ),
+    listGitHubWorkflowRunJobs: async (input: GitHubWorkflowRunJobsInput) =>
+        assertIpcObject<GitHubWorkflowRunJobsResult>(
+            IPC_CHANNELS.listGitHubWorkflowRunJobs,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.listGitHubWorkflowRunJobs,
+                input,
+            ),
+        ),
+    getGitHubWorkflowJobLogs: async (input: GitHubWorkflowJobLogsInput) =>
+        assertIpcObject<GitHubWorkflowJobLogsResult>(
+            IPC_CHANNELS.getGitHubWorkflowJobLogs,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getGitHubWorkflowJobLogs,
+                input,
+            ),
+        ),
+    listGitHubWorkflowRunArtifacts: async (
+        input: GitHubWorkflowRunArtifactsInput,
+    ) =>
+        assertIpcObject<GitHubWorkflowRunArtifactsResult>(
+            IPC_CHANNELS.listGitHubWorkflowRunArtifacts,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.listGitHubWorkflowRunArtifacts,
+                input,
+            ),
+        ),
+    listGitHubCheckRunAnnotations: async (
+        input: GitHubCheckRunAnnotationsInput,
+    ) =>
+        assertIpcObject<GitHubCheckRunAnnotationsResult>(
+            IPC_CHANNELS.listGitHubCheckRunAnnotations,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.listGitHubCheckRunAnnotations,
+                input,
+            ),
+        ),
+    rerunGitHubWorkflowRunFailedJobs: (input: GitHubWorkflowRunMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.rerunGitHubWorkflowRunFailedJobs, input),
+    cancelGitHubWorkflowRun: (input: GitHubWorkflowRunMutationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.cancelGitHubWorkflowRun, input),
+    listGitHubNotifications: async (input: GitHubNotificationsInput) =>
+        assertIpcObject<GitHubNotificationsResult>(
+            IPC_CHANNELS.listGitHubNotifications,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitHubNotifications, input),
+        ),
+    listGitHubReleases: async (input: GitHubListReleasesInput) =>
+        assertIpcObject<GitHubListReleasesResult>(
+            IPC_CHANNELS.listGitHubReleases,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitHubReleases, input),
+        ),
+    generateGitHubReleaseNotes: async (
+        input: GitHubGenerateReleaseNotesInput,
+    ) =>
+        assertIpcObject<GitHubGeneratedReleaseNotes>(
+            IPC_CHANNELS.generateGitHubReleaseNotes,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.generateGitHubReleaseNotes,
+                input,
+            ),
+        ),
+    createGitHubRelease: async (input: GitHubCreateReleaseInput) =>
+        assertIpcObject<GitHubReleaseSummary>(
+            IPC_CHANNELS.createGitHubRelease,
+            await ipcRenderer.invoke(IPC_CHANNELS.createGitHubRelease, input),
+        ),
+    publishGitHubRelease: async (input: GitHubPublishReleaseInput) =>
+        assertIpcObject<GitHubReleaseSummary>(
+            IPC_CHANNELS.publishGitHubRelease,
+            await ipcRenderer.invoke(IPC_CHANNELS.publishGitHubRelease, input),
+        ),
+    listGitHubMilestones: async (input: GitHubListMilestonesInput) =>
+        assertIpcObject<GitHubListMilestonesResult>(
+            IPC_CHANNELS.listGitHubMilestones,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitHubMilestones, input),
+        ),
     listProjectTree: (input: ListProjectTreeInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.listProjectTree, input),
     listProjectEntries: (input: ListProjectEntriesInput) =>

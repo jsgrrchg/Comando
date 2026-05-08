@@ -30,6 +30,7 @@ import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
 import { createGitWorkerClient, type GitWorkerClient } from "./git";
+import { GitHubService } from "./github/service";
 import {
     installFilePreviewProtocol,
     registerFilePreviewSchemes,
@@ -60,6 +61,7 @@ let aiWorkerClient: AiWorkerClient | null = null;
 let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
 let gitService: GitWorkerClient | null = null;
+let githubService: GitHubService | null = null;
 let secretStore: SecretStoreGateway | null = null;
 let settingsService: SettingsGateway | null = null;
 let terminalService: TerminalService | null = null;
@@ -106,6 +108,7 @@ if (!hasSingleInstanceLock) {
             });
             persistenceService = dbWorkerClient.persistence;
             secretStore = dbWorkerClient.secretStore;
+            githubService = new GitHubService({ secretStore });
             settingsService = dbWorkerClient.settings;
             gitService = await createGitWorkerClient();
             const projectWorker = await createProjectWorkerClient({
@@ -204,6 +207,7 @@ if (!hasSingleInstanceLock) {
                 },
                 persistenceService,
                 gitService,
+                githubService,
                 openProjectWindow: (input) => {
                     openOrFocusProjectWindow(input);
                 },
@@ -332,6 +336,7 @@ async function shutdownApplication(): Promise<void> {
     aiWorkerClient = null;
     dbWorkerClient = null;
     gitService = null;
+    githubService = null;
     persistenceService = null;
     projectService = null;
     secretStore = null;

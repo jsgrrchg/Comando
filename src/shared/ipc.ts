@@ -56,6 +56,37 @@ export const IPC_CHANNELS = {
     fetchGitRepository: "git:fetch",
     pullGitRepository: "git:pull",
     pushGitRepository: "git:push",
+    getGitHubAuthStatus: "github:get-auth-status",
+    saveGitHubToken: "github:save-token",
+    clearGitHubToken: "github:clear-token",
+    listGitHubIssues: "github:list-issues",
+    getGitHubIssue: "github:get-issue",
+    createGitHubIssue: "github:create-issue",
+    commentGitHubIssue: "github:comment-issue",
+    closeGitHubIssue: "github:close-issue",
+    reopenGitHubIssue: "github:reopen-issue",
+    listGitHubPullRequests: "github:list-pull-requests",
+    getGitHubPullRequest: "github:get-pull-request",
+    listGitHubPullRequestChecks: "github:list-pull-request-checks",
+    createGitHubPullRequest: "github:create-pull-request",
+    commentGitHubPullRequest: "github:comment-pull-request",
+    markGitHubPullRequestReady: "github:mark-pull-request-ready",
+    convertGitHubPullRequestToDraft: "github:convert-pull-request-to-draft",
+    requestGitHubPullRequestReviewers:
+        "github:request-pull-request-reviewers",
+    listGitHubWorkflowRuns: "github:list-workflow-runs",
+    listGitHubWorkflowRunJobs: "github:list-workflow-run-jobs",
+    getGitHubWorkflowJobLogs: "github:get-workflow-job-logs",
+    listGitHubWorkflowRunArtifacts: "github:list-workflow-run-artifacts",
+    listGitHubCheckRunAnnotations: "github:list-check-run-annotations",
+    rerunGitHubWorkflowRunFailedJobs: "github:rerun-workflow-run-failed-jobs",
+    cancelGitHubWorkflowRun: "github:cancel-workflow-run",
+    listGitHubNotifications: "github:list-notifications",
+    listGitHubReleases: "github:list-releases",
+    generateGitHubReleaseNotes: "github:generate-release-notes",
+    createGitHubRelease: "github:create-release",
+    publishGitHubRelease: "github:publish-release",
+    listGitHubMilestones: "github:list-milestones",
     listProjects: "projects:list",
     openProjects: "projects:open",
     cloneRepository: "projects:clone-repository",
@@ -124,6 +155,7 @@ export const IPC_EVENTS = {
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
+    githubAuthUpdated: "github:auth-updated",
     terminalData: "terminals:data",
     terminalExit: "terminals:exit",
     aiRuntimeStatus: "ai:runtime-status",
@@ -787,6 +819,573 @@ export interface GitPushInput extends GitRepositoryScopeInput {
     readonly setUpstream?: boolean;
 }
 
+export interface GitHubRepositoryRef {
+    readonly host: string;
+    readonly owner: string;
+    readonly repo: string;
+}
+
+export type GitHubAuthState =
+    | "authenticated"
+    | "invalid"
+    | "missing"
+    | "unknown";
+
+export type GitHubErrorCode =
+    | "forbidden"
+    | "invalid_auth"
+    | "missing_auth"
+    | "missing_remote"
+    | "network_error"
+    | "not_found"
+    | "rate_limited"
+    | "unknown";
+
+export type GitHubIssueState = "closed" | "open";
+
+export type GitHubIssueStateReason =
+    | "completed"
+    | "not_planned"
+    | "reopened";
+
+export type GitHubPullRequestState = "closed" | "merged" | "open";
+
+export interface GitHubHostInput {
+    readonly host?: string | null;
+}
+
+export type GitHubAuthStatusInput = GitHubHostInput;
+
+export interface GitHubAuthStatus {
+    readonly canReadActions: boolean;
+    readonly canWriteActions: boolean;
+    readonly canWriteIssues: boolean;
+    readonly canWritePullRequests: boolean;
+    readonly checkedAt: string;
+    readonly errorCode: GitHubErrorCode | null;
+    readonly host: string;
+    readonly readOnly: boolean;
+    readonly state: GitHubAuthState;
+    readonly user: GitHubUserSummary | null;
+}
+
+export interface GitHubSaveTokenInput extends GitHubHostInput {
+    readonly token: string;
+}
+
+export type GitHubClearTokenInput = GitHubHostInput;
+
+export interface GitHubRepositoryInput {
+    readonly repository: GitHubRepositoryRef;
+}
+
+export interface GitHubPaginationInput {
+    readonly cursor?: string | null;
+    readonly limit?: number | null;
+}
+
+export interface GitHubMutationInput {
+    readonly clientRequestId?: string | null;
+}
+
+export interface GitHubUserSummary {
+    readonly avatarUrl: string | null;
+    readonly id: number;
+    readonly login: string;
+    readonly url: string;
+}
+
+export interface GitHubLabelSummary {
+    readonly color: string;
+    readonly description: string | null;
+    readonly id: number;
+    readonly name: string;
+}
+
+export interface GitHubMilestoneSummary {
+    readonly dueOn: string | null;
+    readonly id: number;
+    readonly number: number;
+    readonly state: GitHubIssueState;
+    readonly title: string;
+}
+
+export interface GitHubCommentSummary {
+    readonly author: GitHubUserSummary | null;
+    readonly body: string;
+    readonly createdAt: string;
+    readonly id: number;
+    readonly updatedAt: string;
+    readonly url: string;
+}
+
+export interface GitHubIssueSummary {
+    readonly assignees: readonly GitHubUserSummary[];
+    readonly author: GitHubUserSummary | null;
+    readonly closedAt: string | null;
+    readonly commentCount: number;
+    readonly createdAt: string;
+    readonly id: number;
+    readonly isLocked: boolean;
+    readonly labels: readonly GitHubLabelSummary[];
+    readonly milestone: GitHubMilestoneSummary | null;
+    readonly nodeId: string;
+    readonly number: number;
+    readonly state: GitHubIssueState;
+    readonly stateReason: GitHubIssueStateReason | null;
+    readonly title: string;
+    readonly updatedAt: string;
+    readonly url: string;
+}
+
+export interface GitHubIssueDetail extends GitHubIssueSummary {
+    readonly body: string;
+    readonly comments: readonly GitHubCommentSummary[];
+}
+
+export interface GitHubListIssuesInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {
+    readonly assignee?: string | null;
+    readonly labels?: readonly string[] | null;
+    readonly query?: string | null;
+    readonly state?: GitHubIssueState | "all";
+}
+
+export interface GitHubListIssuesResult {
+    readonly issues: readonly GitHubIssueSummary[];
+    readonly nextCursor: string | null;
+    readonly totalCount: number | null;
+}
+
+export interface GitHubGetIssueInput extends GitHubRepositoryInput {
+    readonly number: number;
+}
+
+export interface GitHubCreateIssueInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly assignees?: readonly string[] | null;
+    readonly body?: string | null;
+    readonly labels?: readonly string[] | null;
+    readonly milestoneNumber?: number | null;
+    readonly title: string;
+}
+
+export interface GitHubCommentIssueInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly body: string;
+    readonly number: number;
+}
+
+export interface GitHubSetIssueStateInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly number: number;
+    readonly state: GitHubIssueState;
+    readonly stateReason?: GitHubIssueStateReason | null;
+}
+
+export interface GitHubPullRequestBranchRef {
+    readonly label: string;
+    readonly ref: string;
+    readonly repository: GitHubRepositoryRef;
+    readonly sha: string;
+}
+
+export interface GitHubPullRequestSummary {
+    readonly additions: number | null;
+    readonly author: GitHubUserSummary | null;
+    readonly base: GitHubPullRequestBranchRef;
+    readonly changedFileCount: number | null;
+    readonly closedAt: string | null;
+    readonly commentCount: number;
+    readonly commitCount: number | null;
+    readonly createdAt: string;
+    readonly deletions: number | null;
+    readonly draft: boolean;
+    readonly head: GitHubPullRequestBranchRef;
+    readonly id: number;
+    readonly labels: readonly GitHubLabelSummary[];
+    readonly mergedAt: string | null;
+    readonly nodeId: string;
+    readonly number: number;
+    readonly state: GitHubPullRequestState;
+    readonly title: string;
+    readonly updatedAt: string;
+    readonly url: string;
+}
+
+export interface GitHubCommitSummary {
+    readonly additions: number | null;
+    readonly author: GitHubUserSummary | null;
+    readonly authoredAt: string;
+    readonly committer: GitHubUserSummary | null;
+    readonly committedAt: string;
+    readonly deletions: number | null;
+    readonly message: string;
+    readonly parentShas: readonly string[];
+    readonly sha: string;
+    readonly shortSha: string;
+    readonly url: string;
+}
+
+export interface GitHubPullRequestDetail extends GitHubPullRequestSummary {
+    readonly body: string;
+    readonly comments: readonly GitHubCommentSummary[];
+    readonly commits: readonly GitHubCommitSummary[];
+    readonly mergeable: boolean | null;
+}
+
+export type GitHubPullRequestChecksState =
+    | "failure"
+    | "pending"
+    | "success"
+    | "unknown";
+
+export type GitHubPullRequestCheckStatus =
+    | "completed"
+    | "in_progress"
+    | "pending"
+    | "queued"
+    | "unknown";
+
+export type GitHubPullRequestCheckConclusion =
+    | "action_required"
+    | "cancelled"
+    | "failure"
+    | "neutral"
+    | "skipped"
+    | "startup_failure"
+    | "success"
+    | "timed_out"
+    | "unknown";
+
+export interface GitHubPullRequestCheckSummary {
+    readonly completedAt: string | null;
+    readonly conclusion: GitHubPullRequestCheckConclusion | null;
+    readonly detailsUrl: string | null;
+    readonly id: string;
+    readonly name: string;
+    readonly source: "check_run" | "status";
+    readonly startedAt: string | null;
+    readonly status: GitHubPullRequestCheckStatus;
+}
+
+export interface GitHubPullRequestChecksInput extends GitHubRepositoryInput {
+    readonly headSha: string;
+    readonly pullRequestNumber: number;
+}
+
+export interface GitHubPullRequestChecksResult {
+    readonly checkedAt: string;
+    readonly checks: readonly GitHubPullRequestCheckSummary[];
+    readonly headSha: string;
+    readonly pullRequestNumber: number;
+    readonly state: GitHubPullRequestChecksState;
+    readonly url: string;
+}
+
+export interface GitHubListPullRequestsInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {
+    readonly base?: string | null;
+    readonly head?: string | null;
+    readonly query?: string | null;
+    readonly state?: GitHubIssueState | "all";
+}
+
+export interface GitHubListPullRequestsResult {
+    readonly nextCursor: string | null;
+    readonly pullRequests: readonly GitHubPullRequestSummary[];
+    readonly totalCount: number | null;
+}
+
+export interface GitHubGetPullRequestInput extends GitHubRepositoryInput {
+    readonly number: number;
+}
+
+export interface GitHubCreatePullRequestInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly base: string;
+    readonly body?: string | null;
+    readonly draft?: boolean;
+    readonly head: string;
+    readonly maintainerCanModify?: boolean;
+    readonly title: string;
+}
+
+export interface GitHubCommentPullRequestInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly body: string;
+    readonly number: number;
+}
+
+export interface GitHubSetPullRequestDraftStateInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly draft: boolean;
+    readonly number: number;
+}
+
+export interface GitHubRequestPullRequestReviewInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly number: number;
+    readonly reviewers?: readonly string[] | null;
+    readonly teamReviewers?: readonly string[] | null;
+}
+
+export type GitHubWorkflowRunStatus =
+    | "completed"
+    | "in_progress"
+    | "queued"
+    | "requested"
+    | "unknown"
+    | "waiting";
+
+export type GitHubWorkflowConclusion =
+    | "action_required"
+    | "cancelled"
+    | "failure"
+    | "neutral"
+    | "skipped"
+    | "stale"
+    | "success"
+    | "timed_out"
+    | "unknown";
+
+export interface GitHubWorkflowRunSummary {
+    readonly branch: string;
+    readonly checkSuiteId: number | null;
+    readonly conclusion: GitHubWorkflowConclusion | null;
+    readonly createdAt: string;
+    readonly event: string;
+    readonly headSha: string;
+    readonly id: number;
+    readonly name: string;
+    readonly runAttempt: number;
+    readonly runNumber: number;
+    readonly status: GitHubWorkflowRunStatus;
+    readonly updatedAt: string;
+    readonly url: string;
+    readonly workflowName: string;
+}
+
+export interface GitHubWorkflowJobStepSummary {
+    readonly completedAt: string | null;
+    readonly conclusion: GitHubWorkflowConclusion | null;
+    readonly name: string;
+    readonly number: number;
+    readonly startedAt: string | null;
+    readonly status: GitHubWorkflowRunStatus;
+}
+
+export interface GitHubWorkflowJobSummary {
+    readonly checkRunId: number | null;
+    readonly completedAt: string | null;
+    readonly conclusion: GitHubWorkflowConclusion | null;
+    readonly id: number;
+    readonly name: string;
+    readonly runnerName: string | null;
+    readonly startedAt: string | null;
+    readonly status: GitHubWorkflowRunStatus;
+    readonly steps: readonly GitHubWorkflowJobStepSummary[];
+    readonly url: string;
+}
+
+export interface GitHubWorkflowArtifactSummary {
+    readonly archiveDownloadUrl: string;
+    readonly createdAt: string;
+    readonly expired: boolean;
+    readonly expiresAt: string | null;
+    readonly id: number;
+    readonly name: string;
+    readonly sizeInBytes: number;
+    readonly updatedAt: string;
+    readonly url: string;
+}
+
+export interface GitHubCheckRunAnnotationSummary {
+    readonly annotationLevel: "failure" | "notice" | "warning";
+    readonly blobHref: string | null;
+    readonly endColumn: number | null;
+    readonly endLine: number | null;
+    readonly message: string;
+    readonly path: string;
+    readonly rawDetails: string | null;
+    readonly startColumn: number | null;
+    readonly startLine: number;
+    readonly title: string | null;
+}
+
+export interface GitHubWorkflowRunsInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {
+    readonly branch?: string | null;
+    readonly headSha?: string | null;
+}
+
+export interface GitHubWorkflowRunsResult {
+    readonly nextCursor: string | null;
+    readonly runs: readonly GitHubWorkflowRunSummary[];
+    readonly totalCount: number | null;
+}
+
+export interface GitHubWorkflowRunJobsInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {
+    readonly runId: number;
+}
+
+export interface GitHubWorkflowRunJobsResult {
+    readonly jobs: readonly GitHubWorkflowJobSummary[];
+    readonly nextCursor: string | null;
+    readonly runId: number;
+    readonly totalCount: number | null;
+}
+
+export interface GitHubWorkflowJobLogsInput extends GitHubRepositoryInput {
+    readonly jobId: number;
+}
+
+export interface GitHubWorkflowJobLogsResult {
+    readonly jobId: number;
+    readonly logs: string;
+    readonly truncated: boolean;
+}
+
+export interface GitHubWorkflowRunArtifactsInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {
+    readonly runId: number;
+}
+
+export interface GitHubWorkflowRunArtifactsResult {
+    readonly artifacts: readonly GitHubWorkflowArtifactSummary[];
+    readonly nextCursor: string | null;
+    readonly runId: number;
+    readonly totalCount: number | null;
+}
+
+export interface GitHubCheckRunAnnotationsInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {
+    readonly checkRunId: number;
+}
+
+export interface GitHubCheckRunAnnotationsResult {
+    readonly annotations: readonly GitHubCheckRunAnnotationSummary[];
+    readonly checkRunId: number;
+    readonly nextCursor: string | null;
+}
+
+export interface GitHubWorkflowRunMutationInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly runId: number;
+}
+
+export interface GitHubNotificationSubjectSummary {
+    readonly latestCommentUrl: string | null;
+    readonly title: string;
+    readonly type: string;
+    readonly url: string | null;
+}
+
+export interface GitHubNotificationSummary {
+    readonly id: string;
+    readonly lastReadAt: string | null;
+    readonly reason: string;
+    readonly repository: GitHubRepositoryRef;
+    readonly subject: GitHubNotificationSubjectSummary;
+    readonly unread: boolean;
+    readonly updatedAt: string;
+    readonly url: string;
+}
+
+export interface GitHubNotificationsInput
+    extends GitHubHostInput,
+        GitHubPaginationInput {
+    readonly all?: boolean | null;
+    readonly participating?: boolean | null;
+}
+
+export interface GitHubNotificationsResult {
+    readonly nextCursor: string | null;
+    readonly notifications: readonly GitHubNotificationSummary[];
+    readonly totalCount: number | null;
+}
+
+export interface GitHubReleaseSummary {
+    readonly author: GitHubUserSummary | null;
+    readonly body: string;
+    readonly createdAt: string;
+    readonly draft: boolean;
+    readonly id: number;
+    readonly name: string | null;
+    readonly prerelease: boolean;
+    readonly publishedAt: string | null;
+    readonly tagName: string;
+    readonly targetCommitish: string;
+    readonly updatedAt: string;
+    readonly url: string;
+}
+
+export interface GitHubListReleasesInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {}
+
+export interface GitHubListReleasesResult {
+    readonly nextCursor: string | null;
+    readonly releases: readonly GitHubReleaseSummary[];
+    readonly totalCount: number | null;
+}
+
+export interface GitHubGenerateReleaseNotesInput extends GitHubRepositoryInput {
+    readonly previousTagName?: string | null;
+    readonly tagName: string;
+    readonly targetCommitish?: string | null;
+}
+
+export interface GitHubGeneratedReleaseNotes {
+    readonly body: string;
+    readonly name: string;
+    readonly tagName: string;
+}
+
+export interface GitHubCreateReleaseInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly body?: string | null;
+    readonly draft: boolean;
+    readonly name?: string | null;
+    readonly prerelease?: boolean;
+    readonly tagName: string;
+    readonly targetCommitish?: string | null;
+}
+
+export interface GitHubPublishReleaseInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly releaseId: number;
+}
+
+export interface GitHubListMilestonesInput
+    extends GitHubRepositoryInput,
+        GitHubPaginationInput {
+    readonly state?: GitHubIssueState | "all";
+}
+
+export interface GitHubListMilestonesResult {
+    readonly milestones: readonly GitHubMilestoneSummary[];
+    readonly nextCursor: string | null;
+    readonly totalCount: number | null;
+}
+
 export type GitStatusBadge =
     | "added"
     | "deleted"
@@ -1078,6 +1677,48 @@ export interface WorkspaceGitCommitTab {
     readonly worktreeId?: string | null;
 }
 
+export interface WorkspaceGitHubIssuesTab {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: "github_issues";
+    readonly projectId: string | null;
+    readonly ref: GitHubRepositoryRef;
+    readonly title: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface WorkspaceGitHubIssueTab {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly issueNumber: number;
+    readonly kind: "github_issue";
+    readonly projectId: string | null;
+    readonly ref: GitHubRepositoryRef;
+    readonly title: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface WorkspaceGitHubPullRequestsTab {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: "github_pull_requests";
+    readonly projectId: string | null;
+    readonly ref: GitHubRepositoryRef;
+    readonly title: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface WorkspaceGitHubPullRequestTab {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: "github_pull_request";
+    readonly projectId: string | null;
+    readonly pullRequestNumber: number;
+    readonly ref: GitHubRepositoryRef;
+    readonly title: string;
+    readonly worktreeId?: string | null;
+}
+
 export interface WorkspaceTerminalTab {
     readonly id: string;
     readonly kind: "terminal";
@@ -1094,6 +1735,10 @@ export type WorkspaceTab =
     | WorkspaceChatHistoryTab
     | WorkspaceGitTab
     | WorkspaceGitCommitTab
+    | WorkspaceGitHubIssueTab
+    | WorkspaceGitHubIssuesTab
+    | WorkspaceGitHubPullRequestTab
+    | WorkspaceGitHubPullRequestsTab
     | WorkspaceReviewTab
     | WorkspaceTerminalTab;
 
@@ -1215,6 +1860,26 @@ export type AiComposerMessagePart =
           readonly type: "git_commit_mention";
           readonly commitSha: string;
           readonly label: string;
+      }
+    | {
+          readonly type: "github_issue_mention";
+          readonly host: string;
+          readonly owner: string;
+          readonly repo: string;
+          readonly number: number;
+          readonly label: string;
+          readonly title: string;
+          readonly url: string;
+      }
+    | {
+          readonly type: "github_pull_request_mention";
+          readonly host: string;
+          readonly owner: string;
+          readonly repo: string;
+          readonly number: number;
+          readonly label: string;
+          readonly title: string;
+          readonly url: string;
       };
 
 export interface AiMessage {
@@ -1668,6 +2333,96 @@ export interface ComandoApi {
     ) => Promise<GitRepositorySnapshot>;
     pullGitRepository: (input: GitPullInput) => Promise<GitRepositorySnapshot>;
     pushGitRepository: (input: GitPushInput) => Promise<GitRepositorySnapshot>;
+    getGitHubAuthStatus: (
+        input: GitHubAuthStatusInput,
+    ) => Promise<GitHubAuthStatus>;
+    saveGitHubToken: (
+        input: GitHubSaveTokenInput,
+    ) => Promise<GitHubAuthStatus>;
+    clearGitHubToken: (
+        input: GitHubClearTokenInput,
+    ) => Promise<GitHubAuthStatus>;
+    listGitHubIssues: (
+        input: GitHubListIssuesInput,
+    ) => Promise<GitHubListIssuesResult>;
+    getGitHubIssue: (
+        input: GitHubGetIssueInput,
+    ) => Promise<GitHubIssueDetail | null>;
+    createGitHubIssue: (
+        input: GitHubCreateIssueInput,
+    ) => Promise<GitHubIssueDetail>;
+    commentGitHubIssue: (
+        input: GitHubCommentIssueInput,
+    ) => Promise<GitHubCommentSummary>;
+    closeGitHubIssue: (
+        input: GitHubSetIssueStateInput,
+    ) => Promise<GitHubIssueDetail>;
+    reopenGitHubIssue: (
+        input: GitHubSetIssueStateInput,
+    ) => Promise<GitHubIssueDetail>;
+    listGitHubPullRequests: (
+        input: GitHubListPullRequestsInput,
+    ) => Promise<GitHubListPullRequestsResult>;
+    getGitHubPullRequest: (
+        input: GitHubGetPullRequestInput,
+    ) => Promise<GitHubPullRequestDetail | null>;
+    listGitHubPullRequestChecks: (
+        input: GitHubPullRequestChecksInput,
+    ) => Promise<GitHubPullRequestChecksResult>;
+    createGitHubPullRequest: (
+        input: GitHubCreatePullRequestInput,
+    ) => Promise<GitHubPullRequestDetail>;
+    commentGitHubPullRequest: (
+        input: GitHubCommentPullRequestInput,
+    ) => Promise<GitHubCommentSummary>;
+    markGitHubPullRequestReady: (
+        input: GitHubSetPullRequestDraftStateInput,
+    ) => Promise<GitHubPullRequestDetail>;
+    convertGitHubPullRequestToDraft: (
+        input: GitHubSetPullRequestDraftStateInput,
+    ) => Promise<GitHubPullRequestDetail>;
+    requestGitHubPullRequestReviewers: (
+        input: GitHubRequestPullRequestReviewInput,
+    ) => Promise<GitHubPullRequestDetail>;
+    listGitHubWorkflowRuns: (
+        input: GitHubWorkflowRunsInput,
+    ) => Promise<GitHubWorkflowRunsResult>;
+    listGitHubWorkflowRunJobs: (
+        input: GitHubWorkflowRunJobsInput,
+    ) => Promise<GitHubWorkflowRunJobsResult>;
+    getGitHubWorkflowJobLogs: (
+        input: GitHubWorkflowJobLogsInput,
+    ) => Promise<GitHubWorkflowJobLogsResult>;
+    listGitHubWorkflowRunArtifacts: (
+        input: GitHubWorkflowRunArtifactsInput,
+    ) => Promise<GitHubWorkflowRunArtifactsResult>;
+    listGitHubCheckRunAnnotations: (
+        input: GitHubCheckRunAnnotationsInput,
+    ) => Promise<GitHubCheckRunAnnotationsResult>;
+    rerunGitHubWorkflowRunFailedJobs: (
+        input: GitHubWorkflowRunMutationInput,
+    ) => Promise<void>;
+    cancelGitHubWorkflowRun: (
+        input: GitHubWorkflowRunMutationInput,
+    ) => Promise<void>;
+    listGitHubNotifications: (
+        input: GitHubNotificationsInput,
+    ) => Promise<GitHubNotificationsResult>;
+    listGitHubReleases: (
+        input: GitHubListReleasesInput,
+    ) => Promise<GitHubListReleasesResult>;
+    generateGitHubReleaseNotes: (
+        input: GitHubGenerateReleaseNotesInput,
+    ) => Promise<GitHubGeneratedReleaseNotes>;
+    createGitHubRelease: (
+        input: GitHubCreateReleaseInput,
+    ) => Promise<GitHubReleaseSummary>;
+    publishGitHubRelease: (
+        input: GitHubPublishReleaseInput,
+    ) => Promise<GitHubReleaseSummary>;
+    listGitHubMilestones: (
+        input: GitHubListMilestonesInput,
+    ) => Promise<GitHubListMilestonesResult>;
     listProjects: () => Promise<ProjectSummary[]>;
     openProjects: () => Promise<ProjectAddResult>;
     cloneRepository: (
@@ -1796,6 +2551,9 @@ export interface ComandoApi {
     ) => () => void;
     onGitWorktreesUpdated: (
         listener: (payload: GitRepositoryInvalidation) => void,
+    ) => () => void;
+    onGitHubAuthUpdated: (
+        listener: (payload: GitHubAuthStatus) => void,
     ) => () => void;
     onThemeUpdated: (listener: (theme: SystemTheme) => void) => () => void;
     onSettingsUpdated: (

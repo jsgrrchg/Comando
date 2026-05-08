@@ -45,6 +45,50 @@ import {
     type GitDiscardPathsInput,
     type GitFetchInput,
     type GitFileDiff as SharedGitFileDiff,
+    type GitHubAuthStatus,
+    type GitHubAuthStatusInput,
+    type GitHubClearTokenInput,
+    type GitHubCommentIssueInput,
+    type GitHubCommentPullRequestInput,
+    type GitHubCommentSummary,
+    type GitHubCreateIssueInput,
+    type GitHubCreatePullRequestInput,
+    type GitHubGetIssueInput,
+    type GitHubGetPullRequestInput,
+    type GitHubIssueDetail,
+    type GitHubListIssuesInput,
+    type GitHubListIssuesResult,
+    type GitHubListMilestonesInput,
+    type GitHubListMilestonesResult,
+    type GitHubListPullRequestsInput,
+    type GitHubListPullRequestsResult,
+    type GitHubListReleasesInput,
+    type GitHubListReleasesResult,
+    type GitHubNotificationsInput,
+    type GitHubNotificationsResult,
+    type GitHubPullRequestChecksInput,
+    type GitHubPullRequestChecksResult,
+    type GitHubPullRequestDetail,
+    type GitHubCreateReleaseInput,
+    type GitHubGeneratedReleaseNotes,
+    type GitHubGenerateReleaseNotesInput,
+    type GitHubPublishReleaseInput,
+    type GitHubReleaseSummary,
+    type GitHubRequestPullRequestReviewInput,
+    type GitHubSaveTokenInput,
+    type GitHubSetIssueStateInput,
+    type GitHubSetPullRequestDraftStateInput,
+    type GitHubCheckRunAnnotationsInput,
+    type GitHubCheckRunAnnotationsResult,
+    type GitHubWorkflowJobLogsInput,
+    type GitHubWorkflowJobLogsResult,
+    type GitHubWorkflowRunArtifactsInput,
+    type GitHubWorkflowRunArtifactsResult,
+    type GitHubWorkflowRunJobsInput,
+    type GitHubWorkflowRunJobsResult,
+    type GitHubWorkflowRunMutationInput,
+    type GitHubWorkflowRunsInput,
+    type GitHubWorkflowRunsResult,
     type GitHistoryListInput,
     type GitHistoryListResult as SharedGitHistoryListResult,
     type GitPullInput,
@@ -111,6 +155,7 @@ import {
     recordOpenFileBuffer,
 } from "@main/ai/openFileBuffers";
 import type { GitGateway } from "@main/git/service";
+import type { GitHubGateway } from "@main/github/service";
 import type { ProjectService } from "@main/projects/service";
 import type { PersistenceGateway } from "@main/persistence/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -141,6 +186,7 @@ interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
     readonly aiWorker: Pick<AiWorkerClient, "notifyFileBuffer"> | null;
     readonly gitService: GitGateway;
+    readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
     readonly openProjectWindow: (input: OpenProjectWindowInput) => void;
     readonly persistenceService: PersistenceGateway;
@@ -197,6 +243,36 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.fetchGitRepository);
     ipcMain.removeHandler(IPC_CHANNELS.pullGitRepository);
     ipcMain.removeHandler(IPC_CHANNELS.pushGitRepository);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitHubAuthStatus);
+    ipcMain.removeHandler(IPC_CHANNELS.saveGitHubToken);
+    ipcMain.removeHandler(IPC_CHANNELS.clearGitHubToken);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubIssues);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitHubIssue);
+    ipcMain.removeHandler(IPC_CHANNELS.createGitHubIssue);
+    ipcMain.removeHandler(IPC_CHANNELS.commentGitHubIssue);
+    ipcMain.removeHandler(IPC_CHANNELS.closeGitHubIssue);
+    ipcMain.removeHandler(IPC_CHANNELS.reopenGitHubIssue);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubPullRequests);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitHubPullRequest);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubPullRequestChecks);
+    ipcMain.removeHandler(IPC_CHANNELS.createGitHubPullRequest);
+    ipcMain.removeHandler(IPC_CHANNELS.commentGitHubPullRequest);
+    ipcMain.removeHandler(IPC_CHANNELS.markGitHubPullRequestReady);
+    ipcMain.removeHandler(IPC_CHANNELS.convertGitHubPullRequestToDraft);
+    ipcMain.removeHandler(IPC_CHANNELS.requestGitHubPullRequestReviewers);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubWorkflowRuns);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubWorkflowRunJobs);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitHubWorkflowJobLogs);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubWorkflowRunArtifacts);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubCheckRunAnnotations);
+    ipcMain.removeHandler(IPC_CHANNELS.rerunGitHubWorkflowRunFailedJobs);
+    ipcMain.removeHandler(IPC_CHANNELS.cancelGitHubWorkflowRun);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubNotifications);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubReleases);
+    ipcMain.removeHandler(IPC_CHANNELS.generateGitHubReleaseNotes);
+    ipcMain.removeHandler(IPC_CHANNELS.createGitHubRelease);
+    ipcMain.removeHandler(IPC_CHANNELS.publishGitHubRelease);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubMilestones);
     ipcMain.removeHandler(IPC_CHANNELS.listProjects);
     ipcMain.removeHandler(IPC_CHANNELS.openProjects);
     ipcMain.removeHandler(IPC_CHANNELS.cloneRepository);
@@ -851,7 +927,246 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     }),
             ),
     );
-
+    ipcMain.handle(
+        IPC_CHANNELS.getGitHubAuthStatus,
+        async (
+            _event,
+            input: GitHubAuthStatusInput,
+        ): Promise<GitHubAuthStatus> =>
+            options.githubService.getAuthStatus(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.saveGitHubToken,
+        async (
+            _event,
+            input: GitHubSaveTokenInput,
+        ): Promise<GitHubAuthStatus> => {
+            const status = await options.githubService.saveToken(input);
+            broadcastGitHubAuthUpdated(status);
+            return status;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.clearGitHubToken,
+        async (
+            _event,
+            input: GitHubClearTokenInput,
+        ): Promise<GitHubAuthStatus> => {
+            const status = await options.githubService.clearToken(input);
+            broadcastGitHubAuthUpdated(status);
+            return status;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubIssues,
+        async (
+            _event,
+            input: GitHubListIssuesInput,
+        ): Promise<GitHubListIssuesResult> =>
+            options.githubService.listIssues(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getGitHubIssue,
+        async (
+            _event,
+            input: GitHubGetIssueInput,
+        ): Promise<GitHubIssueDetail | null> =>
+            options.githubService.getIssue(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.createGitHubIssue,
+        async (
+            _event,
+            input: GitHubCreateIssueInput,
+        ): Promise<GitHubIssueDetail> =>
+            options.githubService.createIssue(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.commentGitHubIssue,
+        async (
+            _event,
+            input: GitHubCommentIssueInput,
+        ): Promise<GitHubCommentSummary> =>
+            options.githubService.commentIssue(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.closeGitHubIssue,
+        async (
+            _event,
+            input: GitHubSetIssueStateInput,
+        ): Promise<GitHubIssueDetail> =>
+            options.githubService.closeIssue(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.reopenGitHubIssue,
+        async (
+            _event,
+            input: GitHubSetIssueStateInput,
+        ): Promise<GitHubIssueDetail> =>
+            options.githubService.reopenIssue(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubPullRequests,
+        async (
+            _event,
+            input: GitHubListPullRequestsInput,
+        ): Promise<GitHubListPullRequestsResult> =>
+            options.githubService.listPullRequests(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getGitHubPullRequest,
+        async (
+            _event,
+            input: GitHubGetPullRequestInput,
+        ): Promise<GitHubPullRequestDetail | null> =>
+            options.githubService.getPullRequest(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubPullRequestChecks,
+        async (
+            _event,
+            input: GitHubPullRequestChecksInput,
+        ): Promise<GitHubPullRequestChecksResult> =>
+            options.githubService.listPullRequestChecks(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.createGitHubPullRequest,
+        async (
+            _event,
+            input: GitHubCreatePullRequestInput,
+        ): Promise<GitHubPullRequestDetail> =>
+            options.githubService.createPullRequest(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.commentGitHubPullRequest,
+        async (
+            _event,
+            input: GitHubCommentPullRequestInput,
+        ): Promise<GitHubCommentSummary> =>
+            options.githubService.commentPullRequest(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.markGitHubPullRequestReady,
+        async (
+            _event,
+            input: GitHubSetPullRequestDraftStateInput,
+        ): Promise<GitHubPullRequestDetail> =>
+            options.githubService.markPullRequestReady(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.convertGitHubPullRequestToDraft,
+        async (
+            _event,
+            input: GitHubSetPullRequestDraftStateInput,
+        ): Promise<GitHubPullRequestDetail> =>
+            options.githubService.convertPullRequestToDraft(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.requestGitHubPullRequestReviewers,
+        async (
+            _event,
+            input: GitHubRequestPullRequestReviewInput,
+        ): Promise<GitHubPullRequestDetail> =>
+            options.githubService.requestPullRequestReviewers(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubWorkflowRuns,
+        async (
+            _event,
+            input: GitHubWorkflowRunsInput,
+        ): Promise<GitHubWorkflowRunsResult> =>
+            options.githubService.listWorkflowRuns(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubWorkflowRunJobs,
+        async (
+            _event,
+            input: GitHubWorkflowRunJobsInput,
+        ): Promise<GitHubWorkflowRunJobsResult> =>
+            options.githubService.listWorkflowRunJobs(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getGitHubWorkflowJobLogs,
+        async (
+            _event,
+            input: GitHubWorkflowJobLogsInput,
+        ): Promise<GitHubWorkflowJobLogsResult> =>
+            options.githubService.getWorkflowJobLogs(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubWorkflowRunArtifacts,
+        async (
+            _event,
+            input: GitHubWorkflowRunArtifactsInput,
+        ): Promise<GitHubWorkflowRunArtifactsResult> =>
+            options.githubService.listWorkflowRunArtifacts(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubCheckRunAnnotations,
+        async (
+            _event,
+            input: GitHubCheckRunAnnotationsInput,
+        ): Promise<GitHubCheckRunAnnotationsResult> =>
+            options.githubService.listCheckRunAnnotations(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.rerunGitHubWorkflowRunFailedJobs,
+        async (_event, input: GitHubWorkflowRunMutationInput): Promise<void> =>
+            options.githubService.rerunWorkflowRunFailedJobs(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.cancelGitHubWorkflowRun,
+        async (_event, input: GitHubWorkflowRunMutationInput): Promise<void> =>
+            options.githubService.cancelWorkflowRun(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubNotifications,
+        async (
+            _event,
+            input: GitHubNotificationsInput,
+        ): Promise<GitHubNotificationsResult> =>
+            options.githubService.listNotifications(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubReleases,
+        async (
+            _event,
+            input: GitHubListReleasesInput,
+        ): Promise<GitHubListReleasesResult> =>
+            options.githubService.listReleases(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.generateGitHubReleaseNotes,
+        async (
+            _event,
+            input: GitHubGenerateReleaseNotesInput,
+        ): Promise<GitHubGeneratedReleaseNotes> =>
+            options.githubService.generateReleaseNotes(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.createGitHubRelease,
+        async (
+            _event,
+            input: GitHubCreateReleaseInput,
+        ): Promise<GitHubReleaseSummary> =>
+            options.githubService.createRelease(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.publishGitHubRelease,
+        async (
+            _event,
+            input: GitHubPublishReleaseInput,
+        ): Promise<GitHubReleaseSummary> =>
+            options.githubService.publishRelease(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubMilestones,
+        async (
+            _event,
+            input: GitHubListMilestonesInput,
+        ): Promise<GitHubListMilestonesResult> =>
+            options.githubService.listMilestones(input),
+    );
     nativeTheme.on("updated", () => {
         const theme: SystemTheme = {
             isDark: nativeTheme.shouldUseDarkColors,
@@ -1367,6 +1682,12 @@ function broadcastProjectSettingsUpdated(
 ): void {
     forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.projectSettingsUpdated, payload);
+    });
+}
+
+function broadcastGitHubAuthUpdated(payload: GitHubAuthStatus): void {
+    forEachLiveWindow((window) => {
+        window.webContents.send(IPC_EVENTS.githubAuthUpdated, payload);
     });
 }
 

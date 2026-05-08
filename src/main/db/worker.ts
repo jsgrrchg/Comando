@@ -82,6 +82,7 @@ const bootstrapSecretKeys = [
     "secret.ai.codex.openai_api_key",
     "secret.ai.gemini.gemini_api_key",
     "secret.ai.gemini.google_api_key",
+    "secret.github.token",
 ] as const;
 
 let rpcPort: MessagePort | null = null;

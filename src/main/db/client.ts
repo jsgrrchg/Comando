@@ -468,24 +468,28 @@ class SecretStoreClient implements SecretStoreGateway {
         );
     }
 
-    saveSecret(
+    async saveSecret(
         namespace: string,
         secretId: string,
         value: string | null,
-    ): void {
+    ): Promise<void> {
         const normalizedValue = value?.trim() ?? "";
         const key = buildSecretStorageKey(namespace, secretId);
         const nextValue = normalizedValue.length > 0 ? normalizedValue : null;
         const storedValue =
             nextValue === null ? null : serializeStoredSecretValue(nextValue);
+        const previousValue = this.#valuesByKey.get(key) ?? null;
 
         this.#valuesByKey.set(key, nextValue);
-        void this.#rpc
-            .call("secrets.saveRecord", {
+        try {
+            await this.#rpc.call("secrets.saveRecord", {
                 key,
                 value: storedValue,
-            })
-            .catch(() => undefined);
+            });
+        } catch (error) {
+            this.#valuesByKey.set(key, previousValue);
+            throw error;
+        }
     }
 }
 
