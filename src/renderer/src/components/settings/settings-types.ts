@@ -3,6 +3,7 @@ import type {
     ProjectAppDataSummary,
     AppPrivacyAccessState,
     AppUpdateState,
+    GitHubAuthStatus,
 } from "@shared/ipc";
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -118,6 +119,7 @@ export interface SettingsWindowProps {
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly aiChat: SettingsAiChatState;
+    readonly github: SettingsGitHubState;
     readonly privacy: SettingsPrivacyState;
     readonly projects: SettingsProjectsState;
     readonly updates: SettingsUpdatesState;
@@ -150,6 +152,19 @@ export interface SettingsProjectsState {
 export interface SettingsPrivacyState {
     readonly state: AppPrivacyAccessState;
     readonly onOpenFullDiskAccessSettings?: () => void;
+}
+
+export interface SettingsGitHubState {
+    readonly error: string | null;
+    readonly loading: boolean;
+    readonly notice: string | null;
+    readonly saving: boolean;
+    readonly status: GitHubAuthStatus;
+    readonly tokenDraft: string;
+    readonly onDisconnect?: () => void;
+    readonly onRefresh?: () => void;
+    readonly onSaveToken?: () => void;
+    readonly onTokenDraftChange?: (value: string) => void;
 }
 
 export interface SettingsUpdatesState {

@@ -11,6 +11,7 @@ import type {
     AppUpdateState,
     AppEditorSettings,
     ChatFontFamily,
+    GitHubAuthStatus,
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
@@ -86,6 +87,13 @@ export function SettingsApp() {
             message: "Loading privacy access status...",
             status: "not-applicable",
         });
+    const [githubAuthStatus, setGitHubAuthStatus] =
+        useState<GitHubAuthStatus>(() => createDefaultGitHubAuthStatus());
+    const [githubTokenDraft, setGitHubTokenDraft] = useState("");
+    const [githubLoading, setGitHubLoading] = useState(true);
+    const [githubSaving, setGitHubSaving] = useState(false);
+    const [githubError, setGitHubError] = useState<string | null>(null);
+    const [githubNotice, setGitHubNotice] = useState<string | null>(null);
     const [projects, setProjects] = useState<readonly ProjectSummary[]>([]);
     const [projectsError, setProjectsError] = useState<string | null>(null);
     const [projectsLoading, setProjectsLoading] = useState(true);
@@ -146,6 +154,29 @@ export function SettingsApp() {
         setAppPrivacyAccessState(nextState);
     }, []);
 
+    const loadGitHubAuthStatus = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        setGitHubLoading(true);
+        try {
+            const nextStatus = await window.comando.getGitHubAuthStatus({
+                host: "github.com",
+            });
+            setGitHubAuthStatus(nextStatus);
+            setGitHubError(null);
+        } catch (error) {
+            setGitHubError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not load GitHub auth status.",
+            );
+        } finally {
+            setGitHubLoading(false);
+        }
+    }, []);
+
     const loadProjects = useCallback(async () => {
         if (!window.comando) {
             return;
@@ -175,6 +206,7 @@ export function SettingsApp() {
                 loadAppUpdateState(),
                 loadAppChangelog(),
                 loadAppPrivacyAccessState(),
+                loadGitHubAuthStatus(),
                 loadProjects(),
             ]);
         }, 0);
@@ -187,6 +219,7 @@ export function SettingsApp() {
         loadAppChangelog,
         loadAppPrivacyAccessState,
         loadAppUpdateState,
+        loadGitHubAuthStatus,
         loadRuntimeStatuses,
         loadProjects,
     ]);
@@ -462,6 +495,73 @@ export function SettingsApp() {
         [loadProjects],
     );
 
+    const handleGitHubSaveToken = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        const token = githubTokenDraft.trim();
+        if (!token) {
+            return;
+        }
+
+        setGitHubSaving(true);
+        setGitHubError(null);
+        setGitHubNotice(null);
+        try {
+            const nextStatus = await window.comando.saveGitHubToken({
+                host: "github.com",
+                token,
+            });
+            setGitHubAuthStatus(nextStatus);
+            setGitHubTokenDraft("");
+            setGitHubNotice("Token saved securely on this machine.");
+        } catch (error) {
+            setGitHubError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not save GitHub token. Secure storage may be unavailable on this machine.",
+            );
+        } finally {
+            setGitHubSaving(false);
+            setGitHubLoading(false);
+        }
+    }, [githubTokenDraft]);
+
+    const handleGitHubDisconnect = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        if (
+            !window.confirm(
+                "Disconnect GitHub?\n\nThis removes the saved token from this machine.",
+            )
+        ) {
+            return;
+        }
+
+        setGitHubLoading(true);
+        setGitHubError(null);
+        setGitHubNotice(null);
+        try {
+            const nextStatus = await window.comando.clearGitHubToken({
+                host: "github.com",
+            });
+            setGitHubAuthStatus(nextStatus);
+            setGitHubTokenDraft("");
+            setGitHubNotice("GitHub token removed from this machine.");
+        } catch (error) {
+            setGitHubError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not disconnect GitHub.",
+            );
+        } finally {
+            setGitHubLoading(false);
+        }
+    }, []);
+
     return (
         <SettingsWindow
             aiChat={{
@@ -542,6 +642,28 @@ export function SettingsApp() {
                 onMinimapEnabledChange: handleAppEditorMinimapEnabledChange,
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
+            }}
+            github={{
+                error: githubError,
+                loading: githubLoading,
+                notice: githubNotice,
+                onDisconnect: () => {
+                    void handleGitHubDisconnect();
+                },
+                onRefresh: () => {
+                    void loadGitHubAuthStatus();
+                },
+                onSaveToken: () => {
+                    void handleGitHubSaveToken();
+                },
+                onTokenDraftChange: (value) => {
+                    setGitHubTokenDraft(value);
+                    setGitHubError(null);
+                    setGitHubNotice(null);
+                },
+                saving: githubSaving,
+                status: githubAuthStatus,
+                tokenDraft: githubTokenDraft,
             }}
             privacy={{
                 onOpenFullDiskAccessSettings: () => {
@@ -640,6 +762,21 @@ export function SettingsApp() {
             }}
         />
     );
+}
+
+function createDefaultGitHubAuthStatus(): GitHubAuthStatus {
+    return {
+        canReadActions: false,
+        canWriteActions: false,
+        canWriteIssues: false,
+        canWritePullRequests: false,
+        checkedAt: new Date().toISOString(),
+        errorCode: "missing_auth",
+        host: "github.com",
+        readOnly: true,
+        state: "missing",
+        user: null,
+    };
 }
 
 async function handleRuntimeAction(options: {

@@ -55,6 +55,7 @@ import type {
     RuntimeCardOption,
     SettingsAiChatState,
     SettingsEditorControlState,
+    SettingsGitHubState,
     SettingsPrivacyState,
     SettingsProjectOption,
     SettingsProjectsState,
@@ -69,6 +70,7 @@ type Category =
     | "appearance"
     | "editor"
     | "projects"
+    | "github"
     | "ai"
     | "privacy"
     | "shortcuts"
@@ -79,6 +81,7 @@ const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "editor", label: "Editor" },
     { id: "projects", label: "Projects" },
+    { id: "github", label: "GitHub" },
     { id: "ai", label: "AI" },
     { id: "privacy", label: "Privacy" },
     { id: "shortcuts", label: "Shortcuts" },
@@ -90,6 +93,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     appearance: "Theme mode and visual presets",
     editor: "Typography and editor behavior",
     projects: "Project locations and saved app data",
+    github: "Issues, pull requests, and repository auth",
     ai: "Chat, composer, and AI behavior",
     privacy: "Protected folders and macOS permission guidance",
     shortcuts: "Keyboard shortcuts reference",
@@ -108,6 +112,7 @@ interface SettingsSearchContext {
     readonly aiChat: SettingsAiChatState;
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
+    readonly github: SettingsGitHubState;
     readonly privacy: SettingsPrivacyState;
     readonly projects: SettingsProjectsState;
     readonly shortcuts: readonly ShortcutEntryOption[];
@@ -169,6 +174,23 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Reveal in Finder",
         "Reveal in Explorer",
         "Chat history transcripts review artifacts workspace tabs",
+    ],
+    github: [
+        "GitHub",
+        "Connect GitHub",
+        "Personal access token",
+        "Save Token",
+        "Disconnect",
+        "Token saved securely on this machine.",
+        "Missing token",
+        "Invalid token",
+        "Read-only access",
+        "Issues write access",
+        "Pull requests write access",
+        "Actions read access",
+        "metadata issues pull requests contents read",
+        "comments in PRs use GitHub issue comments permissions",
+        "Some actions are disabled because the token is missing write permissions.",
     ],
     ai: [
         "Chat",
@@ -327,6 +349,28 @@ function getDynamicCategorySearchValues(
                     project.lastOpenedAt,
                 ]),
             ];
+        case "github":
+            return [
+                context.github.error,
+                context.github.notice,
+                context.github.status.errorCode,
+                context.github.status.host,
+                context.github.status.state,
+                context.github.status.user?.login,
+                context.github.status.readOnly ? "Read-only access" : null,
+                context.github.status.canReadActions
+                    ? "Actions read access"
+                    : null,
+                context.github.status.canWriteActions
+                    ? "Actions write access"
+                    : null,
+                context.github.status.canWriteIssues
+                    ? "Issues write access"
+                    : null,
+                context.github.status.canWritePullRequests
+                    ? "Pull requests write access"
+                    : null,
+            ];
         case "ai":
             return [
                 ...context.aiChat.chatFontFamilies.flatMap((font) => [
@@ -389,6 +433,7 @@ export function SettingsWindow({
     aiChat,
     appAppearance,
     appEditor,
+    github,
     privacy,
     projects,
     onRuntimeAction,
@@ -403,6 +448,7 @@ export function SettingsWindow({
         aiChat,
         appAppearance,
         appEditor,
+        github,
         privacy,
         projects,
         shortcuts,
@@ -699,6 +745,13 @@ export function SettingsWindow({
                                     <ProjectsContent
                                         searchQuery={activeSearchQuery}
                                         state={projects}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "github" && (
+                                    <GitHubContent
+                                        searchQuery={activeSearchQuery}
+                                        state={github}
                                     />
                                 )}
                             {filteredCategories.length > 0 &&
@@ -1117,6 +1170,316 @@ function formatProjectLastOpened(value: string | null): string | null {
         dateStyle: "medium",
         timeStyle: "short",
     });
+}
+
+function GitHubContent({
+    searchQuery,
+    state,
+}: {
+    searchQuery: SettingsSearchQuery;
+    state: SettingsGitHubState;
+}) {
+    const canSave = state.tokenDraft.trim().length > 0 && !state.saving;
+    const isConnected = state.status.state === "authenticated";
+    const showConnection = sectionHasMatches(searchQuery, "Connection", [
+        [
+            "Connect GitHub",
+            "Personal access token",
+            "Save Token",
+            "Disconnect",
+            "Token saved securely on this machine.",
+            "Missing token",
+            "Invalid token",
+            state.status.state,
+            state.status.user?.login,
+            state.error,
+            state.notice,
+        ],
+    ]);
+    const showPermissions = sectionHasMatches(searchQuery, "Permissions", [
+        [
+            "Read-only access",
+            "Issues write access",
+            "Pull requests write access",
+            "Actions read access",
+            "metadata issues read pull requests read contents read",
+            "comments in PRs use GitHub issue comments permissions",
+            "Some actions are disabled because the token is missing write permissions.",
+        ],
+    ]);
+
+    if (!showConnection && !showPermissions) {
+        return <EmptyPanelSearchResult />;
+    }
+
+    return (
+        <div>
+            {showConnection ? <SectionLabel>Connection</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Connection"
+                label="GitHub status"
+                description={formatGitHubStatusDescription(state)}
+                keywords={[
+                    state.status.state,
+                    state.status.errorCode,
+                    state.status.user?.login,
+                    state.status.host,
+                ]}
+                control={
+                    <div
+                        style={{
+                            alignItems: "center",
+                            display: "flex",
+                            gap: 8,
+                        }}
+                    >
+                        <GitHubStatusBadge status={state.status.state} />
+                        <IdeActionButton
+                            disabled={state.loading}
+                            onClick={() => state.onRefresh?.()}
+                            title="Refresh GitHub auth status"
+                        >
+                            refresh
+                        </IdeActionButton>
+                    </div>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Connection"
+                label="Personal access token"
+                description="Paste a fine-grained PAT. Comando stores it securely on this machine and never exposes the saved token to the renderer."
+                keywords={[
+                    "Connect GitHub",
+                    "Save Token",
+                    "Token saved securely on this machine.",
+                    "secure storage",
+                ]}
+                control={
+                    <div
+                        style={{
+                            alignItems: "center",
+                            display: "flex",
+                            gap: 6,
+                        }}
+                    >
+                        <input
+                            aria-label="GitHub personal access token"
+                            autoCapitalize="off"
+                            autoComplete="off"
+                            autoCorrect="off"
+                            className="ide-input"
+                            disabled={state.saving}
+                            onChange={(event) =>
+                                state.onTokenDraftChange?.(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter" && canSave) {
+                                    event.preventDefault();
+                                    state.onSaveToken?.();
+                                }
+                            }}
+                            placeholder={
+                                isConnected
+                                    ? "Paste a new token to replace"
+                                    : "github_pat_..."
+                            }
+                            spellCheck={false}
+                            style={{
+                                fontFamily: "var(--font-mono)",
+                                width: 220,
+                            }}
+                            type="password"
+                            value={state.tokenDraft}
+                        />
+                        <IdeActionButton
+                            active={canSave}
+                            disabled={!canSave}
+                            onClick={() => state.onSaveToken?.()}
+                            title="Save GitHub token"
+                        >
+                            {state.saving ? "saving..." : "save token"}
+                        </IdeActionButton>
+                    </div>
+                }
+            />
+            {state.error ? (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Connection"
+                    label="GitHub error"
+                    description={state.error}
+                    keywords={[
+                        "secure storage unavailable",
+                        "invalid token",
+                        "forbidden",
+                    ]}
+                    control={<DangerText>attention</DangerText>}
+                />
+            ) : null}
+            {state.notice ? (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Connection"
+                    label="Saved token"
+                    description={state.notice}
+                    keywords={["Token saved securely on this machine."]}
+                    control={<PositiveText>saved</PositiveText>}
+                />
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Connection"
+                label="Disconnect"
+                description="Remove the saved GitHub token from this machine. Existing workspace tabs stay open, but GitHub refreshes will require a new token."
+                keywords={["clear token", "remove token", "logout"]}
+                control={
+                    <IdeActionButton
+                        disabled={
+                            state.loading ||
+                            state.status.state === "missing" ||
+                            state.status.state === "unknown"
+                        }
+                        onClick={() => state.onDisconnect?.()}
+                    >
+                        disconnect
+                    </IdeActionButton>
+                }
+            />
+
+            {showPermissions ? (
+                <SectionLabel>Permissions</SectionLabel>
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Permissions"
+                label="Read-only access"
+                description="Minimum useful token permissions: metadata, issues read, pull requests read, and contents read."
+                keywords={["metadata", "issues read", "pull requests read"]}
+                control={<PermissionBadge enabled={isConnected} />}
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Permissions"
+                label="Issues write access"
+                description="Required to create issues, close or reopen issues, and comment on issue conversations."
+                control={
+                    <PermissionBadge enabled={state.status.canWriteIssues} />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Permissions"
+                label="Pull requests write access"
+                description="Required to create PRs, update draft/ready state, and operate pull request metadata."
+                control={
+                    <PermissionBadge
+                        enabled={state.status.canWritePullRequests}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Permissions"
+                label="PR conversation comments"
+                description="General PR comments use GitHub issue comments permissions because GitHub models PR conversations as issues."
+                keywords={["comments in PRs", "issue comments permissions"]}
+                control={
+                    <PermissionBadge enabled={state.status.canWriteIssues} />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Permissions"
+                label="Actions read access"
+                description="Optional for future CI and Actions panels."
+                control={
+                    <PermissionBadge enabled={state.status.canReadActions} />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Permissions"
+                label="Actions write access"
+                description="Required to re-run failed jobs or cancel workflow runs."
+                control={
+                    <PermissionBadge enabled={state.status.canWriteActions} />
+                }
+            />
+            {isConnected && state.status.readOnly ? (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Permissions"
+                    label="Write actions"
+                    description="Some actions are disabled because the token is missing write permissions."
+                    control={<DangerText>read-only</DangerText>}
+                />
+            ) : null}
+        </div>
+    );
+}
+
+function PermissionBadge({ enabled }: { enabled: boolean }) {
+    return enabled ? (
+        <PositiveText>enabled</PositiveText>
+    ) : (
+        <StatusText tone="neutral">unavailable</StatusText>
+    );
+}
+
+function PositiveText({ children }: { children: string }) {
+    return <StatusText tone="positive">{children}</StatusText>;
+}
+
+function DangerText({ children }: { children: string }) {
+    return <StatusText tone="danger">{children}</StatusText>;
+}
+
+function StatusText({
+    children,
+    tone,
+}: {
+    readonly children: string;
+    readonly tone: "danger" | "neutral" | "positive";
+}) {
+    const colors: Record<typeof tone, string> = {
+        danger: "var(--diff-remove)",
+        neutral: "var(--color-text-secondary)",
+        positive: "var(--diff-add)",
+    };
+
+    return (
+        <span
+            style={{
+                color: colors[tone],
+                fontFamily: "var(--font-mono)",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+            }}
+        >
+            {children}
+        </span>
+    );
+}
+
+function formatGitHubStatusDescription(state: SettingsGitHubState): string {
+    const login = state.status.user?.login;
+    switch (state.status.state) {
+        case "authenticated":
+            return login
+                ? `Connected to ${state.status.host} as ${login}.`
+                : `Connected to ${state.status.host}.`;
+        case "invalid":
+            return "The saved token is invalid or expired. Paste a new token to reconnect.";
+        case "missing":
+            return "Missing token. Connect GitHub to enable Issues and Pull Requests.";
+        case "unknown":
+        default:
+            return "GitHub auth status could not be verified yet.";
+    }
 }
 
 function AppearanceContent({
@@ -2419,6 +2782,34 @@ function PrivacyStatusBadge({
     );
 }
 
+function GitHubStatusBadge({
+    status,
+}: {
+    status: SettingsGitHubState["status"]["state"];
+}) {
+    const { backgroundColor, borderColor, color, label } =
+        getGitHubStatusPresentation(status);
+
+    return (
+        <span
+            style={{
+                backgroundColor,
+                border: `1px solid ${borderColor}`,
+                borderRadius: 6,
+                color,
+                fontFamily: "var(--font-mono)",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                padding: "1px 6px",
+                textTransform: "uppercase",
+            }}
+        >
+            {label}
+        </span>
+    );
+}
+
 function ChangelogItem({
     entry,
     isLatest,
@@ -2650,6 +3041,54 @@ function getPrivacyStatusPresentation(
                     "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)",
                 color: "var(--color-text-secondary)",
                 label: "N/A",
+            };
+    }
+}
+
+function getGitHubStatusPresentation(
+    status: SettingsGitHubState["status"]["state"],
+): {
+    readonly backgroundColor: string;
+    readonly borderColor: string;
+    readonly color: string;
+    readonly label: string;
+} {
+    switch (status) {
+        case "authenticated":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--diff-add) 8%, transparent)",
+                borderColor:
+                    "color-mix(in srgb, var(--diff-add) 35%, var(--color-border))",
+                color: "var(--diff-add)",
+                label: "Connected",
+            };
+        case "invalid":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--diff-remove) 8%, transparent)",
+                borderColor:
+                    "color-mix(in srgb, var(--diff-remove) 35%, var(--color-border))",
+                color: "var(--diff-remove)",
+                label: "Invalid",
+            };
+        case "missing":
+            return {
+                backgroundColor: "var(--color-bg-tertiary)",
+                borderColor:
+                    "color-mix(in srgb, var(--color-border) 60%, transparent)",
+                color: "var(--color-text-secondary)",
+                label: "Missing token",
+            };
+        case "unknown":
+        default:
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-accent) 8%, transparent)",
+                borderColor:
+                    "color-mix(in srgb, var(--color-accent) 35%, var(--color-border))",
+                color: "var(--color-accent)",
+                label: "Unknown",
             };
     }
 }

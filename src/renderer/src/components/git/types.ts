@@ -131,6 +131,7 @@ export interface GitCommitControls {
 export interface GitPanelToolbarProps {
     readonly summary: GitRepositorySummary | null;
     readonly commit?: GitCommitControls | null;
+    readonly gitHubActions?: ReactNode;
     readonly primaryActions?: readonly GitAction[];
     readonly secondaryActions?: readonly GitAction[];
     readonly syncActions?: {

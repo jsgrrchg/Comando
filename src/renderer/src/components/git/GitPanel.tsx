@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
     ContextMenu,
@@ -55,6 +55,7 @@ export function GitPanel({
             {activeTab === "changes" && toolbar?.commit ? (
                 <GitCommitFooter
                     commit={toolbar.commit}
+                    gitHubActions={toolbar.gitHubActions}
                     summary={toolbar.summary}
                 />
             ) : null}
@@ -163,6 +164,7 @@ function GitPanelActions({
 
 export function GitCommitFooter({
     commit,
+    gitHubActions,
     onOpenHistory,
     summary,
     syncActions,
@@ -171,6 +173,7 @@ export function GitCommitFooter({
     readonly commit: NonNullable<
         NonNullable<GitPanelProps["toolbar"]>["commit"]
     >;
+    readonly gitHubActions?: ReactNode;
     readonly onOpenHistory?: () => void;
     readonly summary: NonNullable<GitPanelProps["toolbar"]>["summary"];
     readonly syncActions?: {
@@ -457,6 +460,8 @@ export function GitCommitFooter({
                     </div>
                 </div>
             ) : null}
+
+            {gitHubActions ? <div>{gitHubActions}</div> : null}
 
             <div
                 className="commit-composer"

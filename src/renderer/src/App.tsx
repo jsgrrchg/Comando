@@ -50,6 +50,7 @@ import {
 import { useAppStore } from "./app/store/app-store";
 import { useAiStore } from "./app/store/ai-store";
 import { useGitStore } from "./app/store/git-store";
+import { useGitHubStore } from "./app/store/github-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useSettingsStore } from "./app/store/settings-store";
 import { useShellStore } from "./app/store/shell-store";
@@ -573,6 +574,22 @@ export function App() {
             unsubscribeWorktrees();
         };
     }, [ingestGitSnapshot, refreshGitHistory, refreshGitProject]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        return comandoApi.onGitHubAuthUpdated((status) => {
+            useGitHubStore.setState((state) => ({
+                authStatusByHost: {
+                    ...state.authStatusByHost,
+                    [status.host]: status,
+                },
+            }));
+        });
+    }, []);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -2703,6 +2720,7 @@ export function App() {
             {sidebarView === "git" && activeProjectId ? (
                 <SidebarGitPanel
                     filter={gitChangesFilter}
+                    onOpenSettings={openSettingsWindow}
                     projectId={activeProjectId}
                     worktreeId={activeWorktreeId}
                 />
