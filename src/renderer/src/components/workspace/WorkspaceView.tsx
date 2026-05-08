@@ -34,6 +34,7 @@ import {
 import {
     isPointOverComposerDropZone,
     type ComposerProjectEntryDragData,
+    type WorkspaceTabComposerDragItem,
 } from "@renderer/app/drag-and-drop";
 import {
     clampRoundedInt,
@@ -67,6 +68,10 @@ import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
+import {
+    getGitHubRepoKey,
+    useGitHubStore,
+} from "@renderer/app/store/github-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import {
     getBestMatchingChatTabId,
@@ -87,6 +92,10 @@ import {
 } from "@renderer/app/workspace/pending-review";
 import { ChatHistoryTabView } from "@renderer/components/workspace/ChatHistoryTabView";
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
+import { GitHubIssuesTabView } from "@renderer/components/workspace/GitHubIssuesTabView";
+import { GitHubIssueTabView } from "@renderer/components/workspace/GitHubIssueTabView";
+import { GitHubPullRequestsTabView } from "@renderer/components/workspace/GitHubPullRequestsTabView";
+import { GitHubPullRequestTabView } from "@renderer/components/workspace/GitHubPullRequestTabView";
 import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabView";
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
@@ -2066,22 +2075,9 @@ function WorkspacePaneView({
                                                     kind: tab.kind,
                                                     paneId: paneNodeId,
                                                     composerDragItem:
-                                                        tab.kind === "file"
-                                                            ? {
-                                                                  kind: "file_mention",
-                                                                  label: tab.title,
-                                                                  relativePath:
-                                                                      tab.relativePath,
-                                                              }
-                                                            : tab.kind ===
-                                                                  "git_commit"
-                                                              ? {
-                                                                    commitSha:
-                                                                        tab.commitSha,
-                                                                    kind: "git_commit_mention",
-                                                                    label: tab.title,
-                                                                }
-                                                            : null,
+                                                        getWorkspaceTabComposerDragItem(
+                                                            tab,
+                                                        ),
                                                     sourceIndex: tabIndex,
                                                     tabId: tab.id,
                                                     title: tabDisplayTitle,
@@ -2225,6 +2221,14 @@ function WorkspacePaneView({
                                 onOpenFile={handleOpenWorkspaceFile}
                                 tab={activeTab}
                             />
+                        ) : activeTab.kind === "github_issues" ? (
+                            <GitHubIssuesTabView tab={activeTab} />
+                        ) : activeTab.kind === "github_issue" ? (
+                            <GitHubIssueTabView tab={activeTab} />
+                        ) : activeTab.kind === "github_pull_requests" ? (
+                            <GitHubPullRequestsTabView tab={activeTab} />
+                        ) : activeTab.kind === "github_pull_request" ? (
+                            <GitHubPullRequestTabView tab={activeTab} />
                         ) : activeTab.kind === "terminal" ? null : (
                             <ChatTabView
                                 key={activeTab.id}
@@ -2372,6 +2376,114 @@ function WorkspaceTabDragOverlay({
             </div>
         </>,
         document.body,
+    );
+}
+
+function isWorkspaceGitHubTabKind(
+    kind: RuntimeWorkspaceTab["kind"],
+): kind is
+    | "github_issue"
+    | "github_issues"
+    | "github_pull_request"
+    | "github_pull_requests" {
+    return (
+        kind === "github_issues" ||
+        kind === "github_issue" ||
+        kind === "github_pull_requests" ||
+        kind === "github_pull_request"
+    );
+}
+
+function getWorkspaceTabComposerDragItem(
+    tab: RuntimeWorkspaceTab,
+): WorkspaceTabComposerDragItem | null {
+    if (tab.kind === "file") {
+        return {
+            kind: "file_mention",
+            label: tab.title,
+            relativePath: tab.relativePath,
+        };
+    }
+
+    if (tab.kind === "git_commit") {
+        return {
+            commitSha: tab.commitSha,
+            kind: "git_commit_mention",
+            label: tab.title,
+        };
+    }
+
+    if (tab.kind === "github_issue") {
+        const title = getCachedGitHubIssueTitle(tab);
+        return {
+            host: tab.ref.host,
+            kind: "github_issue_mention",
+            label: `#${tab.issueNumber}`,
+            number: tab.issueNumber,
+            owner: tab.ref.owner,
+            repo: tab.ref.repo,
+            title,
+            url: buildGitHubRepositoryUrl(tab.ref, `/issues/${tab.issueNumber}`),
+        };
+    }
+
+    if (tab.kind === "github_pull_request") {
+        const title = getCachedGitHubPullRequestTitle(tab);
+        return {
+            host: tab.ref.host,
+            kind: "github_pull_request_mention",
+            label: `PR #${tab.pullRequestNumber}`,
+            number: tab.pullRequestNumber,
+            owner: tab.ref.owner,
+            repo: tab.ref.repo,
+            title,
+            url: buildGitHubRepositoryUrl(
+                tab.ref,
+                `/pull/${tab.pullRequestNumber}`,
+            ),
+        };
+    }
+
+    return null;
+}
+
+function buildGitHubRepositoryUrl(
+    ref: { readonly host: string; readonly owner: string; readonly repo: string },
+    path = "",
+): string {
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    return `https://${ref.host}/${ref.owner}/${ref.repo}${path ? normalizedPath : ""}`;
+}
+
+function getCachedGitHubIssueTitle(
+    tab: Extract<RuntimeWorkspaceTab, { readonly kind: "github_issue" }>,
+): string {
+    const repoKey = getGitHubRepoKey(tab.ref);
+    const state = useGitHubStore.getState();
+
+    return (
+        state.issueDetailsByRepo[repoKey]?.[tab.issueNumber]?.title ??
+        state.issuesByRepo[repoKey]?.find(
+            (issue) => issue.number === tab.issueNumber,
+        )?.title ??
+        tab.title
+    );
+}
+
+function getCachedGitHubPullRequestTitle(
+    tab: Extract<RuntimeWorkspaceTab, { readonly kind: "github_pull_request" }>,
+): string {
+    const repoKey = getGitHubRepoKey(tab.ref);
+    const state = useGitHubStore.getState();
+
+    return (
+        state.pullRequestDetailsByRepo[repoKey]?.[tab.pullRequestNumber]
+            ?.title ??
+        state.pullRequestsByRepo[repoKey]?.find(
+            (pullRequest) =>
+                pullRequest.number === tab.pullRequestNumber,
+        )?.title ??
+        tab.title
     );
 }
 
@@ -5654,6 +5766,10 @@ function TabIcon({
         | "file"
         | "git"
         | "git_commit"
+        | "github_issue"
+        | "github_issues"
+        | "github_pull_request"
+        | "github_pull_requests"
         | "review"
         | "terminal";
     readonly runtimeId?: AiRuntimeId;
@@ -5742,6 +5858,25 @@ function TabIcon({
                 <path d="M5.2 4h5.6" strokeWidth="1.1" />
                 <path d="M4.9 5.1 7.1 10.9" strokeWidth="1.1" />
                 <path d="M11.1 5.1 8.9 10.9" strokeWidth="1.1" />
+            </svg>
+        );
+    }
+
+    if (isWorkspaceGitHubTabKind(kind)) {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <circle cx="8" cy="8" r="5.1" strokeWidth="1.1" />
+                <path d="M5.5 10.7c.7.5 1.5.8 2.5.8s1.8-.3 2.5-.8" strokeWidth="1" />
+                <path d="M5.8 6.6h.01M10.2 6.6h.01" strokeWidth="1.7" />
             </svg>
         );
     }
