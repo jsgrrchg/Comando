@@ -7,6 +7,6 @@ Generated paths under here are build inputs, not source:
 - `embedded/`
   - local build caches and embedded runtime support assets
   - current Rust target cache for vendored `codex-acp`
-  - future embedded runtimes and support binaries such as Node for Claude
+  - embedded Node plus the staged Claude ACP JavaScript project
 
 These outputs are prepared by the scripts in `scripts/ai/`.

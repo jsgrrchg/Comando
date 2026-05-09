@@ -23,8 +23,10 @@ Current scope in Comando:
     - `vendor/codex-acp/src/prompt_args.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.31.4`
-  - synced against upstream commit `9957b54` (`chore(main): release 0.31.4 (#611)`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.33.1`
+  - synced against upstream commit `e0ea9d8` (`chore(main): release 0.33.1 (#638)`)
+  - uses `@anthropic-ai/claude-agent-sdk` `0.2.132`
+  - includes upstream fixes for `availableModels` allowlists, real `Write` overwrite diffs, and task-notification result origins
 
 ## Current Codex Delta
 
@@ -65,6 +67,18 @@ Current status:
 - Codex is vendored and staged into `resources/ai/binaries/`
 - local Rust build caches now live under `resources/ai/embedded/`
 - Claude is vendored under `Claude-agent-acp-upstream/`
+
+Suggested validation after Claude vendor updates:
+
+```bash
+cd vendor/Claude-agent-acp-upstream
+npm ci
+npm run build
+npm test -- --run
+cd ../..
+node scripts/ai/stage-claude-runtime.mjs
+pnpm run verify:ai-runtimes
+```
 
 Suggested validation after Codex vendor updates:
 
