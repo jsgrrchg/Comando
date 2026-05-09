@@ -14,15 +14,15 @@ use acp::{Agent, Client, ConnectTo, ConnectionTo, Error};
 use agent_client_protocol as acp;
 use codex_config::{McpServerConfig, McpServerTransportConfig};
 use codex_core::{
-    NewThread, RolloutRecorder, SortDirection, ThreadConfigSnapshot, ThreadManager, ThreadSortKey,
-    config::Config, find_thread_path_by_id_str, parse_cursor,
+    NewThread, RolloutRecorder, SortDirection, StateDbHandle, ThreadConfigSnapshot, ThreadManager,
+    ThreadSortKey, config::Config, find_thread_path_by_id_str, init_state_db, parse_cursor,
+    resolve_installation_id, thread_store_from_config,
 };
 use codex_exec_server::{EnvironmentManager, EnvironmentManagerArgs, ExecServerRuntimePaths};
 use codex_login::{
     CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
     auth::{AuthManager, CodexAuth, read_codex_api_key_from_env, read_openai_api_key_from_env},
 };
-use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::{
     ThreadId,
     openai_models::{ModelsResponse, ReasoningEffort, ReasoningEffortPreset},
@@ -55,6 +55,8 @@ pub struct CodexAgent {
     config: Config,
     /// Thread manager for handling sessions
     thread_manager: Arc<ThreadManager>,
+    /// SQLite-backed Codex state index, when initialization succeeds
+    state_db: Option<StateDbHandle>,
     /// Active sessions mapped by `SessionId`
     sessions: Arc<Mutex<HashMap<SessionId, Arc<Thread>>>>,
     /// Session working directories for filesystem sandboxing
@@ -73,35 +75,47 @@ const GPT_5_5_DESCRIPTION: &str =
 
 impl CodexAgent {
     /// Create a new `CodexAgent` with the given configuration
-    pub fn new(config: Config, codex_linux_sandbox_exe: Option<PathBuf>) -> std::io::Result<Self> {
+    pub async fn new(
+        config: Config,
+        codex_linux_sandbox_exe: Option<PathBuf>,
+    ) -> std::io::Result<Self> {
         let config = augment_model_catalog(config);
         let auth_manager = AuthManager::shared(
             config.codex_home.to_path_buf(),
             false,
             config.cli_auth_credentials_store_mode,
             Some(config.chatgpt_base_url.clone()),
-        );
+        )
+        .await;
 
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
+        let state_db = init_state_db(&config).await;
+        let environment_manager = Arc::new(
+            EnvironmentManager::new(EnvironmentManagerArgs::new(ExecServerRuntimePaths::new(
+                std::env::current_exe()?,
+                codex_linux_sandbox_exe,
+            )?))
+            .await,
+        );
+        let thread_store = thread_store_from_config(&config, state_db.clone());
+        let installation_id = resolve_installation_id(&config.codex_home).await?;
         let thread_manager = Arc::new(ThreadManager::new(
             &config,
             auth_manager.clone(),
             SessionSource::Unknown,
-            CollaborationModesConfig {
-                // False for now
-                default_mode_request_user_input: false,
-            },
-            Arc::new(EnvironmentManager::new(EnvironmentManagerArgs::from_env(
-                ExecServerRuntimePaths::new(std::env::current_exe()?, codex_linux_sandbox_exe)?,
-            ))),
+            environment_manager,
             None,
+            thread_store,
+            state_db.clone(),
+            installation_id,
         ));
         Ok(Self {
             auth_manager,
             client_capabilities,
             config,
             thread_manager,
+            state_db,
             sessions: Arc::default(),
             session_roots,
             subagent_watcher_started: AtomicBool::new(false),
@@ -317,7 +331,7 @@ impl CodexAgent {
         let sessions = self.sessions.clone();
         let session_roots = self.session_roots.clone();
         let auth_manager = self.auth_manager.clone();
-        let models_manager = self.thread_manager.get_models_manager();
+        let models_manager = Arc::new(self.thread_manager.get_models_manager());
         let client_capabilities = self.client_capabilities.clone();
         let base_config = self.config.clone();
 
@@ -360,7 +374,11 @@ impl CodexAgent {
     }
 
     async fn check_auth(&self) -> Result<(), Error> {
-        if self.config.model_provider_id == "openai" && self.auth_manager.auth().await.is_none() {
+        if self.config.model_provider_id == "openai"
+            && self.auth_manager.auth().await.is_none()
+            // Check if anything changed on disk since the last reload.
+            && !self.auth_manager.reload().await
+        {
             return Err(Error::auth_required());
         }
         Ok(())
@@ -481,7 +499,7 @@ impl CodexAgent {
         config.model = Some(session_configured.model.clone());
         config.model_provider_id = session_configured.model_provider_id.clone();
         config.model_reasoning_effort = session_configured.reasoning_effort;
-        config.service_tier = session_configured.service_tier;
+        config.service_tier = session_configured.service_tier.clone();
         config
             .permissions
             .approval_policy
@@ -489,8 +507,10 @@ impl CodexAgent {
             .map_err(Error::into_internal_error)?;
         config
             .permissions
-            .sandbox_policy
-            .set(session_configured.sandbox_policy.clone())
+            .set_permission_profile_with_active_profile(
+                session_configured.permission_profile.clone(),
+                session_configured.active_permission_profile.clone(),
+            )
             .map_err(Error::into_internal_error)?;
         Ok(())
     }
@@ -503,7 +523,7 @@ impl CodexAgent {
         config.model = Some(snapshot.model.clone());
         config.model_provider_id = snapshot.model_provider_id.clone();
         config.model_reasoning_effort = snapshot.reasoning_effort;
-        config.service_tier = snapshot.service_tier;
+        config.service_tier = snapshot.service_tier.clone();
         config
             .permissions
             .approval_policy
@@ -511,8 +531,10 @@ impl CodexAgent {
             .map_err(Error::into_internal_error)?;
         config
             .permissions
-            .sandbox_policy
-            .set(snapshot.sandbox_policy.clone())
+            .set_permission_profile_with_active_profile(
+                snapshot.permission_profile.clone(),
+                snapshot.active_permission_profile.clone(),
+            )
             .map_err(Error::into_internal_error)?;
         Ok(())
     }
@@ -662,7 +684,7 @@ impl CodexAgent {
                     .await
                     .map_err(Error::into_internal_error)?;
 
-                self.auth_manager.reload();
+                self.auth_manager.reload().await;
             }
             CodexAuthMethod::CodexApiKey => {
                 let api_key = read_codex_api_key_from_env().ok_or_else(|| {
@@ -688,7 +710,7 @@ impl CodexAgent {
             }
         }
 
-        self.auth_manager.reload();
+        self.auth_manager.reload().await;
 
         Ok(AuthenticateResponse::new())
     }
@@ -696,6 +718,7 @@ impl CodexAgent {
     async fn logout(&self, _request: LogoutRequest) -> Result<LogoutResponse, Error> {
         self.auth_manager
             .logout()
+            .await
             .map_err(Error::into_internal_error)?;
         Ok(LogoutResponse::new())
     }
@@ -736,7 +759,7 @@ impl CodexAgent {
             session_id.clone(),
             thread,
             self.auth_manager.clone(),
-            self.thread_manager.get_models_manager(),
+            Arc::new(self.thread_manager.get_models_manager()),
             self.client_capabilities.clone(),
             config.clone(),
             cx,
@@ -772,11 +795,14 @@ impl CodexAgent {
             ..
         } = request;
 
-        let rollout_path =
-            find_thread_path_by_id_str(&self.config.codex_home, session_id.0.as_ref())
-                .await
-                .map_err(|e| Error::internal_error().data(e.to_string()))?
-                .ok_or_else(|| Error::resource_not_found(None))?;
+        let rollout_path = find_thread_path_by_id_str(
+            &self.config.codex_home,
+            session_id.0.as_ref(),
+            self.state_db.as_deref(),
+        )
+        .await
+        .map_err(|e| Error::internal_error().data(e.to_string()))?
+        .ok_or_else(|| Error::resource_not_found(None))?;
 
         let history = RolloutRecorder::get_rollout_history(&rollout_path)
             .await
@@ -809,7 +835,7 @@ impl CodexAgent {
             session_id.clone(),
             thread,
             self.auth_manager.clone(),
-            self.thread_manager.get_models_manager(),
+            Arc::new(self.thread_manager.get_models_manager()),
             self.client_capabilities.clone(),
             config.clone(),
             cx,
@@ -841,6 +867,7 @@ impl CodexAgent {
         let cursor_obj = cursor.as_deref().and_then(parse_cursor);
 
         let page = RolloutRecorder::list_threads(
+            self.state_db.clone(),
             &self.config,
             SESSION_LIST_PAGE_SIZE,
             cursor_obj.as_ref(),
@@ -1142,8 +1169,9 @@ mod tests {
     use codex_models_manager::bundled_models_response;
     use codex_protocol::{
         config_types::{ApprovalsReviewer, ServiceTier},
+        models::PermissionProfile,
         openai_models::ReasoningEffort,
-        protocol::{AskForApproval, SandboxPolicy},
+        protocol::AskForApproval,
     };
 
     #[tokio::test]
@@ -1153,21 +1181,22 @@ mod tests {
             ConfigOverrides::default(),
         )
         .await?;
+        let thread_id = ThreadId::new();
         let session_configured = SessionConfiguredEvent {
-            session_id: ThreadId::new(),
+            session_id: thread_id.into(),
+            thread_id,
             forked_from_id: None,
+            thread_source: None,
             thread_name: Some("Fast session".to_string()),
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
-            service_tier: Some(ServiceTier::Fast),
+            service_tier: Some(ServiceTier::Fast.request_value().to_string()),
             approval_policy: AskForApproval::OnFailure,
             approvals_reviewer: ApprovalsReviewer::default(),
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
+            permission_profile: PermissionProfile::Disabled,
+            active_permission_profile: None,
             cwd: std::env::current_dir()?.try_into()?,
             reasoning_effort: Some(ReasoningEffort::High),
-            history_log_id: 0,
-            history_entry_count: 0,
             initial_messages: None,
             network_proxy: None,
             rollout_path: None,
@@ -1177,15 +1206,18 @@ mod tests {
 
         assert_eq!(config.model.as_deref(), Some("gpt-5"));
         assert_eq!(config.model_provider_id, "openai");
-        assert_eq!(config.service_tier, Some(ServiceTier::Fast));
+        assert_eq!(
+            config.service_tier.as_deref(),
+            Some(ServiceTier::Fast.request_value())
+        );
         assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(
             *config.permissions.approval_policy.get(),
             AskForApproval::OnFailure
         );
         assert!(matches!(
-            config.permissions.sandbox_policy.get(),
-            SandboxPolicy::DangerFullAccess
+            config.permissions.permission_profile.get(),
+            PermissionProfile::Disabled
         ));
         assert_eq!(config.cwd.to_path_buf(), std::env::current_dir()?);
 
