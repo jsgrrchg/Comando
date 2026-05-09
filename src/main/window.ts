@@ -12,36 +12,45 @@ import { debugBenignError } from "./observability/logging";
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const MIN_VISIBLE_RESTORE_OVERLAP = 80;
 
-export const WINDOWS_TITLE_BAR_HEIGHT = 40;
+export const DESKTOP_TITLE_BAR_HEIGHT = 40;
 
 type WindowKind = "main" | "settings";
 
 const acrylicWindows = new WeakSet<BrowserWindow>();
 
-function resolveWindowsTitleBarOverlay(): Electron.TitleBarOverlayOptions {
+function supportsNativeTitleBarOverlay(): boolean {
+    return process.platform === "win32" || process.platform === "linux";
+}
+
+function resolveDesktopTitleBarOverlay(): Electron.TitleBarOverlayOptions {
     const isDark = nativeTheme.shouldUseDarkColors;
     return {
         color: "#00000000",
-        height: WINDOWS_TITLE_BAR_HEIGHT,
+        height: DESKTOP_TITLE_BAR_HEIGHT,
         symbolColor: isDark ? "#e8e8e8" : "#1c1c1c",
     };
 }
 
 function resolveWindowIconPath(): string | undefined {
-    if (process.platform !== "win32") {
+    if (process.platform !== "win32" && process.platform !== "linux") {
         return undefined;
     }
 
+    const iconFileName =
+        process.platform === "win32" ? "windows.ico" : "app.png";
+    const devIconPath =
+        process.platform === "win32"
+            ? path.join(rootDir, appIdentity.iconPaths.windows)
+            : path.join(rootDir, appIdentity.iconPaths.png);
     const packagedIconPath = path.join(
         process.resourcesPath,
         "icons",
-        "windows.ico",
+        iconFileName,
     );
     if (fs.existsSync(packagedIconPath)) {
         return packagedIconPath;
     }
 
-    const devIconPath = path.join(rootDir, appIdentity.iconPaths.windows);
     if (fs.existsSync(devIconPath)) {
         return devIconPath;
     }
@@ -103,11 +112,12 @@ function createBaseWindow(options: {
 }): BrowserWindow {
     const isMac = process.platform === "darwin";
     const isWindows = process.platform === "win32";
+    const hasNativeTitleBarOverlay = supportsNativeTitleBarOverlay();
     const restoredState = normalizeRestoredState(options.restoredState);
     const isAcrylic = isWindows;
 
-    const titleBarOverlay = isWindows
-        ? resolveWindowsTitleBarOverlay()
+    const titleBarOverlay = hasNativeTitleBarOverlay
+        ? resolveDesktopTitleBarOverlay()
         : undefined;
     const icon = resolveWindowIconPath();
 
@@ -123,7 +133,11 @@ function createBaseWindow(options: {
         backgroundColor: isMac || isAcrylic ? "#00000000" : options.backgroundColor,
         backgroundMaterial: isAcrylic ? "acrylic" : undefined,
         titleBarOverlay,
-        titleBarStyle: isMac ? "hiddenInset" : isWindows ? "hidden" : "default",
+        titleBarStyle: isMac
+            ? "hiddenInset"
+            : hasNativeTitleBarOverlay
+              ? "hidden"
+              : "default",
         trafficLightPosition: isMac
             ? (options.trafficLightPosition ?? { x: 18, y: 18 })
             : undefined,
@@ -205,11 +219,11 @@ export function createSettingsWindow(
 }
 
 export function refreshWindowsTitleBarOverlays(): void {
-    if (process.platform !== "win32") {
+    if (!supportsNativeTitleBarOverlay()) {
         return;
     }
 
-    const overlay = resolveWindowsTitleBarOverlay();
+    const overlay = resolveDesktopTitleBarOverlay();
 
     forEachLiveWindow((window) => {
         if (!acrylicWindows.has(window)) return;

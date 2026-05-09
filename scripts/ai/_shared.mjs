@@ -82,12 +82,26 @@ export function isFile(candidatePath) {
 export function copyExecutable(fromPath, toPath) {
     ensureDir(path.dirname(toPath));
 
-    if (path.resolve(fromPath) !== path.resolve(toPath)) {
-        fs.copyFileSync(fromPath, toPath);
+    if (path.resolve(fromPath) === path.resolve(toPath)) {
+        if (!isWindows) {
+            fs.chmodSync(toPath, 0o755);
+        }
+        return;
     }
 
-    if (!isWindows) {
-        fs.chmodSync(toPath, 0o755);
+    if (isWindows) {
+        fs.copyFileSync(fromPath, toPath);
+        return;
+    }
+
+    const temporaryPath = `${toPath}.${process.pid}.tmp`;
+    try {
+        fs.copyFileSync(fromPath, temporaryPath);
+        fs.chmodSync(temporaryPath, 0o755);
+        fs.renameSync(temporaryPath, toPath);
+    } catch (error) {
+        fs.rmSync(temporaryPath, { force: true });
+        throw error;
     }
 }
 

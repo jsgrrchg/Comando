@@ -38,6 +38,12 @@
         "prepackage:win:x64": "pnpm run icons:build",
         "package:win:x64": "node scripts/package-windows-app.mjs --x64",
         "release:win:x64": "node scripts/package-windows-app.mjs --x64 --publish always",
+        "prepackage:linux": "pnpm run icons:build",
+        "package:linux": "node scripts/package-linux-app.mjs --publish never",
+        "package:linux:appimage": "node scripts/package-linux-app.mjs AppImage --publish never",
+        "package:linux:deb": "node scripts/package-linux-app.mjs deb --publish never",
+        "package:linux:rpm": "node scripts/package-linux-app.mjs rpm --publish never",
+        "release:linux": "node scripts/package-linux-app.mjs --publish always",
         "lint": "eslint .",
         "postinstall": "pnpm run rebuild:native",
         "rebuild:native": "electron-rebuild -f -w better-sqlite3,node-pty",
@@ -141,6 +147,10 @@
                 "to": "icons/windows.ico"
             },
             {
+                "from": "resources/icons/app.png",
+                "to": "icons/app.png"
+            },
+            {
                 "from": "build/package-resources/ai",
                 "to": "ai",
                 "filter": [
@@ -185,6 +195,17 @@
                 }
             ],
             "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+        },
+        "linux": {
+            "category": "Development",
+            "icon": "resources/icons/app.png",
+            "maintainer": "José Gurruchaga <jsgrrchg@users.noreply.github.com>",
+            "target": [
+                "AppImage",
+                "deb",
+                "rpm"
+            ],
+            "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
         }
     }
 }

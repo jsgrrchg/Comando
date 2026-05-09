@@ -16,6 +16,7 @@ vitest.config.js
 vitest.config.d.ts
 src/**/*.js
 src/**/*.d.ts
+!src/main/env.d.ts
 !src/renderer/src/env.d.ts
 vendor/codex-acp/target/
 resources/ai/binaries/*

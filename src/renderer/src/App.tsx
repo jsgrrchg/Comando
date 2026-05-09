@@ -88,7 +88,7 @@ import {
 } from "./components/workspace/quick-create";
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
 import { closeWorkspaceTabsWithConfirmation } from "./components/workspace/workspaceCloseGuard";
-import { WindowsTopBar } from "./components/WindowsTopBar";
+import { DesktopTopBar } from "./components/DesktopTopBar";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 
 type DragState = {
@@ -1155,7 +1155,9 @@ export function App() {
     const activeGitError = gitErrors[activeGitContextKey] ?? null;
     const isMac = bootstrap?.platform === "darwin";
     const isWindows = bootstrap?.platform === "win32";
-    const windowsTitleBarTitle =
+    const isLinux = bootstrap?.platform === "linux";
+    const hasDesktopTitleBar = isWindows || isLinux;
+    const desktopTitleBarTitle =
         activeProject?.name ?? bootstrap?.app.windowTitle ?? "Comando";
     const topStatus = [
         bootstrapError,
@@ -2932,8 +2934,8 @@ export function App() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    {isWindows && (
-                        <WindowsTopBar title={windowsTitleBarTitle} />
+                    {hasDesktopTitleBar && (
+                        <DesktopTopBar title={desktopTitleBarTitle} />
                     )}
                     <div
                         className="grid min-h-0 flex-1"
