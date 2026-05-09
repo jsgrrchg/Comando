@@ -198,6 +198,11 @@
         },
         "linux": {
             "category": "Development",
+            "desktop": {
+                "entry": {
+                    "StartupWMClass": "comando"
+                }
+            },
             "icon": "resources/icons/app.png",
             "maintainer": "José Gurruchaga <jsgrrchg@users.noreply.github.com>",
             "target": [
