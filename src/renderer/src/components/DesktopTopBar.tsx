@@ -1,14 +1,14 @@
-interface WindowsTopBarProps {
+interface DesktopTopBarProps {
     readonly title: string;
 }
 
-export function WindowsTopBar({ title }: WindowsTopBarProps) {
+export function DesktopTopBar({ title }: DesktopTopBarProps) {
     return (
         <div
             aria-hidden
-            className="app-drag windows-titlebar relative flex shrink-0 items-center justify-center select-none"
+            className="app-drag desktop-titlebar relative flex shrink-0 items-center justify-center select-none"
             style={{
-                height: "var(--windows-titlebar-height, 40px)",
+                height: "var(--desktop-titlebar-height, 40px)",
                 paddingLeft: 12,
                 paddingRight: "var(--titlebar-controls-width, 138px)",
             }}

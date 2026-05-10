@@ -30,6 +30,18 @@ export function configureMainProcessApp(): void {
     process.env.COMANDO_APP_CHANNEL = appChannel;
     app.setName(appIdentity.name);
 
+    const linuxApp = app as typeof app & {
+        readonly setDesktopName?: (desktopName: string) => void;
+    };
+
+    if (
+        process.platform === "linux" &&
+        appChannel === "release" &&
+        typeof linuxApp.setDesktopName === "function"
+    ) {
+        linuxApp.setDesktopName("comando.desktop");
+    }
+
     if (
         process.platform === "win32" &&
         typeof app.setAppUserModelId === "function"

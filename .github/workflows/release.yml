@@ -187,3 +187,60 @@ jobs:
               with:
                   name: windows-arm64-dist
                   path: dist/*
+
+    release-linux:
+        name: Linux ${{ matrix.arch }}
+        runs-on: ${{ matrix.runner }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - arch: x64
+                      runner: ubuntu-latest
+                    - arch: arm64
+                      runner: ubuntu-24.04-arm
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            NODE_OPTIONS: --max-old-space-size=8192
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.33.0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Install Linux package toolchain
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y rpm libcrypt1
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Build Claude ACP vendor
+              run: |
+                  npm ci --prefix vendor/Claude-agent-acp-upstream
+                  npm run build --prefix vendor/Claude-agent-acp-upstream
+
+            - name: Publish Linux artifacts
+              run: pnpm run release:linux
+
+            - name: Upload Linux workflow artifacts
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: linux-${{ matrix.arch }}-dist
+                  path: |
+                      dist/*.AppImage
+                      dist/*.deb
+                      dist/*.rpm
+                      dist/latest-linux*.yml

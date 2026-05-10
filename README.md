@@ -58,12 +58,13 @@ Comando implements the [Agent Client Protocol (ACP)](https://github.com/agentcli
 | Runtime | Provider | Delivery | Authentication |
 |---------|----------|----------|----------------|
 | **Claude** | Anthropic | Bundled/staged ACP runtime | `~/.claude.json` or `ANTHROPIC_API_KEY` (gateway-compatible via `ANTHROPIC_BASE_URL`) |
-| **Codex** | OpenAI | Bundled/staged ACP runtime | ChatGPT login, Codex API key, or OpenAI API key |
+| **Codex** | OpenAI | Bundled/staged ACP runtime (`codex-acp` 0.14.0) | ChatGPT login, Codex API key, or OpenAI API key |
 | **Gemini** | Google | External runtime | Login via Gemini CLI or API-key-based configuration |
 | **Kilo** | Kilo | External runtime | `kilo auth` |
 
 Credentials are stored encrypted via Electron's `safeStorage`.
 The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes; Gemini and Kilo are configured as external runtimes.
+The bundled Codex runtime is vendored from Zed's `codex-acp`, pinned to OpenAI Codex Rust `rust-v0.129.0`, and carries Comando-specific patches for Fast mode, subagent session projection, generated-image rendering, custom prompt expansion, and ACP metadata compatibility.
 
 ## Requirements
 
@@ -71,6 +72,7 @@ The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes
 - **pnpm** 10.33.0 (see `packageManager` in `package.json`)
 - **Supported platforms**: macOS 15+ (universal arm64 + x64), Windows 10/11 (x64 + arm64)
 - C++ toolchain to compile native dependencies during development (`better-sqlite3`, `node-pty`)
+- Rust/Cargo when rebuilding the vendored Codex ACP runtime locally; `pnpm stage:codex-runtime` also accepts `COMANDO_CODEX_ACP_BUNDLE_BIN` when using a prebuilt binary
 - macOS packaging must run on macOS; Windows packaging must run on Windows
 
 ## Installation
@@ -123,6 +125,8 @@ pnpm rebuild:native
 ## Packaging
 
 Comando stages the bundled Claude and Codex ACP runtimes automatically before `pnpm dev` and `pnpm build` via the `predev` and `prebuild` hooks. Packaging also relies on the staged embedded Node/runtime payload under `resources/ai`.
+
+Codex staging builds or copies the vendored `codex-acp` sidecar into `resources/ai/binaries/codex-acp`. Fresh local builds use `cargo build --release --locked` with the Rust target cache under `resources/ai/embedded/codex-acp/target/`; the generated binary/cache are staging artifacts, not source edits.
 
 Run the staging step manually only when you want to refresh the staged artifacts ahead of time or diagnose runtime/package issues:
 

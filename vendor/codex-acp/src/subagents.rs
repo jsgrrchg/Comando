@@ -607,6 +607,7 @@ mod tests {
             codex_protocol::protocol::CollabWaitingEndEvent {
                 sender_thread_id: parent_thread_id,
                 call_id: "wait-1".to_string(),
+                completed_at_ms: 0,
                 agent_statuses: vec![codex_protocol::protocol::CollabAgentStatusEntry {
                     thread_id: child_thread_id,
                     agent_nickname: Some("Galileo".to_string()),

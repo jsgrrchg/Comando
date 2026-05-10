@@ -1,0 +1,75 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(scriptDir, "..");
+const packageResourcesRoot = path.join(repoRoot, "build", "package-resources");
+const stagedAiRoot = path.join(packageResourcesRoot, "ai");
+const sourceAiRoot = path.join(repoRoot, "resources", "ai");
+
+function run(command, args, options = {}) {
+    const result = spawnSync(command, args, {
+        cwd: repoRoot,
+        env: process.env,
+        stdio: "inherit",
+        ...options,
+    });
+
+    if (result.error) {
+        throw result.error;
+    }
+
+    if (result.status !== 0) {
+        process.exit(result.status ?? 1);
+    }
+}
+
+function stageLinuxPackageResources() {
+    fs.rmSync(packageResourcesRoot, { force: true, recursive: true });
+    fs.mkdirSync(stagedAiRoot, { recursive: true });
+
+    copyAiPayload("binaries");
+    copyAiPayload(path.join("embedded", "node"));
+    copyAiPayload(path.join("embedded", "claude-agent-acp"));
+    copyAiPayload("README.md");
+}
+
+function copyAiPayload(relativePath) {
+    const fromPath = path.join(sourceAiRoot, relativePath);
+    if (!fs.existsSync(fromPath)) {
+        return;
+    }
+
+    fs.cpSync(fromPath, path.join(stagedAiRoot, relativePath), {
+        dereference: false,
+        errorOnExist: false,
+        force: true,
+        preserveTimestamps: true,
+        recursive: true,
+    });
+}
+
+function main() {
+    if (process.platform !== "linux") {
+        throw new Error("Linux packaging must run on Linux.");
+    }
+
+    const packageArgs = process.argv.slice(2);
+    const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+    const nodeOptions = process.env.NODE_OPTIONS?.trim()
+        ? process.env.NODE_OPTIONS
+        : "--max-old-space-size=4096";
+
+    run(pnpmCommand, ["run", "build"], {
+        env: {
+            ...process.env,
+            NODE_OPTIONS: nodeOptions,
+        },
+    });
+    stageLinuxPackageResources();
+    run("electron-builder", ["--linux", ...packageArgs]);
+}
+
+main();

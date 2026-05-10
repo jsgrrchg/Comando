@@ -31,23 +31,8 @@ use codex_core::{
     review_prompts::user_facing_hint,
 };
 use codex_features::Feature;
-use codex_login::AuthManager;
+use codex_login::auth::AuthManager;
 use codex_models_manager::manager::{ModelsManager, RefreshStrategy};
-use codex_protocol::protocol::{
-    AgentMessageContentDeltaEvent, AgentMessageEvent, AgentReasoningEvent,
-    AgentReasoningRawContentEvent, AgentReasoningSectionBreakEvent, ApplyPatchApprovalRequestEvent,
-    AskForApproval, ElicitationAction, ErrorEvent, Event, EventMsg, ExecApprovalRequestEvent,
-    ExecCommandBeginEvent, ExecCommandEndEvent, ExecCommandOutputDeltaEvent, ExecCommandStatus,
-    ExitedReviewModeEvent, FileChange, GuardianAssessmentEvent, GuardianAssessmentStatus,
-    ImageGenerationBeginEvent, ImageGenerationEndEvent, ItemCompletedEvent, ItemStartedEvent,
-    McpInvocation, McpStartupCompleteEvent, McpStartupUpdateEvent, McpToolCallBeginEvent,
-    McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent, PatchApplyEndEvent,
-    PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent,
-    ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget, SandboxPolicy,
-    StreamErrorEvent, TerminalInteractionEvent, TokenCountEvent, TurnAbortedEvent,
-    TurnCompleteEvent, TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent,
-    WebSearchBeginEvent, WebSearchEndEvent,
-};
 use codex_protocol::{
     approvals::{ElicitationRequest, ElicitationRequestEvent},
     config_types::{ServiceTier, TrustLevel},
@@ -55,12 +40,29 @@ use codex_protocol::{
     error::CodexErr,
     items::TurnItem,
     mcp::CallToolResult,
-    models::{FileSystemPermissions, PermissionProfile, ResponseItem, WebSearchAction},
+    models::{
+        ActivePermissionProfile, AdditionalPermissionProfile, FileSystemPermissions,
+        PermissionProfile, ResponseItem, WebSearchAction,
+    },
     openai_models::{ModelPreset, ReasoningEffort, ReasoningEffortPreset},
     parse_command::ParsedCommand,
     plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs},
     protocol::{
-        DynamicToolCallResponseEvent, NetworkApprovalContext, NetworkPolicyRuleAction, RolloutItem,
+        AgentMessageContentDeltaEvent, AgentMessageEvent, AgentReasoningEvent,
+        AgentReasoningRawContentEvent, AgentReasoningSectionBreakEvent,
+        ApplyPatchApprovalRequestEvent, DynamicToolCallResponseEvent, ElicitationAction,
+        ErrorEvent, Event, EventMsg, ExecApprovalRequestEvent, ExecCommandBeginEvent,
+        ExecCommandEndEvent, ExecCommandOutputDeltaEvent, ExecCommandStatus, ExitedReviewModeEvent,
+        FileChange, GuardianAssessmentEvent, GuardianAssessmentStatus, ImageGenerationBeginEvent,
+        ImageGenerationEndEvent, ItemCompletedEvent, ItemStartedEvent, McpInvocation,
+        McpStartupCompleteEvent, McpStartupUpdateEvent, McpToolCallBeginEvent, McpToolCallEndEvent,
+        ModelRerouteEvent, NetworkApprovalContext, NetworkPolicyRuleAction, Op,
+        PatchApplyBeginEvent, PatchApplyEndEvent, PatchApplyStatus, PlanDeltaEvent,
+        ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent, ReviewDecision,
+        ReviewOutputEvent, ReviewRequest, ReviewTarget, RolloutItem, StreamErrorEvent,
+        TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent, TokenCountEvent,
+        TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
+        ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
     },
     request_permissions::{
         PermissionGrantScope, RequestPermissionProfile, RequestPermissionsEvent,
@@ -134,51 +136,100 @@ const GPT_5_5_DISPLAY_NAME: &str = "GPT-5.5";
 const GPT_5_5_DESCRIPTION: &str =
     "Frontier model for complex coding, research, and real-world work.";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
+const CODEX_READ_ONLY_PROFILE_ID: &str = ":read-only";
+const CODEX_WORKSPACE_PROFILE_ID: &str = ":workspace";
+const CODEX_DANGER_NO_SANDBOX_PROFILE_ID: &str = ":danger-no-sandbox";
 
-fn approval_preset_matches_config(
-    preset: &ApprovalPreset,
-    approval_policy: &AskForApproval,
-    sandbox_policy: &SandboxPolicy,
-) -> bool {
-    if &preset.approval != approval_policy {
-        return false;
+fn session_mode_id_for_active_profile(profile_id: &str) -> Option<&'static str> {
+    match profile_id {
+        CODEX_READ_ONLY_PROFILE_ID => Some("read-only"),
+        CODEX_WORKSPACE_PROFILE_ID => Some("auto"),
+        CODEX_DANGER_NO_SANDBOX_PROFILE_ID => Some("full-access"),
+        _ => None,
     }
+}
 
-    match (&preset.sandbox, sandbox_policy) {
-        (
-            SandboxPolicy::ReadOnly {
-                access: preset_access,
-                network_access: preset_network_access,
-            },
-            SandboxPolicy::ReadOnly {
-                access,
-                network_access,
-            },
-        ) => preset_access == access && preset_network_access == network_access,
-        (
-            SandboxPolicy::WorkspaceWrite {
-                read_only_access: preset_read_only_access,
-                network_access: preset_network_access,
-                exclude_tmpdir_env_var: preset_exclude_tmpdir_env_var,
-                exclude_slash_tmp: preset_exclude_slash_tmp,
-                ..
-            },
-            SandboxPolicy::WorkspaceWrite {
-                read_only_access,
-                network_access,
-                exclude_tmpdir_env_var,
-                exclude_slash_tmp,
-                ..
-            },
-        ) => {
-            preset_read_only_access == read_only_access
-                && preset_network_access == network_access
-                && preset_exclude_tmpdir_env_var == exclude_tmpdir_env_var
-                && preset_exclude_slash_tmp == exclude_slash_tmp
+fn active_profile_id_for_session_mode(mode_id: &str) -> Option<&'static str> {
+    match mode_id {
+        "read-only" => Some(CODEX_READ_ONLY_PROFILE_ID),
+        "auto" => Some(CODEX_WORKSPACE_PROFILE_ID),
+        "full-access" => Some(CODEX_DANGER_NO_SANDBOX_PROFILE_ID),
+        _ => None,
+    }
+}
+
+fn approval_matches_current_config(preset: &ApprovalPreset, config: &Config) -> bool {
+    std::mem::discriminant(&preset.approval)
+        == std::mem::discriminant(config.permissions.approval_policy.get())
+}
+
+fn mode_id_if_approval_matches(mode_id: &'static str, config: &Config) -> Option<SessionModeId> {
+    APPROVAL_PRESETS
+        .iter()
+        .find(|preset| preset.id == mode_id && approval_matches_current_config(preset, config))
+        .map(|preset| SessionModeId::new(preset.id))
+}
+
+fn untrusted_read_only_mode_id(config: &Config) -> Option<SessionModeId> {
+    // When the project is untrusted, the approval policy won't match since
+    // AskForApproval::UnlessTrusted is not part of the default presets.
+    // However, we still want to show the mode selector, which allows the user
+    // to choose a different mode and trust the project.
+    config
+        .active_project
+        .is_untrusted()
+        .then(|| SessionModeId::new("read-only"))
+}
+
+fn semantic_session_mode_id_for_permission_profile(config: &Config) -> Option<&'static str> {
+    let permission_profile = config.permissions.permission_profile.get();
+
+    match permission_profile {
+        PermissionProfile::Managed { .. } => {
+            let workspace_preset = APPROVAL_PRESETS.iter().find(|preset| preset.id == "auto")?;
+            if permission_profile.network_sandbox_policy()
+                != workspace_preset.permission_profile.network_sandbox_policy()
+            {
+                return None;
+            }
+
+            let file_system = permission_profile.file_system_sandbox_policy();
+            let cwd = config.cwd.as_path();
+            if file_system.has_full_disk_read_access()
+                && !file_system.has_full_disk_write_access()
+                && file_system.can_write_path_with_cwd(cwd, cwd)
+            {
+                Some("auto")
+            } else {
+                None
+            }
         }
-        (SandboxPolicy::DangerFullAccess, SandboxPolicy::DangerFullAccess) => true,
-        _ => &preset.sandbox == sandbox_policy,
+        PermissionProfile::Disabled => Some("full-access"),
+        PermissionProfile::External { .. } => None,
     }
+}
+
+fn current_session_mode_id(config: &Config) -> Option<SessionModeId> {
+    if let Some(active_profile) = config.permissions.active_permission_profile().as_ref() {
+        return session_mode_id_for_active_profile(&active_profile.id)
+            .and_then(|mode_id| mode_id_if_approval_matches(mode_id, config))
+            .or_else(|| untrusted_read_only_mode_id(config));
+    }
+
+    if let Some(preset) = APPROVAL_PRESETS.iter().find(|preset| {
+        approval_matches_current_config(preset, config)
+            && &preset.permission_profile == config.permissions.permission_profile.get()
+    }) {
+        return Some(SessionModeId::new(preset.id));
+    }
+
+    semantic_session_mode_id_for_permission_profile(config)
+        .and_then(|mode_id| mode_id_if_approval_matches(mode_id, config))
+        .or_else(|| untrusted_read_only_mode_id(config))
+}
+
+fn mode_trusts_project(mode_id: &str) -> bool {
+    matches!(mode_id, "auto" | "full-access")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,25 +272,26 @@ pub trait ModelsManagerImpl: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl ModelsManagerImpl for ModelsManager {
+impl ModelsManagerImpl for Arc<dyn ModelsManager> {
     async fn get_model(&self, model_id: &Option<String>) -> String {
         self.get_default_model(model_id, RefreshStrategy::OnlineIfUncached)
             .await
     }
 
     async fn list_models(&self) -> Vec<ModelPreset> {
-        self.list_models(RefreshStrategy::OnlineIfUncached).await
+        ModelsManager::list_models(self.as_ref(), RefreshStrategy::OnlineIfUncached).await
     }
 }
 
 pub trait Auth {
-    fn logout(&self) -> Result<bool, Error>;
+    fn logout(&self) -> impl Future<Output = Result<bool, Error>> + Send;
 }
 
 impl Auth for Arc<AuthManager> {
-    fn logout(&self) -> Result<bool, Error> {
+    async fn logout(&self) -> Result<bool, Error> {
         self.as_ref()
             .logout()
+            .await
             .map_err(|e| Error::internal_error().data(e.to_string()))
     }
 }
@@ -523,7 +575,7 @@ enum PendingPermissionRequest {
     },
     RequestPermissions {
         call_id: String,
-        permissions: PermissionProfile,
+        permissions: RequestPermissionProfile,
     },
     McpElicitation {
         server_name: String,
@@ -809,6 +861,22 @@ fn format_mcp_tool_approval_value(value: &serde_json::Value) -> String {
     }
 }
 
+fn format_thread_goal_update(event: &ThreadGoalUpdatedEvent) -> String {
+    let status = match event.goal.status {
+        ThreadGoalStatus::Active => "active",
+        ThreadGoalStatus::Paused => "paused",
+        ThreadGoalStatus::BudgetLimited => "budget limited",
+        ThreadGoalStatus::Complete => "complete",
+    };
+
+    let objective = event.goal.objective.trim();
+    if objective.contains('\n') {
+        format!("Goal updated ({status}):\n{objective}")
+    } else {
+        format!("Goal updated ({status}): {objective}")
+    }
+}
+
 struct PromptState {
     submission_id: String,
     active_commands: HashMap<String, ActiveCommand>,
@@ -901,7 +969,10 @@ fn turn_item_id(item: &TurnItem) -> &str {
         TurnItem::Plan(item) => &item.id,
         TurnItem::Reasoning(item) => &item.id,
         TurnItem::WebSearch(item) => &item.id,
+        TurnItem::ImageView(item) => &item.id,
         TurnItem::ImageGeneration(item) => &item.id,
+        TurnItem::FileChange(item) => &item.id,
+        TurnItem::McpToolCall(item) => &item.id,
         TurnItem::ContextCompaction(item) => &item.id,
     }
 }
@@ -920,6 +991,7 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
                 .or_else(|| item.raw_content.first().cloned()),
         ),
         TurnItem::WebSearch(item) => ("Web search", Some(item.query.clone())),
+        TurnItem::ImageView(item) => ("Viewing image", Some(item.path.display().to_string())),
         TurnItem::ImageGeneration(item) => (
             "Generating image",
             item.saved_path
@@ -927,8 +999,17 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
                 .map(|path| path.display().to_string())
                 .or_else(|| Some(item.result.clone())),
         ),
+        TurnItem::FileChange(item) => ("Changing files", Some(format_file_changes(&item.changes))),
+        TurnItem::McpToolCall(item) => ("MCP tool", Some(format!("{}/{}", item.server, item.tool))),
         TurnItem::ContextCompaction(..) => ("Compacting context", None),
     }
+}
+
+fn format_file_changes(changes: &HashMap<PathBuf, FileChange>) -> String {
+    changes
+        .keys()
+        .map(|path| path.display().to_string())
+        .join("\n")
 }
 
 fn format_permission_rule(permissions: &RequestPermissionProfile) -> Option<String> {
@@ -1383,12 +1464,12 @@ impl PromptState {
                         ..
                     }) => match option_id.0.as_ref() {
                         "approved-for-session" => RequestPermissionsResponse {
-                            permissions: permissions.into(),
+                            permissions: permissions.clone(),
                             scope: PermissionGrantScope::Session,
                             strict_auto_review: false,
                         },
                         "approved" => RequestPermissionsResponse {
-                            permissions: permissions.into(),
+                            permissions: permissions.clone(),
                             scope: PermissionGrantScope::Turn,
                             strict_auto_review: false,
                         },
@@ -1596,6 +1677,8 @@ impl PromptState {
             | EventMsg::UserMessage(..)
             | EventMsg::ExecApprovalRequest(..)
             | EventMsg::RequestPermissions(..)
+            | EventMsg::ImageGenerationBegin(..)
+            | EventMsg::ImageGenerationEnd(..)
             | EventMsg::ExecCommandBegin(..)
             | EventMsg::ExecCommandOutputDelta(..)
             | EventMsg::ExecCommandEnd(..)
@@ -1651,18 +1734,12 @@ impl PromptState {
                             .await;
                     }
             }
-            EventMsg::ItemStarted(ItemStartedEvent { thread_id, turn_id, item }) => {
+            EventMsg::ItemStarted(ItemStartedEvent { thread_id, turn_id, item, .. }) => {
                 info!("Item started with thread_id: {thread_id}, turn_id: {turn_id}, item: {item:?}");
                 match item {
-                    TurnItem::ImageGeneration(image_item) => {
-                        self.send_image_generation_started(
-                            client,
-                            ImageGenerationBeginEvent {
-                                call_id: image_item.id,
-                            },
-                        )
-                        .await;
-                    }
+                    // Codex also emits ImageGenerationBegin for this item; that event
+                    // carries the Comando-specific image tool metadata.
+                    TurnItem::ImageGeneration(..) => {}
                     other_item => {
                         let (title, detail) = describe_turn_item(&other_item);
                         self.send_status_tool_call(
@@ -1747,15 +1824,9 @@ impl PromptState {
                     client.send_agent_thought(text).await;
                 }
             }
-            EventMsg::ThreadNameUpdated(event) => {
-                info!("Thread name updated: {:?}", event.thread_name);
-                if let Some(title) = event.thread_name {
-                    client
-                        .send_notification(SessionUpdate::SessionInfoUpdate(
-                            SessionInfoUpdate::new().title(title),
-                        ))
-                        .await;
-                }
+            EventMsg::ThreadGoalUpdated(event) => {
+                info!("Thread goal updated: {:?}", event.goal.objective);
+                client.send_agent_text(format_thread_goal_update(&event)).await;
             }
             EventMsg::PlanUpdate(UpdatePlanArgs { explanation, plan }) => {
                 // Send this to the client via session/update notification
@@ -1928,6 +1999,7 @@ impl PromptState {
                 thread_id,
                 turn_id,
                 item,
+                ..
             }) => {
                 info!("Item completed: thread_id={}, turn_id={}, item={:?}", thread_id, turn_id, item);
                 if let TurnItem::Plan(plan_item) = &item {
@@ -1940,19 +2012,8 @@ impl PromptState {
                     self.emit_plan_text_update(client, &final_text, false).await;
                 }
                 match item {
-                    TurnItem::ImageGeneration(image_item) => {
-                        self.send_image_generation_completed(
-                            client,
-                            ImageGenerationEndEvent {
-                                call_id: image_item.id,
-                                status: image_item.status,
-                                revised_prompt: image_item.revised_prompt,
-                                result: image_item.result,
-                                saved_path: image_item.saved_path,
-                            },
-                        )
-                        .await;
-                    }
+                    // ImageGenerationEnd is the canonical live bridge for generated images.
+                    TurnItem::ImageGeneration(..) => {}
                     other_item => {
                         let (title, detail) = describe_turn_item(&other_item);
                         self.send_status_tool_call_update(
@@ -1990,23 +2051,6 @@ impl PromptState {
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::EndTurn)).ok();
                 }
-            }
-            EventMsg::UndoStarted(event) => {
-                client
-                    .send_agent_text(
-                        event
-                            .message
-                            .unwrap_or_else(|| "Undo in progress...".to_string()),
-                    )
-                    .await;
-            }
-            EventMsg::UndoCompleted(event) => {
-                let fallback = if event.success {
-                    "Undo completed.".to_string()
-                } else {
-                    "Undo failed.".to_string()
-                };
-                client.send_agent_text(event.message.unwrap_or(fallback)).await;
             }
             EventMsg::StreamError(StreamErrorEvent {
                 message,
@@ -2207,13 +2251,8 @@ impl PromptState {
             | EventMsg::ThreadRolledBack(..)
             // we already have a way to diff the turn, so ignore
             | EventMsg::TurnDiff(..)
-            // Revisit when we can emit status updates
-            | EventMsg::BackgroundEvent(..)
             | EventMsg::SkillsUpdateAvailable
             // Old events
-            | EventMsg::AgentMessageDelta(..)
-            | EventMsg::AgentReasoningDelta(..)
-            | EventMsg::AgentReasoningRawContentDelta(..)
             | EventMsg::RawResponseItem(..)
             | EventMsg::SessionConfigured(..)
             // Collab events are projected before the main match.
@@ -2231,16 +2270,12 @@ impl PromptState {
             | EventMsg::RealtimeConversationSdp(..)
             | EventMsg::RealtimeConversationRealtime(..)
             | EventMsg::RealtimeConversationClosed(..)
-            | EventMsg::RealtimeConversationListVoicesResponse(..)
             | EventMsg::ModelVerification(..)
             | EventMsg::GuardianWarning(..)
             | EventMsg::HookStarted(..)
             | EventMsg::HookCompleted(..)
             | EventMsg::PatchApplyUpdated(..) => {}
-            e @ (EventMsg::McpListToolsResponse(..)
-            | EventMsg::ListSkillsResponse(..)
-            // Used for returning a single history entry
-            | EventMsg::GetHistoryEntryResponse(..)
+            e @ (EventMsg::RealtimeConversationListVoicesResponse(..)
             | EventMsg::DeprecationNotice(..)) => {
                 warn!("Unexpected event: {:?}", e);
             }
@@ -2336,7 +2371,7 @@ impl PromptState {
             permissions_request_key(&call_id),
             PendingPermissionRequest::RequestPermissions {
                 call_id: call_id.clone(),
-                permissions: permissions.into(),
+                permissions,
             },
             ToolCallUpdate::new(
                 call_id,
@@ -2832,6 +2867,7 @@ impl PromptState {
             cwd,
             parsed_cmd,
             process_id: _,
+            ..
         } = event;
         // Create a new tool call for the command execution
         let tool_call_id = ToolCallId::new(call_id.clone());
@@ -2900,8 +2936,8 @@ impl PromptState {
         if let Some(active_command) = self.active_commands.get_mut(&call_id) {
             let data_str = String::from_utf8_lossy(&chunk).to_string();
 
-            let update = if client.supports_terminal_output(active_command) {
-                ToolCallUpdate::new(
+            if client.supports_terminal_output(active_command) {
+                let update = ToolCallUpdate::new(
                     active_command.tool_call_id.clone(),
                     ToolCallUpdateFields::new(),
                 )
@@ -2911,27 +2947,15 @@ impl PromptState {
                         "terminal_id": call_id,
                         "data": data_str
                     }),
-                )]))
+                )]));
+                client.send_tool_call_update(update).await;
             } else {
+                // Fallback path (no terminal_output capability): accumulate locally
+                // and emit a single ToolCallUpdate at exec_command_end. Resending the
+                // entire accumulated buffer per chunk is O(N²) memory and crashes the
+                // process on large outputs (issue #225).
                 active_command.output.push_str(&data_str);
-                let content = match active_command.file_extension.as_deref() {
-                    Some("md") => active_command.output.clone(),
-                    Some(ext) => format!(
-                        "```{ext}\n{}\n```\n",
-                        active_command.output.trim_end_matches('\n')
-                    ),
-                    None => format!(
-                        "```sh\n{}\n```\n",
-                        active_command.output.trim_end_matches('\n')
-                    ),
-                };
-                ToolCallUpdate::new(
-                    active_command.tool_call_id.clone(),
-                    ToolCallUpdateFields::new().content(vec![content.into()]),
-                )
-            };
-
-            client.send_tool_call_update(update).await;
+            }
         }
     }
 
@@ -2953,6 +2977,7 @@ impl PromptState {
             formatted_output: _,
             process_id: _,
             status,
+            ..
         } = event;
         if let Some(active_command) = self.active_commands.remove(&call_id) {
             let is_success = exit_code == 0;
@@ -2970,12 +2995,18 @@ impl PromptState {
                 vec![]
             };
 
-            // When diffs are found, reconstruct the full content array (existing
-            // output + diffs) because setting content replaces the existing items.
-            // When there are no diffs, leave content as None to preserve existing.
-            let content: Option<Vec<ToolCallContent>> = if !exec_diffs.is_empty() {
+            let supports_terminal = client.supports_terminal_output(&active_command);
+
+            // For the non-terminal fallback path the per-chunk delta handler now
+            // accumulates silently (see exec_command_output_delta). Emit the full
+            // buffer here, exactly once, as a single content block. When diffs are
+            // found, reconstruct the full content array because setting content
+            // replaces the existing items.
+            let content: Option<Vec<ToolCallContent>> = if !exec_diffs.is_empty()
+                || (!supports_terminal && !active_command.output.is_empty())
+            {
                 let mut items: Vec<ToolCallContent> = Vec::new();
-                if client.supports_terminal_output(&active_command) {
+                if supports_terminal {
                     items.push(ToolCallContent::Terminal(Terminal::new(call_id.clone())));
                 } else if !active_command.output.is_empty() {
                     let text = match active_command.file_extension.as_deref() {
@@ -3139,7 +3170,7 @@ struct ExecPermissionOption {
 fn build_exec_permission_options(
     available_decisions: &[ReviewDecision],
     network_approval_context: Option<&NetworkApprovalContext>,
-    additional_permissions: Option<&PermissionProfile>,
+    additional_permissions: Option<&AdditionalPermissionProfile>,
 ) -> Vec<ExecPermissionOption> {
     available_decisions
         .iter()
@@ -3822,31 +3853,7 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     fn modes(&self) -> Option<SessionModeState> {
-        let current_mode_id = APPROVAL_PRESETS
-            .iter()
-            .find(|preset| {
-                approval_preset_matches_config(
-                    preset,
-                    self.config.permissions.approval_policy.get(),
-                    self.config.permissions.sandbox_policy.get(),
-                )
-            })
-            .or_else(|| {
-                // When the project is untrusted, the above code won't match
-                // since AskForApproval::UnlessTrusted is not part of the
-                // default presets. However, in this case we still want to show
-                // the mode selector, which allows the user to choose a
-                // different mode (which will set the project to be trusted)
-                // See https://github.com/zed-industries/zed/issues/48132
-                if self.config.active_project.is_untrusted() {
-                    APPROVAL_PRESETS
-                        .iter()
-                        .find(|preset| preset.id == "read-only")
-                } else {
-                    None
-                }
-            })
-            .map(|preset| SessionModeId::new(preset.id))?;
+        let current_mode_id = current_session_mode_id(&self.config)?;
 
         Some(SessionModeState::new(
             current_mode_id,
@@ -3895,7 +3902,10 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     fn current_service_tier(&self) -> Option<ServiceTier> {
-        self.config.service_tier
+        self.config
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value)
     }
 
     fn fast_mode_available(&self) -> bool {
@@ -4184,8 +4194,8 @@ impl<A: Auth> ThreadActor<A> {
     ) -> Result<(), Error> {
         let service_tier = match value.0.as_ref() {
             "off" => None,
-            "fast" => Some(ServiceTier::Fast),
-            "flex" => Some(ServiceTier::Flex),
+            "fast" => Some(ServiceTier::Fast.request_value().to_string()),
+            "flex" => Some(ServiceTier::Flex.request_value().to_string()),
             _ => return Err(Error::invalid_params().data("Unsupported service tier")),
         };
 
@@ -4200,7 +4210,7 @@ impl<A: Auth> ThreadActor<A> {
                 model: None,
                 effort: None,
                 summary: None,
-                service_tier: Some(service_tier),
+                service_tier: Some(service_tier.clone()),
                 collaboration_mode: None,
                 personality: None,
             })
@@ -4273,7 +4283,7 @@ impl<A: Auth> ThreadActor<A> {
         if let Some((name, rest)) = extract_slash_command(&items) {
             match name {
                 "compact" => op = Op::Compact,
-                "undo" => op = Op::Undo,
+                "undo" => op = Op::ThreadRollback { num_turns: 1 },
                 "init" => {
                     op = Op::UserInput {
                         environments: None,
@@ -4391,7 +4401,7 @@ impl<A: Auth> ThreadActor<A> {
                     }
                 }
                 "logout" => {
-                    self.auth.logout()?;
+                    self.auth.logout().await?;
                     return Err(Error::auth_required());
                 }
                 _ => {
@@ -4462,8 +4472,8 @@ impl<A: Auth> ThreadActor<A> {
                 cwd: None,
                 approval_policy: Some(preset.approval),
                 approvals_reviewer: None,
-                sandbox_policy: Some(preset.sandbox.clone()),
-                permission_profile: None,
+                sandbox_policy: None,
+                permission_profile: Some(preset.permission_profile.clone()),
                 windows_sandbox_level: None,
                 model: None,
                 effort: None,
@@ -4482,22 +4492,18 @@ impl<A: Auth> ThreadActor<A> {
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
         self.config
             .permissions
-            .sandbox_policy
-            .set(preset.sandbox.clone())
+            .set_permission_profile_with_active_profile(
+                preset.permission_profile.clone(),
+                active_profile_id_for_session_mode(preset.id).map(ActivePermissionProfile::new),
+            )
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
 
-        match preset.sandbox {
-            // Treat this user action as a trusted dir
-            SandboxPolicy::DangerFullAccess
-            | SandboxPolicy::WorkspaceWrite { .. }
-            | SandboxPolicy::ExternalSandbox { .. } => {
-                set_project_trust_level(
-                    &self.config.codex_home,
-                    &self.config.cwd,
-                    TrustLevel::Trusted,
-                )?;
-            }
-            SandboxPolicy::ReadOnly { .. } => {}
+        if mode_trusts_project(preset.id) {
+            set_project_trust_level(
+                &self.config.codex_home,
+                &self.config.cwd,
+                TrustLevel::Trusted,
+            )?;
         }
 
         Ok(())
@@ -4938,6 +4944,43 @@ impl<A: Auth> ThreadActor<A> {
                         ToolCall::new(call_id, title)
                             .kind(ToolKind::Search)
                             .status(ToolCallStatus::Completed),
+                    )
+                    .await;
+            }
+            ResponseItem::ImageGenerationCall {
+                id,
+                status,
+                revised_prompt,
+                result,
+            } => {
+                let tool_status = image_generation_tool_status(status);
+                let is_failure = tool_status == ToolCallStatus::Failed;
+                let title = if is_failure {
+                    "Image generation failed"
+                } else {
+                    "Generated image"
+                };
+                let mut raw_output = json!({
+                    "status": status,
+                    "result": result,
+                });
+                if let Some(object) = raw_output.as_object_mut() {
+                    if let Some(revised_prompt) = revised_prompt {
+                        object.insert("revised_prompt".to_string(), json!(revised_prompt));
+                    }
+                    if is_failure {
+                        object.insert("error".to_string(), json!(result));
+                    }
+                }
+
+                self.client
+                    .send_tool_call(
+                        ToolCall::new(image_generation_tool_call_id(id), title)
+                            .kind(ToolKind::Other)
+                            .status(tool_status)
+                            .content(vec![ToolCallContent::Content(Content::new(result.clone()))])
+                            .raw_output(raw_output)
+                            .meta(codex_acp_image_generation_meta()),
                     )
                     .await;
             }
@@ -5744,6 +5787,19 @@ mod tests {
 
     use super::*;
 
+    fn agent_message_texts(notifications: &[SessionNotification]) -> Vec<&str> {
+        notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn augment_model_presets_seeds_gpt_5_5_from_gpt_5_4() {
         let presets = augment_model_presets(all_model_presets().to_owned());
@@ -5796,14 +5852,7 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
-        assert!(matches!(
-            &notifications[0].update,
-            SessionUpdate::AgentMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                ..
-            }) if text == "Hi"
-        ));
+        assert_eq!(agent_message_texts(&notifications), vec!["Hi"]);
 
         Ok(())
     }
@@ -5875,27 +5924,13 @@ mod tests {
 
         let notifications = client.notifications.lock().unwrap();
         assert_eq!(
-            notifications.len(),
-            2,
+            agent_message_texts(&notifications),
+            vec!["Undo in progress...", "Undo completed."],
             "notifications don't match {notifications:?}"
         );
-        assert!(matches!(
-            &notifications[0].update,
-            SessionUpdate::AgentMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                ..
-            }) if text == "Undo in progress..."
-        ));
-        assert!(matches!(
-            &notifications[1].update,
-            SessionUpdate::AgentMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                ..
-            }) if text == "Undo completed."
-        ));
 
         let ops = thread.ops.lock().unwrap();
-        assert_eq!(ops.as_slice(), &[Op::Undo]);
+        assert_eq!(ops.as_slice(), &[Op::ThreadRollback { num_turns: 1 }]);
 
         Ok(())
     }
@@ -6006,9 +6041,9 @@ mod tests {
         assert!(matches!(
             &ops[0],
             Op::OverrideTurnContext {
-                service_tier: Some(Some(ServiceTier::Fast)),
+                service_tier: Some(Some(value)),
                 ..
-            }
+            } if value == ServiceTier::Fast.request_value()
         ));
 
         Ok(())
@@ -6054,9 +6089,9 @@ mod tests {
         assert!(matches!(
             &ops[0],
             Op::OverrideTurnContext {
-                service_tier: Some(Some(ServiceTier::Fast)),
+                service_tier: Some(Some(value)),
                 ..
-            }
+            } if value == ServiceTier::Fast.request_value()
         ));
 
         Ok(())
@@ -6130,9 +6165,9 @@ mod tests {
         assert!(matches!(
             &ops[0],
             Op::OverrideTurnContext {
-                service_tier: Some(Some(ServiceTier::Fast)),
+                service_tier: Some(Some(value)),
                 ..
-            }
+            } if value == ServiceTier::Fast.request_value()
         ));
         assert!(matches!(
             &ops[1],
@@ -6169,14 +6204,12 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
+        let messages = agent_message_texts(&notifications);
+        assert_eq!(messages.len(), 1);
         assert!(
-            matches!(
-                &notifications[0].update,
-                SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(TextContent { text, .. }), ..
-                }) if text == INIT_COMMAND_PROMPT // we echo the prompt
-            ),
+            messages
+                .first()
+                .is_some_and(|text| *text == INIT_COMMAND_PROMPT),
             "notifications don't match {notifications:?}"
         );
         let ops = thread.ops.lock().unwrap();
@@ -6454,15 +6487,12 @@ mod tests {
         )?;
 
         let notifications = client.notifications.lock().unwrap();
-        assert_eq!(notifications.len(), 1);
+        let messages = agent_message_texts(&notifications);
+        assert_eq!(messages.len(), 1);
         assert!(
-            matches!(
-                &notifications[0].update,
-                SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(TextContent { text, .. }),
-                    ..
-                }) if text == "Custom prompt with foo arg."
-            ),
+            messages
+                .first()
+                .is_some_and(|text| *text == "Custom prompt with foo arg."),
             "notifications don't match {notifications:?}"
         );
 
@@ -6507,20 +6537,15 @@ mod tests {
             }
         )?;
 
-        // We should only get ONE notification, not duplicates from both delta and non-delta
+        // We should only get ONE agent message, not duplicates from both delta and non-delta.
         let notifications = client.notifications.lock().unwrap();
+        let messages = agent_message_texts(&notifications);
         assert_eq!(
-            notifications.len(),
+            messages.len(),
             1,
             "Should only receive delta event, not duplicate non-delta. Got: {notifications:?}"
         );
-        assert!(matches!(
-            &notifications[0].update,
-            SessionUpdate::AgentMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                ..
-            }) if text == "test delta"
-        ));
+        assert_eq!(messages[0], "test delta");
 
         Ok(())
     }
@@ -6598,6 +6623,7 @@ mod tests {
                         id: "plan-1".into(),
                         text: "# Final plan\nSummary paragraph\n- [x] Inspect current state\n- Implement live plan updates\n".into(),
                     }),
+                    completed_at_ms: 0,
                 }),
             )
             .await;
@@ -6833,6 +6859,7 @@ mod tests {
                 EventMsg::CollabAgentSpawnBegin(
                     codex_protocol::protocol::CollabAgentSpawnBeginEvent {
                         call_id: "spawn-1".to_string(),
+                        started_at_ms: 0,
                         sender_thread_id: parent_thread_id,
                         prompt: "inspect the renderer".to_string(),
                         model: "gpt-5.5".to_string(),
@@ -6846,6 +6873,7 @@ mod tests {
                 &session_client,
                 EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                     call_id: "spawn-1".to_string(),
+                    completed_at_ms: 0,
                     sender_thread_id: parent_thread_id,
                     new_thread_id: Some(child_thread_id),
                     new_agent_nickname: Some("Galileo".to_string()),
@@ -6992,7 +7020,7 @@ mod tests {
     struct StubAuth;
 
     impl Auth for StubAuth {
-        fn logout(&self) -> Result<bool, Error> {
+        async fn logout(&self) -> Result<bool, Error> {
             Ok(true)
         }
     }
@@ -7062,6 +7090,7 @@ mod tests {
                         };
                         send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                             call_id: "call-a".into(),
+                            started_at_ms: 0,
                             process_id: None,
                             turn_id: turn_id.clone(),
                             command: vec!["echo".into(), "a".into()],
@@ -7074,6 +7103,7 @@ mod tests {
                         }));
                         send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                             call_id: "call-b".into(),
+                            started_at_ms: 0,
                             process_id: None,
                             turn_id: turn_id.clone(),
                             command: vec!["echo".into(), "b".into()],
@@ -7086,6 +7116,7 @@ mod tests {
                         }));
                         send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                             call_id: "call-a".into(),
+                            completed_at_ms: 0,
                             process_id: None,
                             turn_id: turn_id.clone(),
                             command: vec!["echo".into(), "a".into()],
@@ -7103,6 +7134,7 @@ mod tests {
                         }));
                         send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                             call_id: "call-b".into(),
+                            completed_at_ms: 0,
                             process_id: None,
                             turn_id: turn_id.clone(),
                             command: vec!["echo".into(), "b".into()],
@@ -7199,26 +7231,25 @@ mod tests {
                         })
                         .unwrap();
                 }
-                Op::Undo => {
+                Op::ThreadRollback { .. } => {
                     self.op_tx
                         .send(Event {
                             id: id.to_string(),
-                            msg: EventMsg::UndoStarted(
-                                codex_protocol::protocol::UndoStartedEvent {
-                                    message: Some("Undo in progress...".to_string()),
-                                },
-                            ),
+                            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                                message: "Undo in progress...".to_string(),
+                                phase: None,
+                                memory_citation: None,
+                            }),
                         })
                         .unwrap();
                     self.op_tx
                         .send(Event {
                             id: id.to_string(),
-                            msg: EventMsg::UndoCompleted(
-                                codex_protocol::protocol::UndoCompletedEvent {
-                                    success: true,
-                                    message: Some("Undo completed.".to_string()),
-                                },
-                            ),
+                            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                                message: "Undo completed.".to_string(),
+                                phase: None,
+                                memory_citation: None,
+                            }),
                         })
                         .unwrap();
                     self.op_tx

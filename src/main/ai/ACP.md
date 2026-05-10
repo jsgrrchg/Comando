@@ -15,7 +15,7 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini | Kilo |
 |---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.31.4`, vendored upstream snapshot) | Rust (`codex-acp` `0.12.0`, vendored on top of `openai/codex` `rust-v0.124.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.33.1`, vendored upstream snapshot) | Rust (`codex-acp` `0.14.0`, vendored on top of `openai/codex` `rust-v0.129.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
 | **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today |
 | **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` |
@@ -26,10 +26,11 @@ Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
 - The vendored Claude ACP snapshot follows upstream reasoning support. Comando maps upstream `thought_level` and legacy `effort` config options into the UI's reasoning controls and keeps compatibility with older saved `effort_level` preferences.
-- The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.12.0`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.124.0` and `agent-client-protocol` `0.11.1`.
+- The current Claude vendor is `@agentclientprotocol/claude-agent-acp` `0.33.1`, with `@anthropic-ai/claude-agent-sdk` `0.2.132`. Compared with the previous Comando baseline (`0.31.4`), it now honors `availableModels` from Claude settings, emits real diffs when `Write` overwrites existing files, and preserves task-notification result origins so autonomous followups do not incorrectly drive the user-turn lifecycle.
+- The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.14.0`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.129.0` and `agent-client-protocol` `0.11.1`.
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
-- The vendored Codex ACP snapshot also carries a local image-generation bridge: Codex `ImageGenerationBegin` / `ImageGenerationEnd` and `TurnItem::ImageGeneration` are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity.
-- The current Codex vendor also carries compatibility glue for the `rust-v0.124.0` runtime API shape, including updated auth/config wiring, newer event payloads, and local custom prompt handling.
+- The vendored Codex ACP snapshot also carries a local image-generation bridge: live Codex `ImageGenerationBegin` / `ImageGenerationEnd` events and replayed `ResponseItem::ImageGenerationCall` items are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity. `TurnItem::ImageGeneration` is intentionally ignored for the live bridge because Codex also emits the begin/end events, and handling both would duplicate image cards.
+- The current Codex vendor also carries compatibility glue for the `rust-v0.129.0` runtime API shape, including state DB/thread-store wiring, installation IDs, async auth reload/logout, permission-profile modes, newer event payloads, and local custom prompt handling.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Status metadata currently uses `codexAcp*` names while Comando keeps app-branded `comando*` aliases for compatibility paths it owns.
 
@@ -152,6 +153,8 @@ Fresh builds run with:
 CARGO_TARGET_DIR=resources/ai/embedded/codex-acp/target
 ```
 
+If `cargo` is not discoverable from the Node process environment, set `CARGO=/absolute/path/to/cargo` before running `pnpm run stage:codex-runtime`.
+
 The resulting binary is copied to:
 
 ```text
@@ -166,10 +169,12 @@ resources/ai/embedded/codex-acp/target/
 
 Current local snapshot note:
 
-- `vendor/codex-acp/` stays at `codex-acp` `0.12.0`, but its vendored Rust runtime dependencies are pinned to `openai/codex` `rust-v0.124.0` and `agent-client-protocol` `0.11.1`.
+- `vendor/codex-acp/` is currently based on `codex-acp` `0.14.0`, with vendored Rust runtime dependencies pinned to `openai/codex` `rust-v0.129.0` and `agent-client-protocol` `0.11.1`.
 - `vendor/codex-acp/` includes a local Fast Mode patch carried over into Comando, adding ACP `service_tier` config handling, `/fast` command support, and session `service_tier` rehydration.
-- `vendor/codex-acp/` includes a local generated-image patch. Image generation begin/end events are converted into structured ACP tool call updates with `image_generation` metadata, preserving `status`, `path`, `result`, `revised_prompt`, and `error` fields for the Comando chat pipeline.
-- The local vendor was adapted to the newer Codex runtime API so `cargo build --release --locked`, `cargo test --locked`, and staging continue to work from the vendored tree.
+- `vendor/codex-acp/` includes a local generated-image patch. Live image generation begin/end events are converted into structured ACP tool call updates with `image_generation` metadata, preserving `status`, `path`, `result`, `revised_prompt`, and `error` fields for the Comando chat pipeline. Replay also maps stored `ImageGenerationCall` response items back into `codex-acp:image:` tool calls.
+- `vendor/codex-acp/` includes local subagent projection: spawned Codex child threads are registered as ACP sessions and parent-thread breadcrumbs are mirrored through `codex-acp:subagent:` tool updates.
+- The local vendor was adapted to the newer Codex runtime API so `cargo build --release --locked`, `cargo test --locked`, and staging continue to work from the vendored tree. The important upstream API changes now carried locally are state DB/thread-store initialization, installation ID resolution, async auth reload/logout, permission-profile based modes, `ThreadGoalUpdated`, image generation response items, and the O(N²) exec-output fallback fix.
+- Linux npm platform packages now expect the bundled `codex-resources/bwrap` payload from upstream release archives; Comando's local desktop staging still stages the native sidecar binary directly.
 - This local divergence should be reevaluated once the official upstream `codex-acp` ships equivalent support, so Comando can reduce vendor drift.
 
 ### Claude staging (`scripts/ai/stage-claude-runtime.mjs`)
@@ -186,9 +191,13 @@ This means Claude is staged as an embedded project, not as a freshly built stand
 
 Current local snapshot note:
 
+- `vendor/Claude-agent-acp-upstream/` is synced to upstream `@agentclientprotocol/claude-agent-acp` `0.33.1` at commit `e0ea9d8`.
 - `vendor/Claude-agent-acp-upstream/` uses the upstream Claude ACP reasoning implementation.
 - Upstream exposes model-specific reasoning values through the `thought_level` ACP session config option when the selected Claude model reports support for them.
 - Comando still accepts older saved `effort_level` and `effort` preferences and applies them to upstream's reasoning option.
+- The vendor now applies Claude `availableModels` settings before model catalog/config option publication, so Comando should only surface the allowed model set plus the upstream `default` entry.
+- Claude `Write` tool updates now use the structured post-tool diff when overwriting existing files, which keeps Comando's inline review and edited-files surfaces from showing overwrites as plain file creation.
+- Claude task-notification result origins are preserved in usage update metadata and ignored for user-turn stop-state decisions, preventing autonomous followups from ending or cancelling the visible user turn.
 
 ### macOS packaging (`scripts/package-macos-app.mjs`)
 
@@ -464,7 +473,11 @@ and the Comando-owned compatibility alias:
 comandoEventType
 ```
 
-The current vendored Codex runtime emits codexAcp-prefixed metadata fields and codex-acp status tool-call IDs.
+The current vendored Codex runtime emits codexAcp-prefixed metadata fields and codex-acp tool-call IDs:
+
+- `codex-acp:status:` for status/activity bridge updates
+- `codex-acp:image:` for generated-image tool calls
+- `codex-acp:subagent:` for subagent breadcrumb tool calls
 
 ### Protocol version
 

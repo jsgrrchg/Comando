@@ -12,19 +12,22 @@ Current scope in Comando:
 ## Current Baselines
 
 - `codex-acp/`
-  - upstream baseline: `zed-industries/codex-acp` `0.12.0`
-  - synced against upstream commit `ee9418a65befdf08c3793d9a92dd4a083f545fcf`
-  - OpenAI Codex Rust crates: `rust-v0.124.0` (`e9fb49366c93a1478ec71cc41ecee415a197d036`)
+  - upstream baseline: `zed-industries/codex-acp` `0.14.0`
+  - synced against upstream commit `156cb0da12f6c7b1c697f90b5f22d5e14be31165`
+  - OpenAI Codex Rust crates: `rust-v0.129.0` (`2808a4deb181e5ca2b1293a1a5980938cb746861`)
   - vendor ACP SDK: `agent-client-protocol` `0.11.1`
   - local Comando delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/Cargo.toml`
     - `vendor/codex-acp/src/lib.rs`
     - `vendor/codex-acp/src/codex_agent.rs`
     - `vendor/codex-acp/src/prompt_args.rs`
+    - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.31.4`
-  - synced against upstream commit `9957b54` (`chore(main): release 0.31.4 (#611)`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.33.1`
+  - synced against upstream commit `e0ea9d8` (`chore(main): release 0.33.1 (#638)`)
+  - uses `@anthropic-ai/claude-agent-sdk` `0.2.132`
+  - includes upstream fixes for `availableModels` allowlists, real `Write` overwrite diffs, and task-notification result origins
 
 ## Current Codex Delta
 
@@ -35,14 +38,18 @@ The remaining Comando-specific delta exists to preserve desktop product behavior
 - canonical `codexAcp*` ACP metadata for status, plan updates, diffs and `user_input_request`
 - `__codex_acp_user_input_response__` user-input response routing
 - reconstruction of `unified_diff` into `old_text`, `new_text` and hunk metadata for inline review and edited-files flows
-- mode and approval-preset stability when Codex expands writable roots under `workspace-write`
+- mode and approval-preset stability on top of Codex permission profiles
 - custom slash-prompt discovery and expansion from the user's Codex prompts directory
 - local `gpt-5.5` model-catalog seed while upstream Codex metadata catches up
 - Fast service-tier controls exposed to the desktop UI
-- generated-image bridge that emits Codex image generation events as ACP `image_generation` tool updates for inline chat rendering
+- generated-image bridge that emits live Codex image generation begin/end events and replayed image generation response items as ACP `image_generation` tool updates for inline chat rendering
 - session-config synchronization from Codex `SessionConfiguredEvent` back into the ACP session config
+- subagent session registration and breadcrumb notifications for spawned Codex child threads
+- state DB/thread-store/installation ID wiring required by the `rust-v0.129.0` Codex runtime API
+- async auth reload/logout compatibility for ChatGPT and API-key auth flows
+- O(N²) exec-output fallback fix from upstream while preserving Comando's exec snapshot diff reconstruction
 
-When updating Codex again, treat `ee9418a` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
+When updating Codex again, treat `156cb0d` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
 Comando's ACP client lives in TypeScript/Electron under `src/main/ai/` and currently uses `@agentclientprotocol/sdk` from npm. Do not copy a Rust workspace ACP client migration unless Comando gains an equivalent Rust backend.
 
@@ -66,13 +73,32 @@ Current status:
 - local Rust build caches now live under `resources/ai/embedded/`
 - Claude is vendored under `Claude-agent-acp-upstream/`
 
+Suggested validation after Claude vendor updates:
+
+```bash
+cd vendor/Claude-agent-acp-upstream
+npm ci
+npm run build
+npm test -- --run
+cd ../..
+node scripts/ai/stage-claude-runtime.mjs
+pnpm run verify:ai-runtimes
+```
+
 Suggested validation after Codex vendor updates:
 
 ```bash
-cd vendor/codex-acp && cargo test -q
+cd vendor/codex-acp && cargo test --locked
 pnpm run stage:codex-runtime
 pnpm test -- src/main/ai/worker-runtime.test.ts src/main/ai/service.codex.test.ts src/main/ai/service.review.test.ts src/main/ai/codex/setup.test.ts
+pnpm run verify:ai-runtimes
 pnpm run typecheck
+```
+
+If the staging script cannot find Cargo even though Rust is installed, run it with an explicit path, for example:
+
+```bash
+CARGO=/Users/jfg/.cargo/bin/cargo pnpm run stage:codex-runtime
 ```
 
 For broader release confidence:

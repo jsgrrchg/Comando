@@ -351,9 +351,11 @@
 }
 
 :root[data-platform="win32"],
-:root.dark[data-platform="win32"] {
+:root.dark[data-platform="win32"],
+:root[data-platform="linux"],
+:root.dark[data-platform="linux"] {
     --vibrancy-opacity: 0%;
-    --windows-titlebar-height: 40px;
+    --desktop-titlebar-height: 40px;
     --windows-acrylic-tint: color-mix(
         in srgb,
         var(--color-bg-panel) 55%,
@@ -367,9 +369,14 @@
 }
 
 :root[data-platform="win32"] .app-sidebar,
-:root[data-platform="win32"] .windows-titlebar,
+:root[data-platform="win32"] .desktop-titlebar,
 :root[data-platform="win32"] .settings-chrome {
     background: var(--windows-acrylic-tint);
+}
+
+:root[data-platform="linux"] .desktop-titlebar {
+    background: var(--color-bg-panel);
+    border-bottom: 1px solid var(--color-border-subtle);
 }
 
 * {
