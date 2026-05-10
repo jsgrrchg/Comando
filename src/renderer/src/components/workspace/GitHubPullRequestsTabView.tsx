@@ -499,11 +499,13 @@ export function GitHubPullRequestsTabView({
                             letterSpacing: "0.06em",
                         }}
                     >
-                        <span>#</span>
-                        <span>Description</span>
-                        <span>Branch</span>
-                        <span>Date</span>
-                        <span className="text-right">Action</span>
+                        <span className="min-w-0 truncate">#</span>
+                        <span className="min-w-0 truncate">Description</span>
+                        <span className="min-w-0 truncate">Branch</span>
+                        <span className="min-w-0 truncate">Date</span>
+                        <span className="min-w-0 truncate text-right">
+                            Action
+                        </span>
                     </div>
                     {visiblePullRequests.map((pullRequest) => {
                         const isCurrentBranchPullRequest =
@@ -547,11 +549,11 @@ export function GitHubPullRequestsTabView({
                                     }
                                     type="button"
                                 >
-                                    <div className="border-b border-border-subtle py-2.5 font-mono text-text-secondary">
+                                    <div className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-text-secondary">
                                         #{pullRequest.number}
                                     </div>
-                                    <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3">
-                                        <div className="flex min-w-0 items-center gap-2">
+                                    <div className="min-w-0 overflow-hidden border-b border-border-subtle py-2.5 pr-3">
+                                        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
                                             <GitHubStatePill
                                                 tone={
                                                     pullRequest.draft
@@ -567,7 +569,7 @@ export function GitHubPullRequestsTabView({
                                                       ? "merged"
                                                       : pullRequest.state}
                                             </GitHubStatePill>
-                                            <span className="truncate text-[12px] text-text-primary">
+                                            <span className="min-w-0 flex-1 truncate text-[12px] text-text-primary">
                                                 {pullRequest.title}
                                             </span>
                                             <GitHubChecksPill
@@ -593,7 +595,7 @@ export function GitHubPullRequestsTabView({
                                         ) : null}
                                     </div>
                                     <div
-                                        className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px] text-text-secondary"
+                                        className="min-w-0 overflow-hidden border-b border-border-subtle py-2.5 pr-3 text-[11px] text-text-secondary"
                                         style={{
                                             fontFamily: "var(--font-mono)",
                                         }}
@@ -605,7 +607,7 @@ export function GitHubPullRequestsTabView({
                                             into {pullRequest.base.label}
                                         </div>
                                     </div>
-                                    <div className="border-b border-border-subtle py-2.5 pr-3 text-[11px] text-text-secondary">
+                                    <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px] text-text-secondary">
                                         <div>
                                             {pullRequest.commentCount} comments
                                         </div>
