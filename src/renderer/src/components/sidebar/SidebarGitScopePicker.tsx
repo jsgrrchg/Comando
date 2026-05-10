@@ -7,6 +7,7 @@ import {
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -34,9 +35,15 @@ import { SidebarNodeRow, type SidebarBadge } from "./SidebarNodeRow";
 type GitScopeTabId = "branches" | "worktrees";
 
 interface MenuPosition {
+    readonly height: number;
     readonly width: number;
     readonly x: number;
     readonly y: number;
+}
+
+interface GitScopeMenuSize {
+    readonly height: number;
+    readonly width: number;
 }
 
 interface SidebarGitScopePickerProps {
@@ -50,6 +57,104 @@ const GIT_SCOPE_VIRTUALIZATION_THRESHOLD = 120;
 const GIT_SCOPE_VIRTUALIZATION_OVERSCAN = 6;
 const GIT_SCOPE_ROW_ESTIMATE = 52;
 const GIT_SCOPE_SECTION_ESTIMATE = 30;
+const GIT_SCOPE_MENU_SIZE_STORAGE_KEY = "comando.git.scope.menu.size";
+const GIT_SCOPE_MENU_SIZE_VERSION = 1;
+const GIT_SCOPE_MENU_MIN_WIDTH = 280;
+const GIT_SCOPE_MENU_MAX_WIDTH = 720;
+const GIT_SCOPE_MENU_MIN_HEIGHT = 260;
+const GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT = 420;
+const GIT_SCOPE_MENU_MAX_HEIGHT = 720;
+
+function getStorage(): Storage | null {
+    try {
+        return globalThis.localStorage ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function getMenuMaxWidth(x = 8): number {
+    return Math.max(
+        GIT_SCOPE_MENU_MIN_WIDTH,
+        Math.min(GIT_SCOPE_MENU_MAX_WIDTH, window.innerWidth - x - 8),
+    );
+}
+
+function getMenuMaxHeight(y = 8): number {
+    return Math.max(
+        GIT_SCOPE_MENU_MIN_HEIGHT,
+        Math.min(GIT_SCOPE_MENU_MAX_HEIGHT, window.innerHeight - y - 8),
+    );
+}
+
+function clampGitScopeMenuSize(
+    size: GitScopeMenuSize,
+    origin?: { readonly x: number; readonly y: number },
+): GitScopeMenuSize {
+    const maxWidth = getMenuMaxWidth(origin?.x);
+    const maxHeight = getMenuMaxHeight(origin?.y);
+
+    return {
+        height: Math.round(
+            Math.min(Math.max(size.height, GIT_SCOPE_MENU_MIN_HEIGHT), maxHeight),
+        ),
+        width: Math.round(
+            Math.min(Math.max(size.width, GIT_SCOPE_MENU_MIN_WIDTH), maxWidth),
+        ),
+    };
+}
+
+function readPersistedGitScopeMenuSize(): GitScopeMenuSize | null {
+    const storage = getStorage();
+    if (!storage) {
+        return null;
+    }
+
+    const raw = storage.getItem(GIT_SCOPE_MENU_SIZE_STORAGE_KEY);
+    if (!raw) {
+        return null;
+    }
+
+    try {
+        const parsed = JSON.parse(raw) as {
+            readonly height?: unknown;
+            readonly version?: unknown;
+            readonly width?: unknown;
+        };
+        if (
+            parsed.version !== GIT_SCOPE_MENU_SIZE_VERSION ||
+            typeof parsed.width !== "number" ||
+            typeof parsed.height !== "number" ||
+            !Number.isFinite(parsed.width) ||
+            !Number.isFinite(parsed.height)
+        ) {
+            return null;
+        }
+
+        return clampGitScopeMenuSize({
+            height: parsed.height,
+            width: parsed.width,
+        });
+    } catch {
+        return null;
+    }
+}
+
+function persistGitScopeMenuSize(size: GitScopeMenuSize): void {
+    const storage = getStorage();
+    if (!storage) {
+        return;
+    }
+
+    storage.setItem(
+        GIT_SCOPE_MENU_SIZE_STORAGE_KEY,
+        JSON.stringify({
+            ...size,
+            updatedAt: Date.now(),
+            version: GIT_SCOPE_MENU_SIZE_VERSION,
+        }),
+    );
+}
 
 interface RemoteBranchResolution {
     readonly hasSuggestedNameConflict: boolean;
@@ -136,12 +241,24 @@ export function SidebarGitScopePicker({
     const [collapsedSections, setCollapsedSections] = useState<
         Record<string, boolean>
     >({});
+    const [userMenuSize, setUserMenuSize] = useState<GitScopeMenuSize | null>(
+        () => readPersistedGitScopeMenuSize(),
+    );
     const buttonRef = useRef<HTMLButtonElement | null>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
     const searchRef = useRef<HTMLInputElement | null>(null);
     const listRef = useRef<HTMLDivElement | null>(null);
     const virtualListRef = useRef<MeasuredVirtualListHandle | null>(null);
+    const menuResizeStateRef = useRef<{
+        readonly startHeight: number;
+        readonly startWidth: number;
+        readonly startX: number;
+        readonly startY: number;
+        readonly x: number;
+        readonly y: number;
+    } | null>(null);
+    const pendingMenuSizeRef = useRef<GitScopeMenuSize | null>(null);
 
     const project = useProjectsStore((state) =>
         projectId
@@ -437,37 +554,48 @@ export function SidebarGitScopePicker({
 
         const buttonRect = button.getBoundingClientRect();
         const measuredMenuRect = menuRef.current?.getBoundingClientRect();
-        const width = Math.min(
+        const defaultWidth = Math.min(
             window.innerWidth - 16,
-            Math.max(280, Math.ceil(buttonRect.width)),
+            Math.max(GIT_SCOPE_MENU_MIN_WIDTH, Math.ceil(buttonRect.width)),
         );
         const estimatedRows = Math.max(listItems.length, 1);
-        const estimatedHeight = Math.min(
-            420,
+        const defaultHeight = Math.min(
+            GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT,
             estimatedRows * GIT_SCOPE_ROW_ESTIMATE + 144 + (actionError ? 40 : 0),
         );
-        const height = Math.ceil(measuredMenuRect?.height ?? estimatedHeight);
+        const size = clampGitScopeMenuSize(
+            userMenuSize ?? {
+                height: Math.ceil(measuredMenuRect?.height ?? defaultHeight),
+                width: defaultWidth,
+            },
+            {
+                x: buttonRect.left,
+                y: buttonRect.bottom + 6,
+            },
+        );
         const spaceAbove = buttonRect.top - 8;
         const spaceBelow = window.innerHeight - buttonRect.bottom - 8;
-        const openAbove = spaceAbove >= height || spaceAbove > spaceBelow;
+        const openAbove = spaceAbove >= size.height || spaceAbove > spaceBelow;
         const preferredY = openAbove
-            ? buttonRect.top - height - 6
+            ? buttonRect.top - size.height - 6
             : buttonRect.bottom + 6;
         const safePosition = getViewportSafeMenuPosition(
             buttonRect.left,
             preferredY,
-            width,
-            height,
+            size.width,
+            size.height,
         );
 
         setMenuPosition({
-            width,
+            height: size.height,
+            width: size.width,
             x: safePosition.x,
             y: safePosition.y,
         });
     }, [
         actionError,
         listItems.length,
+        userMenuSize,
     ]);
 
     useEffect(() => {
@@ -1266,6 +1394,102 @@ export function SidebarGitScopePicker({
         [],
     );
 
+    const handleMenuResizeMove = useCallback((event: PointerEvent) => {
+        const resizeState = menuResizeStateRef.current;
+        if (!resizeState) {
+            return;
+        }
+
+        event.preventDefault();
+        const nextSize = clampGitScopeMenuSize(
+            {
+                height:
+                    resizeState.startHeight + event.clientY - resizeState.startY,
+                width: resizeState.startWidth + event.clientX - resizeState.startX,
+            },
+            {
+                x: resizeState.x,
+                y: resizeState.y,
+            },
+        );
+        pendingMenuSizeRef.current = nextSize;
+        setMenuPosition((current) =>
+            current
+                ? {
+                      ...current,
+                      height: nextSize.height,
+                      width: nextSize.width,
+                  }
+                : current,
+        );
+    }, []);
+
+    const handleMenuResizeEnd = useCallback(() => {
+        const nextSize = pendingMenuSizeRef.current;
+        menuResizeStateRef.current = null;
+        pendingMenuSizeRef.current = null;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("pointermove", handleMenuResizeMove);
+        window.removeEventListener("pointerup", handleMenuResizeEnd);
+        window.removeEventListener("pointercancel", handleMenuResizeEnd);
+
+        if (!nextSize) {
+            return;
+        }
+
+        setUserMenuSize(nextSize);
+        persistGitScopeMenuSize(nextSize);
+    }, [handleMenuResizeMove]);
+
+    const handleMenuResizeStart = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const rect = menuRef.current?.getBoundingClientRect();
+            if (!rect) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const startSize = clampGitScopeMenuSize(
+                {
+                    height: rect.height,
+                    width: rect.width,
+                },
+                {
+                    x: rect.left,
+                    y: rect.top,
+                },
+            );
+            menuResizeStateRef.current = {
+                startHeight: startSize.height,
+                startWidth: startSize.width,
+                startX: event.clientX,
+                startY: event.clientY,
+                x: rect.left,
+                y: rect.top,
+            };
+            pendingMenuSizeRef.current = startSize;
+            document.body.style.cursor = "nwse-resize";
+            document.body.style.userSelect = "none";
+            window.addEventListener("pointermove", handleMenuResizeMove);
+            window.addEventListener("pointerup", handleMenuResizeEnd);
+            window.addEventListener("pointercancel", handleMenuResizeEnd);
+        },
+        [handleMenuResizeEnd, handleMenuResizeMove],
+    );
+
+    useEffect(() => {
+        return () => {
+            window.removeEventListener("pointermove", handleMenuResizeMove);
+            window.removeEventListener("pointerup", handleMenuResizeEnd);
+            window.removeEventListener("pointercancel", handleMenuResizeEnd);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+        };
+    }, [handleMenuResizeEnd, handleMenuResizeMove]);
+
     useEffect(() => {
         if (focusIndex < 0 || !listRef.current) return;
 
@@ -1454,6 +1678,7 @@ export function SidebarGitScopePicker({
                           onKeyDown={handleListKeyDown}
                           ref={menuRef}
                           style={{
+                              height: menuPosition?.height,
                               left: menuPosition?.x ?? 8,
                               top: menuPosition?.y ?? 8,
                               width: menuPosition?.width ?? 280,
@@ -1553,6 +1778,13 @@ export function SidebarGitScopePicker({
                                   Updating git scope…
                               </div>
                           ) : null}
+
+                          <div
+                              aria-hidden="true"
+                              className="sidebar-git-scope-menu__resize-handle"
+                              onPointerDown={handleMenuResizeStart}
+                              title="Resize"
+                          />
                       </div>,
                       document.body,
                   )
