@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getGitHubRepoKey, useGitHubStore } from "@renderer/app/store/github-store";
 import type { RuntimeWorkspaceGitHubIssueTab } from "@renderer/app/workspace/tree";
@@ -31,6 +31,14 @@ export function GitHubIssueTabView({
 }) {
     const repoKey = getGitHubRepoKey(tab.ref);
     const [commentDraft, setCommentDraft] = useState("");
+    const [isIssueBodyCopied, setIsIssueBodyCopied] = useState(false);
+    const [isIssueLinkCopied, setIsIssueLinkCopied] = useState(false);
+    const copyResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
+    const copyLinkResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
     const detail = useGitHubStore(
         (state) =>
             state.issueDetailsByRepo[repoKey]?.[tab.issueNumber] ?? null,
@@ -76,23 +84,52 @@ export function GitHubIssueTabView({
     const reopenIssue = useGitHubStore((state) => state.reopenIssue);
     const canWriteIssues = hasGitHubWritePermission(authStatus, "issues");
     const writePermissionLabel = getGitHubWritePermissionLabel("issues");
+    const issueUrl =
+        detail?.url ?? buildGitHubWebUrl(tab.ref, `/issues/${tab.issueNumber}`);
 
     useEffect(() => {
         let cancelled = false;
 
-        async function refreshInitialData() {
-            const status = await refreshAuthStatus(tab.ref);
+        async function loadInitialData() {
+            if (
+                useGitHubStore.getState().issueDetailsByRepo[repoKey]?.[
+                    tab.issueNumber
+                ] !== undefined
+            ) {
+                return;
+            }
+
+            const status =
+                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
+                (await refreshAuthStatus(tab.ref));
             if (!cancelled && status.state === "authenticated") {
                 await ensureIssueDetail(tab.ref, tab.issueNumber);
             }
         }
 
-        void refreshInitialData();
+        void loadInitialData();
 
         return () => {
             cancelled = true;
         };
-    }, [ensureIssueDetail, refreshAuthStatus, tab.issueNumber, tab.ref]);
+    }, [
+        ensureIssueDetail,
+        refreshAuthStatus,
+        repoKey,
+        tab.issueNumber,
+        tab.ref,
+    ]);
+
+    useEffect(() => {
+        return () => {
+            if (copyResetTimeoutRef.current) {
+                clearTimeout(copyResetTimeoutRef.current);
+            }
+            if (copyLinkResetTimeoutRef.current) {
+                clearTimeout(copyLinkResetTimeoutRef.current);
+            }
+        };
+    }, []);
 
     const handleRefresh = async () => {
         const status = await refreshAuthStatus(tab.ref);
@@ -109,6 +146,45 @@ export function GitHubIssueTabView({
 
         await commentIssue(tab.ref, tab.issueNumber, body);
         setCommentDraft("");
+    };
+
+    const handleCommentAndClose = async () => {
+        const body = commentDraft.trim();
+        if (!body || !canWriteIssues) {
+            return;
+        }
+
+        await commentIssue(tab.ref, tab.issueNumber, body);
+        setCommentDraft("");
+        await closeIssue(tab.ref, tab.issueNumber);
+    };
+
+    const handleCopyIssueBody = async () => {
+        if (!detail?.body) {
+            return;
+        }
+
+        await navigator.clipboard.writeText(detail.body);
+        setIsIssueBodyCopied(true);
+        if (copyResetTimeoutRef.current) {
+            clearTimeout(copyResetTimeoutRef.current);
+        }
+        copyResetTimeoutRef.current = setTimeout(() => {
+            setIsIssueBodyCopied(false);
+            copyResetTimeoutRef.current = null;
+        }, 1600);
+    };
+
+    const handleCopyIssueLink = async () => {
+        await navigator.clipboard.writeText(issueUrl);
+        setIsIssueLinkCopied(true);
+        if (copyLinkResetTimeoutRef.current) {
+            clearTimeout(copyLinkResetTimeoutRef.current);
+        }
+        copyLinkResetTimeoutRef.current = setTimeout(() => {
+            setIsIssueLinkCopied(false);
+            copyLinkResetTimeoutRef.current = null;
+        }, 1600);
     };
 
     const handleClose = async () => {
@@ -140,15 +216,13 @@ export function GitHubIssueTabView({
                     actions={
                         <>
                             <IdeActionButton
-                                onClick={() =>
-                                    openGitHubWebUrl(
-                                        detail?.url ??
-                                            buildGitHubWebUrl(
-                                                tab.ref,
-                                                `/issues/${tab.issueNumber}`,
-                                            ),
-                                    )
-                                }
+                                onClick={() => void handleCopyIssueLink()}
+                                title="Copy GitHub issue link to clipboard"
+                            >
+                                {isIssueLinkCopied ? "Copied" : "Copy Link"}
+                            </IdeActionButton>
+                            <IdeActionButton
+                                onClick={() => openGitHubWebUrl(issueUrl)}
                             >
                                 Open in GitHub
                             </IdeActionButton>
@@ -210,6 +284,15 @@ export function GitHubIssueTabView({
                                     ))}
                                 </div>
                             </div>
+                            <div className="flex justify-end px-4 pt-3">
+                                <IdeActionButton
+                                    disabled={!detail.body}
+                                    onClick={() => void handleCopyIssueBody()}
+                                    title="Copy issue description to clipboard"
+                                >
+                                    {isIssueBodyCopied ? "Copied" : "Copy"}
+                                </IdeActionButton>
+                            </div>
                             <div className="px-4 py-4 text-[13px] leading-6 text-text-secondary">
                                 <MarkdownContent
                                     content={detail.body || "_No description._"}
@@ -256,10 +339,27 @@ export function GitHubIssueTabView({
                                 disabled={!canWriteIssues}
                                 error={error}
                                 initialPreviewExpanded={false}
-                                isSubmitting={isCommenting}
+                                isSubmitting={isCommenting || isClosing}
                                 onChange={setCommentDraft}
                                 onSubmit={() => void handleComment()}
                                 permissionLabel={writePermissionLabel}
+                                secondaryAction={
+                                    detail.state === "open"
+                                        ? {
+                                              armedLabel:
+                                                  "Click again to comment and close",
+                                              disabled: !canWriteIssues,
+                                              isSubmitting: isClosing,
+                                              label: "Close issue with comment",
+                                              loadingLabel: "Closing...",
+                                              onConfirm: () =>
+                                                  void handleCommentAndClose(),
+                                              title: canWriteIssues
+                                                  ? undefined
+                                                  : writePermissionLabel,
+                                          }
+                                        : undefined
+                                }
                                 value={commentDraft}
                             />
                         </section>

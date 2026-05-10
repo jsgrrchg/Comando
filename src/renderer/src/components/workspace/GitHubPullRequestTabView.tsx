@@ -1,7 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import type { GitHubPullRequestChecksState } from "@shared/ipc";
+import type {
+    GitHubPullRequestChecksResult,
+    GitHubPullRequestChecksState,
+} from "@shared/ipc";
 
 import {
     getGitHubPullRequestChecksKey,
@@ -56,11 +59,11 @@ export function GitHubPullRequestTabView({
                 tab.pullRequestNumber
             ] ?? null,
     );
-    const checks = useGitHubStore((state) =>
-        detail?.head.sha
-            ? (state.pullRequestChecksByRepo[repoKey]?.[detail.head.sha] ??
-              null)
-            : null,
+    const checks = useGitHubStore(
+        (state): GitHubPullRequestChecksResult | null | undefined =>
+            detail?.head.sha
+                ? state.pullRequestChecksByRepo[repoKey]?.[detail.head.sha]
+                : undefined,
     );
     const authStatus = useGitHubStore(
         (state) => state.authStatusByHost[tab.ref.host] ?? null,
@@ -179,14 +182,24 @@ export function GitHubPullRequestTabView({
     useEffect(() => {
         let cancelled = false;
 
-        async function refreshInitialData() {
-            const status = await refreshAuthStatus(tab.ref);
+        async function loadInitialData() {
+            if (
+                useGitHubStore.getState().pullRequestDetailsByRepo[repoKey]?.[
+                    tab.pullRequestNumber
+                ] !== undefined
+            ) {
+                return;
+            }
+
+            const status =
+                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
+                (await refreshAuthStatus(tab.ref));
             if (!cancelled && status.state === "authenticated") {
                 await ensurePullRequestDetail(tab.ref, tab.pullRequestNumber);
             }
         }
 
-        void refreshInitialData();
+        void loadInitialData();
 
         return () => {
             cancelled = true;
@@ -194,6 +207,7 @@ export function GitHubPullRequestTabView({
     }, [
         ensurePullRequestDetail,
         refreshAuthStatus,
+        repoKey,
         tab.pullRequestNumber,
         tab.ref,
     ]);
@@ -202,7 +216,7 @@ export function GitHubPullRequestTabView({
         if (
             authStatus?.state !== "authenticated" ||
             !detail?.head.sha ||
-            checks !== null ||
+            checks !== undefined ||
             isLoadingChecks ||
             checksError
         ) {

@@ -1,5 +1,6 @@
 import {
     useEffect,
+    useRef,
     useState,
     type KeyboardEvent,
     type ReactNode,
@@ -471,6 +472,32 @@ export function GitHubCommentList({
 }: {
     readonly comments: readonly GitHubCommentSummary[];
 }) {
+    const [copiedCommentId, setCopiedCommentId] = useState<string | null>(null);
+    const copyResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
+
+    useEffect(() => {
+        return () => {
+            if (copyResetTimeoutRef.current) {
+                clearTimeout(copyResetTimeoutRef.current);
+            }
+        };
+    }, []);
+
+    const handleCopyComment = async (commentId: string, body: string) => {
+        await navigator.clipboard.writeText(body);
+        setCopiedCommentId(commentId);
+
+        if (copyResetTimeoutRef.current) {
+            clearTimeout(copyResetTimeoutRef.current);
+        }
+        copyResetTimeoutRef.current = setTimeout(() => {
+            setCopiedCommentId(null);
+            copyResetTimeoutRef.current = null;
+        }, 1600);
+    };
+
     if (comments.length === 0) {
         return (
             <GitHubEmptyState>
@@ -481,24 +508,44 @@ export function GitHubCommentList({
 
     return (
         <div className="space-y-3">
-            {comments.map((comment) => (
-                <article
-                    className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary"
-                    key={comment.id}
-                >
-                    <div className="flex items-center justify-between gap-3 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-3 py-2">
-                        <div className="min-w-0 text-[11px] font-medium">
-                            {comment.author?.login ?? "ghost"}
+            {comments.map((comment) => {
+                const commentId = String(comment.id);
+                const isCopied = copiedCommentId === commentId;
+
+                return (
+                    <article
+                        className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary"
+                        key={comment.id}
+                    >
+                        <div className="flex items-center justify-between gap-3 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-3 py-2">
+                            <div className="min-w-0 text-[11px] font-medium">
+                                {comment.author?.login ?? "ghost"}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                                <div className="text-[10px] text-text-secondary">
+                                    {formatGitHubRelativeTime(comment.updatedAt)}
+                                </div>
+                                <IdeActionButton
+                                    onClick={() =>
+                                        void handleCopyComment(
+                                            commentId,
+                                            comment.body,
+                                        )
+                                    }
+                                    title="Copy comment to clipboard"
+                                >
+                                    {isCopied ? "Copied" : "Copy"}
+                                </IdeActionButton>
+                            </div>
                         </div>
-                        <div className="shrink-0 text-[10px] text-text-secondary">
-                            {formatGitHubRelativeTime(comment.updatedAt)}
+                        <div className="px-3 py-3 text-[12px] leading-6 text-text-secondary">
+                            <MarkdownContent
+                                content={comment.body || "_No body._"}
+                            />
                         </div>
-                    </div>
-                    <div className="px-3 py-3 text-[12px] leading-6 text-text-secondary">
-                        <MarkdownContent content={comment.body || "_No body._"} />
-                    </div>
-                </article>
-            ))}
+                    </article>
+                );
+            })}
         </div>
     );
 }
@@ -509,6 +556,7 @@ export function GitHubCommentComposer({
     error,
     initialPreviewExpanded = true,
     isSubmitting,
+    secondaryAction,
     onChange,
     onSubmit,
     permissionLabel,
@@ -519,6 +567,15 @@ export function GitHubCommentComposer({
     readonly error?: string | null;
     readonly initialPreviewExpanded?: boolean;
     readonly isSubmitting?: boolean;
+    readonly secondaryAction?: {
+        readonly armedLabel: string;
+        readonly disabled?: boolean;
+        readonly isSubmitting?: boolean;
+        readonly label: string;
+        readonly loadingLabel: string;
+        readonly onConfirm: () => void;
+        readonly title?: string;
+    };
     readonly onChange: (value: string) => void;
     readonly onSubmit: () => void;
     readonly permissionLabel: string;
@@ -529,6 +586,12 @@ export function GitHubCommentComposer({
     );
     const trimmed = value.trim();
     const submitDisabled = disabled || isSubmitting || trimmed.length === 0;
+    const secondaryDisabled =
+        disabled ||
+        isSubmitting ||
+        secondaryAction?.disabled ||
+        secondaryAction?.isSubmitting ||
+        trimmed.length === 0;
 
     useEffect(() => {
         if (trimmed.length === 0) {
@@ -550,6 +613,44 @@ export function GitHubCommentComposer({
                     {error}
                 </div>
             ) : null}
+            <div className="mt-3 flex items-center justify-between gap-3">
+                <div className="text-[10px] text-text-secondary">
+                    Draft is kept locally if publishing fails.
+                </div>
+                <div className="flex items-center gap-2">
+                    <IdeActionButton
+                        disabled
+                        onClick={() => undefined}
+                        title="Agent-assisted drafts land in a follow-up phase."
+                    >
+                        Draft with Agent
+                    </IdeActionButton>
+                    {secondaryAction ? (
+                        <GitHubConfirmActionButton
+                            armedLabel={secondaryAction.armedLabel}
+                            disabled={secondaryDisabled}
+                            onConfirm={secondaryAction.onConfirm}
+                            title={
+                                disabled
+                                    ? permissionLabel
+                                    : secondaryAction.title
+                            }
+                        >
+                            {secondaryAction.isSubmitting
+                                ? secondaryAction.loadingLabel
+                                : secondaryAction.label}
+                        </GitHubConfirmActionButton>
+                    ) : null}
+                    <GitHubConfirmActionButton
+                        armedLabel={armedSubmitLabel}
+                        disabled={submitDisabled}
+                        onConfirm={onSubmit}
+                        title={disabled ? permissionLabel : undefined}
+                    >
+                        {isSubmitting ? "Commenting..." : "Comment"}
+                    </GitHubConfirmActionButton>
+                </div>
+            </div>
             {trimmed ? (
                 <div className="mt-3 rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
                     <div className="flex items-center justify-between gap-3">
@@ -574,28 +675,6 @@ export function GitHubCommentComposer({
                     ) : null}
                 </div>
             ) : null}
-            <div className="mt-3 flex items-center justify-between gap-3">
-                <div className="text-[10px] text-text-secondary">
-                    Draft is kept locally if publishing fails.
-                </div>
-                <div className="flex items-center gap-2">
-                    <IdeActionButton
-                        disabled
-                        onClick={() => undefined}
-                        title="Agent-assisted drafts land in a follow-up phase."
-                    >
-                        Draft with Agent
-                    </IdeActionButton>
-                    <GitHubConfirmActionButton
-                        armedLabel={armedSubmitLabel}
-                        disabled={submitDisabled}
-                        onConfirm={onSubmit}
-                        title={disabled ? permissionLabel : undefined}
-                    >
-                        {isSubmitting ? "Commenting..." : "Comment"}
-                    </GitHubConfirmActionButton>
-                </div>
-            </div>
         </div>
     );
 }

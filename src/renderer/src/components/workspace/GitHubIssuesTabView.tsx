@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { GitHubIssueState } from "@shared/ipc";
 
@@ -72,20 +72,53 @@ export function GitHubIssuesTabView({
     const openGitHubIssueTab = useWorkspaceStore(
         (state) => state.openGitHubIssueTab,
     );
+    const lastRequestedFilterRef = useRef(filter);
 
     useEffect(() => {
         let cancelled = false;
 
-        async function refreshInitialData() {
-            const status = await refreshAuthStatus(tab.ref);
+        async function loadInitialData() {
+            if (useGitHubStore.getState().issuesByRepo[repoKey] !== undefined) {
+                return;
+            }
+
+            const status =
+                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
+                (await refreshAuthStatus(tab.ref));
             if (!cancelled && status.state === "authenticated") {
                 await refreshIssues(tab.ref, {
-                    state: filter === "assigned" ? "all" : filter,
+                    state: "open",
                 });
             }
         }
 
-        void refreshInitialData();
+        void loadInitialData();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [refreshAuthStatus, refreshIssues, repoKey, tab.ref]);
+
+    useEffect(() => {
+        if (lastRequestedFilterRef.current === filter) {
+            return;
+        }
+        lastRequestedFilterRef.current = filter;
+
+        let cancelled = false;
+
+        async function refreshFilterData() {
+            const status =
+                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
+                (await refreshAuthStatus(tab.ref));
+            if (!cancelled && status.state === "authenticated") {
+                await refreshIssues(tab.ref, {
+                    state: getIssueListState(filter),
+                });
+            }
+        }
+
+        void refreshFilterData();
 
         return () => {
             cancelled = true;
@@ -136,7 +169,7 @@ export function GitHubIssuesTabView({
         const status = await refreshAuthStatus(tab.ref);
         if (status.state === "authenticated") {
             await refreshIssues(tab.ref, {
-                state: filter === "assigned" ? "all" : filter,
+                state: getIssueListState(filter),
             });
         }
     };
@@ -378,7 +411,7 @@ export function GitHubIssuesTabView({
                                 <IdeActionButton
                                     onClick={() => openGitHubWebUrl(issue.url)}
                                 >
-                                    Open
+                                    Open in GitHub
                                 </IdeActionButton>
                             </div>
                         </div>
@@ -389,7 +422,7 @@ export function GitHubIssuesTabView({
     );
 }
 
-const ISSUE_TABLE_GRID = "56px minmax(280px,1fr) 180px 110px 72px";
+const ISSUE_TABLE_GRID = "56px minmax(280px,1fr) 180px 110px 116px";
 
 function parseCsv(value: string): readonly string[] | null {
     const entries = value
@@ -397,4 +430,8 @@ function parseCsv(value: string): readonly string[] | null {
         .map((entry) => entry.trim())
         .filter(Boolean);
     return entries.length > 0 ? entries : null;
+}
+
+function getIssueListState(filter: IssueFilter): GitHubIssueState | "all" {
+    return filter === "assigned" ? "all" : filter;
 }

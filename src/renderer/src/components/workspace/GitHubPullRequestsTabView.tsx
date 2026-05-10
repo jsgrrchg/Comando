@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { GitRepositorySnapshot } from "@shared/ipc";
 
@@ -106,6 +106,7 @@ export function GitHubPullRequestsTabView({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
+    const lastRequestedFilterRef = useRef(filter);
 
     useEffect(() => {
         if (!newHead && currentBranch) {
@@ -116,19 +117,51 @@ export function GitHubPullRequestsTabView({
     useEffect(() => {
         let cancelled = false;
 
-        async function refreshInitialData() {
-            const status = await refreshAuthStatus(tab.ref);
+        async function loadInitialData() {
+            if (
+                useGitHubStore.getState().pullRequestsByRepo[repoKey] !==
+                undefined
+            ) {
+                return;
+            }
+
+            const status =
+                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
+                (await refreshAuthStatus(tab.ref));
             if (!cancelled && status.state === "authenticated") {
                 await refreshPullRequests(tab.ref, {
-                    state:
-                        filter === "draft" || filter === "branch"
-                            ? "all"
-                            : filter,
+                    state: "open",
                 });
             }
         }
 
-        void refreshInitialData();
+        void loadInitialData();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [refreshAuthStatus, refreshPullRequests, repoKey, tab.ref]);
+
+    useEffect(() => {
+        if (lastRequestedFilterRef.current === filter) {
+            return;
+        }
+        lastRequestedFilterRef.current = filter;
+
+        let cancelled = false;
+
+        async function refreshFilterData() {
+            const status =
+                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
+                (await refreshAuthStatus(tab.ref));
+            if (!cancelled && status.state === "authenticated") {
+                await refreshPullRequests(tab.ref, {
+                    state: getPullRequestListState(filter),
+                });
+            }
+        }
+
+        void refreshFilterData();
 
         return () => {
             cancelled = true;
@@ -247,10 +280,7 @@ export function GitHubPullRequestsTabView({
         const status = await refreshAuthStatus(tab.ref);
         if (status.state === "authenticated") {
             await refreshPullRequests(tab.ref, {
-                state:
-                    filter === "draft" || filter === "branch"
-                        ? "all"
-                        : filter,
+                state: getPullRequestListState(filter),
             });
         }
     };
@@ -605,6 +635,12 @@ export function GitHubPullRequestsTabView({
 }
 
 const PR_TABLE_GRID = "56px minmax(280px,1fr) 200px 110px 72px";
+
+function getPullRequestListState(
+    filter: PullRequestFilter,
+): "all" | "closed" | "open" {
+    return filter === "draft" || filter === "branch" ? "all" : filter;
+}
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
     return `${projectId}::${worktreeId ?? "primary"}`;
