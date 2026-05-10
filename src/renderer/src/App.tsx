@@ -75,6 +75,7 @@ import {
 } from "./components/context-menu/ContextMenu";
 import {
     SidebarAgentsPanel,
+    SidebarGitHubPanel,
     SidebarGitPanel,
     SidebarGitScopePicker,
 } from "./components/sidebar";
@@ -98,7 +99,7 @@ type DragState = {
     readonly startX: number;
 } | null;
 
-type SidebarView = "files" | "git" | "agents";
+type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 
 const ROOT_NODE_KEY = "__root__";
 const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
@@ -306,6 +307,8 @@ export function App() {
     const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
     const [gitChangesFilter, setGitChangesFilter] = useState("");
     const [agentsFilter, setAgentsFilter] = useState("");
+    const [issuesFilter, setIssuesFilter] = useState("");
+    const [pullRequestsFilter, setPullRequestsFilter] = useState("");
     const [fileTreeSelectedPaths, setFileTreeSelectedPaths] = useState<
         readonly string[]
     >([]);
@@ -2124,6 +2127,23 @@ export function App() {
         [saveFileTreeScrollPosition, setSidebarView, sidebarView],
     );
 
+    const setSidebarSearchValue = useCallback(
+        (value: string) => {
+            if (sidebarView === "files") {
+                setFileTreeFilter(value);
+            } else if (sidebarView === "git") {
+                setGitChangesFilter(value);
+            } else if (sidebarView === "issues") {
+                setIssuesFilter(value);
+            } else if (sidebarView === "pull_requests") {
+                setPullRequestsFilter(value);
+            } else {
+                setAgentsFilter(value);
+            }
+        },
+        [sidebarView],
+    );
+
     const closeQuickOpen = useCallback(() => {
         setIsQuickOpenLoading(false);
         setIsQuickOpenOpen(false);
@@ -2382,6 +2402,37 @@ export function App() {
         };
     }, [bootstrap?.platform]);
 
+    const sidebarSearchValue =
+        sidebarView === "files"
+            ? fileTreeFilter
+            : sidebarView === "git"
+              ? gitChangesFilter
+              : sidebarView === "issues"
+                ? issuesFilter
+                : sidebarView === "pull_requests"
+                  ? pullRequestsFilter
+                  : agentsFilter;
+    const sidebarSearchAriaLabel =
+        sidebarView === "files"
+            ? "Filter files"
+            : sidebarView === "git"
+              ? "Filter changes"
+              : sidebarView === "issues"
+                ? "Search issues"
+                : sidebarView === "pull_requests"
+                  ? "Search pull requests"
+                  : "Filter threads";
+    const sidebarSearchPlaceholder =
+        sidebarView === "files"
+            ? "Filter files..."
+            : sidebarView === "git"
+              ? "Filter changes..."
+              : sidebarView === "issues"
+                ? "Search issues..."
+                : sidebarView === "pull_requests"
+                  ? "Search pull requests..."
+                  : "Filter threads...";
+
     const sidebarContent = (
         <>
             <div
@@ -2516,6 +2567,51 @@ export function App() {
                     <button
                         className={[
                             "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
+                            sidebarView === "agents"
+                                ? "sidebar-action-row--active"
+                                : "",
+                        ]
+                            .filter(Boolean)
+                            .join(" ")}
+                        onClick={() => {
+                            if (sidebarView !== "agents") {
+                                handleSidebarViewChange("agents");
+                            }
+                        }}
+                        type="button"
+                    >
+                        <svg
+                            aria-hidden="true"
+                            className="h-4 w-4 shrink-0"
+                            fill="none"
+                            viewBox="0 0 16 16"
+                        >
+                            <path
+                                d="M3 4.25A1.25 1.25 0 0 1 4.25 3h7.5A1.25 1.25 0 0 1 13 4.25v5.5A1.25 1.25 0 0 1 11.75 11H8.6l-2.2 2.05A.5.5 0 0 1 5.6 12.7V11H4.25A1.25 1.25 0 0 1 3 9.75v-5.5Z"
+                                stroke="currentColor"
+                                strokeWidth="1.1"
+                                fill="currentColor"
+                                fillOpacity="0.18"
+                            />
+                            <circle
+                                cx="6"
+                                cy="7"
+                                r="0.85"
+                                fill="currentColor"
+                            />
+                            <circle
+                                cx="10"
+                                cy="7"
+                                r="0.85"
+                                fill="currentColor"
+                            />
+                        </svg>
+                        <span>Agents</span>
+                    </button>
+
+                    <button
+                        className={[
+                            "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
                             sidebarView === "git"
                                 ? "sidebar-action-row--active"
                                 : "",
@@ -2564,19 +2660,23 @@ export function App() {
                     </button>
 
                     <button
+                        aria-label="Issues"
                         className={[
-                            "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
-                            sidebarView === "agents"
+                            "sidebar-action-row sidebar-action-row--compact sidebar-action-row--icon app-no-drag shrink-0",
+                            sidebarView === "issues"
                                 ? "sidebar-action-row--active"
                                 : "",
                         ]
                             .filter(Boolean)
                             .join(" ")}
+                        disabled={!activeProjectId}
                         onClick={() => {
-                            if (sidebarView !== "agents") {
-                                handleSidebarViewChange("agents");
+                            if (!activeProjectId) return;
+                            if (sidebarView !== "issues") {
+                                handleSidebarViewChange("issues");
                             }
                         }}
+                        title="Issues"
                         type="button"
                     >
                         <svg
@@ -2585,27 +2685,79 @@ export function App() {
                             fill="none"
                             viewBox="0 0 16 16"
                         >
-                            <path
-                                d="M3 4.25A1.25 1.25 0 0 1 4.25 3h7.5A1.25 1.25 0 0 1 13 4.25v5.5A1.25 1.25 0 0 1 11.75 11H8.6l-2.2 2.05A.5.5 0 0 1 5.6 12.7V11H4.25A1.25 1.25 0 0 1 3 9.75v-5.5Z"
+                            <circle
+                                cx="8"
+                                cy="8"
+                                r="5.2"
                                 stroke="currentColor"
-                                strokeWidth="1.1"
-                                fill="currentColor"
-                                fillOpacity="0.18"
+                                strokeWidth="1.15"
+                            />
+                            <path
+                                d="M8 4.9v3.8"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeWidth="1.25"
                             />
                             <circle
-                                cx="6"
-                                cy="7"
-                                r="0.85"
+                                cx="8"
+                                cy="11.1"
                                 fill="currentColor"
-                            />
-                            <circle
-                                cx="10"
-                                cy="7"
-                                r="0.85"
-                                fill="currentColor"
+                                r="0.75"
                             />
                         </svg>
-                        <span>Agents</span>
+                    </button>
+
+                    <button
+                        aria-label="Pull Requests"
+                        className={[
+                            "sidebar-action-row sidebar-action-row--compact sidebar-action-row--icon app-no-drag shrink-0",
+                            sidebarView === "pull_requests"
+                                ? "sidebar-action-row--active"
+                                : "",
+                        ]
+                            .filter(Boolean)
+                            .join(" ")}
+                        disabled={!activeProjectId}
+                        onClick={() => {
+                            if (!activeProjectId) return;
+                            if (sidebarView !== "pull_requests") {
+                                handleSidebarViewChange("pull_requests");
+                            }
+                        }}
+                        title="Pull Requests"
+                        type="button"
+                    >
+                        <svg
+                            aria-hidden="true"
+                            className="h-4 w-4 shrink-0"
+                            fill="none"
+                            viewBox="0 0 16 16"
+                        >
+                            <circle
+                                cx="5"
+                                cy="4"
+                                fill="currentColor"
+                                r="1.2"
+                            />
+                            <circle
+                                cx="5"
+                                cy="12"
+                                fill="currentColor"
+                                r="1.2"
+                            />
+                            <circle
+                                cx="11"
+                                cy="8"
+                                fill="currentColor"
+                                r="1.2"
+                            />
+                            <path
+                                d="M5 5.2v5.6M6.2 4H8a3 3 0 0 1 3 3v0"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeWidth="1.15"
+                            />
+                        </svg>
                     </button>
 
                 </div>
@@ -2637,72 +2789,30 @@ export function App() {
                         </svg>
                     </span>
                     <input
-                        aria-label={
-                            sidebarView === "files"
-                                ? "Filter files"
-                                : sidebarView === "git"
-                                  ? "Filter changes"
-                                  : "Filter threads"
-                        }
+                        aria-label={sidebarSearchAriaLabel}
                         autoCapitalize="off"
                         autoCorrect="off"
                         className="sidebar-search-input"
                         onChange={(event) => {
-                            const value = event.target.value;
-                            if (sidebarView === "files") {
-                                setFileTreeFilter(value);
-                            } else if (sidebarView === "git") {
-                                setGitChangesFilter(value);
-                            } else {
-                                setAgentsFilter(value);
-                            }
+                            setSidebarSearchValue(event.target.value);
                         }}
                         onKeyDown={(event) => {
                             if (event.key === "Escape") {
                                 event.preventDefault();
-                                if (sidebarView === "files") {
-                                    setFileTreeFilter("");
-                                } else if (sidebarView === "git") {
-                                    setGitChangesFilter("");
-                                } else {
-                                    setAgentsFilter("");
-                                }
+                                setSidebarSearchValue("");
                             }
                         }}
-                        placeholder={
-                            sidebarView === "files"
-                                ? "Filter files..."
-                                : sidebarView === "git"
-                                  ? "Filter changes..."
-                                  : "Filter threads..."
-                        }
+                        placeholder={sidebarSearchPlaceholder}
                         spellCheck={false}
                         type="text"
-                        value={
-                            sidebarView === "files"
-                                ? fileTreeFilter
-                                : sidebarView === "git"
-                                  ? gitChangesFilter
-                                  : agentsFilter
-                        }
+                        value={sidebarSearchValue}
                     />
-                    {(sidebarView === "files"
-                        ? fileTreeFilter
-                        : sidebarView === "git"
-                          ? gitChangesFilter
-                          : agentsFilter
-                    ).length > 0 ? (
+                    {sidebarSearchValue.length > 0 ? (
                         <button
                             aria-label="Clear filter"
                             className="sidebar-search-clear"
                             onClick={() => {
-                                if (sidebarView === "files") {
-                                    setFileTreeFilter("");
-                                } else if (sidebarView === "git") {
-                                    setGitChangesFilter("");
-                                } else {
-                                    setAgentsFilter("");
-                                }
+                                setSidebarSearchValue("");
                             }}
                             title="Clear filter"
                             type="button"
@@ -2722,6 +2832,21 @@ export function App() {
             {sidebarView === "git" && activeProjectId ? (
                 <SidebarGitPanel
                     filter={gitChangesFilter}
+                    projectId={activeProjectId}
+                    worktreeId={activeWorktreeId}
+                />
+            ) : sidebarView === "issues" ? (
+                <SidebarGitHubPanel
+                    filter={issuesFilter}
+                    kind="issues"
+                    onOpenSettings={openSettingsWindow}
+                    projectId={activeProjectId}
+                    worktreeId={activeWorktreeId}
+                />
+            ) : sidebarView === "pull_requests" ? (
+                <SidebarGitHubPanel
+                    filter={pullRequestsFilter}
+                    kind="pull_requests"
                     onOpenSettings={openSettingsWindow}
                     projectId={activeProjectId}
                     worktreeId={activeWorktreeId}

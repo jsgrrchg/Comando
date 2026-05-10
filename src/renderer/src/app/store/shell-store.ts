@@ -14,7 +14,7 @@ import {
 
 const initialLayout = createDefaultShellLayout();
 
-type SidebarView = "files" | "git" | "agents";
+type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 
 interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
@@ -51,6 +51,12 @@ function normalizeSidebarView(
     }
     if (view === "agents") {
         return "agents";
+    }
+    if (view === "issues") {
+        return "issues";
+    }
+    if (view === "pull_requests") {
+        return "pull_requests";
     }
     return "files";
 }

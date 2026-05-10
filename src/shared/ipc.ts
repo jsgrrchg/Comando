@@ -259,7 +259,12 @@ export interface PersistedShellState {
     readonly activeSurface: PersistedShellSurface;
     readonly leftCollapsed?: boolean;
     readonly leftWidth: number;
-    readonly sidebarView?: "files" | "git" | "agents";
+    readonly sidebarView?:
+        | "files"
+        | "git"
+        | "agents"
+        | "issues"
+        | "pull_requests";
 }
 
 export type AiRuntimeId = "claude" | "codex" | "gemini" | "kilo";

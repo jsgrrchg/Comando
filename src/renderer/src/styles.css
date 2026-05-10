@@ -774,9 +774,25 @@ button {
     font-size: 12px;
 }
 
+.sidebar-action-row--icon {
+    justify-content: center;
+    width: 30px;
+    padding: 5px;
+}
+
 .sidebar-action-row:hover {
     background: var(--color-bg-tertiary);
     color: var(--color-text-primary);
+}
+
+.sidebar-action-row:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+.sidebar-action-row:disabled:hover {
+    background: transparent;
+    color: var(--color-text-secondary);
 }
 
 .sidebar-action-row--active {

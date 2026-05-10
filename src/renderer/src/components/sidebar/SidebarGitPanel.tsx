@@ -15,7 +15,6 @@ import {
     type GitChangeGroupId,
     type GitTreeNode,
 } from "@renderer/components/git";
-import { GitHubSidebarActions } from "@renderer/components/github/GitHubSidebarActions";
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
     return `${projectId}::${worktreeId ?? "primary"}`;
@@ -23,12 +22,10 @@ function getContextKey(projectId: string, worktreeId: string | null): string {
 
 export function SidebarGitPanel({
     filter,
-    onOpenSettings,
     projectId,
     worktreeId,
 }: {
     readonly filter?: string;
-    readonly onOpenSettings: () => void;
     readonly projectId: string;
     readonly worktreeId: string | null;
 }) {
@@ -327,13 +324,6 @@ export function SidebarGitPanel({
                         setCommitMessage(projectId, msg, worktreeId),
                     onCommit: handleCommit,
                 }}
-                gitHubActions={
-                    <GitHubSidebarActions
-                        onOpenSettings={onOpenSettings}
-                        projectId={projectId}
-                        worktreeId={worktreeId}
-                    />
-                }
                 onOpenHistory={handleOpenHistory}
                 summary={summary}
                 syncActions={{
