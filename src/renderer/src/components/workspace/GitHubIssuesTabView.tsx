@@ -27,7 +27,6 @@ import {
     hasGitHubWritePermission,
     openGitHubWebUrl,
 } from "./GitHubWorkspacePrimitives";
-import { GitHubCoordinationPanel } from "./GitHubCoordinationPanel";
 import { IdeActionButton } from "./ide-bar";
 
 type IssueFilter = GitHubIssueState | "all" | "assigned";
@@ -202,10 +201,6 @@ export function GitHubIssuesTabView({
             <div className="space-y-3 p-4">
                 <GitHubAuthNotice authStatus={authStatus} />
                 {error ? <GitHubErrorState>{error}</GitHubErrorState> : null}
-                <GitHubCoordinationPanel
-                    authStatus={authStatus}
-                    repo={tab.ref}
-                />
                 <div className="flex flex-wrap items-center gap-2">
                     <GitHubSearchBox
                         onChange={setQuery}

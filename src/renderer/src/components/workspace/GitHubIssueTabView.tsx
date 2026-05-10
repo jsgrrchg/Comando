@@ -255,6 +255,7 @@ export function GitHubIssueTabView({
                             <GitHubCommentComposer
                                 disabled={!canWriteIssues}
                                 error={error}
+                                initialPreviewExpanded={false}
                                 isSubmitting={isCommenting}
                                 onChange={setCommentDraft}
                                 onSubmit={() => void handleComment()}

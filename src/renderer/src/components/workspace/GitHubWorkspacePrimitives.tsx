@@ -507,6 +507,7 @@ export function GitHubCommentComposer({
     armedSubmitLabel = "Click again to publish",
     disabled,
     error,
+    initialPreviewExpanded = true,
     isSubmitting,
     onChange,
     onSubmit,
@@ -516,14 +517,24 @@ export function GitHubCommentComposer({
     readonly armedSubmitLabel?: string;
     readonly disabled?: boolean;
     readonly error?: string | null;
+    readonly initialPreviewExpanded?: boolean;
     readonly isSubmitting?: boolean;
     readonly onChange: (value: string) => void;
     readonly onSubmit: () => void;
     readonly permissionLabel: string;
     readonly value: string;
 }) {
+    const [isPreviewExpanded, setIsPreviewExpanded] = useState(
+        initialPreviewExpanded,
+    );
     const trimmed = value.trim();
     const submitDisabled = disabled || isSubmitting || trimmed.length === 0;
+
+    useEffect(() => {
+        if (trimmed.length === 0) {
+            setIsPreviewExpanded(initialPreviewExpanded);
+        }
+    }, [initialPreviewExpanded, trimmed.length]);
 
     return (
         <div className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-3">
@@ -541,10 +552,26 @@ export function GitHubCommentComposer({
             ) : null}
             {trimmed ? (
                 <div className="mt-3 rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
-                    <GitHubSectionLabel>Preview before publishing</GitHubSectionLabel>
-                    <div className="mt-2 max-h-48 overflow-y-auto text-[12px] leading-5 text-text-secondary">
-                        <MarkdownContent content={trimmed} />
+                    <div className="flex items-center justify-between gap-3">
+                        <GitHubSectionLabel>
+                            Preview before publishing
+                        </GitHubSectionLabel>
+                        <button
+                            aria-expanded={isPreviewExpanded}
+                            className="text-[10px] font-medium text-text-secondary transition hover:text-text-primary"
+                            onClick={() =>
+                                setIsPreviewExpanded((value) => !value)
+                            }
+                            type="button"
+                        >
+                            {isPreviewExpanded ? "Hide preview" : "Show preview"}
+                        </button>
                     </div>
+                    {isPreviewExpanded ? (
+                        <div className="mt-2 max-h-48 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                            <MarkdownContent content={trimmed} />
+                        </div>
+                    ) : null}
                 </div>
             ) : null}
             <div className="mt-3 flex items-center justify-between gap-3">
