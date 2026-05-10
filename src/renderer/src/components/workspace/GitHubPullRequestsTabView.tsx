@@ -634,7 +634,7 @@ export function GitHubPullRequestsTabView({
     );
 }
 
-const PR_TABLE_GRID = "56px minmax(280px,1fr) 200px 110px 72px";
+const PR_TABLE_GRID = "42px minmax(78px,1.25fr) minmax(0,0.75fr) minmax(68px,0.5fr) 64px";
 
 function getPullRequestListState(
     filter: PullRequestFilter,
