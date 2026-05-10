@@ -56,9 +56,44 @@ describe("github-store", () => {
         expect(useGitHubStore.getState().issuesByRepo[repoKey]).toEqual([
             issue,
         ]);
+        expect(useGitHubStore.getState().issueListStateByRepo[repoKey]).toBe(
+            "open",
+        );
         expect(useGitHubStore.getState().loadingKeys[`${repoKey}:issues`]).toBe(
             false,
         );
+    });
+
+    it("tracks the cached list state for issues and pull requests", async () => {
+        const issue = createIssueSummary({ number: 2, state: "closed" });
+        const pullRequest = createPullRequestDetail({
+            number: 3,
+            state: "closed",
+        });
+        const listGitHubIssues = vi.fn().mockResolvedValue({
+            issues: [issue],
+            nextCursor: null,
+            totalCount: null,
+        });
+        const listGitHubPullRequests = vi.fn().mockResolvedValue({
+            nextCursor: null,
+            pullRequests: [pullRequest],
+            totalCount: null,
+        });
+        stubComando({ listGitHubIssues, listGitHubPullRequests });
+
+        await useGitHubStore.getState().refreshIssues(repository, {
+            state: "closed",
+        });
+        await useGitHubStore.getState().refreshPullRequests(repository, {
+            state: "all",
+        });
+
+        const state = useGitHubStore.getState();
+        expect(state.issueListStateByRepo[repoKey]).toBe("closed");
+        expect(state.pullRequestListStateByRepo[repoKey]).toBe("all");
+        expect(state.issuesByRepo[repoKey]).toEqual([issue]);
+        expect(state.pullRequestsByRepo[repoKey]).toEqual([pullRequest]);
     });
 
     it("loads issue details once unless forced", async () => {

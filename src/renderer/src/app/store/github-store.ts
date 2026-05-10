@@ -35,6 +35,10 @@ type GitHubListPullRequestsOptions = Omit<
     GitHubListPullRequestsInput,
     "repository"
 >;
+type GitHubIssueListState = NonNullable<GitHubListIssuesInput["state"]>;
+type GitHubPullRequestListState = NonNullable<
+    GitHubListPullRequestsInput["state"]
+>;
 type GitHubCreateIssueOptions = Omit<
     GitHubCreateIssueInput,
     "clientRequestId" | "repository"
@@ -63,6 +67,7 @@ export interface GitHubStoreState {
         string,
         Record<number, GitHubIssueDetail | null>
     >;
+    readonly issueListStateByRepo: Record<string, GitHubIssueListState>;
     readonly issuesByRepo: Record<string, readonly GitHubIssueSummary[]>;
     readonly loadingKeys: Record<string, boolean>;
     readonly mutatingKeys: Record<string, boolean>;
@@ -77,6 +82,10 @@ export interface GitHubStoreState {
     readonly pullRequestsByRepo: Record<
         string,
         readonly GitHubPullRequestSummary[]
+    >;
+    readonly pullRequestListStateByRepo: Record<
+        string,
+        GitHubPullRequestListState
     >;
     readonly workflowRunsByRepo: Record<
         string,
@@ -253,11 +262,13 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
     authStatusByHost: {},
     errors: {},
     issueDetailsByRepo: {},
+    issueListStateByRepo: {},
     issuesByRepo: {},
     loadingKeys: {},
     mutatingKeys: {},
     pullRequestDetailsByRepo: {},
     pullRequestChecksByRepo: {},
+    pullRequestListStateByRepo: {},
     pullRequestsByRepo: {},
     workflowRunsByRepo: {},
     workflowRunJobsByRepo: {},
@@ -274,6 +285,10 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
         set((state) => ({
             errors: omitKeysWithPrefix(state.errors, repoKey),
             issueDetailsByRepo: omitKey(state.issueDetailsByRepo, repoKey),
+            issueListStateByRepo: omitKey(
+                state.issueListStateByRepo,
+                repoKey,
+            ),
             issuesByRepo: omitKey(state.issuesByRepo, repoKey),
             loadingKeys: omitKeysWithPrefix(state.loadingKeys, repoKey),
             mutatingKeys: omitKeysWithPrefix(state.mutatingKeys, repoKey),
@@ -283,6 +298,10 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
             ),
             pullRequestChecksByRepo: omitKey(
                 state.pullRequestChecksByRepo,
+                repoKey,
+            ),
+            pullRequestListStateByRepo: omitKey(
+                state.pullRequestListStateByRepo,
                 repoKey,
             ),
             pullRequestsByRepo: omitKey(state.pullRequestsByRepo, repoKey),
@@ -480,12 +499,17 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
 
     refreshIssues: async (ref, options = {}) => {
         const repoKey = getRepoKey(ref);
+        const listState = normalizeGitHubIssueListState(options.state);
         return await withLoading(set, `${repoKey}:issues`, async () => {
             const result = await getComandoApi().listGitHubIssues({
                 ...options,
                 repository: ref,
             });
             set((state) => ({
+                issueListStateByRepo: {
+                    ...state.issueListStateByRepo,
+                    [repoKey]: listState,
+                },
                 issuesByRepo: {
                     ...state.issuesByRepo,
                     [repoKey]: result.issues,
@@ -497,12 +521,17 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
 
     refreshPullRequests: async (ref, options = {}) => {
         const repoKey = getRepoKey(ref);
+        const listState = normalizeGitHubPullRequestListState(options.state);
         return await withLoading(set, `${repoKey}:prs`, async () => {
             const result = await getComandoApi().listGitHubPullRequests({
                 ...options,
                 repository: ref,
             });
             set((state) => ({
+                pullRequestListStateByRepo: {
+                    ...state.pullRequestListStateByRepo,
+                    [repoKey]: listState,
+                },
                 pullRequestsByRepo: {
                     ...state.pullRequestsByRepo,
                     [repoKey]: result.pullRequests,
@@ -867,11 +896,13 @@ export function resetGitHubStoreForTests(): void {
         authStatusByHost: {},
         errors: {},
         issueDetailsByRepo: {},
+        issueListStateByRepo: {},
         issuesByRepo: {},
         loadingKeys: {},
         mutatingKeys: {},
         pullRequestDetailsByRepo: {},
         pullRequestChecksByRepo: {},
+        pullRequestListStateByRepo: {},
         pullRequestsByRepo: {},
         workflowRunsByRepo: {},
         workflowRunJobsByRepo: {},
@@ -1225,6 +1256,18 @@ function incrementCommentCount<T extends { readonly commentCount: number; readon
             ? { ...entry, commentCount: entry.commentCount + 1 }
             : entry,
     );
+}
+
+function normalizeGitHubIssueListState(
+    state: GitHubListIssuesOptions["state"],
+): GitHubIssueListState {
+    return state ?? "open";
+}
+
+function normalizeGitHubPullRequestListState(
+    state: GitHubListPullRequestsOptions["state"],
+): GitHubPullRequestListState {
+    return state ?? "open";
 }
 
 function getRepoKey(ref: GitHubRepositoryRef): string {
