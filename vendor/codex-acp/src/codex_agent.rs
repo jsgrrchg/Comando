@@ -339,7 +339,11 @@ impl CodexAgent {
             .unwrap_or_else(|| self.config.cwd.to_path_buf());
 
         let rollout_path =
-            find_thread_path_by_id_str(&self.config.codex_home, session_id.0.as_ref())
+            find_thread_path_by_id_str(
+                &self.config.codex_home,
+                session_id.0.as_ref(),
+                self.state_db.as_deref(),
+            )
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?
                 .ok_or_else(|| Error::resource_not_found(None))?;
@@ -375,7 +379,7 @@ impl CodexAgent {
             session_id.clone(),
             thread,
             self.auth_manager.clone(),
-            self.thread_manager.get_models_manager(),
+            Arc::new(self.thread_manager.get_models_manager()),
             self.client_capabilities.clone(),
             config.clone(),
             cx,
