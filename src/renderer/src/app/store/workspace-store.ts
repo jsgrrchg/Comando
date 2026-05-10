@@ -163,23 +163,49 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly ref: GitHubRepositoryRef;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    openGitHubIssuesTabAtTarget: (input: {
+        readonly projectId: string | null;
+        readonly ref: GitHubRepositoryRef;
+        readonly target: WorkspaceOpenTarget;
+        readonly worktreeId?: string | null;
+    }) => Promise<string | null>;
     openGitHubIssueTab: (input: {
         readonly issueNumber: number;
         readonly projectId: string | null;
         readonly ref: GitHubRepositoryRef;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    openGitHubIssueTabAtTarget: (input: {
+        readonly issueNumber: number;
+        readonly projectId: string | null;
+        readonly ref: GitHubRepositoryRef;
+        readonly target: WorkspaceOpenTarget;
+        readonly worktreeId?: string | null;
+    }) => Promise<string | null>;
     openGitHubPullRequestsTab: (input: {
         readonly projectId: string | null;
         readonly ref: GitHubRepositoryRef;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    openGitHubPullRequestsTabAtTarget: (input: {
+        readonly projectId: string | null;
+        readonly ref: GitHubRepositoryRef;
+        readonly target: WorkspaceOpenTarget;
+        readonly worktreeId?: string | null;
+    }) => Promise<string | null>;
     openGitHubPullRequestTab: (input: {
         readonly projectId: string | null;
         readonly pullRequestNumber: number;
         readonly ref: GitHubRepositoryRef;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    openGitHubPullRequestTabAtTarget: (input: {
+        readonly projectId: string | null;
+        readonly pullRequestNumber: number;
+        readonly ref: GitHubRepositoryRef;
+        readonly target: WorkspaceOpenTarget;
+        readonly worktreeId?: string | null;
+    }) => Promise<string | null>;
     handleTerminalExit: (event: TerminalExitEvent) => void;
     hydrate: () => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
@@ -805,6 +831,20 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         });
     },
 
+    openGitHubIssuesTabAtTarget: async (input): Promise<string | null> =>
+        await openGitHubWorkspaceTabAtTarget(
+            get,
+            set,
+            {
+                kind: "github_issues",
+                projectId: input.projectId,
+                ref: input.ref,
+                title: "Issues",
+                worktreeId: input.worktreeId ?? null,
+            },
+            input.target,
+        ),
+
     openGitHubIssueTab: async (input) => {
         await openGitHubWorkspaceTab(get, set, {
             issueNumber: input.issueNumber,
@@ -816,6 +856,21 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         });
     },
 
+    openGitHubIssueTabAtTarget: async (input): Promise<string | null> =>
+        await openGitHubWorkspaceTabAtTarget(
+            get,
+            set,
+            {
+                issueNumber: input.issueNumber,
+                kind: "github_issue",
+                projectId: input.projectId,
+                ref: input.ref,
+                title: `#${input.issueNumber}`,
+                worktreeId: input.worktreeId ?? null,
+            },
+            input.target,
+        ),
+
     openGitHubPullRequestsTab: async (input) => {
         await openGitHubWorkspaceTab(get, set, {
             kind: "github_pull_requests",
@@ -825,6 +880,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             worktreeId: input.worktreeId ?? null,
         });
     },
+
+    openGitHubPullRequestsTabAtTarget: async (
+        input,
+    ): Promise<string | null> =>
+        await openGitHubWorkspaceTabAtTarget(
+            get,
+            set,
+            {
+                kind: "github_pull_requests",
+                projectId: input.projectId,
+                ref: input.ref,
+                title: "Pull Requests",
+                worktreeId: input.worktreeId ?? null,
+            },
+            input.target,
+        ),
 
     openGitHubPullRequestTab: async (input) => {
         await openGitHubWorkspaceTab(get, set, {
@@ -836,6 +907,23 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             worktreeId: input.worktreeId ?? null,
         });
     },
+
+    openGitHubPullRequestTabAtTarget: async (
+        input,
+    ): Promise<string | null> =>
+        await openGitHubWorkspaceTabAtTarget(
+            get,
+            set,
+            {
+                kind: "github_pull_request",
+                projectId: input.projectId,
+                pullRequestNumber: input.pullRequestNumber,
+                ref: input.ref,
+                title: `PR #${input.pullRequestNumber}`,
+                worktreeId: input.worktreeId ?? null,
+            },
+            input.target,
+        ),
 
     handleTerminalExit: (event) => {
         set((state) => ({
@@ -2364,6 +2452,97 @@ async function openGitHubWorkspaceTab(
         ),
     }));
     await persistWorkspaceState(get);
+}
+
+async function openGitHubWorkspaceTabAtTarget(
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    input: GitHubWorkspaceTabInput,
+    target: WorkspaceOpenTarget,
+): Promise<string | null> {
+    const paneId = ensureWorkspaceOpenTargetPane(get, set, target);
+    if (!paneId) {
+        return null;
+    }
+
+    const targetIndex = getWorkspaceOpenTargetInsertIndex(target);
+    const existingTab = findExistingGitHubTab(get(), input);
+    if (existingTab) {
+        const sourcePaneId = findPaneIdByTabId(get(), existingTab.id);
+        if (!sourcePaneId) {
+            return null;
+        }
+        const adjustedTargetIndex =
+            targetIndex === undefined
+                ? Number.POSITIVE_INFINITY
+                : getExistingTabMoveTargetIndex(
+                      get(),
+                      existingTab.id,
+                      sourcePaneId,
+                      paneId,
+                      targetIndex,
+                  );
+
+        set((state) => ({
+            ...(sourcePaneId === paneId && targetIndex === undefined
+                ? selectPaneTab(state, paneId, existingTab.id)
+                : moveExistingTabToTarget(
+                      state,
+                      existingTab.id,
+                      sourcePaneId,
+                      paneId,
+                      adjustedTargetIndex,
+                      target.type === "split",
+                  )),
+            error: null,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                existingTab.id,
+            ),
+        }));
+        await persistWorkspaceState(get);
+        return existingTab.id;
+    }
+
+    const tab = {
+        ...input,
+        createdAt: new Date().toISOString(),
+        id: crypto.randomUUID(),
+        worktreeId: input.worktreeId ?? null,
+    } as RuntimeWorkspaceTab;
+
+    set((state) => ({
+        ...(targetIndex === undefined
+            ? attachTabToPane(state, paneId, tab)
+            : attachTabToPaneAtIndex(state, paneId, tab, targetIndex)),
+        error: null,
+        recentActiveTabIds: recordRecentTabActivation(
+            state.recentActiveTabIds,
+            tab.id,
+        ),
+    }));
+    await persistWorkspaceState(get);
+    return tab.id;
+}
+
+function getExistingTabMoveTargetIndex(
+    state: WorkspaceTreeState,
+    tabId: string,
+    sourcePaneId: string,
+    targetPaneId: string,
+    targetIndex: number,
+): number {
+    if (sourcePaneId !== targetPaneId) {
+        return targetIndex;
+    }
+
+    const pane = findPaneById(state.rootNode, sourcePaneId);
+    const sourceIndex = pane?.tabIds.indexOf(tabId) ?? -1;
+    if (sourceIndex < 0 || targetIndex <= sourceIndex) {
+        return targetIndex;
+    }
+
+    return targetIndex - 1;
 }
 
 function createHydratedRuntimeTabs(

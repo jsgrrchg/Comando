@@ -156,6 +156,10 @@ import {
     SIDEBAR_AGENT_DRAG_EVENT,
     type SidebarAgentDragDetail,
 } from "@renderer/components/sidebar/sidebarAgentDragEvents";
+import {
+    SIDEBAR_GITHUB_DRAG_EVENT,
+    type SidebarGitHubDragDetail,
+} from "@renderer/components/sidebar/sidebarGitHubDragEvents";
 
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
@@ -508,6 +512,12 @@ export function WorkspaceView({
     const openFileTabAtTarget = useWorkspaceStore(
         (state) => state.openFileTabAtTarget,
     );
+    const openGitHubIssueTabAtTarget = useWorkspaceStore(
+        (state) => state.openGitHubIssueTabAtTarget,
+    );
+    const openGitHubPullRequestTabAtTarget = useWorkspaceStore(
+        (state) => state.openGitHubPullRequestTabAtTarget,
+    );
     const defaultDropRootPath = useWorkspaceProjectRootPath(
         defaultProjectId,
         defaultWorktreeId,
@@ -767,13 +777,73 @@ export function WorkspaceView({
         scheduleExternalDropTarget(target);
     });
 
+    const handleSidebarGitHubDrag = useEffectEvent((event: Event) => {
+        const detail = (event as CustomEvent<SidebarGitHubDragDetail>).detail;
+
+        if (detail.phase === "cancel") {
+            clearExternalDropTarget();
+            return;
+        }
+
+        const target = resolveExternalPaneDropTarget(detail.x, detail.y);
+        if (!target) {
+            if (detail.phase === "end") {
+                clearExternalDropTarget();
+                return;
+            }
+
+            if (
+                isPointOverComposerDropZone(detail.x, detail.y) ||
+                !isPointInsideWorkspaceRoot(detail.x, detail.y)
+            ) {
+                scheduleExternalDropTarget(null);
+            }
+            return;
+        }
+
+        if (detail.phase === "end") {
+            const openTarget = workspacePaneDropTargetToOpenTarget(target);
+            clearExternalDropTarget();
+
+            if (detail.itemKind === "issue") {
+                void openGitHubIssueTabAtTarget({
+                    issueNumber: detail.number,
+                    projectId: detail.projectId,
+                    ref: detail.ref,
+                    target: openTarget,
+                    worktreeId: detail.worktreeId,
+                });
+                return;
+            }
+
+            void openGitHubPullRequestTabAtTarget({
+                projectId: detail.projectId,
+                pullRequestNumber: detail.number,
+                ref: detail.ref,
+                target: openTarget,
+                worktreeId: detail.worktreeId,
+            });
+            return;
+        }
+
+        scheduleExternalDropTarget(target);
+    });
+
     useEffect(() => {
         window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleSidebarAgentDrag);
+        window.addEventListener(
+            SIDEBAR_GITHUB_DRAG_EVENT,
+            handleSidebarGitHubDrag,
+        );
         return () => {
             externalDropTargetScheduler.dispose();
             window.removeEventListener(
                 SIDEBAR_AGENT_DRAG_EVENT,
                 handleSidebarAgentDrag,
+            );
+            window.removeEventListener(
+                SIDEBAR_GITHUB_DRAG_EVENT,
+                handleSidebarGitHubDrag,
             );
         };
     }, [externalDropTargetScheduler]);

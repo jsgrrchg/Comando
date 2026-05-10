@@ -381,6 +381,183 @@ describe("workspace file opening", () => {
         );
     });
 
+    it("opens a GitHub issue tab in the requested workspace pane target", async () => {
+        const ref = {
+            host: "github.com",
+            owner: "octocat",
+            repo: "hello-world",
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-left",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {},
+        }));
+
+        const tabId = await useWorkspaceStore
+            .getState()
+            .openGitHubIssueTabAtTarget({
+                issueNumber: 321,
+                projectId: "project-1",
+                ref,
+                target: {
+                    paneId: "pane-right",
+                    type: "pane",
+                },
+                worktreeId: "worktree-1",
+            });
+
+        const state = useWorkspaceStore.getState();
+        const rightPane = findWorkspacePane(state.rootNode, "pane-right");
+        const leftPane = findWorkspacePane(state.rootNode, "pane-left");
+
+        expect(tabId).toBeTruthy();
+        expect(state.activePaneId).toBe("pane-right");
+        expect(leftPane?.tabIds).toEqual([]);
+        expect(rightPane?.tabIds).toEqual([tabId]);
+        expect(tabId ? state.tabsById[tabId] : null).toMatchObject({
+            issueNumber: 321,
+            kind: "github_issue",
+            projectId: "project-1",
+            ref,
+            title: "#321",
+            worktreeId: "worktree-1",
+        });
+    });
+
+    it("moves an existing GitHub pull request tab into a split target", async () => {
+        const ref = {
+            host: "github.com",
+            owner: "octocat",
+            repo: "hello-world",
+        };
+
+        await useWorkspaceStore.getState().openGitHubPullRequestTab({
+            projectId: "project-1",
+            pullRequestNumber: 456,
+            ref,
+            worktreeId: "worktree-1",
+        });
+
+        const initialState = useWorkspaceStore.getState();
+        const initialPane =
+            initialState.rootNode.type === "pane" ? initialState.rootNode : null;
+        const existingTabId = initialPane?.tabIds[0] ?? null;
+        expect(existingTabId).toBeTruthy();
+
+        const movedTabId = await useWorkspaceStore
+            .getState()
+            .openGitHubPullRequestTabAtTarget({
+                projectId: "project-1",
+                pullRequestNumber: 456,
+                ref,
+                target: {
+                    direction: "right",
+                    paneId: "pane-root",
+                    type: "split",
+                },
+                worktreeId: "worktree-1",
+            });
+
+        const state = useWorkspaceStore.getState();
+        const targetPane = findWorkspacePane(state.rootNode, state.activePaneId);
+        const sourcePane = findWorkspacePane(state.rootNode, "pane-root");
+
+        expect(movedTabId).toBe(existingTabId);
+        expect(state.rootNode.type).toBe("split");
+        expect(sourcePane?.tabIds).toEqual([]);
+        expect(targetPane?.tabIds).toEqual([existingTabId]);
+        expect(targetPane?.activeTabId).toBe(existingTabId);
+        expect(Object.values(state.tabsById)).toHaveLength(1);
+    });
+
+    it("reorders an existing GitHub issue tab correctly when targeting a later strip index in the same pane", async () => {
+        const ref = {
+            host: "github.com",
+            owner: "octocat",
+            repo: "hello-world",
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "issue-tab",
+                id: "pane-root",
+                tabIds: ["issue-tab", "helper-tab", "other-tab"],
+                type: "pane",
+            },
+            tabsById: {
+                "helper-tab": createWorkspaceChatTab(
+                    "helper-tab",
+                    "session-helper",
+                    "codex",
+                ),
+                "issue-tab": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "issue-tab",
+                    issueNumber: 42,
+                    kind: "github_issue",
+                    projectId: "project-1",
+                    ref,
+                    title: "#42",
+                    worktreeId: "worktree-1",
+                },
+                "other-tab": {
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "other-tab",
+                    issueNumber: 43,
+                    kind: "github_issue",
+                    projectId: "project-1",
+                    ref,
+                    title: "#43",
+                    worktreeId: "worktree-1",
+                },
+            },
+        }));
+
+        const tabId = await useWorkspaceStore
+            .getState()
+            .openGitHubIssueTabAtTarget({
+                issueNumber: 42,
+                projectId: "project-1",
+                ref,
+                target: {
+                    insertIndex: 2,
+                    paneId: "pane-root",
+                    type: "pane",
+                },
+                worktreeId: "worktree-1",
+            });
+
+        const state = useWorkspaceStore.getState();
+        const pane = findWorkspacePane(state.rootNode, "pane-root");
+
+        expect(tabId).toBe("issue-tab");
+        expect(pane?.tabIds).toEqual(["helper-tab", "issue-tab", "other-tab"]);
+        expect(pane?.activeTabId).toBe("issue-tab");
+    });
+
     it("opens a file in a new split target", async () => {
         const paneId = await useWorkspaceStore.getState().openFileTabAtTarget({
             projectId: "project-1",
