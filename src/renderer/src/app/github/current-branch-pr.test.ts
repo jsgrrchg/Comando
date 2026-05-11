@@ -8,7 +8,7 @@ import type {
 import {
     countCurrentBranchPullRequests,
     isPullRequestForCurrentBranch,
-    sortPullRequestsForCurrentBranch,
+    sortPullRequestsNewestFirst,
 } from "./current-branch-pr";
 
 const repository: GitHubRepositoryRef = {
@@ -95,9 +95,13 @@ describe("current branch pull request helpers", () => {
         ).toBe(false);
     });
 
-    it("sorts current branch pull requests first", () => {
-        const current = createPullRequest({ number: 1 });
+    it("sorts pull requests by newest creation date first", () => {
+        const olderCurrentBranchPullRequest = createPullRequest({
+            createdAt: "2026-05-01T00:00:00.000Z",
+            number: 1,
+        });
         const other = createPullRequest({
+            createdAt: "2026-05-06T00:00:00.000Z",
             head: {
                 label: "comando:feature/other",
                 ref: "feature/other",
@@ -105,16 +109,14 @@ describe("current branch pull request helpers", () => {
                 sha: "other-sha",
             },
             number: 2,
-            updatedAt: "2026-05-06T00:00:00.000Z",
         });
 
         expect(
-            sortPullRequestsForCurrentBranch(
-                [other, current],
-                "feature/github-api",
-                repository,
-            ).map((pullRequest) => pullRequest.number),
-        ).toEqual([1, 2]);
+            sortPullRequestsNewestFirst([
+                olderCurrentBranchPullRequest,
+                other,
+            ]).map((pullRequest) => pullRequest.number),
+        ).toEqual([2, 1]);
     });
 
     it("counts current branch pull requests", () => {

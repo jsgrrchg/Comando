@@ -33,30 +33,13 @@ export function countCurrentBranchPullRequests(
     ).length;
 }
 
-export function sortPullRequestsForCurrentBranch(
+export function sortPullRequestsNewestFirst(
     pullRequests: readonly GitHubPullRequestSummary[],
-    currentBranchName: string | null,
-    repository: GitHubRepositoryRef,
 ): readonly GitHubPullRequestSummary[] {
     return [...pullRequests].sort((first, second) => {
-        const firstMatches = isPullRequestForCurrentBranch(
-            first,
-            currentBranchName,
-            repository,
-        );
-        const secondMatches = isPullRequestForCurrentBranch(
-            second,
-            currentBranchName,
-            repository,
-        );
-
-        if (firstMatches !== secondMatches) {
-            return firstMatches ? -1 : 1;
-        }
-
         return (
-            new Date(second.updatedAt).getTime() -
-            new Date(first.updatedAt).getTime()
+            new Date(second.createdAt).getTime() -
+            new Date(first.createdAt).getTime()
         );
     });
 }
@@ -71,4 +54,3 @@ function repositoriesMatch(
         first.repo.toLowerCase() === second.repo.toLowerCase()
     );
 }
-
