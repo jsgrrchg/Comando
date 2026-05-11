@@ -36,7 +36,6 @@ import {
     GitHubEmptyState,
     GitHubErrorState,
     GitHubLabelPill,
-    GitHubStatePill,
     GitHubUsers,
 } from "@renderer/components/workspace/GitHubWorkspacePrimitives";
 
@@ -675,7 +674,6 @@ function SidebarGitHubIssueRow({
             worktreeId={worktreeId}
         >
             <div className="flex w-full min-w-0 items-center gap-2">
-                <GitHubStatePill tone={issue.state}>{issue.state}</GitHubStatePill>
                 <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text-primary">
                     {issue.title}
                 </span>
@@ -729,17 +727,6 @@ function SidebarGitHubPullRequestRow({
         currentBranch,
         repoRef,
     );
-    const stateTone = pullRequest.draft
-        ? "draft"
-        : pullRequest.mergedAt || pullRequest.state === "merged"
-          ? "merged"
-          : pullRequest.state;
-    const stateLabel = pullRequest.draft
-        ? "draft"
-        : pullRequest.mergedAt || pullRequest.state === "merged"
-          ? "merged"
-          : pullRequest.state;
-
     return (
         <SidebarGitHubDraggableRow
             itemKind="pull_request"
@@ -752,7 +739,6 @@ function SidebarGitHubPullRequestRow({
             worktreeId={worktreeId}
         >
             <div className="flex w-full min-w-0 items-center gap-2">
-                <GitHubStatePill tone={stateTone}>{stateLabel}</GitHubStatePill>
                 <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text-primary">
                     {pullRequest.title}
                 </span>

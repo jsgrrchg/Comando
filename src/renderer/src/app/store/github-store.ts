@@ -22,6 +22,7 @@ import type {
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
     GitHubCheckRunAnnotationSummary,
+    GitHubUpdatePullRequestInput,
     GitHubWorkflowArtifactSummary,
     GitHubWorkflowJobSummary,
     GitHubWorkflowRunSummary,
@@ -57,6 +58,10 @@ type GitHubGenerateReleaseNotesOptions = Omit<
 >;
 type GitHubRequestPullRequestReviewOptions = Omit<
     GitHubRequestPullRequestReviewInput,
+    "clientRequestId" | "number" | "repository"
+>;
+type GitHubUpdatePullRequestOptions = Omit<
+    GitHubUpdatePullRequestInput,
     "clientRequestId" | "number" | "repository"
 >;
 
@@ -243,6 +248,11 @@ export interface GitHubStoreState {
         ref: GitHubRepositoryRef,
         number: number,
         input: GitHubRequestPullRequestReviewOptions,
+    ) => Promise<GitHubPullRequestDetail>;
+    updatePullRequest: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        input: GitHubUpdatePullRequestOptions,
     ) => Promise<GitHubPullRequestDetail>;
 }
 
@@ -880,6 +890,23 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                         number,
                         repository: ref,
                     });
+                setPullRequestDetail(set, ref, detail);
+                return detail;
+            },
+        ),
+
+    updatePullRequest: async (ref, number, input) =>
+        dedupeMutation(
+            set,
+            getRepoKey(ref),
+            `pr:${number}:update`,
+            async (clientRequestId) => {
+                const detail = await getComandoApi().updateGitHubPullRequest({
+                    ...input,
+                    clientRequestId,
+                    number,
+                    repository: ref,
+                });
                 setPullRequestDetail(set, ref, detail);
                 return detail;
             },

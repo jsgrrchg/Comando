@@ -16,6 +16,7 @@ export const IPC_CHANNELS = {
     getWindowContext: "app:get-window-context",
     readClipboardText: "app:read-clipboard-text",
     writeClipboardText: "app:write-clipboard-text",
+    openExternalUrl: "app:open-external-url",
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
@@ -69,6 +70,7 @@ export const IPC_CHANNELS = {
     getGitHubPullRequest: "github:get-pull-request",
     listGitHubPullRequestChecks: "github:list-pull-request-checks",
     createGitHubPullRequest: "github:create-pull-request",
+    updateGitHubPullRequest: "github:update-pull-request",
     commentGitHubPullRequest: "github:comment-pull-request",
     markGitHubPullRequestReady: "github:mark-pull-request-ready",
     convertGitHubPullRequestToDraft: "github:convert-pull-request-to-draft",
@@ -1120,6 +1122,13 @@ export interface GitHubCreatePullRequestInput
     readonly head: string;
     readonly maintainerCanModify?: boolean;
     readonly title: string;
+}
+
+export interface GitHubUpdatePullRequestInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly body?: string | null;
+    readonly number: number;
 }
 
 export interface GitHubCommentPullRequestInput
@@ -2267,6 +2276,7 @@ export interface ComandoApi {
     readClipboardText: () => Promise<string>;
     resolveDroppedFilePath: (file: File | null) => string | null;
     writeClipboardText: (text: string) => Promise<void>;
+    openExternalUrl: (url: string) => Promise<void>;
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
@@ -2376,6 +2386,9 @@ export interface ComandoApi {
     ) => Promise<GitHubPullRequestChecksResult>;
     createGitHubPullRequest: (
         input: GitHubCreatePullRequestInput,
+    ) => Promise<GitHubPullRequestDetail>;
+    updateGitHubPullRequest: (
+        input: GitHubUpdatePullRequestInput,
     ) => Promise<GitHubPullRequestDetail>;
     commentGitHubPullRequest: (
         input: GitHubCommentPullRequestInput,

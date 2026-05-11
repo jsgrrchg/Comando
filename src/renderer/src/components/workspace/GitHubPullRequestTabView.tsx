@@ -52,6 +52,8 @@ export function GitHubPullRequestTabView({
     const [reviewerDraft, setReviewerDraft] = useState("");
     const [teamReviewerDraft, setTeamReviewerDraft] = useState("");
     const [showAllCommits, setShowAllCommits] = useState(false);
+    const [isEditingDescription, setIsEditingDescription] = useState(false);
+    const [descriptionDraft, setDescriptionDraft] = useState("");
 
     const detail = useGitHubStore(
         (state) =>
@@ -90,6 +92,7 @@ export function GitHubPullRequestTabView({
         isMarkingReady,
         isConvertingDraft,
         isRequestingReview,
+        isUpdatingPullRequest,
     } = useGitHubStore(
         useShallow((state) => ({
             isCommenting:
@@ -108,6 +111,10 @@ export function GitHubPullRequestTabView({
                 state.mutatingKeys[
                     `${repoKey}:pr:${tab.pullRequestNumber}:request-review`
                 ] ?? false,
+            isUpdatingPullRequest:
+                state.mutatingKeys[
+                    `${repoKey}:pr:${tab.pullRequestNumber}:update`
+                ] ?? false,
         })),
     );
 
@@ -118,6 +125,7 @@ export function GitHubPullRequestTabView({
         draftError,
         requestReviewError,
         checksError,
+        updateError,
     } = useGitHubStore(
         useShallow((state) => ({
             checksError: checksKey ? (state.errors[checksKey] ?? null) : null,
@@ -139,6 +147,10 @@ export function GitHubPullRequestTabView({
             requestReviewError:
                 state.errors[
                     `${repoKey}:pr:${tab.pullRequestNumber}:request-review`
+                ] ?? null,
+            updateError:
+                state.errors[
+                    `${repoKey}:pr:${tab.pullRequestNumber}:update`
                 ] ?? null,
         })),
     );
@@ -163,6 +175,9 @@ export function GitHubPullRequestTabView({
     );
     const requestPullRequestReviewers = useGitHubStore(
         (state) => state.requestPullRequestReviewers,
+    );
+    const updatePullRequest = useGitHubStore(
+        (state) => state.updatePullRequest,
     );
     const openGitCommitTab = useWorkspaceStore(
         (state) => state.openGitCommitTab,
@@ -238,6 +253,12 @@ export function GitHubPullRequestTabView({
         tab.ref,
     ]);
 
+    useEffect(() => {
+        if (!isEditingDescription) {
+            setDescriptionDraft(detail?.body ?? "");
+        }
+    }, [detail?.body, isEditingDescription]);
+
     const handleRefresh = async () => {
         const status = await refreshAuthStatus(tab.ref);
         if (status.state === "authenticated") {
@@ -306,6 +327,31 @@ export function GitHubPullRequestTabView({
         setTeamReviewerDraft("");
     };
 
+    const handleStartEditingDescription = () => {
+        if (!canWritePullRequests || !detail) {
+            return;
+        }
+
+        setDescriptionDraft(detail.body ?? "");
+        setIsEditingDescription(true);
+    };
+
+    const handleCancelEditingDescription = () => {
+        setDescriptionDraft(detail?.body ?? "");
+        setIsEditingDescription(false);
+    };
+
+    const handleSaveDescription = async () => {
+        if (!canWritePullRequests || !detail) {
+            return;
+        }
+
+        await updatePullRequest(tab.ref, tab.pullRequestNumber, {
+            body: descriptionDraft.trim(),
+        });
+        setIsEditingDescription(false);
+    };
+
     const stateTone = detail?.draft
         ? "draft"
         : detail?.mergedAt
@@ -328,6 +374,12 @@ export function GitHubPullRequestTabView({
         isRequestingReview ||
         (parseCsv(reviewerDraft).length === 0 &&
             parseCsv(teamReviewerDraft).length === 0);
+    const descriptionChanged =
+        descriptionDraft.trim() !== (detail?.body ?? "").trim();
+    const saveDescriptionDisabled =
+        !canWritePullRequests ||
+        isUpdatingPullRequest ||
+        !descriptionChanged;
 
     const commits = detail?.commits ?? [];
     const visibleCommits = showAllCommits
@@ -367,23 +419,12 @@ export function GitHubPullRequestTabView({
                     }
                     meta={
                         detail ? (
-                            <>
-                                <span
-                                    className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary"
-                                    title={detail.title}
-                                >
-                                    {detail.title}
-                                </span>
-                                <GitHubStatePill tone={stateTone}>
-                                    {stateLabel}
-                                </GitHubStatePill>
-                                <GitHubChecksPill state={checksState} />
-                                {showMergeable ? (
-                                    <GitHubMergeablePill
-                                        state={mergeableState}
-                                    />
-                                ) : null}
-                            </>
+                            <span
+                                className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary"
+                                title={detail.title}
+                            >
+                                {detail.title}
+                            </span>
                         ) : null
                     }
                     repo={tab.ref}
@@ -521,16 +562,90 @@ export function GitHubPullRequestTabView({
                         </section>
 
                         <section className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
-                            <div className="border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-2">
+                            <div className="flex items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-2">
                                 <GitHubSectionLabel>
                                     Description
                                 </GitHubSectionLabel>
+                                {!isEditingDescription ? (
+                                    <IdeActionButton
+                                        disabled={!canWritePullRequests}
+                                        onClick={handleStartEditingDescription}
+                                        title={
+                                            canWritePullRequests
+                                                ? undefined
+                                                : writePermissionLabel
+                                        }
+                                    >
+                                        Edit description
+                                    </IdeActionButton>
+                                ) : null}
                             </div>
-                            <div className="px-4 py-4 text-[13px] leading-6 text-text-secondary">
-                                <MarkdownContent
-                                    content={detail.body || "_No description._"}
-                                />
-                            </div>
+                            {isEditingDescription ? (
+                                <div className="space-y-3 px-4 py-4">
+                                    <textarea
+                                        className="min-h-56 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                        disabled={isUpdatingPullRequest}
+                                        onChange={(event) =>
+                                            setDescriptionDraft(
+                                                event.currentTarget.value,
+                                            )
+                                        }
+                                        placeholder="Describe this pull request..."
+                                        value={descriptionDraft}
+                                    />
+                                    {updateError ? (
+                                        <div className="text-[11px] text-[color:var(--diff-remove)]">
+                                            {updateError}
+                                        </div>
+                                    ) : null}
+                                    <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                                        <GitHubSectionLabel>
+                                            Preview
+                                        </GitHubSectionLabel>
+                                        <div className="mt-2 max-h-72 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                                            <MarkdownContent
+                                                content={
+                                                    descriptionDraft.trim() ||
+                                                    "_No description._"
+                                                }
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-end gap-2">
+                                        <IdeActionButton
+                                            disabled={isUpdatingPullRequest}
+                                            onClick={
+                                                handleCancelEditingDescription
+                                            }
+                                        >
+                                            Cancel
+                                        </IdeActionButton>
+                                        <IdeActionButton
+                                            disabled={saveDescriptionDisabled}
+                                            onClick={() =>
+                                                void handleSaveDescription()
+                                            }
+                                            title={
+                                                canWritePullRequests
+                                                    ? undefined
+                                                    : writePermissionLabel
+                                            }
+                                        >
+                                            {isUpdatingPullRequest
+                                                ? "Saving..."
+                                                : "Save description"}
+                                        </IdeActionButton>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="px-4 py-4 text-[13px] leading-6 text-text-secondary">
+                                    <MarkdownContent
+                                        content={
+                                            detail.body || "_No description._"
+                                        }
+                                    />
+                                </div>
+                            )}
                         </section>
 
                         <section className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">

@@ -31,6 +31,7 @@ import {
     getTemporalGroupLabel,
 } from "@renderer/app/git/history-presentation";
 import { useGitStore } from "@renderer/app/store/git-store";
+import { openExternalUrl } from "@renderer/app/utils/external-url";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitTab } from "@renderer/app/workspace/tree";
 import { GitAuthorAvatar, GitEmptyState } from "@renderer/components/git";
@@ -1126,9 +1127,7 @@ function GitCommitDetailSidebar({
                     {remoteLink ? (
                         <button
                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-text-secondary transition-colors hover:bg-bg-secondary hover:text-text-primary"
-                            onClick={() =>
-                                window.open(remoteLink.url, "_blank")
-                            }
+                            onClick={() => openExternalUrl(remoteLink.url)}
                             type="button"
                         >
                             <span className="shrink-0">{"->"}</span>

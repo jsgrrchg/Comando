@@ -39,6 +39,7 @@ import type {
     GitHubSaveTokenInput,
     GitHubSetIssueStateInput,
     GitHubSetPullRequestDraftStateInput,
+    GitHubUpdatePullRequestInput,
     GitHubCheckRunAnnotationsInput,
     GitHubCheckRunAnnotationsResult,
     GitHubWorkflowJobLogsInput,
@@ -67,6 +68,9 @@ export interface GitHubGateway {
     createIssue(input: GitHubCreateIssueInput): Promise<GitHubIssueDetail>;
     createPullRequest(
         input: GitHubCreatePullRequestInput,
+    ): Promise<GitHubPullRequestDetail>;
+    updatePullRequest(
+        input: GitHubUpdatePullRequestInput,
     ): Promise<GitHubPullRequestDetail>;
     getAuthStatus(input: GitHubAuthStatusInput): Promise<GitHubAuthStatus>;
     getIssue(input: GitHubGetIssueInput): Promise<GitHubIssueDetail | null>;
@@ -284,6 +288,14 @@ export class GitHubService implements GitHubGateway {
     ): Promise<GitHubPullRequestDetail> {
         return await this.#dedupeMutation(input.clientRequestId, () =>
             this.#createClient(input.repository.host).createPullRequest(input),
+        );
+    }
+
+    async updatePullRequest(
+        input: GitHubUpdatePullRequestInput,
+    ): Promise<GitHubPullRequestDetail> {
+        return await this.#dedupeMutation(input.clientRequestId, () =>
+            this.#createClient(input.repository.host).updatePullRequest(input),
         );
     }
 

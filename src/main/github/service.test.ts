@@ -339,6 +339,44 @@ describe("GitHubService", () => {
         );
     });
 
+    it("updates pull request descriptions", async () => {
+        const fetchMock = vi
+            .fn<GitHubFetch>()
+            .mockResolvedValueOnce(jsonResponse(rawPullRequest({ number: 5 })))
+            .mockResolvedValueOnce(
+                jsonResponse(rawPullRequest({ body: "Updated body", number: 5 })),
+            )
+            .mockResolvedValueOnce(jsonResponse([]))
+            .mockResolvedValueOnce(jsonResponse([]));
+        const service = createService(fetchMock);
+
+        const result = await service.updatePullRequest({
+            body: "Updated body",
+            clientRequestId: "update-pr",
+            number: 5,
+            repository,
+        });
+
+        expect(result.body).toBe("Updated body");
+        const requestInit = fetchMock.mock.calls[0]?.[1];
+        expect(fetchMock).toHaveBeenNthCalledWith(
+            1,
+            expect.objectContaining({
+                href: "https://api.github.com/repos/octocat/hello-world/pulls/5",
+            }),
+            expect.objectContaining({
+                method: "PATCH",
+            }),
+        );
+        const body = requestInit?.body;
+        if (typeof body !== "string") {
+            throw new Error("Expected request body to be JSON.");
+        }
+        expect(JSON.parse(body)).toEqual({
+            body: "Updated body",
+        });
+    });
+
     it("requests pull request reviewers with explicit reviewer lists", async () => {
         const fetchMock = vi
             .fn<GitHubFetch>()
@@ -617,13 +655,14 @@ function rawIssue(
 
 function rawPullRequest(
     overrides: Partial<{
+        readonly body: string;
         readonly number: number;
         readonly title: string;
     }> = {},
 ) {
     return {
         base: rawPullRequestRef("main"),
-        body: "",
+        body: overrides.body ?? "",
         closed_at: null,
         comments: 0,
         created_at: "2026-05-07T00:00:00Z",

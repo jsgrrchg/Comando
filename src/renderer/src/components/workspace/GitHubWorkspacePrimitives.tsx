@@ -16,6 +16,7 @@ import type {
     GitHubUserSummary,
 } from "@shared/ipc";
 
+import { openExternalUrl } from "@renderer/app/utils/external-url";
 import { MarkdownContent } from "./MarkdownContent";
 import {
     IdeActionButton,
@@ -858,5 +859,5 @@ export function buildGitHubWebUrl(
 }
 
 export function openGitHubWebUrl(url: string): void {
-    window.open(url, "_blank", "noopener,noreferrer");
+    openExternalUrl(url);
 }

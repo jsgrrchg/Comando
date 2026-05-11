@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildGitRemoteCommitLink } from "@renderer/app/git/remote-link";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
+import { openExternalUrl } from "@renderer/app/utils/external-url";
 import {
     convertCommitFilesToDiffFiles,
     formatGitCommitDateTime,
@@ -281,9 +282,7 @@ export function GitCommitTabView({
                     {remoteLink ? (
                         <button
                             className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                            onClick={() =>
-                                window.open(remoteLink.url, "_blank")
-                            }
+                            onClick={() => openExternalUrl(remoteLink.url)}
                             type="button"
                         >
                             {remoteLink.label}

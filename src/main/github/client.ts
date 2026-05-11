@@ -674,6 +674,33 @@ export class GitHubApiClient {
         return mapPullRequestDetail(response.data, input.repository, [], []);
     }
 
+    async updatePullRequest(input: {
+        readonly body?: string | null;
+        readonly number: number;
+        readonly repository: GitHubRepositoryRef;
+    }): Promise<GitHubPullRequestDetail> {
+        await this.#requestJson<RawGitHubPullRequest>(
+            input.repository.host,
+            repoPath(input.repository, `/pulls/${input.number}`),
+            {
+                body: {
+                    body: input.body ?? "",
+                },
+                method: "PATCH",
+            },
+        );
+        const updated = await this.getPullRequest(input);
+        if (!updated) {
+            throw new GitHubApiError(
+                "GitHub pull request could not be loaded after updating.",
+                "not_found",
+                404,
+            );
+        }
+
+        return updated;
+    }
+
     async commentPullRequest(input: {
         readonly body: string;
         readonly number: number;

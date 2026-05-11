@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
+import { openExternalUrl } from "../../app/utils/external-url";
 import {
     parseMarkdownListItem,
     type MarkdownListItem,
@@ -350,15 +351,17 @@ function renderInline(
                         href={linkTarget}
                         onClick={(event) => {
                             if (
-                                !resolvedLinkReference ||
-                                !options?.onOpenFile ||
-                                !isLikelyProjectFileReference(linkTarget)
+                                resolvedLinkReference &&
+                                options?.onOpenFile &&
+                                isLikelyProjectFileReference(linkTarget)
                             ) {
+                                event.preventDefault();
+                                options.onOpenFile(resolvedLinkReference);
                                 return;
                             }
 
                             event.preventDefault();
-                            options.onOpenFile(resolvedLinkReference);
+                            openExternalUrl(linkTarget);
                         }}
                         rel="noopener noreferrer"
                         style={{ color: "var(--color-accent)" }}
@@ -428,6 +431,10 @@ function renderInline(
                 <a
                     key={key++}
                     href={trimmedUrl}
+                    onClick={(event) => {
+                        event.preventDefault();
+                        openExternalUrl(trimmedUrl);
+                    }}
                     rel="noopener noreferrer"
                     style={{ color: "var(--color-accent)" }}
                     target="_blank"

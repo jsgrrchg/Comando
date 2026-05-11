@@ -78,6 +78,7 @@ import {
     type GitHubSaveTokenInput,
     type GitHubSetIssueStateInput,
     type GitHubSetPullRequestDraftStateInput,
+    type GitHubUpdatePullRequestInput,
     type GitHubCheckRunAnnotationsInput,
     type GitHubCheckRunAnnotationsResult,
     type GitHubWorkflowJobLogsInput,
@@ -208,6 +209,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getWindowContext);
     ipcMain.removeHandler(IPC_CHANNELS.readClipboardText);
     ipcMain.removeHandler(IPC_CHANNELS.writeClipboardText);
+    ipcMain.removeHandler(IPC_CHANNELS.openExternalUrl);
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
@@ -380,6 +382,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         }
 
         clipboard.writeText(text);
+    });
+    ipcMain.handle(IPC_CHANNELS.openExternalUrl, async (_event, url: string) => {
+        if (typeof url !== "string") {
+            throw new TypeError("Expected external URL to be a string.");
+        }
+
+        const parsedUrl = new URL(url);
+        if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+            throw new Error("Only http and https URLs can be opened externally.");
+        }
+
+        await shell.openExternal(parsedUrl.toString());
     });
     ipcMain.handle(
         IPC_CHANNELS.openGeneratedImage,
@@ -1036,6 +1050,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitHubCreatePullRequestInput,
         ): Promise<GitHubPullRequestDetail> =>
             options.githubService.createPullRequest(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.updateGitHubPullRequest,
+        async (
+            _event,
+            input: GitHubUpdatePullRequestInput,
+        ): Promise<GitHubPullRequestDetail> =>
+            options.githubService.updatePullRequest(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.commentGitHubPullRequest,

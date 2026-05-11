@@ -344,56 +344,40 @@ export function GitHubActionsPanel({
                 </GitHubEmptyState>
             ) : null}
             {runs.length > 0 ? (
-                <div className="grid gap-3 xl:grid-cols-[minmax(260px,0.85fr)_minmax(360px,1.15fr)]">
-                    <div className="overflow-hidden rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary">
-                        {runs.map((run) => (
-                            <button
-                                className={[
-                                    "flex w-full flex-col gap-1 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] border-l-[3px] pl-2.5 pr-3 py-2 text-left text-[11px] transition last:border-b-0 hover:bg-bg-secondary",
-                                    selectedRun?.id === run.id
-                                        ? "border-l-[color-mix(in_srgb,var(--color-accent)_70%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]"
-                                        : "border-l-transparent hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)]",
-                                ].join(" ")}
-                                key={run.id}
-                                onClick={() => {
-                                    setSelectedRunId(run.id);
-                                    setSelectedJobId(null);
-                                }}
-                                type="button"
-                            >
-                                <div className="flex items-center justify-between gap-2">
-                                    <div className="flex min-w-0 items-center gap-2">
-                                        <ActionStatusDot
-                                            tone={deriveActionTone(
-                                                run.conclusion,
-                                                run.status,
-                                            )}
-                                        />
-                                        <span className="min-w-0 truncate text-text-primary">
-                                            {run.name}
-                                        </span>
-                                    </div>
+                <div className="space-y-3">
+                    {runs.length > 1 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                            {runs.map((run) => (
+                                <button
+                                    className={[
+                                        "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition",
+                                        selectedRun?.id === run.id
+                                            ? "border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] text-text-primary"
+                                            : "border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary text-text-secondary hover:border-[color-mix(in_srgb,var(--color-accent)_50%,transparent)] hover:text-text-primary",
+                                    ].join(" ")}
+                                    key={run.id}
+                                    onClick={() => {
+                                        setSelectedRunId(run.id);
+                                        setSelectedJobId(null);
+                                    }}
+                                    title={`${run.event} · ${formatGitHubDateTime(run.updatedAt)}`}
+                                    type="button"
+                                >
+                                    <ActionStatusDot
+                                        tone={deriveActionTone(
+                                            run.conclusion,
+                                            run.status,
+                                        )}
+                                    />
+                                    <span className="truncate">{run.name}</span>
                                     <ActionStatusPill
                                         conclusion={run.conclusion}
                                         status={run.status}
                                     />
-                                </div>
-                                <div className="flex flex-wrap gap-2 pl-4 text-[10px] text-text-secondary">
-                                    <span>{run.event}</span>
-                                    <span aria-hidden="true">·</span>
-                                    <span
-                                        title={formatGitHubDateTime(
-                                            run.updatedAt,
-                                        )}
-                                    >
-                                        {formatGitHubRelativeTime(
-                                            run.updatedAt,
-                                        )}
-                                    </span>
-                                </div>
-                            </button>
-                        ))}
-                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    ) : null}
                     {selectedRun ? (
                         <RunDetail
                             artifacts={artifacts}
@@ -485,22 +469,34 @@ function RunDetail({
             run.conclusion === "timed_out" ||
             run.conclusion === "action_required");
 
+    const selectedJobRunner = selectedJob
+        ? cleanRunnerName(selectedJob.runnerName)
+        : null;
+
     return (
         <div className="space-y-3 rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
                     <ActionStatusDot
                         tone={deriveActionTone(run.conclusion, run.status)}
                     />
                     <div className="min-w-0">
-                        <div className="truncate text-[12px] font-semibold text-text-primary">
-                            {run.name}
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate text-[12px] font-semibold text-text-primary">
+                                {run.name}
+                            </span>
+                            <ActionStatusPill
+                                conclusion={run.conclusion}
+                                status={run.status}
+                            />
                         </div>
-                        <div
-                            className="mt-0.5 text-[10px] text-text-secondary"
-                            title={formatGitHubDateTime(run.updatedAt)}
-                        >
-                            updated {formatGitHubRelativeTime(run.updatedAt)}
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-text-secondary">
+                            <span>{run.event}</span>
+                            <span aria-hidden="true">·</span>
+                            <span title={formatGitHubDateTime(run.updatedAt)}>
+                                updated{" "}
+                                {formatGitHubRelativeTime(run.updatedAt)}
+                            </span>
                         </div>
                     </div>
                 </div>
@@ -537,93 +533,82 @@ function RunDetail({
                     Loading jobs...
                 </div>
             ) : null}
-            <div className="grid gap-3 lg:grid-cols-[minmax(220px,0.8fr)_minmax(260px,1.2fr)]">
-                <div className="space-y-2">
-                    {jobs.map((job) => {
-                        const runnerLabel = cleanRunnerName(job.runnerName);
-                        return (
-                            <button
-                                className={[
-                                    "w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] border-l-[3px] pl-2.5 pr-3 py-2 text-left text-[11px] transition hover:bg-bg-secondary",
-                                    selectedJob?.id === job.id
-                                        ? "border-l-[color-mix(in_srgb,var(--color-accent)_70%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]"
-                                        : "border-l-transparent hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)]",
-                                ].join(" ")}
-                                key={job.id}
-                                onClick={() => selectJob(job.id)}
-                                type="button"
-                            >
-                                <div className="flex items-center justify-between gap-2">
-                                    <div className="flex min-w-0 items-center gap-2">
-                                        <ActionStatusDot
-                                            tone={deriveActionTone(
-                                                job.conclusion,
-                                                job.status,
-                                            )}
-                                        />
-                                        <span className="min-w-0 truncate text-text-primary">
-                                            {job.name}
-                                        </span>
-                                    </div>
-                                    <ActionStatusPill
-                                        conclusion={job.conclusion}
-                                        status={job.status}
-                                    />
-                                </div>
-                                {runnerLabel ? (
-                                    <div className="mt-1 pl-4 text-[10px] text-text-secondary">
-                                        {runnerLabel}
-                                    </div>
-                                ) : null}
-                            </button>
-                        );
-                    })}
-                    {jobs.length === 0 && !isLoadingJobs ? (
-                        <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-3 py-2 text-[11px] text-text-secondary">
-                            No jobs available for this run.
-                        </div>
-                    ) : null}
-                </div>
-                <div className="space-y-3">
-                    {selectedJob ? (
-                        <>
-                            <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-2">
-                                <div className="flex items-center justify-between gap-2">
-                                    <div className="flex min-w-0 items-center gap-2">
-                                        <GitHubSectionLabel>
-                                            Logs
-                                        </GitHubSectionLabel>
-                                    </div>
-                                    <IdeActionButton
-                                        disabled={isLoadingLogs}
-                                        onClick={() => loadLogs(selectedJob)}
-                                    >
-                                        {isLoadingLogs
-                                            ? "Loading..."
-                                            : logs
-                                              ? "Reload"
-                                              : "Load"}
-                                    </IdeActionButton>
-                                </div>
-                                {logs ? (
-                                    <div className="mt-2 max-h-44 overflow-y-auto rounded-md bg-editor p-2 font-mono text-[10px] leading-4 text-text-secondary">
-                                        {logs}
-                                    </div>
-                                ) : (
-                                    <div className="mt-2 rounded-md border border-dashed border-[color-mix(in_srgb,var(--color-border)_50%,transparent)] px-3 py-3 text-center text-[10px] text-text-secondary">
-                                        Logs load on demand.
-                                    </div>
+            {jobs.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                    {jobs.map((job) => (
+                        <button
+                            className={[
+                                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition",
+                                selectedJob?.id === job.id
+                                    ? "border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] text-text-primary"
+                                    : "border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary text-text-secondary hover:border-[color-mix(in_srgb,var(--color-accent)_50%,transparent)] hover:text-text-primary",
+                            ].join(" ")}
+                            key={job.id}
+                            onClick={() => selectJob(job.id)}
+                            type="button"
+                        >
+                            <ActionStatusDot
+                                tone={deriveActionTone(
+                                    job.conclusion,
+                                    job.status,
                                 )}
-                            </div>
-                            <AnnotationsList annotations={annotations} />
-                            <StepsList steps={selectedJob.steps} />
-                        </>
-                    ) : null}
-                    <ArtifactsList
-                        artifacts={artifacts}
-                        isLoading={isLoadingArtifacts}
-                    />
+                            />
+                            <span className="truncate">{job.name}</span>
+                            <ActionStatusPill
+                                conclusion={job.conclusion}
+                                status={job.status}
+                            />
+                        </button>
+                    ))}
                 </div>
+            ) : null}
+            {jobs.length === 0 && !isLoadingJobs ? (
+                <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-3 py-2 text-[11px] text-text-secondary">
+                    No jobs available for this run.
+                </div>
+            ) : null}
+            <div className="space-y-3">
+                {selectedJob ? (
+                    <>
+                        <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <GitHubSectionLabel>Logs</GitHubSectionLabel>
+                                    {selectedJobRunner ? (
+                                        <span className="truncate text-[10px] text-text-secondary">
+                                            {selectedJobRunner}
+                                        </span>
+                                    ) : null}
+                                </div>
+                                <IdeActionButton
+                                    disabled={isLoadingLogs}
+                                    onClick={() => loadLogs(selectedJob)}
+                                >
+                                    {isLoadingLogs
+                                        ? "Loading..."
+                                        : logs
+                                          ? "Reload"
+                                          : "Load"}
+                                </IdeActionButton>
+                            </div>
+                            {logs ? (
+                                <div className="mt-2 max-h-72 overflow-y-auto rounded-md bg-editor p-2 font-mono text-[10px] leading-4 text-text-secondary">
+                                    {logs}
+                                </div>
+                            ) : (
+                                <div className="mt-2 rounded-md border border-dashed border-[color-mix(in_srgb,var(--color-border)_50%,transparent)] px-3 py-3 text-center text-[10px] text-text-secondary">
+                                    Logs load on demand.
+                                </div>
+                            )}
+                        </div>
+                        <AnnotationsList annotations={annotations} />
+                        <StepsList steps={selectedJob.steps} />
+                    </>
+                ) : null}
+                <ArtifactsList
+                    artifacts={artifacts}
+                    isLoading={isLoadingArtifacts}
+                />
             </div>
         </div>
     );
@@ -644,6 +629,7 @@ function StepsList({
     const skippedCount = steps.filter(
         (step) => deriveActionTone(step.conclusion, step.status) === "skipped",
     ).length;
+    const useTwoColumns = steps.length > 8;
 
     return (
         <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-2">
@@ -663,7 +649,13 @@ function StepsList({
                     </span>
                 ) : null}
             </div>
-            <div className="space-y-0.5">
+            <div
+                className={
+                    useTwoColumns
+                        ? "grid gap-x-3 gap-y-0.5 sm:grid-cols-2"
+                        : "space-y-0.5"
+                }
+            >
                 {steps.map((step) => {
                     const tone = deriveActionTone(
                         step.conclusion,

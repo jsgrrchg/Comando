@@ -104,6 +104,7 @@ import {
     type GitHubSaveTokenInput,
     type GitHubSetIssueStateInput,
     type GitHubSetPullRequestDraftStateInput,
+    type GitHubUpdatePullRequestInput,
     type GitHubCheckRunAnnotationsInput,
     type GitHubCheckRunAnnotationsResult,
     type GitHubWorkflowJobLogsInput,
@@ -315,6 +316,8 @@ const comandoApi: ComandoApi = {
     },
     writeClipboardText: (text: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.writeClipboardText, text),
+    openExternalUrl: (url: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openExternalUrl, url),
     openGeneratedImage: (path: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.openGeneratedImage, path),
     revealGeneratedImage: (path: string) =>
@@ -858,6 +861,14 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.createGitHubPullRequest,
             await ipcRenderer.invoke(
                 IPC_CHANNELS.createGitHubPullRequest,
+                input,
+            ),
+        ),
+    updateGitHubPullRequest: async (input: GitHubUpdatePullRequestInput) =>
+        assertIpcObject<GitHubPullRequestDetail>(
+            IPC_CHANNELS.updateGitHubPullRequest,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.updateGitHubPullRequest,
                 input,
             ),
         ),
