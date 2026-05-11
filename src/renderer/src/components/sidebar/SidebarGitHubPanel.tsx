@@ -21,7 +21,7 @@ import type {
 import {
     countCurrentBranchPullRequests,
     isPullRequestForCurrentBranch,
-    sortPullRequestsForCurrentBranch,
+    sortPullRequestsNewestFirst,
 } from "@renderer/app/github/current-branch-pr";
 import { resolveGitHubRepositoryRef } from "@renderer/app/git/remote-link";
 import { useGitStore } from "@renderer/app/store/git-store";
@@ -351,13 +351,7 @@ export function SidebarGitHubPanel({
             return pullRequestMatchesSearch(pullRequest, normalizedSearch);
         });
 
-        return repoRef
-            ? sortPullRequestsForCurrentBranch(
-                  filteredPullRequests,
-                  currentBranch,
-                  repoRef,
-              )
-            : filteredPullRequests;
+        return sortPullRequestsNewestFirst(filteredPullRequests);
     }, [
         currentBranch,
         normalizedSearch,
@@ -439,7 +433,6 @@ export function SidebarGitHubPanel({
     ]);
 
     const panelTitle = kind === "issues" ? "Issues" : "Pull Requests";
-    const repoLabel = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "GitHub";
     const isLoading =
         isCheckingAuth ||
         (kind === "issues" ? isLoadingIssues : isLoadingPullRequests);
@@ -486,9 +479,6 @@ export function SidebarGitHubPanel({
                         <div className="text-[12px] font-semibold text-text-primary">
                             {panelTitle}
                         </div>
-                        <div className="truncate text-[10px] text-text-secondary">
-                            {repoLabel}
-                        </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                         <button
@@ -504,7 +494,7 @@ export function SidebarGitHubPanel({
                             onClick={handleOpenList}
                             type="button"
                         >
-                            Open List
+                            Open
                         </button>
                     </div>
                 </div>
