@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type {
@@ -20,8 +20,6 @@ import {
     formatGitHubDateTime,
     getGitHubWritePermissionLabel,
     GitHubAuthNotice,
-    GitHubChecksPill,
-    GitHubChecksTable,
     GitHubCommentComposer,
     GitHubCommentList,
     GitHubConfirmActionButton,
@@ -29,6 +27,7 @@ import {
     GitHubErrorState,
     GitHubInput,
     GitHubMergeablePill,
+    GitHubSection,
     GitHubSectionLabel,
     GitHubStatePill,
     GitHubTabHeader,
@@ -49,8 +48,6 @@ export function GitHubPullRequestTabView({
 }) {
     const repoKey = getGitHubRepoKey(tab.ref);
     const [commentDraft, setCommentDraft] = useState("");
-    const [reviewerDraft, setReviewerDraft] = useState("");
-    const [teamReviewerDraft, setTeamReviewerDraft] = useState("");
     const [showAllCommits, setShowAllCommits] = useState(false);
     const [isEditingDescription, setIsEditingDescription] = useState(false);
     const [descriptionDraft, setDescriptionDraft] = useState("");
@@ -309,9 +306,10 @@ export function GitHubPullRequestTabView({
         await convertPullRequestToDraft(tab.ref, tab.pullRequestNumber);
     };
 
-    const handleRequestReview = async () => {
-        const reviewers = parseCsv(reviewerDraft);
-        const teamReviewers = parseCsv(teamReviewerDraft);
+    const handleRequestReview = async (
+        reviewers: readonly string[],
+        teamReviewers: readonly string[],
+    ) => {
         if (
             !canWritePullRequests ||
             (reviewers.length === 0 && teamReviewers.length === 0)
@@ -323,8 +321,6 @@ export function GitHubPullRequestTabView({
             reviewers: reviewers.length > 0 ? reviewers : null,
             teamReviewers: teamReviewers.length > 0 ? teamReviewers : null,
         });
-        setReviewerDraft("");
-        setTeamReviewerDraft("");
     };
 
     const handleStartEditingDescription = () => {
@@ -369,11 +365,6 @@ export function GitHubPullRequestTabView({
     const mergeableState = deriveGitHubMergeableState(detail?.mergeable);
     const showLifecycleCta =
         detail?.state === "open" && !detail?.mergedAt;
-    const requestReviewDisabled =
-        !canWritePullRequests ||
-        isRequestingReview ||
-        (parseCsv(reviewerDraft).length === 0 &&
-            parseCsv(teamReviewerDraft).length === 0);
     const descriptionChanged =
         descriptionDraft.trim() !== (detail?.body ?? "").trim();
     const saveDescriptionDisabled =
@@ -452,7 +443,6 @@ export function GitHubPullRequestTabView({
                                 <GitHubStatePill tone={stateTone}>
                                     {stateLabel}
                                 </GitHubStatePill>
-                                <GitHubChecksPill state={checksState} />
                                 {showMergeable ? (
                                     <GitHubMergeablePill
                                         state={mergeableState}
@@ -479,14 +469,6 @@ export function GitHubPullRequestTabView({
                             <div className="flex flex-wrap items-center gap-3 text-[12px] text-text-secondary">
                                 <span>
                                     <span className="text-text-primary">
-                                        {detail.commitCount ??
-                                            detail.commits.length}
-                                    </span>{" "}
-                                    commits
-                                </span>
-                                <span aria-hidden="true">·</span>
-                                <span>
-                                    <span className="text-text-primary">
                                         {detail.changedFileCount ?? "?"}
                                     </span>{" "}
                                     files
@@ -506,6 +488,13 @@ export function GitHubPullRequestTabView({
                             ) : null}
                             {showLifecycleCta ? (
                                 <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                                    <RequestReviewerPopover
+                                        canWrite={canWritePullRequests}
+                                        error={requestReviewError}
+                                        isRequesting={isRequestingReview}
+                                        onRequest={handleRequestReview}
+                                        permissionLabel={writePermissionLabel}
+                                    />
                                     {detail.draft ? (
                                         <GitHubConfirmActionButton
                                             armedLabel="Click again to mark ready"
@@ -561,12 +550,9 @@ export function GitHubPullRequestTabView({
                             ) : null}
                         </section>
 
-                        <section className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
-                            <div className="flex items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-2">
-                                <GitHubSectionLabel>
-                                    Description
-                                </GitHubSectionLabel>
-                                {!isEditingDescription ? (
+                        <GitHubSection
+                            actions={
+                                !isEditingDescription ? (
                                     <IdeActionButton
                                         disabled={!canWritePullRequests}
                                         onClick={handleStartEditingDescription}
@@ -578,10 +564,18 @@ export function GitHubPullRequestTabView({
                                     >
                                         Edit description
                                     </IdeActionButton>
-                                ) : null}
-                            </div>
+                                ) : null
+                            }
+                            bodyClassName={
+                                isEditingDescription
+                                    ? "space-y-3 px-4 py-4"
+                                    : "px-4 py-4 text-[13px] leading-6 text-text-secondary"
+                            }
+                            title="Description"
+                            tone="accent"
+                        >
                             {isEditingDescription ? (
-                                <div className="space-y-3 px-4 py-4">
+                                <>
                                     <textarea
                                         className="min-h-56 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
                                         disabled={isUpdatingPullRequest}
@@ -636,29 +630,19 @@ export function GitHubPullRequestTabView({
                                                 : "Save description"}
                                         </IdeActionButton>
                                     </div>
-                                </div>
+                                </>
                             ) : (
-                                <div className="px-4 py-4 text-[13px] leading-6 text-text-secondary">
-                                    <MarkdownContent
-                                        content={
-                                            detail.body || "_No description._"
-                                        }
-                                    />
-                                </div>
+                                <MarkdownContent
+                                    content={
+                                        detail.body || "_No description._"
+                                    }
+                                />
                             )}
-                        </section>
+                        </GitHubSection>
 
-                        <section className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
-                            <div className="flex items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-2">
-                                <div className="flex items-center gap-2">
-                                    <GitHubSectionLabel>
-                                        Commits
-                                    </GitHubSectionLabel>
-                                    <span className="text-[10px] text-text-secondary">
-                                        {commits.length}
-                                    </span>
-                                </div>
-                                {hiddenCommitsCount > 0 ? (
+                        <GitHubSection
+                            actions={
+                                hiddenCommitsCount > 0 ? (
                                     <IdeActionButton
                                         onClick={() =>
                                             setShowAllCommits((prev) => !prev)
@@ -668,9 +652,14 @@ export function GitHubPullRequestTabView({
                                             ? "Collapse"
                                             : `Show all ${commits.length}`}
                                     </IdeActionButton>
-                                ) : null}
-                            </div>
-                            <div className="space-y-1 px-2 py-2">
+                                ) : null
+                            }
+                            bodyClassName="space-y-1 px-2 py-2"
+                            count={commits.length}
+                            title="Commits"
+                            tone="info"
+                        >
+                            <>
                                 {visibleCommits.map((commit) => (
                                     <button
                                         className="flex w-full items-center justify-between gap-3 rounded-md border-l-[3px] border-l-transparent px-2 py-1 text-left text-[11px] transition hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-tertiary"
@@ -735,95 +724,44 @@ export function GitHubPullRequestTabView({
                                         No commit details available yet.
                                     </div>
                                 ) : null}
-                            </div>
-                        </section>
+                            </>
+                        </GitHubSection>
 
-                        <section className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3">
-                            <GitHubChecksTable
-                                checks={checks?.checks ?? []}
-                                error={checksError}
-                                isLoading={isLoadingChecks}
-                                state={checksState}
-                                url={checks?.url ?? null}
-                            />
-                        </section>
-
-                        <section className="space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3">
-                            <GitHubSectionLabel>CI Actions</GitHubSectionLabel>
-                            <GitHubActionsPanel
-                                authStatus={authStatus}
-                                branch={detail.head.ref}
-                                headSha={detail.head.sha}
-                                ref={tab.ref}
-                            />
-                        </section>
-
-                        <section className="space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3">
-                            <GitHubSectionLabel>
-                                Request review
-                            </GitHubSectionLabel>
-                            <div className="grid gap-2 md:grid-cols-2">
-                                <GitHubInput
-                                    disabled={
-                                        !canWritePullRequests ||
-                                        isRequestingReview
-                                    }
-                                    onChange={setReviewerDraft}
-                                    placeholder="Reviewers, comma separated"
-                                    value={reviewerDraft}
+                        <GitHubSection
+                            count={detail.comments.length}
+                            title="Conversation"
+                            tone="neutral"
+                        >
+                            <div className="space-y-3">
+                                <GitHubCommentList
+                                    comments={detail.comments}
                                 />
-                                <GitHubInput
-                                    disabled={
-                                        !canWritePullRequests ||
-                                        isRequestingReview
-                                    }
-                                    onChange={setTeamReviewerDraft}
-                                    placeholder="Team slugs, comma separated"
-                                    value={teamReviewerDraft}
+                                <GitHubCommentComposer
+                                    disabled={!canCommentPullRequests}
+                                    error={commentError}
+                                    isSubmitting={isCommenting}
+                                    onChange={setCommentDraft}
+                                    onSubmit={() => void handleComment()}
+                                    permissionLabel={commentPermissionLabel}
+                                    value={commentDraft}
                                 />
                             </div>
-                            <div className="flex items-center justify-between gap-3">
-                                <div className="text-[10px] text-text-secondary">
-                                    Click the button twice to send the review
-                                    request.
-                                </div>
-                                <GitHubConfirmActionButton
-                                    armedLabel="Click again to request"
-                                    disabled={requestReviewDisabled}
-                                    onConfirm={() => void handleRequestReview()}
-                                    title={
-                                        canWritePullRequests
-                                            ? undefined
-                                            : writePermissionLabel
-                                    }
-                                >
-                                    {isRequestingReview
-                                        ? "Requesting..."
-                                        : "Request Review"}
-                                </GitHubConfirmActionButton>
-                            </div>
-                            {requestReviewError ? (
-                                <div className="text-[11px] text-[color:var(--diff-remove)]">
-                                    {requestReviewError}
-                                </div>
-                            ) : null}
-                        </section>
+                        </GitHubSection>
 
-                        <section className="space-y-3">
-                            <GitHubSectionLabel>
-                                Conversation
-                            </GitHubSectionLabel>
-                            <GitHubCommentList comments={detail.comments} />
-                            <GitHubCommentComposer
-                                disabled={!canCommentPullRequests}
-                                error={commentError}
-                                isSubmitting={isCommenting}
-                                onChange={setCommentDraft}
-                                onSubmit={() => void handleComment()}
-                                permissionLabel={commentPermissionLabel}
-                                value={commentDraft}
-                            />
-                        </section>
+                        <GitHubActionsPanel
+                            authStatus={authStatus}
+                            branch={detail.head.ref}
+                            checksCount={checks?.checks?.length ?? null}
+                            checksState={checksState}
+                            checksUrl={checks?.url ?? null}
+                            headSha={detail.head.sha}
+                            ref={tab.ref}
+                        />
+                        {checksError ? (
+                            <GitHubErrorState>
+                                Checks could not be loaded. {checksError}
+                            </GitHubErrorState>
+                        ) : null}
                     </>
                 ) : null}
             </div>
@@ -861,4 +799,109 @@ function parseCsv(value: string): readonly string[] {
         .split(",")
         .map((entry) => entry.trim())
         .filter(Boolean);
+}
+
+function RequestReviewerPopover({
+    canWrite,
+    error,
+    isRequesting,
+    onRequest,
+    permissionLabel,
+}: {
+    readonly canWrite: boolean;
+    readonly error: string | null;
+    readonly isRequesting: boolean;
+    readonly onRequest: (
+        reviewers: readonly string[],
+        teamReviewers: readonly string[],
+    ) => Promise<void>;
+    readonly permissionLabel: string;
+}) {
+    const [isOpen, setIsOpen] = useState(false);
+    const [reviewers, setReviewers] = useState("");
+    const [teams, setTeams] = useState("");
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!isOpen) {
+            return;
+        }
+        const handlePointerDown = (event: PointerEvent) => {
+            if (
+                containerRef.current &&
+                !containerRef.current.contains(event.target as Node)
+            ) {
+                setIsOpen(false);
+            }
+        };
+        const handleKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener("pointerdown", handlePointerDown);
+        document.addEventListener("keydown", handleKey);
+        return () => {
+            document.removeEventListener("pointerdown", handlePointerDown);
+            document.removeEventListener("keydown", handleKey);
+        };
+    }, [isOpen]);
+
+    const parsedReviewers = parseCsv(reviewers);
+    const parsedTeams = parseCsv(teams);
+    const submitDisabled =
+        !canWrite ||
+        isRequesting ||
+        (parsedReviewers.length === 0 && parsedTeams.length === 0);
+
+    const handleSubmit = async () => {
+        if (submitDisabled) {
+            return;
+        }
+        await onRequest(parsedReviewers, parsedTeams);
+        setReviewers("");
+        setTeams("");
+        setIsOpen(false);
+    };
+
+    return (
+        <div className="relative" ref={containerRef}>
+            <IdeActionButton
+                disabled={!canWrite}
+                onClick={() => setIsOpen((prev) => !prev)}
+                title={canWrite ? undefined : permissionLabel}
+            >
+                Request reviewers
+            </IdeActionButton>
+            {isOpen ? (
+                <div className="absolute right-0 top-full z-20 mt-1 w-[320px] space-y-2 rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-3 shadow-lg">
+                    <GitHubInput
+                        disabled={!canWrite || isRequesting}
+                        onChange={setReviewers}
+                        placeholder="Reviewers, comma separated"
+                        value={reviewers}
+                    />
+                    <GitHubInput
+                        disabled={!canWrite || isRequesting}
+                        onChange={setTeams}
+                        placeholder="Team slugs, comma separated"
+                        value={teams}
+                    />
+                    {error ? (
+                        <div className="text-[11px] text-[color:var(--diff-remove)]">
+                            {error}
+                        </div>
+                    ) : null}
+                    <div className="flex justify-end">
+                        <IdeActionButton
+                            disabled={submitDisabled}
+                            onClick={() => void handleSubmit()}
+                        >
+                            {isRequesting ? "Requesting..." : "Send request"}
+                        </IdeActionButton>
+                    </div>
+                </div>
+            ) : null}
+        </div>
+    );
 }

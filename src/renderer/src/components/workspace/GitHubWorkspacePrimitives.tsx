@@ -318,28 +318,13 @@ export function GitHubChecksTable({
     checks,
     error,
     isLoading,
-    state,
-    url,
 }: {
     readonly checks: readonly GitHubPullRequestCheckSummary[];
     readonly error: string | null;
     readonly isLoading: boolean;
-    readonly state: GitHubPullRequestChecksState | "loading";
-    readonly url: string | null;
 }) {
     return (
-        <section className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                    <GitHubSectionLabel>Checks</GitHubSectionLabel>
-                    <GitHubChecksPill state={state} />
-                </div>
-                {url ? (
-                    <IdeActionButton onClick={() => openGitHubWebUrl(url)}>
-                        Open Checks
-                    </IdeActionButton>
-                ) : null}
-            </div>
+        <div className="space-y-3">
             {error ? (
                 <GitHubErrorState>
                     Checks could not be loaded. {error}
@@ -397,7 +382,7 @@ export function GitHubChecksTable({
                     ))}
                 </div>
             ) : null}
-        </section>
+        </div>
     );
 }
 
@@ -759,6 +744,73 @@ export function GitHubSectionLabel({
         >
             {children}
         </span>
+    );
+}
+
+export type GitHubSectionTone =
+    | "accent"
+    | "danger"
+    | "info"
+    | "neutral"
+    | "success"
+    | "warn";
+
+const GITHUB_SECTION_TONE_BAR: Record<GitHubSectionTone, string> = {
+    accent: "var(--color-accent)",
+    danger: "var(--diff-remove)",
+    info: "color-mix(in srgb, var(--color-accent) 60%, var(--color-text-secondary))",
+    neutral:
+        "color-mix(in srgb, var(--color-text-secondary) 55%, transparent)",
+    success: "var(--diff-add)",
+    warn: "var(--diff-warn, #d99a3a)",
+};
+
+export function GitHubSection({
+    actions,
+    bodyClassName,
+    children,
+    count,
+    eyebrow,
+    title,
+    tone = "neutral",
+}: {
+    readonly actions?: ReactNode;
+    readonly bodyClassName?: string;
+    readonly children: ReactNode;
+    readonly count?: number | string | null;
+    readonly eyebrow?: ReactNode;
+    readonly title: ReactNode;
+    readonly tone?: GitHubSectionTone;
+}) {
+    return (
+        <section className="overflow-hidden rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
+            <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-border)_45%,transparent)] bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)] px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                    <span
+                        aria-hidden="true"
+                        className="inline-block h-3.5 w-[3px] shrink-0 rounded-full"
+                        style={{
+                            background: GITHUB_SECTION_TONE_BAR[tone],
+                        }}
+                    />
+                    <span className="truncate text-[12px] font-semibold text-text-primary">
+                        {title}
+                    </span>
+                    {count != null ? (
+                        <span className="shrink-0 rounded-full bg-bg-tertiary px-1.5 py-[1px] font-mono text-[10px] text-text-secondary">
+                            {count}
+                        </span>
+                    ) : null}
+                    {eyebrow}
+                </div>
+                {actions ? (
+                    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                        {actions}
+                    </div>
+                ) : null}
+            </header>
+            <div className={bodyClassName ?? "px-4 py-3"}>{children}</div>
+        </section>
     );
 }
 

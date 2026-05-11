@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type {
     GitHubAuthStatus,
     GitHubCheckRunAnnotationSummary,
+    GitHubPullRequestChecksState,
     GitHubRepositoryRef,
     GitHubWorkflowArtifactSummary,
     GitHubWorkflowConclusion,
@@ -26,10 +27,13 @@ import {
 import {
     formatGitHubDateTime,
     formatGitHubRelativeTime,
+    GitHubChecksPill,
     GitHubEmptyState,
     GitHubErrorState,
+    GitHubSection,
     GitHubSectionLabel,
     openGitHubWebUrl,
+    type GitHubSectionTone,
 } from "./GitHubWorkspacePrimitives";
 import { IdeActionButton } from "./ide-bar";
 
@@ -79,11 +83,17 @@ function cleanRunnerName(name: string | null | undefined): string | null {
 export function GitHubActionsPanel({
     authStatus,
     branch,
+    checksCount,
+    checksState,
+    checksUrl,
     headSha,
     ref,
 }: {
     readonly authStatus: GitHubAuthStatus | null;
     readonly branch: string | null;
+    readonly checksCount?: number | null;
+    readonly checksState?: GitHubPullRequestChecksState | "loading";
+    readonly checksUrl?: string | null;
     readonly headSha: string;
     readonly ref: GitHubRepositoryRef;
 }) {
@@ -298,22 +308,44 @@ export function GitHubActionsPanel({
         ]);
     };
 
+    const sectionTone: GitHubSectionTone = checksState
+        ? deriveChecksSectionTone(checksState)
+        : "accent";
+
     return (
-        <section className="space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                    <GitHubSectionLabel>Actions</GitHubSectionLabel>
+        <GitHubSection
+            actions={
+                <>
+                    {checksUrl ? (
+                        <IdeActionButton
+                            onClick={() => openGitHubWebUrl(checksUrl)}
+                        >
+                            Open Checks
+                        </IdeActionButton>
+                    ) : null}
+                    <IdeActionButton
+                        disabled={loadingKeys[runsKey]}
+                        onClick={() => void handleRefresh()}
+                    >
+                        {loadingKeys[runsKey] ? "Refreshing..." : "Refresh"}
+                    </IdeActionButton>
+                </>
+            }
+            bodyClassName="space-y-3 px-3 py-3"
+            count={checksCount ?? null}
+            eyebrow={
+                <span className="flex items-center gap-2">
                     <span className="font-mono text-[10px] text-text-secondary">
                         {headSha.slice(0, 7)}
                     </span>
-                </div>
-                <IdeActionButton
-                    disabled={loadingKeys[runsKey]}
-                    onClick={() => void handleRefresh()}
-                >
-                    {loadingKeys[runsKey] ? "Refreshing..." : "Refresh"}
-                </IdeActionButton>
-            </div>
+                    {checksState ? (
+                        <GitHubChecksPill state={checksState} />
+                    ) : null}
+                </span>
+            }
+            title="CI Actions"
+            tone={sectionTone}
+        >
             {!isAuthenticated ? (
                 <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[11px] text-text-secondary">
                     Actions load after GitHub authentication is verified.
@@ -383,6 +415,7 @@ export function GitHubActionsPanel({
                             artifacts={artifacts}
                             canMutateActions={canWriteActions}
                             cancelRun={() => void handleCancelRun(selectedRun)}
+                            compact={runs.length === 1}
                             isCanceling={
                                 mutatingKeys[
                                     `${repoKey}:actions:${selectedRun.id}:cancel`
@@ -418,7 +451,7 @@ export function GitHubActionsPanel({
                     ) : null}
                 </div>
             ) : null}
-        </section>
+        </GitHubSection>
     );
 }
 
@@ -427,6 +460,7 @@ function RunDetail({
     artifacts,
     canMutateActions,
     cancelRun,
+    compact,
     isCanceling,
     isLoadingArtifacts,
     isLoadingJobs,
@@ -444,6 +478,7 @@ function RunDetail({
     readonly artifacts: readonly GitHubWorkflowArtifactSummary[];
     readonly canMutateActions: boolean;
     readonly cancelRun: () => void;
+    readonly compact: boolean;
     readonly isCanceling: boolean;
     readonly isLoadingArtifacts: boolean;
     readonly isLoadingJobs: boolean;
@@ -476,30 +511,43 @@ function RunDetail({
     return (
         <div className="space-y-3 rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex min-w-0 flex-1 items-center gap-2">
-                    <ActionStatusDot
-                        tone={deriveActionTone(run.conclusion, run.status)}
-                    />
-                    <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate text-[12px] font-semibold text-text-primary">
-                                {run.name}
-                            </span>
-                            <ActionStatusPill
-                                conclusion={run.conclusion}
-                                status={run.status}
-                            />
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-text-secondary">
-                            <span>{run.event}</span>
-                            <span aria-hidden="true">·</span>
-                            <span title={formatGitHubDateTime(run.updatedAt)}>
-                                updated{" "}
-                                {formatGitHubRelativeTime(run.updatedAt)}
-                            </span>
+                {compact ? (
+                    <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[10px] text-text-secondary">
+                        <span>{run.event}</span>
+                        <span aria-hidden="true">·</span>
+                        <span title={formatGitHubDateTime(run.updatedAt)}>
+                            updated{" "}
+                            {formatGitHubRelativeTime(run.updatedAt)}
+                        </span>
+                    </div>
+                ) : (
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <ActionStatusDot
+                            tone={deriveActionTone(run.conclusion, run.status)}
+                        />
+                        <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="truncate text-[12px] font-semibold text-text-primary">
+                                    {run.name}
+                                </span>
+                                <ActionStatusPill
+                                    conclusion={run.conclusion}
+                                    status={run.status}
+                                />
+                            </div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-text-secondary">
+                                <span>{run.event}</span>
+                                <span aria-hidden="true">·</span>
+                                <span
+                                    title={formatGitHubDateTime(run.updatedAt)}
+                                >
+                                    updated{" "}
+                                    {formatGitHubRelativeTime(run.updatedAt)}
+                                </span>
+                            </div>
                         </div>
                     </div>
-                </div>
+                )}
                 <div className="flex flex-wrap gap-2">
                     <IdeActionButton onClick={() => openGitHubWebUrl(run.url)}>
                         Open Run
@@ -839,4 +887,20 @@ function formatBytes(value: number): string {
     }
 
     return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function deriveChecksSectionTone(
+    state: GitHubPullRequestChecksState | "loading",
+): GitHubSectionTone {
+    switch (state) {
+        case "failure":
+            return "danger";
+        case "pending":
+        case "loading":
+            return "warn";
+        case "success":
+            return "success";
+        default:
+            return "accent";
+    }
 }
