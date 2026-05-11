@@ -1,4 +1,5 @@
 import {
+    COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
     getExternalComposerDropItems,
@@ -33,6 +34,13 @@ export function resolveWorkspacePaneFileDragOverIntent(input: {
         return {
             acceptsDrop: false,
             previewTarget: null,
+        };
+    }
+
+    if (hasWorkspacePaneProjectFileDragPayload(input.dataTransfer)) {
+        return {
+            acceptsDrop: true,
+            previewTarget: input.target,
         };
     }
 
@@ -99,10 +107,18 @@ export function hasWorkspacePaneFileDragPayload(
 ): boolean {
     const types = Array.from(dataTransfer.types ?? []);
     return (
+        types.includes(COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME) ||
         types.includes(COMPOSER_PROJECT_ENTRY_LIST_MIME) ||
         types.includes(COMPOSER_PROJECT_ENTRY_MIME) ||
         types.includes("Files")
     );
+}
+
+function hasWorkspacePaneProjectFileDragPayload(
+    dataTransfer: DataTransfer,
+): boolean {
+    const types = Array.from(dataTransfer.types ?? []);
+    return types.includes(COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME);
 }
 
 export function getWorkspacePaneFileDropEntries(input: {

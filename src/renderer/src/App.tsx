@@ -42,6 +42,7 @@ import {
     type EdgePeekPointerPosition,
 } from "./app/layout/edge-peek";
 import {
+    COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
     serializeComposerProjectEntryListDragData,
@@ -1787,6 +1788,10 @@ export function App() {
                     entries: composerEntries,
                 }),
             );
+
+            if (composerEntries.some((entry) => entry.kind === "file")) {
+                dataTransfer.setData(COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME, "1");
+            }
 
             if (composerEntries.length === 1) {
                 dataTransfer.setData(

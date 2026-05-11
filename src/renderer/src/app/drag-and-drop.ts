@@ -2,6 +2,8 @@ export const COMPOSER_PROJECT_ENTRY_MIME =
     "application/x-comando-composer-project-entry";
 export const COMPOSER_PROJECT_ENTRY_LIST_MIME =
     "application/x-comando-composer-project-entry-list";
+export const COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME =
+    "application/x-comando-composer-project-file-entry-list";
 export const WORKSPACE_TAB_COMPOSER_DRAG_EVENT =
     "comando:workspace-tab-composer-drag";
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+    COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
     serializeComposerProjectEntryListDragData,
 } from "@renderer/app/drag-and-drop";
@@ -70,6 +71,30 @@ describe("workspaceExternalDrop", () => {
                 relativePath: "src/app.ts",
             },
         ]);
+    });
+
+    it("previews protected internal project file payloads during dragover", () => {
+        const dataTransfer = createDataTransfer({
+            data: {
+                [COMPOSER_PROJECT_ENTRY_LIST_MIME]: "",
+                [COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME]: "",
+            },
+            types: [
+                COMPOSER_PROJECT_ENTRY_LIST_MIME,
+                COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
+            ],
+        });
+
+        expect(
+            resolveWorkspacePaneFileDragOverIntent({
+                dataTransfer,
+                projectRootPath: null,
+                target: paneTarget,
+            }),
+        ).toEqual({
+            acceptsDrop: true,
+            previewTarget: paneTarget,
+        });
     });
 
     it("previews native files inside the active root", () => {
