@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type DragEvent as ReactDragEvent,
+    type PointerEvent as ReactPointerEvent,
+} from "react";
 
-import type { GitHubIssueState } from "@shared/ipc";
+import type { GitHubIssueState, GitHubIssueSummary } from "@shared/ipc";
 
 import {
     EMPTY_GITHUB_LIST,
@@ -30,6 +38,47 @@ import {
 import { IdeActionButton } from "./ide-bar";
 
 type IssueFilter = GitHubIssueState | "all" | "assigned";
+type IssueColumnId = (typeof ISSUE_TABLE_COLUMN_IDS)[number];
+type IssueColumnWidths = Record<IssueColumnId, number>;
+
+interface IssueTableLayout {
+    readonly order: readonly IssueColumnId[];
+    readonly widths: IssueColumnWidths;
+}
+
+const ISSUE_TABLE_COLUMN_IDS = [
+    "number",
+    "description",
+    "assignees",
+    "date",
+    "action",
+] as const;
+const ISSUE_TABLE_LAYOUT_STORAGE_KEY = "comando.github.issues.table.layout";
+const ISSUE_TABLE_LAYOUT_VERSION = 1;
+const DEFAULT_ISSUE_TABLE_COLUMN_ORDER: readonly IssueColumnId[] =
+    ISSUE_TABLE_COLUMN_IDS;
+const DEFAULT_ISSUE_TABLE_COLUMN_WIDTHS: IssueColumnWidths = {
+    action: 128,
+    assignees: 180,
+    date: 140,
+    description: 420,
+    number: 56,
+};
+const ISSUE_TABLE_COLUMN_MIN_WIDTHS: IssueColumnWidths = {
+    action: 112,
+    assignees: 120,
+    date: 96,
+    description: 180,
+    number: 44,
+};
+const ISSUE_TABLE_COLUMN_MAX_WIDTH = 900;
+const ISSUE_TABLE_COLUMN_LABELS: Record<IssueColumnId, string> = {
+    action: "Action",
+    assignees: "Assignees",
+    date: "Date",
+    description: "Description",
+    number: "#",
+};
 
 export function GitHubIssuesTabView({
     tab,
@@ -73,6 +122,127 @@ export function GitHubIssuesTabView({
         (state) => state.openGitHubIssueTab,
     );
     const lastRequestedFilterRef = useRef(filter);
+    const columnResizeCleanupRef = useRef<(() => void) | null>(null);
+    const [tableLayout, setTableLayout] = useState<IssueTableLayout>(
+        () => readPersistedIssueTableLayout(),
+    );
+    const [draggedColumnId, setDraggedColumnId] =
+        useState<IssueColumnId | null>(null);
+    const tableGridTemplate = useMemo(
+        () =>
+            tableLayout.order
+                .map((columnId) => `${tableLayout.widths[columnId]}px`)
+                .join(" "),
+        [tableLayout],
+    );
+    const tableMinWidth = useMemo(
+        () =>
+            tableLayout.order.reduce(
+                (total, columnId) => total + tableLayout.widths[columnId],
+                0,
+            ),
+        [tableLayout],
+    );
+
+    useEffect(() => {
+        return () => {
+            columnResizeCleanupRef.current?.();
+        };
+    }, []);
+
+    const persistTableLayout = useCallback((layout: IssueTableLayout) => {
+        setTableLayout(layout);
+        persistIssueTableLayout(layout);
+    }, []);
+
+    const handleColumnResizePointerDown = useCallback(
+        (
+            columnId: IssueColumnId,
+            event: ReactPointerEvent<HTMLDivElement>,
+        ) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            columnResizeCleanupRef.current?.();
+
+            const startX = event.clientX;
+            const startWidth = tableLayout.widths[columnId];
+            const previousCursor = document.body.style.cursor;
+            const previousUserSelect = document.body.style.userSelect;
+            let nextLayout = tableLayout;
+
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+
+            const handlePointerMove = (pointerEvent: PointerEvent) => {
+                const nextWidth = clampWidth(
+                    startWidth + pointerEvent.clientX - startX,
+                    ISSUE_TABLE_COLUMN_MIN_WIDTHS[columnId],
+                    ISSUE_TABLE_COLUMN_MAX_WIDTH,
+                );
+                nextLayout = {
+                    ...tableLayout,
+                    widths: {
+                        ...tableLayout.widths,
+                        [columnId]: Math.round(nextWidth),
+                    },
+                };
+                setTableLayout(nextLayout);
+            };
+
+            const cleanup = () => {
+                document.body.style.cursor = previousCursor;
+                document.body.style.userSelect = previousUserSelect;
+                window.removeEventListener("pointermove", handlePointerMove);
+                window.removeEventListener("pointerup", handlePointerUp);
+                window.removeEventListener("pointercancel", handlePointerUp);
+                columnResizeCleanupRef.current = null;
+                persistIssueTableLayout(nextLayout);
+            };
+
+            const handlePointerUp = () => {
+                cleanup();
+            };
+
+            columnResizeCleanupRef.current = cleanup;
+            window.addEventListener("pointermove", handlePointerMove);
+            window.addEventListener("pointerup", handlePointerUp);
+            window.addEventListener("pointercancel", handlePointerUp);
+        },
+        [tableLayout],
+    );
+
+    const handleColumnDragStart = useCallback(
+        (columnId: IssueColumnId, event: ReactDragEvent<HTMLDivElement>) => {
+            setDraggedColumnId(columnId);
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", columnId);
+        },
+        [],
+    );
+
+    const handleColumnDrop = useCallback(
+        (targetColumnId: IssueColumnId, event: ReactDragEvent<HTMLDivElement>) => {
+            event.preventDefault();
+            const sourceColumnId =
+                draggedColumnId ??
+                parseIssueColumnId(event.dataTransfer.getData("text/plain"));
+            setDraggedColumnId(null);
+            if (!sourceColumnId || sourceColumnId === targetColumnId) {
+                return;
+            }
+
+            persistTableLayout({
+                ...tableLayout,
+                order: moveIssueColumn(
+                    tableLayout.order,
+                    sourceColumnId,
+                    targetColumnId,
+                ),
+            });
+        },
+        [draggedColumnId, persistTableLayout, tableLayout],
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -334,7 +504,7 @@ export function GitHubIssuesTabView({
                 ) : null}
             </div>
             {!isLoading && visibleIssues.length > 0 ? (
-                <div>
+                <div className="shell-scrollbar overflow-x-auto">
                     <div
                         className="sticky top-0 z-10 grid items-center px-3 py-1.5 text-[10px] font-semibold uppercase text-text-secondary"
                         style={{
@@ -342,87 +512,342 @@ export function GitHubIssuesTabView({
                             borderBottom:
                                 "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                             fontFamily: "var(--font-mono)",
-                            gridTemplateColumns: ISSUE_TABLE_GRID,
+                            gridTemplateColumns: tableGridTemplate,
                             letterSpacing: "0.06em",
+                            minWidth: tableMinWidth,
                         }}
                     >
-                        <span>#</span>
-                        <span>Description</span>
-                        <span>Assignees</span>
-                        <span>Date</span>
-                        <span className="text-right">Action</span>
-                    </div>
-                    {visibleIssues.map((issue) => (
-                        <div
-                            className="group/row grid items-stretch border-l-[3px] border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary"
-                            key={issue.id}
-                            style={{ gridTemplateColumns: ISSUE_TABLE_GRID }}
-                        >
-                            <button
-                                className="contents text-left"
-                                onClick={() =>
-                                    void openGitHubIssueTab({
-                                        issueNumber: issue.number,
-                                        projectId: tab.projectId,
-                                        ref: tab.ref,
-                                        worktreeId: tab.worktreeId ?? null,
-                                    })
+                        {tableLayout.order.map((columnId) => (
+                            <IssueHeaderCell
+                                columnId={columnId}
+                                dragged={draggedColumnId === columnId}
+                                key={columnId}
+                                label={ISSUE_TABLE_COLUMN_LABELS[columnId]}
+                                onDragEnd={() => setDraggedColumnId(null)}
+                                onDragOver={(event) => {
+                                    event.preventDefault();
+                                    event.dataTransfer.dropEffect = "move";
+                                }}
+                                onDragStart={(event) =>
+                                    handleColumnDragStart(columnId, event)
                                 }
-                                type="button"
+                                onDrop={(event) =>
+                                    handleColumnDrop(columnId, event)
+                                }
+                                onResizePointerDown={(event) =>
+                                    handleColumnResizePointerDown(
+                                        columnId,
+                                        event,
+                                    )
+                                }
+                            />
+                        ))}
+                    </div>
+                    {visibleIssues.map((issue) => {
+                        const handleOpenIssue = () =>
+                            void openGitHubIssueTab({
+                                issueNumber: issue.number,
+                                projectId: tab.projectId,
+                                ref: tab.ref,
+                                worktreeId: tab.worktreeId ?? null,
+                            });
+
+                        return (
+                            <div
+                                className="group/row grid items-stretch border-l-[3px] border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary"
+                                key={issue.id}
+                                style={{
+                                    gridTemplateColumns: tableGridTemplate,
+                                    minWidth: tableMinWidth,
+                                }}
                             >
-                                <div className="border-b border-border-subtle py-2.5 font-mono text-text-secondary">
-                                    #{issue.number}
-                                </div>
-                                <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3">
-                                    <div className="flex min-w-0 items-center gap-2">
-                                        <GitHubStatePill tone={issue.state}>
-                                            {issue.state}
-                                        </GitHubStatePill>
-                                        <span className="truncate text-[12px] text-text-primary">
-                                            {issue.title}
-                                        </span>
-                                    </div>
-                                    {issue.labels.length > 0 ? (
-                                        <div className="mt-1 flex flex-wrap gap-1">
-                                            {issue.labels
-                                                .slice(0, 4)
-                                                .map((label) => (
-                                                    <GitHubLabelPill
-                                                        key={label.id}
-                                                        label={label}
-                                                    />
-                                                ))}
-                                        </div>
-                                    ) : null}
-                                </div>
-                                <div className="flex min-w-0 items-center border-b border-border-subtle py-2.5 pr-3">
-                                    <GitHubUsers users={issue.assignees} />
-                                </div>
-                                <div className="border-b border-border-subtle py-2.5 pr-3 text-[11px] text-text-secondary">
-                                    <div>{issue.commentCount} comments</div>
-                                    <div className="mt-0.5">
-                                        {formatGitHubRelativeTime(
-                                            issue.updatedAt,
-                                        )}
-                                    </div>
-                                </div>
-                            </button>
-                            <div className="flex items-center justify-end border-b border-border-subtle py-2.5">
-                                <IdeActionButton
-                                    onClick={() => openGitHubWebUrl(issue.url)}
-                                >
-                                    Open in GitHub
-                                </IdeActionButton>
+                                {tableLayout.order.map((columnId) => (
+                                    <IssueTableCell
+                                        columnId={columnId}
+                                        issue={issue}
+                                        key={columnId}
+                                        onOpen={handleOpenIssue}
+                                    />
+                                ))}
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             ) : null}
         </GitHubTabShell>
     );
 }
 
-const ISSUE_TABLE_GRID = "56px minmax(280px,1fr) 180px 110px 116px";
+function IssueHeaderCell({
+    columnId,
+    dragged,
+    label,
+    onDragEnd,
+    onDragOver,
+    onDragStart,
+    onDrop,
+    onResizePointerDown,
+}: {
+    readonly columnId: IssueColumnId;
+    readonly dragged: boolean;
+    readonly label: string;
+    readonly onDragEnd: () => void;
+    readonly onDragOver: (event: ReactDragEvent<HTMLDivElement>) => void;
+    readonly onDragStart: (event: ReactDragEvent<HTMLDivElement>) => void;
+    readonly onDrop: (event: ReactDragEvent<HTMLDivElement>) => void;
+    readonly onResizePointerDown: (
+        event: ReactPointerEvent<HTMLDivElement>,
+    ) => void;
+}) {
+    return (
+        <div
+            className={[
+                "relative min-w-0 pr-3",
+                columnId === "action" ? "text-right" : "",
+                dragged ? "opacity-55" : "",
+            ]
+                .filter(Boolean)
+                .join(" ")}
+            draggable
+            onDragEnd={onDragEnd}
+            onDragOver={onDragOver}
+            onDragStart={onDragStart}
+            onDrop={onDrop}
+            title="Drag to reorder. Drag the edge to resize."
+        >
+            <span className="block cursor-grab truncate active:cursor-grabbing">
+                {label}
+            </span>
+            <div
+                aria-label={`Resize ${label} column`}
+                className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize touch-none"
+                onPointerDown={onResizePointerDown}
+                role="separator"
+                title={`Resize ${label}`}
+            >
+                <div className="absolute left-1/2 top-1/2 h-4 w-px -translate-x-1/2 -translate-y-1/2 bg-border-strong" />
+            </div>
+        </div>
+    );
+}
+
+function IssueTableCell({
+    columnId,
+    issue,
+    onOpen,
+}: {
+    readonly columnId: IssueColumnId;
+    readonly issue: GitHubIssueSummary;
+    readonly onOpen: () => void;
+}) {
+    if (columnId === "action") {
+        return (
+            <div className="flex min-w-0 items-center justify-end border-b border-border-subtle py-2.5">
+                <IdeActionButton onClick={() => openGitHubWebUrl(issue.url)}>
+                    Open in GitHub
+                </IdeActionButton>
+            </div>
+        );
+    }
+
+    return (
+        <button
+            className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-left"
+            onClick={onOpen}
+            type="button"
+        >
+            {renderIssueColumnContent({ columnId, issue })}
+        </button>
+    );
+}
+
+function renderIssueColumnContent({
+    columnId,
+    issue,
+}: {
+    readonly columnId: Exclude<IssueColumnId, "action">;
+    readonly issue: GitHubIssueSummary;
+}) {
+    if (columnId === "number") {
+        return (
+            <div className="truncate font-mono text-text-secondary">
+                #{issue.number}
+            </div>
+        );
+    }
+
+    if (columnId === "assignees") {
+        return (
+            <div className="flex min-w-0 items-center">
+                <GitHubUsers users={issue.assignees} />
+            </div>
+        );
+    }
+
+    if (columnId === "date") {
+        return (
+            <div className="min-w-0 text-[11px] text-text-secondary">
+                <div>{issue.commentCount} comments</div>
+                <div className="mt-0.5">
+                    {formatGitHubRelativeTime(issue.updatedAt)}
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-w-0 overflow-hidden">
+            <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+                <GitHubStatePill tone={issue.state}>
+                    {issue.state}
+                </GitHubStatePill>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-text-primary">
+                    {issue.title}
+                </span>
+            </div>
+            {issue.labels.length > 0 ? (
+                <div className="mt-1 flex flex-wrap gap-1">
+                    {issue.labels.slice(0, 4).map((label) => (
+                        <GitHubLabelPill key={label.id} label={label} />
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function clampWidth(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+}
+
+function createDefaultIssueTableLayout(): IssueTableLayout {
+    return {
+        order: DEFAULT_ISSUE_TABLE_COLUMN_ORDER,
+        widths: DEFAULT_ISSUE_TABLE_COLUMN_WIDTHS,
+    };
+}
+
+function readPersistedIssueTableLayout(): IssueTableLayout {
+    const storage = getStorage();
+    if (!storage) {
+        return createDefaultIssueTableLayout();
+    }
+
+    const rawValue = storage.getItem(ISSUE_TABLE_LAYOUT_STORAGE_KEY);
+    if (!rawValue) {
+        return createDefaultIssueTableLayout();
+    }
+
+    try {
+        return normalizeIssueTableLayout(JSON.parse(rawValue));
+    } catch {
+        return createDefaultIssueTableLayout();
+    }
+}
+
+function persistIssueTableLayout(layout: IssueTableLayout): void {
+    const storage = getStorage();
+    if (!storage) {
+        return;
+    }
+
+    storage.setItem(
+        ISSUE_TABLE_LAYOUT_STORAGE_KEY,
+        JSON.stringify({
+            ...layout,
+            updatedAt: Date.now(),
+            version: ISSUE_TABLE_LAYOUT_VERSION,
+        }),
+    );
+}
+
+function normalizeIssueTableLayout(raw: unknown): IssueTableLayout {
+    if (!raw || typeof raw !== "object") {
+        return createDefaultIssueTableLayout();
+    }
+
+    const version = (raw as { version?: unknown }).version;
+    const rawOrder = (raw as { order?: unknown }).order;
+    const rawWidths = (raw as { widths?: unknown }).widths;
+    if (version !== ISSUE_TABLE_LAYOUT_VERSION || !Array.isArray(rawOrder)) {
+        return createDefaultIssueTableLayout();
+    }
+
+    const order = normalizeIssueColumnOrder(rawOrder);
+    const widths = { ...DEFAULT_ISSUE_TABLE_COLUMN_WIDTHS };
+    if (rawWidths && typeof rawWidths === "object") {
+        for (const columnId of ISSUE_TABLE_COLUMN_IDS) {
+            const width = (rawWidths as Record<string, unknown>)[columnId];
+            if (typeof width !== "number" || !Number.isFinite(width)) {
+                continue;
+            }
+
+            widths[columnId] = Math.round(
+                clampWidth(
+                    width,
+                    ISSUE_TABLE_COLUMN_MIN_WIDTHS[columnId],
+                    ISSUE_TABLE_COLUMN_MAX_WIDTH,
+                ),
+            );
+        }
+    }
+
+    return { order, widths };
+}
+
+function normalizeIssueColumnOrder(
+    rawOrder: readonly unknown[],
+): readonly IssueColumnId[] {
+    const seen = new Set<IssueColumnId>();
+    const order: IssueColumnId[] = [];
+    for (const item of rawOrder) {
+        const columnId = parseIssueColumnId(item);
+        if (!columnId || seen.has(columnId)) {
+            continue;
+        }
+
+        seen.add(columnId);
+        order.push(columnId);
+    }
+
+    for (const columnId of DEFAULT_ISSUE_TABLE_COLUMN_ORDER) {
+        if (!seen.has(columnId)) {
+            order.push(columnId);
+        }
+    }
+
+    return order;
+}
+
+function parseIssueColumnId(value: unknown): IssueColumnId | null {
+    return typeof value === "string" &&
+        (ISSUE_TABLE_COLUMN_IDS as readonly string[]).includes(value)
+        ? (value as IssueColumnId)
+        : null;
+}
+
+function moveIssueColumn(
+    order: readonly IssueColumnId[],
+    sourceColumnId: IssueColumnId,
+    targetColumnId: IssueColumnId,
+): readonly IssueColumnId[] {
+    const nextOrder = order.filter((columnId) => columnId !== sourceColumnId);
+    const targetIndex = nextOrder.indexOf(targetColumnId);
+    if (targetIndex < 0) {
+        return order;
+    }
+
+    nextOrder.splice(targetIndex, 0, sourceColumnId);
+    return nextOrder;
+}
+
+function getStorage(): Storage | null {
+    try {
+        return globalThis.localStorage ?? null;
+    } catch {
+        return null;
+    }
+}
 
 function parseCsv(value: string): readonly string[] | null {
     const entries = value

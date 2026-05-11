@@ -1,11 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type DragEvent as ReactDragEvent,
+    type PointerEvent as ReactPointerEvent,
+} from "react";
 
-import type { GitRepositorySnapshot } from "@shared/ipc";
+import type {
+    GitHubPullRequestChecksState,
+    GitHubPullRequestSummary,
+    GitRepositorySnapshot,
+} from "@shared/ipc";
 
 import {
     countCurrentBranchPullRequests,
     isPullRequestForCurrentBranch,
-    sortPullRequestsForCurrentBranch,
+    sortPullRequestsNewestFirst,
 } from "@renderer/app/github/current-branch-pr";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
@@ -38,6 +50,47 @@ import {
 import { IdeActionButton } from "./ide-bar";
 
 type PullRequestFilter = "all" | "branch" | "closed" | "draft" | "open";
+type PullRequestColumnId = (typeof PR_TABLE_COLUMN_IDS)[number];
+type PullRequestColumnWidths = Record<PullRequestColumnId, number>;
+
+interface PullRequestTableLayout {
+    readonly order: readonly PullRequestColumnId[];
+    readonly widths: PullRequestColumnWidths;
+}
+
+const PR_TABLE_COLUMN_IDS = [
+    "number",
+    "description",
+    "branch",
+    "date",
+    "action",
+] as const;
+const PR_TABLE_LAYOUT_STORAGE_KEY = "comando.github.pull-requests.table.layout";
+const PR_TABLE_LAYOUT_VERSION = 1;
+const DEFAULT_PR_TABLE_COLUMN_ORDER: readonly PullRequestColumnId[] =
+    PR_TABLE_COLUMN_IDS;
+const DEFAULT_PR_TABLE_COLUMN_WIDTHS: PullRequestColumnWidths = {
+    action: 84,
+    branch: 220,
+    date: 140,
+    description: 420,
+    number: 56,
+};
+const PR_TABLE_COLUMN_MIN_WIDTHS: PullRequestColumnWidths = {
+    action: 72,
+    branch: 120,
+    date: 96,
+    description: 180,
+    number: 44,
+};
+const PR_TABLE_COLUMN_MAX_WIDTH = 900;
+const PR_TABLE_COLUMN_LABELS: Record<PullRequestColumnId, string> = {
+    action: "Action",
+    branch: "Branch",
+    date: "Date",
+    description: "Description",
+    number: "#",
+};
 
 export function GitHubPullRequestsTabView({
     tab,
@@ -107,6 +160,135 @@ export function GitHubPullRequestsTabView({
         (state) => state.openGitHubPullRequestTab,
     );
     const lastRequestedFilterRef = useRef(filter);
+    const columnResizeCleanupRef = useRef<(() => void) | null>(null);
+    const [tableLayout, setTableLayout] = useState<PullRequestTableLayout>(
+        () => readPersistedPullRequestTableLayout(),
+    );
+    const [draggedColumnId, setDraggedColumnId] =
+        useState<PullRequestColumnId | null>(null);
+    const tableGridTemplate = useMemo(
+        () =>
+            tableLayout.order
+                .map((columnId) => `${tableLayout.widths[columnId]}px`)
+                .join(" "),
+        [tableLayout],
+    );
+    const tableMinWidth = useMemo(
+        () =>
+            tableLayout.order.reduce(
+                (total, columnId) => total + tableLayout.widths[columnId],
+                0,
+            ),
+        [tableLayout],
+    );
+
+    useEffect(() => {
+        return () => {
+            columnResizeCleanupRef.current?.();
+        };
+    }, []);
+
+    const persistTableLayout = useCallback((layout: PullRequestTableLayout) => {
+        setTableLayout(layout);
+        persistPullRequestTableLayout(layout);
+    }, []);
+
+    const handleColumnResizePointerDown = useCallback(
+        (
+            columnId: PullRequestColumnId,
+            event: ReactPointerEvent<HTMLDivElement>,
+        ) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            columnResizeCleanupRef.current?.();
+
+            const startX = event.clientX;
+            const startWidth = tableLayout.widths[columnId];
+            const previousCursor = document.body.style.cursor;
+            const previousUserSelect = document.body.style.userSelect;
+            let nextLayout = tableLayout;
+
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+
+            const handlePointerMove = (pointerEvent: PointerEvent) => {
+                const nextWidth = clampWidth(
+                    startWidth + pointerEvent.clientX - startX,
+                    PR_TABLE_COLUMN_MIN_WIDTHS[columnId],
+                    PR_TABLE_COLUMN_MAX_WIDTH,
+                );
+                nextLayout = {
+                    ...tableLayout,
+                    widths: {
+                        ...tableLayout.widths,
+                        [columnId]: Math.round(nextWidth),
+                    },
+                };
+                setTableLayout(nextLayout);
+            };
+
+            const cleanup = () => {
+                document.body.style.cursor = previousCursor;
+                document.body.style.userSelect = previousUserSelect;
+                window.removeEventListener("pointermove", handlePointerMove);
+                window.removeEventListener("pointerup", handlePointerUp);
+                window.removeEventListener("pointercancel", handlePointerUp);
+                columnResizeCleanupRef.current = null;
+                persistPullRequestTableLayout(nextLayout);
+            };
+
+            const handlePointerUp = () => {
+                cleanup();
+            };
+
+            columnResizeCleanupRef.current = cleanup;
+            window.addEventListener("pointermove", handlePointerMove);
+            window.addEventListener("pointerup", handlePointerUp);
+            window.addEventListener("pointercancel", handlePointerUp);
+        },
+        [tableLayout],
+    );
+
+    const handleColumnDragStart = useCallback(
+        (
+            columnId: PullRequestColumnId,
+            event: ReactDragEvent<HTMLDivElement>,
+        ) => {
+            setDraggedColumnId(columnId);
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", columnId);
+        },
+        [],
+    );
+
+    const handleColumnDrop = useCallback(
+        (
+            targetColumnId: PullRequestColumnId,
+            event: ReactDragEvent<HTMLDivElement>,
+        ) => {
+            event.preventDefault();
+            const sourceColumnId =
+                draggedColumnId ??
+                parsePullRequestColumnId(
+                    event.dataTransfer.getData("text/plain"),
+                );
+            setDraggedColumnId(null);
+            if (!sourceColumnId || sourceColumnId === targetColumnId) {
+                return;
+            }
+
+            persistTableLayout({
+                ...tableLayout,
+                order: movePullRequestColumn(
+                    tableLayout.order,
+                    sourceColumnId,
+                    targetColumnId,
+                ),
+            });
+        },
+        [draggedColumnId, persistTableLayout, tableLayout],
+    );
 
     useEffect(() => {
         if (!newHead && currentBranch) {
@@ -208,11 +390,7 @@ export function GitHubPullRequestsTabView({
             );
         });
 
-        return sortPullRequestsForCurrentBranch(
-            filteredPullRequests,
-            currentBranch,
-            tab.ref,
-        );
+        return sortPullRequestsNewestFirst(filteredPullRequests);
     }, [currentBranch, filter, pullRequests, query, tab.ref]);
 
     const currentBranchPullRequestCount = useMemo(
@@ -487,7 +665,7 @@ export function GitHubPullRequestsTabView({
                 ) : null}
             </div>
             {!isLoading && visiblePullRequests.length > 0 ? (
-                <div>
+                <div className="shell-scrollbar overflow-x-auto">
                     <div
                         className="sticky top-0 z-10 grid items-center px-3 py-1.5 text-[10px] font-semibold uppercase text-text-secondary"
                         style={{
@@ -495,17 +673,36 @@ export function GitHubPullRequestsTabView({
                             borderBottom:
                                 "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                             fontFamily: "var(--font-mono)",
-                            gridTemplateColumns: PR_TABLE_GRID,
+                            gridTemplateColumns: tableGridTemplate,
                             letterSpacing: "0.06em",
+                            minWidth: tableMinWidth,
                         }}
                     >
-                        <span className="min-w-0 truncate">#</span>
-                        <span className="min-w-0 truncate">Description</span>
-                        <span className="min-w-0 truncate">Branch</span>
-                        <span className="min-w-0 truncate">Date</span>
-                        <span className="min-w-0 truncate text-right">
-                            Action
-                        </span>
+                        {tableLayout.order.map((columnId) => (
+                            <PullRequestHeaderCell
+                                columnId={columnId}
+                                dragged={draggedColumnId === columnId}
+                                key={columnId}
+                                label={PR_TABLE_COLUMN_LABELS[columnId]}
+                                onDragEnd={() => setDraggedColumnId(null)}
+                                onDragOver={(event) => {
+                                    event.preventDefault();
+                                    event.dataTransfer.dropEffect = "move";
+                                }}
+                                onDragStart={(event) =>
+                                    handleColumnDragStart(columnId, event)
+                                }
+                                onDrop={(event) =>
+                                    handleColumnDrop(columnId, event)
+                                }
+                                onResizePointerDown={(event) =>
+                                    handleColumnResizePointerDown(
+                                        columnId,
+                                        event,
+                                    )
+                                }
+                            />
+                        ))}
                     </div>
                     {visiblePullRequests.map((pullRequest) => {
                         const isCurrentBranchPullRequest =
@@ -524,6 +721,13 @@ export function GitHubPullRequestsTabView({
                         const checksState = loadingKeys[checksKey]
                             ? "loading"
                             : (checks?.state ?? "unknown");
+                        const handleOpenPullRequest = () =>
+                            void openGitHubPullRequestTab({
+                                projectId: tab.projectId,
+                                pullRequestNumber: pullRequest.number,
+                                ref: tab.ref,
+                                worktreeId: tab.worktreeId ?? null,
+                            });
 
                         return (
                             <div
@@ -534,99 +738,23 @@ export function GitHubPullRequestsTabView({
                                         : "border-l-transparent text-text-secondary hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary",
                                 ].join(" ")}
                                 key={pullRequest.id}
-                                style={{ gridTemplateColumns: PR_TABLE_GRID }}
+                                style={{
+                                    gridTemplateColumns: tableGridTemplate,
+                                    minWidth: tableMinWidth,
+                                }}
                             >
-                                <button
-                                    className="contents text-left"
-                                    onClick={() =>
-                                        void openGitHubPullRequestTab({
-                                            projectId: tab.projectId,
-                                            pullRequestNumber:
-                                                pullRequest.number,
-                                            ref: tab.ref,
-                                            worktreeId: tab.worktreeId ?? null,
-                                        })
-                                    }
-                                    type="button"
-                                >
-                                    <div className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-text-secondary">
-                                        #{pullRequest.number}
-                                    </div>
-                                    <div className="min-w-0 overflow-hidden border-b border-border-subtle py-2.5 pr-3">
-                                        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-                                            <GitHubStatePill
-                                                tone={
-                                                    pullRequest.draft
-                                                        ? "draft"
-                                                        : pullRequest.mergedAt
-                                                          ? "merged"
-                                                          : pullRequest.state
-                                                }
-                                            >
-                                                {pullRequest.draft
-                                                    ? "draft"
-                                                    : pullRequest.mergedAt
-                                                      ? "merged"
-                                                      : pullRequest.state}
-                                            </GitHubStatePill>
-                                            <span className="min-w-0 flex-1 truncate text-[12px] text-text-primary">
-                                                {pullRequest.title}
-                                            </span>
-                                            <GitHubChecksPill
-                                                state={checksState}
-                                            />
-                                            {isCurrentBranchPullRequest ? (
-                                                <span className="shrink-0 rounded-md border border-[color-mix(in_srgb,var(--color-accent)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-text-primary">
-                                                    Current branch
-                                                </span>
-                                            ) : null}
-                                        </div>
-                                        {pullRequest.labels.length > 0 ? (
-                                            <div className="mt-1 flex flex-wrap gap-1">
-                                                {pullRequest.labels
-                                                    .slice(0, 4)
-                                                    .map((label) => (
-                                                        <GitHubLabelPill
-                                                            key={label.id}
-                                                            label={label}
-                                                        />
-                                                    ))}
-                                            </div>
-                                        ) : null}
-                                    </div>
-                                    <div
-                                        className="min-w-0 overflow-hidden border-b border-border-subtle py-2.5 pr-3 text-[11px] text-text-secondary"
-                                        style={{
-                                            fontFamily: "var(--font-mono)",
-                                        }}
-                                    >
-                                        <div className="truncate">
-                                            {pullRequest.head.label}
-                                        </div>
-                                        <div className="truncate">
-                                            into {pullRequest.base.label}
-                                        </div>
-                                    </div>
-                                    <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px] text-text-secondary">
-                                        <div>
-                                            {pullRequest.commentCount} comments
-                                        </div>
-                                        <div className="mt-0.5">
-                                            {formatGitHubRelativeTime(
-                                                pullRequest.updatedAt,
-                                            )}
-                                        </div>
-                                    </div>
-                                </button>
-                                <div className="flex items-center justify-end border-b border-border-subtle py-2.5">
-                                    <IdeActionButton
-                                        onClick={() =>
-                                            openGitHubWebUrl(pullRequest.url)
+                                {tableLayout.order.map((columnId) => (
+                                    <PullRequestTableCell
+                                        checksState={checksState}
+                                        columnId={columnId}
+                                        isCurrentBranchPullRequest={
+                                            isCurrentBranchPullRequest
                                         }
-                                    >
-                                        Open
-                                    </IdeActionButton>
-                                </div>
+                                        key={columnId}
+                                        onOpen={handleOpenPullRequest}
+                                        pullRequest={pullRequest}
+                                    />
+                                ))}
                             </div>
                         );
                     })}
@@ -636,7 +764,317 @@ export function GitHubPullRequestsTabView({
     );
 }
 
-const PR_TABLE_GRID = "42px minmax(78px,1.25fr) minmax(0,0.75fr) minmax(68px,0.5fr) 64px";
+function PullRequestHeaderCell({
+    columnId,
+    dragged,
+    label,
+    onDragEnd,
+    onDragOver,
+    onDragStart,
+    onDrop,
+    onResizePointerDown,
+}: {
+    readonly columnId: PullRequestColumnId;
+    readonly dragged: boolean;
+    readonly label: string;
+    readonly onDragEnd: () => void;
+    readonly onDragOver: (event: ReactDragEvent<HTMLDivElement>) => void;
+    readonly onDragStart: (event: ReactDragEvent<HTMLDivElement>) => void;
+    readonly onDrop: (event: ReactDragEvent<HTMLDivElement>) => void;
+    readonly onResizePointerDown: (
+        event: ReactPointerEvent<HTMLDivElement>,
+    ) => void;
+}) {
+    return (
+        <div
+            className={[
+                "relative min-w-0 pr-3",
+                columnId === "action" ? "text-right" : "",
+                dragged ? "opacity-55" : "",
+            ]
+                .filter(Boolean)
+                .join(" ")}
+            draggable
+            onDragEnd={onDragEnd}
+            onDragOver={onDragOver}
+            onDragStart={onDragStart}
+            onDrop={onDrop}
+            title="Drag to reorder. Drag the edge to resize."
+        >
+            <span className="block cursor-grab truncate active:cursor-grabbing">
+                {label}
+            </span>
+            <div
+                aria-label={`Resize ${label} column`}
+                className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize touch-none"
+                onPointerDown={onResizePointerDown}
+                role="separator"
+                title={`Resize ${label}`}
+            >
+                <div className="absolute left-1/2 top-1/2 h-4 w-px -translate-x-1/2 -translate-y-1/2 bg-border-strong" />
+            </div>
+        </div>
+    );
+}
+
+function PullRequestTableCell({
+    checksState,
+    columnId,
+    isCurrentBranchPullRequest,
+    onOpen,
+    pullRequest,
+}: {
+    readonly checksState: GitHubPullRequestChecksState | "loading";
+    readonly columnId: PullRequestColumnId;
+    readonly isCurrentBranchPullRequest: boolean;
+    readonly onOpen: () => void;
+    readonly pullRequest: GitHubPullRequestSummary;
+}) {
+    if (columnId === "action") {
+        return (
+            <div className="flex min-w-0 items-center justify-end border-b border-border-subtle py-2.5">
+                <IdeActionButton
+                    onClick={() => openGitHubWebUrl(pullRequest.url)}
+                >
+                    Open
+                </IdeActionButton>
+            </div>
+        );
+    }
+
+    return (
+        <button
+            className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-left"
+            onClick={onOpen}
+            type="button"
+        >
+            {renderPullRequestColumnContent({
+                checksState,
+                columnId,
+                isCurrentBranchPullRequest,
+                pullRequest,
+            })}
+        </button>
+    );
+}
+
+function renderPullRequestColumnContent({
+    checksState,
+    columnId,
+    isCurrentBranchPullRequest,
+    pullRequest,
+}: {
+    readonly checksState: GitHubPullRequestChecksState | "loading";
+    readonly columnId: Exclude<PullRequestColumnId, "action">;
+    readonly isCurrentBranchPullRequest: boolean;
+    readonly pullRequest: GitHubPullRequestSummary;
+}) {
+    if (columnId === "number") {
+        return (
+            <div className="truncate font-mono text-text-secondary">
+                #{pullRequest.number}
+            </div>
+        );
+    }
+
+    if (columnId === "branch") {
+        return (
+            <div
+                className="min-w-0 overflow-hidden text-[11px] text-text-secondary"
+                style={{
+                    fontFamily: "var(--font-mono)",
+                }}
+            >
+                <div className="truncate">{pullRequest.head.label}</div>
+                <div className="truncate">into {pullRequest.base.label}</div>
+            </div>
+        );
+    }
+
+    if (columnId === "date") {
+        return (
+            <div className="min-w-0 text-[11px] text-text-secondary">
+                <div>{pullRequest.commentCount} comments</div>
+                <div className="mt-0.5">
+                    {formatGitHubRelativeTime(pullRequest.updatedAt)}
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-w-0 overflow-hidden">
+            <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+                <GitHubStatePill
+                    tone={
+                        pullRequest.draft
+                            ? "draft"
+                            : pullRequest.mergedAt
+                              ? "merged"
+                              : pullRequest.state
+                    }
+                >
+                    {pullRequest.draft
+                        ? "draft"
+                        : pullRequest.mergedAt
+                          ? "merged"
+                          : pullRequest.state}
+                </GitHubStatePill>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-text-primary">
+                    {pullRequest.title}
+                </span>
+                <GitHubChecksPill state={checksState} />
+                {isCurrentBranchPullRequest ? (
+                    <span className="shrink-0 rounded-md border border-[color-mix(in_srgb,var(--color-accent)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-text-primary">
+                        Current branch
+                    </span>
+                ) : null}
+            </div>
+            {pullRequest.labels.length > 0 ? (
+                <div className="mt-1 flex flex-wrap gap-1">
+                    {pullRequest.labels.slice(0, 4).map((label) => (
+                        <GitHubLabelPill key={label.id} label={label} />
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function clampWidth(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+}
+
+function createDefaultPullRequestTableLayout(): PullRequestTableLayout {
+    return {
+        order: DEFAULT_PR_TABLE_COLUMN_ORDER,
+        widths: DEFAULT_PR_TABLE_COLUMN_WIDTHS,
+    };
+}
+
+function readPersistedPullRequestTableLayout(): PullRequestTableLayout {
+    const storage = getStorage();
+    if (!storage) {
+        return createDefaultPullRequestTableLayout();
+    }
+
+    const rawValue = storage.getItem(PR_TABLE_LAYOUT_STORAGE_KEY);
+    if (!rawValue) {
+        return createDefaultPullRequestTableLayout();
+    }
+
+    try {
+        return normalizePullRequestTableLayout(JSON.parse(rawValue));
+    } catch {
+        return createDefaultPullRequestTableLayout();
+    }
+}
+
+function persistPullRequestTableLayout(layout: PullRequestTableLayout): void {
+    const storage = getStorage();
+    if (!storage) {
+        return;
+    }
+
+    storage.setItem(
+        PR_TABLE_LAYOUT_STORAGE_KEY,
+        JSON.stringify({
+            ...layout,
+            updatedAt: Date.now(),
+            version: PR_TABLE_LAYOUT_VERSION,
+        }),
+    );
+}
+
+function normalizePullRequestTableLayout(raw: unknown): PullRequestTableLayout {
+    if (!raw || typeof raw !== "object") {
+        return createDefaultPullRequestTableLayout();
+    }
+
+    const version = (raw as { version?: unknown }).version;
+    const rawOrder = (raw as { order?: unknown }).order;
+    const rawWidths = (raw as { widths?: unknown }).widths;
+    if (version !== PR_TABLE_LAYOUT_VERSION || !Array.isArray(rawOrder)) {
+        return createDefaultPullRequestTableLayout();
+    }
+
+    const order = normalizePullRequestColumnOrder(rawOrder);
+    const widths = { ...DEFAULT_PR_TABLE_COLUMN_WIDTHS };
+    if (rawWidths && typeof rawWidths === "object") {
+        for (const columnId of PR_TABLE_COLUMN_IDS) {
+            const width = (rawWidths as Record<string, unknown>)[columnId];
+            if (typeof width !== "number" || !Number.isFinite(width)) {
+                continue;
+            }
+
+            widths[columnId] = Math.round(
+                clampWidth(
+                    width,
+                    PR_TABLE_COLUMN_MIN_WIDTHS[columnId],
+                    PR_TABLE_COLUMN_MAX_WIDTH,
+                ),
+            );
+        }
+    }
+
+    return { order, widths };
+}
+
+function normalizePullRequestColumnOrder(
+    rawOrder: readonly unknown[],
+): readonly PullRequestColumnId[] {
+    const seen = new Set<PullRequestColumnId>();
+    const order: PullRequestColumnId[] = [];
+    for (const item of rawOrder) {
+        const columnId = parsePullRequestColumnId(item);
+        if (!columnId || seen.has(columnId)) {
+            continue;
+        }
+
+        seen.add(columnId);
+        order.push(columnId);
+    }
+
+    for (const columnId of DEFAULT_PR_TABLE_COLUMN_ORDER) {
+        if (!seen.has(columnId)) {
+            order.push(columnId);
+        }
+    }
+
+    return order;
+}
+
+function parsePullRequestColumnId(
+    value: unknown,
+): PullRequestColumnId | null {
+    return typeof value === "string" &&
+        (PR_TABLE_COLUMN_IDS as readonly string[]).includes(value)
+        ? (value as PullRequestColumnId)
+        : null;
+}
+
+function movePullRequestColumn(
+    order: readonly PullRequestColumnId[],
+    sourceColumnId: PullRequestColumnId,
+    targetColumnId: PullRequestColumnId,
+): readonly PullRequestColumnId[] {
+    const nextOrder = order.filter((columnId) => columnId !== sourceColumnId);
+    const targetIndex = nextOrder.indexOf(targetColumnId);
+    if (targetIndex < 0) {
+        return order;
+    }
+
+    nextOrder.splice(targetIndex, 0, sourceColumnId);
+    return nextOrder;
+}
+
+function getStorage(): Storage | null {
+    try {
+        return globalThis.localStorage ?? null;
+    } catch {
+        return null;
+    }
+}
 
 function getPullRequestListState(
     filter: PullRequestFilter,
