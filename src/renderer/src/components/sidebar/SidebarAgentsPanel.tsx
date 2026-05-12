@@ -4,6 +4,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type CSSProperties,
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -724,7 +725,7 @@ export function SidebarAgentsPanel({
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="sidebar-agents-summary flex shrink-0 items-center gap-1 px-2 py-1.5">
+            <div className="sidebar-agents-summary flex shrink-0 items-center gap-1 px-2.5 py-2">
                 <span
                     className={[
                         "min-w-0 flex-1 truncate text-[11px] font-medium",
@@ -902,7 +903,7 @@ function SidebarAgentsSection({
                     </span>
                 </header>
             ) : null}
-            <ul className="flex flex-col gap-px">
+            <ul className="flex flex-col gap-0.5">
                 {groups.flatMap((group) => {
                     const rows = getVisibleSidebarHierarchyRows(
                         group,
@@ -916,6 +917,14 @@ function SidebarAgentsSection({
                                     : undefined
                             }
                             key={row.session.sessionId}
+                            style={
+                                row.depth > 0
+                                    ? ({
+                                          ["--sidebar-agents-depth"]:
+                                              row.depth,
+                                      } as CSSProperties)
+                                    : undefined
+                            }
                         >
                             <SidebarAgentsItem
                                 depth={row.depth}
@@ -1012,7 +1021,9 @@ function SidebarAgentsItem({
             : "text-(--diff-warn)"
         : "text-text-secondary";
     const indentStyle =
-        depth > 1 ? { marginLeft: `${Math.min(depth - 1, 3) * 10}px` } : undefined;
+        depth > 0
+            ? { paddingLeft: `${10 + Math.min(depth, 4) * 14}px` }
+            : undefined;
 
     const emitDrag = useCallback(
         (
@@ -1158,7 +1169,7 @@ function SidebarAgentsItem({
                                 ? "Expand subagents"
                                 : "Collapse subagents"
                         }
-                        className="sidebar-agents-collapse-button -ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                        className="sidebar-agents-collapse-button -ml-1 flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
                         onClick={(event) => {
                             event.stopPropagation();
                             onToggleCollapsed(session.sessionId);
@@ -1175,11 +1186,6 @@ function SidebarAgentsItem({
                     >
                         <ChevronIcon collapsed={isCollapsed} />
                     </button>
-                ) : depth === 0 ? (
-                    <span
-                        aria-hidden="true"
-                        className="h-4 w-4 shrink-0"
-                    />
                 ) : null}
                 <SidebarAgentActivityDot indicator={activity} />
                 {isRenaming ? (
