@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BrowserWindow, nativeTheme, screen } from "electron";
+import { BrowserWindow, nativeTheme, screen, shell } from "electron";
 
 import type { PersistedWindowState } from "@shared/ipc";
 
@@ -154,6 +154,14 @@ function createBaseWindow(options: {
         acrylicWindows.add(window);
     }
 
+    window.webContents.setWindowOpenHandler(({ url }) => {
+        if (openExternalHttpUrl(url)) {
+            return { action: "deny" };
+        }
+
+        return { action: "deny" };
+    });
+
     if (process.env.ELECTRON_RENDERER_URL) {
         const url = new URL(process.env.ELECTRON_RENDERER_URL);
         url.search = options.search ?? "";
@@ -177,6 +185,20 @@ function createBaseWindow(options: {
     }
 
     return window;
+}
+
+function openExternalHttpUrl(url: string): boolean {
+    try {
+        const parsedUrl = new URL(url);
+        if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+            return false;
+        }
+
+        void shell.openExternal(parsedUrl.toString());
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 export function createMainWindow(
