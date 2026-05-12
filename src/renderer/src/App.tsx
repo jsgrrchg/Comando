@@ -81,6 +81,14 @@ import {
     SidebarGitScopePicker,
 } from "./components/sidebar";
 import {
+    SIDEBAR_AGENT_DRAG_EVENT,
+    type SidebarAgentDragDetail,
+} from "./components/sidebar/sidebarAgentDragEvents";
+import {
+    SIDEBAR_GITHUB_DRAG_EVENT,
+    type SidebarGitHubDragDetail,
+} from "./components/sidebar/sidebarGitHubDragEvents";
+import {
     useRestorableSidebarScroll,
     type SidebarScrollPositionStore,
 } from "./components/sidebar/useRestorableSidebarScroll";
@@ -326,6 +334,7 @@ export function App() {
     const fileTreeBackendSearchRequestRef = useRef(0);
     const sidebarOverlayRef = useRef<HTMLDivElement | null>(null);
     const sidebarPointerRef = useRef<EdgePeekPointerPosition | null>(null);
+    const sidebarDragActiveRef = useRef(false);
     const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
     const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
@@ -940,6 +949,7 @@ export function App() {
     }, []);
 
     const hideSidebarOverlayImmediately = useCallback(() => {
+        sidebarDragActiveRef.current = false;
         setSidebarOverlayClosing(false);
         setSidebarOverlayVisible(false);
     }, []);
@@ -973,12 +983,127 @@ export function App() {
     );
 
     const hideSidebarOverlayWithAnimation = useCallback(() => {
-        if (sidebarOverlayClosing || isSidebarPointerInSafeZone()) {
+        if (
+            sidebarDragActiveRef.current ||
+            sidebarOverlayClosing ||
+            isSidebarPointerInSafeZone()
+        ) {
             return;
         }
 
         setSidebarOverlayClosing(true);
     }, [isSidebarPointerInSafeZone, sidebarOverlayClosing]);
+
+    const startSidebarOriginDrag = useCallback(() => {
+        sidebarDragActiveRef.current = true;
+        cancelSidebarOverlayClose();
+        setSidebarOverlayVisible(true);
+    }, [cancelSidebarOverlayClose]);
+
+    const finishSidebarOriginDrag = useCallback(() => {
+        if (!sidebarDragActiveRef.current) {
+            return;
+        }
+
+        sidebarDragActiveRef.current = false;
+        if (leftCollapsed) {
+            hideSidebarOverlayWithAnimation();
+        }
+    }, [hideSidebarOverlayWithAnimation, leftCollapsed]);
+
+    const isPointInsideSidebarOverlay = useCallback(
+        (point: EdgePeekPointerPosition) => {
+            const rect =
+                sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
+            if (!rect || (rect.width <= 0 && rect.height <= 0)) {
+                return false;
+            }
+
+            return (
+                point.x >= rect.left &&
+                point.x <= rect.right &&
+                point.y >= rect.top &&
+                point.y <= rect.bottom
+            );
+        },
+        [],
+    );
+
+    useEffect(() => {
+        const handleSidebarOriginDrag = (
+            detail: SidebarAgentDragDetail | SidebarGitHubDragDetail,
+        ) => {
+            if (!detail) {
+                return;
+            }
+
+            if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
+                sidebarPointerRef.current = {
+                    x: detail.x,
+                    y: detail.y,
+                };
+            }
+
+            if (detail.phase === "start" || detail.phase === "move") {
+                const startedInsideSidebarOverlay =
+                    detail.phase === "start" &&
+                    leftCollapsed &&
+                    sidebarOverlayVisible &&
+                    isPointInsideSidebarOverlay({
+                        x: detail.x,
+                        y: detail.y,
+                    });
+
+                if (
+                    !sidebarDragActiveRef.current &&
+                    !startedInsideSidebarOverlay
+                ) {
+                    return;
+                }
+
+                startSidebarOriginDrag();
+                return;
+            }
+
+            if (detail.phase === "end" || detail.phase === "cancel") {
+                finishSidebarOriginDrag();
+            }
+        };
+
+        const handleSidebarAgentDrag = (event: Event) => {
+            handleSidebarOriginDrag(
+                (event as CustomEvent<SidebarAgentDragDetail>).detail,
+            );
+        };
+
+        const handleSidebarGitHubDrag = (event: Event) => {
+            handleSidebarOriginDrag(
+                (event as CustomEvent<SidebarGitHubDragDetail>).detail,
+            );
+        };
+
+        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleSidebarAgentDrag);
+        window.addEventListener(
+            SIDEBAR_GITHUB_DRAG_EVENT,
+            handleSidebarGitHubDrag,
+        );
+        return () => {
+            window.removeEventListener(
+                SIDEBAR_AGENT_DRAG_EVENT,
+                handleSidebarAgentDrag,
+            );
+            window.removeEventListener(
+                SIDEBAR_GITHUB_DRAG_EVENT,
+                handleSidebarGitHubDrag,
+            );
+        };
+    }, [
+        finishSidebarOriginDrag,
+        isPointInsideSidebarOverlay,
+        leftCollapsed,
+        sidebarOverlayVisible,
+        startSidebarOriginDrag,
+    ]);
 
     useEffect(() => {
         if (!sidebarOverlayVisible) {
@@ -3204,6 +3329,14 @@ export function App() {
                         onMouseLeave={(event) => {
                             rememberSidebarPointer(event);
                             hideSidebarOverlayWithAnimation();
+                        }}
+                        onDragStartCapture={startSidebarOriginDrag}
+                        onDragEndCapture={(event) => {
+                            sidebarPointerRef.current = {
+                                x: event.clientX,
+                                y: event.clientY,
+                            };
+                            finishSidebarOriginDrag();
                         }}
                         onAnimationEnd={(event) => {
                             if (
