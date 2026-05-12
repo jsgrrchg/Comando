@@ -84,28 +84,52 @@ export function SidebarGitHubPanel({
     const authStatus = useGitHubStore((state) =>
         repoRef ? (state.authStatusByHost[repoRef.host] ?? null) : null,
     );
+    const [issueFilter, setIssueFilter] =
+        useState<SidebarIssueFilter>("open");
+    const [pullRequestFilter, setPullRequestFilter] =
+        useState<SidebarPullRequestFilter>("open");
+    const currentBranch = snapshot?.branch?.isDetached
+        ? null
+        : (snapshot?.branch?.name ?? null);
+    const requiredIssueListState = getIssueListState(issueFilter);
+    const requiredPullRequestListState =
+        getPullRequestListState(pullRequestFilter);
     const issues = useGitHubStore((state): readonly GitHubIssueSummary[] =>
         repoKey
-            ? (state.issuesByRepo[repoKey] ?? EMPTY_GITHUB_LIST)
+            ? (state.issuesByRepoAndState[repoKey]?.[
+                  requiredIssueListState
+              ] ??
+              (state.issueListStateByRepo[repoKey] === requiredIssueListState
+                  ? (state.issuesByRepo[repoKey] ?? EMPTY_GITHUB_LIST)
+                  : EMPTY_GITHUB_LIST))
             : EMPTY_GITHUB_LIST,
     );
     const hasIssueCache = useGitHubStore((state) =>
-        repoKey ? state.issuesByRepo[repoKey] !== undefined : false,
-    );
-    const issueListState = useGitHubStore((state) =>
-        repoKey ? (state.issueListStateByRepo[repoKey] ?? null) : null,
+        repoKey
+            ? state.issuesByRepoAndState[repoKey]?.[
+                  requiredIssueListState
+              ] !== undefined
+            : false,
     );
     const pullRequests = useGitHubStore(
         (state): readonly GitHubPullRequestSummary[] =>
             repoKey
-                ? (state.pullRequestsByRepo[repoKey] ?? EMPTY_GITHUB_LIST)
+                ? (state.pullRequestsByRepoAndState[repoKey]?.[
+                      requiredPullRequestListState
+                  ] ??
+                  (state.pullRequestListStateByRepo[repoKey] ===
+                  requiredPullRequestListState
+                      ? (state.pullRequestsByRepo[repoKey] ??
+                        EMPTY_GITHUB_LIST)
+                      : EMPTY_GITHUB_LIST))
                 : EMPTY_GITHUB_LIST,
     );
     const hasPullRequestCache = useGitHubStore((state) =>
-        repoKey ? state.pullRequestsByRepo[repoKey] !== undefined : false,
-    );
-    const pullRequestListState = useGitHubStore((state) =>
-        repoKey ? (state.pullRequestListStateByRepo[repoKey] ?? null) : null,
+        repoKey
+            ? state.pullRequestsByRepoAndState[repoKey]?.[
+                  requiredPullRequestListState
+              ] !== undefined
+            : false,
     );
     const isCheckingAuth = useGitHubStore((state) =>
         repoRef ? (state.loadingKeys[`auth:${repoRef.host}`] ?? false) : false,
@@ -144,17 +168,6 @@ export function SidebarGitHubPanel({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
-    const [issueFilter, setIssueFilter] =
-        useState<SidebarIssueFilter>("open");
-    const [pullRequestFilter, setPullRequestFilter] =
-        useState<SidebarPullRequestFilter>("open");
-
-    const currentBranch = snapshot?.branch?.isDetached
-        ? null
-        : (snapshot?.branch?.name ?? null);
-    const requiredIssueListState = getIssueListState(issueFilter);
-    const requiredPullRequestListState =
-        getPullRequestListState(pullRequestFilter);
     const normalizedSearch = (filter ?? "").trim().toLowerCase();
     const disabledReason = getDisabledReason({
         authError,
@@ -177,7 +190,7 @@ export function SidebarGitHubPanel({
         if (kind !== "issues" || !repoRef || !repoKey) {
             return;
         }
-        if (hasIssueCache && issueListState === requiredIssueListState) {
+        if (hasIssueCache) {
             return;
         }
 
@@ -188,11 +201,9 @@ export function SidebarGitHubPanel({
 
         async function loadIssues() {
             if (
-                useGitHubStore.getState().issuesByRepo[activeRepoKey] !==
-                    undefined &&
-                useGitHubStore.getState().issueListStateByRepo[
+                useGitHubStore.getState().issuesByRepoAndState[
                     activeRepoKey
-                ] === activeListState
+                ]?.[activeListState] !== undefined
             ) {
                 return;
             }
@@ -215,7 +226,6 @@ export function SidebarGitHubPanel({
         };
     }, [
         hasIssueCache,
-        issueListState,
         kind,
         refreshAuthStatus,
         refreshIssues,
@@ -228,10 +238,7 @@ export function SidebarGitHubPanel({
         if (kind !== "pull_requests" || !repoRef || !repoKey) {
             return;
         }
-        if (
-            hasPullRequestCache &&
-            pullRequestListState === requiredPullRequestListState
-        ) {
+        if (hasPullRequestCache) {
             return;
         }
 
@@ -242,11 +249,9 @@ export function SidebarGitHubPanel({
 
         async function loadPullRequests() {
             if (
-                useGitHubStore.getState().pullRequestsByRepo[activeRepoKey] !==
-                    undefined &&
-                useGitHubStore.getState().pullRequestListStateByRepo[
+                useGitHubStore.getState().pullRequestsByRepoAndState[
                     activeRepoKey
-                ] === activeListState
+                ]?.[activeListState] !== undefined
             ) {
                 return;
             }
@@ -270,7 +275,6 @@ export function SidebarGitHubPanel({
     }, [
         hasPullRequestCache,
         kind,
-        pullRequestListState,
         refreshAuthStatus,
         refreshPullRequests,
         repoKey,

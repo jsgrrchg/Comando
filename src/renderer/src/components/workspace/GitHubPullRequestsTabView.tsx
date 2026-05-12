@@ -118,8 +118,15 @@ export function GitHubPullRequestsTabView({
     const [newBase, setNewBase] = useState("main");
     const [newHead, setNewHead] = useState(currentBranch ?? "");
     const [newDraft, setNewDraft] = useState(true);
-    const pullRequests = useGitHubStore(
-        (state) => state.pullRequestsByRepo[repoKey] ?? EMPTY_GITHUB_LIST,
+    const requiredPullRequestListState = getPullRequestListState(filter);
+    const pullRequests = useGitHubStore((state) =>
+        state.pullRequestsByRepoAndState[repoKey]?.[
+            requiredPullRequestListState
+        ] ??
+        (state.pullRequestListStateByRepo[repoKey] ===
+        requiredPullRequestListState
+            ? (state.pullRequestsByRepo[repoKey] ?? EMPTY_GITHUB_LIST)
+            : EMPTY_GITHUB_LIST),
     );
     const pullRequestChecksByHeadSha = useGitHubStore(
         (state) => state.pullRequestChecksByRepo[repoKey] ?? EMPTY_GITHUB_RECORD,
@@ -159,7 +166,6 @@ export function GitHubPullRequestsTabView({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
-    const lastRequestedFilterRef = useRef(filter);
     const columnResizeCleanupRef = useRef<(() => void) | null>(null);
     const [tableLayout, setTableLayout] = useState<PullRequestTableLayout>(
         () => readPersistedPullRequestTableLayout(),
@@ -300,10 +306,11 @@ export function GitHubPullRequestsTabView({
         let cancelled = false;
 
         async function loadInitialData() {
-            if (
-                useGitHubStore.getState().pullRequestsByRepo[repoKey] !==
-                undefined
-            ) {
+            const cachedPullRequests =
+                useGitHubStore.getState().pullRequestsByRepoAndState[repoKey]?.[
+                    requiredPullRequestListState
+                ];
+            if (cachedPullRequests !== undefined) {
                 return;
             }
 
@@ -312,7 +319,7 @@ export function GitHubPullRequestsTabView({
                 (await refreshAuthStatus(tab.ref));
             if (!cancelled && status.state === "authenticated") {
                 await refreshPullRequests(tab.ref, {
-                    state: "open",
+                    state: requiredPullRequestListState,
                 });
             }
         }
@@ -322,33 +329,13 @@ export function GitHubPullRequestsTabView({
         return () => {
             cancelled = true;
         };
-    }, [refreshAuthStatus, refreshPullRequests, repoKey, tab.ref]);
-
-    useEffect(() => {
-        if (lastRequestedFilterRef.current === filter) {
-            return;
-        }
-        lastRequestedFilterRef.current = filter;
-
-        let cancelled = false;
-
-        async function refreshFilterData() {
-            const status =
-                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
-                (await refreshAuthStatus(tab.ref));
-            if (!cancelled && status.state === "authenticated") {
-                await refreshPullRequests(tab.ref, {
-                    state: getPullRequestListState(filter),
-                });
-            }
-        }
-
-        void refreshFilterData();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [filter, refreshAuthStatus, refreshPullRequests, tab.ref]);
+    }, [
+        refreshAuthStatus,
+        refreshPullRequests,
+        repoKey,
+        requiredPullRequestListState,
+        tab.ref,
+    ]);
 
     const visiblePullRequests = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();

@@ -667,13 +667,18 @@ export function GitHubCommentComposer({
 
 export function GitHubDraftPreview({
     body,
+    collapsible = false,
+    defaultExpanded = true,
     meta,
     title,
 }: {
     readonly body: string;
+    readonly collapsible?: boolean;
+    readonly defaultExpanded?: boolean;
     readonly meta?: ReactNode;
     readonly title: string;
 }) {
+    const [isExpanded, setIsExpanded] = useState(defaultExpanded);
     const normalizedTitle = title.trim();
     const normalizedBody = body.trim();
     if (!normalizedTitle && !normalizedBody && !meta) {
@@ -682,22 +687,38 @@ export function GitHubDraftPreview({
 
     return (
         <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
-            <GitHubSectionLabel>Preview before publishing</GitHubSectionLabel>
-            {normalizedTitle ? (
-                <div className="mt-2 text-[12px] font-semibold text-text-primary">
-                    {normalizedTitle}
-                </div>
-            ) : null}
-            {meta ? (
-                <div className="mt-1 text-[10px] text-text-secondary">
-                    {meta}
-                </div>
-            ) : null}
-            <div className="mt-2 max-h-48 overflow-y-auto text-[12px] leading-5 text-text-secondary">
-                <MarkdownContent
-                    content={normalizedBody || "_No description._"}
-                />
+            <div className="flex items-center justify-between gap-3">
+                <GitHubSectionLabel>Preview before publishing</GitHubSectionLabel>
+                {collapsible ? (
+                    <button
+                        aria-expanded={isExpanded}
+                        className="text-[10px] font-medium text-text-secondary transition hover:text-text-primary"
+                        onClick={() => setIsExpanded((value) => !value)}
+                        type="button"
+                    >
+                        {isExpanded ? "Hide preview" : "Show preview"}
+                    </button>
+                ) : null}
             </div>
+            {isExpanded ? (
+                <div>
+                    {normalizedTitle ? (
+                        <div className="mt-2 text-[12px] font-semibold text-text-primary">
+                            {normalizedTitle}
+                        </div>
+                    ) : null}
+                    {meta ? (
+                        <div className="mt-1 text-[10px] text-text-secondary">
+                            {meta}
+                        </div>
+                    ) : null}
+                    <div className="mt-2 max-h-48 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                        <MarkdownContent
+                            content={normalizedBody || "_No description._"}
+                        />
+                    </div>
+                </div>
+            ) : null}
         </div>
     );
 }

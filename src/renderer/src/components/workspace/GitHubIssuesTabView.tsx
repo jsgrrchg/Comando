@@ -92,8 +92,12 @@ export function GitHubIssuesTabView({
     const [newTitle, setNewTitle] = useState("");
     const [newBody, setNewBody] = useState("");
     const [newLabels, setNewLabels] = useState("");
-    const issues = useGitHubStore(
-        (state) => state.issuesByRepo[repoKey] ?? EMPTY_GITHUB_LIST,
+    const requiredIssueListState = getIssueListState(filter);
+    const issues = useGitHubStore((state) =>
+        state.issuesByRepoAndState[repoKey]?.[requiredIssueListState] ??
+        (state.issueListStateByRepo[repoKey] === requiredIssueListState
+            ? (state.issuesByRepo[repoKey] ?? EMPTY_GITHUB_LIST)
+            : EMPTY_GITHUB_LIST),
     );
     const authStatus = useGitHubStore(
         (state) => state.authStatusByHost[tab.ref.host] ?? null,
@@ -121,7 +125,6 @@ export function GitHubIssuesTabView({
     const openGitHubIssueTab = useWorkspaceStore(
         (state) => state.openGitHubIssueTab,
     );
-    const lastRequestedFilterRef = useRef(filter);
     const columnResizeCleanupRef = useRef<(() => void) | null>(null);
     const [tableLayout, setTableLayout] = useState<IssueTableLayout>(
         () => readPersistedIssueTableLayout(),
@@ -248,7 +251,11 @@ export function GitHubIssuesTabView({
         let cancelled = false;
 
         async function loadInitialData() {
-            if (useGitHubStore.getState().issuesByRepo[repoKey] !== undefined) {
+            const cachedIssues =
+                useGitHubStore.getState().issuesByRepoAndState[repoKey]?.[
+                    requiredIssueListState
+                ];
+            if (cachedIssues !== undefined) {
                 return;
             }
 
@@ -257,7 +264,7 @@ export function GitHubIssuesTabView({
                 (await refreshAuthStatus(tab.ref));
             if (!cancelled && status.state === "authenticated") {
                 await refreshIssues(tab.ref, {
-                    state: "open",
+                    state: requiredIssueListState,
                 });
             }
         }
@@ -267,33 +274,13 @@ export function GitHubIssuesTabView({
         return () => {
             cancelled = true;
         };
-    }, [refreshAuthStatus, refreshIssues, repoKey, tab.ref]);
-
-    useEffect(() => {
-        if (lastRequestedFilterRef.current === filter) {
-            return;
-        }
-        lastRequestedFilterRef.current = filter;
-
-        let cancelled = false;
-
-        async function refreshFilterData() {
-            const status =
-                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
-                (await refreshAuthStatus(tab.ref));
-            if (!cancelled && status.state === "authenticated") {
-                await refreshIssues(tab.ref, {
-                    state: getIssueListState(filter),
-                });
-            }
-        }
-
-        void refreshFilterData();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [filter, refreshAuthStatus, refreshIssues, tab.ref]);
+    }, [
+        refreshAuthStatus,
+        refreshIssues,
+        repoKey,
+        requiredIssueListState,
+        tab.ref,
+    ]);
 
     const visibleIssues = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();
@@ -464,6 +451,8 @@ export function GitHubIssuesTabView({
                         <div className="mt-3">
                             <GitHubDraftPreview
                                 body={newBody}
+                                collapsible
+                                defaultExpanded={false}
                                 meta={
                                     parseCsv(newLabels)?.length
                                         ? `Labels: ${parseCsv(newLabels)?.join(", ")}`

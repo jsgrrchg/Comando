@@ -40,6 +40,12 @@ type GitHubIssueListState = NonNullable<GitHubListIssuesInput["state"]>;
 type GitHubPullRequestListState = NonNullable<
     GitHubListPullRequestsInput["state"]
 >;
+type GitHubIssuesByListState = Partial<
+    Record<GitHubIssueListState, readonly GitHubIssueSummary[]>
+>;
+type GitHubPullRequestsByListState = Partial<
+    Record<GitHubPullRequestListState, readonly GitHubPullRequestSummary[]>
+>;
 type GitHubCreateIssueOptions = Omit<
     GitHubCreateIssueInput,
     "clientRequestId" | "repository"
@@ -74,6 +80,7 @@ export interface GitHubStoreState {
     >;
     readonly issueListStateByRepo: Record<string, GitHubIssueListState>;
     readonly issuesByRepo: Record<string, readonly GitHubIssueSummary[]>;
+    readonly issuesByRepoAndState: Record<string, GitHubIssuesByListState>;
     readonly loadingKeys: Record<string, boolean>;
     readonly mutatingKeys: Record<string, boolean>;
     readonly pullRequestDetailsByRepo: Record<
@@ -87,6 +94,10 @@ export interface GitHubStoreState {
     readonly pullRequestsByRepo: Record<
         string,
         readonly GitHubPullRequestSummary[]
+    >;
+    readonly pullRequestsByRepoAndState: Record<
+        string,
+        GitHubPullRequestsByListState
     >;
     readonly pullRequestListStateByRepo: Record<
         string,
@@ -274,12 +285,14 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
     issueDetailsByRepo: {},
     issueListStateByRepo: {},
     issuesByRepo: {},
+    issuesByRepoAndState: {},
     loadingKeys: {},
     mutatingKeys: {},
     pullRequestDetailsByRepo: {},
     pullRequestChecksByRepo: {},
     pullRequestListStateByRepo: {},
     pullRequestsByRepo: {},
+    pullRequestsByRepoAndState: {},
     workflowRunsByRepo: {},
     workflowRunJobsByRepo: {},
     workflowJobLogsByRepo: {},
@@ -300,6 +313,10 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                 repoKey,
             ),
             issuesByRepo: omitKey(state.issuesByRepo, repoKey),
+            issuesByRepoAndState: omitKey(
+                state.issuesByRepoAndState,
+                repoKey,
+            ),
             loadingKeys: omitKeysWithPrefix(state.loadingKeys, repoKey),
             mutatingKeys: omitKeysWithPrefix(state.mutatingKeys, repoKey),
             pullRequestDetailsByRepo: omitKey(
@@ -315,6 +332,10 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                 repoKey,
             ),
             pullRequestsByRepo: omitKey(state.pullRequestsByRepo, repoKey),
+            pullRequestsByRepoAndState: omitKey(
+                state.pullRequestsByRepoAndState,
+                repoKey,
+            ),
             workflowRunsByRepo: omitKey(state.workflowRunsByRepo, repoKey),
             workflowRunJobsByRepo: omitKey(
                 state.workflowRunJobsByRepo,
@@ -524,6 +545,13 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                     ...state.issuesByRepo,
                     [repoKey]: result.issues,
                 },
+                issuesByRepoAndState: {
+                    ...state.issuesByRepoAndState,
+                    [repoKey]: {
+                        ...(state.issuesByRepoAndState[repoKey] ?? {}),
+                        [listState]: result.issues,
+                    },
+                },
             }));
             return result.issues;
         });
@@ -545,6 +573,13 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                 pullRequestsByRepo: {
                     ...state.pullRequestsByRepo,
                     [repoKey]: result.pullRequests,
+                },
+                pullRequestsByRepoAndState: {
+                    ...state.pullRequestsByRepoAndState,
+                    [repoKey]: {
+                        ...(state.pullRequestsByRepoAndState[repoKey] ?? {}),
+                        [listState]: result.pullRequests,
+                    },
                 },
             }));
             return result.pullRequests;
@@ -925,12 +960,14 @@ export function resetGitHubStoreForTests(): void {
         issueDetailsByRepo: {},
         issueListStateByRepo: {},
         issuesByRepo: {},
+        issuesByRepoAndState: {},
         loadingKeys: {},
         mutatingKeys: {},
         pullRequestDetailsByRepo: {},
         pullRequestChecksByRepo: {},
         pullRequestListStateByRepo: {},
         pullRequestsByRepo: {},
+        pullRequestsByRepoAndState: {},
         workflowRunsByRepo: {},
         workflowRunJobsByRepo: {},
         workflowJobLogsByRepo: {},
@@ -1090,8 +1127,17 @@ function upsertIssue(
     set((state) => ({
         issuesByRepo: {
             ...state.issuesByRepo,
-            [repoKey]: upsertByNumber(state.issuesByRepo[repoKey] ?? [], issue),
+            [repoKey]: upsertIssueForListState(
+                state.issuesByRepo[repoKey] ?? [],
+                issue,
+                state.issueListStateByRepo[repoKey] ?? "all",
+            ),
         },
+        issuesByRepoAndState: upsertIssueInStateCaches(
+            state.issuesByRepoAndState,
+            repoKey,
+            issue,
+        ),
     }));
 }
 
@@ -1111,11 +1157,17 @@ function setIssueDetail(
         },
         issuesByRepo: {
             ...state.issuesByRepo,
-            [repoKey]: upsertByNumber(
+            [repoKey]: upsertIssueForListState(
                 state.issuesByRepo[repoKey] ?? [],
                 detail,
+                state.issueListStateByRepo[repoKey] ?? "all",
             ),
         },
+        issuesByRepoAndState: upsertIssueInStateCaches(
+            state.issuesByRepoAndState,
+            repoKey,
+            detail,
+        ),
     }));
 }
 
@@ -1150,6 +1202,11 @@ function appendIssueComment(
                     number,
                 ),
             },
+            issuesByRepoAndState: updateIssueStateCaches(
+                state.issuesByRepoAndState,
+                repoKey,
+                (entries) => incrementCommentCount(entries, number),
+            ),
         };
     });
 }
@@ -1163,11 +1220,17 @@ function upsertPullRequest(
     set((state) => ({
         pullRequestsByRepo: {
             ...state.pullRequestsByRepo,
-            [repoKey]: upsertByNumber(
+            [repoKey]: upsertPullRequestForListState(
                 state.pullRequestsByRepo[repoKey] ?? [],
                 pullRequest,
+                state.pullRequestListStateByRepo[repoKey] ?? "all",
             ),
         },
+        pullRequestsByRepoAndState: upsertPullRequestInStateCaches(
+            state.pullRequestsByRepoAndState,
+            repoKey,
+            pullRequest,
+        ),
     }));
 }
 
@@ -1187,11 +1250,17 @@ function setPullRequestDetail(
         },
         pullRequestsByRepo: {
             ...state.pullRequestsByRepo,
-            [repoKey]: upsertByNumber(
+            [repoKey]: upsertPullRequestForListState(
                 state.pullRequestsByRepo[repoKey] ?? [],
                 detail,
+                state.pullRequestListStateByRepo[repoKey] ?? "all",
             ),
         },
+        pullRequestsByRepoAndState: upsertPullRequestInStateCaches(
+            state.pullRequestsByRepoAndState,
+            repoKey,
+            detail,
+        ),
     }));
 }
 
@@ -1226,6 +1295,11 @@ function appendPullRequestComment(
                     number,
                 ),
             },
+            pullRequestsByRepoAndState: updatePullRequestStateCaches(
+                state.pullRequestsByRepoAndState,
+                repoKey,
+                (entries) => incrementCommentCount(entries, number),
+            ),
         };
     });
 }
@@ -1244,6 +1318,122 @@ function upsertRelease(
     }));
 }
 
+const GITHUB_ISSUE_LIST_STATES: readonly GitHubIssueListState[] = [
+    "open",
+    "closed",
+    "all",
+];
+const GITHUB_PULL_REQUEST_LIST_STATES: readonly GitHubPullRequestListState[] = [
+    "open",
+    "closed",
+    "all",
+];
+
+function upsertIssueInStateCaches(
+    caches: Record<string, GitHubIssuesByListState>,
+    repoKey: string,
+    issue: GitHubIssueSummary,
+): Record<string, GitHubIssuesByListState> {
+    return updateIssueStateCaches(caches, repoKey, (entries, listState) =>
+        upsertIssueForListState(entries, issue, listState),
+    );
+}
+
+function updateIssueStateCaches(
+    caches: Record<string, GitHubIssuesByListState>,
+    repoKey: string,
+    updateEntries: (
+        entries: readonly GitHubIssueSummary[],
+        listState: GitHubIssueListState,
+    ) => readonly GitHubIssueSummary[],
+): Record<string, GitHubIssuesByListState> {
+    const repoCaches = caches[repoKey];
+    if (!repoCaches) {
+        return caches;
+    }
+
+    const nextRepoCaches: GitHubIssuesByListState = { ...repoCaches };
+    for (const listState of GITHUB_ISSUE_LIST_STATES) {
+        const entries = repoCaches[listState];
+        if (entries) {
+            nextRepoCaches[listState] = updateEntries(entries, listState);
+        }
+    }
+
+    return {
+        ...caches,
+        [repoKey]: nextRepoCaches,
+    };
+}
+
+function upsertIssueForListState(
+    entries: readonly GitHubIssueSummary[],
+    issue: GitHubIssueSummary,
+    listState: GitHubIssueListState,
+): readonly GitHubIssueSummary[] {
+    if (listState !== "all" && issue.state !== listState) {
+        return removeByNumber(entries, issue.number);
+    }
+
+    return upsertByNumber(entries, issue);
+}
+
+function upsertPullRequestInStateCaches(
+    caches: Record<string, GitHubPullRequestsByListState>,
+    repoKey: string,
+    pullRequest: GitHubPullRequestSummary,
+): Record<string, GitHubPullRequestsByListState> {
+    return updatePullRequestStateCaches(caches, repoKey, (entries, listState) =>
+        upsertPullRequestForListState(entries, pullRequest, listState),
+    );
+}
+
+function updatePullRequestStateCaches(
+    caches: Record<string, GitHubPullRequestsByListState>,
+    repoKey: string,
+    updateEntries: (
+        entries: readonly GitHubPullRequestSummary[],
+        listState: GitHubPullRequestListState,
+    ) => readonly GitHubPullRequestSummary[],
+): Record<string, GitHubPullRequestsByListState> {
+    const repoCaches = caches[repoKey];
+    if (!repoCaches) {
+        return caches;
+    }
+
+    const nextRepoCaches: GitHubPullRequestsByListState = { ...repoCaches };
+    for (const listState of GITHUB_PULL_REQUEST_LIST_STATES) {
+        const entries = repoCaches[listState];
+        if (entries) {
+            nextRepoCaches[listState] = updateEntries(entries, listState);
+        }
+    }
+
+    return {
+        ...caches,
+        [repoKey]: nextRepoCaches,
+    };
+}
+
+function upsertPullRequestForListState(
+    entries: readonly GitHubPullRequestSummary[],
+    pullRequest: GitHubPullRequestSummary,
+    listState: GitHubPullRequestListState,
+): readonly GitHubPullRequestSummary[] {
+    if (listState === "open" && pullRequest.state !== "open") {
+        return removeByNumber(entries, pullRequest.number);
+    }
+    if (
+        listState === "closed" &&
+        pullRequest.state !== "closed" &&
+        pullRequest.state !== "merged"
+    ) {
+        return removeByNumber(entries, pullRequest.number);
+    }
+
+    return upsertByNumber(entries, pullRequest);
+}
+
 function upsertByNumber<T extends { readonly number: number }>(
     entries: readonly T[],
     nextEntry: T,
@@ -1258,6 +1448,13 @@ function upsertByNumber<T extends { readonly number: number }>(
     return entries.map((entry, index) =>
         index === existingIndex ? nextEntry : entry,
     );
+}
+
+function removeByNumber<T extends { readonly number: number }>(
+    entries: readonly T[],
+    number: number,
+): readonly T[] {
+    return entries.filter((entry) => entry.number !== number);
 }
 
 function upsertById<T extends { readonly id: number }>(
