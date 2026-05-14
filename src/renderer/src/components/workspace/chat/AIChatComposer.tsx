@@ -1417,7 +1417,7 @@ export function AIChatComposer({
         <div
             ref={shellRef}
             data-ai-composer-drop-zone="true"
-            className="relative flex flex-col"
+            className="relative flex select-none flex-col"
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
             onDragEnter={(e) => {
@@ -1529,7 +1529,7 @@ export function AIChatComposer({
             <div className="relative min-h-0 flex-1">
                 {isEmpty && !disabled ? (
                     <div
-                        className="pointer-events-none absolute left-3.5 top-3"
+                        className="pointer-events-none absolute left-3.5 top-3 select-none"
                         style={{
                             color: "var(--color-text-secondary)",
                             fontFamily: composerFontFamily,
@@ -1550,7 +1550,7 @@ export function AIChatComposer({
                     autoCapitalize="off"
                     autoCorrect="off"
                     ref={composerRef}
-                    className="app-no-drag h-full w-full outline-none"
+                    className="app-no-drag h-full w-full select-text outline-none"
                     contentEditable={!disabled}
                     onInput={handleInput}
                     onContextMenu={handleContextMenu}
@@ -1566,6 +1566,7 @@ export function AIChatComposer({
                         minHeight: MIN_COMPOSER_HEIGHT,
                         overflowY: "auto",
                         padding: "10px 14px",
+                        userSelect: "text",
                         whiteSpace: "pre-wrap",
                     }}
                     suppressContentEditableWarning
