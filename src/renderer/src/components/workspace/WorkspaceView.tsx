@@ -2198,7 +2198,7 @@ function WorkspacePaneView({
                                         {isPinned ? null : (
                                             <span
                                                 className={[
-                                                    "ml-0.5 rounded px-1 text-[13px] transition hover:bg-text-secondary/10 hover:text-text-primary",
+                                                    "-mr-1.5 ml-3 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[14px] leading-none transition-all duration-75 hover:bg-text-secondary/15 hover:text-text-primary active:scale-90 active:bg-text-secondary/25",
                                                     isActive
                                                         ? "text-text-secondary opacity-70"
                                                         : "text-text-secondary opacity-0 group-hover:opacity-70",
