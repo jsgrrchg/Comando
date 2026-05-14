@@ -128,6 +128,7 @@ const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
+const PROJECT_TREE_PRIMARY_CONTEXT = "__primary__";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 
 type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
@@ -258,6 +259,16 @@ export const ChatTabView = memo(function ChatTabView({
               null)
             : null,
     );
+    const loadedProjectTreeNodes = useProjectsStore((state) => {
+        if (!tab.projectId) {
+            return null;
+        }
+
+        const contextKey = `${tab.projectId}::${
+            tab.worktreeId ?? PROJECT_TREE_PRIMARY_CONTEXT
+        }`;
+        return state.treeNodes[contextKey] ?? null;
+    });
     const gitSnapshot = useGitStore((state) => {
         if (!tab.projectId) {
             return null;
@@ -766,6 +777,25 @@ export const ChatTabView = memo(function ChatTabView({
             });
         },
         [addDraftFileContext, tab.projectId, tab.sessionId],
+    );
+    const canRenderRawFileReference = useCallback(
+        (
+            _rawReference: string,
+            reference: ResolvedProjectFileReference,
+        ): boolean => {
+            if (!loadedProjectTreeNodes) {
+                return false;
+            }
+
+            return Object.values(loadedProjectTreeNodes).some((nodes) =>
+                nodes.some(
+                    (node) =>
+                        node.kind === "file" &&
+                        node.relativePath === reference.relativePath,
+                ),
+            );
+        },
+        [loadedProjectTreeNodes],
     );
     const diffZoom = DEFAULT_AI_DIFF_ZOOM;
     const hasComposerContext =
@@ -2170,6 +2200,7 @@ export const ChatTabView = memo(function ChatTabView({
                 ) : null}
 
                 <ChatTimeline
+                    canRenderRawFileReference={canRenderRawFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
                     elapsed={elapsed}
@@ -3297,6 +3328,7 @@ function ImageAttachmentChip(props: {
 }
 
 const ChatTimeline = memo(function ChatTimeline({
+    canRenderRawFileReference,
     chatFontFamily,
     chatFontSize,
     elapsed,
@@ -3316,6 +3348,10 @@ const ChatTimeline = memo(function ChatTimeline({
     timelineContentRef,
     worktreeId,
 }: {
+    readonly canRenderRawFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly elapsed: string;
@@ -3366,6 +3402,7 @@ const ChatTimeline = memo(function ChatTimeline({
                 style={{ fontFamily: chatFontFamily }}
             >
                 <ChatTimelineHistory
+                    canRenderRawFileReference={canRenderRawFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={chatFontSize}
                     historyRows={historyRows}
@@ -3380,6 +3417,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     worktreeId={worktreeId}
                 />
                 <ChatTimelineLiveTail
+                    canRenderRawFileReference={canRenderRawFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={chatFontSize}
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
@@ -3402,6 +3440,7 @@ const ChatTimeline = memo(function ChatTimeline({
 ChatTimeline.displayName = "ChatTimeline";
 
 const ChatTimelineHistory = memo(function ChatTimelineHistory({
+    canRenderRawFileReference,
     chatFontFamily,
     chatFontSize,
     historyRows,
@@ -3415,6 +3454,10 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     resolveFileReference,
     worktreeId,
 }: {
+    readonly canRenderRawFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly ChatTimelineRow[];
@@ -3443,6 +3486,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
 }) {
     return historyRows.map((row) => (
         <ChatTimelineRowView
+            canRenderRawFileReference={canRenderRawFileReference}
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             key={row.id}
@@ -3463,6 +3507,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
 ChatTimelineHistory.displayName = "ChatTimelineHistory";
 
 const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
+    canRenderRawFileReference,
     chatFontFamily,
     chatFontSize,
     onAddFileReferenceToChat,
@@ -3476,6 +3521,10 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     row,
     worktreeId,
 }: {
+    readonly canRenderRawFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly onAddFileReferenceToChat?: (
@@ -3508,6 +3557,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
 
     return (
         <ChatTimelineRowView
+            canRenderRawFileReference={canRenderRawFileReference}
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             key={row.id}
@@ -3528,6 +3578,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
 ChatTimelineLiveTail.displayName = "ChatTimelineLiveTail";
 
 const ChatTimelineRowView = memo(function ChatTimelineRowView({
+    canRenderRawFileReference,
     chatFontFamily,
     chatFontSize,
     onAddFileReferenceToChat,
@@ -3541,6 +3592,10 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     row,
     worktreeId,
 }: {
+    readonly canRenderRawFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly onAddFileReferenceToChat?: (
@@ -3570,6 +3625,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     if (row.kind === "message") {
         return (
             <ChatMessageRow
+                canRenderRawFileReference={canRenderRawFileReference}
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 message={row.message}

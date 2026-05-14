@@ -120,6 +120,7 @@ describe("MarkdownContent", () => {
         ].join("\n");
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
                 content,
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -155,6 +156,7 @@ describe("MarkdownContent", () => {
         ].join(" ");
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
                 content,
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -182,6 +184,7 @@ describe("MarkdownContent", () => {
     it("keeps URLs intact when they contain path-like diagnostic text", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
                 content:
                     "See https://example.com/src/app.ts:12 before src/app.ts:12.",
                 onOpenFile: () => undefined,
@@ -198,6 +201,24 @@ describe("MarkdownContent", () => {
         );
         expect(markup.match(/<button/g)?.length).toBe(1);
         expect(markup).toContain('title="src/app.ts:12"');
+    });
+
+    it("keeps raw diagnostic references as text when the project cannot confirm them", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => false,
+                content: "Example path src/app.ts:12 should not be clickable.",
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup).toContain("src/app.ts:12");
+        expect(markup).not.toContain('title="src/app.ts:12"');
+        expect(markup.match(/<button/g)?.length ?? 0).toBe(0);
     });
 
     it("renders conservative git and structured symbol pills", () => {

@@ -39,6 +39,10 @@ import {
 } from "./projectFileReferences";
 
 interface MarkdownContentProps {
+    readonly canRenderRawFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly content: string;
     readonly chatFontSize?: number;
     readonly chatFontFamily?: string;
@@ -244,6 +248,10 @@ function isMarkdownFenceClosingLine(
 /* ─── Inline rendering ─── */
 
 interface InlineOptions {
+    readonly canRenderRawFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -578,7 +586,8 @@ function renderRawTextFileReferencePills(
         const resolvedReference = resolveFileReference(reference);
         if (
             !resolvedReference ||
-            !isRenderableRawTextFileReference(reference, resolvedReference)
+            !isRenderableRawTextFileReference(reference, resolvedReference) ||
+            !options.canRenderRawFileReference?.(reference, resolvedReference)
         ) {
             continue;
         }
@@ -1525,6 +1534,7 @@ function TextBlock({
 /* ─── Main component ─── */
 
 export const MarkdownContent = memo(function MarkdownContent({
+    canRenderRawFileReference,
     content,
     chatFontFamily,
     chatFontSize = 14,
@@ -1613,6 +1623,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     const inlineOptions: InlineOptions | undefined = useMemo(() => {
         if (!onOpenFile || !resolveFileReference) return undefined;
         return {
+            canRenderRawFileReference,
             onAddFileReferenceToChat,
             onFileContextMenu: handleFileReferenceContextMenu,
             metrics: getChatPillMetrics(chatFontSize),
@@ -1621,6 +1632,7 @@ export const MarkdownContent = memo(function MarkdownContent({
             resolveFileReference,
         };
     }, [
+        canRenderRawFileReference,
         chatFontSize,
         handleFileReferenceContextMenu,
         onAddFileReferenceToChat,
