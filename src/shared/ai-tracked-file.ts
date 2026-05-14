@@ -97,6 +97,8 @@ function buildTrackedFile(
     options: {
         readonly currentText?: string;
         readonly diffBase?: string;
+        readonly hunks?: readonly AiDiffHunk[];
+        readonly hunksAreAnchored?: boolean;
         readonly identityKey?: string;
         readonly kind?: AiTrackedFile["kind"];
         readonly newText?: string | null;
@@ -126,14 +128,22 @@ function buildTrackedFile(
         options.kind ??
         inferTrackedFileKindFromTexts(previousPath, oldText, newText);
     const canRecompute = kind === "create" || oldText !== null;
+    const hunksAreAnchored =
+        options.hunksAreAnchored ?? file.hunksAreAnchored === true;
+    const hunks =
+        options.hunks ??
+        (hunksAreAnchored
+            ? [...file.hunks]
+            : canRecompute
+              ? computeDiffHunks(diffBase, currentText, path)
+              : [...file.hunks]);
 
     return {
         ...file,
         currentText,
         diffBase,
-        hunks: canRecompute
-            ? computeDiffHunks(diffBase, currentText, path)
-            : [...file.hunks],
+        hunks,
+        hunksAreAnchored: hunksAreAnchored ? true : undefined,
         identityKey: options.identityKey ?? file.identityKey,
         kind,
         newText,
@@ -247,6 +257,14 @@ function mergePendingTrackedFile(
     const previousPath =
         syncedExistingTrackedFile.previousPath ??
         syncedNextTrackedFile.previousPath;
+    const anchoredHunks =
+        syncedExistingTrackedFile.hunksAreAnchored === true &&
+        syncedNextTrackedFile.hunksAreAnchored === true
+            ? [
+                  ...syncedExistingTrackedFile.hunks,
+                  ...syncedNextTrackedFile.hunks,
+              ]
+            : undefined;
     const diffBase = getTrackedFileDiffBase(syncedExistingTrackedFile);
     const existingCurrent = getTrackedFileCurrentText(syncedExistingTrackedFile);
     const currentText = reconcileCurrentText({
@@ -275,6 +293,8 @@ function mergePendingTrackedFile(
     return buildTrackedFile(syncedNextTrackedFile, {
         currentText,
         diffBase,
+        hunks: anchoredHunks,
+        hunksAreAnchored: anchoredHunks ? true : undefined,
         identityKey: syncedExistingTrackedFile.identityKey,
         kind,
         newText,
@@ -416,6 +436,7 @@ export function resolveTrackedFileHunks(
     return buildTrackedFile(syncedTrackedFile, {
         currentText: nextCurrentText,
         diffBase: nextDiffBase,
+        hunksAreAnchored: false,
         kind: inferTrackedFileKindFromTexts(
             syncedTrackedFile.previousPath,
             nextOldText,

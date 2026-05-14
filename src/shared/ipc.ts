@@ -2033,6 +2033,7 @@ export interface AiTrackedFile {
     readonly diffBase?: string;
     readonly currentText?: string;
     readonly hunks: readonly AiDiffHunk[];
+    readonly hunksAreAnchored?: boolean;
     readonly isText: boolean;
     readonly kind: "create" | "delete" | "move" | "update";
     readonly newText: string | null;

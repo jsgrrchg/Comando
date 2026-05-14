@@ -4,6 +4,7 @@ import type { AiTrackedFile } from "./ipc";
 
 import {
     computeDiffHunks,
+    resolveTrackedFileHunks,
     syncTrackedFile,
     upsertTrackedFile,
 } from "./ai-tracked-file";
@@ -71,6 +72,42 @@ describe("syncTrackedFile", () => {
 
         expect(syncTrackedFile(trackedFile).hunks).toEqual(
             computeDiffHunks(oldText, newText, trackedFile.path),
+        );
+    });
+});
+
+describe("resolveTrackedFileHunks", () => {
+    it("recomputes pending hunks after resolving an anchored hunk", () => {
+        const path = "src/foo.ts";
+        const oldText = "one\ntwo\nthree\nfour";
+        const newText = "ONE\ntwo\nTHREE\nfour";
+        const trackedFile = createTrackedFile({
+            currentText: newText,
+            diffBase: oldText,
+            hunks: computeDiffHunks(oldText, newText, path),
+            hunksAreAnchored: true,
+            identityKey: path,
+            newText,
+            oldText,
+            path,
+        });
+        const firstHunk = trackedFile.hunks[0];
+
+        if (!firstHunk) {
+            throw new Error("Expected an anchored hunk.");
+        }
+
+        const resolved = resolveTrackedFileHunks(
+            trackedFile,
+            [firstHunk.id],
+            "reject",
+        );
+
+        expect(resolved).not.toBeNull();
+        expect(resolved?.currentText).toBe("one\ntwo\nTHREE\nfour");
+        expect(resolved?.hunksAreAnchored).toBeUndefined();
+        expect(resolved?.hunks).toEqual(
+            computeDiffHunks(oldText, "one\ntwo\nTHREE\nfour", path),
         );
     });
 });

@@ -67,6 +67,52 @@ function createClaudeEditUpdateContext(toolCallId = "tool-1") {
     };
 }
 
+describe("Claude structured patch review diffs", () => {
+    it("uses real file line numbers from structured patch metadata for snippet diffs", () => {
+        const diff = __testing.diffToAiFileDiff(
+            {
+                type: "diff",
+                path: "src/example.ts",
+                oldText: "before\nold value\nafter",
+                newText: "before\nnew value\nafter",
+                _meta: {
+                    comandoClaudeStructuredPatch: [
+                        {
+                            oldStart: 40,
+                            oldLines: 3,
+                            newStart: 42,
+                            newLines: 3,
+                            lines: [
+                                " before",
+                                "-old value",
+                                "+new value",
+                                " after",
+                            ],
+                        },
+                    ],
+                },
+            } as never,
+            "edit",
+        );
+
+        expect(diff.hunks).toHaveLength(1);
+        expect(diff.hunks[0]).toMatchObject({
+            oldStart: 40,
+            oldCount: 3,
+            newStart: 42,
+            newCount: 3,
+            visualStartLine: 42,
+            visualEndLine: 44,
+        });
+        expect(diff.hunks[0]?.lines).toEqual([
+            expect.objectContaining({ text: "before", type: "context" }),
+            expect.objectContaining({ text: "old value", type: "remove" }),
+            expect.objectContaining({ text: "new value", type: "add" }),
+            expect.objectContaining({ text: "after", type: "context" }),
+        ]);
+    });
+});
+
 describe("AiService tracked file review merging", () => {
     it("accumulates consecutive updates for the same file", () => {
         const firstTrackedFile = createTrackedFile({
@@ -770,6 +816,98 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
             "alpha\nbeta\nINSERTED\ngamma\ndelta\n",
         );
         // The terminal status should have cleared the dedup entry.
+        expect(liveSession.processedDiffPaths.has("edit-1")).toBe(false);
+    });
+
+    it("processes multiple diffs for the same path in one update while preserving later re-emission dedup", () => {
+        const liveSession = makeLiveSession();
+        const snapshot = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                toolCallId: "edit-1",
+                kind: "edit",
+                status: "in_progress",
+                title: "Edit foo.ts",
+                content: [
+                    {
+                        type: "diff",
+                        path: "foo.ts",
+                        oldText: "oldValue",
+                        newText: "newValue",
+                        _meta: {
+                            comandoClaudeStructuredPatch: [
+                                {
+                                    oldStart: 5,
+                                    oldLines: 1,
+                                    newStart: 5,
+                                    newLines: 1,
+                                    lines: ["-oldValue", "+newValue"],
+                                },
+                            ],
+                        },
+                    },
+                    {
+                        type: "diff",
+                        path: "foo.ts",
+                        oldText: "oldValue",
+                        newText: "newValue",
+                        _meta: {
+                            comandoClaudeStructuredPatch: [
+                                {
+                                    oldStart: 20,
+                                    oldLines: 1,
+                                    newStart: 20,
+                                    newLines: 1,
+                                    lines: ["-oldValue", "+newValue"],
+                                },
+                            ],
+                        },
+                    },
+                ],
+                _meta: { claudeCode: { toolName: "Edit" } },
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:01.000Z",
+        );
+
+        expect(snapshot.toolActivity[0]?.diffs).toHaveLength(2);
+        expect(snapshot.toolActivity[0]?.diffs.map((diff) => diff.hunks[0]?.oldStart)).toEqual([
+            5,
+            20,
+        ]);
+        expect(snapshot.trackedFiles).toHaveLength(1);
+        expect(snapshot.trackedFiles[0]?.hunks.map((hunk) => hunk.oldStart)).toEqual([
+            5,
+            20,
+        ]);
+
+        const afterReEmission = __testing.mapToolCallUpdate(
+            liveSession,
+            snapshot,
+            {
+                toolCallId: "edit-1",
+                kind: "edit",
+                status: "completed",
+                title: "Edit foo.ts",
+                content: [
+                    {
+                        type: "diff",
+                        path: "foo.ts",
+                        oldText: "oldValue",
+                        newText: "newValue",
+                    },
+                ],
+                _meta: { claudeCode: { toolName: "Edit" } },
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:02.000Z",
+        );
+
+        expect(afterReEmission.trackedFiles[0]?.hunks.map((hunk) => hunk.oldStart)).toEqual([
+            5,
+            20,
+        ]);
         expect(liveSession.processedDiffPaths.has("edit-1")).toBe(false);
     });
 

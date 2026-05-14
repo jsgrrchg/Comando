@@ -692,6 +692,8 @@ interface DiffToolResponse {
   structuredPatch?: DiffToolResponseHunk[];
 }
 
+const COMANDO_CLAUDE_STRUCTURED_PATCH_META_KEY = "comandoClaudeStructuredPatch";
+
 /**
  * Builds diff ToolUpdate content from the structured toolResponse provided by
  * the PostToolUse hook for diff-producing tools (Edit, Write). Unlike parsing
@@ -710,7 +712,8 @@ export function toolUpdateFromDiffToolResponse(toolResponse: unknown): {
   const content: ToolCallContent[] = [];
   const locations: ToolCallLocation[] = [];
 
-  for (const { lines, newStart } of response.structuredPatch) {
+  for (const hunk of response.structuredPatch) {
+    const { lines, newStart } = hunk;
     const oldText: string[] = [];
     const newText: string[] = [];
     for (const line of lines) {
@@ -730,6 +733,9 @@ export function toolUpdateFromDiffToolResponse(toolResponse: unknown): {
         path: response.filePath,
         oldText: oldText.join("\n") || null,
         newText: newText.join("\n"),
+        _meta: {
+          [COMANDO_CLAUDE_STRUCTURED_PATCH_META_KEY]: [hunk],
+        },
       });
     }
   }

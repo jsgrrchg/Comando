@@ -9,6 +9,7 @@ import type {
     ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
 import type {
+    AiDiffHunk,
     AiGeneratedImage,
     AiFileDiff,
     AiToolActivity,
@@ -48,6 +49,16 @@ import { debugBenignError } from "@main/observability/logging";
 
 const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
 const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
+const COMANDO_CLAUDE_STRUCTURED_PATCH_META_KEY =
+    "comandoClaudeStructuredPatch";
+
+interface ClaudeStructuredPatchHunk {
+    readonly oldStart: number;
+    readonly oldLines: number;
+    readonly newStart: number;
+    readonly newLines: number;
+    readonly lines: readonly string[];
+}
 
 interface DiffResolutionContext {
     readonly meta: unknown;
@@ -130,6 +141,7 @@ export function mapToolCallUpdate(
     const normalizeDiffPath = (candidatePath: string) =>
         normalizeTrackedDiffPath(liveSession, candidatePath);
     const shouldCollectReviewDiffs = !isSubagentBreadcrumbToolUpdate(update);
+    const pathsProcessedInThisUpdate = new Set<string>();
     const updateLocations =
         update.locations?.map(normalizeToolCallLocation) ?? null;
     const readInputLocations = deriveReadInputLocation(
@@ -190,9 +202,13 @@ export function mapToolCallUpdate(
               const normalizedPath = normalizeDiffPath(entry.path);
               const processedPaths =
                   liveSession.processedDiffPaths.get(update.toolCallId);
-              if (processedPaths?.has(normalizedPath)) {
+              if (
+                  processedPaths?.has(normalizedPath) &&
+                  !pathsProcessedInThisUpdate.has(normalizedPath)
+              ) {
                   return acc;
               }
+              pathsProcessedInThisUpdate.add(normalizedPath);
               if (processedPaths) {
                   processedPaths.add(normalizedPath);
               } else {
@@ -438,9 +454,15 @@ export function diffToAiFileDiff(
     const kind = inferDiffKind(diff, toolKind, previousPath);
     const oldText = normalizeOldText(diff.oldText ?? null);
     const newText = normalizeNewText(kind, diff.newText ?? null);
+    const structuredPatchHunks = claudeStructuredPatchToAiDiffHunks(
+        diff._meta,
+        path,
+    );
 
     return {
-        hunks: computeTextDiffHunks(path, oldText, newText),
+        hunks:
+            structuredPatchHunks ??
+            computeTextDiffHunks(path, oldText, newText),
         isText: true,
         kind,
         newText,
@@ -461,6 +483,8 @@ function diffToTrackedFile(
         candidatePath,
 ): AiTrackedFile {
     const fileDiff = diffToAiFileDiff(diff, toolKind, normalizePath);
+    const hunksAreAnchored =
+        claudeStructuredPatchToAiDiffHunks(diff._meta, fileDiff.path) !== null;
 
     return syncTrackedFile({
         identityKey: fileDiff.previousPath
@@ -469,6 +493,7 @@ function diffToTrackedFile(
         currentText: fileDiff.newText ?? "",
         diffBase: fileDiff.oldText ?? "",
         hunks: fileDiff.hunks,
+        hunksAreAnchored,
         isText: true,
         kind: fileDiff.kind,
         newText: fileDiff.newText,
@@ -754,6 +779,109 @@ function imageGenerationContent(image: AiGeneratedImage): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
+}
+
+function readClaudeStructuredPatchHunks(
+    meta: unknown,
+): readonly ClaudeStructuredPatchHunk[] | null {
+    if (!isRecord(meta)) {
+        return null;
+    }
+
+    const value = meta[COMANDO_CLAUDE_STRUCTURED_PATCH_META_KEY];
+    const candidates = Array.isArray(value) ? value : [value];
+    const hunks = candidates.flatMap((candidate) => {
+        if (!isRecord(candidate) || !Array.isArray(candidate.lines)) {
+            return [];
+        }
+
+        const oldStart = readFiniteNumber(candidate.oldStart);
+        const oldLines = readFiniteNumber(candidate.oldLines);
+        const newStart = readFiniteNumber(candidate.newStart);
+        const newLines = readFiniteNumber(candidate.newLines);
+        if (
+            oldStart === null ||
+            oldLines === null ||
+            newStart === null ||
+            newLines === null
+        ) {
+            return [];
+        }
+
+        return [
+            {
+                lines: candidate.lines.filter(
+                    (line): line is string => typeof line === "string",
+                ),
+                newLines: Math.max(0, Math.trunc(newLines)),
+                newStart: Math.max(1, Math.trunc(newStart)),
+                oldLines: Math.max(0, Math.trunc(oldLines)),
+                oldStart: Math.max(1, Math.trunc(oldStart)),
+            },
+        ];
+    });
+
+    return hunks.length > 0 ? hunks : null;
+}
+
+function readFiniteNumber(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function claudeStructuredPatchToAiDiffHunks(
+    meta: unknown,
+    path: string,
+): readonly AiDiffHunk[] | null {
+    const structuredPatch = readClaudeStructuredPatchHunks(meta);
+    if (!structuredPatch) {
+        return null;
+    }
+
+    const hunks = structuredPatch.flatMap((hunk, hunkIndex) => {
+        const hunkId = `claude-structured:${path}:${hunk.oldStart}:${hunk.newStart}:${hunkIndex}`;
+        const lines = hunk.lines.flatMap((rawLine, lineIndex) => {
+            if (rawLine === "\\ No newline at end of file") {
+                return [];
+            }
+
+            const marker = rawLine[0];
+            const text = marker === "+" || marker === "-" || marker === " "
+                ? rawLine.slice(1)
+                : rawLine;
+            const type: AiDiffHunk["lines"][number]["type"] = marker === "+"
+                ? "add"
+                : marker === "-"
+                  ? "remove"
+                  : "context";
+
+            return [
+                {
+                    id: `${hunkId}:line:${lineIndex}`,
+                    text,
+                    type,
+                },
+            ];
+        });
+
+        if (lines.length === 0) {
+            return [];
+        }
+
+        return [
+            {
+                id: hunkId,
+                lines,
+                newCount: hunk.newLines,
+                newStart: hunk.newStart,
+                oldCount: hunk.oldLines,
+                oldStart: hunk.oldStart,
+                visualEndLine: hunk.newStart + Math.max(hunk.newLines, 1) - 1,
+                visualStartLine: hunk.newStart,
+            },
+        ];
+    });
+
+    return hunks.length > 0 ? hunks : null;
 }
 
 function stringifyJson(value: unknown): string | null {

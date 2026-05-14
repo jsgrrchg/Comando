@@ -1574,6 +1574,8 @@ function normalizeTrackedFiles(value: unknown): readonly AiTrackedFile[] {
                         ? entry.kind
                         : "update",
                 hunks: normalizeDiffHunks(entry.hunks),
+                hunksAreAnchored:
+                    entry.hunksAreAnchored === true ? true : undefined,
                 newText:
                     typeof entry.newText === "string" ? entry.newText : null,
                 oldText:
