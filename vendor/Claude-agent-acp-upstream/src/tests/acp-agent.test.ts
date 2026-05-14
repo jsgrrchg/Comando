@@ -1033,17 +1033,6 @@ describe("toolUpdateFromDiffToolResponse", () => {
           path: "/Users/test/project/test.txt",
           oldText: "context before\nold line\ncontext after",
           newText: "context before\nnew line\ncontext after",
-          _meta: {
-            comandoClaudeStructuredPatch: [
-              {
-                oldStart: 1,
-                oldLines: 3,
-                newStart: 1,
-                newLines: 3,
-                lines: [" context before", "-old line", "+new line", " context after"],
-              },
-            ],
-          },
         },
       ],
       locations: [{ path: "/Users/test/project/test.txt", line: 1 }],
@@ -1078,34 +1067,12 @@ describe("toolUpdateFromDiffToolResponse", () => {
           path: "/Users/test/project/file.ts",
           oldText: "oldValue",
           newText: "newValue",
-          _meta: {
-            comandoClaudeStructuredPatch: [
-              {
-                oldStart: 5,
-                oldLines: 1,
-                newStart: 5,
-                newLines: 1,
-                lines: ["-oldValue", "+newValue"],
-              },
-            ],
-          },
         },
         {
           type: "diff",
           path: "/Users/test/project/file.ts",
           oldText: "oldValue",
           newText: "newValue",
-          _meta: {
-            comandoClaudeStructuredPatch: [
-              {
-                oldStart: 20,
-                oldLines: 1,
-                newStart: 20,
-                newLines: 1,
-                lines: ["-oldValue", "+newValue"],
-              },
-            ],
-          },
         },
       ],
       locations: [
@@ -1136,17 +1103,6 @@ describe("toolUpdateFromDiffToolResponse", () => {
           path: "/Users/test/project/file.ts",
           oldText: "context\nremoved line",
           newText: "context",
-          _meta: {
-            comandoClaudeStructuredPatch: [
-              {
-                oldStart: 10,
-                oldLines: 2,
-                newStart: 10,
-                newLines: 1,
-                lines: [" context", "-removed line"],
-              },
-            ],
-          },
         },
       ],
       locations: [{ path: "/Users/test/project/file.ts", line: 10 }],

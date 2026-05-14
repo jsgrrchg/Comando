@@ -49,8 +49,6 @@ import { debugBenignError } from "@main/observability/logging";
 
 const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
 const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
-const COMANDO_CLAUDE_STRUCTURED_PATCH_META_KEY =
-    "comandoClaudeStructuredPatch";
 
 interface ClaudeStructuredPatchHunk {
     readonly oldStart: number;
@@ -58,6 +56,13 @@ interface ClaudeStructuredPatchHunk {
     readonly newStart: number;
     readonly newLines: number;
     readonly lines: readonly string[];
+}
+
+interface ClaudeStructuredPatchDiffCandidate {
+    readonly hunk: ClaudeStructuredPatchHunk;
+    readonly newText: string;
+    readonly oldText: string | null;
+    readonly path: string;
 }
 
 interface DiffResolutionContext {
@@ -152,12 +157,25 @@ export function mapToolCallUpdate(
         updateLocations,
         readInputLocations,
     );
+    const anchoredHunksByContentIndex =
+        content && shouldCollectReviewDiffs
+            ? buildClaudeStructuredPatchHunksByContentIndex(
+                  content,
+                  update._meta,
+                  normalizeDiffPath,
+              )
+            : new Map<number, readonly AiDiffHunk[]>();
 
     const nextActivity = {
         ...(existing?.action ? { action: existing.action } : {}),
         createdAt: existing?.createdAt ?? updatedAt,
         diffs: content && shouldCollectReviewDiffs
-            ? collectDiffs(content, toolKind, normalizeDiffPath)
+            ? collectDiffs(
+                  content,
+                  toolKind,
+                  normalizeDiffPath,
+                  anchoredHunksByContentIndex,
+              )
             : (existing?.diffs ?? []),
         exitCode,
         id: update.toolCallId,
@@ -195,7 +213,7 @@ export function mapToolCallUpdate(
         update.status === "completed" || update.status === "failed";
 
     const nextTrackedFiles = content && shouldCollectReviewDiffs
-        ? content.reduce((acc, entry) => {
+        ? content.reduce((acc, entry, contentIndex) => {
               if (entry.type !== "diff") {
                   return acc;
               }
@@ -243,6 +261,7 @@ export function mapToolCallUpdate(
                       toolKind,
                       update.toolCallId,
                       updatedAt,
+                      anchoredHunksByContentIndex.get(contentIndex) ?? null,
                       normalizeDiffPath,
                   ),
               );
@@ -385,10 +404,21 @@ function collectDiffs(
     toolKind: string,
     normalizePath: (candidatePath: string) => string = (candidatePath) =>
         candidatePath,
+    anchoredHunksByContentIndex: ReadonlyMap<
+        number,
+        readonly AiDiffHunk[]
+    > = new Map(),
 ): readonly AiFileDiff[] {
-    return (content ?? []).flatMap((entry) =>
+    return (content ?? []).flatMap((entry, contentIndex) =>
         entry.type === "diff"
-            ? [diffToAiFileDiff(entry, toolKind, normalizePath)]
+            ? [
+                  diffToAiFileDiff(
+                      entry,
+                      toolKind,
+                      normalizePath,
+                      anchoredHunksByContentIndex.get(contentIndex) ?? null,
+                  ),
+              ]
             : [],
     );
 }
@@ -441,6 +471,7 @@ export function diffToAiFileDiff(
     toolKind: string,
     normalizePath: (candidatePath: string) => string = (candidatePath) =>
         candidatePath,
+    anchoredHunks: readonly AiDiffHunk[] | null = null,
 ): AiFileDiff {
     const previousPathValue = readDiffMetaString(
         diff._meta,
@@ -454,15 +485,9 @@ export function diffToAiFileDiff(
     const kind = inferDiffKind(diff, toolKind, previousPath);
     const oldText = normalizeOldText(diff.oldText ?? null);
     const newText = normalizeNewText(kind, diff.newText ?? null);
-    const structuredPatchHunks = claudeStructuredPatchToAiDiffHunks(
-        diff._meta,
-        path,
-    );
 
     return {
-        hunks:
-            structuredPatchHunks ??
-            computeTextDiffHunks(path, oldText, newText),
+        hunks: anchoredHunks ?? computeTextDiffHunks(path, oldText, newText),
         isText: true,
         kind,
         newText,
@@ -479,12 +504,17 @@ function diffToTrackedFile(
     toolKind: string,
     toolCallId: string,
     updatedAt: string,
+    anchoredHunks: readonly AiDiffHunk[] | null,
     normalizePath: (candidatePath: string) => string = (candidatePath) =>
         candidatePath,
 ): AiTrackedFile {
-    const fileDiff = diffToAiFileDiff(diff, toolKind, normalizePath);
-    const hunksAreAnchored =
-        claudeStructuredPatchToAiDiffHunks(diff._meta, fileDiff.path) !== null;
+    const fileDiff = diffToAiFileDiff(
+        diff,
+        toolKind,
+        normalizePath,
+        anchoredHunks,
+    );
+    const hunksAreAnchored = anchoredHunks !== null;
 
     return syncTrackedFile({
         identityKey: fileDiff.previousPath
@@ -781,47 +811,155 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
 }
 
-function readClaudeStructuredPatchHunks(
+function buildClaudeStructuredPatchHunksByContentIndex(
+    content: readonly ToolCallContent[],
     meta: unknown,
-): readonly ClaudeStructuredPatchHunk[] | null {
-    if (!isRecord(meta)) {
+    normalizePath: (candidatePath: string) => string,
+): Map<number, readonly AiDiffHunk[]> {
+    const candidates = readClaudeStructuredPatchDiffCandidates(
+        meta,
+        normalizePath,
+    );
+    const anchoredHunksByContentIndex = new Map<
+        number,
+        readonly AiDiffHunk[]
+    >();
+    if (candidates.length === 0) {
+        return anchoredHunksByContentIndex;
+    }
+
+    const usedCandidateIndexes = new Set<number>();
+    content.forEach((entry, contentIndex) => {
+        if (entry.type !== "diff") {
+            return;
+        }
+
+        const path = normalizePath(entry.path);
+        const oldText = entry.oldText ?? null;
+        const newText = entry.newText;
+        const candidateIndex = candidates.findIndex(
+            (candidate, index) =>
+                !usedCandidateIndexes.has(index) &&
+                candidate.path === path &&
+                candidate.oldText === oldText &&
+                candidate.newText === newText,
+        );
+        if (candidateIndex === -1) {
+            return;
+        }
+
+        usedCandidateIndexes.add(candidateIndex);
+        const candidate = candidates[candidateIndex];
+        const hunks = claudeStructuredPatchToAiDiffHunks(
+            [candidate.hunk],
+            path,
+        );
+        if (hunks) {
+            anchoredHunksByContentIndex.set(contentIndex, hunks);
+        }
+    });
+
+    return anchoredHunksByContentIndex;
+}
+
+function readClaudeStructuredPatchDiffCandidates(
+    meta: unknown,
+    normalizePath: (candidatePath: string) => string,
+): readonly ClaudeStructuredPatchDiffCandidate[] {
+    if (!isRecord(meta) || !isRecord(meta.claudeCode)) {
+        return [];
+    }
+
+    const toolName = meta.claudeCode.toolName;
+    if (toolName !== "Edit" && toolName !== "Write") {
+        return [];
+    }
+
+    const toolResponse = meta.claudeCode.toolResponse;
+    if (!isRecord(toolResponse)) {
+        return [];
+    }
+
+    const filePath =
+        typeof toolResponse.filePath === "string" &&
+        toolResponse.filePath.trim().length > 0
+            ? toolResponse.filePath
+            : null;
+    if (!filePath || !Array.isArray(toolResponse.structuredPatch)) {
+        return [];
+    }
+
+    const path = normalizePath(filePath);
+    return toolResponse.structuredPatch.flatMap((candidate) => {
+        const hunk = readClaudeStructuredPatchHunk(candidate);
+        if (!hunk) {
+            return [];
+        }
+
+        const diffTexts = claudeStructuredPatchHunkToDiffTexts(hunk);
+        if (!diffTexts) {
+            return [];
+        }
+
+        return [{ ...diffTexts, hunk, path }];
+    });
+}
+
+function readClaudeStructuredPatchHunk(
+    candidate: unknown,
+): ClaudeStructuredPatchHunk | null {
+    if (!isRecord(candidate) || !Array.isArray(candidate.lines)) {
         return null;
     }
 
-    const value = meta[COMANDO_CLAUDE_STRUCTURED_PATCH_META_KEY];
-    const candidates = Array.isArray(value) ? value : [value];
-    const hunks = candidates.flatMap((candidate) => {
-        if (!isRecord(candidate) || !Array.isArray(candidate.lines)) {
-            return [];
+    const oldStart = readFiniteNumber(candidate.oldStart);
+    const oldLines = readFiniteNumber(candidate.oldLines);
+    const newStart = readFiniteNumber(candidate.newStart);
+    const newLines = readFiniteNumber(candidate.newLines);
+    if (
+        oldStart === null ||
+        oldLines === null ||
+        newStart === null ||
+        newLines === null
+    ) {
+        return null;
+    }
+
+    return {
+        lines: candidate.lines.filter(
+            (line): line is string => typeof line === "string",
+        ),
+        newLines: Math.max(0, Math.trunc(newLines)),
+        newStart: Math.max(1, Math.trunc(newStart)),
+        oldLines: Math.max(0, Math.trunc(oldLines)),
+        oldStart: Math.max(1, Math.trunc(oldStart)),
+    };
+}
+
+function claudeStructuredPatchHunkToDiffTexts(
+    hunk: ClaudeStructuredPatchHunk,
+): Pick<ClaudeStructuredPatchDiffCandidate, "newText" | "oldText"> | null {
+    const oldText: string[] = [];
+    const newText: string[] = [];
+    for (const line of hunk.lines) {
+        if (line.startsWith("-")) {
+            oldText.push(line.slice(1));
+        } else if (line.startsWith("+")) {
+            newText.push(line.slice(1));
+        } else {
+            oldText.push(line.slice(1));
+            newText.push(line.slice(1));
         }
+    }
 
-        const oldStart = readFiniteNumber(candidate.oldStart);
-        const oldLines = readFiniteNumber(candidate.oldLines);
-        const newStart = readFiniteNumber(candidate.newStart);
-        const newLines = readFiniteNumber(candidate.newLines);
-        if (
-            oldStart === null ||
-            oldLines === null ||
-            newStart === null ||
-            newLines === null
-        ) {
-            return [];
-        }
+    if (oldText.length === 0 && newText.length === 0) {
+        return null;
+    }
 
-        return [
-            {
-                lines: candidate.lines.filter(
-                    (line): line is string => typeof line === "string",
-                ),
-                newLines: Math.max(0, Math.trunc(newLines)),
-                newStart: Math.max(1, Math.trunc(newStart)),
-                oldLines: Math.max(0, Math.trunc(oldLines)),
-                oldStart: Math.max(1, Math.trunc(oldStart)),
-            },
-        ];
-    });
-
-    return hunks.length > 0 ? hunks : null;
+    return {
+        newText: newText.join("\n"),
+        oldText: oldText.join("\n") || null,
+    };
 }
 
 function readFiniteNumber(value: unknown): number | null {
@@ -829,16 +967,11 @@ function readFiniteNumber(value: unknown): number | null {
 }
 
 function claudeStructuredPatchToAiDiffHunks(
-    meta: unknown,
+    structuredPatch: readonly ClaudeStructuredPatchHunk[],
     path: string,
 ): readonly AiDiffHunk[] | null {
-    const structuredPatch = readClaudeStructuredPatchHunks(meta);
-    if (!structuredPatch) {
-        return null;
-    }
-
     const hunks = structuredPatch.flatMap((hunk, hunkIndex) => {
-        const hunkId = `claude-structured:${path}:${hunk.oldStart}:${hunk.newStart}:${hunkIndex}`;
+        const hunkId = `anchored-diff:${path}:${hunk.oldStart}:${hunk.newStart}:${hunkIndex}`;
         const lines = hunk.lines.flatMap((rawLine, lineIndex) => {
             if (rawLine === "\\ No newline at end of file") {
                 return [];

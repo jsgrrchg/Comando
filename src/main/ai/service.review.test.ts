@@ -69,32 +69,82 @@ function createClaudeEditUpdateContext(toolCallId = "tool-1") {
 
 describe("Claude structured patch review diffs", () => {
     it("uses real file line numbers from structured patch metadata for snippet diffs", () => {
-        const diff = __testing.diffToAiFileDiff(
+        const snapshot = __testing.mapToolCallUpdate(
             {
-                type: "diff",
-                path: "src/example.ts",
-                oldText: "before\nold value\nafter",
-                newText: "before\nnew value\nafter",
+                cwd: process.cwd(),
+                projectRoot: process.cwd(),
+                processedDiffPaths: new Map<string, Set<string>>(),
+                terminalOutputBuffers: new Map<string, string>(),
+            },
+            {
+                availableCommands: [],
+                configOptions: [],
+                lastError: null,
+                messages: [],
+                modeId: null,
+                modes: [],
+                modelId: null,
+                models: [],
+                pendingPermission: null,
+                pendingUserInput: null,
+                plan: null,
+                projectId: null,
+                runtimeId: "claude",
+                runtimeSessionId: null,
+                sessionId: "session-1",
+                status: "idle",
+                title: "Test",
+                tokenUsage: null,
+                toolActivity: [],
+                trackedFiles: [],
+                updatedAt: "2026-04-20T12:00:00.000Z",
+                worktreeId: null,
+            },
+            {
+                content: [
+                    {
+                        type: "diff",
+                        path: "src/example.ts",
+                        oldText: "before\nold value\nafter",
+                        newText: "before\nnew value\nafter",
+                    },
+                ],
+                kind: "edit",
+                status: "completed",
+                title: "Edit src/example.ts",
+                toolCallId: "tool-1",
                 _meta: {
-                    comandoClaudeStructuredPatch: [
-                        {
-                            oldStart: 40,
-                            oldLines: 3,
-                            newStart: 42,
-                            newLines: 3,
-                            lines: [
-                                " before",
-                                "-old value",
-                                "+new value",
-                                " after",
+                    claudeCode: {
+                        toolName: "Edit",
+                        toolResponse: {
+                            filePath: "src/example.ts",
+                            structuredPatch: [
+                                {
+                                    oldStart: 40,
+                                    oldLines: 3,
+                                    newStart: 42,
+                                    newLines: 3,
+                                    lines: [
+                                        " before",
+                                        "-old value",
+                                        "+new value",
+                                        " after",
+                                    ],
+                                },
                             ],
                         },
-                    ],
+                    },
                 },
             } as never,
-            "edit",
+            "tool_call_update",
+            "2026-04-20T12:00:01.000Z",
         );
 
+        const diff = snapshot.toolActivity[0]?.diffs[0];
+        expect(diff).toBeDefined();
+        if (!diff) {
+            throw new Error("Expected Claude structured patch diff");
+        }
         expect(diff.hunks).toHaveLength(1);
         expect(diff.hunks[0]).toMatchObject({
             oldStart: 40,
@@ -110,6 +160,11 @@ describe("Claude structured patch review diffs", () => {
             expect.objectContaining({ text: "new value", type: "add" }),
             expect.objectContaining({ text: "after", type: "context" }),
         ]);
+        expect(snapshot.trackedFiles[0]?.hunksAreAnchored).toBe(true);
+        expect(snapshot.trackedFiles[0]?.hunks[0]).toMatchObject({
+            oldStart: 40,
+            newStart: 42,
+        });
     });
 });
 
@@ -805,7 +860,23 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
                         newText: "beta\nINSERTED",
                     },
                 ],
-                _meta: { claudeCode: { toolName: "Edit" } },
+                _meta: {
+                    claudeCode: {
+                        toolName: "Edit",
+                        toolResponse: {
+                            filePath: "foo.ts",
+                            structuredPatch: [
+                                {
+                                    oldStart: 2,
+                                    oldLines: 1,
+                                    newStart: 2,
+                                    newLines: 2,
+                                    lines: [" beta", "+INSERTED"],
+                                },
+                            ],
+                        },
+                    },
+                },
             } as never,
             "tool_call_update",
             "2026-04-20T12:00:02.000Z",
@@ -835,8 +906,20 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
                         path: "foo.ts",
                         oldText: "oldValue",
                         newText: "newValue",
-                        _meta: {
-                            comandoClaudeStructuredPatch: [
+                    },
+                    {
+                        type: "diff",
+                        path: "foo.ts",
+                        oldText: "oldValue",
+                        newText: "newValue",
+                    },
+                ],
+                _meta: {
+                    claudeCode: {
+                        toolName: "Edit",
+                        toolResponse: {
+                            filePath: "foo.ts",
+                            structuredPatch: [
                                 {
                                     oldStart: 5,
                                     oldLines: 1,
@@ -844,16 +927,6 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
                                     newLines: 1,
                                     lines: ["-oldValue", "+newValue"],
                                 },
-                            ],
-                        },
-                    },
-                    {
-                        type: "diff",
-                        path: "foo.ts",
-                        oldText: "oldValue",
-                        newText: "newValue",
-                        _meta: {
-                            comandoClaudeStructuredPatch: [
                                 {
                                     oldStart: 20,
                                     oldLines: 1,
@@ -864,8 +937,7 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
                             ],
                         },
                     },
-                ],
-                _meta: { claudeCode: { toolName: "Edit" } },
+                },
             } as never,
             "tool_call_update",
             "2026-04-20T12:00:01.000Z",
