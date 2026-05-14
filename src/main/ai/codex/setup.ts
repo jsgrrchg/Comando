@@ -1,11 +1,16 @@
 import type {
+    AiAuthCredentialSource,
     AiAuthMethod,
     AiRuntimeStatus,
     CodexAuthMethodId,
     CodexRuntimeSettings,
 } from "@shared/ipc";
 
-import type { SecretStoreGateway } from "@main/ai/secret-store";
+import {
+    buildSecretStorageKey,
+    type SecretRecordPatch,
+    type SecretStoreGateway,
+} from "@main/ai/secret-store";
 
 import { resolveCodexRuntime } from "@main/ai/resolver/runtime-resolver";
 
@@ -27,6 +32,11 @@ export function getCodexRuntimeStatus(
 ): AiRuntimeStatus {
     const resolved = resolveCodexRuntime(settings);
     const authMethod = detectCodexAuthMethod(settings, secrets, env);
+    const credentialSource = getCodexCredentialSource(
+        settings,
+        secrets,
+        env,
+    );
     const authReady = authMethod !== null;
     const binaryReady = resolved.status.state === "ready";
 
@@ -40,9 +50,59 @@ export function getCodexRuntimeStatus(
         authMethod,
         authMethods: getCodexAuthMethods(),
         authReady,
+        authCredentialSource: credentialSource,
+        authCredentialSourceLabel:
+            getCredentialSourceLabel(credentialSource),
+        authSessionMessage:
+            "This affects new sessions. Active sessions may keep using credentials loaded at launch.",
+        canDisconnectAuth:
+            settings.authMethod !== null ||
+            Boolean(secrets.codexApiKey) ||
+            Boolean(secrets.openaiApiKey),
+        canLogoutAuth: settings.authMethod === CHATGPT_AUTH_METHOD_ID,
         message,
         onboardingRequired: !binaryReady || !authReady,
     };
+}
+
+export function getCodexCredentialSource(
+    settings: CodexRuntimeSettings,
+    secrets: CodexSecretBundle,
+    env: NodeJS.ProcessEnv = process.env,
+): AiAuthCredentialSource {
+    if (
+        settings.authMethod === CODEX_API_KEY_AUTH_METHOD_ID &&
+        envSecretPresent(env, "CODEX_API_KEY")
+    ) {
+        return "environment";
+    }
+
+    if (
+        settings.authMethod === OPENAI_API_KEY_AUTH_METHOD_ID &&
+        envSecretPresent(env, "OPENAI_API_KEY")
+    ) {
+        return "environment";
+    }
+
+    if (
+        settings.authMethod === CODEX_API_KEY_AUTH_METHOD_ID &&
+        Boolean(normalizeOptionalText(secrets.codexApiKey))
+    ) {
+        return "comando-secret";
+    }
+
+    if (
+        settings.authMethod === OPENAI_API_KEY_AUTH_METHOD_ID &&
+        Boolean(normalizeOptionalText(secrets.openaiApiKey))
+    ) {
+        return "comando-secret";
+    }
+
+    if (settings.authMethod === CHATGPT_AUTH_METHOD_ID) {
+        return "external-runtime";
+    }
+
+    return "none";
 }
 
 export function getCodexAuthMethods(): readonly AiAuthMethod[] {
@@ -93,10 +153,28 @@ export function saveCodexSecrets(
 } {
     const codexApiKey = normalizeOptionalText(input.codexApiKey);
     const openaiApiKey = normalizeOptionalText(input.openaiApiKey);
+    const currentCodexApiKey = normalizeOptionalText(
+        secretStore.loadSecret("ai.codex", CODEX_API_KEY_SECRET),
+    );
+    const currentOpenAiApiKey = normalizeOptionalText(
+        secretStore.loadSecret("ai.codex", OPENAI_API_KEY_SECRET),
+    );
 
     if (codexApiKey) {
-        secretStore.saveSecret("ai.codex", CODEX_API_KEY_SECRET, codexApiKey);
-        secretStore.saveSecret("ai.codex", OPENAI_API_KEY_SECRET, null);
+        saveSecretIfChanged(
+            secretStore,
+            "ai.codex",
+            CODEX_API_KEY_SECRET,
+            currentCodexApiKey,
+            codexApiKey,
+        );
+        saveSecretIfChanged(
+            secretStore,
+            "ai.codex",
+            OPENAI_API_KEY_SECRET,
+            currentOpenAiApiKey,
+            null,
+        );
 
         return {
             hasCodexApiKey: true,
@@ -105,8 +183,20 @@ export function saveCodexSecrets(
     }
 
     if (openaiApiKey) {
-        secretStore.saveSecret("ai.codex", OPENAI_API_KEY_SECRET, openaiApiKey);
-        secretStore.saveSecret("ai.codex", CODEX_API_KEY_SECRET, null);
+        saveSecretIfChanged(
+            secretStore,
+            "ai.codex",
+            OPENAI_API_KEY_SECRET,
+            currentOpenAiApiKey,
+            openaiApiKey,
+        );
+        saveSecretIfChanged(
+            secretStore,
+            "ai.codex",
+            CODEX_API_KEY_SECRET,
+            currentCodexApiKey,
+            null,
+        );
 
         return {
             hasCodexApiKey: false,
@@ -114,13 +204,147 @@ export function saveCodexSecrets(
         };
     }
 
-    secretStore.saveSecret("ai.codex", CODEX_API_KEY_SECRET, null);
-    secretStore.saveSecret("ai.codex", OPENAI_API_KEY_SECRET, null);
+    saveSecretIfChanged(
+        secretStore,
+        "ai.codex",
+        CODEX_API_KEY_SECRET,
+        currentCodexApiKey,
+        null,
+    );
+    saveSecretIfChanged(
+        secretStore,
+        "ai.codex",
+        OPENAI_API_KEY_SECRET,
+        currentOpenAiApiKey,
+        null,
+    );
 
     return {
         hasCodexApiKey: false,
         hasOpenAiApiKey: false,
     };
+}
+
+export function buildCodexSecretPatches(
+    secretStore: SecretStoreGateway,
+    input: CodexSecretBundle,
+): {
+    readonly flags: {
+        readonly hasCodexApiKey: boolean;
+        readonly hasOpenAiApiKey: boolean;
+    };
+    readonly patches: readonly SecretRecordPatch[];
+} {
+    const codexApiKey = normalizeOptionalText(input.codexApiKey);
+    const openaiApiKey = normalizeOptionalText(input.openaiApiKey);
+    const currentCodexApiKey = normalizeOptionalText(
+        secretStore.loadSecret("ai.codex", CODEX_API_KEY_SECRET),
+    );
+    const currentOpenAiApiKey = normalizeOptionalText(
+        secretStore.loadSecret("ai.codex", OPENAI_API_KEY_SECRET),
+    );
+    const patches: SecretRecordPatch[] = [];
+
+    if (codexApiKey) {
+        pushSecretPatchIfChanged(
+            patches,
+            "ai.codex",
+            CODEX_API_KEY_SECRET,
+            currentCodexApiKey,
+            codexApiKey,
+        );
+        pushSecretPatchIfChanged(
+            patches,
+            "ai.codex",
+            OPENAI_API_KEY_SECRET,
+            currentOpenAiApiKey,
+            null,
+        );
+        return {
+            flags: {
+                hasCodexApiKey: true,
+                hasOpenAiApiKey: false,
+            },
+            patches,
+        };
+    }
+
+    if (openaiApiKey) {
+        pushSecretPatchIfChanged(
+            patches,
+            "ai.codex",
+            OPENAI_API_KEY_SECRET,
+            currentOpenAiApiKey,
+            openaiApiKey,
+        );
+        pushSecretPatchIfChanged(
+            patches,
+            "ai.codex",
+            CODEX_API_KEY_SECRET,
+            currentCodexApiKey,
+            null,
+        );
+        return {
+            flags: {
+                hasCodexApiKey: false,
+                hasOpenAiApiKey: true,
+            },
+            patches,
+        };
+    }
+
+    pushSecretPatchIfChanged(
+        patches,
+        "ai.codex",
+        CODEX_API_KEY_SECRET,
+        currentCodexApiKey,
+        null,
+    );
+    pushSecretPatchIfChanged(
+        patches,
+        "ai.codex",
+        OPENAI_API_KEY_SECRET,
+        currentOpenAiApiKey,
+        null,
+    );
+    return {
+        flags: {
+            hasCodexApiKey: false,
+            hasOpenAiApiKey: false,
+        },
+        patches,
+    };
+}
+
+function saveSecretIfChanged(
+    secretStore: SecretStoreGateway,
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    void secretStore.saveSecret(namespace, secretId, nextValue);
+}
+
+function pushSecretPatchIfChanged(
+    patches: SecretRecordPatch[],
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    patches.push({
+        key: buildSecretStorageKey(namespace, secretId),
+        value: nextValue,
+    });
 }
 
 export function applyCodexAuthEnv(
@@ -214,6 +438,20 @@ function envSecretPresent(
     key: "CODEX_API_KEY" | "OPENAI_API_KEY",
 ): boolean {
     return Boolean(env[key]?.trim());
+}
+
+function getCredentialSourceLabel(source: AiAuthCredentialSource): string {
+    switch (source) {
+        case "comando-secret":
+            return "Using Comando stored credentials";
+        case "environment":
+            return "Using environment variable";
+        case "external-runtime":
+            return "Using external runtime login";
+        case "none":
+        default:
+            return "Needs authentication";
+    }
 }
 
 function normalizeOptionalText(

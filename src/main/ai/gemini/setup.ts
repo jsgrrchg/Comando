@@ -1,16 +1,20 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 
 import type {
+    AiAuthCredentialSource,
     AiAuthMethod,
     AiRuntimeStatus,
     GeminiAuthMethodId,
     GeminiRuntimeSettings,
 } from "@shared/ipc";
 
-import type { SecretStoreGateway } from "@main/ai/secret-store";
+import {
+    buildSecretStorageKey,
+    type SecretRecordPatch,
+    type SecretStoreGateway,
+} from "@main/ai/secret-store";
+import { launchTerminalLoginCommand } from "@main/ai/auth/terminal-login";
 import { debugBenignError } from "@main/observability/logging";
 
 const GEMINI_PROGRAM_NAME = "gemini";
@@ -60,6 +64,19 @@ export function getGeminiRuntimeStatus(
     const resolved = resolveGeminiBinary(settings);
     const authMethods = getGeminiAuthMethods();
     const authMethod = detectGeminiAuthMethod(settings, secretStore);
+    const secrets = loadGeminiSecretBundle(secretStore);
+    const credentialSource = getGeminiCredentialSource(
+        authMethod,
+        secrets,
+        process.env,
+    );
+    const storageStatus = secretStore.getStorageStatus?.() ?? {
+        encryptionAvailable: true,
+        isWeakBackend: false,
+        message: null,
+        platform: process.platform,
+        selectedBackend: null,
+    };
     const binaryReady = resolved.state === "ready" && Boolean(resolved.program);
     const authReady = authMethod !== null;
 
@@ -72,6 +89,18 @@ export function getGeminiRuntimeStatus(
         authMethod,
         authMethods,
         authReady,
+        authCredentialSource: credentialSource,
+        authCredentialSourceLabel:
+            getCredentialSourceLabel(credentialSource),
+        authSessionMessage:
+            "This affects new sessions. Active sessions may keep using credentials loaded at launch.",
+        authStorageMessage: storageStatus.message,
+        canDisconnectAuth:
+            settings.authMethod !== null ||
+            Boolean(secrets.geminiApiKey) ||
+            Boolean(secrets.googleApiKey) ||
+            (credentialSource !== "environment" && authMethod !== null),
+        canLogoutAuth: false,
         checkedAt: new Date().toISOString(),
         command: resolved.command,
         hasCustomBinaryPath: Boolean(settings.binaryPath?.trim()),
@@ -83,6 +112,31 @@ export function getGeminiRuntimeStatus(
         source: resolved.source,
         state: resolved.state,
     };
+}
+
+export function getGeminiCredentialSource(
+    authMethod: GeminiAuthMethodId | null,
+    secrets: GeminiSecretBundle,
+    env: NodeJS.ProcessEnv = process.env,
+): AiAuthCredentialSource {
+    if (authMethod === "use_gemini") {
+        if (
+            envSecretPresent(env, "GEMINI_API_KEY") ||
+            envSecretPresent(env, "GOOGLE_API_KEY")
+        ) {
+            return "environment";
+        }
+
+        if (secrets.geminiApiKey || secrets.googleApiKey) {
+            return "comando-secret";
+        }
+    }
+
+    if (authMethod === "login_with_google") {
+        return "external-runtime";
+    }
+
+    return "none";
 }
 
 export function resolveGeminiRuntime(
@@ -131,21 +185,110 @@ export function saveGeminiSecrets(
     readonly hasGeminiApiKey: boolean;
     readonly hasGoogleApiKey: boolean;
 } {
-    secretStore.saveSecret(
+    saveSecretIfChanged(
+        secretStore,
         "ai.gemini",
         GEMINI_API_KEY_SECRET,
-        input.geminiApiKey,
+        normalizeOptionalText(
+            secretStore.loadSecret("ai.gemini", GEMINI_API_KEY_SECRET),
+        ),
+        normalizeOptionalText(input.geminiApiKey),
     );
-    secretStore.saveSecret(
+    saveSecretIfChanged(
+        secretStore,
         "ai.gemini",
         GOOGLE_API_KEY_SECRET,
-        input.googleApiKey,
+        normalizeOptionalText(
+            secretStore.loadSecret("ai.gemini", GOOGLE_API_KEY_SECRET),
+        ),
+        normalizeOptionalText(input.googleApiKey),
     );
 
     return {
         hasGeminiApiKey: Boolean(input.geminiApiKey?.trim()),
         hasGoogleApiKey: Boolean(input.googleApiKey?.trim()),
     };
+}
+
+export function buildGeminiSecretPatches(
+    secretStore: SecretStoreGateway,
+    input: {
+        readonly geminiApiKey: string | null;
+        readonly googleApiKey: string | null;
+    },
+): {
+    readonly flags: {
+        readonly hasGeminiApiKey: boolean;
+        readonly hasGoogleApiKey: boolean;
+    };
+    readonly patches: readonly SecretRecordPatch[];
+} {
+    const geminiApiKey = normalizeOptionalText(input.geminiApiKey);
+    const googleApiKey = normalizeOptionalText(input.googleApiKey);
+    const patches: SecretRecordPatch[] = [];
+
+    pushSecretPatchIfChanged(
+        patches,
+        "ai.gemini",
+        GEMINI_API_KEY_SECRET,
+        normalizeOptionalText(
+            secretStore.loadSecret("ai.gemini", GEMINI_API_KEY_SECRET),
+        ),
+        geminiApiKey,
+    );
+    pushSecretPatchIfChanged(
+        patches,
+        "ai.gemini",
+        GOOGLE_API_KEY_SECRET,
+        normalizeOptionalText(
+            secretStore.loadSecret("ai.gemini", GOOGLE_API_KEY_SECRET),
+        ),
+        googleApiKey,
+    );
+
+    return {
+        flags: {
+            hasGeminiApiKey: Boolean(geminiApiKey),
+            hasGoogleApiKey: Boolean(googleApiKey),
+        },
+        patches,
+    };
+}
+
+function saveSecretIfChanged(
+    secretStore: SecretStoreGateway,
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    void secretStore.saveSecret(namespace, secretId, nextValue);
+}
+
+function pushSecretPatchIfChanged(
+    patches: SecretRecordPatch[],
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    patches.push({
+        key: buildSecretStorageKey(namespace, secretId),
+        value: nextValue,
+    });
+}
+
+function normalizeOptionalText(value: string | null | undefined): string | null {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
 }
 
 export function applyGeminiAuthEnv(
@@ -155,12 +298,26 @@ export function applyGeminiAuthEnv(
 ): NodeJS.ProcessEnv {
     const env = { ...baseEnv };
     const secrets = loadGeminiSecretBundle(secretStore);
+    const shouldApplyApiKeySecrets = settings.authMethod !== "login_with_google";
 
-    if (!envSecretPresent(env, "GEMINI_API_KEY") && secrets.geminiApiKey) {
+    if (!shouldApplyApiKeySecrets) {
+        delete env.GEMINI_API_KEY;
+        delete env.GOOGLE_API_KEY;
+    }
+
+    if (
+        shouldApplyApiKeySecrets &&
+        !envSecretPresent(env, "GEMINI_API_KEY") &&
+        secrets.geminiApiKey
+    ) {
         env.GEMINI_API_KEY = secrets.geminiApiKey;
     }
 
-    if (!envSecretPresent(env, "GOOGLE_API_KEY") && secrets.googleApiKey) {
+    if (
+        shouldApplyApiKeySecrets &&
+        !envSecretPresent(env, "GOOGLE_API_KEY") &&
+        secrets.googleApiKey
+    ) {
         env.GOOGLE_API_KEY = secrets.googleApiKey;
     }
 
@@ -271,45 +428,13 @@ export function launchGeminiLogin(
 
     const commandParts = [resolved.program];
 
-    if (process.platform === "win32") {
-        const scriptPath = buildWindowsLoginScript(commandParts, cwd);
-        return spawnDetached("cmd", [
-            "/C",
-            "start",
-            "",
-            "cmd",
-            "/K",
-            scriptPath,
-        ]);
-    }
-
-    if (process.platform === "darwin") {
-        const scriptPath = buildPosixLoginScript(commandParts, cwd);
-        return spawnDetached("open", ["-a", "Terminal", scriptPath]);
-    }
-
-    const scriptPath = buildPosixLoginScript(commandParts, cwd);
-    const candidates: Array<readonly [string, readonly string[]]> = [
-        ["x-terminal-emulator", ["-e", scriptPath]],
-        ["gnome-terminal", ["--", "bash", scriptPath]],
-        ["konsole", ["-e", "bash", scriptPath]],
-        ["xterm", ["-e", "bash", scriptPath]],
-    ];
-
-    for (const [program, args] of candidates) {
-        const resolvedProgram = resolveFromPath(program);
-        if (!resolvedProgram) {
-            continue;
-        }
-
-        return spawnDetached(resolvedProgram, args);
-    }
-
-    return Promise.reject(
-        new Error(
+    return launchTerminalLoginCommand({
+        commandParts,
+        cwd,
+        missingTerminalMessage:
             "No compatible terminal launcher was found for Gemini login.",
-        ),
-    );
+        scriptPrefix: "comando-gemini-login",
+    });
 }
 
 function resolveGeminiBinary(
@@ -566,66 +691,16 @@ function envSecretPresent(env: NodeJS.ProcessEnv, key: string): boolean {
     return typeof value === "string" && value.trim().length > 0;
 }
 
-function buildWindowsLoginScript(
-    commandParts: readonly string[],
-    cwd?: string | null,
-): string {
-    const scriptPath = path.join(
-        os.tmpdir(),
-        `comando-gemini-login-${Date.now()}.cmd`,
-    );
-    const lines = [
-        "@echo off",
-        ...(cwd ? [`cd /d "${cwd}"`] : []),
-        commandParts.map(quoteWindowsArg).join(" "),
-        "pause",
-    ];
-    fs.writeFileSync(scriptPath, lines.join("\r\n"), "utf8");
-    return scriptPath;
-}
-
-function buildPosixLoginScript(
-    commandParts: readonly string[],
-    cwd?: string | null,
-): string {
-    const scriptPath = path.join(
-        os.tmpdir(),
-        `comando-gemini-login-${Date.now()}.sh`,
-    );
-    const lines = [
-        "#!/bin/sh",
-        ...(cwd ? [`cd ${quoteShellArg(cwd)}`] : []),
-        commandParts.map(quoteShellArg).join(" "),
-        'printf "\\nPress Enter to close... "',
-        "read _ignored",
-    ];
-    fs.writeFileSync(scriptPath, lines.join("\n"), "utf8");
-    fs.chmodSync(scriptPath, 0o755);
-    return scriptPath;
-}
-
-function quoteShellArg(value: string): string {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function quoteWindowsArg(value: string): string {
-    return `"${value.replace(/"/g, '\\"')}"`;
-}
-
-function spawnDetached(
-    program: string,
-    args: readonly string[],
-): Promise<void> {
-    return new Promise((resolve, reject) => {
-        const child = spawn(program, [...args], {
-            detached: true,
-            stdio: "ignore",
-        });
-
-        child.once("error", reject);
-        child.once("spawn", () => {
-            child.unref();
-            resolve();
-        });
-    });
+function getCredentialSourceLabel(source: AiAuthCredentialSource): string {
+    switch (source) {
+        case "comando-secret":
+            return "Using Comando API key";
+        case "environment":
+            return "Using Gemini environment variable";
+        case "external-runtime":
+            return "Using external Google login";
+        case "none":
+        default:
+            return "Needs authentication";
+    }
 }

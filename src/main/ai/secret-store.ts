@@ -5,12 +5,25 @@ import type Database from "better-sqlite3";
 import { debugBenignError } from "@main/observability/logging";
 
 export interface SecretStoreGateway {
+    cacheSecretPatches?(secrets: readonly SecretRecordPatch[]): void;
+    deleteSecrets?(
+        secrets: readonly {
+            readonly namespace: string;
+            readonly secretId: string;
+        }[],
+    ): Promise<void> | void;
+    getStorageStatus?(): SecretStorageStatus;
     loadSecret(namespace: string, secretId: string): string | null;
     saveSecret(
         namespace: string,
         secretId: string,
         value: string | null,
     ): Promise<void> | void;
+}
+
+export interface SecretRecordPatch {
+    readonly key: string;
+    readonly value: string | null;
 }
 
 interface SettingRow {
@@ -20,6 +33,14 @@ interface SettingRow {
 export interface StoredSecretRecord {
     readonly scheme: "electron-safe-storage-v1" | "plain-text-v1";
     readonly value: string;
+}
+
+export interface SecretStorageStatus {
+    readonly encryptionAvailable: boolean;
+    readonly isWeakBackend: boolean;
+    readonly message: string | null;
+    readonly platform: NodeJS.Platform;
+    readonly selectedBackend: string | null;
 }
 
 export class SecretStoreService {
@@ -38,6 +59,34 @@ export class SecretStoreService {
             .get(buildSecretStorageKey(namespace, secretId));
 
         return deserializeStoredSecretValue(row?.value ?? null);
+    }
+
+    getStorageStatus(): SecretStorageStatus {
+        return getSecretStorageStatus();
+    }
+
+    deleteSecrets(
+        secrets: readonly {
+            readonly namespace: string;
+            readonly secretId: string;
+        }[],
+    ): void {
+        if (secrets.length === 0) {
+            return;
+        }
+
+        const deleteSecret = this.#connection.prepare<
+            [string],
+            void
+        >("DELETE FROM app_settings WHERE key = ?");
+        const transaction = this.#connection.transaction(() => {
+            for (const secret of secrets) {
+                deleteSecret.run(
+                    buildSecretStorageKey(secret.namespace, secret.secretId),
+                );
+            }
+        });
+        transaction();
     }
 
     saveSecret(
@@ -74,6 +123,31 @@ export class SecretStoreService {
     }
 }
 
+export function getSecretStorageStatus(): SecretStorageStatus {
+    const encryptionAvailable = safeStorage.isEncryptionAvailable();
+    const selectedBackend =
+        process.platform === "linux" &&
+        typeof safeStorage.getSelectedStorageBackend === "function"
+            ? safeStorage.getSelectedStorageBackend()
+            : null;
+    const isWeakBackend =
+        process.platform === "linux" &&
+        (selectedBackend === "basic_text" || selectedBackend === "unknown");
+    const message = !encryptionAvailable
+        ? "Secure secret storage is unavailable on this machine."
+        : isWeakBackend
+          ? "Linux keyring backend is weak; Comando cannot save new secrets until a secure keyring is available."
+          : null;
+
+    return {
+        encryptionAvailable,
+        isWeakBackend,
+        message,
+        platform: process.platform,
+        selectedBackend,
+    };
+}
+
 export function buildSecretStorageKey(
     namespace: string,
     secretId: string,
@@ -90,15 +164,23 @@ export function deserializeStoredSecretValue(
 
     try {
         const stored = JSON.parse(storedValue) as StoredSecretRecord;
-        if (stored.scheme === "electron-safe-storage-v1") {
-            const decrypted = safeStorage.decryptString(
-                Buffer.from(stored.value, "base64"),
-            );
+        switch (stored.scheme) {
+            case "electron-safe-storage-v1": {
+                const decrypted = safeStorage.decryptString(
+                    Buffer.from(stored.value, "base64"),
+                );
 
-            return decrypted.trim() ? decrypted : null;
+                return decrypted.trim() ? decrypted : null;
+            }
+            case "plain-text-v1":
+                return stored.value.trim() ? stored.value : null;
+            default:
+                debugBenignError(
+                    "ai.secretStore.unknownScheme",
+                    new Error(`Unknown secret storage scheme: ${stored.scheme}`),
+                );
+                return null;
         }
-
-        return stored.value.trim() ? stored.value : null;
     } catch (error) {
         debugBenignError("ai.secretStore.decrypt", error);
         return null;
@@ -106,9 +188,11 @@ export function deserializeStoredSecretValue(
 }
 
 export function serializeStoredSecretValue(value: string): string {
-    if (!safeStorage.isEncryptionAvailable()) {
+    const status = getSecretStorageStatus();
+    if (!status.encryptionAvailable || status.isWeakBackend) {
         throw new Error(
-            "Secure secret storage is unavailable on this machine.",
+            status.message ??
+                "Secure secret storage is unavailable on this machine.",
         );
     }
 

@@ -2,8 +2,12 @@ import { parentPort, type MessagePort } from "node:worker_threads";
 
 import type {
     AiRuntimeId,
+    ClaudeRuntimeSettings,
+    CodexRuntimeSettings,
     DatabaseStatus,
+    GeminiRuntimeSettings,
     GetAiSessionTranscriptPageInput,
+    KiloRuntimeSettings,
     ListAiSessionHistoryInput,
     PersistenceSnapshot,
 } from "@shared/ipc";
@@ -422,6 +426,47 @@ function dispatchMethod(method: string, params: unknown): unknown {
             saveSecretRecord(input.key, input.value);
             return null;
         }
+        case "ai.saveCodexAuth": {
+            const settings = requireSettingsService();
+            const input = params as {
+                readonly secrets: readonly SecretRecordMutation[];
+                readonly settings: CodexRuntimeSettings;
+            };
+            runAuthSettingsTransaction(input.secrets, () => {
+                settings.saveCodexRuntimeSettings(input.settings);
+            });
+            return null;
+        }
+        case "ai.saveClaudeAuth": {
+            const settings = requireSettingsService();
+            const input = params as {
+                readonly secrets: readonly SecretRecordMutation[];
+                readonly settings: ClaudeRuntimeSettings;
+            };
+            runAuthSettingsTransaction(input.secrets, () => {
+                settings.saveClaudeRuntimeSettings(input.settings);
+            });
+            return null;
+        }
+        case "ai.saveGeminiAuth": {
+            const settings = requireSettingsService();
+            const input = params as {
+                readonly secrets: readonly SecretRecordMutation[];
+                readonly settings: GeminiRuntimeSettings;
+            };
+            runAuthSettingsTransaction(input.secrets, () => {
+                settings.saveGeminiRuntimeSettings(input.settings);
+            });
+            return null;
+        }
+        case "ai.saveKiloAuth": {
+            const settings = requireSettingsService();
+            const input = params as {
+                readonly settings: KiloRuntimeSettings;
+            };
+            settings.saveKiloRuntimeSettings(input.settings);
+            return null;
+        }
         case "settings.loadSnapshot":
             return settingsService.loadSnapshot();
         case "settings.saveSnapshot":
@@ -498,6 +543,11 @@ function dispatchMethod(method: string, params: unknown): unknown {
         default:
             throw new Error(`Unknown DB worker method: ${method}`);
     }
+}
+
+interface SecretRecordMutation {
+    readonly key: string;
+    readonly value: string | null;
 }
 
 function buildBootstrapState(): DbWorkerBootstrapState {
@@ -582,6 +632,30 @@ function saveSecretRecord(key: string, value: string | null): void {
             `,
         )
         .run(key, value, new Date().toISOString());
+}
+
+function runAuthSettingsTransaction(
+    secrets: readonly SecretRecordMutation[],
+    saveSettings: () => void,
+): void {
+    if (!database) {
+        throw new Error("The database is not initialized yet.");
+    }
+
+    database.connection.transaction(() => {
+        for (const secret of secrets) {
+            saveSecretRecord(secret.key, secret.value);
+        }
+        saveSettings();
+    })();
+}
+
+function requireSettingsService(): SettingsService {
+    if (!settingsService) {
+        throw new Error("The settings service is not initialized yet.");
+    }
+
+    return settingsService;
 }
 
 function serializeError(error: unknown): SerializedError {

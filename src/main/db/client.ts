@@ -34,6 +34,7 @@ import {
     buildSecretStorageKey,
     deserializeStoredSecretValue,
     serializeStoredSecretValue,
+    type SecretRecordPatch,
     type SecretStoreGateway,
 } from "../ai/secret-store";
 import { mainProcessPerformance } from "../observability/performance";
@@ -382,13 +383,7 @@ class SettingsClient implements SettingsGateway {
     }
 
     saveCodexRuntimeSettings(settings: CodexRuntimeSettings): void {
-        this.#snapshot = {
-            ...this.#snapshot,
-            ai: {
-                ...requireAiSettings(this.#snapshot.ai),
-                codex: settings,
-            },
-        };
+        this.#setCodexRuntimeSettings(settings);
         this.#dispatch("settings.saveCodexRuntimeSettings", settings);
     }
 
@@ -397,13 +392,7 @@ class SettingsClient implements SettingsGateway {
     }
 
     saveClaudeRuntimeSettings(settings: ClaudeRuntimeSettings): void {
-        this.#snapshot = {
-            ...this.#snapshot,
-            ai: {
-                ...requireAiSettings(this.#snapshot.ai),
-                claude: settings,
-            },
-        };
+        this.#setClaudeRuntimeSettings(settings);
         this.#dispatch("settings.saveClaudeRuntimeSettings", settings);
     }
 
@@ -412,13 +401,7 @@ class SettingsClient implements SettingsGateway {
     }
 
     saveGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void {
-        this.#snapshot = {
-            ...this.#snapshot,
-            ai: {
-                ...requireAiSettings(this.#snapshot.ai),
-                gemini: settings,
-            },
-        };
+        this.#setGeminiRuntimeSettings(settings);
         this.#dispatch("settings.saveGeminiRuntimeSettings", settings);
     }
 
@@ -427,6 +410,108 @@ class SettingsClient implements SettingsGateway {
     }
 
     saveKiloRuntimeSettings(settings: KiloRuntimeSettings): void {
+        this.#setKiloRuntimeSettings(settings);
+        this.#dispatch("settings.saveKiloRuntimeSettings", settings);
+    }
+
+    async saveCodexAuth(
+        settings: CodexRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        const records = serializeSecretRecordPatches(secrets);
+        const previousSettings = this.loadCodexRuntimeSettings();
+        this.#setCodexRuntimeSettings(settings);
+        try {
+            await this.#rpc.call("ai.saveCodexAuth", {
+                secrets: records,
+                settings,
+            });
+        } catch (error) {
+            this.#setCodexRuntimeSettings(previousSettings);
+            throw error;
+        }
+    }
+
+    async saveClaudeAuth(
+        settings: ClaudeRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        const records = serializeSecretRecordPatches(secrets);
+        const previousSettings = this.loadClaudeRuntimeSettings();
+        this.#setClaudeRuntimeSettings(settings);
+        try {
+            await this.#rpc.call("ai.saveClaudeAuth", {
+                secrets: records,
+                settings,
+            });
+        } catch (error) {
+            this.#setClaudeRuntimeSettings(previousSettings);
+            throw error;
+        }
+    }
+
+    async saveGeminiAuth(
+        settings: GeminiRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        const records = serializeSecretRecordPatches(secrets);
+        const previousSettings = this.loadGeminiRuntimeSettings();
+        this.#setGeminiRuntimeSettings(settings);
+        try {
+            await this.#rpc.call("ai.saveGeminiAuth", {
+                secrets: records,
+                settings,
+            });
+        } catch (error) {
+            this.#setGeminiRuntimeSettings(previousSettings);
+            throw error;
+        }
+    }
+
+    async saveKiloAuth(settings: KiloRuntimeSettings): Promise<void> {
+        const previousSettings = this.loadKiloRuntimeSettings();
+        this.#setKiloRuntimeSettings(settings);
+        try {
+            await this.#rpc.call("ai.saveKiloAuth", {
+                settings,
+            });
+        } catch (error) {
+            this.#setKiloRuntimeSettings(previousSettings);
+            throw error;
+        }
+    }
+
+    #setCodexRuntimeSettings(settings: CodexRuntimeSettings): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            ai: {
+                ...requireAiSettings(this.#snapshot.ai),
+                codex: settings,
+            },
+        };
+    }
+
+    #setClaudeRuntimeSettings(settings: ClaudeRuntimeSettings): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            ai: {
+                ...requireAiSettings(this.#snapshot.ai),
+                claude: settings,
+            },
+        };
+    }
+
+    #setGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            ai: {
+                ...requireAiSettings(this.#snapshot.ai),
+                gemini: settings,
+            },
+        };
+    }
+
+    #setKiloRuntimeSettings(settings: KiloRuntimeSettings): void {
         this.#snapshot = {
             ...this.#snapshot,
             ai: {
@@ -434,7 +519,6 @@ class SettingsClient implements SettingsGateway {
                 kilo: settings,
             },
         };
-        this.#dispatch("settings.saveKiloRuntimeSettings", settings);
     }
 
     #dispatch(method: string, params: unknown): void {
@@ -468,6 +552,16 @@ class SecretStoreClient implements SecretStoreGateway {
         );
     }
 
+    cacheSecretPatches(secrets: readonly SecretRecordPatch[]): void {
+        for (const secret of secrets) {
+            const normalizedValue = secret.value?.trim() ?? "";
+            this.#valuesByKey.set(
+                secret.key,
+                normalizedValue.length > 0 ? normalizedValue : null,
+            );
+        }
+    }
+
     async saveSecret(
         namespace: string,
         secretId: string,
@@ -491,6 +585,18 @@ class SecretStoreClient implements SecretStoreGateway {
             throw error;
         }
     }
+}
+
+function serializeSecretRecordPatches(
+    secrets: readonly SecretRecordPatch[],
+): readonly SecretRecordPatch[] {
+    return secrets.map((secret) => ({
+        key: secret.key,
+        value:
+            secret.value === null
+                ? null
+                : serializeStoredSecretValue(secret.value),
+    }));
 }
 
 class WorkspaceClient implements WorkspaceGateway {

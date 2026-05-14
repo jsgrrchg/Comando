@@ -13,6 +13,7 @@ import {
     type AiHistorySessionSummary,
     type AiSessionUpdate,
     type AiPermissionResponseInput,
+    type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
     type AiRuntimeAuthLogoutInput,
     type AiRuntimeId,
@@ -1058,6 +1059,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.launchAiRuntimeAuth, input),
     logoutAiRuntimeAuth: (input: AiRuntimeAuthLogoutInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.logoutAiRuntimeAuth, input),
+    disconnectAiRuntimeAuth: (input: AiRuntimeAuthDisconnectInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.disconnectAiRuntimeAuth, input),
     respondAiPermission: (input: AiPermissionResponseInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.respondAiPermission, input),
     respondAiUserInput: (input: AiUserInputResponseInput) =>

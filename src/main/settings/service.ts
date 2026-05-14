@@ -29,6 +29,8 @@ import type {
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
+
+import type { SecretRecordPatch } from "../ai/secret-store";
 import {
     AI_CHAT_FONT_SIZE_MAX,
     AI_CHAT_FONT_SIZE_MIN,
@@ -167,6 +169,20 @@ interface SettingRow {
 }
 
 export interface SettingsGateway {
+    runTransaction?(action: () => void): void;
+    saveCodexAuth?(
+        settings: CodexRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void>;
+    saveClaudeAuth?(
+        settings: ClaudeRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void>;
+    saveGeminiAuth?(
+        settings: GeminiRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void>;
+    saveKiloAuth?(settings: KiloRuntimeSettings): Promise<void>;
     loadSnapshot(): SettingsSnapshot;
     saveSnapshot(snapshot: SettingsSnapshot): void;
     loadAppAppearanceSettings(): AppAppearanceSettings;
@@ -192,6 +208,10 @@ export class SettingsService {
 
     constructor(connection: Database.Database) {
         this.#connection = connection;
+    }
+
+    runTransaction(action: () => void): void {
+        this.#connection.transaction(action)();
     }
 
     loadSnapshot(): SettingsSnapshot {

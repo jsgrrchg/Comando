@@ -1,17 +1,21 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import type {
+    AiAuthCredentialSource,
     AiAuthMethod,
     AiRuntimeStatus,
     ClaudeAuthMethodId,
     ClaudeRuntimeSettings,
 } from "@shared/ipc";
 
-import type { SecretStoreGateway } from "@main/ai/secret-store";
+import {
+    buildSecretStorageKey,
+    type SecretRecordPatch,
+    type SecretStoreGateway,
+} from "@main/ai/secret-store";
+import { launchTerminalLoginCommand } from "@main/ai/auth/terminal-login";
 import { debugBenignError } from "@main/observability/logging";
 
 const CLAUDE_LOGIN_METHOD_ID = "claude-login";
@@ -74,24 +78,52 @@ export function getClaudeRuntimeStatus(
     options: ResolveClaudeRuntimeOptions = {},
 ): AiRuntimeStatus {
     const resolved = resolveClaudeBinary(settings, options);
-    const gatewayIssue = gatewayValidationError(settings);
+    const externalTokenPresent = envSecretPresent(
+        process.env,
+        "ANTHROPIC_AUTH_TOKEN",
+    );
+    const externalHeadersPresent = envSecretPresent(
+        process.env,
+        "ANTHROPIC_CUSTOM_HEADERS",
+    );
+    const externalBaseUrlPresent = envSecretPresent(
+        process.env,
+        "ANTHROPIC_BASE_URL",
+    );
+    const gatewayIssue = externalBaseUrlPresent
+        ? null
+        : gatewayValidationError(settings);
     const authMethod = detectClaudeAuthMethod(settings);
     const binaryReady = resolved.state === "ready" && Boolean(resolved.program);
-    const gatewaySecretsReady = Boolean(
-        secretStore.loadSecret("ai.claude", CLAUDE_AUTH_TOKEN_SECRET) ||
-        secretStore.loadSecret("ai.claude", CLAUDE_CUSTOM_HEADERS_SECRET),
-    );
-    const authReady =
-        authMethod !== null &&
-        (authMethod !== GATEWAY_METHOD_ID || gatewaySecretsReady);
     const hasCustomBinaryPath = Boolean(settings.binaryPath?.trim());
-    const hasGatewayUrl = Boolean(settings.gatewayBaseUrl?.trim());
-    const hasGatewayConfig =
-        gatewayIssue === null &&
-        Boolean(settings.gatewayBaseUrl?.trim()) &&
-        (settings.hasGatewayAuthToken || settings.hasGatewayCustomHeaders);
     const authMethods = getClaudeAuthMethods();
     const secretBundle = loadClaudeSecretBundle(secretStore);
+    const gatewayCredentialsReady =
+        externalTokenPresent ||
+        externalHeadersPresent ||
+        Boolean(
+            secretBundle.anthropicAuthToken ||
+                secretBundle.anthropicCustomHeaders,
+        );
+    const authReady =
+        authMethod !== null &&
+        (authMethod !== GATEWAY_METHOD_ID || gatewayCredentialsReady);
+    const hasGatewayUrl =
+        externalBaseUrlPresent || Boolean(settings.gatewayBaseUrl?.trim());
+    const hasGatewayConfig =
+        gatewayIssue === null && hasGatewayUrl && gatewayCredentialsReady;
+    const credentialSource = getClaudeCredentialSource(
+        authMethod,
+        secretBundle,
+        process.env,
+    );
+    const storageStatus = secretStore.getStorageStatus?.() ?? {
+        encryptionAvailable: true,
+        isWeakBackend: false,
+        message: null,
+        platform: process.platform,
+        selectedBackend: null,
+    };
 
     let message = resolved.message;
     if (binaryReady) {
@@ -118,6 +150,18 @@ export function getClaudeRuntimeStatus(
         authMethod,
         authMethods,
         authReady,
+        authCredentialSource: credentialSource,
+        authCredentialSourceLabel:
+            getCredentialSourceLabel(credentialSource),
+        authSessionMessage:
+            "This affects new sessions. Active sessions may keep using credentials loaded at launch.",
+        authStorageMessage: storageStatus.message,
+        canDisconnectAuth:
+            settings.authMethod !== null ||
+            Boolean(secretBundle.anthropicAuthToken) ||
+            Boolean(secretBundle.anthropicCustomHeaders) ||
+            (credentialSource !== "environment" && authMethod !== null),
+        canLogoutAuth: false,
         checkedAt: new Date().toISOString(),
         command: resolved.command,
         hasCustomBinaryPath,
@@ -168,6 +212,37 @@ export function loadClaudeSecretBundle(
     };
 }
 
+export function getClaudeCredentialSource(
+    authMethod: ClaudeAuthMethodId | null,
+    secrets: ClaudeSecretBundle,
+    env: NodeJS.ProcessEnv = process.env,
+): AiAuthCredentialSource {
+    if (
+        envSecretPresent(env, "ANTHROPIC_BASE_URL") ||
+        envSecretPresent(env, "ANTHROPIC_AUTH_TOKEN") ||
+        envSecretPresent(env, "ANTHROPIC_CUSTOM_HEADERS")
+    ) {
+        return "environment";
+    }
+
+    if (
+        authMethod === GATEWAY_METHOD_ID &&
+        (secrets.anthropicAuthToken || secrets.anthropicCustomHeaders)
+    ) {
+        return "comando-secret";
+    }
+
+    if (
+        authMethod === CLAUDE_LOGIN_METHOD_ID ||
+        authMethod === CLAUDE_AI_LOGIN_METHOD_ID ||
+        authMethod === CONSOLE_LOGIN_METHOD_ID
+    ) {
+        return "external-runtime";
+    }
+
+    return "none";
+}
+
 export function saveClaudeSecrets(
     secretStore: SecretStoreGateway,
     input: {
@@ -178,21 +253,203 @@ export function saveClaudeSecrets(
     readonly hasGatewayAuthToken: boolean;
     readonly hasGatewayCustomHeaders: boolean;
 } {
-    secretStore.saveSecret(
+    const gatewayCustomHeaders = normalizeGatewayCustomHeaders(
+        input.gatewayCustomHeaders,
+    );
+    saveSecretIfChanged(
+        secretStore,
         "ai.claude",
         CLAUDE_AUTH_TOKEN_SECRET,
-        input.gatewayAuthToken,
+        normalizeOptionalText(
+            secretStore.loadSecret("ai.claude", CLAUDE_AUTH_TOKEN_SECRET),
+        ),
+        normalizeOptionalText(input.gatewayAuthToken),
     );
-    secretStore.saveSecret(
+    saveSecretIfChanged(
+        secretStore,
         "ai.claude",
         CLAUDE_CUSTOM_HEADERS_SECRET,
-        input.gatewayCustomHeaders,
+        normalizeGatewayCustomHeaders(
+            secretStore.loadSecret(
+                "ai.claude",
+                CLAUDE_CUSTOM_HEADERS_SECRET,
+            ),
+        ),
+        gatewayCustomHeaders,
     );
 
     return {
         hasGatewayAuthToken: Boolean(input.gatewayAuthToken?.trim()),
-        hasGatewayCustomHeaders: Boolean(input.gatewayCustomHeaders?.trim()),
+        hasGatewayCustomHeaders: Boolean(gatewayCustomHeaders),
     };
+}
+
+export function buildClaudeSecretPatches(
+    secretStore: SecretStoreGateway,
+    input: {
+        readonly gatewayAuthToken: string | null;
+        readonly gatewayCustomHeaders: string | null;
+    },
+): {
+    readonly flags: {
+        readonly hasGatewayAuthToken: boolean;
+        readonly hasGatewayCustomHeaders: boolean;
+    };
+    readonly patches: readonly SecretRecordPatch[];
+} {
+    const gatewayAuthToken = normalizeOptionalText(input.gatewayAuthToken);
+    const gatewayCustomHeaders = normalizeGatewayCustomHeaders(
+        input.gatewayCustomHeaders,
+    );
+    const patches: SecretRecordPatch[] = [];
+
+    pushSecretPatchIfChanged(
+        patches,
+        "ai.claude",
+        CLAUDE_AUTH_TOKEN_SECRET,
+        normalizeOptionalText(
+            secretStore.loadSecret("ai.claude", CLAUDE_AUTH_TOKEN_SECRET),
+        ),
+        gatewayAuthToken,
+    );
+    pushSecretPatchIfChanged(
+        patches,
+        "ai.claude",
+        CLAUDE_CUSTOM_HEADERS_SECRET,
+        safeNormalizeExistingGatewayCustomHeaders(
+            secretStore.loadSecret("ai.claude", CLAUDE_CUSTOM_HEADERS_SECRET),
+        ),
+        gatewayCustomHeaders,
+    );
+
+    return {
+        flags: {
+            hasGatewayAuthToken: Boolean(gatewayAuthToken),
+            hasGatewayCustomHeaders: Boolean(gatewayCustomHeaders),
+        },
+        patches,
+    };
+}
+
+export function normalizeGatewayCustomHeaders(
+    raw: string | null,
+): string | null {
+    const trimmed = raw?.trim() ?? "";
+    if (!trimmed) {
+        return null;
+    }
+
+    if (trimmed.length > 16_384) {
+        throw new Error("Gateway custom headers are too large.");
+    }
+
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(trimmed);
+    } catch {
+        throw new Error("Gateway custom headers must be valid JSON.");
+    }
+
+    if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+    ) {
+        throw new Error(
+            "Gateway custom headers must be a JSON object with string values.",
+        );
+    }
+
+    const normalized: Record<string, string> = {};
+    for (const [name, value] of Object.entries(parsed)) {
+        const headerName = name.trim();
+        if (!headerName) {
+            throw new Error("Gateway custom header names cannot be empty.");
+        }
+        if (/[\r\n]/u.test(headerName)) {
+            throw new Error(
+                "Gateway custom header names cannot contain line breaks.",
+            );
+        }
+        if (
+            ["authorization", "host", "content-length"].includes(
+                headerName.toLowerCase(),
+            )
+        ) {
+            throw new Error(
+                `Gateway custom header \`${headerName}\` is managed by the runtime and cannot be set here.`,
+            );
+        }
+        if (typeof value !== "string") {
+            throw new Error(
+                "Gateway custom headers must use string values only.",
+            );
+        }
+        if (/[\r\n]/u.test(value)) {
+            throw new Error(
+                "Gateway custom header values cannot contain line breaks.",
+            );
+        }
+        normalized[headerName] = value;
+    }
+
+    if (Object.keys(normalized).length === 0) {
+        return null;
+    }
+
+    return JSON.stringify(
+        Object.fromEntries(
+            Object.entries(normalized).sort(([a], [b]) =>
+                a.localeCompare(b),
+            ),
+        ),
+    );
+}
+
+function saveSecretIfChanged(
+    secretStore: SecretStoreGateway,
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    void secretStore.saveSecret(namespace, secretId, nextValue);
+}
+
+function pushSecretPatchIfChanged(
+    patches: SecretRecordPatch[],
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    patches.push({
+        key: buildSecretStorageKey(namespace, secretId),
+        value: nextValue,
+    });
+}
+
+function safeNormalizeExistingGatewayCustomHeaders(
+    value: string | null,
+): string | null {
+    try {
+        return normalizeGatewayCustomHeaders(value);
+    } catch {
+        return normalizeOptionalText(value);
+    }
+}
+
+function normalizeOptionalText(value: string | null | undefined): string | null {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
 }
 
 export function applyClaudeAuthEnv(
@@ -275,10 +532,12 @@ export function getClaudeAuthMethods(): readonly AiAuthMethod[] {
 
 export function detectClaudeAuthMethod(
     settings: ClaudeRuntimeSettings,
+    env: NodeJS.ProcessEnv = process.env,
 ): ClaudeAuthMethodId | null {
     if (
-        settings.authMethod === GATEWAY_METHOD_ID &&
-        gatewayIsConfigured(settings)
+        (settings.authMethod === GATEWAY_METHOD_ID ||
+            envSecretPresent(env, "ANTHROPIC_BASE_URL")) &&
+        gatewayIsConfigured(settings, env)
     ) {
         return GATEWAY_METHOD_ID;
     }
@@ -325,45 +584,14 @@ export function launchClaudeLogin(
     const loginArgs = getClaudeLoginArgs(methodId);
     const commandParts = [resolved.program, ...resolved.args, ...loginArgs];
 
-    if (process.platform === "win32") {
-        const scriptPath = buildWindowsLoginScript(commandParts, cwd);
-        return spawnDetached("cmd", [
-            "/C",
-            "start",
-            "",
-            "cmd",
-            "/K",
-            scriptPath,
-        ]);
-    }
-
-    if (process.platform === "darwin") {
-        const scriptPath = buildPosixLoginScript(commandParts, cwd);
-        return spawnDetached("open", ["-a", "Terminal", scriptPath]);
-    }
-
-    const scriptPath = buildPosixLoginScript(commandParts, cwd);
-    const candidates: Array<readonly [string, readonly string[]]> = [
-        ["x-terminal-emulator", ["-e", scriptPath]],
-        ["gnome-terminal", ["--", "bash", scriptPath]],
-        ["konsole", ["-e", "bash", scriptPath]],
-        ["xterm", ["-e", "bash", scriptPath]],
-    ];
-
-    for (const [program, args] of candidates) {
-        const resolvedProgram = resolveFromPath(program);
-        if (!resolvedProgram) {
-            continue;
-        }
-
-        return spawnDetached(resolvedProgram, args);
-    }
-
-    return Promise.reject(
-        new Error(
+    return launchTerminalLoginCommand({
+        commandParts,
+        cwd,
+        exitOnCommandError: true,
+        missingTerminalMessage:
             "No compatible terminal launcher was found for Claude login.",
-        ),
-    );
+        scriptPrefix: "comando-claude-login",
+    });
 }
 
 export function gatewayValidationError(
@@ -451,18 +679,38 @@ function gatewayEnvPolicy(
     settings: ClaudeRuntimeSettings,
     externalBaseUrlPresent: boolean,
 ): GatewayEnvPolicy {
-    const managedBaseUrl = validatedGatewayUrl(settings);
+    if (externalBaseUrlPresent) {
+        return {
+            allowSecretBundle: true,
+            managedBaseUrl: null,
+        };
+    }
+
+    const managedBaseUrl =
+        settings.authMethod === GATEWAY_METHOD_ID
+            ? validatedGatewayUrl(settings)
+            : null;
     const invalidManagedGateway =
-        settings.gatewayBaseUrl !== null && managedBaseUrl === null;
+        settings.authMethod === GATEWAY_METHOD_ID &&
+        settings.gatewayBaseUrl !== null &&
+        managedBaseUrl === null;
 
     return {
-        allowSecretBundle: !invalidManagedGateway || externalBaseUrlPresent,
+        allowSecretBundle:
+            settings.authMethod === GATEWAY_METHOD_ID &&
+            !invalidManagedGateway,
         managedBaseUrl,
     };
 }
 
-function gatewayIsConfigured(settings: ClaudeRuntimeSettings): boolean {
-    return validatedGatewayUrl(settings) !== null;
+function gatewayIsConfigured(
+    settings: ClaudeRuntimeSettings,
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    return (
+        envSecretPresent(env, "ANTHROPIC_BASE_URL") ||
+        validatedGatewayUrl(settings) !== null
+    );
 }
 
 function validatedGatewayUrl(settings: ClaudeRuntimeSettings): string | null {
@@ -974,67 +1222,16 @@ function envSecretPresent(env: NodeJS.ProcessEnv, key: string): boolean {
     return typeof value === "string" && value.trim().length > 0;
 }
 
-function buildWindowsLoginScript(
-    commandParts: readonly string[],
-    cwd?: string | null,
-): string {
-    const scriptPath = path.join(
-        os.tmpdir(),
-        `comando-claude-login-${Date.now()}.cmd`,
-    );
-    const lines = [
-        "@echo off",
-        ...(cwd ? [`cd /d "${cwd}"`] : []),
-        commandParts.map(quoteWindowsArg).join(" "),
-        "pause",
-    ];
-    fs.writeFileSync(scriptPath, lines.join("\r\n"), "utf8");
-    return scriptPath;
-}
-
-function buildPosixLoginScript(
-    commandParts: readonly string[],
-    cwd?: string | null,
-): string {
-    const scriptPath = path.join(
-        os.tmpdir(),
-        `comando-claude-login-${Date.now()}.sh`,
-    );
-    const lines = [
-        "#!/bin/sh",
-        "set -e",
-        ...(cwd ? [`cd ${quoteShellArg(cwd)}`] : []),
-        commandParts.map(quoteShellArg).join(" "),
-        'printf "\\nPress Enter to close... "',
-        "read _ignored",
-    ];
-    fs.writeFileSync(scriptPath, lines.join("\n"), "utf8");
-    fs.chmodSync(scriptPath, 0o755);
-    return scriptPath;
-}
-
-function quoteShellArg(value: string): string {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function quoteWindowsArg(value: string): string {
-    return `"${value.replace(/"/g, '\\"')}"`;
-}
-
-function spawnDetached(
-    program: string,
-    args: readonly string[],
-): Promise<void> {
-    return new Promise((resolve, reject) => {
-        const child = spawn(program, [...args], {
-            detached: true,
-            stdio: "ignore",
-        });
-
-        child.once("error", reject);
-        child.once("spawn", () => {
-            child.unref();
-            resolve();
-        });
-    });
+function getCredentialSourceLabel(source: AiAuthCredentialSource): string {
+    switch (source) {
+        case "comando-secret":
+            return "Using Comando gateway credentials";
+        case "environment":
+            return "Using Anthropic environment variables";
+        case "external-runtime":
+            return "Using external Claude login";
+        case "none":
+        default:
+            return "Needs authentication";
+    }
 }

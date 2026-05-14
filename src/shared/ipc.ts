@@ -132,6 +132,7 @@ export const IPC_CHANNELS = {
     closeAiSession: "ai:close-session",
     launchAiRuntimeAuth: "ai:launch-runtime-auth",
     logoutAiRuntimeAuth: "ai:logout-runtime-auth",
+    disconnectAiRuntimeAuth: "ai:disconnect-runtime-auth",
     respondAiPermission: "ai:respond-permission",
     respondAiUserInput: "ai:respond-user-input",
     keepAiTrackedFile: "ai:keep-tracked-file",
@@ -377,11 +378,23 @@ export type AiRuntimeSource =
 
 export type AiRuntimeState = "error" | "missing" | "ready";
 
+export type AiAuthCredentialSource =
+    | "comando-secret"
+    | "environment"
+    | "external-runtime"
+    | "none";
+
 export interface AiRuntimeStatus {
     readonly availableCommands?: readonly AiAvailableCommand[];
     readonly authMethod: string | null;
     readonly authMethods: readonly AiAuthMethod[];
     readonly authReady: boolean;
+    readonly authCredentialSource?: AiAuthCredentialSource;
+    readonly authCredentialSourceLabel?: string;
+    readonly authSessionMessage?: string | null;
+    readonly authStorageMessage?: string | null;
+    readonly canDisconnectAuth?: boolean;
+    readonly canLogoutAuth?: boolean;
     readonly checkedAt: string;
     readonly command: string | null;
     readonly configOptions?: readonly AiSessionConfigOption[];
@@ -2259,6 +2272,11 @@ export interface AiRuntimeAuthLogoutInput {
     readonly runtimeId: AiRuntimeId;
 }
 
+export interface AiRuntimeAuthDisconnectInput {
+    readonly runtimeId: AiRuntimeId;
+    readonly scope?: "comando" | "runtime" | "all";
+}
+
 export interface AiTrackedFileMutationInput {
     readonly path: string;
     readonly sessionId: string;
@@ -2529,6 +2547,9 @@ export interface ComandoApi {
     launchAiRuntimeAuth: (input: AiRuntimeAuthLaunchInput) => Promise<void>;
     logoutAiRuntimeAuth: (
         input: AiRuntimeAuthLogoutInput,
+    ) => Promise<AiRuntimeStatus>;
+    disconnectAiRuntimeAuth: (
+        input: AiRuntimeAuthDisconnectInput,
     ) => Promise<AiRuntimeStatus>;
     keepAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
     rejectAiTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;

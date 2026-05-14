@@ -9,6 +9,7 @@ import {
     type AppBootstrapSnapshot,
     type AppWindowKind,
     type AiPermissionResponseInput,
+    type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
     type AiRuntimeAuthLogoutInput,
     type AiRuntimeId,
@@ -318,6 +319,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.respondAiPermission);
     ipcMain.removeHandler(IPC_CHANNELS.respondAiUserInput);
     ipcMain.removeHandler(IPC_CHANNELS.logoutAiRuntimeAuth);
+    ipcMain.removeHandler(IPC_CHANNELS.disconnectAiRuntimeAuth);
     ipcMain.removeHandler(IPC_CHANNELS.keepAiTrackedFile);
     ipcMain.removeHandler(IPC_CHANNELS.rejectAiTrackedFile);
     ipcMain.removeHandler(IPC_CHANNELS.keepAiTrackedFileHunks);
@@ -1618,6 +1620,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.logoutAiRuntimeAuth,
         (_event, input: AiRuntimeAuthLogoutInput) =>
             options.aiService.logoutRuntimeAuth(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.disconnectAiRuntimeAuth,
+        (_event, input: AiRuntimeAuthDisconnectInput) =>
+            options.aiService.disconnectRuntimeAuth(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.respondAiPermission,

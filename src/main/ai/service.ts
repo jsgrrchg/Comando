@@ -14,6 +14,7 @@ import type {
     AiPromptResult,
     PrepareAiSessionInput,
     AiRuntimeAuthLaunchInput,
+    AiRuntimeAuthDisconnectInput,
     AiRuntimeAuthLogoutInput,
     AiRuntimeId,
     AiRuntimeStatus,
@@ -46,7 +47,10 @@ import {
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
-import type { SecretStoreGateway } from "@main/ai/secret-store";
+import type {
+    SecretRecordPatch,
+    SecretStoreGateway,
+} from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
 
 import {
@@ -87,31 +91,31 @@ import { buildRuntimeSpawnEnv } from "./runtime-env";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     applyCodexAuthEnv,
+    buildCodexSecretPatches,
     getCodexAuthMethods,
     getCodexRuntimeStatus,
     isCodexAuthenticationError,
     type CodexSecretBundle,
     loadCodexSecretBundle,
-    saveCodexSecrets,
 } from "./codex/setup";
 import {
     applyClaudeAuthEnv,
+    buildClaudeSecretPatches,
     getClaudeRuntimeStatus,
     isClaudeAuthenticationError,
     launchClaudeLogin,
     loadClaudeSecretBundle,
     markClaudeAuthInvalidated,
     resolveClaudeRuntime,
-    saveClaudeSecrets,
 } from "./claude/setup";
 import {
     applyGeminiAuthEnv,
+    buildGeminiSecretPatches,
     getGeminiRuntimeStatus,
     isGeminiAuthenticationError,
     launchGeminiLogin,
     markGeminiAuthInvalidated,
     resolveGeminiRuntime,
-    saveGeminiSecrets,
 } from "./gemini/setup";
 import {
     getKiloRuntimeStatus,
@@ -257,16 +261,16 @@ export class AiService {
         return status;
     }
 
-    saveCodexRuntimeSettings(
+    async saveCodexRuntimeSettings(
         settings: CodexRuntimeSettingsInput,
-    ): AiRuntimeStatus {
+    ): Promise<AiRuntimeStatus> {
         const currentSettings =
             this.#settingsService.loadCodexRuntimeSettings();
         const nextSecrets = resolveCodexSecretBundle(
             loadCodexSecretBundle(this.#secretStore),
             settings,
         );
-        const secretFlags = saveCodexSecrets(this.#secretStore, {
+        const secretPatch = buildCodexSecretPatches(this.#secretStore, {
             codexApiKey: nextSecrets.codexApiKey,
             openaiApiKey: nextSecrets.openaiApiKey,
         });
@@ -274,11 +278,10 @@ export class AiService {
             ...currentSettings,
             authMethod: settings.authMethod,
             binaryPath: normalizeOptionalText(settings.binaryPath),
-            hasCodexApiKey: secretFlags.hasCodexApiKey,
-            hasOpenAiApiKey: secretFlags.hasOpenAiApiKey,
+            hasCodexApiKey: secretPatch.flags.hasCodexApiKey,
+            hasOpenAiApiKey: secretPatch.flags.hasOpenAiApiKey,
         } satisfies CodexRuntimeSettings;
-
-        this.#settingsService.saveCodexRuntimeSettings(nextSettings);
+        await this.#saveCodexAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
             getCodexRuntimeStatus(nextSettings, nextSecrets),
         );
@@ -286,9 +289,9 @@ export class AiService {
         return status;
     }
 
-    saveClaudeRuntimeSettings(
+    async saveClaudeRuntimeSettings(
         settings: ClaudeRuntimeSettingsInput,
-    ): AiRuntimeStatus {
+    ): Promise<AiRuntimeStatus> {
         const currentSettings =
             this.#settingsService.loadClaudeRuntimeSettings();
         const currentSecrets = loadClaudeSecretBundle(this.#secretStore);
@@ -300,7 +303,7 @@ export class AiService {
             currentSecrets.anthropicCustomHeaders,
             settings.gatewayCustomHeaders,
         );
-        const secretFlags = saveClaudeSecrets(this.#secretStore, {
+        const secretPatch = buildClaudeSecretPatches(this.#secretStore, {
             gatewayAuthToken,
             gatewayCustomHeaders,
         });
@@ -309,11 +312,11 @@ export class AiService {
             authMethod: settings.authMethod,
             binaryPath: normalizeOptionalText(settings.binaryPath),
             gatewayBaseUrl: normalizeOptionalText(settings.gatewayBaseUrl),
-            hasGatewayAuthToken: secretFlags.hasGatewayAuthToken,
-            hasGatewayCustomHeaders: secretFlags.hasGatewayCustomHeaders,
+            hasGatewayAuthToken: secretPatch.flags.hasGatewayAuthToken,
+            hasGatewayCustomHeaders: secretPatch.flags.hasGatewayCustomHeaders,
         };
 
-        this.#settingsService.saveClaudeRuntimeSettings(nextSettings);
+        await this.#saveClaudeAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
             getClaudeRuntimeStatus(nextSettings, this.#secretStore),
         );
@@ -321,9 +324,9 @@ export class AiService {
         return status;
     }
 
-    saveGeminiRuntimeSettings(
+    async saveGeminiRuntimeSettings(
         settings: GeminiRuntimeSettingsInput,
-    ): AiRuntimeStatus {
+    ): Promise<AiRuntimeStatus> {
         const currentSettings =
             this.#settingsService.loadGeminiRuntimeSettings();
         const geminiApiKey = applySecretValuePatch(
@@ -334,7 +337,7 @@ export class AiService {
             this.#secretStore.loadSecret("ai.gemini", "google_api_key"),
             settings.googleApiKey,
         );
-        const secretFlags = saveGeminiSecrets(this.#secretStore, {
+        const secretPatch = buildGeminiSecretPatches(this.#secretStore, {
             geminiApiKey,
             googleApiKey,
         });
@@ -348,11 +351,11 @@ export class AiService {
             googleCloudProject: normalizeOptionalText(
                 settings.googleCloudProject,
             ),
-            hasGeminiApiKey: secretFlags.hasGeminiApiKey,
-            hasGoogleApiKey: secretFlags.hasGoogleApiKey,
+            hasGeminiApiKey: secretPatch.flags.hasGeminiApiKey,
+            hasGoogleApiKey: secretPatch.flags.hasGoogleApiKey,
         };
 
-        this.#settingsService.saveGeminiRuntimeSettings(nextSettings);
+        await this.#saveGeminiAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
             getGeminiRuntimeStatus(nextSettings, this.#secretStore),
         );
@@ -657,7 +660,7 @@ export class AiService {
                 ...currentSettings,
                 authMethod,
             });
-            this.#settingsService.saveClaudeRuntimeSettings(nextSettings);
+            await this.#saveClaudeAuthSettings(nextSettings, []);
 
             const resolvedRuntime = resolveClaudeRuntime(
                 nextSettings,
@@ -696,7 +699,7 @@ export class AiService {
                 ...currentSettings,
                 authMethod,
             });
-            this.#settingsService.saveGeminiRuntimeSettings(nextSettings);
+            await this.#saveGeminiAuthSettings(nextSettings, []);
 
             await launchGeminiLogin(nextSettings, cwd);
             this.#onRuntimeStatus(
@@ -715,7 +718,7 @@ export class AiService {
             const nextSettings = markKiloAuthInvalidated(
                 this.#settingsService.loadKiloRuntimeSettings(),
             );
-            this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+            await this.#saveKiloAuthSettings(nextSettings);
 
             await launchKiloLogin(nextSettings, cwd);
             this.#onRuntimeStatus(getKiloRuntimeStatus(nextSettings));
@@ -777,7 +780,7 @@ export class AiService {
                 nextSettings,
             );
 
-            this.#settingsService.saveCodexRuntimeSettings(nextSettings);
+            await this.#saveCodexAuthSettings(nextSettings, []);
             this.#onRuntimeStatus(
                 this.#withPersistedRuntimeCatalog(
                     getCodexRuntimeStatus(
@@ -805,6 +808,12 @@ export class AiService {
 
         const currentSettings =
             this.#settingsService.loadCodexRuntimeSettings();
+        if (currentSettings.authMethod !== "chatgpt") {
+            throw new Error(
+                "Codex provider logout is only available for ChatGPT login. Use Disconnect from Comando to clear local API keys.",
+            );
+        }
+
         if (currentSettings.authMethod === "chatgpt") {
             await this.#runRuntimeAuthConnection(
                 "codex",
@@ -836,23 +845,112 @@ export class AiService {
             );
         }
 
-        const secretFlags = saveCodexSecrets(this.#secretStore, {
+        const secretPatch = buildCodexSecretPatches(this.#secretStore, {
             codexApiKey: null,
             openaiApiKey: null,
         });
         const nextSettings = {
             ...currentSettings,
             authMethod: null,
-            hasCodexApiKey: secretFlags.hasCodexApiKey,
-            hasOpenAiApiKey: secretFlags.hasOpenAiApiKey,
+            hasCodexApiKey: secretPatch.flags.hasCodexApiKey,
+            hasOpenAiApiKey: secretPatch.flags.hasOpenAiApiKey,
         } satisfies CodexRuntimeSettings;
-        this.#settingsService.saveCodexRuntimeSettings(nextSettings);
+        await this.#saveCodexAuthSettings(nextSettings, secretPatch.patches);
 
         const status = this.#withPersistedRuntimeCatalog(
             getCodexRuntimeStatus(
                 nextSettings,
                 loadCodexSecretBundle(this.#secretStore),
             ),
+        );
+        this.#onRuntimeStatus(status);
+        return status;
+    }
+
+    async disconnectRuntimeAuth(
+        input: AiRuntimeAuthDisconnectInput,
+    ): Promise<AiRuntimeStatus> {
+        if (input.runtimeId === "codex") {
+            const currentSettings =
+                this.#settingsService.loadCodexRuntimeSettings();
+            const secretPatch = buildCodexSecretPatches(this.#secretStore, {
+                codexApiKey: null,
+                openaiApiKey: null,
+            });
+            const nextSettings = {
+                ...currentSettings,
+                authMethod: null,
+                hasCodexApiKey: secretPatch.flags.hasCodexApiKey,
+                hasOpenAiApiKey: secretPatch.flags.hasOpenAiApiKey,
+            } satisfies CodexRuntimeSettings;
+            await this.#saveCodexAuthSettings(nextSettings, secretPatch.patches);
+            const status = this.#withPersistedRuntimeCatalog(
+                getCodexRuntimeStatus(
+                    nextSettings,
+                    loadCodexSecretBundle(this.#secretStore),
+                ),
+            );
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
+        if (input.runtimeId === "claude") {
+            const currentSettings =
+                this.#settingsService.loadClaudeRuntimeSettings();
+            const secretPatch = buildClaudeSecretPatches(this.#secretStore, {
+                gatewayAuthToken: null,
+                gatewayCustomHeaders: null,
+            });
+            const nextSettings = {
+                ...currentSettings,
+                authInvalidatedAtMs:
+                    currentSettings.authMethod === "gateway"
+                        ? currentSettings.authInvalidatedAtMs
+                        : Date.now(),
+                authMethod: null,
+                hasGatewayAuthToken: secretPatch.flags.hasGatewayAuthToken,
+                hasGatewayCustomHeaders:
+                    secretPatch.flags.hasGatewayCustomHeaders,
+            };
+            await this.#saveClaudeAuthSettings(nextSettings, secretPatch.patches);
+            const status = this.#withPersistedRuntimeCatalog(
+                getClaudeRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
+        if (input.runtimeId === "gemini") {
+            const currentSettings =
+                this.#settingsService.loadGeminiRuntimeSettings();
+            const secretPatch = buildGeminiSecretPatches(this.#secretStore, {
+                geminiApiKey: null,
+                googleApiKey: null,
+            });
+            const nextSettings = {
+                ...currentSettings,
+                authInvalidatedAtMs:
+                    currentSettings.authMethod === "use_gemini"
+                        ? currentSettings.authInvalidatedAtMs
+                        : Date.now(),
+                authMethod: null,
+                hasGeminiApiKey: secretPatch.flags.hasGeminiApiKey,
+                hasGoogleApiKey: secretPatch.flags.hasGoogleApiKey,
+            };
+            await this.#saveGeminiAuthSettings(nextSettings, secretPatch.patches);
+            const status = this.#withPersistedRuntimeCatalog(
+                getGeminiRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
+        const nextSettings = markKiloAuthInvalidated(
+            this.#settingsService.loadKiloRuntimeSettings(),
+        );
+        await this.#saveKiloAuthSettings(nextSettings);
+        const status = this.#withPersistedRuntimeCatalog(
+            getKiloRuntimeStatus(nextSettings),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -1360,6 +1458,72 @@ export class AiService {
         );
     }
 
+    async #saveCodexAuthSettings(
+        settings: CodexRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        if (this.#settingsService.saveCodexAuth) {
+            await this.#settingsService.saveCodexAuth(settings, secrets);
+            this.#secretStore.cacheSecretPatches?.(secrets);
+            return;
+        }
+
+        await this.#saveSecretPatches(secrets);
+        this.#settingsService.saveCodexRuntimeSettings(settings);
+    }
+
+    async #saveClaudeAuthSettings(
+        settings: ReturnType<SettingsGateway["loadClaudeRuntimeSettings"]>,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        if (this.#settingsService.saveClaudeAuth) {
+            await this.#settingsService.saveClaudeAuth(settings, secrets);
+            this.#secretStore.cacheSecretPatches?.(secrets);
+            return;
+        }
+
+        await this.#saveSecretPatches(secrets);
+        this.#settingsService.saveClaudeRuntimeSettings(settings);
+    }
+
+    async #saveGeminiAuthSettings(
+        settings: ReturnType<SettingsGateway["loadGeminiRuntimeSettings"]>,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        if (this.#settingsService.saveGeminiAuth) {
+            await this.#settingsService.saveGeminiAuth(settings, secrets);
+            this.#secretStore.cacheSecretPatches?.(secrets);
+            return;
+        }
+
+        await this.#saveSecretPatches(secrets);
+        this.#settingsService.saveGeminiRuntimeSettings(settings);
+    }
+
+    async #saveKiloAuthSettings(
+        settings: ReturnType<SettingsGateway["loadKiloRuntimeSettings"]>,
+    ): Promise<void> {
+        if (this.#settingsService.saveKiloAuth) {
+            await this.#settingsService.saveKiloAuth(settings);
+            return;
+        }
+
+        this.#settingsService.saveKiloRuntimeSettings(settings);
+    }
+
+    async #saveSecretPatches(
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        for (const secret of secrets) {
+            const parsed = parseSecretStorageKey(secret.key);
+            await this.#secretStore.saveSecret(
+                parsed.namespace,
+                parsed.secretId,
+                secret.value,
+            );
+        }
+    }
+
     #withPersistedRuntimeCatalog(status: AiRuntimeStatus): AiRuntimeStatus {
         const catalog = this.#persistence.loadLatestRuntimeCatalog(
             status.runtimeId,
@@ -1631,6 +1795,27 @@ function resolveCodexSecretBundle(
     return {
         codexApiKey,
         openaiApiKey,
+    };
+}
+
+function parseSecretStorageKey(key: string): {
+    readonly namespace: string;
+    readonly secretId: string;
+} {
+    const prefix = "secret.";
+    if (!key.startsWith(prefix)) {
+        throw new Error(`Invalid secret storage key: ${key}`);
+    }
+
+    const keyBody = key.slice(prefix.length);
+    const separatorIndex = keyBody.lastIndexOf(".");
+    if (separatorIndex <= 0 || separatorIndex === keyBody.length - 1) {
+        throw new Error(`Invalid secret storage key: ${key}`);
+    }
+
+    return {
+        namespace: keyBody.slice(0, separatorIndex),
+        secretId: keyBody.slice(separatorIndex + 1),
     };
 }
 
