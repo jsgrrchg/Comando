@@ -222,6 +222,11 @@ describe("GitService", () => {
 
     it("lists history and commit details", async () => {
         const rootPath = createGitRepositoryFixture();
+        const featureWorktreePath = path.join(
+            path.dirname(rootPath),
+            "comando-git-history-feature",
+        );
+        temporaryDirectories.push(featureWorktreePath);
 
         git(rootPath, ["init", "-b", "main"]);
         git(rootPath, ["config", "user.name", "Comando"]);
@@ -235,6 +240,19 @@ describe("GitService", () => {
         fs.writeFileSync(path.join(rootPath, "notes.txt"), "details\n");
         git(rootPath, ["add", "."]);
         git(rootPath, ["commit", "-m", "update docs"]);
+        git(rootPath, ["branch", "feature/history", "HEAD~1"]);
+        git(rootPath, [
+            "worktree",
+            "add",
+            featureWorktreePath,
+            "feature/history",
+        ]);
+        fs.writeFileSync(
+            path.join(featureWorktreePath, "feature.txt"),
+            "feature\n",
+        );
+        git(featureWorktreePath, ["add", "feature.txt"]);
+        git(featureWorktreePath, ["commit", "-m", "feature worktree commit"]);
 
         const service = new GitService({ cacheSnapshots: false });
         const history = await service.listHistory(rootPath, { limit: 10 });
@@ -277,6 +295,64 @@ describe("GitService", () => {
         expect(filteredHistory.commits[0]?.subject).toBe("initial commit");
         expect(filteredHistory.matchedCount).toBe(1);
         expect(filteredHistory.totalCount).toBe(2);
+
+        const hiddenBranchHistory = await service.listHistory(rootPath, {
+            query: "feature worktree",
+        });
+        expect(hiddenBranchHistory.commits).toHaveLength(0);
+        expect(hiddenBranchHistory.matchedCount).toBe(0);
+        expect(hiddenBranchHistory.totalCount).toBe(2);
+
+        const featureHistory = await service.listHistory(featureWorktreePath, {
+            limit: 10,
+        });
+        expect(featureHistory.commits.map((commit) => commit.subject)).toEqual([
+            "feature worktree commit",
+            "initial commit",
+        ]);
+        expect(featureHistory.matchedCount).toBe(2);
+        expect(featureHistory.totalCount).toBe(2);
+    });
+
+    it("invalidates cached snapshots across worktrees after branch metadata changes", async () => {
+        const rootPath = createGitRepositoryFixture();
+        const featureWorktreePath = path.join(
+            path.dirname(rootPath),
+            "comando-git-cache-feature",
+        );
+        temporaryDirectories.push(featureWorktreePath);
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+        git(rootPath, ["branch", "feature/cache"]);
+        git(rootPath, [
+            "worktree",
+            "add",
+            featureWorktreePath,
+            "feature/cache",
+        ]);
+
+        const service = new GitService();
+        const cachedFeatureSnapshot =
+            await service.getRepositorySnapshot(featureWorktreePath);
+        expect(
+            cachedFeatureSnapshot.branches.map((branch) => branch.name),
+        ).not.toContain("hotfix/cache");
+
+        await service.checkoutBranch(rootPath, {
+            branchName: "main",
+            newBranchName: "hotfix/cache",
+        });
+
+        const refreshedFeatureSnapshot =
+            await service.getRepositorySnapshot(featureWorktreePath);
+        expect(
+            refreshedFeatureSnapshot.branches.map((branch) => branch.name),
+        ).toContain("hotfix/cache");
     });
 
     it("classifies paths outside a repo as non-repository", async () => {

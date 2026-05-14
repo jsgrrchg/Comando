@@ -22,6 +22,7 @@ import {
 } from "@shared/chatTitle";
 
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
+import { getGitContextKey } from "@renderer/app/git/context-key";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
@@ -165,7 +166,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 
         return (
             state.snapshots[
-                `${tab.projectId}::${tab.worktreeId ?? "primary"}`
+                getGitContextKey(tab.projectId, tab.worktreeId ?? null)
             ] ?? null
         );
     });

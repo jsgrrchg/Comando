@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { buildGitRemoteCommitLink } from "@renderer/app/git/remote-link";
+import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
@@ -23,7 +24,7 @@ import { IdeActionButton } from "./ide-bar";
 const EMPTY_LOADING_SHAS: readonly string[] = [];
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
-    return `${projectId}::${worktreeId ?? "primary"}`;
+    return getGitContextKey(projectId, worktreeId);
 }
 
 export function GitCommitTabView({

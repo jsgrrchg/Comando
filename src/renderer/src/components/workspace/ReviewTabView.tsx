@@ -6,6 +6,7 @@ import {
     AI_REVIEW_UNDO_ENABLED,
     DEFAULT_AI_DIFF_ZOOM,
 } from "@renderer/app/ai/sessionReviewContracts";
+import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
@@ -522,7 +523,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
 
         return (
             state.snapshots[
-                `${tab.projectId}::${tab.worktreeId ?? "primary"}`
+                getGitContextKey(tab.projectId, tab.worktreeId ?? null)
             ] ?? null
         );
     });

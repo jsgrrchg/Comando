@@ -27,7 +27,6 @@ export async function listGitHistory(
         if (query) {
             const raw = await git.raw([
                 "log",
-                "--all",
                 "--date-order",
                 `--pretty=format:${format}`,
             ]);
@@ -50,7 +49,6 @@ export async function listGitHistory(
         const [raw, totalCount] = await Promise.all([
             git.raw([
                 "log",
-                "--all",
                 "--date-order",
                 `--max-count=${limit}`,
                 `--pretty=format:${format}`,
@@ -80,7 +78,7 @@ async function countGitHistoryCommits(
     git: ReturnType<typeof createBackgroundSafeGit>,
 ): Promise<number> {
     try {
-        const raw = await git.raw(["rev-list", "--all", "--count"]);
+        const raw = await git.raw(["rev-list", "--count", "HEAD"]);
         const count = Number.parseInt(raw.trim(), 10);
         return Number.isFinite(count) ? count : 0;
     } catch (error) {
@@ -214,6 +212,7 @@ function isEmptyRepositoryHistoryError(error: unknown): boolean {
     return (
         error.message.includes("does not have any commits yet") ||
         error.message.includes("your current branch") ||
+        error.message.includes("ambiguous argument 'HEAD'") ||
         error.message.includes("bad default revision")
     );
 }

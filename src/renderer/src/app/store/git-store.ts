@@ -12,6 +12,10 @@ import type {
     ProjectSummary,
 } from "@shared/ipc";
 
+import {
+    getGitContextKey,
+    getPrimaryWorktreeId,
+} from "../git/context-key";
 import { resolveGitHubAvatars } from "../git/github-avatar-cache";
 
 import type { GitChangeGroupId, GitPanelTabId } from "../../components/git";
@@ -892,7 +896,11 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         set((state) => ({
             activeWorktreeIds: {
                 ...state.activeWorktreeIds,
-                [projectId]: worktreeId,
+                [projectId]: normalizeWorktreeIdForStorage(
+                    projectId,
+                    worktreeId,
+                    state.snapshots,
+                ),
             },
         }));
         return Promise.resolve();
@@ -1104,7 +1112,24 @@ function resolveSnapshotWorktreeId(
 }
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
-    return `${projectId}::${worktreeId ?? "primary"}`;
+    return getGitContextKey(projectId, worktreeId);
+}
+
+function normalizeWorktreeIdForStorage(
+    projectId: string,
+    worktreeId: string | null,
+    snapshots: Record<string, GitRepositorySnapshot | null>,
+): string | null {
+    if (worktreeId !== null) {
+        return worktreeId;
+    }
+
+    return (
+        Object.values(snapshots).find(
+            (snapshot) => snapshot?.projectId === projectId,
+        )?.worktrees.find((worktree) => worktree.isPrimary)?.id ??
+        getPrimaryWorktreeId(projectId)
+    );
 }
 
 function getComandoApi() {

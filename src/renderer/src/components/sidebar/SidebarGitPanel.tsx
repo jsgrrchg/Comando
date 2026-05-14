@@ -6,6 +6,7 @@ import {
     buildGitChangeGroups,
     summarizeGitRepository,
 } from "@renderer/app/git/presentation";
+import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
@@ -17,7 +18,7 @@ import {
 } from "@renderer/components/git";
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
-    return `${projectId}::${worktreeId ?? "primary"}`;
+    return getGitContextKey(projectId, worktreeId);
 }
 
 export function SidebarGitPanel({

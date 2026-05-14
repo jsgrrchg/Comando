@@ -52,6 +52,7 @@ import {
     indentMarkdownListItems,
     outdentMarkdownListItems,
 } from "@renderer/app/editor/markdownLists";
+import { getGitContextKey } from "@renderer/app/git/context-key";
 import { createComandoEditorFeatureOptions } from "@renderer/app/editor/monacoEditorFeatures";
 import { resolveMonacoLanguageId } from "@renderer/app/editor/monacoLanguage";
 import {
@@ -1031,7 +1032,7 @@ function getWorkspaceGitContextKey(
     projectId: string,
     worktreeId: string | null,
 ): string {
-    return `${projectId}::${worktreeId ?? "primary"}`;
+    return getGitContextKey(projectId, worktreeId);
 }
 
 async function openProjectFileEntriesAtTarget(input: {
@@ -3350,7 +3351,10 @@ function FileTabView({
         } | null>(null);
     const documentLanguageId = document?.languageId ?? "plaintext";
     const gitSnapshot = useGitStore((state) => {
-        const contextKey = `${tab.projectId}::${tab.worktreeId ?? "primary"}`;
+        const contextKey = getWorkspaceGitContextKey(
+            tab.projectId,
+            tab.worktreeId ?? null,
+        );
         return state.snapshots[contextKey] ?? null;
     });
     const activeGitChange = useMemo(

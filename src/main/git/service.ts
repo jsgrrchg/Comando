@@ -588,7 +588,7 @@ export class GitService implements GitGateway {
 
         await git.raw(args);
         const commitSha = (await git.raw(["rev-parse", "HEAD"])).trim();
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
 
         return {
             commitSha,
@@ -621,7 +621,7 @@ export class GitService implements GitGateway {
         }
 
         await git.raw(args);
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -651,7 +651,7 @@ export class GitService implements GitGateway {
         }
 
         await git.raw(args);
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -667,7 +667,7 @@ export class GitService implements GitGateway {
         const args = ["branch", options.force ? "-D" : "-d", options.branchName];
 
         await git.raw(args);
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -689,7 +689,7 @@ export class GitService implements GitGateway {
         ]);
         await git.raw(["fetch", options.remoteName, "--prune"]);
 
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -710,7 +710,7 @@ export class GitService implements GitGateway {
 
         args.push(path.resolve(options.path));
         await git.raw(args);
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -737,7 +737,7 @@ export class GitService implements GitGateway {
         }
 
         await git.raw(args);
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -766,7 +766,7 @@ export class GitService implements GitGateway {
         }
 
         await git.raw(args);
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -803,7 +803,7 @@ export class GitService implements GitGateway {
         }
 
         await git.raw(args);
-        this.invalidate(inputPath);
+        this.#invalidateSharedRepositoryMetadata();
         return this.getRepositorySnapshot(inputPath);
     }
 
@@ -831,6 +831,10 @@ export class GitService implements GitGateway {
         }
 
         return resolution.canonicalRootPath;
+    }
+
+    #invalidateSharedRepositoryMetadata(): void {
+        this.invalidate();
     }
 }
 

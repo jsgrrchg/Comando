@@ -17,6 +17,11 @@ import type {
     GitWorktreeSummary,
 } from "@shared/ipc";
 
+import {
+    areGitWorktreeIdsEquivalent,
+    getGitContextKey,
+    isGitWorktreeActive,
+} from "@renderer/app/git/context-key";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
@@ -259,6 +264,7 @@ export function SidebarGitScopePicker({
         readonly y: number;
     } | null>(null);
     const pendingMenuSizeRef = useRef<GitScopeMenuSize | null>(null);
+    const menuResizeEndRef = useRef<(() => void) | null>(null);
 
     const project = useProjectsStore((state) =>
         projectId
@@ -290,7 +296,12 @@ export function SidebarGitScopePicker({
     const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
 
     const activeWorktree =
-        snapshot?.worktrees.find((entry) => entry.id === worktreeId) ??
+        snapshot?.worktrees.find(
+            (entry) =>
+                projectId
+                    ? isGitScopeWorktreeActive(projectId, worktreeId, entry)
+                    : entry.id === worktreeId,
+        ) ??
         snapshot?.worktrees.find((entry) => entry.isCurrent) ??
         snapshot?.worktrees.find((entry) => entry.isPrimary) ??
         null;
@@ -353,9 +364,15 @@ export function SidebarGitScopePicker({
                           ),
                       },
                       branchWorktree,
+                      projectId,
                       worktreeId,
                   )
-                : getBranchBadges(branch, branchWorktree, worktreeId);
+                : getBranchBadges(
+                      branch,
+                      branchWorktree,
+                      projectId,
+                      worktreeId,
+                  );
             const description = getBranchDescription(
                 branch,
                 branchWorktree,
@@ -384,14 +401,23 @@ export function SidebarGitScopePicker({
                 searchText,
             } satisfies BranchListRow;
         });
-    }, [branches, snapshot?.branch?.name, snapshot?.branch?.upstreamName, worktreeId, worktrees]);
+    }, [
+        branches,
+        projectId,
+        snapshot?.branch?.name,
+        snapshot?.branch?.upstreamName,
+        worktreeId,
+        worktrees,
+    ]);
 
     const worktreeRows = useMemo(
         () =>
             worktrees.map((worktree) => ({
                 badges: getWorktreeBadges(worktree),
                 description: worktree.rootPath,
-                isActive: worktree.id === (worktreeId ?? null),
+                isActive: projectId
+                    ? isGitScopeWorktreeActive(projectId, worktreeId, worktree)
+                    : worktree.id === (worktreeId ?? null),
                 searchText: [
                     worktree.branchName ?? "",
                     worktree.rootPath,
@@ -404,7 +430,7 @@ export function SidebarGitScopePicker({
                     worktree.branchName ?? getDetachedWorktreeLabel(worktree),
                 worktree,
             })) satisfies readonly WorktreeListRow[],
-        [worktreeId, worktrees],
+        [projectId, worktreeId, worktrees],
     );
     const branchRowByName = useMemo(
         () => new Map(branchRows.map((row) => [row.branch.name, row])),
@@ -708,7 +734,13 @@ export function SidebarGitScopePicker({
                 return;
             }
 
-            if ((worktreeId ?? null) === (nextWorktreeId ?? null)) {
+            if (
+                areGitScopeWorktreeIdsEqual(
+                    projectId,
+                    worktreeId,
+                    nextWorktreeId,
+                )
+            ) {
                 setIsOpen(false);
                 setQuery("");
                 setActionError(null);
@@ -775,7 +807,11 @@ export function SidebarGitScopePicker({
 
             if (
                 linkedWorktree &&
-                linkedWorktree.id !== (worktreeId ?? snapshot?.currentWorktreeId ?? null)
+                !areGitScopeWorktreeIdsEqual(
+                    projectId,
+                    linkedWorktree.id,
+                    worktreeId ?? snapshot?.currentWorktreeId ?? null,
+                )
             ) {
                 await handleSelectWorktree(linkedWorktree.id);
                 return;
@@ -1234,8 +1270,11 @@ export function SidebarGitScopePicker({
             const linkedWorktree = row.branchWorktree;
             const canSwitchToLinkedWorktree =
                 linkedWorktree !== null &&
-                linkedWorktree.id !==
-                    (worktreeId ?? snapshot?.currentWorktreeId ?? null);
+                !areGitScopeWorktreeIdsEqual(
+                    projectId ?? linkedWorktree.projectId,
+                    linkedWorktree.id,
+                    worktreeId ?? snapshot?.currentWorktreeId ?? null,
+                );
             const checkoutLabel = canSwitchToLinkedWorktree
                 ? "Switch to Worktree"
                 : "Checkout";
@@ -1419,6 +1458,10 @@ export function SidebarGitScopePicker({
         );
     }, []);
 
+    const handleMenuResizeEndEvent = useCallback(() => {
+        menuResizeEndRef.current?.();
+    }, []);
+
     const handleMenuResizeEnd = useCallback(() => {
         const nextSize = pendingMenuSizeRef.current;
         menuResizeStateRef.current = null;
@@ -1426,8 +1469,8 @@ export function SidebarGitScopePicker({
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
         window.removeEventListener("pointermove", handleMenuResizeMove);
-        window.removeEventListener("pointerup", handleMenuResizeEnd);
-        window.removeEventListener("pointercancel", handleMenuResizeEnd);
+        window.removeEventListener("pointerup", handleMenuResizeEndEvent);
+        window.removeEventListener("pointercancel", handleMenuResizeEndEvent);
 
         if (!nextSize) {
             return;
@@ -1435,7 +1478,16 @@ export function SidebarGitScopePicker({
 
         setUserMenuSize(nextSize);
         persistGitScopeMenuSize(nextSize);
-    }, [handleMenuResizeMove]);
+    }, [handleMenuResizeEndEvent, handleMenuResizeMove]);
+
+    useEffect(() => {
+        menuResizeEndRef.current = handleMenuResizeEnd;
+        return () => {
+            if (menuResizeEndRef.current === handleMenuResizeEnd) {
+                menuResizeEndRef.current = null;
+            }
+        };
+    }, [handleMenuResizeEnd]);
 
     const handleMenuResizeStart = useCallback(
         (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1469,21 +1521,21 @@ export function SidebarGitScopePicker({
             document.body.style.cursor = "nwse-resize";
             document.body.style.userSelect = "none";
             window.addEventListener("pointermove", handleMenuResizeMove);
-            window.addEventListener("pointerup", handleMenuResizeEnd);
-            window.addEventListener("pointercancel", handleMenuResizeEnd);
+            window.addEventListener("pointerup", handleMenuResizeEndEvent);
+            window.addEventListener("pointercancel", handleMenuResizeEndEvent);
         },
-        [handleMenuResizeEnd, handleMenuResizeMove],
+        [handleMenuResizeEndEvent, handleMenuResizeMove],
     );
 
     useEffect(() => {
         return () => {
             window.removeEventListener("pointermove", handleMenuResizeMove);
-            window.removeEventListener("pointerup", handleMenuResizeEnd);
-            window.removeEventListener("pointercancel", handleMenuResizeEnd);
+            window.removeEventListener("pointerup", handleMenuResizeEndEvent);
+            window.removeEventListener("pointercancel", handleMenuResizeEndEvent);
             document.body.style.cursor = "";
             document.body.style.userSelect = "";
         };
-    }, [handleMenuResizeEnd, handleMenuResizeMove]);
+    }, [handleMenuResizeEndEvent, handleMenuResizeMove]);
 
     useEffect(() => {
         if (focusIndex < 0 || !listRef.current) return;
@@ -1949,6 +2001,7 @@ function SearchIcon() {
 function getBranchBadges(
     branch: GitBranchSummary,
     branchWorktree: GitWorktreeSummary | null,
+    projectId: string | null,
     activeWorktreeId: string | null,
 ): readonly SidebarBadge[] {
     const badges: SidebarBadge[] = [];
@@ -1957,7 +2010,14 @@ function getBranchBadges(
         badges.push({ label: "Current", tone: "accent" });
     }
 
-    if (branchWorktree && branchWorktree.id !== activeWorktreeId) {
+    if (
+        branchWorktree &&
+        !isGitScopeWorktreeActive(
+            projectId ?? branchWorktree.projectId,
+            activeWorktreeId,
+            branchWorktree,
+        )
+    ) {
         badges.push({ label: "Worktree", tone: "success" });
     }
 
@@ -1967,6 +2027,7 @@ function getBranchBadges(
 function getRemoteBranchBadges(
     resolution: RemoteBranchResolution,
     branchWorktree: GitWorktreeSummary | null,
+    projectId: string | null,
     activeWorktreeId: string | null,
 ): readonly SidebarBadge[] {
     const badges: SidebarBadge[] = [];
@@ -1975,7 +2036,14 @@ function getRemoteBranchBadges(
         badges.push({ label: "Local", tone: "neutral" });
     }
 
-    if (branchWorktree && branchWorktree.id !== activeWorktreeId) {
+    if (
+        branchWorktree &&
+        !isGitScopeWorktreeActive(
+            projectId ?? branchWorktree.projectId,
+            activeWorktreeId,
+            branchWorktree,
+        )
+    ) {
         badges.push({ label: "Worktree", tone: "success" });
     }
 
@@ -2232,6 +2300,26 @@ function getComandoApi() {
     return window.comando;
 }
 
+export function isGitScopeWorktreeActive(
+    projectId: string,
+    activeWorktreeId: string | null,
+    worktree: GitWorktreeSummary,
+): boolean {
+    return isGitWorktreeActive(projectId, activeWorktreeId, worktree);
+}
+
+function areGitScopeWorktreeIdsEqual(
+    projectId: string,
+    leftWorktreeId: string | null,
+    rightWorktreeId: string | null,
+): boolean {
+    return areGitWorktreeIdsEquivalent(
+        projectId,
+        leftWorktreeId,
+        rightWorktreeId,
+    );
+}
+
 function ChevronIcon({ open }: { readonly open: boolean }) {
     return (
         <svg
@@ -2349,7 +2437,7 @@ function WorktreeGlyph() {
 }
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
-    return `${projectId}::${worktreeId ?? "primary"}`;
+    return getGitContextKey(projectId, worktreeId);
 }
 
 function getProjectSnapshot(

@@ -5,6 +5,7 @@ import type { GitBranchSummary, GitWorktreeSummary } from "@shared/ipc";
 import {
     buildSuggestedWorktreePath,
     buildUniqueLocalBranchName,
+    isGitScopeWorktreeActive,
     parseRemoteBranchReference,
     resolveRemoteBranchResolution,
     stripRemotePrefix,
@@ -149,5 +150,30 @@ describe("SidebarGitScopePicker helpers", () => {
             remoteName: "origin",
             remoteRef: "feature/hardening/ui",
         });
+    });
+
+    it("treats null and the persisted primary worktree id as the same active scope", () => {
+        const primaryWorktree = createWorktree({
+            id: "project-1:primary",
+            isPrimary: true,
+        });
+
+        expect(
+            isGitScopeWorktreeActive("project-1", null, primaryWorktree),
+        ).toBe(true);
+        expect(
+            isGitScopeWorktreeActive(
+                "project-1",
+                "project-1:primary",
+                primaryWorktree,
+            ),
+        ).toBe(true);
+        expect(
+            isGitScopeWorktreeActive(
+                "project-1",
+                "worktree-2",
+                primaryWorktree,
+            ),
+        ).toBe(false);
     });
 });

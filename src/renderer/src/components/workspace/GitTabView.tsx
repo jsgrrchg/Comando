@@ -22,6 +22,10 @@ import {
     laneX,
     LINE_WIDTH,
 } from "@renderer/app/git/graph-lines";
+import {
+    getGitContextKey,
+    normalizeGitWorktreeIdForContext,
+} from "@renderer/app/git/context-key";
 import { buildGitRemoteCommitLink } from "@renderer/app/git/remote-link";
 import {
     buildGitHistoryGraphRows,
@@ -76,7 +80,7 @@ type GitHistoryColumnKey =
 type GitHistoryColumnWidths = Record<GitHistoryColumnKey, number>;
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
-    return `${projectId}::${worktreeId ?? "primary"}`;
+    return getGitContextKey(projectId, worktreeId);
 }
 
 export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
@@ -158,9 +162,10 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         }
 
         const query = searchQuery.trim();
-        const searchKey = `${worktreeId ?? "primary"}\u0000${query}\u0000${
-            isCaseSensitive ? "case" : "nocase"
-        }`;
+        const searchKey = `${normalizeGitWorktreeIdForContext(
+            projectId,
+            worktreeId,
+        )}\u0000${query}\u0000${isCaseSensitive ? "case" : "nocase"}`;
 
         if (lastHistorySearchKeyRef.current === null) {
             lastHistorySearchKeyRef.current = searchKey;
