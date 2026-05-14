@@ -74,7 +74,13 @@ function createSnapshot(
                 exitCode: 0,
                 id: "tool-1",
                 kind: "shell",
-                locations: ["src/app.ts"],
+                locations: [
+                    {
+                        endLine: null,
+                        line: null,
+                        path: "src/app.ts",
+                    },
+                ],
                 rawInputJson: "{\"cmd\":\"echo hello\"}",
                 rawOutputJson: "{\"ok\":true}",
                 sessionId: "session-1",

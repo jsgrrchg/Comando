@@ -109,9 +109,35 @@ export function areToolActivitiesEquivalent(
         previous.rawOutputJson === next.rawOutputJson &&
         previous.terminalOutput === next.terminalOutput &&
         areToolActivityActionsEquivalent(previous.action, next.action) &&
-        previous.locations.length === next.locations.length &&
+        areToolActivityLocationsEquivalent(
+            previous.locations,
+            next.locations,
+        ) &&
         previous.diffs.length === next.diffs.length
     );
+}
+
+function areToolActivityLocationsEquivalent(
+    previous: ToolActivityReviewEntry["activity"]["locations"],
+    next: ToolActivityReviewEntry["activity"]["locations"],
+): boolean {
+    if (previous.length !== next.length) {
+        return false;
+    }
+
+    for (let index = 0; index < previous.length; index += 1) {
+        const previousLocation = previous[index];
+        const nextLocation = next[index];
+        if (
+            previousLocation?.path !== nextLocation?.path ||
+            previousLocation?.line !== nextLocation?.line ||
+            previousLocation?.endLine !== nextLocation?.endLine
+        ) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function areToolActivityActionsEquivalent(

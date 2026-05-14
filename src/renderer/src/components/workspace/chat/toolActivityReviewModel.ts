@@ -163,8 +163,8 @@ function collectActivityPaths(activity: AiToolActivity): Set<string> {
     const candidatePaths = new Set<string>();
 
     for (const location of activity.locations) {
-        if (location.trim()) {
-            candidatePaths.add(location);
+        if (location.path.trim()) {
+            candidatePaths.add(location.path);
         }
     }
 

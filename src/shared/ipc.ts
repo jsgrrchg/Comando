@@ -1942,6 +1942,12 @@ export type AiToolActivityAction = {
     readonly sessionId: string;
 };
 
+export interface AiToolActivityLocation {
+    readonly endLine: number | null;
+    readonly line: number | null;
+    readonly path: string;
+}
+
 export interface AiToolActivity {
     readonly action?: AiToolActivityAction | null;
     readonly createdAt: string;
@@ -1949,7 +1955,7 @@ export interface AiToolActivity {
     readonly exitCode: number | null;
     readonly id: string;
     readonly kind: string;
-    readonly locations: readonly string[];
+    readonly locations: readonly AiToolActivityLocation[];
     readonly rawInputJson: string | null;
     readonly rawOutputJson: string | null;
     readonly sessionId: string;

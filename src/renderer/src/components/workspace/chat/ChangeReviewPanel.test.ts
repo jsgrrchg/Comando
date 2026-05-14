@@ -46,7 +46,13 @@ function createActivity(
         exitCode: null,
         id: "tool-1",
         kind: "edit",
-        locations: ["src/app.ts"],
+        locations: [
+            {
+                endLine: null,
+                line: null,
+                path: "src/app.ts",
+            },
+        ],
         rawInputJson: null,
         rawOutputJson: null,
         sessionId: "session-1",

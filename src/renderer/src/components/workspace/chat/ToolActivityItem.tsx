@@ -1,6 +1,10 @@
 import { memo, useState } from "react";
 
-import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import type {
+    AiToolActivity,
+    AiToolActivityLocation,
+    AiTrackedFile,
+} from "@shared/ipc";
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
@@ -286,6 +290,23 @@ function openToolFileReference({
     }
 
     void onOpenFile(projectId, parsedReference.path, worktreeId);
+}
+
+function formatToolLocationReference(
+    location: AiToolActivityLocation,
+): string {
+    if (location.line === null) {
+        return location.path;
+    }
+
+    if (
+        location.endLine !== null &&
+        location.endLine !== location.line
+    ) {
+        return `${location.path}:${location.line}-${location.endLine}`;
+    }
+
+    return `${location.path}:${location.line}`;
 }
 
 function ToolDetailCodeBlock({
@@ -588,52 +609,57 @@ function FileToolMessage({
                     ) : null}
                     {activity.locations.length > 0 ? (
                         <div className="mb-1 flex flex-wrap gap-1">
-                            {activity.locations.map((loc) => (
-                                <button
-                                    className="app-no-drag rounded-md px-2 py-0.5"
-                                    key={loc}
-                                    onClick={() => {
-                                        openToolFileReference({
-                                            onOpenFile,
-                                            onOpenFileReference,
-                                            projectId,
-                                            resolveFileReference,
-                                            target: loc,
-                                            worktreeId,
-                                        });
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        e.currentTarget.style.backgroundColor =
-                                            "var(--color-bg-secondary)";
-                                        e.currentTarget.style.filter =
-                                            "brightness(1.05)";
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        e.currentTarget.style.backgroundColor =
-                                            "var(--color-bg-tertiary)";
-                                        e.currentTarget.style.filter = "none";
-                                    }}
-                                    style={{
-                                        backgroundColor:
-                                            "var(--color-bg-tertiary)",
-                                        border: "1px solid var(--color-border)",
-                                        color: "var(--color-text-secondary)",
-                                        cursor: canOpenToolFileReference({
-                                            projectId,
-                                            resolveFileReference,
-                                            target: loc,
-                                        })
-                                            ? "pointer"
-                                            : "default",
-                                        fontSize: "0.9em",
-                                        transition:
-                                            "background-color 100ms ease, filter 100ms ease",
-                                    }}
-                                    type="button"
-                                >
-                                    {loc}
-                                </button>
-                            ))}
+                            {activity.locations.map((loc) => {
+                                const target = formatToolLocationReference(loc);
+
+                                return (
+                                    <button
+                                        className="app-no-drag rounded-md px-2 py-0.5"
+                                        key={target}
+                                        onClick={() => {
+                                            openToolFileReference({
+                                                onOpenFile,
+                                                onOpenFileReference,
+                                                projectId,
+                                                resolveFileReference,
+                                                target,
+                                                worktreeId,
+                                            });
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.backgroundColor =
+                                                "var(--color-bg-secondary)";
+                                            e.currentTarget.style.filter =
+                                                "brightness(1.05)";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.backgroundColor =
+                                                "var(--color-bg-tertiary)";
+                                            e.currentTarget.style.filter =
+                                                "none";
+                                        }}
+                                        style={{
+                                            backgroundColor:
+                                                "var(--color-bg-tertiary)",
+                                            border: "1px solid var(--color-border)",
+                                            color: "var(--color-text-secondary)",
+                                            cursor: canOpenToolFileReference({
+                                                projectId,
+                                                resolveFileReference,
+                                                target,
+                                            })
+                                                ? "pointer"
+                                                : "default",
+                                            fontSize: "0.9em",
+                                            transition:
+                                                "background-color 100ms ease, filter 100ms ease",
+                                        }}
+                                        type="button"
+                                    >
+                                        {target}
+                                    </button>
+                                );
+                            })}
                         </div>
                     ) : null}
                     {activity.diffs.map((diff) => (
@@ -749,6 +775,16 @@ function extractCommand(rawInputJson: string | null): string | null {
     return null;
 }
 
+function isCommandDuplicatedByTitle(title: string, command: string): boolean {
+    const normalizedTitle = title.trim();
+    const normalizedCommand = command.trim();
+
+    return (
+        normalizedTitle === normalizedCommand ||
+        normalizedTitle === `Run ${normalizedCommand}`
+    );
+}
+
 function TerminalToolMessage({
     activity,
 }: {
@@ -757,13 +793,18 @@ function TerminalToolMessage({
     const isFailed = activity.status === "failed";
     const hasNonZeroExit =
         activity.exitCode !== null && activity.exitCode !== 0;
-    const [expanded, setExpanded] = useState(isFailed || hasNonZeroExit);
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
 
     const accent = isFailed || hasNonZeroExit ? "#ef4444" : "#6b7280";
     const command = extractCommand(activity.rawInputJson);
-    const hasDetail = !!command || !!activity.terminalOutput;
+    const shouldShowCommand =
+        !!command && !isCommandDuplicatedByTitle(activity.title, command);
+    const hasTerminalOutput = !!activity.terminalOutput;
+    const hasDetail = shouldShowCommand || hasTerminalOutput;
+    const [expanded, setExpanded] = useState(
+        (isFailed || hasNonZeroExit) && hasTerminalOutput,
+    );
 
     return (
         <div
@@ -832,20 +873,11 @@ function TerminalToolMessage({
                 ) : null}
             </button>
 
-            {expanded ? (
+            {expanded && hasDetail ? (
                 <div
                     className="space-y-1 px-3 py-1.5"
                     style={{ fontSize: "0.78em" }}
                 >
-                    {command ? (
-                        <ToolDetailCodeBlock
-                            accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
-                            backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
-                            color="var(--color-text-primary)"
-                            content={command}
-                            languageInfo="shell"
-                        />
-                    ) : null}
                     {activity.terminalOutput ? (
                         <ToolDetailCodeBlock
                             accentBorder={
@@ -865,6 +897,15 @@ function TerminalToolMessage({
                             }
                             content={activity.terminalOutput}
                             languageInfo={command ? "shell" : null}
+                        />
+                    ) : null}
+                    {shouldShowCommand ? (
+                        <ToolDetailCodeBlock
+                            accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
+                            backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
+                            color="var(--color-text-primary)"
+                            content={command}
+                            languageInfo="shell"
                         />
                     ) : null}
                 </div>

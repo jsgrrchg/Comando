@@ -795,6 +795,87 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         );
     });
 
+    it("preserves ACP tool call location lines", () => {
+        const snapshot = __testing.mapToolCallUpdate(
+            makeLiveSession(),
+            makeSnapshot(),
+            {
+                kind: "read",
+                locations: [{ line: 42, path: "src/App.tsx" }],
+                status: "completed",
+                title: "Read App.tsx",
+                toolCallId: "read-1",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:05.000Z",
+        );
+
+        expect(snapshot.toolActivity[0]?.locations).toEqual([
+            {
+                endLine: null,
+                line: 42,
+                path: "src/App.tsx",
+            },
+        ]);
+    });
+
+    it("derives read ranges from raw input when ACP only supplies read parameters", () => {
+        const snapshot = __testing.mapToolCallUpdate(
+            makeLiveSession(),
+            makeSnapshot(),
+            {
+                kind: "read",
+                rawInput: {
+                    file_path: "src/App.tsx",
+                    limit: 5,
+                    offset: 12,
+                },
+                status: "completed",
+                title: "Read App.tsx",
+                toolCallId: "read-1",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:05.000Z",
+        );
+
+        expect(snapshot.toolActivity[0]?.locations).toEqual([
+            {
+                endLine: 16,
+                line: 12,
+                path: "src/App.tsx",
+            },
+        ]);
+    });
+
+    it("enriches path-only ACP locations with raw input read ranges", () => {
+        const snapshot = __testing.mapToolCallUpdate(
+            makeLiveSession(),
+            makeSnapshot(),
+            {
+                kind: "read",
+                locations: [{ path: "src/App.tsx" }],
+                rawInput: {
+                    file_path: "src/App.tsx",
+                    limit: 3,
+                    offset: 20,
+                },
+                status: "completed",
+                title: "Read App.tsx",
+                toolCallId: "read-1",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:05.000Z",
+        );
+
+        expect(snapshot.toolActivity[0]?.locations).toEqual([
+            {
+                endLine: 22,
+                line: 20,
+                path: "src/App.tsx",
+            },
+        ]);
+    });
+
     it("upserts Codex image generation updates as a single image message", () => {
         const started = mapImageGenerationToolUpdate(
             makeSnapshot(),

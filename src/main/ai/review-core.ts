@@ -5,11 +5,13 @@ import type {
     Diff,
     ToolCall,
     ToolCallContent,
+    ToolCallLocation,
     ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
 import type {
     AiGeneratedImage,
     AiFileDiff,
+    AiToolActivity,
     AiSessionSnapshot,
     AiTrackedFile,
     AiUserInputRequest,
@@ -128,6 +130,17 @@ export function mapToolCallUpdate(
     const normalizeDiffPath = (candidatePath: string) =>
         normalizeTrackedDiffPath(liveSession, candidatePath);
     const shouldCollectReviewDiffs = !isSubagentBreadcrumbToolUpdate(update);
+    const updateLocations =
+        update.locations?.map(normalizeToolCallLocation) ?? null;
+    const readInputLocations = deriveReadInputLocation(
+        toolKind,
+        update.rawInput,
+    );
+    const nextLocations = mergeToolActivityLocations(
+        updateLocations,
+        readInputLocations,
+    );
+
     const nextActivity = {
         ...(existing?.action ? { action: existing.action } : {}),
         createdAt: existing?.createdAt ?? updatedAt,
@@ -137,10 +150,7 @@ export function mapToolCallUpdate(
         exitCode,
         id: update.toolCallId,
         kind: toolKind,
-        locations:
-            update.locations?.map((location) => location.path) ??
-            existing?.locations ??
-            [],
+        locations: nextLocations ?? existing?.locations ?? [],
         rawInputJson:
             update.rawInput !== undefined
                 ? stringifyJson(update.rawInput)
@@ -757,6 +767,93 @@ function stringifyJson(value: unknown): string | null {
         debugBenignError("ai.service.stringifyJson", error);
         return null;
     }
+}
+
+function normalizeToolCallLocation(location: ToolCallLocation) {
+    const line = normalizeNonNegativeLineNumber(location.line);
+
+    return {
+        endLine: null,
+        line,
+        path: location.path,
+    };
+}
+
+function deriveReadInputLocation(
+    kind: string,
+    rawInput: unknown,
+): AiToolActivity["locations"] | null {
+    if (kind.toLowerCase() !== "read" || !isRecord(rawInput)) {
+        return null;
+    }
+
+    const pathValue = rawInput.file_path ?? rawInput.path;
+    if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
+        return null;
+    }
+    const locationPath = pathValue.trim();
+
+    const line = normalizeNonNegativeLineNumber(
+        rawInput.line ??
+            rawInput.startLine ??
+            rawInput.start_line ??
+            rawInput.offset,
+    );
+    const limit = normalizeNonNegativeLineNumber(rawInput.limit);
+    const endLine =
+        line !== null && limit !== null && limit > 1 ? line + limit - 1 : null;
+
+    return [
+        {
+            endLine,
+            line,
+            path: locationPath,
+        },
+    ];
+}
+
+function mergeToolActivityLocations(
+    primary: AiToolActivity["locations"] | null,
+    fallback: AiToolActivity["locations"] | null,
+): AiToolActivity["locations"] | null {
+    if (primary && primary.length > 0) {
+        if (!fallback || fallback.length === 0) {
+            return primary;
+        }
+
+        return primary.map((location) => {
+            if (location.line !== null) {
+                return location;
+            }
+
+            const fallbackLocation = fallback.find(
+                (candidate) => candidate.path === location.path,
+            );
+            if (!fallbackLocation) {
+                return location;
+            }
+
+            return {
+                ...location,
+                endLine: fallbackLocation.endLine,
+                line: fallbackLocation.line,
+            };
+        });
+    }
+
+    return fallback && fallback.length > 0 ? fallback : null;
+}
+
+function normalizeNonNegativeLineNumber(value: unknown): number | null {
+    if (
+        typeof value !== "number" ||
+        !Number.isInteger(value) ||
+        value < 0
+    ) {
+        return null;
+    }
+
+    return value;
 }
 
 function buildToolSummary(

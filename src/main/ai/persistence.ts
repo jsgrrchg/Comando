@@ -1422,12 +1422,7 @@ function normalizeToolActivity(value: unknown): readonly AiToolActivity[] {
                     typeof entry.exitCode === "number" ? entry.exitCode : null,
                 id: entry.id,
                 kind: typeof entry.kind === "string" ? entry.kind : "unknown",
-                locations: Array.isArray(entry.locations)
-                    ? entry.locations.filter(
-                          (location): location is string =>
-                              typeof location === "string",
-                      )
-                    : [],
+                locations: normalizeToolActivityLocations(entry.locations),
                 rawInputJson:
                     typeof entry.rawInputJson === "string"
                         ? entry.rawInputJson
@@ -1475,6 +1470,46 @@ function normalizeToolActivityAction(
         kind: "open_session",
         sessionId,
     };
+}
+
+function normalizeToolActivityLocations(
+    value: unknown,
+): AiToolActivity["locations"] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry) => {
+        if (typeof entry === "string") {
+            return entry.trim()
+                ? [
+                      {
+                          endLine: null,
+                          line: null,
+                          path: entry,
+                      },
+                  ]
+                : [];
+        }
+
+        if (!isRecord(entry) || typeof entry.path !== "string") {
+            return [];
+        }
+
+        return [
+            {
+                endLine: normalizePersistedLineNumber(entry.endLine),
+                line: normalizePersistedLineNumber(entry.line),
+                path: entry.path,
+            },
+        ];
+    });
+}
+
+function normalizePersistedLineNumber(value: unknown): number | null {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0
+        ? value
+        : null;
 }
 
 function normalizeTokenUsage(value: unknown): AiTokenUsage | null {

@@ -127,7 +127,13 @@ describe("toolActivityReviewModel", () => {
     it("omits ambiguous path fallback", () => {
         const activity = createActivity({
             id: "tool-without-link",
-            locations: ["src/app.ts"],
+            locations: [
+                {
+                    endLine: null,
+                    line: null,
+                    path: "src/app.ts",
+                },
+            ],
         });
         const trackedFiles = [
             createTrackedFile({

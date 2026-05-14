@@ -40,7 +40,13 @@ function createActivity(
         exitCode: null,
         id: "tool-1",
         kind: "edit",
-        locations: ["src/app.ts"],
+        locations: [
+            {
+                endLine: null,
+                line: null,
+                path: "src/app.ts",
+            },
+        ],
         rawInputJson: null,
         rawOutputJson: null,
         sessionId: "session-1",
@@ -253,5 +259,61 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("Cargo.toml");
         expect(markup).toContain("comando");
+        expect(markup.indexOf("comando")).toBeLessThan(
+            markup.indexOf("Cargo.toml"),
+        );
+    });
+
+    it("keeps failed terminal cards compact when there is no output to show", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: 1,
+                    kind: "shell",
+                    rawInputJson: JSON.stringify({
+                        command: "pnpm run typecheck",
+                    }),
+                    status: "failed",
+                    summary: null,
+                    terminalOutput: null,
+                    title: "Run pnpm run typecheck",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Run pnpm run typecheck");
+        expect(markup).toContain("exit 1");
+        expect(markup).not.toContain("space-y-1");
+        expect(markup).not.toContain("cm-static-code");
+    });
+
+    it("does not repeat duplicated terminal commands in expanded output", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: 1,
+                    kind: "shell",
+                    rawInputJson: JSON.stringify({
+                        command: "pnpm run typecheck",
+                    }),
+                    status: "failed",
+                    summary: null,
+                    terminalOutput: "Type error\n",
+                    title: "Run pnpm run typecheck",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Type error");
+        expect(markup).toContain("space-y-1");
+        expect(markup.match(/pnpm run typecheck/g)).toHaveLength(1);
     });
 });
