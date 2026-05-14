@@ -27,10 +27,12 @@ import {
     MAX_IMAGE_ATTACHMENTS,
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "@shared/ai-attachments";
+import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useShallow } from "zustand/react/shallow";
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -263,7 +265,7 @@ export const ChatTabView = memo(function ChatTabView({
 
         return (
             state.snapshots[
-                `${tab.projectId}::${tab.worktreeId ?? "primary"}`
+                getGitContextKey(tab.projectId, tab.worktreeId ?? null)
             ] ?? null
         );
     });
@@ -723,6 +725,47 @@ export const ChatTabView = memo(function ChatTabView({
             );
         },
         [onOpenFile, tab.projectId, tab.worktreeId],
+    );
+    const handleRevealResolvedFileReference = useCallback(
+        (reference: ResolvedProjectFileReference) => {
+            if (!tab.projectId) {
+                return;
+            }
+
+            void getComandoApi().revealProjectEntry({
+                projectId: tab.projectId,
+                relativePath: reference.relativePath,
+                worktreeId: tab.worktreeId ?? null,
+            });
+        },
+        [tab.projectId, tab.worktreeId],
+    );
+    const handleAddResolvedFileReferenceToChat = useCallback(
+        (reference: ResolvedProjectFileReference) => {
+            if (!tab.projectId) {
+                return;
+            }
+
+            const fileName =
+                reference.relativePath.split("/").pop() ??
+                reference.relativePath;
+            const extension = fileName.includes(".")
+                ? (fileName.split(".").pop() ?? null)
+                : null;
+            addDraftFileContext(tab.sessionId, {
+                endLine: reference.endLine,
+                extension,
+                id: `file-ctx:${crypto.randomUUID()}`,
+                languageId: resolveEditorLanguage({
+                    filePath: reference.relativePath,
+                }).id,
+                name: fileName,
+                projectId: tab.projectId,
+                relativePath: reference.relativePath,
+                startLine: reference.startLine,
+            });
+        },
+        [addDraftFileContext, tab.projectId, tab.sessionId],
     );
     const diffZoom = DEFAULT_AI_DIFF_ZOOM;
     const hasComposerContext =
@@ -2133,12 +2176,16 @@ export const ChatTabView = memo(function ChatTabView({
                     historyRows={timelineModel.historyRows}
                     isStreaming={isStreaming}
                     liveTailRow={timelineModel.liveTailRow}
+                    onAddFileReferenceToChat={
+                        handleAddResolvedFileReferenceToChat
+                    }
                     onOpenFile={onOpenFile}
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={
                         handleOpenResolvedFileReference
                     }
                     onOpenSession={openAiSessionById}
+                    onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
@@ -3256,10 +3303,12 @@ const ChatTimeline = memo(function ChatTimeline({
     historyRows,
     isStreaming,
     liveTailRow,
+    onAddFileReferenceToChat,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
     onOpenSession,
+    onRevealFileReference,
     onScroll,
     projectId,
     resolveFileReference,
@@ -3273,6 +3322,9 @@ const ChatTimeline = memo(function ChatTimeline({
     readonly historyRows: readonly ChatTimelineRow[];
     readonly isStreaming: boolean;
     readonly liveTailRow: ChatTimelineRow | null;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3284,6 +3336,9 @@ const ChatTimeline = memo(function ChatTimeline({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onScroll: () => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
@@ -3314,10 +3369,12 @@ const ChatTimeline = memo(function ChatTimeline({
                     chatFontFamily={chatFontFamily}
                     chatFontSize={chatFontSize}
                     historyRows={historyRows}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
                     onOpenFile={onOpenFile}
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={onOpenResolvedFileReference}
                     onOpenSession={onOpenSession}
+                    onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     worktreeId={worktreeId}
@@ -3325,10 +3382,12 @@ const ChatTimeline = memo(function ChatTimeline({
                 <ChatTimelineLiveTail
                     chatFontFamily={chatFontFamily}
                     chatFontSize={chatFontSize}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
                     onOpenFile={onOpenFile}
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={onOpenResolvedFileReference}
                     onOpenSession={onOpenSession}
+                    onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     row={liveTailRow}
@@ -3346,10 +3405,12 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontFamily,
     chatFontSize,
     historyRows,
+    onAddFileReferenceToChat,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
     onOpenSession,
+    onRevealFileReference,
     projectId,
     resolveFileReference,
     worktreeId,
@@ -3357,6 +3418,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly ChatTimelineRow[];
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3368,6 +3432,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -3379,10 +3446,12 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             key={row.id}
+            onAddFileReferenceToChat={onAddFileReferenceToChat}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
             onOpenSession={onOpenSession}
+            onRevealFileReference={onRevealFileReference}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
@@ -3396,10 +3465,12 @@ ChatTimelineHistory.displayName = "ChatTimelineHistory";
 const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     chatFontFamily,
     chatFontSize,
+    onAddFileReferenceToChat,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
     onOpenSession,
+    onRevealFileReference,
     projectId,
     resolveFileReference,
     row,
@@ -3407,6 +3478,9 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3418,6 +3492,9 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -3434,10 +3511,12 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             key={row.id}
+            onAddFileReferenceToChat={onAddFileReferenceToChat}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
             onOpenSession={onOpenSession}
+            onRevealFileReference={onRevealFileReference}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
@@ -3451,10 +3530,12 @@ ChatTimelineLiveTail.displayName = "ChatTimelineLiveTail";
 const ChatTimelineRowView = memo(function ChatTimelineRowView({
     chatFontFamily,
     chatFontSize,
+    onAddFileReferenceToChat,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
     onOpenSession,
+    onRevealFileReference,
     projectId,
     resolveFileReference,
     row,
@@ -3462,6 +3543,9 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3473,6 +3557,9 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -3486,8 +3573,10 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 message={row.message}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
                 onOpenFile={onOpenResolvedFileReference}
                 onOpenImage={onOpenImage}
+                onRevealFileReference={onRevealFileReference}
                 resolveFileReference={resolveFileReference}
             />
         );
@@ -3517,6 +3606,9 @@ function areChatTimelinePropsEqual(
         readonly historyRows: readonly ChatTimelineRow[];
         readonly isStreaming: boolean;
         readonly liveTailRow: ChatTimelineRow | null;
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3528,6 +3620,9 @@ function areChatTimelinePropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onScroll: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
@@ -3544,6 +3639,9 @@ function areChatTimelinePropsEqual(
         readonly historyRows: readonly ChatTimelineRow[];
         readonly isStreaming: boolean;
         readonly liveTailRow: ChatTimelineRow | null;
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3555,6 +3653,9 @@ function areChatTimelinePropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onScroll: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
@@ -3572,9 +3673,15 @@ function areChatTimelinePropsEqual(
         previous.historyRows === next.historyRows &&
         previous.isStreaming === next.isStreaming &&
         previous.liveTailRow === next.liveTailRow &&
+        previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
+        previous.onOpenFile === next.onOpenFile &&
         previous.onOpenImage === next.onOpenImage &&
+        previous.onOpenResolvedFileReference ===
+            next.onOpenResolvedFileReference &&
         previous.onOpenSession === next.onOpenSession &&
+        previous.onRevealFileReference === next.onRevealFileReference &&
         previous.projectId === next.projectId &&
+        previous.resolveFileReference === next.resolveFileReference &&
         previous.scrollRef === next.scrollRef &&
         previous.timelineContentRef === next.timelineContentRef &&
         previous.worktreeId === next.worktreeId
@@ -3586,6 +3693,9 @@ function areChatTimelineHistoryPropsEqual(
         readonly chatFontFamily?: string;
         readonly chatFontSize?: number;
         readonly historyRows: readonly ChatTimelineRow[];
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3597,6 +3707,9 @@ function areChatTimelineHistoryPropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3607,6 +3720,9 @@ function areChatTimelineHistoryPropsEqual(
         readonly chatFontFamily?: string;
         readonly chatFontSize?: number;
         readonly historyRows: readonly ChatTimelineRow[];
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3618,6 +3734,9 @@ function areChatTimelineHistoryPropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3629,11 +3748,13 @@ function areChatTimelineHistoryPropsEqual(
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
         previous.historyRows === next.historyRows &&
+        previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
         previous.onOpenFile === next.onOpenFile &&
         previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
         previous.onOpenSession === next.onOpenSession &&
+        previous.onRevealFileReference === next.onRevealFileReference &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.worktreeId === next.worktreeId
@@ -3644,6 +3765,9 @@ function areChatTimelineLiveTailPropsEqual(
     previous: Readonly<{
         readonly chatFontFamily?: string;
         readonly chatFontSize?: number;
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3655,6 +3779,9 @@ function areChatTimelineLiveTailPropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3665,6 +3792,9 @@ function areChatTimelineLiveTailPropsEqual(
     next: Readonly<{
         readonly chatFontFamily?: string;
         readonly chatFontSize?: number;
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3676,6 +3806,9 @@ function areChatTimelineLiveTailPropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3687,11 +3820,13 @@ function areChatTimelineLiveTailPropsEqual(
     return (
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
+        previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
         previous.onOpenFile === next.onOpenFile &&
         previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
         previous.onOpenSession === next.onOpenSession &&
+        previous.onRevealFileReference === next.onRevealFileReference &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.row === next.row &&
@@ -3703,6 +3838,9 @@ function areChatTimelineRowViewPropsEqual(
     previous: Readonly<{
         readonly chatFontFamily?: string;
         readonly chatFontSize?: number;
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3714,6 +3852,9 @@ function areChatTimelineRowViewPropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3724,6 +3865,9 @@ function areChatTimelineRowViewPropsEqual(
     next: Readonly<{
         readonly chatFontFamily?: string;
         readonly chatFontSize?: number;
+        readonly onAddFileReferenceToChat?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -3735,6 +3879,9 @@ function areChatTimelineRowViewPropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+        readonly onRevealFileReference?: (
+            reference: ResolvedProjectFileReference,
+        ) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -3746,11 +3893,13 @@ function areChatTimelineRowViewPropsEqual(
     return (
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
+        previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
         previous.onOpenFile === next.onOpenFile &&
         previous.onOpenImage === next.onOpenImage &&
         previous.onOpenResolvedFileReference ===
             next.onOpenResolvedFileReference &&
         previous.onOpenSession === next.onOpenSession &&
+        previous.onRevealFileReference === next.onRevealFileReference &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.row === next.row &&
@@ -4376,4 +4525,14 @@ function formatAttachmentSize(sizeBytes: number | null): string {
     }
 
     return formatBytes(sizeBytes);
+}
+
+function getComandoApi() {
+    if (!window.comando) {
+        throw new Error(
+            "The desktop bridge is not available yet. Restart the Electron app and try again.",
+        );
+    }
+
+    return window.comando;
 }

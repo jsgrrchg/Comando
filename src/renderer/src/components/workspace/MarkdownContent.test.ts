@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { MarkdownContent } from "./MarkdownContent";
+import { resolveProjectFileReference } from "./projectFileReferences";
 
 describe("MarkdownContent", () => {
     it("renders diff blocks with DiffLineView", () => {
@@ -106,6 +107,117 @@ describe("MarkdownContent", () => {
         expect(markup).toContain("white-space:normal");
         expect(markup).not.toContain("ExtraordinarilyLong...");
         expect(markup).not.toContain("text-overflow:ellipsis");
+    });
+
+    it("keeps slash tokens as text unless they are strong file references", () => {
+        const content = [
+            "Läuft euer S/4 in der Public Cloud?",
+            "Viele Schaltanlagenbauer /EVU-Partner gehen in unsere Richtung.",
+            "TCP/IP ist der Standard.",
+            "Zielquartal ist 2024/Q1.",
+            "Inline code: `S/4`, `TCP/IP`, `2024/Q1`, `/LinkedIn`.",
+            "Real file: `src/renderer/src/components/workspace/MarkdownContent.tsx`.",
+        ].join("\n");
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content,
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: [
+                            "/Users/test/workspace/comando",
+                            "/Users/test/workspace/comando/.git/..",
+                        ],
+                    }),
+            }),
+        );
+
+        expect(markup).toContain("S/4");
+        expect(markup).toContain("/EVU-Partner");
+        expect(markup).toContain("TCP/IP");
+        expect(markup).toContain("2024/Q1");
+        expect(markup).toContain("/LinkedIn");
+        expect(markup).not.toContain('title="S/4"');
+        expect(markup).not.toContain('title="TCP/IP"');
+        expect(markup).not.toContain('title="2024/Q1"');
+        expect(markup).not.toContain('title="/LinkedIn"');
+        expect(markup).toContain(
+            'title="src/renderer/src/components/workspace/MarkdownContent.tsx"',
+        );
+    });
+
+    it("renders raw diagnostic file references as interactive pills", () => {
+        const content = [
+            "Errors at src/app.ts:12 and src/app.ts:12:5.",
+            "Also ./src/app.ts:12.",
+            "Absolute /Users/test/workspace/comando/src/app.ts:42.",
+            "File URL file:///Users/test/workspace/comando/src/app.ts#L9-L14.",
+        ].join(" ");
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content,
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup.match(/<button/g)?.length).toBe(5);
+        expect(markup).toContain(">app.ts:12<");
+        expect(markup).toContain(">app.ts:12:5<");
+        expect(markup).toContain(">app.ts:9-14<");
+        expect(markup).toContain('title="src/app.ts:12"');
+        expect(markup).toContain('title="src/app.ts:12:5"');
+        expect(markup).toContain('title="./src/app.ts:12"');
+        expect(markup).toContain(
+            'title="/Users/test/workspace/comando/src/app.ts:42"',
+        );
+        expect(markup).toContain(
+            'title="file:///Users/test/workspace/comando/src/app.ts#L9-L14"',
+        );
+    });
+
+    it("keeps URLs intact when they contain path-like diagnostic text", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content:
+                    "See https://example.com/src/app.ts:12 before src/app.ts:12.",
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup).toContain('href="https://example.com/src/app.ts:12"');
+        expect(markup).not.toContain(
+            'title="https://example.com/src/app.ts:12"',
+        );
+        expect(markup.match(/<button/g)?.length).toBe(1);
+        expect(markup).toContain('title="src/app.ts:12"');
+    });
+
+    it("renders conservative git and structured symbol pills", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: [
+                    "Fixed in commit abcdef1234567890.",
+                    "Mention abcdef1 alone stays text.",
+                    "\u200B\u00ABsymbol: WorkspaceView.openFileTab\u00BB\u200B",
+                    "\u200B\u00ABcommit: 123456789abc\u00BB\u200B",
+                ].join("\n"),
+            }),
+        );
+
+        expect(markup).toContain('title="abcdef1234567890"');
+        expect(markup).toContain(">abcdef123456<");
+        expect(markup).toContain("Mention abcdef1 alone stays text.");
+        expect(markup).toContain("WorkspaceView.openFileTab");
+        expect(markup).not.toContain(">symbol: WorkspaceView.openFileTab<");
+        expect(markup).toContain("commit: 123456789abc");
     });
 
     it("keeps ordered items grouped when they contain paragraphs and nested bullets", () => {

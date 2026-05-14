@@ -16,8 +16,14 @@ interface ChatMessageRowProps {
     readonly chatFontSize?: number;
     readonly highlightQuery?: string;
     readonly message: AiSessionSnapshot["messages"][number];
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -28,8 +34,10 @@ export const ChatMessageRow = memo(function ChatMessageRow({
     chatFontSize,
     highlightQuery,
     message,
+    onAddFileReferenceToChat,
     onOpenFile,
     onOpenImage,
+    onRevealFileReference,
     resolveFileReference,
 }: ChatMessageRowProps) {
     if (message.kind === "user")
@@ -40,8 +48,10 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 chatFontSize={chatFontSize}
                 content={message.content}
                 highlightQuery={highlightQuery}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
                 onOpenFile={onOpenFile}
                 onOpenImage={onOpenImage}
+                onRevealFileReference={onRevealFileReference}
                 resolveFileReference={resolveFileReference}
             />
         );
@@ -52,7 +62,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 chatFontSize={chatFontSize}
                 content={message.content}
                 highlightQuery={highlightQuery}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
                 onOpenFile={onOpenFile}
+                onRevealFileReference={onRevealFileReference}
                 resolveFileReference={resolveFileReference}
             />
         );
@@ -65,7 +77,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 content={message.content}
                 highlightQuery={highlightQuery}
                 inProgress={message.status === "streaming"}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
                 onOpenFile={onOpenFile}
+                onRevealFileReference={onRevealFileReference}
                 resolveFileReference={resolveFileReference}
             />
         );
@@ -84,8 +98,10 @@ export const ChatMessageRow = memo(function ChatMessageRow({
             chatFontSize={chatFontSize}
             content={message.content}
             highlightQuery={highlightQuery}
+            onAddFileReferenceToChat={onAddFileReferenceToChat}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
+            onRevealFileReference={onRevealFileReference}
             resolveFileReference={resolveFileReference}
         />
     );
@@ -101,8 +117,10 @@ function areChatMessageRowPropsEqual(
         previous.chatFontFamily === next.chatFontFamily &&
         previous.chatFontSize === next.chatFontSize &&
         previous.highlightQuery === next.highlightQuery &&
+        previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
         previous.onOpenFile === next.onOpenFile &&
         previous.onOpenImage === next.onOpenImage &&
+        previous.onRevealFileReference === next.onRevealFileReference &&
         previous.resolveFileReference === next.resolveFileReference &&
         areMessagesEquivalent(previous.message, next.message)
     );
@@ -535,7 +553,13 @@ function renderHighlightableMarkdown(params: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -557,7 +581,9 @@ function renderHighlightableMarkdown(params: {
             chatFontFamily={params.chatFontFamily}
             chatFontSize={params.chatFontSize}
             content={params.content}
+            onAddFileReferenceToChat={params.onAddFileReferenceToChat}
             onOpenFile={params.onOpenFile}
+            onRevealFileReference={params.onRevealFileReference}
             resolveFileReference={params.resolveFileReference}
         />
     );
@@ -569,8 +595,14 @@ function UserMessage(props: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -594,7 +626,9 @@ function UserMessage(props: {
                       chatFontSize: props.chatFontSize,
                       content: props.content,
                       highlightQuery: props.highlightQuery,
+                      onAddFileReferenceToChat: props.onAddFileReferenceToChat,
                       onOpenFile: props.onOpenFile,
+                      onRevealFileReference: props.onRevealFileReference,
                       resolveFileReference: props.resolveFileReference,
                   })
                 : null}
@@ -614,8 +648,14 @@ function AssistantMessage(props: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -634,7 +674,9 @@ function AssistantMessage(props: {
                       chatFontSize: props.chatFontSize,
                       content: props.content,
                       highlightQuery: props.highlightQuery,
+                      onAddFileReferenceToChat: props.onAddFileReferenceToChat,
                       onOpenFile: props.onOpenFile,
+                      onRevealFileReference: props.onRevealFileReference,
                       resolveFileReference: props.resolveFileReference,
                   })
                 : null}
@@ -680,14 +722,22 @@ function UserInputRequestMessage({
     chatFontSize,
     content,
     highlightQuery,
+    onAddFileReferenceToChat,
     onOpenFile,
+    onRevealFileReference,
     resolveFileReference,
 }: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -728,7 +778,9 @@ function UserInputRequestMessage({
                         : chatFontSize,
                     content,
                     highlightQuery,
+                    onAddFileReferenceToChat,
                     onOpenFile,
+                    onRevealFileReference,
                     resolveFileReference,
                 })}
             </div>
@@ -742,7 +794,9 @@ function ThinkingMessage({
     content,
     highlightQuery,
     inProgress,
+    onAddFileReferenceToChat,
     onOpenFile,
+    onRevealFileReference,
     resolveFileReference,
 }: {
     readonly chatFontFamily?: string;
@@ -750,7 +804,13 @@ function ThinkingMessage({
     readonly content: string;
     readonly highlightQuery?: string;
     readonly inProgress: boolean;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -802,7 +862,9 @@ function ThinkingMessage({
                         chatFontSize: 13,
                         content,
                         highlightQuery,
+                        onAddFileReferenceToChat,
                         onOpenFile,
+                        onRevealFileReference,
                         resolveFileReference,
                     })}
                 </div>

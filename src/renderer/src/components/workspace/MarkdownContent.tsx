@@ -4,6 +4,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type MouseEvent,
     type ReactElement,
 } from "react";
 
@@ -15,6 +16,11 @@ import {
 } from "../../app/editor/markdownLists";
 import { HighlightedCodeText } from "../../app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "../../app/editor/useCodeLanguageSupport";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "../context-menu/ContextMenu";
 import { useTextContextMenu } from "../context-menu/useTextContextMenu";
 import { DiffLineView } from "./review/DiffLineView";
 import {
@@ -29,7 +35,6 @@ import { ChatInlinePill } from "./chat/ChatInlinePill";
 import { getChatPillMetrics } from "./chat/chatPillMetrics";
 import { type ChatPillVariant } from "./chat/chatPillPalette";
 import {
-    isLikelyProjectFileReference,
     type ResolvedProjectFileReference,
 } from "./projectFileReferences";
 
@@ -37,7 +42,13 @@ interface MarkdownContentProps {
     readonly content: string;
     readonly chatFontSize?: number;
     readonly chatFontFamily?: string;
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly onOpenFile?: (reference: ResolvedProjectFileReference) => void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference?: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -233,11 +244,26 @@ function isMarkdownFenceClosingLine(
 /* ─── Inline rendering ─── */
 
 interface InlineOptions {
+    readonly onAddFileReferenceToChat?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly onFileContextMenu?: (
+        event: MouseEvent<HTMLElement>,
+        payload: FileReferencePillContextMenuPayload,
+    ) => void;
     readonly metrics?: ReturnType<typeof getChatPillMetrics>;
     readonly onOpenFile?: (reference: ResolvedProjectFileReference) => void;
+    readonly onRevealFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
     readonly resolveFileReference?: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
+}
+
+interface FileReferencePillContextMenuPayload {
+    readonly rawReference: string;
+    readonly resolvedReference: ResolvedProjectFileReference;
 }
 
 interface ParsedList {
@@ -257,11 +283,346 @@ type MarkdownLineBlockKind =
 function getPillVariant(label: string): ChatPillVariant {
     if (label === "@fetch") return "success";
     if (label === "/plan") return "neutral";
+    if (label.startsWith("commit:")) return "commit";
+    if (label.startsWith("symbol:")) return "neutral";
     if (label.startsWith("@")) {
         return /\.\w+$/.test(label.slice(1)) ? "file" : "folder";
     }
     if (label.startsWith("\u{1F4CE}")) return "file";
     return "accent";
+}
+
+function getSerializedPillDisplayLabel(label: string): string {
+    if (label.startsWith("symbol:")) {
+        return label.slice("symbol:".length).trim() || label;
+    }
+
+    return label;
+}
+
+const EXPLICIT_RELATIVE_PATH_RE = /^\.{1,2}[\\/]/;
+const FILE_URL_RE = /^file:\/\//i;
+const RAW_TEXT_FILE_REFERENCE_RE =
+    /file:\/\/[^\s<>"'`()[\]{}]+|(?:[A-Za-z]:[\\/]|\\\\|\/|\.{1,2}[\\/]|[A-Za-z0-9_@.-]+[\\/])[^\s<>"'`()[\]{}]+/gi;
+const RAW_GIT_COMMIT_REFERENCE_RE =
+    /\b(?:commit|revision|sha)\s*:?\s*([0-9a-f]{7,40})\b/gi;
+const KNOWN_EXTENSIONLESS_FILE_NAMES = new Set([
+    "Brewfile",
+    "CMakeLists",
+    "Dockerfile",
+    "Gemfile",
+    "Guardfile",
+    "Justfile",
+    "Makefile",
+    "Podfile",
+    "Procfile",
+    "Rakefile",
+]);
+
+function isRenderableInlineFileReference(
+    rawReference: string,
+    resolvedReference: ResolvedProjectFileReference,
+): boolean {
+    const trimmedReference = rawReference.trim();
+    if (resolvedReference.isAbsolute || FILE_URL_RE.test(trimmedReference)) {
+        return true;
+    }
+
+    if (EXPLICIT_RELATIVE_PATH_RE.test(trimmedReference)) {
+        return true;
+    }
+
+    if (
+        resolvedReference.startLine !== null ||
+        resolvedReference.endLine !== null
+    ) {
+        return true;
+    }
+
+    const fileName = resolvedReference.relativePath.split("/").pop() ?? "";
+    if (KNOWN_EXTENSIONLESS_FILE_NAMES.has(fileName)) {
+        return true;
+    }
+
+    return /\.[^/.]+$/.test(fileName);
+}
+
+function isRenderableRawTextFileReference(
+    rawReference: string,
+    resolvedReference: ResolvedProjectFileReference,
+): boolean {
+    const trimmedReference = rawReference.trim();
+    const fileName = resolvedReference.relativePath.split("/").pop() ?? "";
+    const hasKnownExtensionlessFileName =
+        KNOWN_EXTENSIONLESS_FILE_NAMES.has(fileName);
+    const hasFileExtension = /\.[^/.]+$/.test(fileName);
+    const hasLineReference =
+        resolvedReference.startLine !== null ||
+        resolvedReference.endLine !== null;
+
+    if (/^https?:\/\//i.test(trimmedReference)) {
+        return false;
+    }
+
+    if (FILE_URL_RE.test(trimmedReference)) {
+        return true;
+    }
+
+    if (resolvedReference.isAbsolute) {
+        return (
+            resolvedReference.relativePath.includes("/") ||
+            hasFileExtension ||
+            hasKnownExtensionlessFileName ||
+            hasLineReference
+        );
+    }
+
+    if (EXPLICIT_RELATIVE_PATH_RE.test(trimmedReference)) {
+        return hasFileExtension;
+    }
+
+    return hasFileExtension && hasLineReference;
+}
+
+function splitRawTextFileReferenceCandidate(rawCandidate: string): {
+    readonly reference: string;
+    readonly trailing: string;
+} {
+    const reference = rawCandidate.replace(/[.,;!?:]+$/, "");
+    return {
+        reference,
+        trailing: rawCandidate.slice(reference.length),
+    };
+}
+
+function getFileReferenceName(reference: ResolvedProjectFileReference): string {
+    return reference.relativePath.split("/").pop() ?? reference.relativePath;
+}
+
+function getRawReferenceLocationSuffix(rawReference: string): string {
+    const trimmedReference = rawReference.trim();
+    const trailingLineMatch = trimmedReference.match(
+        /:(\d+)(?::(\d+))?(?:[.,;!?])?$/,
+    );
+    if (trailingLineMatch) {
+        return trailingLineMatch[2]
+            ? `:${trailingLineMatch[1]}:${trailingLineMatch[2]}`
+            : `:${trailingLineMatch[1]}`;
+    }
+
+    const hashLineMatch = trimmedReference.match(
+        /#L?(\d+)(?:-L?(\d+))?(?:[.,;!?])?$/i,
+    );
+    if (!hashLineMatch) {
+        return "";
+    }
+
+    return hashLineMatch[2]
+        ? `:${hashLineMatch[1]}-${hashLineMatch[2]}`
+        : `:${hashLineMatch[1]}`;
+}
+
+function getRawFileReferencePillLabel(
+    rawReference: string,
+    resolvedReference: ResolvedProjectFileReference,
+): string {
+    return `${getFileReferenceName(resolvedReference)}${getRawReferenceLocationSuffix(rawReference)}`;
+}
+
+function getRevealFileReferenceLabel(): string {
+    if (typeof navigator === "undefined") {
+        return "Reveal in Folder";
+    }
+
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes("mac")) {
+        return "Reveal in Finder";
+    }
+    if (userAgent.includes("windows")) {
+        return "Reveal in Explorer";
+    }
+
+    return "Reveal in Folder";
+}
+
+async function writeTextToClipboard(text: string): Promise<void> {
+    if (window.comando?.writeClipboardText) {
+        try {
+            await window.comando.writeClipboardText(text);
+            return;
+        } catch {
+            // Fall through to the Web Clipboard API when the native bridge is unavailable.
+        }
+    }
+
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch {
+            // Context menu actions should stay quiet if clipboard access is denied.
+        }
+    }
+}
+
+function renderFileReferencePill({
+    key,
+    label,
+    metrics,
+    onFileContextMenu,
+    onOpenFile,
+    rawReference,
+    resolvedReference,
+}: {
+    readonly key: number;
+    readonly label: string;
+    readonly metrics: ReturnType<typeof getChatPillMetrics>;
+    readonly onFileContextMenu?: InlineOptions["onFileContextMenu"];
+    readonly onOpenFile: (reference: ResolvedProjectFileReference) => void;
+    readonly rawReference: string;
+    readonly resolvedReference: ResolvedProjectFileReference;
+}): ReactElement {
+    return (
+        <ChatInlinePill
+            interactive
+            key={key}
+            label={label}
+            metrics={metrics}
+            onClick={() => onOpenFile(resolvedReference)}
+            onContextMenu={(event) =>
+                onFileContextMenu?.(event, {
+                    rawReference,
+                    resolvedReference,
+                })
+            }
+            title={rawReference}
+            variant="file"
+        />
+    );
+}
+
+function renderRawGitCommitReferencePills(
+    text: string,
+    metrics: ReturnType<typeof getChatPillMetrics>,
+    keyStart: number,
+): {
+    readonly nextKey: number;
+    readonly parts: Array<ReactElement | string>;
+} {
+    const parts: Array<ReactElement | string> = [];
+    let cursor = 0;
+    let key = keyStart;
+    RAW_GIT_COMMIT_REFERENCE_RE.lastIndex = 0;
+
+    for (const match of text.matchAll(RAW_GIT_COMMIT_REFERENCE_RE)) {
+        const fullMatch = match[0];
+        const sha = match[1];
+        const matchIndex = match.index ?? 0;
+        if (!sha) {
+            continue;
+        }
+
+        const shaIndex = matchIndex + fullMatch.lastIndexOf(sha);
+        if (shaIndex > cursor) {
+            parts.push(text.slice(cursor, shaIndex));
+        }
+        parts.push(
+            <ChatInlinePill
+                key={key++}
+                label={sha.slice(0, 12)}
+                metrics={metrics}
+                title={sha}
+                variant="commit"
+            />,
+        );
+        cursor = shaIndex + sha.length;
+    }
+
+    if (cursor < text.length) {
+        parts.push(text.slice(cursor));
+    }
+
+    return { nextKey: key, parts };
+}
+
+function renderRawTextFileReferencePills(
+    text: string,
+    options: InlineOptions | undefined,
+    keyStart: number,
+): {
+    readonly nextKey: number;
+    readonly parts: Array<ReactElement | string>;
+} {
+    const metrics = options?.metrics ?? getChatPillMetrics(14);
+    const handleOpenFile = options?.onOpenFile;
+    const resolveFileReference = options?.resolveFileReference;
+
+    if (!handleOpenFile || !resolveFileReference) {
+        return renderRawGitCommitReferencePills(text, metrics, keyStart);
+    }
+
+    const parts: Array<ReactElement | string> = [];
+    let cursor = 0;
+    let key = keyStart;
+    RAW_TEXT_FILE_REFERENCE_RE.lastIndex = 0;
+
+    for (const match of text.matchAll(RAW_TEXT_FILE_REFERENCE_RE)) {
+        const matchIndex = match.index ?? 0;
+        const rawCandidate = match[0];
+        const candidateEnd = matchIndex + rawCandidate.length;
+        const { reference, trailing } =
+            splitRawTextFileReferenceCandidate(rawCandidate);
+        if (!reference) {
+            continue;
+        }
+
+        const resolvedReference = resolveFileReference(reference);
+        if (
+            !resolvedReference ||
+            !isRenderableRawTextFileReference(reference, resolvedReference)
+        ) {
+            continue;
+        }
+
+        if (matchIndex > cursor) {
+            const renderedText = renderRawGitCommitReferencePills(
+                text.slice(cursor, matchIndex),
+                metrics,
+                key,
+            );
+            parts.push(...renderedText.parts);
+            key = renderedText.nextKey;
+        }
+        parts.push(
+            renderFileReferencePill({
+                key: key++,
+                label: getRawFileReferencePillLabel(
+                    reference,
+                    resolvedReference,
+                ),
+                metrics,
+                onFileContextMenu: options.onFileContextMenu,
+                onOpenFile: handleOpenFile,
+                rawReference: reference,
+                resolvedReference,
+            }),
+        );
+        if (trailing) {
+            parts.push(trailing);
+        }
+        cursor = candidateEnd;
+    }
+
+    if (cursor < text.length) {
+        const renderedText = renderRawGitCommitReferencePills(
+            text.slice(cursor),
+            metrics,
+            key,
+        );
+        parts.push(...renderedText.parts);
+        key = renderedText.nextKey;
+    }
+
+    return { nextKey: key, parts };
 }
 
 function renderInline(
@@ -276,17 +637,27 @@ function renderInline(
 
     for (const match of text.matchAll(re)) {
         const before = text.slice(lastIndex, match.index);
-        if (before) parts.push(before);
+        if (before) {
+            const renderedBefore = renderRawTextFileReferencePills(
+                before,
+                options,
+                key,
+            );
+            parts.push(...renderedBefore.parts);
+            key = renderedBefore.nextKey;
+        }
 
         if (match[5]) {
             const pillLabel = match[5].slice(2, -2);
+            const displayLabel = getSerializedPillDisplayLabel(pillLabel);
             const variant = getPillVariant(pillLabel);
             const pillMetrics = options?.metrics ?? getChatPillMetrics(14);
             parts.push(
                 <ChatInlinePill
                     key={key++}
-                    label={pillLabel}
+                    label={displayLabel}
                     metrics={pillMetrics}
+                    title={pillLabel}
                     variant={variant}
                 />,
             );
@@ -300,17 +671,18 @@ function renderInline(
                 resolvedCodeReference &&
                 inlineMetrics &&
                 handleOpenFile &&
-                isLikelyProjectFileReference(codeText)
+                isRenderableInlineFileReference(codeText, resolvedCodeReference)
             ) {
                 parts.push(
-                    <ChatInlinePill
-                        key={key++}
-                        interactive
-                        label={codeText}
-                        metrics={inlineMetrics}
-                        onClick={() => handleOpenFile(resolvedCodeReference)}
-                        variant="file"
-                    />,
+                    renderFileReferencePill({
+                        key: key++,
+                        label: codeText,
+                        metrics: inlineMetrics,
+                        onFileContextMenu: options.onFileContextMenu,
+                        onOpenFile: handleOpenFile,
+                        rawReference: codeText,
+                        resolvedReference: resolvedCodeReference,
+                    }),
                 );
             } else {
                 parts.push(
@@ -353,7 +725,10 @@ function renderInline(
                             if (
                                 resolvedLinkReference &&
                                 options?.onOpenFile &&
-                                isLikelyProjectFileReference(linkTarget)
+                                isRenderableInlineFileReference(
+                                    linkTarget,
+                                    resolvedLinkReference,
+                                )
                             ) {
                                 event.preventDefault();
                                 options.onOpenFile(resolvedLinkReference);
@@ -448,7 +823,10 @@ function renderInline(
     }
 
     const tail = text.slice(lastIndex);
-    if (tail) parts.push(tail);
+    if (tail) {
+        const renderedTail = renderRawTextFileReferencePills(tail, options, key);
+        parts.push(...renderedTail.parts);
+    }
 
     return parts;
 }
@@ -1150,25 +1528,106 @@ export const MarkdownContent = memo(function MarkdownContent({
     content,
     chatFontFamily,
     chatFontSize = 14,
+    onAddFileReferenceToChat,
     onOpenFile,
+    onRevealFileReference,
     resolveFileReference,
 }: MarkdownContentProps) {
     const blocks = useMemo(() => parseBlocks(content), [content]);
     const contentRef = useRef<HTMLDivElement | null>(null);
-    const { contextMenu, handleContextMenu } =
+    const [fileReferenceContextMenu, setFileReferenceContextMenu] =
+        useState<ContextMenuState<FileReferencePillContextMenuPayload> | null>(
+            null,
+        );
+    const { contextMenu: textContextMenu, handleContextMenu } =
         useTextContextMenu<HTMLDivElement>({
             containerRef: contentRef,
             getFallbackCopyText: () => content,
         });
+    const closeFileReferenceContextMenu = useCallback(() => {
+        setFileReferenceContextMenu(null);
+    }, []);
+    const handleFileReferenceContextMenu = useCallback(
+        (
+            event: MouseEvent<HTMLElement>,
+            payload: FileReferencePillContextMenuPayload,
+        ) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setFileReferenceContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                payload,
+            });
+        },
+        [],
+    );
+    const fileReferenceContextMenuEntries = useMemo((): readonly ContextMenuEntry[] => {
+        if (!fileReferenceContextMenu || !onOpenFile) {
+            return [];
+        }
+
+        const { rawReference, resolvedReference } =
+            fileReferenceContextMenu.payload;
+        const entries: ContextMenuEntry[] = [
+            {
+                label: "Open",
+                action: () => onOpenFile(resolvedReference),
+            },
+            { type: "separator" },
+            {
+                label: "Copy Relative Path",
+                action: () =>
+                    void writeTextToClipboard(resolvedReference.relativePath),
+            },
+            {
+                label: "Copy Absolute Path",
+                action: () => void writeTextToClipboard(resolvedReference.path),
+                disabled: !resolvedReference.isAbsolute,
+            },
+            {
+                label: "Copy Reference",
+                action: () => void writeTextToClipboard(rawReference),
+            },
+            { type: "separator" },
+            {
+                label: getRevealFileReferenceLabel(),
+                action: () => onRevealFileReference?.(resolvedReference),
+                disabled: !onRevealFileReference,
+            },
+            {
+                label: "Add to Chat",
+                action: () => onAddFileReferenceToChat?.(resolvedReference),
+                disabled: !onAddFileReferenceToChat,
+            },
+        ];
+
+        return entries;
+    }, [
+        fileReferenceContextMenu,
+        onAddFileReferenceToChat,
+        onOpenFile,
+        onRevealFileReference,
+    ]);
 
     const inlineOptions: InlineOptions | undefined = useMemo(() => {
         if (!onOpenFile || !resolveFileReference) return undefined;
         return {
+            onAddFileReferenceToChat,
+            onFileContextMenu: handleFileReferenceContextMenu,
             metrics: getChatPillMetrics(chatFontSize),
             onOpenFile,
+            onRevealFileReference,
             resolveFileReference,
         };
-    }, [chatFontSize, onOpenFile, resolveFileReference]);
+    }, [
+        chatFontSize,
+        handleFileReferenceContextMenu,
+        onAddFileReferenceToChat,
+        onOpenFile,
+        onRevealFileReference,
+        resolveFileReference,
+    ]);
 
     return (
         <div
@@ -1197,7 +1656,15 @@ export const MarkdownContent = memo(function MarkdownContent({
                     />
                 ),
             )}
-            {contextMenu}
+            {textContextMenu}
+            {fileReferenceContextMenu &&
+            fileReferenceContextMenuEntries.length > 0 ? (
+                <ContextMenu
+                    entries={fileReferenceContextMenuEntries}
+                    menu={fileReferenceContextMenu}
+                    onClose={closeFileReferenceContextMenu}
+                />
+            ) : null}
         </div>
     );
 });
