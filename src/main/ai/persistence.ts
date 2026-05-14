@@ -59,7 +59,14 @@ interface PersistedAiHistorySessionRow {
 
 interface PersistedAiTranscriptRow {
     readonly message_count: number | null;
+    readonly parent_session_id: string | null;
+    readonly project_id: string | null;
+    readonly runtime: string;
+    readonly status: string;
+    readonly title: string;
     readonly transcript_json: string | null;
+    readonly updated_at: string;
+    readonly worktree_id: string | null;
 }
 
 interface ExistingDraftRow {
@@ -74,6 +81,24 @@ interface PersistedRuntimeCatalogRow {
 interface PersistedRuntimePreferencesRow {
     readonly value: string;
 }
+
+type PersistedSessionSnapshot = Omit<
+    AiSessionSnapshot,
+    "availableCommands" | "configOptions" | "modes" | "models"
+> & {
+    readonly persistenceVersion: number;
+};
+
+const CURRENT_PERSISTED_SESSION_VERSION = 2;
+const HEAL_TRANSCRIPT_SIZE_THRESHOLD_CHARS = 64_000;
+const MAX_PERSISTED_RAW_INPUT_JSON_CHARS = 8_000;
+const MAX_PERSISTED_RAW_OUTPUT_JSON_CHARS = 16_000;
+const MAX_PERSISTED_TERMINAL_OUTPUT_CHARS = 24_000;
+const MAX_PERSISTED_DIFF_TEXT_CHARS = 12_000;
+const MAX_PERSISTED_DIFF_TEXT_TOTAL_CHARS = 32_000;
+const MAX_PERSISTED_DIFF_HUNKS_JSON_CHARS = 24_000;
+const MAX_PERSISTED_DIFF_HUNK_LINES = 500;
+const MAX_PERSISTED_DIFFS_PER_ACTIVITY = 100;
 
 const LATEST_RUNTIME_CATALOG_TRANSCRIPT_QUERY = `
     SELECT
@@ -206,7 +231,7 @@ export class AiPersistence {
                     );
                 }
 
-                const snapshot = {
+                const snapshot = sanitizeLoadedSessionSnapshot({
                     activeTurnStartedAt:
                         typeof raw.activeTurnStartedAt === "string"
                             ? raw.activeTurnStartedAt
@@ -236,7 +261,10 @@ export class AiPersistence {
                         row.parent_session_id,
                     ),
                     projectId: row.project_id,
-                    runtimeId: normalizeRuntimeId(raw.runtimeId),
+                    runtimeId:
+                        typeof raw.runtimeId === "string"
+                            ? normalizeRuntimeId(raw.runtimeId)
+                            : fallback.runtimeId,
                     runtimeSessionId:
                         typeof raw.runtimeSessionId === "string"
                             ? raw.runtimeSessionId
@@ -262,7 +290,14 @@ export class AiPersistence {
                         raw.worktreeId === null
                             ? raw.worktreeId
                             : fallback.worktreeId,
-                };
+                });
+
+                this.#healPersistedSessionTranscriptIfNeeded({
+                    originalJson: row.transcript_json,
+                    raw,
+                    sessionId,
+                    snapshot,
+                });
 
                 return mergeRuntimeCatalogIntoSnapshot(
                     snapshot,
@@ -306,6 +341,13 @@ export class AiPersistence {
                     .prepare<[string], PersistedAiTranscriptRow | undefined>(
                         `
                         SELECT
+                            chat_sessions.project_id,
+                            chat_sessions.worktree_id,
+                            chat_sessions.parent_session_id,
+                            chat_sessions.title,
+                            chat_sessions.runtime,
+                            chat_sessions.status,
+                            chat_sessions.updated_at,
                             chat_transcripts.transcript_json,
                             chat_transcripts.message_count
                         FROM chat_sessions
@@ -323,11 +365,92 @@ export class AiPersistence {
 
                 const offset = normalizeHistoryOffset(input.offset);
                 const limit = normalizeTranscriptPageLimit(input.limit);
-                const messages = extractPersistedMessages(row.transcript_json);
+                const raw = parseJsonWithFallback<Record<
+                    string,
+                    unknown
+                > | null>(row.transcript_json, null);
+                const messages = normalizeMessages(raw?.messages);
                 const totalMessages = Math.max(
                     messages.length,
                     row.message_count ?? 0,
                 );
+
+                if (raw) {
+                    const snapshot = sanitizeLoadedSessionSnapshot({
+                        activeTurnStartedAt:
+                            typeof raw.activeTurnStartedAt === "string"
+                                ? raw.activeTurnStartedAt
+                                : null,
+                        availableCommands: normalizeAvailableCommands(
+                            raw.availableCommands,
+                        ),
+                        configOptions: normalizeConfigOptions(
+                            raw.configOptions,
+                        ),
+                        lastError:
+                            typeof raw.lastError === "string"
+                                ? raw.lastError
+                                : null,
+                        messages,
+                        modeId:
+                            typeof raw.modeId === "string"
+                                ? raw.modeId
+                                : null,
+                        modes: normalizeSessionModes(raw.modes),
+                        modelId:
+                            typeof raw.modelId === "string"
+                                ? raw.modelId
+                                : null,
+                        models: normalizeSessionModels(raw.models),
+                        pendingPermission: normalizePermissionRequest(
+                            raw.pendingPermission,
+                        ),
+                        pendingUserInput: normalizeUserInputRequest(
+                            raw.pendingUserInput,
+                        ),
+                        plan: normalizePlan(raw.plan),
+                        parentSessionId: normalizeParentSessionId(
+                            row.parent_session_id,
+                        ),
+                        projectId: row.project_id,
+                        runtimeId:
+                            typeof raw.runtimeId === "string"
+                                ? normalizeRuntimeId(raw.runtimeId)
+                                : normalizeRuntimeId(row.runtime),
+                        runtimeSessionId:
+                            typeof raw.runtimeSessionId === "string"
+                                ? raw.runtimeSessionId
+                                : null,
+                        sessionId:
+                            typeof raw.sessionId === "string"
+                                ? raw.sessionId
+                                : input.sessionId,
+                        status: normalizeSessionStatus(raw.status),
+                        title:
+                            typeof raw.title === "string"
+                                ? raw.title
+                                : row.title,
+                        tokenUsage: normalizeTokenUsage(raw.tokenUsage),
+                        toolActivity: normalizeToolActivity(raw.toolActivity),
+                        trackedFiles: normalizeTrackedFiles(raw.trackedFiles),
+                        updatedAt:
+                            typeof raw.updatedAt === "string"
+                                ? raw.updatedAt
+                                : row.updated_at,
+                        worktreeId:
+                            typeof raw.worktreeId === "string" ||
+                            raw.worktreeId === null
+                                ? raw.worktreeId
+                                : row.worktree_id,
+                    });
+
+                    this.#healPersistedSessionTranscriptIfNeeded({
+                        originalJson: row.transcript_json,
+                        raw,
+                        sessionId: input.sessionId,
+                        snapshot,
+                    });
+                }
 
                 return {
                     messages: messages.slice(offset, offset + limit),
@@ -674,6 +797,74 @@ export class AiPersistence {
         return row?.draft ?? "";
     }
 
+    #healPersistedSessionTranscriptIfNeeded(input: {
+        readonly originalJson: string | null;
+        readonly raw: Record<string, unknown>;
+        readonly sessionId: string;
+        readonly snapshot: AiSessionSnapshot;
+    }): void {
+        if (!input.originalJson) {
+            return;
+        }
+
+        const healedJson = JSON.stringify(
+            createPersistedSessionSnapshot(input.snapshot),
+        );
+        if (
+            !shouldHealPersistedSessionTranscript(
+                input.raw,
+                input.originalJson,
+                healedJson,
+            )
+        ) {
+            return;
+        }
+
+        const now = new Date().toISOString();
+        const runtimeCatalog = extractRuntimeCatalog(input.snapshot);
+        if (hasRuntimeCatalog(runtimeCatalog)) {
+            this.#connection
+                .prepare<[string, string, string], void>(
+                    `
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    `,
+                )
+                .run(
+                    getRuntimeCatalogKey(input.snapshot.runtimeId),
+                    JSON.stringify(runtimeCatalog),
+                    now,
+                );
+        }
+
+        this.#connection
+            .prepare<[string, number, string, string, string], void>(
+                `
+                UPDATE chat_transcripts
+                SET
+                    transcript_json = ?,
+                    message_count = ?,
+                    preview = ?,
+                    updated_at = ?
+                WHERE session_id = ?
+                `,
+            )
+            .run(
+                healedJson,
+                input.snapshot.messages.length,
+                serializePersistedPreview(
+                    deriveSessionPreview(input.snapshot.messages),
+                ),
+                // This only marks the transcript rewrite; chat_sessions.updated_at
+                // remains unchanged so history ordering does not move.
+                now,
+                input.sessionId,
+            );
+    }
+
 }
 
 function getRuntimeSelectionPreferencesKey(
@@ -886,32 +1077,251 @@ export function createEmptyAiSessionSnapshot(options: {
 
 function createPersistedSessionSnapshot(
     snapshot: AiSessionSnapshot,
-): Omit<
-    AiSessionSnapshot,
-    "availableCommands" | "configOptions" | "modes" | "models"
-> {
+): PersistedSessionSnapshot {
+    const sanitizedSnapshot = sanitizeLoadedSessionSnapshot(snapshot);
+
     return {
-        activeTurnStartedAt: snapshot.activeTurnStartedAt ?? null,
-        lastError: snapshot.lastError,
-        messages: snapshot.messages,
-        modeId: snapshot.modeId,
-        modelId: snapshot.modelId,
-        pendingPermission: snapshot.pendingPermission,
-        pendingUserInput: snapshot.pendingUserInput,
-        plan: snapshot.plan,
-        parentSessionId: snapshot.parentSessionId ?? null,
-        projectId: snapshot.projectId,
-        runtimeId: snapshot.runtimeId,
-        runtimeSessionId: snapshot.runtimeSessionId,
-        sessionId: snapshot.sessionId,
-        status: snapshot.status,
-        title: snapshot.title,
-        tokenUsage: snapshot.tokenUsage,
-        toolActivity: snapshot.toolActivity,
-        trackedFiles: snapshot.trackedFiles,
-        updatedAt: snapshot.updatedAt,
-        worktreeId: snapshot.worktreeId ?? null,
+        activeTurnStartedAt: sanitizedSnapshot.activeTurnStartedAt ?? null,
+        lastError: sanitizedSnapshot.lastError,
+        messages: sanitizedSnapshot.messages,
+        modeId: sanitizedSnapshot.modeId,
+        modelId: sanitizedSnapshot.modelId,
+        pendingPermission: sanitizedSnapshot.pendingPermission,
+        pendingUserInput: sanitizedSnapshot.pendingUserInput,
+        persistenceVersion: CURRENT_PERSISTED_SESSION_VERSION,
+        plan: sanitizedSnapshot.plan,
+        parentSessionId: sanitizedSnapshot.parentSessionId ?? null,
+        projectId: sanitizedSnapshot.projectId,
+        runtimeId: sanitizedSnapshot.runtimeId,
+        runtimeSessionId: sanitizedSnapshot.runtimeSessionId,
+        sessionId: sanitizedSnapshot.sessionId,
+        status: sanitizedSnapshot.status,
+        title: sanitizedSnapshot.title,
+        tokenUsage: sanitizedSnapshot.tokenUsage,
+        toolActivity: sanitizedSnapshot.toolActivity,
+        trackedFiles: sanitizedSnapshot.trackedFiles,
+        updatedAt: sanitizedSnapshot.updatedAt,
+        worktreeId: sanitizedSnapshot.worktreeId ?? null,
     };
+}
+
+function sanitizeLoadedSessionSnapshot(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        toolActivity: sanitizePersistedToolActivity(snapshot.toolActivity),
+    };
+}
+
+function sanitizePersistedToolActivity(
+    entries: readonly AiToolActivity[],
+): readonly AiToolActivity[] {
+    return entries.map((entry) => ({
+        ...entry,
+        diffs: sanitizePersistedFileDiffs(entry.diffs),
+        rawInputJson: sanitizeNullableString(
+            entry.rawInputJson,
+            MAX_PERSISTED_RAW_INPUT_JSON_CHARS,
+            "null",
+        ),
+        rawOutputJson: sanitizeNullableString(
+            entry.rawOutputJson,
+            MAX_PERSISTED_RAW_OUTPUT_JSON_CHARS,
+            "null",
+        ),
+        terminalOutput: sanitizeNullableString(
+            entry.terminalOutput,
+            MAX_PERSISTED_TERMINAL_OUTPUT_CHARS,
+            "truncate",
+        ),
+    }));
+}
+
+function sanitizeNullableString(
+    value: string | null,
+    maxChars: number,
+    strategy: "null" | "truncate",
+): string | null {
+    if (value === null || value.length <= maxChars) {
+        return value;
+    }
+
+    return strategy === "truncate" ? value.slice(-maxChars) : null;
+}
+
+function sanitizePersistedFileDiffs(
+    diffs: AiToolActivity["diffs"],
+): AiToolActivity["diffs"] {
+    const tooManyDiffs = diffs.length > MAX_PERSISTED_DIFFS_PER_ACTIVITY;
+    const retainedDiffs = tooManyDiffs
+        ? diffs.slice(0, MAX_PERSISTED_DIFFS_PER_ACTIVITY)
+        : diffs;
+    let remainingTextBudget = tooManyDiffs
+        ? 0
+        : MAX_PERSISTED_DIFF_TEXT_TOTAL_CHARS;
+
+    return retainedDiffs.map((diff) => {
+        const oldText = sanitizePersistedDiffText(
+            diff.oldText,
+            remainingTextBudget,
+        );
+        if (oldText !== null) {
+            remainingTextBudget -= oldText.length;
+        }
+
+        const newText = sanitizePersistedDiffText(
+            diff.newText,
+            remainingTextBudget,
+        );
+        if (newText !== null) {
+            remainingTextBudget -= newText.length;
+        }
+
+        return {
+            ...diff,
+            hunks: sanitizePersistedDiffHunks(diff.hunks, tooManyDiffs),
+            newText,
+            oldText,
+        };
+    });
+}
+
+function sanitizePersistedDiffText(
+    value: string | null,
+    remainingBudget: number,
+): string | null {
+    if (
+        value === null ||
+        value.length > MAX_PERSISTED_DIFF_TEXT_CHARS ||
+        value.length > remainingBudget
+    ) {
+        return null;
+    }
+
+    return value;
+}
+
+function sanitizePersistedDiffHunks(
+    hunks: readonly AiDiffHunk[],
+    forceEmpty: boolean,
+): readonly AiDiffHunk[] {
+    if (forceEmpty || countDiffHunkLines(hunks) > MAX_PERSISTED_DIFF_HUNK_LINES) {
+        return [];
+    }
+
+    return getJsonLength(hunks) > MAX_PERSISTED_DIFF_HUNKS_JSON_CHARS
+        ? []
+        : hunks;
+}
+
+function countDiffHunkLines(hunks: readonly AiDiffHunk[]): number {
+    return hunks.reduce((count, hunk) => count + hunk.lines.length, 0);
+}
+
+function shouldHealPersistedSessionTranscript(
+    raw: Record<string, unknown>,
+    originalJson: string,
+    healedJson: string,
+): boolean {
+    if (healedJson === originalJson) {
+        return false;
+    }
+
+    return (
+        raw.persistenceVersion !== CURRENT_PERSISTED_SESSION_VERSION ||
+        originalJson.length > HEAL_TRANSCRIPT_SIZE_THRESHOLD_CHARS ||
+        hasInflatedPersistedToolActivity(raw.toolActivity) ||
+        healedJson.length < originalJson.length
+    );
+}
+
+function hasInflatedPersistedToolActivity(value: unknown): boolean {
+    if (!Array.isArray(value)) {
+        return false;
+    }
+
+    return value.some((entry) => {
+        if (!isRecord(entry)) {
+            return false;
+        }
+
+        return (
+            isStringLongerThan(
+                entry.rawInputJson,
+                MAX_PERSISTED_RAW_INPUT_JSON_CHARS,
+            ) ||
+            isStringLongerThan(
+                entry.rawOutputJson,
+                MAX_PERSISTED_RAW_OUTPUT_JSON_CHARS,
+            ) ||
+            isStringLongerThan(
+                entry.terminalOutput,
+                MAX_PERSISTED_TERMINAL_OUTPUT_CHARS,
+            ) ||
+            hasInflatedPersistedFileDiffs(entry.diffs)
+        );
+    });
+}
+
+function hasInflatedPersistedFileDiffs(value: unknown): boolean {
+    if (!Array.isArray(value)) {
+        return false;
+    }
+
+    if (value.length > MAX_PERSISTED_DIFFS_PER_ACTIVITY) {
+        return true;
+    }
+
+    let totalTextChars = 0;
+    for (const entry of value) {
+        if (!isRecord(entry)) {
+            continue;
+        }
+
+        for (const text of [entry.oldText, entry.newText]) {
+            if (typeof text !== "string") {
+                continue;
+            }
+
+            totalTextChars += text.length;
+            if (
+                text.length > MAX_PERSISTED_DIFF_TEXT_CHARS ||
+                totalTextChars > MAX_PERSISTED_DIFF_TEXT_TOTAL_CHARS
+            ) {
+                return true;
+            }
+        }
+
+        if (
+            Array.isArray(entry.hunks) &&
+            (getUnknownDiffHunkLineCount(entry.hunks) >
+                MAX_PERSISTED_DIFF_HUNK_LINES ||
+                getJsonLength(entry.hunks) > MAX_PERSISTED_DIFF_HUNKS_JSON_CHARS)
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function isStringLongerThan(value: unknown, maxChars: number): boolean {
+    return typeof value === "string" && value.length > maxChars;
+}
+
+function getUnknownDiffHunkLineCount(value: readonly unknown[]): number {
+    return value.reduce<number>((count, entry) => {
+        if (!isRecord(entry) || !Array.isArray(entry.lines)) {
+            return count;
+        }
+
+        return count + entry.lines.length;
+    }, 0);
+}
+
+function getJsonLength(value: unknown): number {
+    return JSON.stringify(value).length;
 }
 
 function extractRuntimeCatalog(
@@ -1885,21 +2295,6 @@ function normalizeTranscriptPageLimit(value: number): number {
     }
 
     return Math.max(1, Math.min(200, Math.trunc(value)));
-}
-
-function extractPersistedMessages(
-    transcriptJson: string | null,
-): readonly AiMessage[] {
-    const raw = parseJsonWithFallback<Record<string, unknown> | null>(
-        transcriptJson,
-        null,
-    );
-
-    if (!raw) {
-        return [];
-    }
-
-    return normalizeMessages(raw.messages);
 }
 
 function deriveSessionPreview(messages: readonly AiMessage[]): string | null {

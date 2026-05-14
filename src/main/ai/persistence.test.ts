@@ -226,6 +226,227 @@ describe("AiPersistence", () => {
         );
     });
 
+    it("stores a healed compact tool activity when raw output and diffs contain huge strings", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot = createSnapshot({
+            messages: ["Summarize the edit"],
+            sessionId: "session-save-healed-tool-activity",
+            title: "Healed save",
+            toolActivity: [
+                createInflatedToolActivity(
+                    "tool-save-healed",
+                    "session-save-healed-tool-activity",
+                ),
+            ],
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+
+        persistence.saveSessionSnapshot(snapshot);
+
+        const storedSnapshot = loadStoredSnapshot(
+            connection,
+            snapshot.sessionId,
+        );
+        const toolActivity = storedSnapshot.toolActivity?.[0];
+        const diff = toolActivity?.diffs?.[0];
+
+        expect(storedSnapshot.persistenceVersion).toBe(2);
+        expect(toolActivity).toEqual(
+            expect.objectContaining({
+                id: "tool-save-healed",
+                kind: "edit",
+                rawInputJson: null,
+                rawOutputJson: null,
+                sessionId: snapshot.sessionId,
+                status: "completed",
+                summary: "Edited a large file",
+                title: "Edit large file",
+            }),
+        );
+        expect(toolActivity?.terminalOutput?.length).toBeLessThan(
+            "terminal\n".repeat(5_000).length,
+        );
+        expect(diff).toEqual(
+            expect.objectContaining({
+                hunks: [],
+                newText: null,
+                oldText: null,
+                path: "/tmp/large-file.ts",
+                previousPath: null,
+                reversible: true,
+            }),
+        );
+        expect(storedSnapshot.messages).toHaveLength(1);
+    });
+
+    it("heals a legacy inflated transcript on load while preserving messages and essential tool activity fields", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const transcript = createLegacyInflatedTranscript(
+            "session-load-heal",
+            ["User request", "Assistant response"],
+        );
+
+        seedChatSession(connection, {
+            runtimeId: "codex",
+            sessionId: "session-load-heal",
+            transcript,
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+        const originalJson = loadStoredTranscriptJson(
+            connection,
+            "session-load-heal",
+        );
+
+        const loaded = persistence.loadSessionSnapshot("session-load-heal");
+
+        expect(loaded?.messages.map((message) => message.content)).toEqual([
+            "User request",
+            "Assistant response",
+        ]);
+        expect(loaded?.toolActivity[0]).toEqual(
+            expect.objectContaining({
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-load-heal-child",
+                },
+                createdAt: "2026-04-16T12:00:00.000Z",
+                exitCode: 0,
+                id: "tool-legacy-inflated",
+                kind: "edit",
+                locations: [
+                    {
+                        endLine: 12,
+                        line: 4,
+                        path: "/tmp/large-file.ts",
+                    },
+                ],
+                rawInputJson: null,
+                rawOutputJson: null,
+                sessionId: "session-load-heal",
+                status: "completed",
+                summary: "Edited a large file",
+                title: "Edit large file",
+                updatedAt: "2026-04-16T12:00:01.000Z",
+            }),
+        );
+
+        const healedJson = loadStoredTranscriptJson(
+            connection,
+            "session-load-heal",
+        );
+        const healedSnapshot = JSON.parse(healedJson) as Record<
+            string,
+            unknown
+        >;
+
+        expect(healedJson.length).toBeLessThan(originalJson.length);
+        expect(healedSnapshot.persistenceVersion).toBe(2);
+        expect(loadStoredMessageCount(connection, "session-load-heal")).toBe(2);
+        expect(loadStoredPreview(connection, "session-load-heal")).toBe(
+            "Assistant response",
+        );
+        expect(loadStoredSessionUpdatedAt(connection, "session-load-heal")).toBe(
+            "2026-04-16T12:00:00.000Z",
+        );
+    });
+
+    it("heals a legacy inflated transcript when loading a transcript page and returns the correct page", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            runtimeId: "codex",
+            sessionId: "session-page-heal",
+            transcript: createLegacyInflatedTranscript("session-page-heal", [
+                "Message 1",
+                "Message 2",
+                "Message 3",
+                "Message 4",
+            ]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+        const originalJson = loadStoredTranscriptJson(
+            connection,
+            "session-page-heal",
+        );
+
+        const page = persistence.loadSessionTranscriptPage({
+            limit: 2,
+            offset: 1,
+            sessionId: "session-page-heal",
+        });
+
+        expect(page?.messages.map((message) => message.content)).toEqual([
+            "Message 2",
+            "Message 3",
+        ]);
+        expect(page?.totalMessages).toBe(4);
+
+        const healedJson = loadStoredTranscriptJson(
+            connection,
+            "session-page-heal",
+        );
+        const healedSnapshot = JSON.parse(healedJson) as {
+            readonly persistenceVersion?: number;
+            readonly toolActivity?: readonly {
+                readonly rawOutputJson?: string | null;
+            }[];
+        };
+
+        expect(healedJson.length).toBeLessThan(originalJson.length);
+        expect(healedSnapshot.persistenceVersion).toBe(2);
+        expect(healedSnapshot.toolActivity?.[0]?.rawOutputJson).toBeNull();
+        expect(loadStoredMessageCount(connection, "session-page-heal")).toBe(4);
+    });
+
+    it("keeps already-healed transcripts idempotent when loading snapshots and pages", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot = createSnapshot({
+            messages: ["Stable message"],
+            sessionId: "session-heal-idempotent",
+            title: "Stable session",
+            toolActivity: [
+                createInflatedToolActivity(
+                    "tool-idempotent",
+                    "session-heal-idempotent",
+                ),
+            ],
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+
+        persistence.saveSessionSnapshot(snapshot);
+        const storedBefore = loadStoredTranscriptJson(
+            connection,
+            snapshot.sessionId,
+        );
+
+        const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
+        const page = persistence.loadSessionTranscriptPage({
+            limit: 10,
+            offset: 0,
+            sessionId: snapshot.sessionId,
+        });
+        const storedAfter = loadStoredTranscriptJson(
+            connection,
+            snapshot.sessionId,
+        );
+
+        expect(storedAfter).toBe(storedBefore);
+        expect(loaded?.messages).toEqual(snapshot.messages);
+        expect(loaded?.toolActivity[0]).toEqual(
+            expect.objectContaining({
+                id: "tool-idempotent",
+                rawInputJson: null,
+                rawOutputJson: null,
+                title: "Edit large file",
+            }),
+        );
+        expect(page?.messages).toEqual(snapshot.messages);
+    });
+
     it("persists AI session parent links as structured data", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
@@ -1146,6 +1367,184 @@ function seedChatSession(
             input.updatedAt,
             input.updatedAt,
         );
+}
+
+function createLegacyInflatedTranscript(
+    sessionId: string,
+    contents: readonly string[],
+): Record<string, unknown> {
+    return {
+        ...createTranscriptWithMessages(contents),
+        persistenceVersion: undefined,
+        sessionId,
+        title: "Legacy inflated session",
+        toolActivity: [
+            createInflatedToolActivity("tool-legacy-inflated", sessionId),
+        ],
+    };
+}
+
+function createInflatedToolActivity(
+    id: string,
+    sessionId: string,
+): AiSessionSnapshot["toolActivity"][number] {
+    const hugeText = "large change\n".repeat(4_000);
+
+    return {
+        action: {
+            kind: "open_session",
+            sessionId: `${sessionId}-child`,
+        },
+        createdAt: "2026-04-16T12:00:00.000Z",
+        diffs: [
+            {
+                hunks: [
+                    {
+                        id: "hunk-1",
+                        lines: [
+                            {
+                                id: "line-1",
+                                text: hugeText,
+                                type: "context",
+                            },
+                        ],
+                        newCount: 1,
+                        newStart: 1,
+                        oldCount: 1,
+                        oldStart: 1,
+                    },
+                ],
+                isText: true,
+                kind: "update",
+                newText: hugeText,
+                oldText: hugeText,
+                path: "/tmp/large-file.ts",
+                previousPath: null,
+                reversible: true,
+            },
+        ],
+        exitCode: 0,
+        id,
+        kind: "edit",
+        locations: [
+            {
+                endLine: 12,
+                line: 4,
+                path: "/tmp/large-file.ts",
+            },
+        ],
+        rawInputJson: JSON.stringify({ prompt: hugeText }),
+        rawOutputJson: JSON.stringify({ output: hugeText }),
+        sessionId,
+        status: "completed",
+        summary: "Edited a large file",
+        terminalOutput: "terminal\n".repeat(5_000),
+        title: "Edit large file",
+        updatedAt: "2026-04-16T12:00:01.000Z",
+    };
+}
+
+function loadStoredSnapshot(
+    connection: ReturnType<typeof createSqliteCompatConnection>,
+    sessionId: string,
+): {
+    readonly messages?: unknown[];
+    readonly persistenceVersion?: number;
+    readonly toolActivity?: readonly {
+        readonly diffs?: readonly {
+            readonly hunks?: unknown[];
+            readonly newText?: string | null;
+            readonly oldText?: string | null;
+            readonly path?: string;
+            readonly previousPath?: string | null;
+            readonly reversible?: boolean;
+        }[];
+        readonly id?: string;
+        readonly kind?: string;
+        readonly rawInputJson?: string | null;
+        readonly rawOutputJson?: string | null;
+        readonly sessionId?: string;
+        readonly status?: string;
+        readonly summary?: string | null;
+        readonly terminalOutput?: string | null;
+        readonly title?: string;
+    }[];
+} {
+    return JSON.parse(loadStoredTranscriptJson(connection, sessionId)) as {
+        readonly messages?: unknown[];
+        readonly persistenceVersion?: number;
+        readonly toolActivity?: readonly {
+            readonly diffs?: readonly {
+                readonly hunks?: unknown[];
+                readonly newText?: string | null;
+                readonly oldText?: string | null;
+                readonly path?: string;
+                readonly previousPath?: string | null;
+                readonly reversible?: boolean;
+            }[];
+            readonly id?: string;
+            readonly kind?: string;
+            readonly rawInputJson?: string | null;
+            readonly rawOutputJson?: string | null;
+            readonly sessionId?: string;
+            readonly status?: string;
+            readonly summary?: string | null;
+            readonly terminalOutput?: string | null;
+            readonly title?: string;
+        }[];
+    };
+}
+
+function loadStoredTranscriptJson(
+    connection: ReturnType<typeof createSqliteCompatConnection>,
+    sessionId: string,
+): string {
+    const row = connection
+        .prepare<[string], { transcript_json: string } | undefined>(
+            `
+            SELECT transcript_json
+            FROM chat_transcripts
+            WHERE session_id = ?
+            `,
+        )
+        .get(sessionId);
+
+    expect(row).toBeDefined();
+    return row?.transcript_json ?? "";
+}
+
+function loadStoredMessageCount(
+    connection: ReturnType<typeof createSqliteCompatConnection>,
+    sessionId: string,
+): number | null {
+    return (
+        connection
+            .prepare<[string], { message_count: number | null } | undefined>(
+                `
+                SELECT message_count
+                FROM chat_transcripts
+                WHERE session_id = ?
+                `,
+            )
+            .get(sessionId)?.message_count ?? null
+    );
+}
+
+function loadStoredSessionUpdatedAt(
+    connection: ReturnType<typeof createSqliteCompatConnection>,
+    sessionId: string,
+): string | null {
+    return (
+        connection
+            .prepare<[string], { updated_at: string } | undefined>(
+                `
+                SELECT updated_at
+                FROM chat_sessions
+                WHERE id = ?
+                `,
+            )
+            .get(sessionId)?.updated_at ?? null
+    );
 }
 
 function loadStoredPreview(
