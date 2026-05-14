@@ -49,7 +49,11 @@ import {
     type SidebarAgentsHistoryUnknownSessionSeed,
 } from "./sidebarAgentsHistory";
 import {
-    getSidebarAgentsCollapseStorageKey,
+    getSidebarAgentsHistoryCacheKey,
+    readSidebarAgentsHistoryCache,
+    writeSidebarAgentsHistoryCache,
+} from "./sidebarAgentsHistoryCache";
+import {
     persistSidebarAgentsCollapsedSessionIds,
     readSidebarAgentsCollapsedSessionIds,
 } from "./sidebarAgentsCollapseState";
@@ -69,6 +73,7 @@ type SidebarAgentDragPreview = {
 
 const SIDEBAR_AGENTS_TITLE_MAX_CHARS = 48;
 const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
+const EMPTY_AGENTS_SESSIONS: readonly AiHistorySessionSummary[] = [];
 const EMPTY_COLLAPSED_IDS: ReadonlySet<string> = new Set();
 
 const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
@@ -112,9 +117,13 @@ export function SidebarAgentsPanel({
             ? activeTab.sessionId
             : null;
     });
+    const historyScopeKey = useMemo(
+        () => getSidebarAgentsHistoryCacheKey(projectId, worktreeId),
+        [projectId, worktreeId],
+    );
 
     const [sessions, setSessions] = useState<readonly AiHistorySessionSummary[]>(
-        [],
+        () => readSidebarAgentsHistoryCache(projectId, worktreeId)?.sessions ?? [],
     );
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -133,26 +142,71 @@ export function SidebarAgentsPanel({
     >(() => readSidebarAgentsCollapsedSessionIds(projectId, worktreeId));
     const [loadedHistoryScopeKey, setLoadedHistoryScopeKey] = useState<
         string | null
-    >(null);
+    >(
+        () =>
+            readSidebarAgentsHistoryCache(projectId, worktreeId)
+                ? historyScopeKey
+                : null,
+    );
     const requestIdRef = useRef(0);
     const refreshTimerRef = useRef<number | null>(null);
     const normalizedFilter = (filter ?? "").trim().toLowerCase();
     const hasQuery = normalizedFilter.length > 0;
-    const collapseStorageKey = useMemo(
-        () => getSidebarAgentsCollapseStorageKey(projectId, worktreeId),
-        [projectId, worktreeId],
+    const pendingHistoryCache =
+        loadedHistoryScopeKey === historyScopeKey
+            ? null
+            : readSidebarAgentsHistoryCache(projectId, worktreeId);
+    const visibleSessions =
+        loadedHistoryScopeKey === historyScopeKey
+            ? sessions
+            : pendingHistoryCache?.sessions ?? EMPTY_AGENTS_SESSIONS;
+    const visibleError =
+        loadedHistoryScopeKey === historyScopeKey ? error : null;
+    const showBlockingLoading =
+        !visibleError &&
+        (isLoading ||
+            (loadedHistoryScopeKey !== historyScopeKey && !pendingHistoryCache));
+
+    const setSessionsAndCache = useCallback(
+        (
+            updater: (
+                current: readonly AiHistorySessionSummary[],
+            ) => readonly AiHistorySessionSummary[],
+        ) => {
+            setLoadedHistoryScopeKey(historyScopeKey);
+            setSessions((current) => {
+                const currentScopeSessions =
+                    loadedHistoryScopeKey === historyScopeKey
+                        ? current
+                        : readSidebarAgentsHistoryCache(projectId, worktreeId)
+                              ?.sessions ?? EMPTY_AGENTS_SESSIONS;
+                const nextSessions = updater(currentScopeSessions);
+                writeSidebarAgentsHistoryCache(
+                    projectId,
+                    worktreeId,
+                    nextSessions,
+                );
+                return nextSessions;
+            });
+        },
+        [historyScopeKey, loadedHistoryScopeKey, projectId, worktreeId],
     );
 
-    const loadSessions = useCallback(async () => {
+    const loadSessions = useCallback(async ({
+        showBlockingLoading = true,
+    }: {
+        readonly showBlockingLoading?: boolean;
+    } = {}) => {
         const api = getComandoApi();
         if (!api) {
+            setIsLoading(false);
             return;
         }
 
         const requestId = requestIdRef.current + 1;
         requestIdRef.current = requestId;
 
-        setIsLoading(true);
+        setIsLoading(showBlockingLoading);
         setError(null);
         try {
             const nextSessions = await api.listAiSessionHistory({
@@ -164,7 +218,8 @@ export function SidebarAgentsPanel({
                 return;
             }
             setSessions(nextSessions);
-            setLoadedHistoryScopeKey(collapseStorageKey);
+            writeSidebarAgentsHistoryCache(projectId, worktreeId, nextSessions);
+            setLoadedHistoryScopeKey(historyScopeKey);
         } catch (err) {
             if (requestIdRef.current !== requestId) {
                 return;
@@ -179,7 +234,7 @@ export function SidebarAgentsPanel({
                 setIsLoading(false);
             }
         }
-    }, [collapseStorageKey, projectId, worktreeId]);
+    }, [historyScopeKey, projectId, worktreeId]);
 
     const clearRefreshTimer = useCallback(() => {
         if (refreshTimerRef.current !== null) {
@@ -195,19 +250,28 @@ export function SidebarAgentsPanel({
 
         refreshTimerRef.current = window.setTimeout(() => {
             refreshTimerRef.current = null;
-            void loadSessions();
+            void loadSessions({ showBlockingLoading: false });
         }, SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS);
     }, [loadSessions]);
 
     useEffect(() => {
-        setSessions([]);
-        setError(null);
-        setLoadedHistoryScopeKey(null);
-        clearRefreshTimer();
-        void loadSessions();
-    }, [clearRefreshTimer, loadSessions]);
+        const cached = readSidebarAgentsHistoryCache(projectId, worktreeId);
 
-    useEffect(() => clearRefreshTimer, [clearRefreshTimer]);
+        setError(null);
+        clearRefreshTimer();
+        setSessions(cached?.sessions ?? []);
+        setLoadedHistoryScopeKey(cached ? historyScopeKey : null);
+        if (cached) {
+            setIsLoading(false);
+        }
+
+        void loadSessions({ showBlockingLoading: !cached });
+
+        return () => {
+            requestIdRef.current += 1;
+            clearRefreshTimer();
+        };
+    }, [clearRefreshTimer, historyScopeKey, loadSessions, projectId, worktreeId]);
 
     useEffect(() => {
         setCollapsedSessionIds(
@@ -224,14 +288,20 @@ export function SidebarAgentsPanel({
         const unsubscribe = api.onAiSessionSnapshot((update) => {
             let needsReload = false;
 
+            setLoadedHistoryScopeKey(historyScopeKey);
             setSessions((current) => {
+                const currentScopeSessions =
+                    loadedHistoryScopeKey === historyScopeKey
+                        ? current
+                        : readSidebarAgentsHistoryCache(projectId, worktreeId)
+                              ?.sessions ?? EMPTY_AGENTS_SESSIONS;
                 const result = applySessionUpdateToSidebarHistory({
                     limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
                     scope: {
                         projectId,
                         worktreeId: worktreeId ?? null,
                     },
-                    sessions: current,
+                    sessions: currentScopeSessions,
                     unknownSessionSeed:
                         update.kind === "patch"
                             ? buildUnknownSessionSeed(
@@ -243,6 +313,11 @@ export function SidebarAgentsPanel({
                     update,
                 });
                 needsReload = result.needsReload;
+                writeSidebarAgentsHistoryCache(
+                    projectId,
+                    worktreeId,
+                    result.sessions,
+                );
                 return result.sessions;
             });
 
@@ -253,7 +328,13 @@ export function SidebarAgentsPanel({
         return () => {
             unsubscribe();
         };
-    }, [projectId, scheduleReload, worktreeId]);
+    }, [
+        historyScopeKey,
+        loadedHistoryScopeKey,
+        projectId,
+        scheduleReload,
+        worktreeId,
+    ]);
 
     const handleOpenSession = useCallback(
         (session: AiHistorySessionSummary) => {
@@ -328,7 +409,7 @@ export function SidebarAgentsPanel({
             return;
         }
 
-        const session = sessions.find(
+        const session = visibleSessions.find(
             (candidate) => candidate.sessionId === renamingSessionId,
         );
         const trimmedTitle = renameDraft.trim();
@@ -346,7 +427,7 @@ export function SidebarAgentsPanel({
         }
 
         const previousTitle = session.title;
-        setSessions((current) =>
+        setSessionsAndCache((current) =>
             current.map((candidate) =>
                 candidate.sessionId === targetSessionId
                     ? { ...candidate, title: trimmedTitle }
@@ -365,7 +446,7 @@ export function SidebarAgentsPanel({
             });
             await updateSessionTabTitles(targetSessionId, trimmedTitle);
         } catch (err) {
-            setSessions((current) =>
+            setSessionsAndCache((current) =>
                 current.map((candidate) =>
                     candidate.sessionId === targetSessionId
                         ? { ...candidate, title: previousTitle }
@@ -378,11 +459,17 @@ export function SidebarAgentsPanel({
                     : "Could not rename this thread.",
             );
         }
-    }, [renameDraft, renamingSessionId, sessions, updateSessionTabTitles]);
+    }, [
+        renameDraft,
+        renamingSessionId,
+        setSessionsAndCache,
+        updateSessionTabTitles,
+        visibleSessions,
+    ]);
 
     const handleDelete = useCallback(
         async (session: AiHistorySessionSummary) => {
-            const childCount = sessions.filter(
+            const childCount = visibleSessions.filter(
                 (candidate) => candidate.parentSessionId === session.sessionId,
             ).length;
             const confirmed = window.confirm(
@@ -399,8 +486,8 @@ export function SidebarAgentsPanel({
                 return;
             }
 
-            const previousSessions = sessions;
-            setSessions((current) =>
+            const previousSessions = visibleSessions;
+            setSessionsAndCache((current) =>
                 current
                     .filter(
                         (candidate) =>
@@ -430,7 +517,7 @@ export function SidebarAgentsPanel({
                     await closeTab(tabId);
                 }
             } catch (err) {
-                setSessions(previousSessions);
+                setSessionsAndCache(() => previousSessions);
                 setError(
                     err instanceof Error
                         ? err.message
@@ -438,7 +525,7 @@ export function SidebarAgentsPanel({
                 );
             }
         },
-        [closeTab, sessions],
+        [closeTab, setSessionsAndCache, visibleSessions],
     );
 
     const handleTogglePinned = useCallback(
@@ -454,7 +541,7 @@ export function SidebarAgentsPanel({
                 ? new Date().toISOString()
                 : null;
 
-            setSessions((current) =>
+            setSessionsAndCache((current) =>
                 current.map((candidate) =>
                     candidate.sessionId === session.sessionId
                         ? { ...candidate, pinnedAt: optimisticPinnedAt }
@@ -468,7 +555,7 @@ export function SidebarAgentsPanel({
                     sessionId: session.sessionId,
                 });
             } catch (err) {
-                setSessions((current) =>
+                setSessionsAndCache((current) =>
                     current.map((candidate) =>
                         candidate.sessionId === session.sessionId
                             ? { ...candidate, pinnedAt: previousPinnedAt }
@@ -484,7 +571,7 @@ export function SidebarAgentsPanel({
                 );
             }
         },
-        [],
+        [setSessionsAndCache],
     );
 
     const newAgentMenuEntries = useMemo<readonly ContextMenuEntry[]>(
@@ -501,7 +588,7 @@ export function SidebarAgentsPanel({
             return [];
         }
 
-        const session = sessions.find(
+        const session = visibleSessions.find(
             (candidate) =>
                 candidate.sessionId === contextMenu.payload.sessionId,
         );
@@ -534,7 +621,13 @@ export function SidebarAgentsPanel({
         );
 
         return entries;
-    }, [contextMenu, handleDelete, handleTogglePinned, sessions, startRename]);
+    }, [
+        contextMenu,
+        handleDelete,
+        handleTogglePinned,
+        startRename,
+        visibleSessions,
+    ]);
 
     const openSessionIds = useMemo(() => {
         const ids = new Set<string>();
@@ -554,7 +647,7 @@ export function SidebarAgentsPanel({
     const hierarchyGroups = useMemo(
         () => {
             const workingOrder = workingOrderRef.current;
-            return buildAiSessionHierarchyGroups(sessions, {
+            return buildAiSessionHierarchyGroups(visibleSessions, {
                 compareSiblings: (left, right) =>
                     compareSidebarHierarchySiblings(left, right, workingOrder),
                 filterQuery: normalizedFilter,
@@ -562,7 +655,7 @@ export function SidebarAgentsPanel({
         },
         // workingOrderRevision keeps this memo in sync with the ref-backed map.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [normalizedFilter, sessions, workingOrderRevision],
+        [normalizedFilter, visibleSessions, workingOrderRevision],
     );
     const filteredSessionCount = useMemo(
         () => countHierarchyGroupRows(hierarchyGroups),
@@ -610,7 +703,7 @@ export function SidebarAgentsPanel({
     }, [aiSessions]);
 
     useEffect(() => {
-        if (hasQuery || loadedHistoryScopeKey !== collapseStorageKey) {
+        if (hasQuery || loadedHistoryScopeKey !== historyScopeKey) {
             return;
         }
 
@@ -635,9 +728,9 @@ export function SidebarAgentsPanel({
             return next;
         });
     }, [
-        collapseStorageKey,
         collapsibleSessionIds,
         hasQuery,
+        historyScopeKey,
         loadedHistoryScopeKey,
         projectId,
         worktreeId,
@@ -715,13 +808,13 @@ export function SidebarAgentsPanel({
         [projectId, worktreeId],
     );
 
-    const statusLine = isLoading
+    const statusLine = showBlockingLoading
         ? "Loading..."
-        : error
-          ? error
+        : visibleError
+          ? visibleError
           : hasQuery
-            ? `${filteredSessionCount} of ${sessions.length}`
-            : formatSessionCount(sessions.length);
+            ? `${filteredSessionCount} of ${visibleSessions.length}`
+            : formatSessionCount(visibleSessions.length);
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -729,7 +822,7 @@ export function SidebarAgentsPanel({
                 <span
                     className={[
                         "min-w-0 flex-1 truncate text-[11px] font-medium",
-                        error
+                        visibleError
                             ? "text-[var(--diff-remove)]"
                             : "text-text-secondary",
                     ].join(" ")}
@@ -757,7 +850,9 @@ export function SidebarAgentsPanel({
             </div>
 
             <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-2">
-                {!isLoading && !error && sessions.length === 0 ? (
+                {!showBlockingLoading &&
+                !visibleError &&
+                visibleSessions.length === 0 ? (
                     <SidebarAgentsPlaceholder
                         body={
                             projectId
@@ -767,9 +862,9 @@ export function SidebarAgentsPanel({
                     />
                 ) : null}
 
-                {!isLoading &&
-                !error &&
-                sessions.length > 0 &&
+                {!showBlockingLoading &&
+                !visibleError &&
+                visibleSessions.length > 0 &&
                 filteredSessionCount === 0 ? (
                     <SidebarAgentsPlaceholder
                         body={`No threads match "${(filter ?? "").trim()}".`}

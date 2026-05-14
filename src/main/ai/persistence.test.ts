@@ -296,26 +296,26 @@ describe("AiPersistence", () => {
             .get(childSnapshot.sessionId);
         const storedSnapshot = JSON.parse(
             storedTranscript?.transcript_json ?? "{}",
-        );
+        ) as {
+            readonly parentSessionId?: unknown;
+            readonly toolActivity?: readonly {
+                readonly action?: unknown;
+            }[];
+        };
         expect(storedSnapshot.parentSessionId).toBe("session-parent");
         expect(storedSnapshot.toolActivity?.[0]?.action).toEqual({
             kind: "open_session",
             sessionId: "session-child",
         });
 
-        expect(persistence.loadSessionSnapshot(childSnapshot.sessionId)).toEqual(
-            expect.objectContaining({
-                parentSessionId: "session-parent",
-                toolActivity: expect.arrayContaining([
-                    expect.objectContaining({
-                        action: {
-                            kind: "open_session",
-                            sessionId: "session-child",
-                        },
-                    }),
-                ]),
-            }),
+        const loadedChildSnapshot = persistence.loadSessionSnapshot(
+            childSnapshot.sessionId,
         );
+        expect(loadedChildSnapshot?.parentSessionId).toBe("session-parent");
+        expect(loadedChildSnapshot?.toolActivity[0]?.action).toEqual({
+            kind: "open_session",
+            sessionId: "session-child",
+        });
 
         persistence.deleteSession(parentSnapshot.sessionId);
 
@@ -418,6 +418,7 @@ describe("AiPersistence", () => {
             worktreeId: "worktree-a",
         });
         seedChatSession(connection, {
+            preview: "Assistant returns the final summary for the branch.",
             projectId: "project-1",
             runtimeId: "codex",
             sessionId: "session-main",
@@ -468,6 +469,37 @@ describe("AiPersistence", () => {
         expect(loadStoredPreview(connection, "session-main")).toBe(
             "Assistant returns the final summary for the branch.",
         );
+    });
+
+    it("returns null for missing history previews without backfilling transcripts", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+
+        seedChatSession(connection, {
+            projectId: "project-1",
+            runtimeId: "codex",
+            sessionId: "session-legacy",
+            transcript: createTranscriptWithMessages([
+                "Legacy transcript should not be parsed for history.",
+            ]),
+            updatedAt: "2026-04-16T12:00:00.000Z",
+            worktreeId: "worktree-a",
+        });
+
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(history).toEqual([
+            expect.objectContaining({
+                messageCount: 1,
+                preview: null,
+                sessionId: "session-legacy",
+            }),
+        ]);
+        expect(loadStoredPreview(connection, "session-legacy")).toBeNull();
     });
 
     it("uses persisted history previews without parsing transcripts", () => {

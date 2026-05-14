@@ -53,18 +53,12 @@ interface PersistedAiHistorySessionRow {
     readonly runtime: string;
     readonly session_id: string;
     readonly title: string;
-    readonly transcript_json: string | null;
     readonly updated_at: string;
     readonly worktree_id: string | null;
 }
 
 interface PersistedAiTranscriptRow {
     readonly message_count: number | null;
-    readonly transcript_json: string | null;
-}
-
-interface PersistedAiHistoryPreviewBackfillRow {
-    readonly session_id: string;
     readonly transcript_json: string | null;
 }
 
@@ -290,16 +284,9 @@ export class AiPersistence {
                     .all(
                         ...scopedHistoryQuery.params,
                     ) as readonly PersistedAiHistorySessionRow[];
-                const backfilledPreviews =
-                    this.#backfillMissingHistoryPreviews(rows);
 
                 return rows
-                    .map((row) =>
-                        createHistorySessionSummary(
-                            row,
-                            backfilledPreviews.get(row.session_id) ?? null,
-                        ),
-                    )
+                    .map((row) => createHistorySessionSummary(row))
                     .filter(
                         (session) =>
                             session.messageCount > 0 ||
@@ -687,55 +674,6 @@ export class AiPersistence {
         return row?.draft ?? "";
     }
 
-    #backfillMissingHistoryPreviews(
-        rows: readonly PersistedAiHistorySessionRow[],
-    ): ReadonlyMap<string, string> {
-        const missingSessionIds = rows
-            .filter(
-                (row) =>
-                    row.preview === null && Math.max(row.message_count ?? 0, 0) > 0,
-            )
-            .map((row) => row.session_id);
-
-        if (missingSessionIds.length === 0) {
-            return new Map();
-        }
-
-        const loadTranscript = this.#connection.prepare<
-            [string],
-            PersistedAiHistoryPreviewBackfillRow | undefined
-        >(
-            `
-            SELECT
-                session_id,
-                transcript_json
-            FROM chat_transcripts
-            WHERE session_id = ?
-            `,
-        );
-        const updatePreview = this.#connection.prepare<[string, string], void>(
-            `
-            UPDATE chat_transcripts
-            SET preview = ?
-            WHERE session_id = ?
-            `,
-        );
-        const backfilledPreviews = new Map<string, string>();
-
-        for (const sessionId of missingSessionIds) {
-            const row = loadTranscript.get(sessionId);
-            if (!row) {
-                continue;
-            }
-            const messages = extractPersistedMessages(row.transcript_json);
-            const preview = deriveSessionPreview(messages);
-            const storedPreview = serializePersistedPreview(preview);
-            updatePreview.run(storedPreview, sessionId);
-            backfilledPreviews.set(sessionId, storedPreview);
-        }
-
-        return backfilledPreviews;
-    }
 }
 
 function getRuntimeSelectionPreferencesKey(
@@ -1885,8 +1823,7 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
                 chat_sessions.pinned_at,
                 chat_sessions.updated_at,
                 chat_transcripts.message_count,
-                chat_transcripts.preview,
-                chat_transcripts.transcript_json
+                chat_transcripts.preview
             FROM chat_sessions
             LEFT JOIN chat_transcripts
                 ON chat_transcripts.session_id = chat_sessions.id
@@ -1983,7 +1920,6 @@ function normalizePreviewText(value: string): string {
 
 function createHistorySessionSummary(
     row: PersistedAiHistorySessionRow,
-    backfilledPreview: string | null,
 ): AiHistorySessionSummary {
     const messageCount = Math.max(row.message_count ?? 0, 0);
 
@@ -1992,7 +1928,7 @@ function createHistorySessionSummary(
         messageCount,
         parentSessionId: normalizeParentSessionId(row.parent_session_id),
         pinnedAt: row.pinned_at,
-        preview: deserializePersistedPreview(backfilledPreview ?? row.preview),
+        preview: deserializePersistedPreview(row.preview),
         projectId: row.project_id,
         runtimeId: normalizeRuntimeId(row.runtime),
         sessionId: row.session_id,
