@@ -36,6 +36,39 @@ Notes:
 
 ---
 
+## Authentication Semantics
+
+Comando separates provider authentication into two user-visible actions:
+
+- **Log out from provider** is a remote/runtime logout. In this iteration only Codex exposes a real ACP logout capability. If remote logout fails, Comando keeps local settings and secrets intact.
+- **Disconnect from Comando** is local cleanup. It removes Comando-managed secrets or marks external runtime login as signed out, but it never deletes external CLI stores such as `~/.claude.json`, `~/.gemini/settings.json`, or Kilo's own auth databases.
+
+Disconnect/logout affect new runtime sessions. Active ACP sessions may continue using credentials that were already loaded when their process launched.
+
+Runtime credential sources are reported explicitly in `AiRuntimeStatus`:
+
+- `comando-secret`: Comando is using a locally stored secret.
+- `environment`: an environment variable wins over Comando-managed credentials.
+- `external-runtime`: auth belongs to the runtime or CLI outside Comando.
+- `none`: no usable credentials are available.
+
+Credential precedence is runtime-specific:
+
+| Runtime | Method | Runtime precedence |
+|---|---|---|
+| Codex | `codex-api-key` | `CODEX_API_KEY` environment variable, then `secret.ai.codex.codex_api_key` |
+| Codex | `openai-api-key` | `OPENAI_API_KEY` environment variable, then `secret.ai.codex.openai_api_key` |
+| Codex | `chatgpt` | Codex/ACP-managed account login |
+| Claude | `gateway` | `ANTHROPIC_*` environment variables can override Comando-managed gateway URL/token/headers |
+| Claude | login methods | External Claude CLI login |
+| Gemini | `use_gemini` | `GEMINI_API_KEY`/`GOOGLE_API_KEY` environment variables, then Comando-managed secrets |
+| Gemini | `login_with_google` | External Gemini CLI login |
+| Kilo | `kilo-login` | External Kilo auth stores |
+
+Comando stores secrets through Electron `safeStorage`. On macOS this delegates protection to Keychain, on Windows to DPAPI, and on Linux to the selected keyring backend. Linux `basic_text` and `unknown` backends are treated as weak: Comando still reads existing secrets best-effort for compatibility, but blocks new secret writes and reports the storage warning through runtime status.
+
+---
+
 ## Binary Resolution (runtime)
 
 When Comando needs to spawn a runtime process, it resolves the executable or command in this order.
