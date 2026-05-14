@@ -7,4 +7,3 @@ export { SidebarAgentsPanel } from "./SidebarAgentsPanel";
 export { SidebarGitHubPanel } from "./SidebarGitHubPanel";
 export { SidebarGitPanel } from "./SidebarGitPanel";
 export { SidebarGitScopePicker } from "./SidebarGitScopePicker";
-export { SidebarSection } from "./SidebarSection";

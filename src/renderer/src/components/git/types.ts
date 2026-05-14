@@ -128,20 +128,6 @@ export interface GitCommitControls {
     readonly onCommit: () => void;
 }
 
-export interface GitPanelToolbarProps {
-    readonly summary: GitRepositorySummary | null;
-    readonly commit?: GitCommitControls | null;
-    readonly gitHubActions?: ReactNode;
-    readonly primaryActions?: readonly GitAction[];
-    readonly secondaryActions?: readonly GitAction[];
-    readonly syncActions?: {
-        readonly fetch?: GitAction | null;
-        readonly pull?: GitAction | null;
-        readonly push?: GitAction | null;
-    } | null;
-    readonly className?: string;
-}
-
 export interface GitTreeViewProps {
     readonly activePath?: string | null;
     readonly className?: string;
@@ -189,8 +175,6 @@ export interface GitTreeViewProps {
     readonly stickyFolderPaths?: ReadonlySet<string>;
 }
 
-export type GitFilesViewProps = GitTreeViewProps;
-
 export interface GitChangesViewProps {
     readonly activePath?: string | null;
     readonly className?: string;
@@ -225,15 +209,4 @@ export interface GitDiffsViewProps {
     readonly onToggleFileCollapse?: (fileId: string) => void;
     readonly showFileSelector?: boolean;
     readonly surfaceVariant?: "flat" | "panel";
-}
-
-export interface GitPanelProps {
-    readonly activeTab: GitPanelTabId;
-    readonly changes: GitChangesViewProps;
-    readonly className?: string;
-    readonly diffs: GitDiffsViewProps;
-    readonly onTabChange: (tab: GitPanelTabId) => void;
-    readonly tabCounts?: Partial<Record<GitPanelTabId, number>>;
-    readonly title?: string;
-    readonly toolbar?: GitPanelToolbarProps | null;
 }

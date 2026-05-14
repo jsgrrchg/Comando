@@ -1185,20 +1185,6 @@ export function markTerminalExited(
     };
 }
 
-export function removeProjectTabs(
-    state: WorkspaceTreeState,
-    projectId: string,
-): WorkspaceTreeState {
-    const tabIdsToRemove = Object.values(state.tabsById)
-        .filter((tab) => tab.projectId === projectId)
-        .map((tab) => tab.id);
-
-    return tabIdsToRemove.reduce(
-        (currentState, tabId) => closeWorkspaceTab(currentState, tabId),
-        state,
-    );
-}
-
 export function collectPaneNodes(node: WorkspaceNode): WorkspacePaneNode[] {
     if (node.type === "pane") {
         return [node];

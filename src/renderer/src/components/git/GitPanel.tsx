@@ -6,161 +6,7 @@ import {
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
 
-import { GitActionButton } from "./GitUi";
-import { GitChangesView } from "./GitChangesView";
-import { GitDiffsView } from "./GitDiffsView";
-import type { GitPanelProps, GitPanelTabId } from "./types";
-
-export function GitPanel({
-    activeTab,
-    changes,
-    className,
-    diffs,
-    onTabChange,
-    tabCounts,
-    toolbar,
-}: GitPanelProps) {
-    return (
-        <section
-            className={["flex h-full min-h-0 flex-col bg-bg-panel", className]
-                .filter(Boolean)
-                .join(" ")}
-        >
-            <div className="flex h-7.75 items-center border-b border-border bg-bg-panel px-3">
-                <GitPanelTabs
-                    activeTab={activeTab}
-                    counts={tabCounts}
-                    onTabChange={onTabChange}
-                />
-            </div>
-
-            {activeTab === "changes" && toolbar ? (
-                <div className="border-b border-border bg-bg-panel px-3 py-2">
-                    <GitPanelActions
-                        primaryActions={toolbar.primaryActions}
-                        secondaryActions={toolbar.secondaryActions}
-                        syncActions={toolbar.syncActions}
-                    />
-                </div>
-            ) : null}
-
-            <div className="min-h-0 flex-1 overflow-y-auto">
-                {activeTab === "changes" ? (
-                    <GitChangesView {...changes} />
-                ) : (
-                    <GitDiffsView {...diffs} />
-                )}
-            </div>
-
-            {activeTab === "changes" && toolbar?.commit ? (
-                <GitCommitFooter
-                    commit={toolbar.commit}
-                    gitHubActions={toolbar.gitHubActions}
-                    summary={toolbar.summary}
-                />
-            ) : null}
-        </section>
-    );
-}
-
-export function GitPanelTabs({
-    activeTab,
-    counts,
-    onTabChange,
-}: {
-    readonly activeTab: GitPanelTabId;
-    readonly counts?: Partial<Record<GitPanelTabId, number>>;
-    readonly onTabChange: (tab: GitPanelTabId) => void;
-}) {
-    const tabs: readonly {
-        readonly id: GitPanelTabId;
-        readonly label: string;
-    }[] = [
-        { id: "changes", label: "Changes" },
-        { id: "diffs", label: "Diffs" },
-    ];
-
-    return (
-        <div
-            aria-label="Git panel tabs"
-            className="inline-flex h-[25px] items-center gap-0.5 rounded-md border border-border/70 bg-bg-secondary/70 p-0.5"
-            role="tablist"
-        >
-            {tabs.map((tab) => {
-                const isActive = activeTab === tab.id;
-                const count = counts?.[tab.id];
-
-                return (
-                    <button
-                        aria-selected={isActive}
-                        className={[
-                            "inline-flex h-[21px] items-center gap-1 rounded-[7px] px-2.5 text-[11px] font-medium leading-4 transition-colors",
-                            isActive
-                                ? "bg-bg-elevated text-text-primary"
-                                : "text-text-secondary hover:bg-bg-elevated/45 hover:text-text-primary",
-                        ].join(" ")}
-                        key={tab.id}
-                        onClick={() => onTabChange(tab.id)}
-                        role="tab"
-                        type="button"
-                    >
-                        <span>{tab.label}</span>
-                        {typeof count === "number" ? (
-                            <span
-                                className={[
-                                    "min-w-4 rounded-full px-1.5 py-0 text-center text-[10px] leading-4",
-                                    isActive
-                                        ? "bg-bg-tertiary text-text-secondary"
-                                        : "bg-bg-tertiary/70 text-text-secondary/80",
-                                ].join(" ")}
-                            >
-                                {count}
-                            </span>
-                        ) : null}
-                    </button>
-                );
-            })}
-        </div>
-    );
-}
-
-function GitPanelActions({
-    primaryActions,
-    secondaryActions,
-    syncActions,
-}: Pick<
-    NonNullable<GitPanelProps["toolbar"]>,
-    "primaryActions" | "secondaryActions" | "syncActions"
->) {
-    const hasActions =
-        (primaryActions && primaryActions.length > 0) ||
-        syncActions?.fetch ||
-        syncActions?.pull ||
-        syncActions?.push ||
-        (secondaryActions && secondaryActions.length > 0);
-
-    if (!hasActions) return null;
-
-    return (
-        <div className="flex flex-wrap items-center gap-1.5">
-            {primaryActions?.map((action) => (
-                <GitActionButton action={action} key={action.id} />
-            ))}
-            {syncActions?.fetch ? (
-                <GitActionButton action={syncActions.fetch} key="fetch" />
-            ) : null}
-            {syncActions?.pull ? (
-                <GitActionButton action={syncActions.pull} key="pull" />
-            ) : null}
-            {syncActions?.push ? (
-                <GitActionButton action={syncActions.push} key="push" />
-            ) : null}
-            {secondaryActions?.map((action) => (
-                <GitActionButton action={action} key={action.id} />
-            ))}
-        </div>
-    );
-}
+import type { GitCommitControls, GitRepositorySummary } from "./types";
 
 export function GitCommitFooter({
     commit,
@@ -170,12 +16,10 @@ export function GitCommitFooter({
     syncActions,
     syncStatus,
 }: {
-    readonly commit: NonNullable<
-        NonNullable<GitPanelProps["toolbar"]>["commit"]
-    >;
+    readonly commit: GitCommitControls;
     readonly gitHubActions?: ReactNode;
     readonly onOpenHistory?: () => void;
-    readonly summary: NonNullable<GitPanelProps["toolbar"]>["summary"];
+    readonly summary: GitRepositorySummary | null;
     readonly syncActions?: {
         readonly onFetch?: () => void;
         readonly onFetchAll?: () => void;

@@ -32,46 +32,6 @@ export function normalizeComposerParts(
     return result;
 }
 
-/* ─── Serialization ─── */
-
-const PILL_OPEN = "\u200B\u00AB";
-const PILL_CLOSE = "\u00BB\u200B";
-
-export function serializeComposerParts(
-    parts: readonly AIComposerPart[],
-): string {
-    return parts
-        .map((p) => {
-            switch (p.type) {
-                case "text":
-                    return p.text;
-                case "file_mention":
-                    return `${PILL_OPEN}@${p.label}${PILL_CLOSE}`;
-                case "folder_mention":
-                    return `${PILL_OPEN}@${p.label}${PILL_CLOSE}`;
-                case "fetch_mention":
-                    return `${PILL_OPEN}@fetch${PILL_CLOSE}`;
-                case "plan_mention":
-                    return `${PILL_OPEN}/plan${PILL_CLOSE}`;
-                case "selection_mention":
-                    return `${PILL_OPEN}${p.label}${PILL_CLOSE}`;
-                case "file_attachment":
-                    return `${PILL_OPEN}📎${p.label}${PILL_CLOSE}`;
-                case "git_commit_mention":
-                    return `${PILL_OPEN}commit: ${p.label}${PILL_CLOSE}`;
-                case "github_issue_mention":
-                    return `${PILL_OPEN}${p.label}${PILL_CLOSE}`;
-                case "github_pull_request_mention":
-                    return `${PILL_OPEN}${p.label}${PILL_CLOSE}`;
-            }
-        })
-        .join("");
-}
-
-export function cleanPillMarkers(text: string): string {
-    return text.replaceAll(PILL_OPEN, "").replaceAll(PILL_CLOSE, "");
-}
-
 export function createEmptyComposerParts(): AIComposerPart[] {
     return createEmptyComposerDraftParts();
 }
@@ -202,24 +162,6 @@ export function appendFolderMentionPart(
     return normalizeComposerParts(withSpace);
 }
 
-export function appendFetchMentionPart(
-    parts: readonly AIComposerPart[],
-): AIComposerPart[] {
-    const withSpace = ensureTrailingSpace(parts);
-    withSpace.push({ type: "fetch_mention" });
-    withSpace.push({ type: "text", text: " " });
-    return normalizeComposerParts(withSpace);
-}
-
-export function appendPlanMentionPart(
-    parts: readonly AIComposerPart[],
-): AIComposerPart[] {
-    const withSpace = ensureTrailingSpace(parts);
-    withSpace.push({ type: "plan_mention" });
-    withSpace.push({ type: "text", text: " " });
-    return normalizeComposerParts(withSpace);
-}
-
 export function appendFileAttachmentPart(
     parts: readonly AIComposerPart[],
     file: {
@@ -291,12 +233,6 @@ export function appendSelectionMentionPart(
     return normalizeComposerParts(
         appendSelectionMentionDraftPart(parts, selection),
     );
-}
-
-/* ─── Emptiness check ─── */
-
-export function isComposerEmpty(parts: readonly AIComposerPart[]): boolean {
-    return parts.every((p) => p.type === "text" && p.text.trim().length === 0);
 }
 
 export function collectExternalComposerRoots(

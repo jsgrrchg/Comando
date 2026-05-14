@@ -10,7 +10,6 @@ import type {
     GitHubAuthStatus,
     GitHubCommentSummary,
     GitHubLabelSummary,
-    GitHubPullRequestCheckSummary,
     GitHubPullRequestChecksState,
     GitHubRepositoryRef,
     GitHubUserSummary,
@@ -312,88 +311,6 @@ export function GitHubConfirmActionButton({
             </button>
         </span>
     );
-}
-
-export function GitHubChecksTable({
-    checks,
-    error,
-    isLoading,
-}: {
-    readonly checks: readonly GitHubPullRequestCheckSummary[];
-    readonly error: string | null;
-    readonly isLoading: boolean;
-}) {
-    return (
-        <div className="space-y-3">
-            {error ? (
-                <GitHubErrorState>
-                    Checks could not be loaded. {error}
-                </GitHubErrorState>
-            ) : null}
-            {isLoading && checks.length === 0 ? (
-                <div className="text-[11px] text-text-secondary">
-                    Loading checks...
-                </div>
-            ) : null}
-            {!isLoading && !error && checks.length === 0 ? (
-                <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[11px] text-text-secondary">
-                    No checks reported for this PR head yet.
-                </div>
-            ) : null}
-            {checks.length > 0 ? (
-                <div className="overflow-hidden rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary">
-                    {checks.map((check) => (
-                        <div
-                            className="grid grid-cols-[minmax(180px,1fr)_120px_140px_auto] items-center gap-3 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] border-l-[3px] border-l-transparent pl-2.5 pr-3 py-2 text-[11px] transition last:border-b-0 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary"
-                            key={check.id}
-                        >
-                            <div className="min-w-0">
-                                <div className="truncate text-text-primary">
-                                    {check.name}
-                                </div>
-                                <div className="mt-0.5 text-[10px] text-text-secondary">
-                                    {check.source === "check_run"
-                                        ? "Check run"
-                                        : "Commit status"}
-                                </div>
-                            </div>
-                            <div className="text-text-secondary">
-                                {formatGitHubCheckStatus(check)}
-                            </div>
-                            <div className="text-text-secondary">
-                                {check.completedAt
-                                    ? formatGitHubDateTime(check.completedAt)
-                                    : "Not completed"}
-                            </div>
-                            {check.detailsUrl ? (
-                                <IdeActionButton
-                                    onClick={() =>
-                                        openGitHubWebUrl(check.detailsUrl ?? "")
-                                    }
-                                >
-                                    Open
-                                </IdeActionButton>
-                            ) : (
-                                <span className="text-right text-[10px] text-text-secondary">
-                                    No log
-                                </span>
-                            )}
-                        </div>
-                    ))}
-                </div>
-            ) : null}
-        </div>
-    );
-}
-
-function formatGitHubCheckStatus(
-    check: GitHubPullRequestCheckSummary,
-): string {
-    if (check.status !== "completed") {
-        return check.status.replaceAll("_", " ");
-    }
-
-    return (check.conclusion ?? "unknown").replaceAll("_", " ");
 }
 
 export function GitHubLabelPill({

@@ -45,7 +45,6 @@ export const DIFF_CONTEXT_LINES = 5;
 export const DIFF_PANEL_MAX_HEIGHT = 520;
 export const DIFF_ZOOM_MIN = 0.64;
 export const DIFF_ZOOM_MAX = 0.96;
-export const DIFF_ZOOM_STEP = 0.04;
 
 const UNIFIED_DIFF_HUNK_HEADER_REGEX =
     /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
