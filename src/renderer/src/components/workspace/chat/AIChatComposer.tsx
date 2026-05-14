@@ -1581,7 +1581,12 @@ export function AIChatComposer({
                 <div className="flex shrink-0 items-center gap-1">
                     <button
                         aria-label={submitLabel}
-                        className="app-no-drag flex shrink-0 items-center justify-center rounded-full"
+                        className={[
+                            "app-no-drag flex shrink-0 items-center justify-center rounded-full",
+                            canSubmit ? "active:scale-90" : "",
+                        ]
+                            .filter(Boolean)
+                            .join(" ")}
                         onClick={() => {
                             if (canSubmit) onSubmit();
                         }}
@@ -1608,7 +1613,7 @@ export function AIChatComposer({
                             height: 28,
                             opacity: canSubmit ? 1 : 0.4,
                             transition:
-                                "background-color 100ms ease, filter 100ms ease, opacity 100ms ease",
+                                "background-color 100ms ease, filter 100ms ease, opacity 100ms ease, transform 75ms ease",
                             width: 28,
                         }}
                         title={submitLabel}
@@ -1631,7 +1636,7 @@ export function AIChatComposer({
                     {isSessionBusy ? (
                         <button
                             aria-label="Stop"
-                            className="app-no-drag flex shrink-0 items-center justify-center rounded-full"
+                            className="app-no-drag flex shrink-0 items-center justify-center rounded-full active:scale-90"
                             onClick={onStop}
                             onMouseEnter={(e) => {
                                 e.currentTarget.style.filter =
@@ -1648,7 +1653,8 @@ export function AIChatComposer({
                                 cursor: "pointer",
                                 filter: "brightness(1)",
                                 height: 28,
-                                transition: "filter 100ms ease",
+                                transition:
+                                    "filter 100ms ease, transform 75ms ease",
                                 width: 28,
                             }}
                             title="Stop"
