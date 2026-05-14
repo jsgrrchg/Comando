@@ -184,6 +184,7 @@ export const ChatTabView = memo(function ChatTabView({
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
     const geminiSettings = useAiStore((s) => s.geminiSettings);
     const kiloSettings = useAiStore((s) => s.kiloSettings);
+    const disconnectRuntimeAuth = useAiStore((s) => s.disconnectRuntimeAuth);
     const launchRuntimeAuth = useAiStore((s) => s.launchRuntimeAuth);
     const logoutRuntimeAuth = useAiStore((s) => s.logoutRuntimeAuth);
     const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
@@ -1597,6 +1598,8 @@ export const ChatTabView = memo(function ChatTabView({
                     ? tab.runtimeId === "codex"
                         ? renderCodexRuntimeConfig({
                               authMethodDraft: codexAuthMethodDraft,
+                              authNotice:
+                                  formatRuntimeAuthNotice(runtimeStatus),
                               authMethods: getCodexAuthMethods(runtimeStatus),
                               binaryPathDraft,
                               codexApiKeyDraft,
@@ -1607,6 +1610,10 @@ export const ChatTabView = memo(function ChatTabView({
                                   codexSettings.hasOpenAiApiKey,
                               isAuthenticated:
                                   runtimeStatus?.authReady ?? false,
+                              canDisconnect:
+                                  runtimeStatus?.canDisconnectAuth ?? false,
+                              canLogout:
+                                  runtimeStatus?.canLogoutAuth ?? false,
                               isLaunchingAuth: isLaunchingRuntimeAuth,
                               shouldClearCodexApiKey,
                               shouldClearOpenAiApiKey,
@@ -1688,6 +1695,11 @@ export const ChatTabView = memo(function ChatTabView({
                                   }
                               },
                               onLogout: async () => {
+                                  if (!window.confirm(
+                                      "Log out from the provider? If remote logout fails, Comando will keep local credentials unchanged.",
+                                  )) {
+                                      return;
+                                  }
                                   setRuntimeConfigError(null);
                                   setIsSavingRuntime(true);
                                   try {
@@ -1706,6 +1718,36 @@ export const ChatTabView = memo(function ChatTabView({
                                           error instanceof Error
                                               ? error.message
                                               : "Could not log out of Codex.",
+                                      );
+                                  } finally {
+                                      setIsSavingRuntime(false);
+                                  }
+                              },
+                              onDisconnect: async () => {
+                                  if (!window.confirm(
+                                      "Disconnect from Comando? Active sessions may keep credentials loaded at launch.",
+                                  )) {
+                                      return;
+                                  }
+                                  setRuntimeConfigError(null);
+                                  setIsSavingRuntime(true);
+                                  try {
+                                      const status =
+                                          await disconnectRuntimeAuth({
+                                              runtimeId: "codex",
+                                          });
+                                      setCodexAuthMethodDraft(
+                                          getDefaultCodexAuthMethod(status),
+                                      );
+                                      setCodexApiKeyDraft("");
+                                      setOpenAiApiKeyDraft("");
+                                      setShouldClearCodexApiKey(false);
+                                      setShouldClearOpenAiApiKey(false);
+                                  } catch (error) {
+                                      setRuntimeConfigError(
+                                          error instanceof Error
+                                              ? error.message
+                                              : "Could not disconnect Codex.",
                                       );
                                   } finally {
                                       setIsSavingRuntime(false);
@@ -1774,6 +1816,8 @@ export const ChatTabView = memo(function ChatTabView({
                         : tab.runtimeId === "claude"
                           ? renderClaudeRuntimeConfig({
                                 authMethodDraft: claudeAuthMethodDraft,
+                                authNotice:
+                                    formatRuntimeAuthNotice(runtimeStatus),
                                 authMethods: runtimeStatus?.authMethods ?? [],
                                 binaryPathDraft: claudeBinaryPathDraft,
                                 gatewayAuthTokenDraft:
@@ -1787,6 +1831,8 @@ export const ChatTabView = memo(function ChatTabView({
                                     claudeSettings.hasGatewayCustomHeaders,
                                 isLaunchingAuth: isLaunchingRuntimeAuth,
                                 isSaving: isSavingRuntime,
+                                canDisconnect:
+                                    runtimeStatus?.canDisconnectAuth ?? false,
                                 onAuthMethodChange: setClaudeAuthMethodDraft,
                                 onChangeBinaryPath: setClaudeBinaryPathDraft,
                                 onChangeGatewayAuthToken: (value) => {
@@ -1874,6 +1920,40 @@ export const ChatTabView = memo(function ChatTabView({
                                         setIsLaunchingRuntimeAuth(false);
                                     }
                                 },
+                                onDisconnect: async () => {
+                                    if (!window.confirm(
+                                        "Disconnect from Comando? Active sessions may keep credentials loaded at launch.",
+                                    )) {
+                                        return;
+                                    }
+                                    setRuntimeConfigError(null);
+                                    setIsSavingRuntime(true);
+                                    try {
+                                        const status =
+                                            await disconnectRuntimeAuth({
+                                                runtimeId: "claude",
+                                            });
+                                        setClaudeAuthMethodDraft(
+                                            status.authMethod as ClaudeAuthMethodId | null,
+                                        );
+                                        setClaudeGatewayAuthTokenDraft("");
+                                        setClaudeGatewayCustomHeadersDraft("");
+                                        setShouldClearClaudeGatewayAuthToken(
+                                            false,
+                                        );
+                                        setShouldClearClaudeGatewayCustomHeaders(
+                                            false,
+                                        );
+                                    } catch (error) {
+                                        setRuntimeConfigError(
+                                            error instanceof Error
+                                                ? error.message
+                                                : "Could not disconnect Claude.",
+                                        );
+                                    } finally {
+                                        setIsSavingRuntime(false);
+                                    }
+                                },
                                 onSave: async () => {
                                     setRuntimeConfigError(null);
                                     setIsSavingRuntime(true);
@@ -1939,6 +2019,8 @@ export const ChatTabView = memo(function ChatTabView({
                           : tab.runtimeId === "gemini"
                             ? renderGeminiRuntimeConfig({
                                   authMethodDraft: geminiAuthMethodDraft,
+                                  authNotice:
+                                      formatRuntimeAuthNotice(runtimeStatus),
                                   authMethods: runtimeStatus?.authMethods ?? [],
                                   binaryPathDraft: geminiBinaryPathDraft,
                                   geminiApiKeyDraft,
@@ -1951,6 +2033,8 @@ export const ChatTabView = memo(function ChatTabView({
                                       geminiSettings.hasGoogleApiKey,
                                   isLaunchingAuth: isLaunchingRuntimeAuth,
                                   isSaving: isSavingRuntime,
+                                  canDisconnect:
+                                      runtimeStatus?.canDisconnectAuth ?? false,
                                   onAuthMethodChange: setGeminiAuthMethodDraft,
                                   onChangeBinaryPath: setGeminiBinaryPathDraft,
                                   onChangeGeminiApiKey: (value) => {
@@ -2038,6 +2122,36 @@ export const ChatTabView = memo(function ChatTabView({
                                           setIsLaunchingRuntimeAuth(false);
                                       }
                                   },
+                                  onDisconnect: async () => {
+                                      if (!window.confirm(
+                                          "Disconnect from Comando? Active sessions may keep credentials loaded at launch.",
+                                      )) {
+                                          return;
+                                      }
+                                      setRuntimeConfigError(null);
+                                      setIsSavingRuntime(true);
+                                      try {
+                                          const status =
+                                              await disconnectRuntimeAuth({
+                                                  runtimeId: "gemini",
+                                              });
+                                          setGeminiAuthMethodDraft(
+                                              status.authMethod as GeminiAuthMethodId | null,
+                                          );
+                                          setGeminiApiKeyDraft("");
+                                          setGoogleApiKeyDraft("");
+                                          setShouldClearGeminiApiKey(false);
+                                          setShouldClearGoogleApiKey(false);
+                                      } catch (error) {
+                                          setRuntimeConfigError(
+                                              error instanceof Error
+                                                  ? error.message
+                                                  : "Could not disconnect Gemini.",
+                                          );
+                                      } finally {
+                                          setIsSavingRuntime(false);
+                                      }
+                                  },
                                   onSave: async () => {
                                       setRuntimeConfigError(null);
                                       setIsSavingRuntime(true);
@@ -2098,8 +2212,13 @@ export const ChatTabView = memo(function ChatTabView({
                             : tab.runtimeId === "kilo"
                               ? renderKiloRuntimeConfig({
                                     binaryPathDraft: kiloBinaryPathDraft,
+                                    authNotice:
+                                        formatRuntimeAuthNotice(runtimeStatus),
                                     isLaunchingAuth: isLaunchingRuntimeAuth,
                                     isSaving: isSavingRuntime,
+                                    canDisconnect:
+                                        runtimeStatus?.canDisconnectAuth ??
+                                        false,
                                     onChangeBinaryPath: setKiloBinaryPathDraft,
                                     onLaunchAuth: async () => {
                                         setRuntimeConfigError(null);
@@ -2139,6 +2258,28 @@ export const ChatTabView = memo(function ChatTabView({
                                             );
                                         } finally {
                                             setIsLaunchingRuntimeAuth(false);
+                                        }
+                                    },
+                                    onDisconnect: async () => {
+                                        if (!window.confirm(
+                                            "Disconnect from Comando? Active sessions may keep credentials loaded at launch.",
+                                        )) {
+                                            return;
+                                        }
+                                        setRuntimeConfigError(null);
+                                        setIsSavingRuntime(true);
+                                        try {
+                                            await disconnectRuntimeAuth({
+                                                runtimeId: "kilo",
+                                            });
+                                        } catch (error) {
+                                            setRuntimeConfigError(
+                                                error instanceof Error
+                                                    ? error.message
+                                                    : "Could not disconnect Kilo.",
+                                            );
+                                        } finally {
+                                            setIsSavingRuntime(false);
                                         }
                                     },
                                     onSave: async () => {
@@ -2379,6 +2520,7 @@ ChatTabView.displayName = "ChatTabView";
 
 function renderCodexRuntimeConfig(props: {
     readonly authMethodDraft: CodexAuthMethodId;
+    readonly authNotice: string | null;
     readonly authMethods: readonly {
         readonly description: string;
         readonly id: CodexAuthMethodId;
@@ -2389,6 +2531,8 @@ function renderCodexRuntimeConfig(props: {
     readonly openAiApiKeyDraft: string;
     readonly hasStoredCodexApiKey: boolean;
     readonly hasStoredOpenAiApiKey: boolean;
+    readonly canDisconnect: boolean;
+    readonly canLogout: boolean;
     readonly isAuthenticated: boolean;
     readonly isLaunchingAuth: boolean;
     readonly isSaving: boolean;
@@ -2399,6 +2543,7 @@ function renderCodexRuntimeConfig(props: {
     readonly onClearCodexApiKey: () => void;
     readonly onClearOpenAiApiKey: () => void;
     readonly onLaunchAuth: () => Promise<void>;
+    readonly onDisconnect: () => Promise<void>;
     readonly onLogout: () => Promise<void>;
     readonly onSave: () => Promise<void>;
     readonly onVerify: () => Promise<void>;
@@ -2435,6 +2580,11 @@ function renderCodexRuntimeConfig(props: {
                 spellCheck={false}
                 value={props.binaryPathDraft}
             />
+            {props.authNotice ? (
+                <div className="text-[11px] leading-5 text-text-secondary">
+                    {props.authNotice}
+                </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
                 {props.authMethods.map((method) => {
@@ -2560,7 +2710,7 @@ function renderCodexRuntimeConfig(props: {
                             : "Open login"}
                     </button>
                 ) : null}
-                {props.isAuthenticated ? (
+                {props.isAuthenticated && props.canLogout ? (
                     <button
                         className="ide-button app-no-drag"
                         disabled={props.isSaving}
@@ -2569,7 +2719,19 @@ function renderCodexRuntimeConfig(props: {
                         }}
                         type="button"
                     >
-                        Log out
+                        Log out from provider
+                    </button>
+                ) : null}
+                {props.canDisconnect ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isSaving}
+                        onClick={() => {
+                            void props.onDisconnect();
+                        }}
+                        type="button"
+                    >
+                        Disconnect from Comando
                     </button>
                 ) : null}
             </div>
@@ -2585,6 +2747,7 @@ function renderCodexRuntimeConfig(props: {
 
 function renderClaudeRuntimeConfig(props: {
     readonly authMethodDraft: ClaudeAuthMethodId | null;
+    readonly authNotice: string | null;
     readonly authMethods: readonly {
         readonly description: string;
         readonly id: string;
@@ -2596,6 +2759,7 @@ function renderClaudeRuntimeConfig(props: {
     readonly gatewayCustomHeadersDraft: string;
     readonly hasStoredGatewayAuthToken: boolean;
     readonly hasStoredGatewayCustomHeaders: boolean;
+    readonly canDisconnect: boolean;
     readonly isLaunchingAuth: boolean;
     readonly isSaving: boolean;
     readonly onAuthMethodChange: (value: ClaudeAuthMethodId | null) => void;
@@ -2605,6 +2769,7 @@ function renderClaudeRuntimeConfig(props: {
     readonly onChangeGatewayCustomHeaders: (value: string) => void;
     readonly onClearGatewayAuthToken: () => void;
     readonly onClearGatewayCustomHeaders: () => void;
+    readonly onDisconnect: () => Promise<void>;
     readonly onLaunchAuth: () => Promise<void>;
     readonly onSave: () => Promise<void>;
     readonly onVerify: () => Promise<void>;
@@ -2633,6 +2798,11 @@ function renderClaudeRuntimeConfig(props: {
                 spellCheck={false}
                 value={props.binaryPathDraft}
             />
+            {props.authNotice ? (
+                <div className="text-[11px] leading-5 text-text-secondary">
+                    {props.authNotice}
+                </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
                 {props.authMethods.map((method) => {
@@ -2775,6 +2945,18 @@ function renderClaudeRuntimeConfig(props: {
                             : "Open login"}
                     </button>
                 ) : null}
+                {props.canDisconnect ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isSaving}
+                        onClick={() => {
+                            void props.onDisconnect();
+                        }}
+                        type="button"
+                    >
+                        Disconnect from Comando
+                    </button>
+                ) : null}
             </div>
 
             {props.runtimeConfigError ? (
@@ -2787,10 +2969,13 @@ function renderClaudeRuntimeConfig(props: {
 }
 
 function renderKiloRuntimeConfig(props: {
+    readonly authNotice: string | null;
     readonly binaryPathDraft: string;
+    readonly canDisconnect: boolean;
     readonly isLaunchingAuth: boolean;
     readonly isSaving: boolean;
     readonly onChangeBinaryPath: (value: string) => void;
+    readonly onDisconnect: () => Promise<void>;
     readonly onLaunchAuth: () => Promise<void>;
     readonly onSave: () => Promise<void>;
     readonly onVerify: () => Promise<void>;
@@ -2815,6 +3000,11 @@ function renderKiloRuntimeConfig(props: {
                 spellCheck={false}
                 value={props.binaryPathDraft}
             />
+            {props.authNotice ? (
+                <div className="text-[11px] leading-5 text-text-secondary">
+                    {props.authNotice}
+                </div>
+            ) : null}
 
             <div className="text-[11px] leading-5 text-text-secondary">
                 Kilo uses the local CLI login state. Open the system terminal to
@@ -2852,6 +3042,18 @@ function renderKiloRuntimeConfig(props: {
                 >
                     {props.isLaunchingAuth ? "Opening login…" : "Open login"}
                 </button>
+                {props.canDisconnect ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isSaving}
+                        onClick={() => {
+                            void props.onDisconnect();
+                        }}
+                        type="button"
+                    >
+                        Disconnect from Comando
+                    </button>
+                ) : null}
             </div>
 
             {props.runtimeConfigError ? (
@@ -2865,6 +3067,7 @@ function renderKiloRuntimeConfig(props: {
 
 function renderGeminiRuntimeConfig(props: {
     readonly authMethodDraft: GeminiAuthMethodId | null;
+    readonly authNotice: string | null;
     readonly authMethods: readonly {
         readonly description: string;
         readonly id: string;
@@ -2877,6 +3080,7 @@ function renderGeminiRuntimeConfig(props: {
     readonly googleCloudProjectDraft: string;
     readonly hasStoredGeminiApiKey: boolean;
     readonly hasStoredGoogleApiKey: boolean;
+    readonly canDisconnect: boolean;
     readonly isLaunchingAuth: boolean;
     readonly isSaving: boolean;
     readonly onAuthMethodChange: (value: GeminiAuthMethodId | null) => void;
@@ -2887,6 +3091,7 @@ function renderGeminiRuntimeConfig(props: {
     readonly onChangeGoogleCloudProject: (value: string) => void;
     readonly onClearGeminiApiKey: () => void;
     readonly onClearGoogleApiKey: () => void;
+    readonly onDisconnect: () => Promise<void>;
     readonly onLaunchAuth: () => Promise<void>;
     readonly onSave: () => Promise<void>;
     readonly onVerify: () => Promise<void>;
@@ -2913,6 +3118,11 @@ function renderGeminiRuntimeConfig(props: {
                 spellCheck={false}
                 value={props.binaryPathDraft}
             />
+            {props.authNotice ? (
+                <div className="text-[11px] leading-5 text-text-secondary">
+                    {props.authNotice}
+                </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
                 {props.authMethods.map((method) => {
@@ -3069,6 +3279,18 @@ function renderGeminiRuntimeConfig(props: {
                         {props.isLaunchingAuth
                             ? "Opening login…"
                             : "Open login"}
+                    </button>
+                ) : null}
+                {props.canDisconnect ? (
+                    <button
+                        className="ide-button app-no-drag"
+                        disabled={props.isSaving}
+                        onClick={() => {
+                            void props.onDisconnect();
+                        }}
+                        type="button"
+                    >
+                        Disconnect from Comando
                     </button>
                 ) : null}
             </div>
@@ -4377,6 +4599,16 @@ function getDefaultCodexAuthMethod(
     }
 
     return getCodexAuthMethods(status)[0]?.id ?? "chatgpt";
+}
+
+function formatRuntimeAuthNotice(status: AiRuntimeStatus | null): string | null {
+    const parts = [
+        status?.authCredentialSourceLabel,
+        status?.authStorageMessage,
+        status?.authSessionMessage,
+    ].filter((part): part is string => Boolean(part?.trim()));
+
+    return parts.length > 0 ? parts.join(" ") : null;
 }
 
 function toSecretValuePatch(

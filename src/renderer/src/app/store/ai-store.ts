@@ -3,6 +3,7 @@ import { create } from "zustand";
 import type {
     AiFileContextAttachment,
     AiImageAttachment,
+    AiRuntimeAuthDisconnectInput,
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthLogoutInput,
     AiPermissionResponseInput,
@@ -188,6 +189,9 @@ interface AiStore {
     launchRuntimeAuth: (input: AiRuntimeAuthLaunchInput) => Promise<void>;
     logoutRuntimeAuth: (
         input: AiRuntimeAuthLogoutInput,
+    ) => Promise<AiRuntimeStatus>;
+    disconnectRuntimeAuth: (
+        input: AiRuntimeAuthDisconnectInput,
     ) => Promise<AiRuntimeStatus>;
     saveClaudeRuntimeSettings: (
         settings: ClaudeRuntimeSettingsInput,
@@ -1082,7 +1086,28 @@ export const useAiStore = create<AiStore>((set, get) => ({
         const snapshot = await getComandoApi().getSettingsSnapshot();
 
         set((state) => ({
+            claudeSettings: snapshot.ai?.claude ?? state.claudeSettings,
             codexSettings: snapshot.ai?.codex ?? state.codexSettings,
+            geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
+            kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
+            runtimeStatusById: {
+                ...state.runtimeStatusById,
+                [input.runtimeId]: status,
+            },
+        }));
+
+        return status;
+    },
+
+    disconnectRuntimeAuth: async (input) => {
+        const status = await getComandoApi().disconnectAiRuntimeAuth(input);
+        const snapshot = await getComandoApi().getSettingsSnapshot();
+
+        set((state) => ({
+            claudeSettings: snapshot.ai?.claude ?? state.claudeSettings,
+            codexSettings: snapshot.ai?.codex ?? state.codexSettings,
+            geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
+            kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
             runtimeStatusById: {
                 ...state.runtimeStatusById,
                 [input.runtimeId]: status,

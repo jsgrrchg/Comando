@@ -731,15 +731,21 @@ export function SettingsApp() {
                     rootPath: project.rootPath,
                 })),
             }}
-            onRuntimeAction={(runtimeId, actionId) =>
+            onRuntimeAction={(runtimeId, actionId) => {
                 void handleRuntimeAction({
                     actionId,
                     loadRuntimeStatuses,
                     runtimeId: runtimeId as AiRuntimeId,
                     runtimeStatuses,
                     projectId: runtimeProjectId,
-                })
-            }
+                }).catch((error) => {
+                    window.alert(
+                        error instanceof Error
+                            ? error.message
+                            : "Could not complete the runtime action.",
+                    );
+                });
+            }}
             shortcuts={shortcuts}
             runtimes={runtimes}
             updates={{
@@ -796,7 +802,27 @@ async function handleRuntimeAction(options: {
     }
 
     if (options.actionId === "logout") {
+        const confirmed = window.confirm(
+            "Log out from the provider? If the remote logout fails, Comando will keep local credentials unchanged.",
+        );
+        if (!confirmed) {
+            return;
+        }
         await window.comando.logoutAiRuntimeAuth({
+            runtimeId: options.runtimeId,
+        });
+        await options.loadRuntimeStatuses();
+        return;
+    }
+
+    if (options.actionId === "disconnect") {
+        const confirmed = window.confirm(
+            "Disconnect from Comando? This removes Comando-managed credentials or marks external login as signed out. Active sessions may keep credentials loaded at launch.",
+        );
+        if (!confirmed) {
+            return;
+        }
+        await window.comando.disconnectAiRuntimeAuth({
             runtimeId: options.runtimeId,
         });
         await options.loadRuntimeStatuses();
@@ -847,26 +873,34 @@ function mapRuntimeCard(
     }
 
     const actions: RuntimeActionOption[] = [];
-    if (status.runtimeId === "codex") {
-        if (status.authReady) {
+    if (status.authReady) {
+        if (status.canLogoutAuth) {
             actions.push({
                 id: "logout",
-                label: "Log out",
+                label: "Log out from provider",
                 tone: "danger",
             });
-        } else {
+        }
+        if (status.canDisconnectAuth) {
             actions.push({
-                id: "connect",
-                label: "Connect",
-                tone: "primary",
+                id: "disconnect",
+                label: "Disconnect from Comando",
+                tone: status.canLogoutAuth ? undefined : "danger",
             });
         }
-    } else if (!status.authReady) {
+    } else {
         actions.push({
             id: "connect",
             label: "Connect",
             tone: "primary",
         });
+        if (status.canDisconnectAuth) {
+            actions.push({
+                id: "disconnect",
+                label: "Disconnect from Comando",
+                tone: "danger",
+            });
+        }
     }
     actions.push({
         id: "refresh",
@@ -876,15 +910,25 @@ function mapRuntimeCard(
     return {
         actions,
         description: getRuntimeDescription(status.runtimeId),
-        details:
-            status.message ??
-            status.command ??
-            (status.source ? "Source: " + status.source : "No details yet."),
+        details: formatRuntimeDetails(status),
         id: status.runtimeId,
         name: getRuntimeName(status.runtimeId),
         source: status.source ?? "unknown",
         status: formatRuntimeStatus(status),
     };
+}
+
+function formatRuntimeDetails(status: AiRuntimeStatus): string {
+    const parts = [
+        status.authCredentialSourceLabel,
+        status.authStorageMessage,
+        status.authSessionMessage,
+        status.message,
+        status.command,
+        status.source ? "Source: " + status.source : null,
+    ].filter((part): part is string => Boolean(part?.trim()));
+
+    return parts.join(" ") || "No details yet.";
 }
 
 function getRuntimeName(runtimeId: AiRuntimeId): string {
