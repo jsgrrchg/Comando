@@ -874,12 +874,11 @@ export function SidebarGitScopePicker({
                     worktreeId: worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 });
 
-                await setActiveWorktree(projectId, createdWorktree.id);
-                await Promise.all([
-                    refreshGitProject(projectId, createdWorktree.id),
-                    refreshGitHistory(projectId, createdWorktree.id),
-                    refreshProjectTree(projectId, createdWorktree.id),
-                ]);
+                await getComandoApi().openProjectWindow({
+                    forceNewWindow: true,
+                    projectId,
+                    worktreeId: createdWorktree.id,
+                });
 
                 setIsOpen(false);
                 setQuery("");
@@ -887,7 +886,7 @@ export function SidebarGitScopePicker({
                 setActionError(
                     error instanceof Error
                         ? error.message
-                        : "Could not create a worktree from this branch.",
+                        : "Could not create or open a worktree from this branch.",
                 );
             } finally {
                 setIsBusy(false);
@@ -899,10 +898,6 @@ export function SidebarGitScopePicker({
             isBusy,
             project,
             projectId,
-            refreshGitHistory,
-            refreshGitProject,
-            refreshProjectTree,
-            setActiveWorktree,
             snapshot?.currentWorktreeId,
             snapshot?.worktrees,
             worktreeId,
