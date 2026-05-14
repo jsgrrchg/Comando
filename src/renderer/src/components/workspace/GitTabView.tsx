@@ -1080,7 +1080,7 @@ function GitCommitDetailSidebar({
     );
 
     return (
-        <div className="flex min-h-full flex-col">
+        <div className="flex min-h-full select-none flex-col">
             <div className="border-b border-border px-5 py-5">
                 <div className="mb-4 flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3">
@@ -1151,7 +1151,7 @@ function GitCommitDetailSidebar({
                     {commit.subject}
                 </div>
                 {commit.body ? (
-                    <pre className="mt-3 whitespace-pre-wrap font-sans text-[12px] leading-6 text-text-secondary">
+                    <pre className="mt-3 select-text whitespace-pre-wrap font-sans text-[12px] leading-6 text-text-secondary">
                         {commit.body}
                     </pre>
                 ) : null}

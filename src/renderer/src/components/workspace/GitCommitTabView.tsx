@@ -158,7 +158,7 @@ export function GitCommitTabView({
     }
 
     return (
-        <div className="flex h-full min-h-0 flex-col bg-bg-primary">
+        <div className="flex h-full min-h-0 select-none flex-col bg-bg-primary">
             <header className="px-5 py-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2.5">

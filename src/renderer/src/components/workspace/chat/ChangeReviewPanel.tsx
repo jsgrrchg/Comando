@@ -211,7 +211,7 @@ function ChangeReviewFileCard({
 
     return (
         <div
-            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            className="min-w-0 max-w-full select-none overflow-hidden rounded-lg"
             style={{
                 backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
                 border: `1px solid color-mix(in srgb, ${accent} 24%, var(--color-border))`,

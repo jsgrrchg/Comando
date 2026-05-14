@@ -200,7 +200,15 @@ export const DiffLineView = memo(function DiffLineView({
                 >
                     {line.newLineNumber ?? ""}
                 </div>
-                <div style={{ minWidth: 0, padding: "0 12px" }}>{lineText}</div>
+                <div
+                    style={{
+                        minWidth: 0,
+                        padding: "0 12px",
+                        userSelect: "text",
+                    }}
+                >
+                    {lineText}
+                </div>
             </div>
         );
     }
@@ -250,6 +258,7 @@ export const DiffLineView = memo(function DiffLineView({
                 style={{
                     minWidth: 0,
                     padding: compactLineNumbers ? "0 10px" : "0 8px",
+                    userSelect: "text",
                 }}
             >
                 {lineText}

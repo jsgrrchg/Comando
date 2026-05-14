@@ -305,7 +305,7 @@ function ToolDetailCodeBlock({
 
     return (
         <pre
-            className="max-h-48 overflow-y-auto rounded px-2 py-1.5"
+            className="max-h-48 select-text overflow-y-auto rounded px-2 py-1.5"
             style={{
                 backgroundColor,
                 border: accentBorder ?? "1px solid var(--color-border)",
@@ -354,7 +354,7 @@ function ToolDetailSummary({
 }) {
     return (
         <div
-            className="rounded px-2 py-1.5"
+            className="select-text rounded px-2 py-1.5"
             style={{
                 backgroundColor,
                 border: accentBorder ?? "1px solid var(--color-border)",
@@ -466,7 +466,7 @@ function FileToolMessage({
 
     return (
         <div
-            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            className="min-w-0 max-w-full select-none overflow-hidden rounded-lg"
             style={{
                 backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
                 border: `1px solid color-mix(in srgb, ${accent} 25%, var(--color-border))`,
@@ -767,7 +767,7 @@ function TerminalToolMessage({
 
     return (
         <div
-            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            className="min-w-0 max-w-full select-none overflow-hidden rounded-lg"
             style={{
                 backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
                 border: `1px solid color-mix(in srgb, ${accent} 25%, var(--color-border))`,
@@ -926,7 +926,7 @@ function GenericToolMessage({
 
     return (
         <div
-            className="min-w-0 max-w-full"
+            className="min-w-0 max-w-full select-none"
             style={{
                 color: isFailed ? "#ef4444" : "var(--color-text-secondary)",
                 fontSize: "0.85em",

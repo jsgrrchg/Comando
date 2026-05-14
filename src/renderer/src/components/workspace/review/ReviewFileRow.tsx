@@ -124,6 +124,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
     if (variant === "compact") {
         return (
             <div
+                className="select-none"
                 data-review-file-key={item.file.identityKey}
                 data-review-file-updated-at={item.file.updatedAt}
                 style={{
@@ -303,7 +304,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
 
     return (
         <div
-            className="overflow-hidden rounded-md"
+            className="select-none overflow-hidden rounded-md"
             data-review-file-key={item.file.identityKey}
             data-review-file-updated-at={item.file.updatedAt}
             style={{

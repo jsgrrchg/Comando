@@ -640,7 +640,7 @@ function RunDetail({
                                 </IdeActionButton>
                             </div>
                             {logs ? (
-                                <div className="mt-2 max-h-72 overflow-y-auto rounded-md bg-editor p-2 font-mono text-[10px] leading-4 text-text-secondary">
+                                <div className="mt-2 max-h-72 select-text overflow-y-auto rounded-md bg-editor p-2 font-mono text-[10px] leading-4 text-text-secondary">
                                     {logs}
                                 </div>
                             ) : (

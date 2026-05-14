@@ -1,9 +1,17 @@
 import type { ReactNode } from "react";
 
-export function IdeBarHeader({ children }: { readonly children: ReactNode }) {
+export function IdeBarHeader({
+    children,
+    className,
+}: {
+    readonly children: ReactNode;
+    readonly className?: string;
+}) {
     return (
         <div
-            className="shrink-0 px-4 py-1.5"
+            className={["shrink-0 px-4 py-1.5", className]
+                .filter(Boolean)
+                .join(" ")}
             style={{
                 backgroundColor: "var(--color-bg-secondary)",
                 borderBottom:

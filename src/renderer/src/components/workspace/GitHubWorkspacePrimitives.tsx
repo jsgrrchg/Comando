@@ -61,7 +61,7 @@ export function GitHubTabHeader({
     readonly title: string;
 }) {
     return (
-        <IdeBarHeader>
+        <IdeBarHeader className="select-none">
             <IdeBarLabel>{title}</IdeBarLabel>
             {count != null ? (
                 <>
@@ -805,7 +805,7 @@ export function GitHubSection({
 }) {
     return (
         <section className="overflow-hidden rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
-            <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-border)_45%,transparent)] bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)] px-3 py-2">
+            <header className="flex select-none flex-wrap items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-border)_45%,transparent)] bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)] px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">
                     <span
                         aria-hidden="true"

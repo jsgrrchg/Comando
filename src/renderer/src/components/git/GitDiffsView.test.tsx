@@ -123,6 +123,18 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("grid-template-columns:44px max-content");
     });
 
+    it("keeps diff code selectable inside non-selectable commit UI", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[createDiffFile()]}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain("select-text");
+        expect(markup).toContain("user-select:text");
+    });
+
     it("keeps the message for binary files", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView

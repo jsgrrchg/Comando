@@ -851,7 +851,7 @@ function CodeBlock({
 
     return (
         <div
-            className="group relative my-2 min-w-0 max-w-full overflow-hidden rounded-lg"
+            className="group relative my-2 min-w-0 max-w-full select-none overflow-hidden rounded-lg"
             style={{
                 backgroundColor: "var(--color-bg-tertiary)",
                 border: "1px solid var(--color-border)",
@@ -878,7 +878,7 @@ function CodeBlock({
                 {copyButton}
             </div>
             <pre
-                className="overflow-x-auto p-3"
+                className="select-text overflow-x-auto p-3"
                 style={{
                     color: "var(--color-text-primary)",
                     fontFamily: "var(--font-mono)",

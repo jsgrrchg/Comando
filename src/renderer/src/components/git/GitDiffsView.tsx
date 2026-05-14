@@ -291,7 +291,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
                             <div className="border-b border-border px-3 py-1.5 font-mono text-[10px] text-text-secondary/50">
                                 {formatHunkHeader(hunk)}
                             </div>
-                            <div className="overflow-x-auto">
+                            <div className="select-text overflow-x-auto">
                                 <div
                                     className={
                                         lineWrapping

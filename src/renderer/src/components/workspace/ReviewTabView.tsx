@@ -1051,7 +1051,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
 
     return (
         <div
-            className="flex h-full flex-col overflow-hidden"
+            className="flex h-full select-none flex-col overflow-hidden"
             style={{ backgroundColor: "var(--color-bg-primary)" }}
         >
             <div
