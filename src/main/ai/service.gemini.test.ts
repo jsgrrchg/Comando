@@ -5,7 +5,7 @@ import type { AiRuntimeStatus, GeminiRuntimeSettings } from "@shared/ipc";
 import { AiService } from "./service";
 
 describe("AiService Gemini branch", () => {
-    it("stores Gemini settings, persists secrets, and emits runtime status", () => {
+    it("stores Gemini settings, persists secrets, and emits runtime status", async () => {
         let savedSettings: GeminiRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const secretValues = new Map<string, string>();
@@ -78,7 +78,7 @@ describe("AiService Gemini branch", () => {
             settingsService: settingsService as never,
         });
 
-        const status = service.saveGeminiRuntimeSettings({
+        const status = await service.saveGeminiRuntimeSettings({
             authMethod: "use_gemini",
             binaryPath: "/opt/homebrew/bin/gemini",
             geminiApiKey: {
@@ -110,5 +110,89 @@ describe("AiService Gemini branch", () => {
         );
         expect(status.runtimeId).toBe("gemini");
         expect(runtimeStatusEvents.at(-1)?.runtimeId).toBe("gemini");
+    });
+
+    it("disconnects Gemini by clearing API keys and preserving cloud settings", async () => {
+        let savedSettings: GeminiRuntimeSettings | null = null;
+        const secretValues = new Map<string, string>([
+            ["ai.gemini:gemini_api_key", "gem-key"],
+            ["ai.gemini:google_api_key", "google-key"],
+        ]);
+        const service = new AiService({
+            onRuntimeStatus: vi.fn(),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+            } as never,
+            secretStore: {
+                loadSecret: (namespace: string, secretId: string) =>
+                    secretValues.get(`${namespace}:${secretId}`) ?? null,
+                saveSecret: (
+                    namespace: string,
+                    secretId: string,
+                    value: string | null,
+                ) => {
+                    const key = `${namespace}:${secretId}`;
+                    if (!value?.trim()) {
+                        secretValues.delete(key);
+                    } else {
+                        secretValues.set(key, value.trim());
+                    }
+                },
+            } as never,
+            settingsService: {
+                loadClaudeRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    gatewayBaseUrl: null,
+                    hasGatewayAuthToken: false,
+                    hasGatewayCustomHeaders: false,
+                })),
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: null,
+                    binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
+                })),
+                loadGeminiRuntimeSettings: () => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: "use_gemini",
+                    binaryPath: "/opt/homebrew/bin/gemini",
+                    googleCloudLocation: "us-central1",
+                    googleCloudProject: "demo-project",
+                    hasGeminiApiKey: true,
+                    hasGoogleApiKey: true,
+                }),
+                loadKiloRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    binaryPath: null,
+                })),
+                saveClaudeRuntimeSettings: vi.fn(),
+                saveCodexRuntimeSettings: vi.fn(),
+                saveGeminiRuntimeSettings: (settings: GeminiRuntimeSettings) => {
+                    savedSettings = settings;
+                },
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        await service.disconnectRuntimeAuth({ runtimeId: "gemini" });
+
+        expect(savedSettings).toEqual({
+            authInvalidatedAtMs: null,
+            authMethod: null,
+            binaryPath: "/opt/homebrew/bin/gemini",
+            googleCloudLocation: "us-central1",
+            googleCloudProject: "demo-project",
+            hasGeminiApiKey: false,
+            hasGoogleApiKey: false,
+        });
+        expect(secretValues.size).toBe(0);
     });
 });

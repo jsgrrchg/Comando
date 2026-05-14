@@ -1,9 +1,10 @@
 import type Database from "better-sqlite3";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => ({
     decryptString: vi.fn<(value: Buffer) => string>(),
     encryptString: vi.fn<(value: string) => Buffer>(),
+    getSelectedStorageBackend: vi.fn<() => string>(),
     isEncryptionAvailable: vi.fn<() => boolean>(),
 }));
 
@@ -17,7 +18,12 @@ describe("SecretStoreService", () => {
     beforeEach(() => {
         safeStorageMock.decryptString.mockReset();
         safeStorageMock.encryptString.mockReset();
+        safeStorageMock.getSelectedStorageBackend.mockReset();
         safeStorageMock.isEncryptionAvailable.mockReset();
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
     });
 
     it("stores encrypted secrets when safeStorage is available", () => {
@@ -55,6 +61,24 @@ describe("SecretStoreService", () => {
         expect(connection.appSettings.size).toBe(0);
     });
 
+    it("rejects new writes on Linux weak safeStorage backends", () => {
+        const platformSpy = vi.spyOn(process, "platform", "get");
+        platformSpy.mockReturnValue("linux");
+        const connection = createFakeConnection();
+        const service = new SecretStoreService(
+            connection as unknown as Database.Database,
+        );
+
+        safeStorageMock.isEncryptionAvailable.mockReturnValue(true);
+        safeStorageMock.getSelectedStorageBackend.mockReturnValue("basic_text");
+
+        expect(() =>
+            service.saveSecret("ai.codex", "openai_api_key", "secret-value"),
+        ).toThrowError("Linux keyring backend is weak");
+        expect(connection.appSettings.size).toBe(0);
+        expect(service.getStorageStatus().isWeakBackend).toBe(true);
+    });
+
     it("still reads legacy secrets in plain text", () => {
         const connection = createFakeConnection({
             "secret.ai.codex.openai_api_key": JSON.stringify({
@@ -69,6 +93,20 @@ describe("SecretStoreService", () => {
         expect(service.loadSecret("ai.codex", "openai_api_key")).toBe(
             "legacy-secret",
         );
+    });
+
+    it("ignores unknown secret storage schemes", () => {
+        const connection = createFakeConnection({
+            "secret.ai.codex.openai_api_key": JSON.stringify({
+                scheme: "future-secret-v9",
+                value: "surprise-secret",
+            }),
+        });
+        const service = new SecretStoreService(
+            connection as unknown as Database.Database,
+        );
+
+        expect(service.loadSecret("ai.codex", "openai_api_key")).toBeNull();
     });
 });
 

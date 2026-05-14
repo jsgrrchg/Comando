@@ -9,6 +9,7 @@ import {
     detectClaudeAuthMethod,
     gatewayValidationError,
     getClaudeRuntimeStatus,
+    normalizeGatewayCustomHeaders,
     resolveClaudeRuntime,
 } from "./setup";
 import type { SecretStoreService } from "../secret-store";
@@ -26,6 +27,9 @@ const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 const originalClaudeEnv = process.env.COMANDO_CLAUDE_ACP_BIN;
 const originalPath = process.env.PATH;
+const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+const originalAnthropicCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS;
 
 beforeEach(() => {
     delete process.env.COMANDO_CLAUDE_ACP_BIN;
@@ -50,6 +54,24 @@ afterEach(() => {
         process.env.COMANDO_CLAUDE_ACP_BIN = originalClaudeEnv;
     } else {
         delete process.env.COMANDO_CLAUDE_ACP_BIN;
+    }
+
+    if (typeof originalAnthropicBaseUrl === "string") {
+        process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseUrl;
+    } else {
+        delete process.env.ANTHROPIC_BASE_URL;
+    }
+
+    if (typeof originalAnthropicAuthToken === "string") {
+        process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuthToken;
+    } else {
+        delete process.env.ANTHROPIC_AUTH_TOKEN;
+    }
+
+    if (typeof originalAnthropicCustomHeaders === "string") {
+        process.env.ANTHROPIC_CUSTOM_HEADERS = originalAnthropicCustomHeaders;
+    } else {
+        delete process.env.ANTHROPIC_CUSTOM_HEADERS;
     }
 });
 
@@ -182,6 +204,65 @@ describe("Claude setup", () => {
         }
     });
 
+    it("reports external Claude login as disconnectable when discovered by fallback", () => {
+        const tempRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-claude-auth-fallback-"),
+        );
+        const tempHome = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-claude-home-fallback-"),
+        );
+
+        try {
+            const embeddedNode = path.join(
+                tempRoot,
+                "resources",
+                "ai",
+                "embedded",
+                "node",
+                "bin",
+                "node",
+            );
+            const embeddedEntry = path.join(
+                tempRoot,
+                "resources",
+                "ai",
+                "embedded",
+                "claude-agent-acp",
+                "dist",
+                "index.js",
+            );
+            const authFile = path.join(tempHome, ".claude.json");
+
+            fs.mkdirSync(path.dirname(embeddedNode), { recursive: true });
+            fs.mkdirSync(path.dirname(embeddedEntry), { recursive: true });
+            fs.writeFileSync(embeddedNode, "#!/bin/sh\nexit 0\n", "utf8");
+            fs.writeFileSync(embeddedEntry, "console.log('ok')\n", "utf8");
+            fs.writeFileSync(authFile, '{"session":true}', "utf8");
+            fs.chmodSync(embeddedNode, 0o755);
+
+            process.env.HOME = tempHome;
+            delete process.env.USERPROFILE;
+
+            const status = getClaudeRuntimeStatus(
+                createEmptyClaudeSettings(),
+                createFakeSecretStore() as unknown as SecretStoreService,
+                {
+                    allowPathFallback: false,
+                    appRoot: tempRoot,
+                    debugMode: false,
+                    packagedResourcesPath: null,
+                },
+            );
+
+            expect(status.authMethod).toBe("claude-ai-login");
+            expect(status.authCredentialSource).toBe("external-runtime");
+            expect(status.canDisconnectAuth).toBe(true);
+        } finally {
+            fs.rmSync(tempRoot, { force: true, recursive: true });
+            fs.rmSync(tempHome, { force: true, recursive: true });
+        }
+    });
+
     it("prefers packaged macOS architecture-specific Node when available", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-claude-packaged-"),
@@ -257,6 +338,72 @@ describe("Claude setup", () => {
         expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('{"x-test":"1"}');
     });
 
+    it("does not inject stored Claude gateway secrets for external login methods", () => {
+        const secretStore = createFakeSecretStore({
+            "ai.claude:anthropic_auth_token": "stored-token",
+            "ai.claude:anthropic_custom_headers": '{"x-test":"1"}',
+        });
+
+        const env = applyClaudeAuthEnv(
+            {},
+            {
+                ...createEmptyClaudeSettings(),
+                authMethod: "claude-login",
+                gatewayBaseUrl: "https://gateway.example/v1",
+                hasGatewayAuthToken: true,
+                hasGatewayCustomHeaders: true,
+            },
+            secretStore as unknown as SecretStoreService,
+        );
+
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+        expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    });
+
+    it("treats Anthropic gateway environment variables as ready without Comando secrets", () => {
+        process.env.ANTHROPIC_BASE_URL = "https://gateway.example/v1";
+        process.env.ANTHROPIC_AUTH_TOKEN = "external-token";
+
+        const status = getClaudeRuntimeStatus(
+            createEmptyClaudeSettings(),
+            createFakeSecretStore() as unknown as SecretStoreService,
+            {
+                allowPathFallback: false,
+                appRoot: os.tmpdir(),
+                debugMode: false,
+                packagedResourcesPath: null,
+            },
+        );
+
+        expect(detectClaudeAuthMethod(createEmptyClaudeSettings())).toBe(
+            "gateway",
+        );
+        expect(status.authMethod).toBe("gateway");
+        expect(status.authReady).toBe(true);
+        expect(status.authCredentialSource).toBe("environment");
+        expect(status.canDisconnectAuth).toBe(false);
+        expect(status.hasGatewayConfig).toBe(true);
+    });
+
+    it("lets Anthropic environment gateway override an invalid stored gateway URL", () => {
+        const env = applyClaudeAuthEnv(
+            {
+                ANTHROPIC_BASE_URL: "https://gateway.example/v1",
+                ANTHROPIC_AUTH_TOKEN: "external-token",
+            },
+            {
+                ...createEmptyClaudeSettings(),
+                authMethod: "gateway",
+                gatewayBaseUrl: "http://gateway.example",
+            },
+            createFakeSecretStore() as unknown as SecretStoreService,
+        );
+
+        expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/v1");
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBe("external-token");
+    });
+
     it("rejects remote HTTP gateways", () => {
         expect(
             gatewayValidationError({
@@ -264,6 +411,10 @@ describe("Claude setup", () => {
                 gatewayBaseUrl: "http://gateway.example",
             }),
         ).toBe("HTTP gateways are only allowed for localhost.");
+    });
+
+    it("normalizes empty Claude gateway custom headers to no secret", () => {
+        expect(normalizeGatewayCustomHeaders("{}")).toBeNull();
     });
 });
 

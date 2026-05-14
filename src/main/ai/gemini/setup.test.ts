@@ -22,6 +22,8 @@ type FakeSecretStore = {
 };
 
 const originalGeminiEnv = process.env.COMANDO_GEMINI_ACP_BIN;
+const originalGeminiApiKey = process.env.GEMINI_API_KEY;
+const originalGoogleApiKey = process.env.GOOGLE_API_KEY;
 const originalHome = process.env.HOME;
 const originalPath = process.env.PATH;
 const originalUserProfile = process.env.USERPROFILE;
@@ -37,6 +39,18 @@ afterEach(() => {
         process.env.COMANDO_GEMINI_ACP_BIN = originalGeminiEnv;
     } else {
         delete process.env.COMANDO_GEMINI_ACP_BIN;
+    }
+
+    if (typeof originalGeminiApiKey === "string") {
+        process.env.GEMINI_API_KEY = originalGeminiApiKey;
+    } else {
+        delete process.env.GEMINI_API_KEY;
+    }
+
+    if (typeof originalGoogleApiKey === "string") {
+        process.env.GOOGLE_API_KEY = originalGoogleApiKey;
+    } else {
+        delete process.env.GOOGLE_API_KEY;
     }
 
     if (typeof originalHome === "string") {
@@ -185,6 +199,10 @@ describe("Gemini setup", () => {
                 },
                 createFakeSecretStore() as unknown as SecretStoreService,
             );
+            const fallbackStatus = getGeminiRuntimeStatus(
+                createEmptyGeminiSettings(),
+                createFakeSecretStore() as unknown as SecretStoreService,
+            );
             const staleStatus = getGeminiRuntimeStatus(
                 {
                     ...createEmptyGeminiSettings(),
@@ -196,6 +214,13 @@ describe("Gemini setup", () => {
 
             expect(readyStatus.authMethod).toBe("login_with_google");
             expect(readyStatus.authReady).toBe(true);
+            expect(readyStatus.authCredentialSource).toBe("external-runtime");
+            expect(readyStatus.canDisconnectAuth).toBe(true);
+            expect(fallbackStatus.authMethod).toBe("login_with_google");
+            expect(fallbackStatus.authCredentialSource).toBe(
+                "external-runtime",
+            );
+            expect(fallbackStatus.canDisconnectAuth).toBe(true);
             expect(staleStatus.authMethod).toBeNull();
             expect(staleStatus.authReady).toBe(false);
         } finally {
@@ -227,6 +252,42 @@ describe("Gemini setup", () => {
         expect(env.GOOGLE_CLOUD_PROJECT).toBe("demo-project");
         expect(env.GOOGLE_CLOUD_LOCATION).toBe("us-central1");
         expect(env.GEMINI_DEFAULT_AUTH_TYPE).toBe("use_gemini");
+    });
+
+    it("does not inject stored Gemini API keys for Google login", () => {
+        const secretStore = createFakeSecretStore({
+            "ai.gemini:gemini_api_key": "stored-gemini-key",
+            "ai.gemini:google_api_key": "stored-google-key",
+        });
+
+        const env = applyGeminiAuthEnv(
+            {
+                GEMINI_API_KEY: "external-gemini-key",
+                GOOGLE_API_KEY: "external-google-key",
+            },
+            {
+                ...createEmptyGeminiSettings(),
+                authMethod: "login_with_google",
+            },
+            secretStore as unknown as SecretStoreService,
+        );
+
+        expect(env.GEMINI_API_KEY).toBeUndefined();
+        expect(env.GOOGLE_API_KEY).toBeUndefined();
+        expect(env.GEMINI_DEFAULT_AUTH_TYPE).toBe("login_with_google");
+    });
+
+    it("does not offer disconnect for pure Gemini environment credentials", () => {
+        process.env.GEMINI_API_KEY = "external-gemini-key";
+
+        const status = getGeminiRuntimeStatus(
+            createEmptyGeminiSettings(),
+            createFakeSecretStore() as unknown as SecretStoreService,
+        );
+
+        expect(status.authMethod).toBe("use_gemini");
+        expect(status.authCredentialSource).toBe("environment");
+        expect(status.canDisconnectAuth).toBe(false);
     });
 
     it("respects external project variables, location, and auth type", () => {
