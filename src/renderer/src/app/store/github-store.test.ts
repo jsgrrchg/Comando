@@ -12,6 +12,7 @@ import type {
     GitHubReleaseSummary,
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
+    GitHubUpdateIssueInput,
     GitHubWorkflowJobSummary,
     GitHubWorkflowRunSummary,
 } from "@shared/ipc";
@@ -261,6 +262,64 @@ describe("github-store", () => {
         expect(useGitHubStore.getState().errors[`${repoKey}:issue:create`]).toBe(
             "Resource not accessible by token",
         );
+    });
+
+    it("updates issue details and list caches", async () => {
+        const original = createIssueDetail({
+            body: "Before",
+            number: 9,
+            title: "Before title",
+        });
+        const updated = createIssueDetail({
+            body: "After",
+            number: 9,
+            title: "After title",
+        });
+        const updateGitHubIssue = vi.fn<
+            (input: GitHubUpdateIssueInput) => Promise<GitHubIssueDetail>
+        >().mockResolvedValue(updated);
+        useGitHubStore.setState({
+            issueDetailsByRepo: { [repoKey]: { 9: original } },
+            issueListStateByRepo: { [repoKey]: "open" },
+            issuesByRepo: { [repoKey]: [original] },
+            issuesByRepoAndState: { [repoKey]: { open: [original] } },
+        });
+        stubComando({ updateGitHubIssue });
+
+        const result = await useGitHubStore.getState().updateIssue(
+            repository,
+            9,
+            {
+                body: "After",
+                title: "After title",
+            },
+        );
+
+        expect(result).toBe(updated);
+        const updateInput = updateGitHubIssue.mock.calls[0]?.[0];
+        expect(updateInput).toMatchObject({
+            body: "After",
+            number: 9,
+            repository,
+            title: "After title",
+        });
+        expect(updateInput?.clientRequestId).toEqual(
+            expect.stringContaining(`${repoKey}:issue:9:update:`),
+        );
+        expect(
+            useGitHubStore.getState().issueDetailsByRepo[repoKey]?.[9],
+        ).toBe(updated);
+        expect(useGitHubStore.getState().issuesByRepo[repoKey]).toEqual([
+            updated,
+        ]);
+        expect(
+            useGitHubStore.getState().issuesByRepoAndState[repoKey]?.open,
+        ).toEqual([updated]);
+        expect(
+            useGitHubStore.getState().mutatingKeys[
+                `${repoKey}:issue:9:update`
+            ],
+        ).toBe(false);
     });
 
     it("appends comments to cached issue details and summaries", async () => {

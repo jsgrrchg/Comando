@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import { getGitHubRepoKey, useGitHubStore } from "@renderer/app/store/github-store";
 import type { RuntimeWorkspaceGitHubIssueTab } from "@renderer/app/workspace/tree";
@@ -31,6 +32,9 @@ export function GitHubIssueTabView({
 }) {
     const repoKey = getGitHubRepoKey(tab.ref);
     const [commentDraft, setCommentDraft] = useState("");
+    const [isEditingIssue, setIsEditingIssue] = useState(false);
+    const [issueTitleDraft, setIssueTitleDraft] = useState("");
+    const [issueBodyDraft, setIssueBodyDraft] = useState("");
     const [isIssueBodyCopied, setIsIssueBodyCopied] = useState(false);
     const [isIssueLinkCopied, setIsIssueLinkCopied] = useState(false);
     const copyResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -50,27 +54,34 @@ export function GitHubIssueTabView({
         (state) =>
             state.loadingKeys[`${repoKey}:issue:${tab.issueNumber}`] ?? false,
     );
-    const isCommenting = useGitHubStore(
-        (state) =>
-            state.mutatingKeys[`${repoKey}:issue:${tab.issueNumber}:comment`] ??
-            false,
-    );
-    const isClosing = useGitHubStore(
-        (state) =>
-            state.mutatingKeys[`${repoKey}:issue:${tab.issueNumber}:close`] ??
-            false,
-    );
-    const isReopening = useGitHubStore(
-        (state) =>
-            state.mutatingKeys[`${repoKey}:issue:${tab.issueNumber}:reopen`] ??
-            false,
-    );
+    const { isCommenting, isClosing, isReopening, isUpdatingIssue } =
+        useGitHubStore(
+            useShallow((state) => ({
+                isClosing:
+                    state.mutatingKeys[
+                        `${repoKey}:issue:${tab.issueNumber}:close`
+                    ] ?? false,
+                isCommenting:
+                    state.mutatingKeys[
+                        `${repoKey}:issue:${tab.issueNumber}:comment`
+                    ] ?? false,
+                isReopening:
+                    state.mutatingKeys[
+                        `${repoKey}:issue:${tab.issueNumber}:reopen`
+                    ] ?? false,
+                isUpdatingIssue:
+                    state.mutatingKeys[
+                        `${repoKey}:issue:${tab.issueNumber}:update`
+                    ] ?? false,
+            })),
+        );
     const error = useGitHubStore(
         (state) =>
             state.errors[`${repoKey}:issue:${tab.issueNumber}`] ??
             state.errors[`${repoKey}:issue:${tab.issueNumber}:comment`] ??
             state.errors[`${repoKey}:issue:${tab.issueNumber}:close`] ??
             state.errors[`${repoKey}:issue:${tab.issueNumber}:reopen`] ??
+            state.errors[`${repoKey}:issue:${tab.issueNumber}:update`] ??
             null,
     );
     const refreshAuthStatus = useGitHubStore(
@@ -80,6 +91,7 @@ export function GitHubIssueTabView({
         (state) => state.ensureIssueDetail,
     );
     const commentIssue = useGitHubStore((state) => state.commentIssue);
+    const updateIssue = useGitHubStore((state) => state.updateIssue);
     const closeIssue = useGitHubStore((state) => state.closeIssue);
     const reopenIssue = useGitHubStore((state) => state.reopenIssue);
     const canWriteIssues = hasGitHubWritePermission(authStatus, "issues");
@@ -159,6 +171,35 @@ export function GitHubIssueTabView({
         await closeIssue(tab.ref, tab.issueNumber);
     };
 
+    const handleStartEditingIssue = () => {
+        if (!canWriteIssues || !detail) {
+            return;
+        }
+
+        setIssueTitleDraft(detail.title);
+        setIssueBodyDraft(detail.body ?? "");
+        setIsEditingIssue(true);
+    };
+
+    const handleCancelEditingIssue = () => {
+        setIssueTitleDraft(detail?.title ?? "");
+        setIssueBodyDraft(detail?.body ?? "");
+        setIsEditingIssue(false);
+    };
+
+    const handleSaveIssue = async () => {
+        const title = issueTitleDraft.trim();
+        if (!canWriteIssues || !detail || !title) {
+            return;
+        }
+
+        await updateIssue(tab.ref, tab.issueNumber, {
+            body: issueBodyDraft.trim(),
+            title,
+        });
+        setIsEditingIssue(false);
+    };
+
     const handleCopyIssueBody = async () => {
         if (!detail?.body) {
             return;
@@ -208,6 +249,14 @@ export function GitHubIssueTabView({
 
         await reopenIssue(tab.ref, tab.issueNumber);
     };
+
+    const titleChanged = issueTitleDraft.trim() !== (detail?.title ?? "").trim();
+    const bodyChanged = issueBodyDraft.trim() !== (detail?.body ?? "").trim();
+    const saveIssueDisabled =
+        !canWriteIssues ||
+        isUpdatingIssue ||
+        issueTitleDraft.trim().length === 0 ||
+        (!titleChanged && !bodyChanged);
 
     return (
         <GitHubTabShell
@@ -265,9 +314,23 @@ export function GitHubIssueTabView({
                     <>
                         <article className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
                             <div className="border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-3">
-                                <h1 className="text-[18px] font-semibold leading-7 text-text-primary">
-                                    {detail.title}
-                                </h1>
+                                {isEditingIssue ? (
+                                    <input
+                                        className="h-9 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[18px] font-semibold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                        disabled={isUpdatingIssue}
+                                        onChange={(event) =>
+                                            setIssueTitleDraft(
+                                                event.currentTarget.value,
+                                            )
+                                        }
+                                        placeholder="Issue title"
+                                        value={issueTitleDraft}
+                                    />
+                                ) : (
+                                    <h1 className="text-[18px] font-semibold leading-7 text-text-primary">
+                                        {detail.title}
+                                    </h1>
+                                )}
                                 <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
                                     <span>
                                         by {detail.author?.login ?? "ghost"}
@@ -284,20 +347,96 @@ export function GitHubIssueTabView({
                                     ))}
                                 </div>
                             </div>
-                            <div className="flex justify-end px-4 pt-3">
-                                <IdeActionButton
-                                    disabled={!detail.body}
-                                    onClick={() => void handleCopyIssueBody()}
-                                    title="Copy issue description to clipboard"
-                                >
-                                    {isIssueBodyCopied ? "Copied" : "Copy"}
-                                </IdeActionButton>
-                            </div>
-                            <div className="px-4 py-4 text-[13px] leading-6 text-text-secondary">
-                                <MarkdownContent
-                                    content={detail.body || "_No description._"}
-                                />
-                            </div>
+                            {!isEditingIssue ? (
+                                <div className="flex justify-end gap-2 px-4 pt-3">
+                                    <IdeActionButton
+                                        disabled={!canWriteIssues}
+                                        onClick={handleStartEditingIssue}
+                                        title={
+                                            canWriteIssues
+                                                ? undefined
+                                                : writePermissionLabel
+                                        }
+                                    >
+                                        Edit details
+                                    </IdeActionButton>
+                                    <IdeActionButton
+                                        disabled={!detail.body}
+                                        onClick={() =>
+                                            void handleCopyIssueBody()
+                                        }
+                                        title="Copy issue description to clipboard"
+                                    >
+                                        {isIssueBodyCopied
+                                            ? "Copied"
+                                            : "Copy"}
+                                    </IdeActionButton>
+                                </div>
+                            ) : null}
+                            {isEditingIssue ? (
+                                <div className="space-y-3 px-4 py-4">
+                                    <textarea
+                                        className="min-h-48 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                        disabled={isUpdatingIssue}
+                                        onChange={(event) =>
+                                            setIssueBodyDraft(
+                                                event.currentTarget.value,
+                                            )
+                                        }
+                                        placeholder="Describe this issue..."
+                                        value={issueBodyDraft}
+                                    />
+                                    {error ? (
+                                        <div className="text-[11px] text-[color:var(--diff-remove)]">
+                                            {error}
+                                        </div>
+                                    ) : null}
+                                    <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                                        <GitHubSectionLabel>
+                                            Preview
+                                        </GitHubSectionLabel>
+                                        <div className="mt-2 max-h-72 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                                            <MarkdownContent
+                                                content={
+                                                    issueBodyDraft.trim() ||
+                                                    "_No description._"
+                                                }
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-end gap-2">
+                                        <IdeActionButton
+                                            disabled={isUpdatingIssue}
+                                            onClick={handleCancelEditingIssue}
+                                        >
+                                            Cancel
+                                        </IdeActionButton>
+                                        <IdeActionButton
+                                            disabled={saveIssueDisabled}
+                                            onClick={() =>
+                                                void handleSaveIssue()
+                                            }
+                                            title={
+                                                canWriteIssues
+                                                    ? undefined
+                                                    : writePermissionLabel
+                                            }
+                                        >
+                                            {isUpdatingIssue
+                                                ? "Saving..."
+                                                : "Save changes"}
+                                        </IdeActionButton>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="px-4 py-4 text-[13px] leading-6 text-text-secondary">
+                                    <MarkdownContent
+                                        content={
+                                            detail.body || "_No description._"
+                                        }
+                                    />
+                                </div>
+                            )}
                             <div className="flex justify-end gap-2 border-t border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-3">
                                 {detail.state === "open" ? (
                                     <IdeActionButton

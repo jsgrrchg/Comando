@@ -63,6 +63,7 @@ export const IPC_CHANNELS = {
     listGitHubIssues: "github:list-issues",
     getGitHubIssue: "github:get-issue",
     createGitHubIssue: "github:create-issue",
+    updateGitHubIssue: "github:update-issue",
     commentGitHubIssue: "github:comment-issue",
     closeGitHubIssue: "github:close-issue",
     reopenGitHubIssue: "github:reopen-issue",
@@ -990,6 +991,14 @@ export interface GitHubCreateIssueInput
     readonly labels?: readonly string[] | null;
     readonly milestoneNumber?: number | null;
     readonly title: string;
+}
+
+export interface GitHubUpdateIssueInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly body?: string | null;
+    readonly number: number;
+    readonly title?: string | null;
 }
 
 export interface GitHubCommentIssueInput
@@ -2390,6 +2399,9 @@ export interface ComandoApi {
     ) => Promise<GitHubIssueDetail | null>;
     createGitHubIssue: (
         input: GitHubCreateIssueInput,
+    ) => Promise<GitHubIssueDetail>;
+    updateGitHubIssue: (
+        input: GitHubUpdateIssueInput,
     ) => Promise<GitHubIssueDetail>;
     commentGitHubIssue: (
         input: GitHubCommentIssueInput,

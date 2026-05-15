@@ -305,6 +305,52 @@ describe("GitHubService", () => {
         expect(secondResult.number).toBe(7);
     });
 
+    it("updates issue titles and descriptions", async () => {
+        const fetchMock = vi
+            .fn<GitHubFetch>()
+            .mockResolvedValueOnce(jsonResponse(rawIssue({ number: 5 })))
+            .mockResolvedValueOnce(
+                jsonResponse(
+                    rawIssue({
+                        body: "Updated body",
+                        number: 5,
+                        title: "Updated title",
+                    }),
+                ),
+            )
+            .mockResolvedValueOnce(jsonResponse([]));
+        const service = createService(fetchMock);
+
+        const result = await service.updateIssue({
+            body: "Updated body",
+            clientRequestId: "update-issue",
+            number: 5,
+            repository,
+            title: "Updated title",
+        });
+
+        expect(result.body).toBe("Updated body");
+        expect(result.title).toBe("Updated title");
+        const requestInit = fetchMock.mock.calls[0]?.[1];
+        expect(fetchMock).toHaveBeenNthCalledWith(
+            1,
+            expect.objectContaining({
+                href: "https://api.github.com/repos/octocat/hello-world/issues/5",
+            }),
+            expect.objectContaining({
+                method: "PATCH",
+            }),
+        );
+        const body = requestInit?.body;
+        if (typeof body !== "string") {
+            throw new Error("Expected request body to be JSON.");
+        }
+        expect(JSON.parse(body)).toEqual({
+            body: "Updated body",
+            title: "Updated title",
+        });
+    });
+
     it("creates pull requests and comments on PR conversations", async () => {
         const fetchMock = vi
             .fn<GitHubFetch>()

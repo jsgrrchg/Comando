@@ -22,6 +22,7 @@ import type {
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
     GitHubCheckRunAnnotationSummary,
+    GitHubUpdateIssueInput,
     GitHubUpdatePullRequestInput,
     GitHubWorkflowArtifactSummary,
     GitHubWorkflowJobSummary,
@@ -49,6 +50,10 @@ type GitHubPullRequestsByListState = Partial<
 type GitHubCreateIssueOptions = Omit<
     GitHubCreateIssueInput,
     "clientRequestId" | "repository"
+>;
+type GitHubUpdateIssueOptions = Omit<
+    GitHubUpdateIssueInput,
+    "clientRequestId" | "number" | "repository"
 >;
 type GitHubCreatePullRequestOptions = Omit<
     GitHubCreatePullRequestInput,
@@ -152,6 +157,11 @@ export interface GitHubStoreState {
     createIssue: (
         ref: GitHubRepositoryRef,
         input: GitHubCreateIssueOptions,
+    ) => Promise<GitHubIssueDetail>;
+    updateIssue: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        input: GitHubUpdateIssueOptions,
     ) => Promise<GitHubIssueDetail>;
     createPullRequest: (
         ref: GitHubRepositoryRef,
@@ -428,6 +438,23 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                     repository: ref,
                 });
                 upsertIssue(set, ref, detail);
+                setIssueDetail(set, ref, detail);
+                return detail;
+            },
+        ),
+
+    updateIssue: async (ref, number, input) =>
+        dedupeMutation(
+            set,
+            getRepoKey(ref),
+            `issue:${number}:update`,
+            async (clientRequestId) => {
+                const detail = await getComandoApi().updateGitHubIssue({
+                    ...input,
+                    clientRequestId,
+                    number,
+                    repository: ref,
+                });
                 setIssueDetail(set, ref, detail);
                 return detail;
             },

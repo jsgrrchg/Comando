@@ -51,6 +51,7 @@ import type {
     GitHubReleaseSummary,
     GitHubSetIssueStateInput,
     GitHubSetPullRequestDraftStateInput,
+    GitHubUpdateIssueInput,
     GitHubUserSummary,
     GitHubWorkflowArtifactSummary,
     GitHubWorkflowConclusion,
@@ -523,6 +524,37 @@ export class GitHubApiClient {
         );
 
         return mapIssueDetail(response.data, []);
+    }
+
+    async updateIssue(
+        input: GitHubUpdateIssueInput,
+    ): Promise<GitHubIssueDetail> {
+        const body: { body?: string; title?: string } = {};
+        if (Object.hasOwn(input, "body")) {
+            body.body = input.body ?? "";
+        }
+        if (input.title != null) {
+            body.title = input.title;
+        }
+
+        await this.#requestJson<RawGitHubIssue>(
+            input.repository.host,
+            repoPath(input.repository, `/issues/${input.number}`),
+            {
+                body,
+                method: "PATCH",
+            },
+        );
+        const updated = await this.getIssue(input);
+        if (!updated) {
+            throw new GitHubApiError(
+                "GitHub issue could not be loaded after updating.",
+                "not_found",
+                404,
+            );
+        }
+
+        return updated;
     }
 
     async commentIssue(input: {
