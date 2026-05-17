@@ -371,11 +371,28 @@ export function GitHubUsers({
 }
 
 export function GitHubCommentList({
+    canEdit = false,
     comments,
+    getUpdateError,
+    isUpdatingComment,
+    onUpdateComment,
+    permissionLabel,
 }: {
+    readonly canEdit?: boolean;
     readonly comments: readonly GitHubCommentSummary[];
+    readonly getUpdateError?: (comment: GitHubCommentSummary) => string | null;
+    readonly isUpdatingComment?: (comment: GitHubCommentSummary) => boolean;
+    readonly onUpdateComment?: (
+        comment: GitHubCommentSummary,
+        body: string,
+    ) => Promise<void> | void;
+    readonly permissionLabel?: string;
 }) {
     const [copiedCommentId, setCopiedCommentId] = useState<string | null>(null);
+    const [editingCommentId, setEditingCommentId] = useState<number | null>(
+        null,
+    );
+    const [commentDraft, setCommentDraft] = useState("");
     const copyResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
         null,
     );
@@ -401,6 +418,30 @@ export function GitHubCommentList({
         }, 1600);
     };
 
+    const handleStartEditingComment = (comment: GitHubCommentSummary) => {
+        if (!canEdit || !onUpdateComment) {
+            return;
+        }
+
+        setEditingCommentId(comment.id);
+        setCommentDraft(comment.body);
+    };
+
+    const handleCancelEditingComment = () => {
+        setEditingCommentId(null);
+        setCommentDraft("");
+    };
+
+    const handleSaveComment = async (comment: GitHubCommentSummary) => {
+        if (!canEdit || !onUpdateComment || !commentDraft.trim()) {
+            return;
+        }
+
+        await onUpdateComment(comment, commentDraft);
+        setEditingCommentId(null);
+        setCommentDraft("");
+    };
+
     if (comments.length === 0) {
         return (
             <GitHubEmptyState>
@@ -414,6 +455,17 @@ export function GitHubCommentList({
             {comments.map((comment) => {
                 const commentId = String(comment.id);
                 const isCopied = copiedCommentId === commentId;
+                const isEditing = editingCommentId === comment.id;
+                const isUpdating = isUpdatingComment?.(comment) ?? false;
+                const updateError = getUpdateError?.(comment) ?? null;
+                const draftChanged = commentDraft !== comment.body;
+                const editDisabled =
+                    !canEdit || isUpdating || editingCommentId !== null;
+                const saveDisabled =
+                    !canEdit ||
+                    isUpdating ||
+                    commentDraft.trim().length === 0 ||
+                    !draftChanged;
 
                 return (
                     <article
@@ -428,6 +480,21 @@ export function GitHubCommentList({
                                 <div className="text-[10px] text-text-secondary">
                                     {formatGitHubRelativeTime(comment.updatedAt)}
                                 </div>
+                                {onUpdateComment && !isEditing ? (
+                                    <IdeActionButton
+                                        disabled={editDisabled}
+                                        onClick={() =>
+                                            handleStartEditingComment(comment)
+                                        }
+                                        title={
+                                            canEdit
+                                                ? "Edit comment"
+                                                : permissionLabel
+                                        }
+                                    >
+                                        Edit
+                                    </IdeActionButton>
+                                ) : null}
                                 <IdeActionButton
                                     onClick={() =>
                                         void handleCopyComment(
@@ -441,11 +508,61 @@ export function GitHubCommentList({
                                 </IdeActionButton>
                             </div>
                         </div>
-                        <div className="px-3 py-3 text-[12px] leading-6 text-text-secondary">
-                            <MarkdownContent
-                                content={comment.body || "_No body._"}
-                            />
-                        </div>
+                        {isEditing ? (
+                            <div className="space-y-3 px-3 py-3">
+                                <textarea
+                                    className="min-h-32 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                    disabled={isUpdating}
+                                    onChange={(event) =>
+                                        setCommentDraft(
+                                            event.currentTarget.value,
+                                        )
+                                    }
+                                    placeholder="Edit this comment..."
+                                    value={commentDraft}
+                                />
+                                {updateError ? (
+                                    <div className="text-[11px] text-[color:var(--diff-remove)]">
+                                        {updateError}
+                                    </div>
+                                ) : null}
+                                <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                                    <GitHubSectionLabel>
+                                        Preview
+                                    </GitHubSectionLabel>
+                                    <div className="mt-2 max-h-48 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                                            <MarkdownContent
+                                                content={
+                                                    commentDraft.trim() ||
+                                                "_No body._"
+                                            }
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex justify-end gap-2">
+                                    <IdeActionButton
+                                        disabled={isUpdating}
+                                        onClick={handleCancelEditingComment}
+                                    >
+                                        Cancel
+                                    </IdeActionButton>
+                                    <IdeActionButton
+                                        disabled={saveDisabled}
+                                        onClick={() =>
+                                            void handleSaveComment(comment)
+                                        }
+                                    >
+                                        {isUpdating ? "Saving..." : "Save"}
+                                    </IdeActionButton>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="px-3 py-3 text-[12px] leading-6 text-text-secondary">
+                                <MarkdownContent
+                                    content={comment.body || "_No body._"}
+                                />
+                            </div>
+                        )}
                     </article>
                 );
             })}

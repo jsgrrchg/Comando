@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type {
+    GitHubCommentSummary,
     GitHubPullRequestChecksResult,
     GitHubPullRequestChecksState,
 } from "@shared/ipc";
@@ -50,6 +51,7 @@ export function GitHubPullRequestTabView({
     const [commentDraft, setCommentDraft] = useState("");
     const [showAllCommits, setShowAllCommits] = useState(false);
     const [isEditingDescription, setIsEditingDescription] = useState(false);
+    const [titleDraft, setTitleDraft] = useState("");
     const [descriptionDraft, setDescriptionDraft] = useState("");
 
     const detail = useGitHubStore(
@@ -67,6 +69,8 @@ export function GitHubPullRequestTabView({
     const authStatus = useGitHubStore(
         (state) => state.authStatusByHost[tab.ref.host] ?? null,
     );
+    const commentMutatingKeys = useGitHubStore((state) => state.mutatingKeys);
+    const commentErrors = useGitHubStore((state) => state.errors);
 
     const checksKey = detail?.head.sha
         ? getGitHubPullRequestChecksKey(tab.ref, detail.head.sha)
@@ -164,6 +168,7 @@ export function GitHubPullRequestTabView({
     const commentPullRequest = useGitHubStore(
         (state) => state.commentPullRequest,
     );
+    const updateComment = useGitHubStore((state) => state.updateComment);
     const markPullRequestReady = useGitHubStore(
         (state) => state.markPullRequestReady,
     );
@@ -250,12 +255,6 @@ export function GitHubPullRequestTabView({
         tab.ref,
     ]);
 
-    useEffect(() => {
-        if (!isEditingDescription) {
-            setDescriptionDraft(detail?.body ?? "");
-        }
-    }, [detail?.body, isEditingDescription]);
-
     const handleRefresh = async () => {
         const status = await refreshAuthStatus(tab.ref);
         if (status.state === "authenticated") {
@@ -290,6 +289,16 @@ export function GitHubPullRequestTabView({
 
         await commentPullRequest(tab.ref, tab.pullRequestNumber, body);
         setCommentDraft("");
+    };
+
+    const handleUpdateComment = async (
+        comment: GitHubCommentSummary,
+        body: string,
+    ) => {
+        await updateComment(tab.ref, {
+            body,
+            commentId: comment.id,
+        });
     };
 
     const handleMarkReady = async () => {
@@ -328,22 +337,26 @@ export function GitHubPullRequestTabView({
             return;
         }
 
+        setTitleDraft(detail.title);
         setDescriptionDraft(detail.body ?? "");
         setIsEditingDescription(true);
     };
 
     const handleCancelEditingDescription = () => {
+        setTitleDraft(detail?.title ?? "");
         setDescriptionDraft(detail?.body ?? "");
         setIsEditingDescription(false);
     };
 
     const handleSaveDescription = async () => {
-        if (!canWritePullRequests || !detail) {
+        const title = titleDraft.trim();
+        if (!canWritePullRequests || !detail || !title) {
             return;
         }
 
         await updatePullRequest(tab.ref, tab.pullRequestNumber, {
-            body: descriptionDraft.trim(),
+            body: descriptionDraft,
+            title,
         });
         setIsEditingDescription(false);
     };
@@ -365,12 +378,13 @@ export function GitHubPullRequestTabView({
     const mergeableState = deriveGitHubMergeableState(detail?.mergeable);
     const showLifecycleCta =
         detail?.state === "open" && !detail?.mergedAt;
-    const descriptionChanged =
-        descriptionDraft.trim() !== (detail?.body ?? "").trim();
+    const titleChanged = titleDraft.trim() !== (detail?.title ?? "").trim();
+    const descriptionChanged = descriptionDraft !== (detail?.body ?? "");
     const saveDescriptionDisabled =
         !canWritePullRequests ||
         isUpdatingPullRequest ||
-        !descriptionChanged;
+        titleDraft.trim().length === 0 ||
+        (!titleChanged && !descriptionChanged);
 
     const commits = detail?.commits ?? [];
     const visibleCommits = showAllCommits
@@ -562,7 +576,7 @@ export function GitHubPullRequestTabView({
                                                 : writePermissionLabel
                                         }
                                     >
-                                        Edit description
+                                        Edit details
                                     </IdeActionButton>
                                 ) : null
                             }
@@ -576,6 +590,17 @@ export function GitHubPullRequestTabView({
                         >
                             {isEditingDescription ? (
                                 <>
+                                    <input
+                                        className="h-9 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[15px] font-semibold text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                        disabled={isUpdatingPullRequest}
+                                        onChange={(event) =>
+                                            setTitleDraft(
+                                                event.currentTarget.value,
+                                            )
+                                        }
+                                        placeholder="Pull request title"
+                                        value={titleDraft}
+                                    />
                                     <textarea
                                         className="min-h-56 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
                                         disabled={isUpdatingPullRequest}
@@ -627,7 +652,7 @@ export function GitHubPullRequestTabView({
                                         >
                                             {isUpdatingPullRequest
                                                 ? "Saving..."
-                                                : "Save description"}
+                                                : "Save changes"}
                                         </IdeActionButton>
                                     </div>
                                 </>
@@ -734,7 +759,22 @@ export function GitHubPullRequestTabView({
                         >
                             <div className="space-y-3">
                                 <GitHubCommentList
+                                    canEdit={canCommentPullRequests}
                                     comments={detail.comments}
+                                    getUpdateError={(comment) =>
+                                        commentErrors[
+                                            `${repoKey}:comment:${comment.id}:update`
+                                        ] ?? null
+                                    }
+                                    isUpdatingComment={(comment) =>
+                                        commentMutatingKeys[
+                                            `${repoKey}:comment:${comment.id}:update`
+                                        ] ?? false
+                                    }
+                                    onUpdateComment={(comment, body) =>
+                                        handleUpdateComment(comment, body)
+                                    }
+                                    permissionLabel={commentPermissionLabel}
                                 />
                                 <GitHubCommentComposer
                                     disabled={!canCommentPullRequests}

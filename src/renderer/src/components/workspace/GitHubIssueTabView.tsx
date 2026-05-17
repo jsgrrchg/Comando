@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import type { GitHubCommentSummary } from "@shared/ipc";
+
 import { getGitHubRepoKey, useGitHubStore } from "@renderer/app/store/github-store";
 import type { RuntimeWorkspaceGitHubIssueTab } from "@renderer/app/workspace/tree";
 
@@ -50,6 +52,8 @@ export function GitHubIssueTabView({
     const authStatus = useGitHubStore(
         (state) => state.authStatusByHost[tab.ref.host] ?? null,
     );
+    const commentMutatingKeys = useGitHubStore((state) => state.mutatingKeys);
+    const commentErrors = useGitHubStore((state) => state.errors);
     const isLoading = useGitHubStore(
         (state) =>
             state.loadingKeys[`${repoKey}:issue:${tab.issueNumber}`] ?? false,
@@ -75,14 +79,29 @@ export function GitHubIssueTabView({
                     ] ?? false,
             })),
         );
-    const error = useGitHubStore(
-        (state) =>
-            state.errors[`${repoKey}:issue:${tab.issueNumber}`] ??
-            state.errors[`${repoKey}:issue:${tab.issueNumber}:comment`] ??
-            state.errors[`${repoKey}:issue:${tab.issueNumber}:close`] ??
-            state.errors[`${repoKey}:issue:${tab.issueNumber}:reopen`] ??
-            state.errors[`${repoKey}:issue:${tab.issueNumber}:update`] ??
-            null,
+    const {
+        detailError,
+        commentError,
+        closeError,
+        reopenError,
+        updateIssueError,
+    } = useGitHubStore(
+        useShallow((state) => ({
+            closeError:
+                state.errors[`${repoKey}:issue:${tab.issueNumber}:close`] ??
+                null,
+            commentError:
+                state.errors[`${repoKey}:issue:${tab.issueNumber}:comment`] ??
+                null,
+            detailError:
+                state.errors[`${repoKey}:issue:${tab.issueNumber}`] ?? null,
+            reopenError:
+                state.errors[`${repoKey}:issue:${tab.issueNumber}:reopen`] ??
+                null,
+            updateIssueError:
+                state.errors[`${repoKey}:issue:${tab.issueNumber}:update`] ??
+                null,
+        })),
     );
     const refreshAuthStatus = useGitHubStore(
         (state) => state.refreshAuthStatus,
@@ -91,6 +110,7 @@ export function GitHubIssueTabView({
         (state) => state.ensureIssueDetail,
     );
     const commentIssue = useGitHubStore((state) => state.commentIssue);
+    const updateComment = useGitHubStore((state) => state.updateComment);
     const updateIssue = useGitHubStore((state) => state.updateIssue);
     const closeIssue = useGitHubStore((state) => state.closeIssue);
     const reopenIssue = useGitHubStore((state) => state.reopenIssue);
@@ -171,6 +191,16 @@ export function GitHubIssueTabView({
         await closeIssue(tab.ref, tab.issueNumber);
     };
 
+    const handleUpdateComment = async (
+        comment: GitHubCommentSummary,
+        body: string,
+    ) => {
+        await updateComment(tab.ref, {
+            body,
+            commentId: comment.id,
+        });
+    };
+
     const handleStartEditingIssue = () => {
         if (!canWriteIssues || !detail) {
             return;
@@ -194,7 +224,7 @@ export function GitHubIssueTabView({
         }
 
         await updateIssue(tab.ref, tab.issueNumber, {
-            body: issueBodyDraft.trim(),
+            body: issueBodyDraft,
             title,
         });
         setIsEditingIssue(false);
@@ -251,12 +281,13 @@ export function GitHubIssueTabView({
     };
 
     const titleChanged = issueTitleDraft.trim() !== (detail?.title ?? "").trim();
-    const bodyChanged = issueBodyDraft.trim() !== (detail?.body ?? "").trim();
+    const bodyChanged = issueBodyDraft !== (detail?.body ?? "");
     const saveIssueDisabled =
         !canWriteIssues ||
         isUpdatingIssue ||
         issueTitleDraft.trim().length === 0 ||
         (!titleChanged && !bodyChanged);
+    const pageError = detailError ?? closeError ?? reopenError ?? null;
 
     return (
         <GitHubTabShell
@@ -299,7 +330,9 @@ export function GitHubIssueTabView({
         >
             <div className="space-y-4 p-4">
                 <GitHubAuthNotice authStatus={authStatus} />
-                {error ? <GitHubErrorState>{error}</GitHubErrorState> : null}
+                {pageError ? (
+                    <GitHubErrorState>{pageError}</GitHubErrorState>
+                ) : null}
                 {isLoading && !detail ? (
                     <div className="text-[12px] text-text-secondary">
                         Loading issue...
@@ -386,9 +419,9 @@ export function GitHubIssueTabView({
                                         placeholder="Describe this issue..."
                                         value={issueBodyDraft}
                                     />
-                                    {error ? (
+                                    {updateIssueError ? (
                                         <div className="text-[11px] text-[color:var(--diff-remove)]">
-                                            {error}
+                                            {updateIssueError}
                                         </div>
                                     ) : null}
                                     <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
@@ -473,10 +506,27 @@ export function GitHubIssueTabView({
                         </article>
                         <section className="space-y-3">
                             <GitHubSectionLabel>Comments</GitHubSectionLabel>
-                            <GitHubCommentList comments={detail.comments} />
+                            <GitHubCommentList
+                                canEdit={canWriteIssues}
+                                comments={detail.comments}
+                                getUpdateError={(comment) =>
+                                    commentErrors[
+                                        `${repoKey}:comment:${comment.id}:update`
+                                    ] ?? null
+                                }
+                                isUpdatingComment={(comment) =>
+                                    commentMutatingKeys[
+                                        `${repoKey}:comment:${comment.id}:update`
+                                    ] ?? false
+                                }
+                                onUpdateComment={(comment, body) =>
+                                    handleUpdateComment(comment, body)
+                                }
+                                permissionLabel={writePermissionLabel}
+                            />
                             <GitHubCommentComposer
                                 disabled={!canWriteIssues}
-                                error={error}
+                                error={commentError}
                                 initialPreviewExpanded={false}
                                 isSubmitting={isCommenting || isClosing}
                                 onChange={setCommentDraft}
