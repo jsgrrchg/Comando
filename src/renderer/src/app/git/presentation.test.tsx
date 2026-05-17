@@ -1,9 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { GitChangeEntry } from "@shared/ipc";
+import type { GitChangeEntry, GitWorktreeDiffResult } from "@shared/ipc";
 
-import { buildGitChangeGroups } from "./presentation";
+import {
+    buildGitChangeGroups,
+    buildGitDiffFileId,
+    buildGitWorktreeDiffSections,
+    parseGitDiffFileId,
+} from "./presentation";
 
 function createChange(overrides: Partial<GitChangeEntry> = {}): GitChangeEntry {
     return {
@@ -82,6 +87,61 @@ describe("buildGitChangeGroups", () => {
     });
 });
 
+describe("buildGitWorktreeDiffSections", () => {
+    it("keeps staged and unstaged entries separate for the same path", () => {
+        const result = createWorktreeDiffResult({
+            sections: [
+                {
+                    scope: "staged",
+                    files: [
+                        createWorktreeDiffFile({
+                            path: "src/example.ts",
+                            scope: "staged",
+                        }),
+                    ],
+                },
+                {
+                    scope: "unstaged",
+                    files: [
+                        createWorktreeDiffFile({
+                            additions: 2,
+                            path: "src/example.ts",
+                            scope: "unstaged",
+                        }),
+                    ],
+                },
+            ],
+        });
+
+        const sections = buildGitWorktreeDiffSections(result, {
+            onDiscardFile: () => undefined,
+            onOpenFile: () => undefined,
+            onStageFile: () => undefined,
+            onUnstageFile: () => undefined,
+        });
+        const ids = sections.flatMap((section) =>
+            section.files.map((file) => file.id),
+        );
+
+        expect(ids).toEqual([
+            buildGitDiffFileId("staged", "src/example.ts"),
+            buildGitDiffFileId("unstaged", "src/example.ts"),
+        ]);
+    });
+
+    it("parses file ids for paths containing colons", () => {
+        const fileId = buildGitDiffFileId(
+            "unstaged",
+            "src/routes/a:b/file.ts",
+        );
+
+        expect(parseGitDiffFileId(fileId)).toEqual({
+            path: "src/routes/a:b/file.ts",
+            scope: "unstaged",
+        });
+    });
+});
+
 function findNodeByPath(
     nodes: readonly TestTreeNode[],
     path: string,
@@ -109,3 +169,35 @@ type TestTreeNode = {
     readonly meta?: unknown;
     readonly path: string;
 };
+
+function createWorktreeDiffResult(
+    overrides: Partial<GitWorktreeDiffResult> = {},
+): GitWorktreeDiffResult {
+    return {
+        projectId: "project-1",
+        sections: [],
+        updatedAt: "2026-05-17T00:00:00.000Z",
+        worktreeId: "worktree-1",
+        ...overrides,
+    };
+}
+
+function createWorktreeDiffFile(
+    overrides: Partial<
+        GitWorktreeDiffResult["sections"][number]["files"][number]
+    > = {},
+): GitWorktreeDiffResult["sections"][number]["files"][number] {
+    return {
+        additions: 1,
+        deletions: 0,
+        diff: null,
+        error: null,
+        isBinary: false,
+        isConflicted: false,
+        kind: "modified",
+        path: "src/example.ts",
+        previousPath: null,
+        scope: "unstaged",
+        ...overrides,
+    };
+}

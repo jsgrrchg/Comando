@@ -91,6 +91,8 @@ export interface GitDiffHunk {
 }
 
 export interface GitDiffFile {
+    readonly actions?: readonly GitAction[];
+    readonly emptyState?: ReactNode;
     readonly id: string;
     readonly kind: GitDiffFileKind;
     readonly path: string;

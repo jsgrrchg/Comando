@@ -11,6 +11,7 @@ import type {
     WorkspaceChatHistoryTab,
     WorkspaceChatTab,
     WorkspaceGitCommitTab,
+    WorkspaceGitWorktreeDiffTab,
     WorkspaceGitHubIssueTab,
     WorkspaceGitHubIssuesTab,
     WorkspaceGitHubPullRequestTab,
@@ -59,6 +60,7 @@ import {
     workspaceStateToSnapshot,
     type RuntimeWorkspaceChatHistoryTab,
     type RuntimeWorkspaceGitCommitTab,
+    type RuntimeWorkspaceGitWorktreeDiffTab,
     type RuntimeWorkspaceGitHubIssueTab,
     type RuntimeWorkspaceGitHubIssuesTab,
     type RuntimeWorkspaceGitHubPullRequestTab,
@@ -158,6 +160,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly subject: string;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    openGitWorktreeDiffTab: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
     openGitHubIssuesTab: (input: {
         readonly projectId: string | null;
         readonly ref: GitHubRepositoryRef;
@@ -813,6 +819,52 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         set((state) => ({
             ...attachTabToPane(state, state.activePaneId, tab),
             error: null,
+            recentActiveTabIds: recordRecentTabActivation(
+                state.recentActiveTabIds,
+                tab.id,
+            ),
+        }));
+        await persistWorkspaceState(get);
+    },
+
+    openGitWorktreeDiffTab: async (projectId, worktreeId = null) => {
+        const existingTab = findExistingGitWorktreeDiffTab(
+            get(),
+            projectId,
+            worktreeId,
+        );
+        if (existingTab) {
+            const paneId = findPaneIdByTabId(get(), existingTab.id);
+            if (!paneId) {
+                return;
+            }
+
+            set((state) => ({
+                ...selectPaneTab(state, paneId, existingTab.id),
+                error: null,
+                lastQuickCreateAction: "git",
+                recentActiveTabIds: recordRecentTabActivation(
+                    state.recentActiveTabIds,
+                    existingTab.id,
+                ),
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const tab: WorkspaceGitWorktreeDiffTab = {
+            createdAt: new Date().toISOString(),
+            id: crypto.randomUUID(),
+            kind: "git_worktree_diff",
+            projectId,
+            title: "Project Diff",
+            worktreeId: worktreeId ?? null,
+        };
+
+        set((state) => ({
+            ...attachTabToPane(state, state.activePaneId, tab),
+            error: null,
+            lastQuickCreateAction: "git",
             recentActiveTabIds: recordRecentTabActivation(
                 state.recentActiveTabIds,
                 tab.id,
@@ -2566,6 +2618,10 @@ function createHydratedRuntimeTabs(
                 return [tab.id, tab] as const;
             }
 
+            if (tab.kind === "git_worktree_diff") {
+                return [tab.id, tab] as const;
+            }
+
             if (
                 tab.kind === "github_issues" ||
                 tab.kind === "github_issue" ||
@@ -3173,6 +3229,22 @@ function findExistingGitCommitTab(
                 normalizeWorktreeId(tab.worktreeId) ===
                     normalizeWorktreeId(worktreeId) &&
                 tab.commitSha === commitSha,
+        ) ?? null
+    );
+}
+
+function findExistingGitWorktreeDiffTab(
+    state: WorkspaceTreeState,
+    projectId: string,
+    worktreeId: string | null,
+): RuntimeWorkspaceGitWorktreeDiffTab | null {
+    return (
+        Object.values(state.tabsById).find(
+            (tab): tab is RuntimeWorkspaceGitWorktreeDiffTab =>
+                tab.kind === "git_worktree_diff" &&
+                tab.projectId === projectId &&
+                normalizeWorktreeId(tab.worktreeId) ===
+                    normalizeWorktreeId(worktreeId),
         ) ?? null
     );
 }
