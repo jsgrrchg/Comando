@@ -274,6 +274,16 @@ interface FileReferencePillContextMenuPayload {
     readonly resolvedReference: ResolvedProjectFileReference;
 }
 
+type FileReferencePillSource = "inline_code" | "markdown_link" | "raw_text";
+
+interface ParsedInlineMarkdownLink {
+    readonly altText?: string;
+    readonly endIndex: number;
+    readonly image: boolean;
+    readonly label: string;
+    readonly target: string;
+}
+
 interface ParsedList {
     readonly element: ReactElement;
     readonly nextIndex: number;
@@ -327,52 +337,53 @@ const KNOWN_EXTENSIONLESS_FILE_NAMES = new Set([
     "Rakefile",
 ]);
 
-function isRenderableInlineFileReference(
+function getFileReferenceTraits(
     rawReference: string,
     resolvedReference: ResolvedProjectFileReference,
-): boolean {
-    const trimmedReference = rawReference.trim();
-    if (resolvedReference.isAbsolute || FILE_URL_RE.test(trimmedReference)) {
-        return true;
-    }
-
-    if (EXPLICIT_RELATIVE_PATH_RE.test(trimmedReference)) {
-        return true;
-    }
-
-    if (
-        resolvedReference.startLine !== null ||
-        resolvedReference.endLine !== null
-    ) {
-        return true;
-    }
-
-    const fileName = resolvedReference.relativePath.split("/").pop() ?? "";
-    if (KNOWN_EXTENSIONLESS_FILE_NAMES.has(fileName)) {
-        return true;
-    }
-
-    return /\.[^/.]+$/.test(fileName);
-}
-
-function isRenderableRawTextFileReference(
-    rawReference: string,
-    resolvedReference: ResolvedProjectFileReference,
-): boolean {
+): {
+    readonly hasFileExtension: boolean;
+    readonly hasKnownExtensionlessFileName: boolean;
+    readonly hasLineReference: boolean;
+    readonly isExplicitRelativePath: boolean;
+    readonly isFileUrl: boolean;
+} {
     const trimmedReference = rawReference.trim();
     const fileName = resolvedReference.relativePath.split("/").pop() ?? "";
+    const hasFileExtension = /\.[^/.]+$/.test(fileName);
     const hasKnownExtensionlessFileName =
         KNOWN_EXTENSIONLESS_FILE_NAMES.has(fileName);
-    const hasFileExtension = /\.[^/.]+$/.test(fileName);
     const hasLineReference =
         resolvedReference.startLine !== null ||
         resolvedReference.endLine !== null;
+
+    return {
+        hasFileExtension,
+        hasKnownExtensionlessFileName,
+        hasLineReference,
+        isExplicitRelativePath: EXPLICIT_RELATIVE_PATH_RE.test(trimmedReference),
+        isFileUrl: FILE_URL_RE.test(trimmedReference),
+    };
+}
+
+function isStructurallyRenderableFileReference(
+    rawReference: string,
+    resolvedReference: ResolvedProjectFileReference,
+    source: FileReferencePillSource,
+): boolean {
+    const trimmedReference = rawReference.trim();
+    const {
+        hasFileExtension,
+        hasKnownExtensionlessFileName,
+        hasLineReference,
+        isExplicitRelativePath,
+        isFileUrl,
+    } = getFileReferenceTraits(rawReference, resolvedReference);
 
     if (/^https?:\/\//i.test(trimmedReference)) {
         return false;
     }
 
-    if (FILE_URL_RE.test(trimmedReference)) {
+    if (isFileUrl) {
         return true;
     }
 
@@ -385,11 +396,43 @@ function isRenderableRawTextFileReference(
         );
     }
 
-    if (EXPLICIT_RELATIVE_PATH_RE.test(trimmedReference)) {
-        return hasFileExtension;
+    if (isExplicitRelativePath) {
+        return (
+            hasFileExtension ||
+            hasKnownExtensionlessFileName ||
+            source !== "raw_text"
+        );
     }
 
-    return hasFileExtension && hasLineReference;
+    if (hasLineReference || hasKnownExtensionlessFileName) {
+        return true;
+    }
+
+    return hasFileExtension;
+}
+
+function canRenderResolvedFileReferencePill(
+    rawReference: string,
+    resolvedReference: ResolvedProjectFileReference,
+    source: FileReferencePillSource,
+    options: InlineOptions | undefined,
+): boolean {
+    if (
+        !isStructurallyRenderableFileReference(
+            rawReference,
+            resolvedReference,
+            source,
+        )
+    ) {
+        return false;
+    }
+
+    const canRenderRawFileReference = options?.canRenderRawFileReference;
+    if (!canRenderRawFileReference) {
+        return source !== "raw_text";
+    }
+
+    return canRenderRawFileReference(rawReference, resolvedReference);
 }
 
 function splitRawTextFileReferenceCandidate(rawCandidate: string): {
@@ -586,8 +629,12 @@ function renderRawTextFileReferencePills(
         const resolvedReference = resolveFileReference(reference);
         if (
             !resolvedReference ||
-            !isRenderableRawTextFileReference(reference, resolvedReference) ||
-            !options.canRenderRawFileReference?.(reference, resolvedReference)
+            !canRenderResolvedFileReferencePill(
+                reference,
+                resolvedReference,
+                "raw_text",
+                options,
+            )
         ) {
             continue;
         }
@@ -634,21 +681,220 @@ function renderRawTextFileReferencePills(
     return { nextKey: key, parts };
 }
 
+const INLINE_TOKEN_START_RE =
+    /`|\*|\[|!\[|<img\b|https?:\/\/|\u200B\u00AB/gi;
+const GENERIC_MARKDOWN_FILE_LINK_LABELS = new Set([
+    "click here",
+    "file",
+    "here",
+    "link",
+    "source",
+    "this",
+]);
+
+function findNextInlineTokenIndex(text: string, fromIndex: number): number {
+    INLINE_TOKEN_START_RE.lastIndex = fromIndex;
+    const match = INLINE_TOKEN_START_RE.exec(text);
+    return match?.index ?? -1;
+}
+
+function isEscaped(text: string, index: number): boolean {
+    let slashCount = 0;
+    for (
+        let cursor = index - 1;
+        cursor >= 0 && text[cursor] === "\\";
+        cursor--
+    ) {
+        slashCount += 1;
+    }
+
+    return slashCount % 2 === 1;
+}
+
+function findUnescapedChar(
+    text: string,
+    char: string,
+    fromIndex: number,
+): number {
+    for (let cursor = fromIndex; cursor < text.length; cursor++) {
+        if (text[cursor] === char && !isEscaped(text, cursor)) {
+            return cursor;
+        }
+    }
+
+    return -1;
+}
+
+function parseInlineMarkdownLinkAt(
+    text: string,
+    startIndex: number,
+): ParsedInlineMarkdownLink | "incomplete" | null {
+    const image = text.startsWith("![", startIndex);
+    if (!image && text[startIndex] !== "[") {
+        return null;
+    }
+
+    const labelStart = startIndex + (image ? 2 : 1);
+    const labelEnd = findUnescapedChar(text, "]", labelStart);
+    if (labelEnd === -1) {
+        return "incomplete";
+    }
+
+    if (text[labelEnd + 1] !== "(") {
+        return null;
+    }
+
+    const targetStart = labelEnd + 2;
+    const parsedTarget = parseInlineMarkdownLinkTarget(text, targetStart);
+    if (parsedTarget === "incomplete") {
+        return "incomplete";
+    }
+    if (!parsedTarget) {
+        return null;
+    }
+
+    const label = text.slice(labelStart, labelEnd);
+    return {
+        altText: image ? label : undefined,
+        endIndex: parsedTarget.endIndex,
+        image,
+        label,
+        target: parsedTarget.target,
+    };
+}
+
+function parseInlineMarkdownLinkTarget(
+    text: string,
+    startIndex: number,
+):
+    | { readonly endIndex: number; readonly target: string }
+    | "incomplete"
+    | null {
+    if (startIndex >= text.length) {
+        return "incomplete";
+    }
+
+    if (text[startIndex] === "<") {
+        const closingAngleIndex = findUnescapedChar(text, ">", startIndex + 1);
+        if (closingAngleIndex === -1) {
+            return "incomplete";
+        }
+
+        if (text[closingAngleIndex + 1] !== ")") {
+            return closingAngleIndex + 1 >= text.length ? "incomplete" : null;
+        }
+
+        return {
+            endIndex: closingAngleIndex + 2,
+            target: text.slice(startIndex, closingAngleIndex + 1),
+        };
+    }
+
+    let depth = 0;
+    let cursor = startIndex;
+    while (cursor < text.length) {
+        const char = text[cursor];
+        if (char === "\\") {
+            cursor += 2;
+            continue;
+        }
+
+        if (char === "(") {
+            depth += 1;
+            cursor += 1;
+            continue;
+        }
+
+        if (char === ")") {
+            if (depth === 0) {
+                return {
+                    endIndex: cursor + 1,
+                    target: text.slice(startIndex, cursor),
+                };
+            }
+
+            depth -= 1;
+        }
+
+        cursor += 1;
+    }
+
+    return "incomplete";
+}
+
+function unwrapMarkdownLinkHref(target: string): string {
+    const trimmed = target.trim();
+    if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
+        return trimmed.slice(1, -1).trim();
+    }
+
+    return trimmed;
+}
+
+function isUsefulMarkdownFileLinkLabel(
+    label: string,
+    rawTarget: string,
+): boolean {
+    const normalizedLabel = label.trim().replace(/\s+/g, " ");
+    if (!normalizedLabel) {
+        return false;
+    }
+
+    const normalizedLowerLabel = normalizedLabel.toLowerCase();
+    if (GENERIC_MARKDOWN_FILE_LINK_LABELS.has(normalizedLowerLabel)) {
+        return false;
+    }
+
+    return normalizedLabel !== unwrapMarkdownLinkHref(rawTarget);
+}
+
+function getMarkdownFileReferencePillLabel(
+    label: string,
+    rawTarget: string,
+    resolvedReference: ResolvedProjectFileReference,
+): string {
+    const normalizedLabel = label.trim().replace(/\s+/g, " ");
+    if (isUsefulMarkdownFileLinkLabel(normalizedLabel, rawTarget)) {
+        return normalizedLabel;
+    }
+
+    return getRawFileReferencePillLabel(rawTarget, resolvedReference);
+}
+
+function renderPlainInlineText(
+    text: string,
+    options: InlineOptions | undefined,
+    keyStart: number,
+): {
+    readonly nextKey: number;
+    readonly parts: Array<ReactElement | string>;
+} {
+    return renderRawTextFileReferencePills(text, options, keyStart);
+}
+
 function renderInline(
     text: string,
     options?: InlineOptions,
 ): Array<ReactElement | string> {
     const parts: Array<ReactElement | string> = [];
-    const re =
-        /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\u200B\u00AB[^\u00BB]*\u00BB\u200B)|(!\[[^\]]*\]\([^)]+\))|(<img\b[^>]*?\/?>)|(https?:\/\/[^\s<>"')\]]+)/g;
-    let lastIndex = 0;
+    let cursor = 0;
     let key = 0;
 
-    for (const match of text.matchAll(re)) {
-        const before = text.slice(lastIndex, match.index);
-        if (before) {
-            const renderedBefore = renderRawTextFileReferencePills(
-                before,
+    while (cursor < text.length) {
+        const tokenIndex = findNextInlineTokenIndex(text, cursor);
+        if (tokenIndex === -1) {
+            const renderedTail = renderPlainInlineText(
+                text.slice(cursor),
+                options,
+                key,
+            );
+            parts.push(...renderedTail.parts);
+            break;
+        }
+
+        if (tokenIndex > cursor) {
+            const renderedBefore = renderPlainInlineText(
+                text.slice(cursor, tokenIndex),
                 options,
                 key,
             );
@@ -656,8 +902,14 @@ function renderInline(
             key = renderedBefore.nextKey;
         }
 
-        if (match[5]) {
-            const pillLabel = match[5].slice(2, -2);
+        if (text.startsWith("\u200B\u00AB", tokenIndex)) {
+            const pillEndIndex = text.indexOf("\u00BB\u200B", tokenIndex + 2);
+            if (pillEndIndex === -1) {
+                parts.push(text.slice(tokenIndex));
+                break;
+            }
+
+            const pillLabel = text.slice(tokenIndex + 2, pillEndIndex);
             const displayLabel = getSerializedPillDisplayLabel(pillLabel);
             const variant = getPillVariant(pillLabel);
             const pillMetrics = options?.metrics ?? getChatPillMetrics(14);
@@ -670,8 +922,19 @@ function renderInline(
                     variant={variant}
                 />,
             );
-        } else if (match[1]) {
-            const codeText = match[1].slice(1, -1);
+            cursor = pillEndIndex + 2;
+            continue;
+        }
+
+        if (text[tokenIndex] === "`") {
+            const closingIndex = text.indexOf("`", tokenIndex + 1);
+            if (closingIndex <= tokenIndex + 1) {
+                parts.push(text[tokenIndex]);
+                cursor = tokenIndex + 1;
+                continue;
+            }
+
+            const codeText = text.slice(tokenIndex + 1, closingIndex);
             const resolvedCodeReference =
                 options?.resolveFileReference?.(codeText) ?? null;
             const inlineMetrics = options?.metrics;
@@ -680,7 +943,12 @@ function renderInline(
                 resolvedCodeReference &&
                 inlineMetrics &&
                 handleOpenFile &&
-                isRenderableInlineFileReference(codeText, resolvedCodeReference)
+                canRenderResolvedFileReferencePill(
+                    codeText,
+                    resolvedCodeReference,
+                    "inline_code",
+                    options,
+                )
             ) {
                 parts.push(
                     renderFileReferencePill({
@@ -709,75 +977,145 @@ function renderInline(
                     </code>,
                 );
             }
-        } else if (match[2]) {
+            cursor = closingIndex + 1;
+            continue;
+        }
+
+        if (text.startsWith("**", tokenIndex)) {
+            const closingIndex = text.indexOf("**", tokenIndex + 2);
+            if (closingIndex === -1) {
+                parts.push(text[tokenIndex]);
+                cursor = tokenIndex + 1;
+                continue;
+            }
+
             parts.push(
                 <strong
                     key={key++}
                     style={{ color: "var(--color-text-primary)" }}
                 >
-                    {match[2].slice(2, -2)}
+                    {text.slice(tokenIndex + 2, closingIndex)}
                 </strong>,
             );
-        } else if (match[3]) {
-            parts.push(<em key={key++}>{match[3].slice(1, -1)}</em>);
-        } else if (match[4]) {
-            const linkMatch = match[4].match(/\[([^\]]+)\]\(([^)]+)\)/);
-            if (linkMatch) {
-                const linkTarget = linkMatch[2];
-                const resolvedLinkReference =
-                    options?.resolveFileReference?.(linkTarget) ?? null;
+            cursor = closingIndex + 2;
+            continue;
+        }
+
+        if (text[tokenIndex] === "*") {
+            const closingIndex = text.indexOf("*", tokenIndex + 1);
+            if (closingIndex <= tokenIndex + 1) {
+                parts.push(text[tokenIndex]);
+                cursor = tokenIndex + 1;
+                continue;
+            }
+
+            parts.push(
+                <em key={key++}>{text.slice(tokenIndex + 1, closingIndex)}</em>,
+            );
+            cursor = closingIndex + 1;
+            continue;
+        }
+
+        if (text.startsWith("![", tokenIndex) || text[tokenIndex] === "[") {
+            const parsedLink = parseInlineMarkdownLinkAt(text, tokenIndex);
+            if (parsedLink === "incomplete") {
+                parts.push(text.slice(tokenIndex));
+                break;
+            }
+
+            if (!parsedLink) {
+                parts.push(text[tokenIndex]);
+                cursor = tokenIndex + 1;
+                continue;
+            }
+
+            const rawTarget = parsedLink.target.trim();
+            const hrefTarget = unwrapMarkdownLinkHref(rawTarget);
+
+            if (parsedLink.image) {
+                if (/^(https?:\/\/|data:)/i.test(hrefTarget)) {
+                    parts.push(
+                        <img
+                            alt={parsedLink.altText ?? ""}
+                            key={key++}
+                            src={hrefTarget}
+                            style={{
+                                borderRadius: 6,
+                                display: "block",
+                                height: "auto",
+                                margin: "8px 0",
+                                maxWidth: "100%",
+                            }}
+                        />,
+                    );
+                } else {
+                    parts.push(text.slice(tokenIndex, parsedLink.endIndex));
+                }
+                cursor = parsedLink.endIndex;
+                continue;
+            }
+
+            const resolvedLinkReference =
+                options?.resolveFileReference?.(rawTarget) ?? null;
+            const inlineMetrics = options?.metrics;
+            const handleOpenFile = options?.onOpenFile;
+            if (
+                resolvedLinkReference &&
+                inlineMetrics &&
+                handleOpenFile &&
+                canRenderResolvedFileReferencePill(
+                    rawTarget,
+                    resolvedLinkReference,
+                    "markdown_link",
+                    options,
+                )
+            ) {
+                parts.push(
+                    renderFileReferencePill({
+                        key: key++,
+                        label: getMarkdownFileReferencePillLabel(
+                            parsedLink.label,
+                            rawTarget,
+                            resolvedLinkReference,
+                        ),
+                        metrics: inlineMetrics,
+                        onFileContextMenu: options.onFileContextMenu,
+                        onOpenFile: handleOpenFile,
+                        rawReference: rawTarget,
+                        resolvedReference: resolvedLinkReference,
+                    }),
+                );
+            } else {
                 parts.push(
                     <a
                         key={key++}
-                        href={linkTarget}
+                        href={hrefTarget}
                         onClick={(event) => {
-                            if (
-                                resolvedLinkReference &&
-                                options?.onOpenFile &&
-                                isRenderableInlineFileReference(
-                                    linkTarget,
-                                    resolvedLinkReference,
-                                )
-                            ) {
-                                event.preventDefault();
-                                options.onOpenFile(resolvedLinkReference);
-                                return;
-                            }
-
                             event.preventDefault();
-                            openExternalUrl(linkTarget);
+                            openExternalUrl(hrefTarget);
                         }}
                         rel="noopener noreferrer"
                         style={{ color: "var(--color-accent)" }}
                         target="_blank"
                     >
-                        {linkMatch[1]}
+                        {parsedLink.label}
                     </a>,
                 );
             }
-        } else if (match[6]) {
-            const imageMatch = match[6].match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-            const src = imageMatch?.[2] ?? "";
-            if (imageMatch && /^(https?:\/\/|data:)/i.test(src)) {
-                parts.push(
-                    <img
-                        alt={imageMatch[1] ?? ""}
-                        key={key++}
-                        src={src}
-                        style={{
-                            borderRadius: 6,
-                            display: "block",
-                            height: "auto",
-                            margin: "8px 0",
-                            maxWidth: "100%",
-                        }}
-                    />,
-                );
-            } else {
-                parts.push(match[6]);
+
+            cursor = parsedLink.endIndex;
+            continue;
+        }
+
+        if (/^<img\b/i.test(text.slice(tokenIndex))) {
+            const tagEndIndex = text.indexOf(">", tokenIndex + 4);
+            if (tagEndIndex === -1) {
+                parts.push(text[tokenIndex]);
+                cursor = tokenIndex + 1;
+                continue;
             }
-        } else if (match[7]) {
-            const tag = match[7];
+
+            const tag = text.slice(tokenIndex, tagEndIndex + 1);
             const srcMatch = tag.match(/src\s*=\s*["']([^"']+)["']/i);
             const src = srcMatch?.[1] ?? "";
             if (src && /^(https?:\/\/|data:)/i.test(src)) {
@@ -807,8 +1145,15 @@ function renderInline(
             } else {
                 parts.push(tag);
             }
-        } else if (match[8]) {
-            const url = match[8];
+            cursor = tagEndIndex + 1;
+            continue;
+        }
+
+        const urlMatch = text
+            .slice(tokenIndex)
+            .match(/^https?:\/\/[^\s<>"')\]]+/i);
+        if (urlMatch) {
+            const url = urlMatch[0];
             const trimmedUrl = url.replace(/[.,;:!?]+$/, "");
             const trailing = url.slice(trimmedUrl.length);
             parts.push(
@@ -827,14 +1172,12 @@ function renderInline(
                 </a>,
             );
             if (trailing) parts.push(trailing);
+            cursor = tokenIndex + url.length;
+            continue;
         }
-        lastIndex = (match.index ?? 0) + match[0].length;
-    }
 
-    const tail = text.slice(lastIndex);
-    if (tail) {
-        const renderedTail = renderRawTextFileReferencePills(tail, options, key);
-        parts.push(...renderedTail.parts);
+        parts.push(text[tokenIndex]);
+        cursor = tokenIndex + 1;
     }
 
     return parts;

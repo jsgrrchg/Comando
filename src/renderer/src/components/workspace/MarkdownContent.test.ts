@@ -181,6 +181,117 @@ describe("MarkdownContent", () => {
         );
     });
 
+    it("renders markdown project file links as interactive pills", () => {
+        const target = "src/renderer/src/components/workspace/MarkdownContent.tsx";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
+                content: `Open [workspace markdown](${target}).`,
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup.match(/<button/g)?.length).toBe(1);
+        expect(markup).toContain(">workspace markdown<");
+        expect(markup).toContain(`title="${target}"`);
+        expect(markup).not.toContain(`href="${target}"`);
+    });
+
+    it("keeps external markdown links as anchors", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
+                content: "Read [the docs](https://example.com/docs).",
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup).toContain('href="https://example.com/docs"');
+        expect(markup).toContain(">the docs<");
+        expect(markup.match(/<button/g)?.length ?? 0).toBe(0);
+    });
+
+    it("renders markdown file links with parenthesized angle targets", () => {
+        const target = "src/components/Foo(test).tsx";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
+                content: `Review [test component](<${target}>).`,
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup.match(/<button/g)?.length).toBe(1);
+        expect(markup).toContain(">test component<");
+        expect(markup).toContain(`title="&lt;${target}&gt;"`);
+    });
+
+    it("renders raw confirmed file paths without line references", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
+                content: "Touch src/app.ts before committing.",
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup.match(/<button/g)?.length).toBe(1);
+        expect(markup).toContain(">app.ts<");
+        expect(markup).toContain('title="src/app.ts"');
+    });
+
+    it("keeps incomplete streaming markdown links intact", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
+                content: "Streaming [app](src/app.ts",
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup).toContain("Streaming [app](src/app.ts");
+        expect(markup.match(/<button/g)?.length ?? 0).toBe(0);
+        expect(markup).not.toContain('title="src/app.ts"');
+    });
+
+    it("does not pillify dubious markdown path-like links", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => true,
+                content: "Check [SAP](S/4) and [quarter](2024/Q1).",
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup.match(/<button/g)?.length ?? 0).toBe(0);
+        expect(markup).toContain('href="S/4"');
+        expect(markup).toContain('href="2024/Q1"');
+    });
+
     it("keeps URLs intact when they contain path-like diagnostic text", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {

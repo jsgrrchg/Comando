@@ -16,6 +16,24 @@ describe("projectFileReferences", () => {
         });
     });
 
+    it("parses parenthesized relative file paths", () => {
+        expect(parseProjectFileReference("src/components/Foo(test).tsx")).toEqual({
+            endLine: null,
+            isAbsolute: false,
+            path: "src/components/Foo(test).tsx",
+            startLine: null,
+        });
+    });
+
+    it("unwraps angle-bracketed file targets", () => {
+        expect(parseProjectFileReference("<src/components/Foo(test).tsx>")).toEqual({
+            endLine: null,
+            isAbsolute: false,
+            path: "src/components/Foo(test).tsx",
+            startLine: null,
+        });
+    });
+
     it("resolves absolute paths within project root", () => {
         expect(
             resolveProjectFileReference(
