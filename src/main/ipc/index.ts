@@ -1974,7 +1974,7 @@ async function buildSharedGitWorktreeDiffFile(
         error: null,
         isBinary: entry.isBinary,
         isConflicted: entry.conflicted,
-        kind: mapSharedChangeKind(entry.kind),
+        kind: deriveScopedWorktreeDiffKind(entry, diffScope),
         path: entry.relativePath,
         previousPath: entry.previousPath,
         scope: diffScope,
@@ -2006,6 +2006,41 @@ async function buildSharedGitWorktreeDiffFile(
                     ? error.message
                     : "Could not load this diff.",
         };
+    }
+}
+
+function deriveScopedWorktreeDiffKind(
+    entry: MainGitChangeEntry,
+    diffScope: GitDiffScope,
+): GitWorktreeDiffFile["kind"] {
+    if (diffScope === "conflicted") {
+        return "conflicted";
+    }
+
+    if (diffScope === "untracked") {
+        return "untracked";
+    }
+
+    const statusCode =
+        diffScope === "staged" ? entry.statusIndex : entry.statusWorkingDir;
+
+    switch (statusCode) {
+        case "A":
+            return "added";
+        case "C":
+            return "copied";
+        case "D":
+            return "deleted";
+        case "M":
+            return "modified";
+        case "R":
+            return "renamed";
+        case "T":
+            return "typechange";
+        default:
+            return diffScope === "staged" && entry.isRenamed
+                ? "renamed"
+                : mapSharedChangeKind(entry.kind);
     }
 }
 

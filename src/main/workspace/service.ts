@@ -107,6 +107,8 @@ type WorkspaceTerminalPayload = Omit<
     "createdAt" | "id" | "title"
 >;
 
+const GIT_WORKTREE_DIFF_TAB_TITLE = "Uncommitted Changes";
+
 export interface WorkspaceGateway {
     loadSnapshot(workspaceId: string): Awaitable<WorkspaceSnapshot>;
     saveSnapshot(
@@ -559,7 +561,7 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
             id: row.id,
             kind: "git_worktree_diff",
             projectId,
-            title: row.title,
+            title: GIT_WORKTREE_DIFF_TAB_TITLE,
             worktreeId:
                 typeof gitWorktreeDiffPayload.worktreeId === "string" ||
                 gitWorktreeDiffPayload.worktreeId === null

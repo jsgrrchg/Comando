@@ -186,6 +186,37 @@ describe("GitService", () => {
         expect(untrackedDiff.summary.insertions).toBe(1);
     });
 
+    it("keeps same-path staged deletes and untracked replacements visible", async () => {
+        const rootPath = createGitRepositoryFixture();
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "original\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+        git(rootPath, ["rm", "README.md"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "replacement\n");
+
+        const service = new GitService({ cacheSnapshots: false });
+        const snapshot = await service.getRepositorySnapshot(rootPath);
+        const entry = snapshot.status.entries.find(
+            (candidate) => candidate.relativePath === "README.md",
+        );
+        const stagedDiff = await service.getFileDiff(rootPath, "README.md", {
+            scope: "staged",
+        });
+        const untrackedDiff = await service.getFileDiff(rootPath, "README.md", {
+            scope: "untracked",
+        });
+
+        expect(entry?.scopes).toEqual(["staged", "untracked"]);
+        expect(snapshot.status.counts.staged).toBe(1);
+        expect(snapshot.status.counts.untracked).toBe(1);
+        expect(stagedDiff.raw).toContain("deleted file mode");
+        expect(untrackedDiff.raw).toContain("+replacement");
+    });
+
     it("rejects untracked no-index diffs outside the repository", async () => {
         const rootPath = createGitRepositoryFixture();
         const outsidePath = path.join(

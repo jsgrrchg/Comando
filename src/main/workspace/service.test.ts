@@ -163,6 +163,39 @@ describe("WorkspaceService", () => {
         expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
     });
 
+    it("normalizes legacy project diff tab titles on reload", () => {
+        const connection = createTestConnection();
+        const service = new WorkspaceService(connection);
+        const workspaceId = "workspace-git-worktree-diff";
+
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "git-worktree-diff-tab-1",
+                id: "pane-root",
+                tabIds: ["git-worktree-diff-tab-1"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-05-17T00:00:00.000Z",
+                    id: "git-worktree-diff-tab-1",
+                    kind: "git_worktree_diff",
+                    projectId: "project-1",
+                    title: "Project Diff",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        service.saveSnapshot(workspaceId, snapshot);
+
+        expect(service.loadSnapshot(workspaceId).tabs[0]).toMatchObject({
+            kind: "git_worktree_diff",
+            title: "Uncommitted Changes",
+        });
+    });
+
     it("persists and reloads commit detail tabs in the workspace", () => {
         const connection = createTestConnection();
         const service = new WorkspaceService(connection);

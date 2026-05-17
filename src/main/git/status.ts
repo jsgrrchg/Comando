@@ -51,12 +51,21 @@ export function buildGitStatusSnapshot(
             file,
             renameMap.get(file.path) ?? file.from ?? null,
         );
-        entries.set(entry.relativePath, entry);
+        const existing = entries.get(entry.relativePath);
+        entries.set(
+            entry.relativePath,
+            existing ? mergeChangeEntries(existing, entry) : entry,
+        );
     }
 
     for (const filePath of status.not_added) {
         const normalizedPath = normalizeGitPath(filePath);
-        if (entries.has(normalizedPath)) {
+        const existing = entries.get(normalizedPath);
+        if (existing) {
+            entries.set(normalizedPath, {
+                ...existing,
+                scopes: mergeScopes(existing.scopes, ["untracked"]),
+            });
             continue;
         }
 
@@ -346,11 +355,43 @@ function hasChangeEntryId(
     return "changeEntryId" in node;
 }
 
+function mergeChangeEntries(
+    first: GitChangeEntry,
+    second: GitChangeEntry,
+): GitChangeEntry {
+    const primary =
+        first.kind === "untracked" && second.kind !== "untracked"
+            ? second
+            : first;
+
+    return {
+        ...primary,
+        conflicted: first.conflicted || second.conflicted,
+        isBinary: first.isBinary || second.isBinary,
+        scopes: mergeScopes(first.scopes, second.scopes),
+        statusIndex: chooseTrackedStatusCode(
+            first.statusIndex,
+            second.statusIndex,
+        ),
+        statusWorkingDir: first.statusWorkingDir.trim()
+            ? first.statusWorkingDir
+            : second.statusWorkingDir,
+    };
+}
+
 function mergeScopes(
     first: readonly GitChangeScope[],
     second: readonly GitChangeScope[],
 ): readonly GitChangeScope[] {
     return [...new Set([...first, ...second])];
+}
+
+function chooseTrackedStatusCode(first: string, second: string): string {
+    if (first.trim() !== "" && first !== "?") {
+        return first;
+    }
+
+    return second;
 }
 
 function determineScopes(
