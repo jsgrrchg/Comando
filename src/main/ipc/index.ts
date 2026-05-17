@@ -79,6 +79,7 @@ import {
     type GitHubSaveTokenInput,
     type GitHubSetIssueStateInput,
     type GitHubSetPullRequestDraftStateInput,
+    type GitHubUpdateCommentInput,
     type GitHubUpdateIssueInput,
     type GitHubUpdatePullRequestInput,
     type GitHubCheckRunAnnotationsInput,
@@ -255,6 +256,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.createGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.updateGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.commentGitHubIssue);
+    ipcMain.removeHandler(IPC_CHANNELS.updateGitHubComment);
     ipcMain.removeHandler(IPC_CHANNELS.closeGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.reopenGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHubPullRequests);
@@ -1014,6 +1016,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitHubCommentIssueInput,
         ): Promise<GitHubCommentSummary> =>
             options.githubService.commentIssue(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.updateGitHubComment,
+        async (
+            _event,
+            input: GitHubUpdateCommentInput,
+        ): Promise<GitHubCommentSummary> =>
+            options.githubService.updateComment(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.closeGitHubIssue,

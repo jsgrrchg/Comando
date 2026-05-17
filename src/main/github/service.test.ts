@@ -385,12 +385,53 @@ describe("GitHubService", () => {
         );
     });
 
-    it("updates pull request descriptions", async () => {
+    it("updates issue and pull request comments", async () => {
+        const fetchMock = vi
+            .fn<GitHubFetch>()
+            .mockResolvedValueOnce(
+                jsonResponse(rawComment({ body: "Edited comment" })),
+            );
+        const service = createService(fetchMock);
+
+        const result = await service.updateComment({
+            body: "Edited comment",
+            clientRequestId: "update-comment",
+            commentId: 10,
+            repository,
+        });
+
+        expect(result.body).toBe("Edited comment");
+        const requestInit = fetchMock.mock.calls[0]?.[1];
+        expect(fetchMock).toHaveBeenNthCalledWith(
+            1,
+            expect.objectContaining({
+                href: "https://api.github.com/repos/octocat/hello-world/issues/comments/10",
+            }),
+            expect.objectContaining({
+                method: "PATCH",
+            }),
+        );
+        const body = requestInit?.body;
+        if (typeof body !== "string") {
+            throw new Error("Expected request body to be JSON.");
+        }
+        expect(JSON.parse(body)).toEqual({
+            body: "Edited comment",
+        });
+    });
+
+    it("updates pull request titles and descriptions", async () => {
         const fetchMock = vi
             .fn<GitHubFetch>()
             .mockResolvedValueOnce(jsonResponse(rawPullRequest({ number: 5 })))
             .mockResolvedValueOnce(
-                jsonResponse(rawPullRequest({ body: "Updated body", number: 5 })),
+                jsonResponse(
+                    rawPullRequest({
+                        body: "Updated body",
+                        number: 5,
+                        title: "Updated title",
+                    }),
+                ),
             )
             .mockResolvedValueOnce(jsonResponse([]))
             .mockResolvedValueOnce(jsonResponse([]));
@@ -401,9 +442,11 @@ describe("GitHubService", () => {
             clientRequestId: "update-pr",
             number: 5,
             repository,
+            title: "Updated title",
         });
 
         expect(result.body).toBe("Updated body");
+        expect(result.title).toBe("Updated title");
         const requestInit = fetchMock.mock.calls[0]?.[1];
         expect(fetchMock).toHaveBeenNthCalledWith(
             1,
@@ -420,6 +463,7 @@ describe("GitHubService", () => {
         }
         expect(JSON.parse(body)).toEqual({
             body: "Updated body",
+            title: "Updated title",
         });
     });
 

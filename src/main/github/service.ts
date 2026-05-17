@@ -39,6 +39,7 @@ import type {
     GitHubSaveTokenInput,
     GitHubSetIssueStateInput,
     GitHubSetPullRequestDraftStateInput,
+    GitHubUpdateCommentInput,
     GitHubUpdateIssueInput,
     GitHubUpdatePullRequestInput,
     GitHubCheckRunAnnotationsInput,
@@ -62,6 +63,9 @@ export interface GitHubGateway {
     ): Promise<GitHubCommentSummary>;
     commentPullRequest(
         input: GitHubCommentPullRequestInput,
+    ): Promise<GitHubCommentSummary>;
+    updateComment(
+        input: GitHubUpdateCommentInput,
     ): Promise<GitHubCommentSummary>;
     convertPullRequestToDraft(
         input: GitHubSetPullRequestDraftStateInput,
@@ -314,6 +318,14 @@ export class GitHubService implements GitHubGateway {
     ): Promise<GitHubCommentSummary> {
         return await this.#dedupeMutation(input.clientRequestId, () =>
             this.#createClient(input.repository.host).commentPullRequest(input),
+        );
+    }
+
+    async updateComment(
+        input: GitHubUpdateCommentInput,
+    ): Promise<GitHubCommentSummary> {
+        return await this.#dedupeMutation(input.clientRequestId, () =>
+            this.#createClient(input.repository.host).updateComment(input),
         );
     }
 

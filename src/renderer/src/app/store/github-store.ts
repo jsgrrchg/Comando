@@ -22,6 +22,7 @@ import type {
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
     GitHubCheckRunAnnotationSummary,
+    GitHubUpdateCommentInput,
     GitHubUpdateIssueInput,
     GitHubUpdatePullRequestInput,
     GitHubWorkflowArtifactSummary,
@@ -54,6 +55,10 @@ type GitHubCreateIssueOptions = Omit<
 type GitHubUpdateIssueOptions = Omit<
     GitHubUpdateIssueInput,
     "clientRequestId" | "number" | "repository"
+>;
+type GitHubUpdateCommentOptions = Omit<
+    GitHubUpdateCommentInput,
+    "clientRequestId" | "repository"
 >;
 type GitHubCreatePullRequestOptions = Omit<
     GitHubCreatePullRequestInput,
@@ -149,6 +154,10 @@ export interface GitHubStoreState {
         ref: GitHubRepositoryRef,
         number: number,
         body: string,
+    ) => Promise<GitHubCommentSummary>;
+    updateComment: (
+        ref: GitHubRepositoryRef,
+        input: GitHubUpdateCommentOptions,
     ) => Promise<GitHubCommentSummary>;
     convertPullRequestToDraft: (
         ref: GitHubRepositoryRef,
@@ -419,6 +428,22 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                     repository: ref,
                 });
                 appendPullRequestComment(set, ref, number, comment);
+                return comment;
+            },
+        ),
+
+    updateComment: async (ref, input) =>
+        dedupeMutation(
+            set,
+            getRepoKey(ref),
+            `comment:${input.commentId}:update`,
+            async (clientRequestId) => {
+                const comment = await getComandoApi().updateGitHubComment({
+                    ...input,
+                    clientRequestId,
+                    repository: ref,
+                });
+                replaceComment(set, ref, comment);
                 return comment;
             },
         ),
@@ -1329,6 +1354,75 @@ function appendPullRequestComment(
             ),
         };
     });
+}
+
+function replaceComment(
+    set: SetGitHubState,
+    ref: GitHubRepositoryRef,
+    comment: GitHubCommentSummary,
+): void {
+    const repoKey = getRepoKey(ref);
+    set((state) => {
+        const issueDetails = state.issueDetailsByRepo[repoKey] ?? {};
+        const pullRequestDetails =
+            state.pullRequestDetailsByRepo[repoKey] ?? {};
+        const nextIssueDetails = replaceCommentInDetails(
+            issueDetails,
+            comment,
+        );
+        const nextPullRequestDetails = replaceCommentInDetails(
+            pullRequestDetails,
+            comment,
+        );
+
+        return {
+            issueDetailsByRepo:
+                nextIssueDetails === issueDetails
+                    ? state.issueDetailsByRepo
+                    : {
+                          ...state.issueDetailsByRepo,
+                          [repoKey]: nextIssueDetails,
+                      },
+            pullRequestDetailsByRepo:
+                nextPullRequestDetails === pullRequestDetails
+                    ? state.pullRequestDetailsByRepo
+                    : {
+                          ...state.pullRequestDetailsByRepo,
+                          [repoKey]: nextPullRequestDetails,
+                      },
+        };
+    });
+}
+
+function replaceCommentInDetails<
+    TDetail extends {
+        readonly comments: readonly GitHubCommentSummary[];
+    },
+>(
+    details: Record<number, TDetail | null>,
+    comment: GitHubCommentSummary,
+): Record<number, TDetail | null> {
+    let changed = false;
+    const nextDetails: Record<number, TDetail | null> = { ...details };
+
+    for (const [number, detail] of Object.entries(details)) {
+        if (!detail) {
+            continue;
+        }
+        if (!detail.comments.some((entry) => entry.id === comment.id)) {
+            continue;
+        }
+
+        nextDetails[Number(number)] = {
+            ...detail,
+            comments: detail.comments.map((entry) =>
+                entry.id === comment.id ? comment : entry,
+            ),
+        };
+        changed = true;
+    }
+
+    return changed ? nextDetails : details;
 }
 
 function upsertRelease(

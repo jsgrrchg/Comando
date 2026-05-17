@@ -65,6 +65,7 @@ export const IPC_CHANNELS = {
     createGitHubIssue: "github:create-issue",
     updateGitHubIssue: "github:update-issue",
     commentGitHubIssue: "github:comment-issue",
+    updateGitHubComment: "github:update-comment",
     closeGitHubIssue: "github:close-issue",
     reopenGitHubIssue: "github:reopen-issue",
     listGitHubPullRequests: "github:list-pull-requests",
@@ -1008,6 +1009,13 @@ export interface GitHubCommentIssueInput
     readonly number: number;
 }
 
+export interface GitHubUpdateCommentInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly body: string;
+    readonly commentId: number;
+}
+
 export interface GitHubSetIssueStateInput
     extends GitHubRepositoryInput,
         GitHubMutationInput {
@@ -1151,6 +1159,7 @@ export interface GitHubUpdatePullRequestInput
         GitHubMutationInput {
     readonly body?: string | null;
     readonly number: number;
+    readonly title?: string | null;
 }
 
 export interface GitHubCommentPullRequestInput
@@ -2405,6 +2414,9 @@ export interface ComandoApi {
     ) => Promise<GitHubIssueDetail>;
     commentGitHubIssue: (
         input: GitHubCommentIssueInput,
+    ) => Promise<GitHubCommentSummary>;
+    updateGitHubComment: (
+        input: GitHubUpdateCommentInput,
     ) => Promise<GitHubCommentSummary>;
     closeGitHubIssue: (
         input: GitHubSetIssueStateInput,

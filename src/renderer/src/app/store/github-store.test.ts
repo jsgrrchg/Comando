@@ -12,7 +12,9 @@ import type {
     GitHubReleaseSummary,
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
+    GitHubUpdateCommentInput,
     GitHubUpdateIssueInput,
+    GitHubUpdatePullRequestInput,
     GitHubWorkflowJobSummary,
     GitHubWorkflowRunSummary,
 } from "@shared/ipc";
@@ -343,6 +345,120 @@ describe("github-store", () => {
         ]);
         expect(state.issueDetailsByRepo[repoKey]?.[4]?.commentCount).toBe(2);
         expect(state.issuesByRepo[repoKey]?.[0]?.commentCount).toBe(2);
+    });
+
+    it("updates cached comments across issue and pull request details", async () => {
+        const originalComment = createComment({
+            body: "Before",
+            id: 10,
+        });
+        const updatedComment = createComment({
+            body: "After",
+            id: 10,
+        });
+        const issue = createIssueDetail({
+            comments: [originalComment],
+            number: 4,
+        });
+        const pullRequest = createPullRequestDetail({
+            comments: [originalComment],
+            number: 5,
+        });
+        const updateGitHubComment = vi.fn<
+            (input: GitHubUpdateCommentInput) => Promise<GitHubCommentSummary>
+        >().mockResolvedValue(updatedComment);
+        useGitHubStore.setState({
+            issueDetailsByRepo: { [repoKey]: { 4: issue } },
+            pullRequestDetailsByRepo: { [repoKey]: { 5: pullRequest } },
+        });
+        stubComando({ updateGitHubComment });
+
+        const result = await useGitHubStore.getState().updateComment(
+            repository,
+            {
+                body: "After",
+                commentId: 10,
+            },
+        );
+
+        expect(result).toBe(updatedComment);
+        const updateInput = updateGitHubComment.mock.calls[0]?.[0];
+        expect(updateInput).toMatchObject({
+            body: "After",
+            commentId: 10,
+            repository,
+        });
+        expect(updateInput?.clientRequestId).toEqual(
+            expect.stringContaining(`${repoKey}:comment:10:update:`),
+        );
+        expect(
+            useGitHubStore.getState().issueDetailsByRepo[repoKey]?.[4]
+                ?.comments,
+        ).toEqual([updatedComment]);
+        expect(
+            useGitHubStore.getState().pullRequestDetailsByRepo[repoKey]?.[5]
+                ?.comments,
+        ).toEqual([updatedComment]);
+        expect(
+            useGitHubStore.getState().mutatingKeys[
+                `${repoKey}:comment:10:update`
+            ],
+        ).toBe(false);
+    });
+
+    it("updates pull request title and body caches", async () => {
+        const original = createPullRequestDetail({
+            body: "Before",
+            number: 12,
+            title: "Before title",
+        });
+        const updated = createPullRequestDetail({
+            body: "After",
+            number: 12,
+            title: "After title",
+        });
+        const updateGitHubPullRequest = vi.fn<
+            (
+                input: GitHubUpdatePullRequestInput,
+            ) => Promise<GitHubPullRequestDetail>
+        >().mockResolvedValue(updated);
+        useGitHubStore.setState({
+            pullRequestDetailsByRepo: { [repoKey]: { 12: original } },
+            pullRequestListStateByRepo: { [repoKey]: "open" },
+            pullRequestsByRepo: { [repoKey]: [original] },
+            pullRequestsByRepoAndState: { [repoKey]: { open: [original] } },
+        });
+        stubComando({ updateGitHubPullRequest });
+
+        const result = await useGitHubStore.getState().updatePullRequest(
+            repository,
+            12,
+            {
+                body: "After",
+                title: "After title",
+            },
+        );
+
+        expect(result).toBe(updated);
+        const updateInput = updateGitHubPullRequest.mock.calls[0]?.[0];
+        expect(updateInput).toMatchObject({
+            body: "After",
+            number: 12,
+            repository,
+            title: "After title",
+        });
+        expect(updateInput?.clientRequestId).toEqual(
+            expect.stringContaining(`${repoKey}:pr:12:update:`),
+        );
+        expect(
+            useGitHubStore.getState().pullRequestDetailsByRepo[repoKey]?.[12],
+        ).toBe(updated);
+        expect(useGitHubStore.getState().pullRequestsByRepo[repoKey]).toEqual([
+            updated,
+        ]);
+        expect(
+            useGitHubStore.getState().pullRequestsByRepoAndState[repoKey]?.open,
+        ).toEqual([updated]);
     });
 
     it("updates pull request caches from draft state mutations", async () => {

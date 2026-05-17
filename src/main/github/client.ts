@@ -51,6 +51,7 @@ import type {
     GitHubReleaseSummary,
     GitHubSetIssueStateInput,
     GitHubSetPullRequestDraftStateInput,
+    GitHubUpdateCommentInput,
     GitHubUpdateIssueInput,
     GitHubUserSummary,
     GitHubWorkflowArtifactSummary,
@@ -574,6 +575,21 @@ export class GitHubApiClient {
         return mapComment(response.data);
     }
 
+    async updateComment(
+        input: GitHubUpdateCommentInput,
+    ): Promise<GitHubCommentSummary> {
+        const response = await this.#requestJson<RawGitHubComment>(
+            input.repository.host,
+            repoPath(input.repository, `/issues/comments/${input.commentId}`),
+            {
+                body: { body: input.body },
+                method: "PATCH",
+            },
+        );
+
+        return mapComment(response.data);
+    }
+
     async setIssueState(
         input: GitHubSetIssueStateInput,
     ): Promise<GitHubIssueDetail> {
@@ -710,14 +726,21 @@ export class GitHubApiClient {
         readonly body?: string | null;
         readonly number: number;
         readonly repository: GitHubRepositoryRef;
+        readonly title?: string | null;
     }): Promise<GitHubPullRequestDetail> {
+        const body: { body?: string; title?: string } = {};
+        if (Object.hasOwn(input, "body")) {
+            body.body = input.body ?? "";
+        }
+        if (input.title != null) {
+            body.title = input.title;
+        }
+
         await this.#requestJson<RawGitHubPullRequest>(
             input.repository.host,
             repoPath(input.repository, `/pulls/${input.number}`),
             {
-                body: {
-                    body: input.body ?? "",
-                },
+                body,
                 method: "PATCH",
             },
         );
