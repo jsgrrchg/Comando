@@ -242,6 +242,32 @@ describe("GitService", () => {
         ).rejects.toThrow("repository-relative");
     });
 
+    it.runIf(process.platform !== "win32")(
+        "allows repository-relative untracked paths that contain colon segments",
+        async () => {
+            const rootPath = createGitRepositoryFixture();
+
+            git(rootPath, ["init", "-b", "main"]);
+            git(rootPath, ["config", "user.name", "Comando"]);
+            git(rootPath, ["config", "user.email", "comando@example.com"]);
+            fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+            git(rootPath, ["add", "README.md"]);
+            git(rootPath, ["commit", "-m", "initial commit"]);
+            fs.mkdirSync(path.join(rootPath, "C:"));
+            fs.writeFileSync(
+                path.join(rootPath, "C:", "new-file.txt"),
+                "new file\n",
+            );
+
+            const service = new GitService({ cacheSnapshots: false });
+            const diff = await service.getFileDiff(rootPath, "C:/new-file.txt", {
+                scope: "untracked",
+            });
+
+            expect(diff.raw).toContain("+new file");
+        },
+    );
+
     it("lists remotes and collects staged and unstaged diff stats", async () => {
         const rootPath = createGitRepositoryFixture();
         const remotePath = createGitRepositoryFixture();

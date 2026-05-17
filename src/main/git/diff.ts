@@ -310,8 +310,8 @@ function normalizeSafeGitPath(filePath: string): string {
     if (
         normalizedPath.length === 0 ||
         normalizedPath === "." ||
+        path.isAbsolute(filePath) ||
         normalizedPath.startsWith("/") ||
-        /^[A-Za-z]:\//.test(normalizedPath) ||
         segments.some((segment) => segment === "..")
     ) {
         throw new Error("Git diff paths must be repository-relative.");
