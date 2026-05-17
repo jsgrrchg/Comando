@@ -974,7 +974,7 @@ function SidebarGitHubDragGhost({
                         {preview.title}
                     </div>
                     <div className="mt-0.5 truncate text-[10px] leading-tight text-text-secondary">
-                        Drag to open in pane - {preview.kindLabel} -{" "}
+                        Drag to pane or composer - {preview.kindLabel} -{" "}
                         {preview.meta}
                     </div>
                 </div>

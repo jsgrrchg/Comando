@@ -32,6 +32,7 @@ import {
     shouldWrapEditorLanguage,
 } from "@shared/editor-language";
 import {
+    emitWorkspaceTabComposerDrag,
     isPointOverComposerDropZone,
     type ComposerProjectEntryDragData,
     type WorkspaceTabComposerDragItem,
@@ -780,6 +781,12 @@ export function WorkspaceView({
 
     const handleSidebarGitHubDrag = useEffectEvent((event: Event) => {
         const detail = (event as CustomEvent<SidebarGitHubDragDetail>).detail;
+        emitWorkspaceTabComposerDrag({
+            item: getSidebarGitHubComposerDragItem(detail),
+            phase: detail.phase,
+            x: detail.x,
+            y: detail.y,
+        });
 
         if (detail.phase === "cancel") {
             clearExternalDropTarget();
@@ -2524,6 +2531,34 @@ function buildGitHubRepositoryUrl(
 ): string {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     return `https://${ref.host}/${ref.owner}/${ref.repo}${path ? normalizedPath : ""}`;
+}
+
+function getSidebarGitHubComposerDragItem(
+    detail: SidebarGitHubDragDetail,
+): WorkspaceTabComposerDragItem {
+    if (detail.itemKind === "issue") {
+        return {
+            host: detail.ref.host,
+            kind: "github_issue_mention",
+            label: `#${detail.number}`,
+            number: detail.number,
+            owner: detail.ref.owner,
+            repo: detail.ref.repo,
+            title: detail.title,
+            url: buildGitHubRepositoryUrl(detail.ref, `/issues/${detail.number}`),
+        };
+    }
+
+    return {
+        host: detail.ref.host,
+        kind: "github_pull_request_mention",
+        label: `PR #${detail.number}`,
+        number: detail.number,
+        owner: detail.ref.owner,
+        repo: detail.ref.repo,
+        title: detail.title,
+        url: buildGitHubRepositoryUrl(detail.ref, `/pull/${detail.number}`),
+    };
 }
 
 function getCachedGitHubIssueTitle(
