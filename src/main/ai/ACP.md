@@ -15,7 +15,7 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini | Kilo |
 |---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.33.1`, vendored upstream snapshot) | Rust (`codex-acp` `0.14.0`, vendored on top of `openai/codex` `rust-v0.129.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.35.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.14.0`, vendored on top of `openai/codex` `rust-v0.129.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
 | **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today |
 | **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` |
@@ -26,7 +26,7 @@ Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
 - The vendored Claude ACP snapshot follows upstream reasoning support. Comando maps upstream `thought_level` and legacy `effort` config options into the UI's reasoning controls and keeps compatibility with older saved `effort_level` preferences.
-- The current Claude vendor is `@agentclientprotocol/claude-agent-acp` `0.33.1`, with `@anthropic-ai/claude-agent-sdk` `0.2.132`. Compared with the previous Comando baseline (`0.31.4`), it now honors `availableModels` from Claude settings, emits real diffs when `Write` overwrites existing files, and preserves task-notification result origins so autonomous followups do not incorrectly drive the user-turn lifecycle.
+- The current Claude vendor is `@agentclientprotocol/claude-agent-acp` `0.35.0`, with `@anthropic-ai/claude-agent-sdk` `0.3.143`. Compared with the previous Comando baseline (`0.31.4`), it honors `availableModels` from Claude settings, emits real diffs when `Write` overwrites existing files, preserves task-notification result origins so autonomous followups do not incorrectly drive the user-turn lifecycle, resolves defaults through the Claude SDK settings engine, mirrors SDK task hooks into ACP plan updates, and renders local command stdout messages instead of dropping them.
 - The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.14.0`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.129.0` and `agent-client-protocol` `0.11.1`.
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - The vendored Codex ACP snapshot also carries a local image-generation bridge: live Codex `ImageGenerationBegin` / `ImageGenerationEnd` events and replayed `ResponseItem::ImageGenerationCall` items are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity. `TurnItem::ImageGeneration` is intentionally ignored for the live bridge because Codex also emits the begin/end events, and handling both would duplicate image cards.
@@ -224,13 +224,17 @@ This means Claude is staged as an embedded project, not as a freshly built stand
 
 Current local snapshot note:
 
-- `vendor/Claude-agent-acp-upstream/` is synced to upstream `@agentclientprotocol/claude-agent-acp` `0.33.1` at commit `e0ea9d8`.
+- `vendor/Claude-agent-acp-upstream/` is synced to upstream `@agentclientprotocol/claude-agent-acp` `0.35.0` at commit `f6e12d4`.
 - `vendor/Claude-agent-acp-upstream/` uses the upstream Claude ACP reasoning implementation.
 - Upstream exposes model-specific reasoning values through the `thought_level` ACP session config option when the selected Claude model reports support for them.
 - Comando still accepts older saved `effort_level` and `effort` preferences and applies them to upstream's reasoning option.
 - The vendor now applies Claude `availableModels` settings before model catalog/config option publication, so Comando should only surface the allowed model set plus the upstream `default` entry.
 - Claude `Write` tool updates now use the structured post-tool diff when overwriting existing files, which keeps Comando's inline review and edited-files surfaces from showing overwrites as plain file creation.
 - Claude task-notification result origins are preserved in usage update metadata and ignored for user-turn stop-state decisions, preventing autonomous followups from ending or cancelling the visible user turn.
+- Claude settings are now resolved through the Claude SDK settings engine, matching upstream defaults and trust filtering more closely than Comando's previous local merge.
+- Claude SDK task hooks (`TaskCreated` and `TaskCompleted`) now populate ACP plan updates, so newer SDK task state should remain visible in Comando's plan UI.
+- Upstream now renders local command stdout messages after stripping Claude command metadata, which lets slash-command and skill output reach the chat stream.
+- Upstream added a `gateway-bedrock` auth method for Bedrock-style gateways, but Comando's persisted Claude gateway settings still model the existing Anthropic-compatible `gateway` path.
 
 ### macOS packaging (`scripts/package-macos-app.mjs`)
 
