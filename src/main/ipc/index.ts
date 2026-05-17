@@ -42,6 +42,7 @@ import {
     type GitCreateWorktreeInput,
     type GitDeleteLocalBranchInput,
     type GitDeleteRemoteBranchInput,
+    type GitDiffScope,
     type GitDiffInput,
     type GitDiscardPathsInput,
     type GitFetchInput,
@@ -106,6 +107,10 @@ import {
     type GitStagePathsInput,
     type GitSyncStatus as SharedGitSyncStatus,
     type GitUnstagePathsInput,
+    type GitWorktreeDiffFile,
+    type GitWorktreeDiffInput,
+    type GitWorktreeDiffResult,
+    type GitWorktreeDiffSection,
     type GitWorktreeListInput,
     type GitWorktreeSummary as SharedGitWorktreeSummary,
     type ListAiSessionHistoryInput,
@@ -233,6 +238,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.listGitWorktrees);
     ipcMain.removeHandler(IPC_CHANNELS.listGitChanges);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHistory);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitWorktreeDiff);
     ipcMain.removeHandler(IPC_CHANNELS.getGitDiff);
     ipcMain.removeHandler(IPC_CHANNELS.getGitCommitDetail);
     ipcMain.removeHandler(IPC_CHANNELS.initGitRepository);
@@ -657,6 +663,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitDiffInput,
         ): Promise<SharedGitFileDiff | null> =>
             buildSharedGitDiff(
+                options.projectService,
+                options.gitService,
+                input,
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitWorktreeDiff,
+        async (
+            _event,
+            input: GitWorktreeDiffInput,
+        ): Promise<GitWorktreeDiffResult | null> =>
+            buildSharedGitWorktreeDiff(
                 options.projectService,
                 options.gitService,
                 input,
@@ -1783,8 +1801,17 @@ interface ResolvedGitScope {
 type MainGitRepositorySnapshot = Awaited<
     ReturnType<GitGateway["getRepositorySnapshot"]>
 >;
+type MainGitChangeEntry = MainGitRepositorySnapshot["status"]["entries"][number];
 type DiffStatEntry = { additions: number; deletions: number };
 type DiffStatMap = Map<string, DiffStatEntry>;
+
+const GIT_WORKTREE_DIFF_SCOPES: readonly GitDiffScope[] = [
+    "conflicted",
+    "staged",
+    "unstaged",
+    "untracked",
+];
+const GIT_WORKTREE_DIFF_CONCURRENCY = 4;
 
 function buildDiffStatMap(
     entries: Awaited<ReturnType<GitGateway["getDiffStats"]>>,
@@ -1851,20 +1878,140 @@ async function buildSharedGitDiff(
         snapshot.status.entries.find(
             (candidate) => candidate.relativePath === normalizedPath,
         ) ?? null;
+    const requestedScope = input.scope ?? "auto";
     const staged =
-        entry?.scopes.includes("staged") === true &&
-        entry.scopes.includes("unstaged") === false;
+        requestedScope === "staged" ||
+        (requestedScope === "auto" &&
+            entry?.scopes.includes("staged") === true &&
+            entry.scopes.includes("unstaged") === false);
     const diff = await gitService.getFileDiff(scope.rootPath, normalizedPath, {
         kind: entry?.kind ?? null,
         previousPath: entry?.previousPath ?? null,
+        scope: requestedScope,
         staged,
     });
 
+    return adaptGitFileDiff(diff, entry, null);
+}
+
+async function buildSharedGitWorktreeDiff(
+    projectService: ProjectService,
+    gitService: GitGateway,
+    input: GitWorktreeDiffInput,
+): Promise<GitWorktreeDiffResult | null> {
+    const scope = resolveGitScope(projectService, input);
+    const snapshot = await gitService.getRepositorySnapshot(scope.rootPath);
+    if (snapshot.resolution.state !== "ready") {
+        return null;
+    }
+
+    const diffStats = buildDiffStatMap(
+        await gitService.getDiffStats(scope.rootPath),
+    );
+    const requestedScopes = normalizeRequestedDiffScopes(input.scopes);
+    const filesByScope = new Map<GitDiffScope, MainGitChangeEntry[]>(
+        requestedScopes.map((diffScope) => [diffScope, []]),
+    );
+
+    for (const entry of snapshot.status.entries) {
+        for (const diffScope of requestedScopes) {
+            if (entry.scopes.includes(diffScope)) {
+                filesByScope.get(diffScope)?.push(entry);
+            }
+        }
+    }
+
+    const sections = await mapWithConcurrency(
+        requestedScopes,
+        GIT_WORKTREE_DIFF_CONCURRENCY,
+        async (diffScope): Promise<GitWorktreeDiffSection> => ({
+            scope: diffScope,
+            files: await mapWithConcurrency(
+                filesByScope.get(diffScope) ?? [],
+                GIT_WORKTREE_DIFF_CONCURRENCY,
+                (entry) =>
+                    buildSharedGitWorktreeDiffFile(
+                        gitService,
+                        scope.rootPath,
+                        entry,
+                        diffScope,
+                        diffStats,
+                    ),
+            ),
+        }),
+    );
+
+    return {
+        projectId: input.projectId,
+        sections,
+        updatedAt: snapshot.fetchedAt,
+        worktreeId: scope.worktreeId,
+    };
+}
+
+async function buildSharedGitWorktreeDiffFile(
+    gitService: GitGateway,
+    rootPath: string,
+    entry: MainGitChangeEntry,
+    diffScope: GitDiffScope,
+    diffStats: DiffStatMap,
+): Promise<GitWorktreeDiffFile> {
+    const stat = diffStats.get(`${diffScope}:${entry.relativePath}`) ?? null;
+    const baseFile = {
+        additions: stat?.additions ?? null,
+        deletions: stat?.deletions ?? null,
+        error: null,
+        isBinary: entry.isBinary,
+        isConflicted: entry.conflicted,
+        kind: mapSharedChangeKind(entry.kind),
+        path: entry.relativePath,
+        previousPath: entry.previousPath,
+        scope: diffScope,
+    } satisfies Omit<GitWorktreeDiffFile, "diff">;
+
+    try {
+        const diff = await gitService.getFileDiff(rootPath, entry.relativePath, {
+            kind: entry.kind,
+            previousPath: entry.previousPath,
+            scope: diffScope,
+            staged: diffScope === "staged",
+        });
+        const sharedDiff = adaptGitFileDiff(diff, entry, diffScope);
+        const summary = summarizeSharedDiff(sharedDiff);
+
+        return {
+            ...baseFile,
+            additions: baseFile.additions ?? summary.additions,
+            deletions: baseFile.deletions ?? summary.deletions,
+            diff: sharedDiff,
+            isBinary: diff.isBinary || baseFile.isBinary,
+        };
+    } catch (error) {
+        return {
+            ...baseFile,
+            diff: null,
+            error:
+                error instanceof Error
+                    ? error.message
+                    : "Could not load this diff.",
+        };
+    }
+}
+
+function adaptGitFileDiff(
+    diff: Awaited<ReturnType<GitGateway["getFileDiff"]>>,
+    entry: MainGitChangeEntry | null,
+    diffScope: GitDiffScope | null,
+): SharedGitFileDiff {
+    const idPrefix = diffScope
+        ? `${diffScope}:${diff.changedPath}`
+        : diff.changedPath;
+
     return {
         hunks: diff.hunks.map((hunk, hunkIndex) => ({
-            id: `${diff.changedPath}:${hunkIndex}`,
+            id: `${idPrefix}:${hunkIndex}`,
             lines: hunk.lines.map((line, lineIndex) => ({
-                id: `${diff.changedPath}:${hunkIndex}:${lineIndex}`,
+                id: `${idPrefix}:${hunkIndex}:${lineIndex}`,
                 text: line.text,
                 type: line.type,
             })),
@@ -1881,6 +2028,68 @@ async function buildSharedGitDiff(
         previousPath: diff.previousPath,
         reversible: entry?.conflicted !== true,
     };
+}
+
+function normalizeRequestedDiffScopes(
+    requestedScopes: readonly GitDiffScope[] | undefined,
+): readonly GitDiffScope[] {
+    if (!requestedScopes || requestedScopes.length === 0) {
+        return GIT_WORKTREE_DIFF_SCOPES;
+    }
+
+    const requestedScopeSet = new Set(requestedScopes);
+    return GIT_WORKTREE_DIFF_SCOPES.filter((scope) =>
+        requestedScopeSet.has(scope),
+    );
+}
+
+function summarizeSharedDiff(diff: SharedGitFileDiff): {
+    readonly additions: number;
+    readonly deletions: number;
+} {
+    let additions = 0;
+    let deletions = 0;
+
+    for (const hunk of diff.hunks) {
+        for (const line of hunk.lines) {
+            if (line.type === "add") {
+                additions += 1;
+            } else if (line.type === "remove") {
+                deletions += 1;
+            }
+        }
+    }
+
+    return { additions, deletions };
+}
+
+async function mapWithConcurrency<Input, Output>(
+    items: readonly Input[],
+    concurrency: number,
+    mapper: (item: Input, index: number) => Promise<Output>,
+): Promise<Output[]> {
+    const results = new Array<Output>(items.length);
+    let nextIndex = 0;
+
+    async function worker(): Promise<void> {
+        while (nextIndex < items.length) {
+            const currentIndex = nextIndex;
+            nextIndex += 1;
+            results[currentIndex] = await mapper(
+                items[currentIndex],
+                currentIndex,
+            );
+        }
+    }
+
+    await Promise.all(
+        Array.from(
+            { length: Math.min(concurrency, items.length) },
+            () => worker(),
+        ),
+    );
+
+    return results;
 }
 
 async function handleGitSnapshotMutation(

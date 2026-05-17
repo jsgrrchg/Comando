@@ -1,4 +1,6 @@
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { simpleGit } from "simple-git";
 
@@ -6,6 +8,7 @@ import { debugBenignError } from "@main/observability/logging";
 
 import type {
     GitChangeKind,
+    GitChangeScope,
     GitFileDiff,
     GitFileDiffHunk,
     GitFileDiffLine,
@@ -13,17 +16,20 @@ import type {
     GitFileDiffSummary,
 } from "./types";
 
+const execFileAsync = promisify(execFile);
+const GIT_DIFF_MAX_BUFFER_BYTES = 20 * 1024 * 1024;
+
 export async function getGitFileDiff(
     rootPath: string,
     relativePath: string,
     options: GitFileDiffOptions = {},
 ): Promise<GitFileDiff> {
-    const staged = options.staged ?? false;
     const previousPath = options.previousPath ?? null;
     const git = simpleGit(rootPath);
     const detectedKind = options.kind ?? (await detectGitChangeKind(git, relativePath));
-    const args = buildDiffArgs(relativePath, staged, previousPath, detectedKind);
-    const raw = await git.raw(args);
+    const scope = resolveDiffScope(options.scope, options.staged, detectedKind);
+    const args = buildDiffArgs(relativePath, scope, previousPath);
+    const raw = await runGitDiff(rootPath, args, scope);
     const parsed = parseUnifiedGitDiff(raw);
 
     return {
@@ -31,7 +37,7 @@ export async function getGitFileDiff(
         isBinary: parsed.isBinary,
         previousPath,
         raw,
-        staged,
+        staged: scope === "staged",
         summary: parsed.summary,
         hunks: parsed.hunks,
     };
@@ -132,13 +138,15 @@ export function parseUnifiedGitDiff(raw: string): {
 
 export function buildDiffArgs(
     relativePath: string,
-    staged: boolean,
+    scope: GitChangeScope,
     previousPath: string | null,
-    kind: GitChangeKind | null,
 ): string[] {
     const normalizedPath = normalizeGitPath(relativePath);
+    const normalizedPreviousPath = previousPath
+        ? normalizeGitPath(previousPath)
+        : null;
 
-    if (!staged && kind === "untracked") {
+    if (scope === "untracked") {
         return [
             "diff",
             "--no-index",
@@ -150,8 +158,8 @@ export function buildDiffArgs(
         ];
     }
 
-    if (staged) {
-        return previousPath
+    if (scope === "staged") {
+        return normalizedPreviousPath
             ? [
                   "diff",
                   "--cached",
@@ -160,7 +168,7 @@ export function buildDiffArgs(
                   "--no-color",
                   "--unified=3",
                   "--",
-                  previousPath,
+                  normalizedPreviousPath,
                   normalizedPath,
               ]
             : [
@@ -175,7 +183,7 @@ export function buildDiffArgs(
               ];
     }
 
-    if (previousPath) {
+    if (normalizedPreviousPath) {
         return [
             "diff",
             "--find-renames",
@@ -183,7 +191,7 @@ export function buildDiffArgs(
             "--no-color",
             "--unified=3",
             "--",
-            previousPath,
+            normalizedPreviousPath,
             normalizedPath,
         ];
     }
@@ -195,6 +203,51 @@ export function buildDiffArgs(
         "--",
         normalizedPath,
     ];
+}
+
+function resolveDiffScope(
+    requestedScope: GitFileDiffOptions["scope"],
+    staged: boolean | undefined,
+    kind: GitChangeKind | null,
+): GitChangeScope {
+    if (requestedScope && requestedScope !== "auto") {
+        return requestedScope;
+    }
+
+    if (kind === "untracked") {
+        return "untracked";
+    }
+
+    return staged === true ? "staged" : "unstaged";
+}
+
+async function runGitDiff(
+    rootPath: string,
+    args: readonly string[],
+    scope: GitChangeScope,
+): Promise<string> {
+    if (scope !== "untracked") {
+        return simpleGit(rootPath).raw([...args]);
+    }
+
+    try {
+        const result = await execFileAsync("git", [...args], {
+            cwd: rootPath,
+            encoding: "utf8",
+            maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
+        });
+        return result.stdout;
+    } catch (error) {
+        if (
+            isGitExecError(error) &&
+            error.code === 1 &&
+            typeof error.stdout === "string"
+        ) {
+            return error.stdout;
+        }
+
+        throw error;
+    }
 }
 
 async function detectGitChangeKind(
@@ -248,6 +301,16 @@ function parseHunkHeader(
 
 function normalizeGitPath(filePath: string): string {
     return filePath.split(path.sep).join("/");
+}
+
+function isGitExecError(
+    error: unknown,
+): error is Error & { readonly code: number; readonly stdout?: unknown } {
+    return (
+        error instanceof Error &&
+        "code" in error &&
+        typeof (error as { readonly code?: unknown }).code === "number"
+    );
 }
 
 interface MutableGitFileDiffHunk {

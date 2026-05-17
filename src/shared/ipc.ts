@@ -42,6 +42,7 @@ export const IPC_CHANNELS = {
     listGitWorktrees: "git:list-worktrees",
     listGitChanges: "git:list-changes",
     listGitHistory: "git:list-history",
+    listGitWorktreeDiff: "git:list-worktree-diff",
     getGitDiff: "git:get-diff",
     getGitCommitDetail: "git:get-commit-detail",
     initGitRepository: "git:init-repository",
@@ -561,6 +562,8 @@ export type GitTreeViewMode = "flat" | "tree";
 
 export type GitChangeScope = "conflicted" | "staged" | "unstaged" | "untracked";
 
+export type GitDiffScope = GitChangeScope;
+
 export type GitChangeKind =
     | "added"
     | "conflicted"
@@ -749,6 +752,36 @@ export interface GitChangesListInput extends GitRepositoryScopeInput {
 
 export interface GitDiffInput extends GitRepositoryScopeInput {
     readonly path: string;
+    readonly scope?: GitDiffScope | "auto";
+}
+
+export interface GitWorktreeDiffInput extends GitRepositoryScopeInput {
+    readonly scopes?: readonly GitDiffScope[];
+}
+
+export interface GitWorktreeDiffFile {
+    readonly additions: number | null;
+    readonly deletions: number | null;
+    readonly diff: GitFileDiff | null;
+    readonly error: string | null;
+    readonly isBinary: boolean;
+    readonly isConflicted: boolean;
+    readonly kind: GitChangeKind;
+    readonly path: string;
+    readonly previousPath: string | null;
+    readonly scope: GitDiffScope;
+}
+
+export interface GitWorktreeDiffSection {
+    readonly scope: GitDiffScope;
+    readonly files: readonly GitWorktreeDiffFile[];
+}
+
+export interface GitWorktreeDiffResult {
+    readonly projectId: string;
+    readonly worktreeId: string | null;
+    readonly sections: readonly GitWorktreeDiffSection[];
+    readonly updatedAt: string;
 }
 
 export interface GitCommitDetailInput extends GitRepositoryScopeInput {
@@ -1722,6 +1755,15 @@ export interface WorkspaceGitCommitTab {
     readonly worktreeId?: string | null;
 }
 
+export interface WorkspaceGitWorktreeDiffTab {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: "git_worktree_diff";
+    readonly projectId: string;
+    readonly title: string;
+    readonly worktreeId?: string | null;
+}
+
 export interface WorkspaceGitHubIssuesTab {
     readonly createdAt: string;
     readonly id: string;
@@ -1780,6 +1822,7 @@ export type WorkspaceTab =
     | WorkspaceChatHistoryTab
     | WorkspaceGitTab
     | WorkspaceGitCommitTab
+    | WorkspaceGitWorktreeDiffTab
     | WorkspaceGitHubIssueTab
     | WorkspaceGitHubIssuesTab
     | WorkspaceGitHubPullRequestTab
@@ -2354,6 +2397,9 @@ export interface ComandoApi {
     listGitHistory: (
         input: GitHistoryListInput,
     ) => Promise<GitHistoryListResult>;
+    listGitWorktreeDiff: (
+        input: GitWorktreeDiffInput,
+    ) => Promise<GitWorktreeDiffResult | null>;
     getGitDiff: (input: GitDiffInput) => Promise<GitFileDiff | null>;
     getGitCommitDetail: (
         input: GitCommitDetailInput,

@@ -154,6 +154,7 @@ export interface GitFileDiff {
 export interface GitFileDiffOptions {
     readonly kind?: GitChangeKind | null;
     readonly previousPath?: string | null;
+    readonly scope?: GitChangeScope | "auto";
     readonly staged?: boolean;
 }
 
