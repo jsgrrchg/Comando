@@ -223,7 +223,7 @@ export function GitWorktreeDiffTabView({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                         <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary">
-                            Project Diff
+                            Uncommitted Changes
                         </p>
                         <h2 className="mt-1 truncate text-[18px] font-semibold text-text-primary">
                             {project?.name ?? "Repository"}

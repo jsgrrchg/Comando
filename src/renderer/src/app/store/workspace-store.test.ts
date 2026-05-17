@@ -314,7 +314,7 @@ describe("workspace file opening", () => {
         expect(projectDiffTabs[0]).toMatchObject({
             kind: "git_worktree_diff",
             projectId: "project-1",
-            title: "Project Diff",
+            title: "Uncommitted Changes",
             worktreeId: "worktree-1",
         });
     });

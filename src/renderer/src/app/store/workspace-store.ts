@@ -858,7 +858,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             id: crypto.randomUUID(),
             kind: "git_worktree_diff",
             projectId,
-            title: "Project Diff",
+            title: "Uncommitted Changes",
             worktreeId: worktreeId ?? null,
         };
 

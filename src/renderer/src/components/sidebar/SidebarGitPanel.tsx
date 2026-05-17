@@ -304,7 +304,7 @@ export function SidebarGitPanel({
                         className="rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
                         disabled={!hasChanges}
                         onClick={handleReviewChanges}
-                        title="Open Project Diff"
+                        title="Open Uncommitted Changes"
                         type="button"
                     >
                         Review Changes
