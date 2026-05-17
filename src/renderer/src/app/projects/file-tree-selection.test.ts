@@ -4,6 +4,7 @@ import type { RuntimeWorkspaceFileTab } from "../workspace/tree";
 import {
     reconcileFileTreeSelection,
     resolveActiveFileTreePath,
+    resolveFileTreeNodeClickSelection,
 } from "./file-tree-selection";
 
 function createFileTab(
@@ -102,6 +103,54 @@ describe("file tree selection", () => {
         ).toEqual({
             anchorPath: "docs/guide.md",
             selectedPaths: ["docs/guide.md", "docs/todo.md"],
+        });
+    });
+
+    it("clears manual selection on a normal tree row click", () => {
+        expect(
+            resolveFileTreeNodeClickSelection({
+                anchorPath: "docs",
+                isRangeSelection: false,
+                isToggleSelection: false,
+                nodePath: "docs",
+                selectedPaths: ["docs"],
+                visiblePaths: ["docs", "docs/guide.md", "docs/todo.md"],
+            }),
+        ).toEqual({
+            anchorPath: null,
+            selectedPaths: [],
+        });
+    });
+
+    it("preserves modifier-based tree selection", () => {
+        const visiblePaths = ["docs", "docs/guide.md", "docs/todo.md"];
+
+        expect(
+            resolveFileTreeNodeClickSelection({
+                anchorPath: "docs",
+                isRangeSelection: true,
+                isToggleSelection: false,
+                nodePath: "docs/todo.md",
+                selectedPaths: [],
+                visiblePaths,
+            }),
+        ).toEqual({
+            anchorPath: "docs",
+            selectedPaths: ["docs", "docs/guide.md", "docs/todo.md"],
+        });
+
+        expect(
+            resolveFileTreeNodeClickSelection({
+                anchorPath: null,
+                isRangeSelection: false,
+                isToggleSelection: true,
+                nodePath: "docs/guide.md",
+                selectedPaths: ["docs"],
+                visiblePaths,
+            }),
+        ).toEqual({
+            anchorPath: "docs/guide.md",
+            selectedPaths: ["docs", "docs/guide.md"],
         });
     });
 });

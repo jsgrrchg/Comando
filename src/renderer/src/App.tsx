@@ -29,6 +29,7 @@ import {
 import {
     reconcileFileTreeSelection,
     resolveActiveFileTreePath,
+    resolveFileTreeNodeClickSelection,
 } from "./app/projects/file-tree-selection";
 import {
     searchProjectQuickOpenEntries,
@@ -62,8 +63,6 @@ import {
     getProjectEntryParentRelativePath,
     GitTreeView,
     resolveGitTreeDragPaths,
-    selectGitTreeRange,
-    toggleGitTreePathSelection,
     type GitTreeDragData,
     type GitTreeNode,
 } from "./components/git";
@@ -1832,34 +1831,23 @@ export function App() {
             const isRangeSelection = event.shiftKey;
             const isToggleSelection = event.metaKey || event.ctrlKey;
 
-            if (isRangeSelection) {
-                const anchorPath =
-                    effectiveFileTreeSelectionAnchorPath ?? node.path;
-                setFileTreeSelectedPaths(
-                    selectGitTreeRange(
-                        visibleSidebarNodePaths,
-                        anchorPath,
-                        node.path,
-                    ),
-                );
-                setFileTreeSelectionAnchorPath(anchorPath);
-                return;
-            }
+            const nextSelection = resolveFileTreeNodeClickSelection({
+                anchorPath: effectiveFileTreeSelectionAnchorPath,
+                isRangeSelection,
+                isToggleSelection,
+                nodePath: node.path,
+                selectedPaths: effectiveFileTreeSelectedPaths,
+                visiblePaths: visibleSidebarNodePaths,
+            });
 
-            if (isToggleSelection) {
-                setFileTreeSelectedPaths(
-                    toggleGitTreePathSelection(
-                        effectiveFileTreeSelectedPaths,
-                        node.path,
-                    ),
-                );
-                setFileTreeSelectionAnchorPath(node.path);
-                return;
-            }
-
-            if (!activeProjectId || node.kind !== "file") {
-                setFileTreeSelectedPaths([node.path]);
-                setFileTreeSelectionAnchorPath(node.path);
+            if (
+                isRangeSelection ||
+                isToggleSelection ||
+                !activeProjectId ||
+                node.kind !== "file"
+            ) {
+                setFileTreeSelectedPaths(nextSelection.selectedPaths);
+                setFileTreeSelectionAnchorPath(nextSelection.anchorPath);
                 return;
             }
 
