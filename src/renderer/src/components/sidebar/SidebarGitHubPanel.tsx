@@ -44,6 +44,10 @@ import {
     emitSidebarGitHubDrag,
     type SidebarGitHubDragItemKind,
 } from "./sidebarGitHubDragEvents";
+import {
+    shouldCancelSidebarDragOnMove,
+    shouldEmitSidebarDragCancel,
+} from "./sidebarDragGuards";
 
 type SidebarGitHubPanelKind = "issues" | "pull_requests";
 type SidebarIssueFilter = GitHubIssueState | "all" | "assigned";
@@ -803,6 +807,7 @@ function SidebarGitHubDraggableRow({
     const suppressClickRef = useRef(false);
     const [dragPreview, setDragPreview] =
         useState<SidebarGitHubDragPreview | null>(null);
+    const [isPointerTracking, setIsPointerTracking] = useState(false);
     const kindLabel = itemKind === "issue" ? "Issue" : "Pull Request";
 
     const emitDrag = useCallback(
@@ -838,6 +843,73 @@ function SidebarGitHubDraggableRow({
         [kindLabel, meta, title],
     );
 
+    const clearDragState = useCallback(
+        ({
+            emitCancel,
+            event,
+            pointerId,
+            releaseTarget,
+        }: {
+            readonly emitCancel: boolean;
+            readonly event?: Pick<
+                ReactPointerEvent<HTMLElement>,
+                "clientX" | "clientY"
+            >;
+            readonly pointerId?: number;
+            readonly releaseTarget?: EventTarget | null;
+        }) => {
+            const dragState = dragStateRef.current;
+            if (!dragState) {
+                return;
+            }
+
+            dragStateRef.current = null;
+            setIsPointerTracking(false);
+            setDragPreview(null);
+
+            if (
+                releaseTarget instanceof HTMLElement &&
+                pointerId !== undefined
+            ) {
+                releaseTarget.releasePointerCapture?.(pointerId);
+            }
+
+            if (emitCancel && shouldEmitSidebarDragCancel(dragState.active)) {
+                emitDrag("cancel", event);
+            }
+        },
+        [emitDrag],
+    );
+
+    useEffect(() => {
+        if (!isPointerTracking) {
+            return;
+        }
+
+        const handleWindowBlur = () => {
+            clearDragState({ emitCancel: true });
+        };
+        const handleVisibilityChange = () => {
+            if (document.visibilityState !== "hidden") {
+                return;
+            }
+
+            clearDragState({ emitCancel: true });
+        };
+
+        window.addEventListener("blur", handleWindowBlur);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+
+        return () => {
+            window.removeEventListener("blur", handleWindowBlur);
+            document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange,
+            );
+            clearDragState({ emitCancel: true });
+        };
+    }, [clearDragState, isPointerTracking]);
+
     return (
         <>
             <div
@@ -859,10 +931,23 @@ function SidebarGitHubDraggableRow({
                         return;
                     }
 
-                    dragStateRef.current = null;
-                    event.currentTarget.releasePointerCapture?.(event.pointerId);
-                    setDragPreview(null);
-                    emitDrag("cancel", event);
+                    clearDragState({
+                        emitCancel: true,
+                        event,
+                        pointerId: event.pointerId,
+                        releaseTarget: event.currentTarget,
+                    });
+                }}
+                onLostPointerCapture={(event) => {
+                    const dragState = dragStateRef.current;
+                    if (!dragState || dragState.pointerId !== event.pointerId) {
+                        return;
+                    }
+
+                    clearDragState({
+                        emitCancel: true,
+                        event,
+                    });
                 }}
                 onPointerDown={(event) => {
                     if (
@@ -881,11 +966,21 @@ function SidebarGitHubDraggableRow({
                         startX: event.clientX,
                         startY: event.clientY,
                     };
+                    setIsPointerTracking(true);
                     event.currentTarget.setPointerCapture?.(event.pointerId);
                 }}
                 onPointerMove={(event) => {
                     const dragState = dragStateRef.current;
                     if (!dragState || dragState.pointerId !== event.pointerId) {
+                        return;
+                    }
+                    if (shouldCancelSidebarDragOnMove(event.buttons)) {
+                        clearDragState({
+                            emitCancel: true,
+                            event,
+                            pointerId: event.pointerId,
+                            releaseTarget: event.currentTarget,
+                        });
                         return;
                     }
 
@@ -916,8 +1011,10 @@ function SidebarGitHubDraggableRow({
                     }
 
                     dragStateRef.current = null;
+                    setIsPointerTracking(false);
                     event.currentTarget.releasePointerCapture?.(event.pointerId);
                     if (!dragState.active) {
+                        setDragPreview(null);
                         return;
                     }
 

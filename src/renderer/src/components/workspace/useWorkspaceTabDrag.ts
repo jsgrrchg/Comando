@@ -12,6 +12,7 @@ import {
     emitWorkspaceTabComposerDrag,
     type WorkspaceTabComposerDragItem,
 } from "@renderer/app/drag-and-drop";
+import { hasPrimaryPointerButton } from "@renderer/app/pointerGuards";
 import type { WorkspaceTab } from "@shared/ipc";
 
 import type { SplitDirection } from "@renderer/app/workspace/tree";
@@ -83,6 +84,10 @@ const idleState: DragState = {
     pointerOffset: null,
     pointerStart: null,
 };
+
+export function shouldCancelWorkspaceTabDragOnMove(buttons: number): boolean {
+    return !hasPrimaryPointerButton(buttons);
+}
 
 export function useWorkspaceTabDrag({
     onDropToSplit,
@@ -348,6 +353,24 @@ export function useWorkspaceTabDrag({
         }
 
         const handlePointerMove = (event: PointerEvent) => {
+            const currentState = dragStateRef.current;
+            if (
+                currentState.phase !== "idle" &&
+                shouldCancelWorkspaceTabDragOnMove(event.buttons)
+            ) {
+                suppressClickUntilRef.current =
+                    performance.now() + CLICK_SUPPRESSION_MS;
+                if (currentState.phase === "dragging") {
+                    emitComposerDragPhase(
+                        currentState.draggedTab,
+                        "cancel",
+                        currentState.pointerCurrent,
+                    );
+                }
+                clearDragState();
+                return;
+            }
+
             latestPointerRef.current = {
                 x: event.clientX,
                 y: event.clientY,
@@ -375,12 +398,45 @@ export function useWorkspaceTabDrag({
         };
 
         const handlePointerCancel = () => {
-            emitComposerDragPhase(
-                dragStateRef.current.draggedTab,
-                "cancel",
-                dragStateRef.current.pointerCurrent,
-            );
+            const currentState = dragStateRef.current;
+            if (currentState.phase === "dragging") {
+                emitComposerDragPhase(
+                    currentState.draggedTab,
+                    "cancel",
+                    currentState.pointerCurrent,
+                );
+            }
             clearDragState();
+        };
+
+        const handleInterruptedDrag = () => {
+            const currentState = dragStateRef.current;
+            if (currentState.phase === "idle") {
+                return;
+            }
+
+            suppressClickUntilRef.current =
+                performance.now() + CLICK_SUPPRESSION_MS;
+            if (currentState.phase === "dragging") {
+                emitComposerDragPhase(
+                    currentState.draggedTab,
+                    "cancel",
+                    currentState.pointerCurrent,
+                );
+            }
+            clearDragState();
+        };
+
+        const handleWindowBlur = () => {
+            handleInterruptedDrag();
+        };
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState !== "hidden") {
+                return;
+            }
+
+            handleInterruptedDrag();
         };
 
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -396,6 +452,8 @@ export function useWorkspaceTabDrag({
         window.addEventListener("pointerup", handlePointerUp);
         window.addEventListener("pointercancel", handlePointerCancel);
         window.addEventListener("keydown", handleKeyDown);
+        window.addEventListener("blur", handleWindowBlur);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
 
         return () => {
             document.body.style.cursor = previousCursor;
@@ -404,6 +462,11 @@ export function useWorkspaceTabDrag({
             window.removeEventListener("pointerup", handlePointerUp);
             window.removeEventListener("pointercancel", handlePointerCancel);
             window.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("blur", handleWindowBlur);
+            document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange,
+            );
         };
     }, [
         cancelDrag,

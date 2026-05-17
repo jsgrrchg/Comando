@@ -58,6 +58,10 @@ import {
     readSidebarAgentsCollapsedSessionIds,
 } from "./sidebarAgentsCollapseState";
 import { emitSidebarAgentDrag } from "./sidebarAgentDragEvents";
+import {
+    shouldCancelSidebarDragOnMove,
+    shouldEmitSidebarDragCancel,
+} from "./sidebarDragGuards";
 
 interface SidebarAgentsContextMenuPayload {
     readonly sessionId: string;
@@ -1101,6 +1105,7 @@ function SidebarAgentsItem({
     const suppressClickRef = useRef(false);
     const [dragPreview, setDragPreview] =
         useState<SidebarAgentDragPreview | null>(null);
+    const [isPointerTracking, setIsPointerTracking] = useState(false);
     const preview = getHistoryPreviewText(session);
     const title = truncateChatTitle(session.title, SIDEBAR_AGENTS_TITLE_MAX_CHARS);
     const isPinned = isSessionPinned(session);
@@ -1152,6 +1157,73 @@ function SidebarAgentsItem({
         [activity, session.runtimeId, session.title],
     );
 
+    const clearDragState = useCallback(
+        ({
+            emitCancel,
+            event,
+            pointerId,
+            releaseTarget,
+        }: {
+            readonly emitCancel: boolean;
+            readonly event?: Pick<
+                ReactPointerEvent<HTMLElement>,
+                "clientX" | "clientY"
+            >;
+            readonly pointerId?: number;
+            readonly releaseTarget?: EventTarget | null;
+        }) => {
+            const dragState = dragStateRef.current;
+            if (!dragState) {
+                return;
+            }
+
+            dragStateRef.current = null;
+            setIsPointerTracking(false);
+            setDragPreview(null);
+
+            if (
+                releaseTarget instanceof HTMLElement &&
+                pointerId !== undefined
+            ) {
+                releaseTarget.releasePointerCapture?.(pointerId);
+            }
+
+            if (emitCancel && shouldEmitSidebarDragCancel(dragState.active)) {
+                emitDrag("cancel", event);
+            }
+        },
+        [emitDrag],
+    );
+
+    useEffect(() => {
+        if (!isPointerTracking) {
+            return;
+        }
+
+        const handleWindowBlur = () => {
+            clearDragState({ emitCancel: true });
+        };
+        const handleVisibilityChange = () => {
+            if (document.visibilityState !== "hidden") {
+                return;
+            }
+
+            clearDragState({ emitCancel: true });
+        };
+
+        window.addEventListener("blur", handleWindowBlur);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+
+        return () => {
+            window.removeEventListener("blur", handleWindowBlur);
+            document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange,
+            );
+            clearDragState({ emitCancel: true });
+        };
+    }, [clearDragState, isPointerTracking]);
+
     return (
         <>
             <div
@@ -1178,10 +1250,23 @@ function SidebarAgentsItem({
                     return;
                 }
 
-                dragStateRef.current = null;
-                event.currentTarget.releasePointerCapture?.(event.pointerId);
-                setDragPreview(null);
-                emitDrag("cancel", event);
+                clearDragState({
+                    emitCancel: true,
+                    event,
+                    pointerId: event.pointerId,
+                    releaseTarget: event.currentTarget,
+                });
+            }}
+            onLostPointerCapture={(event) => {
+                const dragState = dragStateRef.current;
+                if (!dragState || dragState.pointerId !== event.pointerId) {
+                    return;
+                }
+
+                clearDragState({
+                    emitCancel: true,
+                    event,
+                });
             }}
             onPointerDown={(event) => {
                 if (
@@ -1201,11 +1286,21 @@ function SidebarAgentsItem({
                     startX: event.clientX,
                     startY: event.clientY,
                 };
+                setIsPointerTracking(true);
                 event.currentTarget.setPointerCapture?.(event.pointerId);
             }}
             onPointerMove={(event) => {
                 const dragState = dragStateRef.current;
                 if (!dragState || dragState.pointerId !== event.pointerId) {
+                    return;
+                }
+                if (shouldCancelSidebarDragOnMove(event.buttons)) {
+                    clearDragState({
+                        emitCancel: true,
+                        event,
+                        pointerId: event.pointerId,
+                        releaseTarget: event.currentTarget,
+                    });
                     return;
                 }
 
@@ -1236,8 +1331,10 @@ function SidebarAgentsItem({
                 }
 
                 dragStateRef.current = null;
+                setIsPointerTracking(false);
                 event.currentTarget.releasePointerCapture?.(event.pointerId);
                 if (!dragState.active) {
+                    setDragPreview(null);
                     return;
                 }
 

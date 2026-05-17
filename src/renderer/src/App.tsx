@@ -49,6 +49,10 @@ import {
     serializeComposerProjectEntryListDragData,
     serializeComposerProjectEntryDragData,
 } from "./app/drag-and-drop";
+import {
+    hasPrimaryPointerButton,
+    isPrimaryPointerButton,
+} from "./app/pointerGuards";
 import { useAppStore } from "./app/store/app-store";
 import { useAiStore } from "./app/store/ai-store";
 import { useGitStore } from "./app/store/git-store";
@@ -907,6 +911,10 @@ export function App() {
         if (!dragState) {
             return;
         }
+        if (!hasPrimaryPointerButton(event.buttons)) {
+            stopDragging();
+            return;
+        }
 
         const delta = event.clientX - dragState.startX;
         const nextWidth =
@@ -931,15 +939,29 @@ export function App() {
 
         document.body.style.cursor = "col-resize";
         document.body.style.userSelect = "none";
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === "hidden") {
+                stopDragging();
+            }
+        };
 
         window.addEventListener("pointermove", handlePointerMove);
+        window.addEventListener("pointercancel", stopDragging);
         window.addEventListener("pointerup", stopDragging);
+        window.addEventListener("blur", stopDragging);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
 
         return () => {
             document.body.style.cursor = previousCursor;
             document.body.style.userSelect = previousUserSelect;
             window.removeEventListener("pointermove", handlePointerMove);
+            window.removeEventListener("pointercancel", stopDragging);
             window.removeEventListener("pointerup", stopDragging);
+            window.removeEventListener("blur", stopDragging);
+            document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange,
+            );
         };
     }, [dragState]);
 
@@ -3765,6 +3787,10 @@ function startDragging(
     startWidth: number,
     setDragState: (dragState: DragState) => void,
 ): void {
+    if (!isPrimaryPointerButton(event.button)) {
+        return;
+    }
+
     event.preventDefault();
     setDragState({
         side,

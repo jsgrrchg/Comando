@@ -47,6 +47,10 @@ import {
     CHAT_TITLE_TAB_MAX_CHARS,
     truncateChatTitle,
 } from "@shared/chatTitle";
+import {
+    hasPrimaryPointerButton,
+    isPrimaryPointerButton,
+} from "@renderer/app/pointerGuards";
 
 import {
     continueMarkdownList,
@@ -1102,6 +1106,10 @@ function WorkspaceSplitView({
         if (!node || !dragState || !containerRef.current) {
             return;
         }
+        if (!hasPrimaryPointerButton(event.buttons)) {
+            stopDragging();
+            return;
+        }
 
         const rect = containerRef.current.getBoundingClientRect();
         const totalSize = node.axis === "horizontal" ? rect.width : rect.height;
@@ -1154,10 +1162,17 @@ function WorkspaceSplitView({
             node.axis === "horizontal" ? "col-resize" : "row-resize";
         document.body.style.cursor = nextCursor;
         document.body.style.userSelect = "none";
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === "hidden") {
+                stopDragging();
+            }
+        };
 
         window.addEventListener("pointermove", handlePointerMove);
         window.addEventListener("pointercancel", stopDragging);
         window.addEventListener("pointerup", stopDragging);
+        window.addEventListener("blur", stopDragging);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
 
         return () => {
             document.body.style.cursor = previousCursor;
@@ -1165,6 +1180,11 @@ function WorkspaceSplitView({
             window.removeEventListener("pointermove", handlePointerMove);
             window.removeEventListener("pointercancel", stopDragging);
             window.removeEventListener("pointerup", stopDragging);
+            window.removeEventListener("blur", stopDragging);
+            document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange,
+            );
         };
     }, [dragState, node]);
 
@@ -1193,6 +1213,10 @@ function WorkspaceSplitView({
                     nodeId={child.id}
                     onRequestCreateFile={onRequestCreateFile}
                     onPointerDown={(event) => {
+                        if (!isPrimaryPointerButton(event.button)) {
+                            return;
+                        }
+
                         event.preventDefault();
                         event.stopPropagation();
                         setDragState({
