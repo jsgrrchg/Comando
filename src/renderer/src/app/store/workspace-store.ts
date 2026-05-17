@@ -79,6 +79,7 @@ import {
     collectPendingTrackedFilesFromSessions,
     resolveFileTabReviewContext,
 } from "../workspace/pending-review";
+import { areGitWorktreeIdsEquivalent } from "../git/context-key";
 import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
 
@@ -3243,8 +3244,11 @@ function findExistingGitWorktreeDiffTab(
             (tab): tab is RuntimeWorkspaceGitWorktreeDiffTab =>
                 tab.kind === "git_worktree_diff" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
+                areGitWorktreeIdsEquivalent(
+                    projectId,
+                    normalizeWorktreeId(tab.worktreeId),
                     normalizeWorktreeId(worktreeId),
+                ),
         ) ?? null
     );
 }

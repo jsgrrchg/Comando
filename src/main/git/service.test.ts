@@ -186,6 +186,31 @@ describe("GitService", () => {
         expect(untrackedDiff.summary.insertions).toBe(1);
     });
 
+    it("rejects untracked no-index diffs outside the repository", async () => {
+        const rootPath = createGitRepositoryFixture();
+        const outsidePath = path.join(
+            path.dirname(rootPath),
+            "outside-secret.txt",
+        );
+        temporaryDirectories.push(outsidePath);
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        fs.writeFileSync(outsidePath, "secret\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+
+        const service = new GitService({ cacheSnapshots: false });
+
+        await expect(
+            service.getFileDiff(rootPath, path.relative(rootPath, outsidePath), {
+                scope: "untracked",
+            }),
+        ).rejects.toThrow("repository-relative");
+    });
+
     it("lists remotes and collects staged and unstaged diff stats", async () => {
         const rootPath = createGitRepositoryFixture();
         const remotePath = createGitRepositoryFixture();

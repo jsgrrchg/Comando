@@ -141,9 +141,9 @@ export function buildDiffArgs(
     scope: GitChangeScope,
     previousPath: string | null,
 ): string[] {
-    const normalizedPath = normalizeGitPath(relativePath);
+    const normalizedPath = normalizeSafeGitPath(relativePath);
     const normalizedPreviousPath = previousPath
-        ? normalizeGitPath(previousPath)
+        ? normalizeSafeGitPath(previousPath)
         : null;
 
     if (scope === "untracked") {
@@ -301,6 +301,23 @@ function parseHunkHeader(
 
 function normalizeGitPath(filePath: string): string {
     return filePath.split(path.sep).join("/");
+}
+
+function normalizeSafeGitPath(filePath: string): string {
+    const normalizedPath = normalizeGitPath(filePath);
+    const segments = normalizedPath.split("/");
+
+    if (
+        normalizedPath.length === 0 ||
+        normalizedPath === "." ||
+        normalizedPath.startsWith("/") ||
+        /^[A-Za-z]:\//.test(normalizedPath) ||
+        segments.some((segment) => segment === "..")
+    ) {
+        throw new Error("Git diff paths must be repository-relative.");
+    }
+
+    return normalizedPath;
 }
 
 function isGitExecError(

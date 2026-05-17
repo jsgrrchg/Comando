@@ -1878,7 +1878,18 @@ async function buildSharedGitDiff(
         snapshot.status.entries.find(
             (candidate) => candidate.relativePath === normalizedPath,
         ) ?? null;
-    const requestedScope = input.scope ?? "auto";
+    if (!entry) {
+        return null;
+    }
+
+    const requestedScope = normalizeRequestedDiffScope(input.scope);
+    if (
+        requestedScope !== "auto" &&
+        !entry.scopes.includes(requestedScope)
+    ) {
+        return null;
+    }
+
     const staged =
         requestedScope === "staged" ||
         (requestedScope === "auto" &&
@@ -2040,6 +2051,21 @@ function normalizeRequestedDiffScopes(
     const requestedScopeSet = new Set(requestedScopes);
     return GIT_WORKTREE_DIFF_SCOPES.filter((scope) =>
         requestedScopeSet.has(scope),
+    );
+}
+
+function normalizeRequestedDiffScope(
+    requestedScope: GitDiffInput["scope"],
+): GitDiffScope | "auto" {
+    return isGitDiffScope(requestedScope) ? requestedScope : "auto";
+}
+
+function isGitDiffScope(value: unknown): value is GitDiffScope {
+    return (
+        value === "conflicted" ||
+        value === "staged" ||
+        value === "unstaged" ||
+        value === "untracked"
     );
 }
 

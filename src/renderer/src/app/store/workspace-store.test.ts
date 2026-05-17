@@ -319,6 +319,22 @@ describe("workspace file opening", () => {
         });
     });
 
+    it("deduplicates primary project diff tabs across null and stored worktree ids", async () => {
+        await useWorkspaceStore
+            .getState()
+            .openGitWorktreeDiffTab("project-1", null);
+        await useWorkspaceStore
+            .getState()
+            .openGitWorktreeDiffTab("project-1", "project-1:primary");
+
+        const state = useWorkspaceStore.getState();
+        const projectDiffTabs = Object.values(state.tabsById).filter(
+            (tab) => tab.kind === "git_worktree_diff",
+        );
+
+        expect(projectDiffTabs).toHaveLength(1);
+    });
+
     it("opens unique GitHub workspace tabs and reselects existing detail tabs", async () => {
         const ref = {
             host: "github.com",
