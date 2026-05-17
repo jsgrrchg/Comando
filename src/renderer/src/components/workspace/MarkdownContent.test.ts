@@ -201,6 +201,26 @@ describe("MarkdownContent", () => {
         expect(markup).not.toContain(`href="${target}"`);
     });
 
+    it("keeps explicit markdown file links interactive before tree confirmation", () => {
+        const target = "/Users/test/workspace/comando/src/App.tsx";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderRawFileReference: () => false,
+                content: `Open [App.tsx](${target}).`,
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup.match(/<button/g)?.length).toBe(1);
+        expect(markup).toContain(">App.tsx<");
+        expect(markup).toContain(`title="${target}"`);
+        expect(markup).not.toContain(`href="${target}"`);
+    });
+
     it("keeps external markdown links as anchors", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {

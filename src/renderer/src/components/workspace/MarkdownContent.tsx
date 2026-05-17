@@ -432,6 +432,10 @@ function canRenderResolvedFileReferencePill(
         return source !== "raw_text";
     }
 
+    if (source !== "raw_text") {
+        return true;
+    }
+
     return canRenderRawFileReference(rawReference, resolvedReference);
 }
 
