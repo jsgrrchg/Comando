@@ -1,4 +1,10 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import {
+    memo,
+    useCallback,
+    useMemo,
+    useState,
+    type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import { DiffLineView } from "@renderer/components/workspace/review/DiffLineView";
 
@@ -234,6 +240,9 @@ const DiffFileSurface = memo(function DiffFileSurface({
                         <DiffSummaryColored summary={file.summary} />
                     </p>
                 ) : null}
+                {file.actions?.map((action) => (
+                    <DiffFileActionButton action={action} key={action.id} />
+                ))}
             </div>
         </>
     );
@@ -318,13 +327,47 @@ const DiffFileSurface = memo(function DiffFileSurface({
             ) : (
                 <div className="p-3">
                     <GitEmptyState>
-                        No hunks were produced for this file.
+                        {file.emptyState ??
+                            "No hunks were produced for this file."}
                     </GitEmptyState>
                 </div>
             )}
         </section>
     );
 });
+
+function DiffFileActionButton({
+    action,
+}: {
+    readonly action: NonNullable<GitDiffFile["actions"]>[number];
+}) {
+    const handleClick = useCallback(
+        (event: ReactMouseEvent<HTMLButtonElement>) => {
+            event.stopPropagation();
+            action.onClick();
+        },
+        [action],
+    );
+
+    return (
+        <button
+            aria-label={action.ariaLabel}
+            className={[
+                "rounded border px-2 py-1 text-[10px] font-medium transition-colors",
+                action.tone === "danger"
+                    ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
+                    : "border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
+                action.disabled ? "cursor-not-allowed opacity-50" : "",
+            ].join(" ")}
+            disabled={action.disabled || action.busy}
+            onClick={handleClick}
+            title={action.ariaLabel ?? action.label}
+            type="button"
+        >
+            {action.busy ? "..." : action.label}
+        </button>
+    );
+}
 
 function CollapseChevron({ collapsed }: { readonly collapsed: boolean }) {
     return (

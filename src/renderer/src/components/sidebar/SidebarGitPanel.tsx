@@ -56,6 +56,9 @@ export function SidebarGitPanel({
 
     const openFileTab = useWorkspaceStore((s) => s.openFileTab);
     const openGitTab = useWorkspaceStore((s) => s.openGitTab);
+    const openGitWorktreeDiffTab = useWorkspaceStore(
+        (s) => s.openGitWorktreeDiffTab,
+    );
 
     const project = projects.find((p) => p.id === projectId) ?? null;
 
@@ -226,6 +229,11 @@ export function SidebarGitPanel({
         [openGitTab, projectId, worktreeId],
     );
 
+    const handleReviewChanges = useCallback(
+        () => void openGitWorktreeDiffTab(projectId, worktreeId),
+        [openGitWorktreeDiffTab, projectId, worktreeId],
+    );
+
     const renderNodeMeta = useCallback(
         (node: GitTreeNode): ReactNode => {
             const scope = scopeByPath.get(node.path);
@@ -291,15 +299,28 @@ export function SidebarGitPanel({
                         </span>
                     )}
                 </div>
-                {hasChanges && (
+                <div className="flex items-center gap-1">
                     <button
-                        className="rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
-                        onClick={allStaged ? handleUnstageAll : handleStageAll}
+                        className="rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                        disabled={!hasChanges}
+                        onClick={handleReviewChanges}
+                        title="Open Project Diff"
                         type="button"
                     >
-                        {allStaged ? "Unstage All" : "Stage All"}
+                        Review Changes
                     </button>
-                )}
+                    {hasChanges && (
+                        <button
+                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                            onClick={
+                                allStaged ? handleUnstageAll : handleStageAll
+                            }
+                            type="button"
+                        >
+                            {allStaged ? "Unstage All" : "Stage All"}
+                        </button>
+                    )}
+                </div>
             </div>
 
             <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1">
