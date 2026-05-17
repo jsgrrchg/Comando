@@ -90,10 +90,12 @@ type TokenizedLanguageModule = {
 
 type DeferredMonacoLanguage =
     | {
+          readonly hasMonacoFallback: boolean;
           readonly kind: "monarch";
           readonly load: () => Promise<MonarchLanguageModule>;
       }
     | {
+          readonly hasMonacoFallback: boolean;
           readonly kind: "tokens";
           readonly load: () => Promise<TokenizedLanguageModule>;
       };
@@ -342,6 +344,7 @@ function basicLanguage(
     load: () => Promise<MonarchLanguageModule>,
 ): DeferredMonacoLanguage {
     return {
+        hasMonacoFallback: true,
         kind: "monarch",
         load,
     };
@@ -352,13 +355,19 @@ function monarchLanguage(
     conf?: monaco.languages.LanguageConfiguration,
 ): DeferredMonacoLanguage {
     return {
+        hasMonacoFallback: true,
         kind: "monarch",
         load: () => Promise.resolve({ conf, language }),
     };
 }
 
 function textMateOnlyLanguage(): DeferredMonacoLanguage {
-    return monarchLanguage(textMateOnlyMonarchDefinition);
+    return {
+        hasMonacoFallback: false,
+        kind: "monarch",
+        load: () =>
+            Promise.resolve({ language: textMateOnlyMonarchDefinition }),
+    };
 }
 
 function jsonLanguage({
@@ -367,6 +376,7 @@ function jsonLanguage({
     readonly allowComments: boolean;
 }): DeferredMonacoLanguage {
     return {
+        hasMonacoFallback: true,
         kind: "tokens",
         load: async () => {
             const { createTokenizationSupport } =
@@ -548,9 +558,12 @@ function registerLanguageIds(
             didAttachProvider = true;
 
             void loadDeferredMonacoLanguage(definition).then((loaded) => {
+                const shouldInstallMonacoFallback =
+                    !shouldInstallTextMate || definition.hasMonacoFallback;
+
                 if (definition.kind === "monarch") {
                     const monarchLanguage = loaded as MonarchLanguageModule;
-                    if (!shouldInstallTextMate) {
+                    if (shouldInstallMonacoFallback) {
                         monaco.languages.setMonarchTokensProvider(
                             languageId,
                             monarchLanguage.language,
@@ -569,7 +582,7 @@ function registerLanguageIds(
                 }
 
                 const tokenizedLanguage = loaded as TokenizedLanguageModule;
-                if (!shouldInstallTextMate) {
+                if (shouldInstallMonacoFallback) {
                     monaco.languages.setTokensProvider(
                         languageId,
                         tokenizedLanguage.tokensProvider,
