@@ -240,12 +240,17 @@ const DiffFileSurface = memo(function DiffFileSurface({
                         <DiffSummaryColored summary={file.summary} />
                     </p>
                 ) : null}
-                {file.actions?.map((action) => (
-                    <DiffFileActionButton action={action} key={action.id} />
-                ))}
             </div>
         </>
     );
+    const actionButtons =
+        file.actions && file.actions.length > 0 ? (
+            <div className="flex shrink-0 items-center gap-1.5">
+                {file.actions.map((action) => (
+                    <DiffFileActionButton action={action} key={action.id} />
+                ))}
+            </div>
+        ) : null;
 
     return (
         <section
@@ -257,19 +262,24 @@ const DiffFileSurface = memo(function DiffFileSurface({
             ].join(" ")}
         >
             {isCollapsible ? (
-                <button
-                    aria-expanded={!collapsed}
+                <div
                     className={[
                         "flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-bg-secondary/55",
                         surfaceVariant === "panel" && !collapsed
                             ? "border-b border-border"
                             : "",
                     ].join(" ")}
-                    onClick={handleToggle}
-                    type="button"
                 >
-                    {headerContent}
-                </button>
+                    <button
+                        aria-expanded={!collapsed}
+                        className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2 text-left"
+                        onClick={handleToggle}
+                        type="button"
+                    >
+                        {headerContent}
+                    </button>
+                    {actionButtons}
+                </div>
             ) : (
                 <div
                     className={[
@@ -280,6 +290,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
                     ].join(" ")}
                 >
                     {headerContent}
+                    {actionButtons}
                 </div>
             )}
 
