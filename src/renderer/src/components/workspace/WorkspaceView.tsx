@@ -99,6 +99,7 @@ import { GitHubIssueTabView } from "@renderer/components/workspace/GitHubIssueTa
 import { GitHubPullRequestsTabView } from "@renderer/components/workspace/GitHubPullRequestsTabView";
 import { GitHubPullRequestTabView } from "@renderer/components/workspace/GitHubPullRequestTabView";
 import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabView";
+import { GitWorktreeDiffTabView } from "@renderer/components/workspace/GitWorktreeDiffTabView";
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
@@ -2290,6 +2291,8 @@ function WorkspacePaneView({
                             />
                         ) : activeTab.kind === "git" ? (
                             <GitTabView tab={activeTab} />
+                        ) : activeTab.kind === "git_worktree_diff" ? (
+                            <GitWorktreeDiffTabView tab={activeTab} />
                         ) : activeTab.kind === "chat_history" ? (
                             <ChatHistoryTabView tab={activeTab} />
                         ) : activeTab.kind === "git_commit" ? (
@@ -5875,6 +5878,7 @@ function TabIcon({
         | "file"
         | "git"
         | "git_commit"
+        | "git_worktree_diff"
         | "github_issue"
         | "github_issues"
         | "github_pull_request"
@@ -5902,7 +5906,7 @@ function TabIcon({
         );
     }
 
-    if (kind === "git") {
+    if (kind === "git" || kind === "git_worktree_diff") {
         return (
             <svg
                 className="shrink-0 opacity-55"

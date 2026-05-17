@@ -128,6 +128,146 @@ describe("GitService", () => {
         expect(untrackedDiff.raw).toContain("diff --git");
     });
 
+    it("loads staged and unstaged diffs separately for the same file", async () => {
+        const rootPath = createGitRepositoryFixture();
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\nbase\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\nstaged\n");
+        git(rootPath, ["add", "README.md"]);
+        fs.writeFileSync(
+            path.join(rootPath, "README.md"),
+            "hello\nunstaged\n",
+        );
+
+        const service = new GitService({ cacheSnapshots: false });
+        const stagedDiff = await service.getFileDiff(rootPath, "README.md", {
+            scope: "staged",
+        });
+        const unstagedDiff = await service.getFileDiff(rootPath, "README.md", {
+            scope: "unstaged",
+        });
+
+        expect(stagedDiff.staged).toBe(true);
+        expect(stagedDiff.raw).toContain("+staged");
+        expect(stagedDiff.raw).not.toContain("+unstaged");
+        expect(unstagedDiff.staged).toBe(false);
+        expect(unstagedDiff.raw).toContain("-staged");
+        expect(unstagedDiff.raw).toContain("+unstaged");
+    });
+
+    it("treats untracked no-index diff exit code 1 as a valid diff", async () => {
+        const rootPath = createGitRepositoryFixture();
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+        fs.writeFileSync(path.join(rootPath, "new-file.txt"), "new file\n");
+
+        const service = new GitService({ cacheSnapshots: false });
+        const untrackedDiff = await service.getFileDiff(
+            rootPath,
+            "new-file.txt",
+            {
+                scope: "untracked",
+            },
+        );
+
+        expect(untrackedDiff.hunks.length).toBeGreaterThan(0);
+        expect(untrackedDiff.raw).toContain("diff --git");
+        expect(untrackedDiff.summary.insertions).toBe(1);
+    });
+
+    it("keeps same-path staged deletes and untracked replacements visible", async () => {
+        const rootPath = createGitRepositoryFixture();
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "original\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+        git(rootPath, ["rm", "README.md"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "replacement\n");
+
+        const service = new GitService({ cacheSnapshots: false });
+        const snapshot = await service.getRepositorySnapshot(rootPath);
+        const entry = snapshot.status.entries.find(
+            (candidate) => candidate.relativePath === "README.md",
+        );
+        const stagedDiff = await service.getFileDiff(rootPath, "README.md", {
+            scope: "staged",
+        });
+        const untrackedDiff = await service.getFileDiff(rootPath, "README.md", {
+            scope: "untracked",
+        });
+
+        expect(entry?.scopes).toEqual(["staged", "untracked"]);
+        expect(snapshot.status.counts.staged).toBe(1);
+        expect(snapshot.status.counts.untracked).toBe(1);
+        expect(stagedDiff.raw).toContain("deleted file mode");
+        expect(untrackedDiff.raw).toContain("+replacement");
+    });
+
+    it("rejects untracked no-index diffs outside the repository", async () => {
+        const rootPath = createGitRepositoryFixture();
+        const outsidePath = path.join(
+            path.dirname(rootPath),
+            "outside-secret.txt",
+        );
+        temporaryDirectories.push(outsidePath);
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        fs.writeFileSync(outsidePath, "secret\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+
+        const service = new GitService({ cacheSnapshots: false });
+
+        await expect(
+            service.getFileDiff(rootPath, path.relative(rootPath, outsidePath), {
+                scope: "untracked",
+            }),
+        ).rejects.toThrow("repository-relative");
+    });
+
+    it.runIf(process.platform !== "win32")(
+        "allows repository-relative untracked paths that contain colon segments",
+        async () => {
+            const rootPath = createGitRepositoryFixture();
+
+            git(rootPath, ["init", "-b", "main"]);
+            git(rootPath, ["config", "user.name", "Comando"]);
+            git(rootPath, ["config", "user.email", "comando@example.com"]);
+            fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+            git(rootPath, ["add", "README.md"]);
+            git(rootPath, ["commit", "-m", "initial commit"]);
+            fs.mkdirSync(path.join(rootPath, "C:"));
+            fs.writeFileSync(
+                path.join(rootPath, "C:", "new-file.txt"),
+                "new file\n",
+            );
+
+            const service = new GitService({ cacheSnapshots: false });
+            const diff = await service.getFileDiff(rootPath, "C:/new-file.txt", {
+                scope: "untracked",
+            });
+
+            expect(diff.raw).toContain("+new file");
+        },
+    );
+
     it("lists remotes and collects staged and unstaged diff stats", async () => {
         const rootPath = createGitRepositoryFixture();
         const remotePath = createGitRepositoryFixture();

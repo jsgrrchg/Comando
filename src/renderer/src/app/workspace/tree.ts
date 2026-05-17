@@ -7,6 +7,7 @@ import type {
     WorkspaceChatTab,
     WorkspaceFileTab,
     WorkspaceGitCommitTab,
+    WorkspaceGitWorktreeDiffTab,
     WorkspaceGitHubIssueTab,
     WorkspaceGitHubIssuesTab,
     WorkspaceGitHubPullRequestTab,
@@ -65,6 +66,7 @@ export interface RuntimeWorkspaceTerminalTab extends WorkspaceTerminalTab {
 }
 
 export type RuntimeWorkspaceGitTab = WorkspaceGitTab;
+export type RuntimeWorkspaceGitWorktreeDiffTab = WorkspaceGitWorktreeDiffTab;
 
 export type RuntimeWorkspaceTab =
     | RuntimeWorkspaceFileTab
@@ -75,6 +77,7 @@ export type RuntimeWorkspaceTab =
     | RuntimeWorkspaceGitHubIssuesTab
     | RuntimeWorkspaceGitHubPullRequestTab
     | RuntimeWorkspaceGitHubPullRequestsTab
+    | RuntimeWorkspaceGitWorktreeDiffTab
     | RuntimeWorkspaceGitTab
     | RuntimeWorkspaceReviewTab
     | RuntimeWorkspaceTerminalTab;

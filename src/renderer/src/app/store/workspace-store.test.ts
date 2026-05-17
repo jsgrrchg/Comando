@@ -297,6 +297,44 @@ describe("workspace file opening", () => {
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });
 
+    it("opens a singleton project diff tab per project and worktree", async () => {
+        await useWorkspaceStore
+            .getState()
+            .openGitWorktreeDiffTab("project-1", "worktree-1");
+        await useWorkspaceStore
+            .getState()
+            .openGitWorktreeDiffTab("project-1", "worktree-1");
+
+        const state = useWorkspaceStore.getState();
+        const projectDiffTabs = Object.values(state.tabsById).filter(
+            (tab) => tab.kind === "git_worktree_diff",
+        );
+
+        expect(projectDiffTabs).toHaveLength(1);
+        expect(projectDiffTabs[0]).toMatchObject({
+            kind: "git_worktree_diff",
+            projectId: "project-1",
+            title: "Uncommitted Changes",
+            worktreeId: "worktree-1",
+        });
+    });
+
+    it("deduplicates primary project diff tabs across null and stored worktree ids", async () => {
+        await useWorkspaceStore
+            .getState()
+            .openGitWorktreeDiffTab("project-1", null);
+        await useWorkspaceStore
+            .getState()
+            .openGitWorktreeDiffTab("project-1", "project-1:primary");
+
+        const state = useWorkspaceStore.getState();
+        const projectDiffTabs = Object.values(state.tabsById).filter(
+            (tab) => tab.kind === "git_worktree_diff",
+        );
+
+        expect(projectDiffTabs).toHaveLength(1);
+    });
+
     it("opens unique GitHub workspace tabs and reselects existing detail tabs", async () => {
         const ref = {
             host: "github.com",

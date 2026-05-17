@@ -1,8 +1,11 @@
 import type {
     GitChangeEntry,
+    GitDiffScope,
     GitFileDiff as SharedGitFileDiff,
     GitRepositorySnapshot,
     GitRepositoryState,
+    GitWorktreeDiffFile,
+    GitWorktreeDiffResult,
     ProjectSummary,
 } from "@shared/ipc";
 
@@ -15,6 +18,14 @@ import type {
     GitRepositorySummary,
     GitTreeNode,
 } from "@renderer/components/git";
+
+export interface GitWorktreeDiffPresentationSection {
+    readonly additions: number;
+    readonly deletions: number;
+    readonly files: readonly GitDiffFile[];
+    readonly id: GitDiffScope;
+    readonly title: string;
+}
 
 type MutableGitChangeTreeNode = {
     readonly children: Map<string, MutableGitChangeTreeNode>;
@@ -118,6 +129,62 @@ export function buildGitDiffFiles(
                 change?.deletions ?? null,
             ),
         } satisfies GitDiffFile;
+    });
+}
+
+export function buildGitDiffFileId(scope: GitDiffScope, path: string): string {
+    return `${scope}:${encodeURIComponent(path)}`;
+}
+
+export function parseGitDiffFileId(
+    fileId: string,
+): { readonly path: string; readonly scope: GitDiffScope } | null {
+    const separatorIndex = fileId.indexOf(":");
+    if (separatorIndex < 0) {
+        return null;
+    }
+
+    const scope = fileId.slice(0, separatorIndex);
+    if (!isGitDiffScope(scope)) {
+        return null;
+    }
+
+    try {
+        return {
+            path: decodeURIComponent(fileId.slice(separatorIndex + 1)),
+            scope,
+        };
+    } catch {
+        return null;
+    }
+}
+
+export function buildGitWorktreeDiffSections(
+    result: GitWorktreeDiffResult | null,
+    actions: {
+        readonly onDiscardFile: (file: GitWorktreeDiffFile) => void;
+        readonly onOpenFile: (file: GitWorktreeDiffFile) => void;
+        readonly onStageFile: (file: GitWorktreeDiffFile) => void;
+        readonly onUnstageFile: (file: GitWorktreeDiffFile) => void;
+    },
+): readonly GitWorktreeDiffPresentationSection[] {
+    if (!result) {
+        return [];
+    }
+
+    return result.sections.map((section) => {
+        const files = section.files.map((file) =>
+            convertWorktreeDiffFile(file, buildWorktreeDiffFileActions(file, actions)),
+        );
+        const totals = sumWorktreeDiffStats(section.files);
+
+        return {
+            additions: totals.additions,
+            deletions: totals.deletions,
+            files,
+            id: section.scope,
+            title: formatWorktreeDiffSectionTitle(section.scope),
+        };
     });
 }
 
@@ -415,6 +482,134 @@ function convertSharedGitDiff(
     };
 }
 
+function convertWorktreeDiffFile(
+    file: GitWorktreeDiffFile,
+    actions: readonly GitAction[],
+): GitDiffFile {
+    const id = buildGitDiffFileId(file.scope, file.path);
+    const summary = formatGitCountLabel(
+        file.additions ?? null,
+        file.deletions ?? null,
+    );
+
+    if (file.diff) {
+        const converted = convertSharedGitDiff(file.diff, null);
+        return {
+            ...converted,
+            actions,
+            emptyState: buildWorktreeDiffFileEmptyState(file),
+            id,
+            isText: !file.isBinary,
+            kind: mapSharedChangeKindToDiffKind(file.kind),
+            path: file.path,
+            previousPath: file.previousPath,
+            reversible: file.scope !== "untracked" && !file.isConflicted,
+            statusLabel: formatWorktreeDiffStatusLabel(file),
+            summary,
+        };
+    }
+
+    return {
+        actions,
+        emptyState: buildWorktreeDiffFileEmptyState(file),
+        hunks: [],
+        id,
+        isText: !file.isBinary,
+        kind: mapSharedChangeKindToDiffKind(file.kind),
+        newText: null,
+        oldText: null,
+        path: file.path,
+        previousPath: file.previousPath,
+        reversible: file.scope !== "untracked" && !file.isConflicted,
+        statusLabel: formatWorktreeDiffStatusLabel(file),
+        summary,
+    };
+}
+
+function buildWorktreeDiffFileActions(
+    file: GitWorktreeDiffFile,
+    actions: {
+        readonly onDiscardFile: (file: GitWorktreeDiffFile) => void;
+        readonly onOpenFile: (file: GitWorktreeDiffFile) => void;
+        readonly onStageFile: (file: GitWorktreeDiffFile) => void;
+        readonly onUnstageFile: (file: GitWorktreeDiffFile) => void;
+    },
+): readonly GitAction[] {
+    const nextActions: GitAction[] = [
+        {
+            id: `${buildGitDiffFileId(file.scope, file.path)}:open`,
+            label: "Open",
+            onClick: () => actions.onOpenFile(file),
+        },
+    ];
+
+    if (file.isConflicted || file.scope === "conflicted") {
+        return nextActions;
+    }
+
+    if (file.scope === "staged") {
+        return [
+            {
+                id: `${buildGitDiffFileId(file.scope, file.path)}:unstage`,
+                label: "Unstage",
+                onClick: () => actions.onUnstageFile(file),
+            },
+            ...nextActions,
+        ];
+    }
+
+    nextActions.unshift({
+        id: `${buildGitDiffFileId(file.scope, file.path)}:stage`,
+        label: "Stage",
+        onClick: () => actions.onStageFile(file),
+    });
+
+    nextActions.push({
+        id: `${buildGitDiffFileId(file.scope, file.path)}:discard`,
+        label: file.scope === "untracked" ? "Delete" : "Discard",
+        onClick: () => actions.onDiscardFile(file),
+        tone: "danger",
+    });
+
+    return nextActions;
+}
+
+function buildWorktreeDiffFileEmptyState(file: GitWorktreeDiffFile): string {
+    if (file.error) {
+        return file.error;
+    }
+
+    if (file.isConflicted || file.scope === "conflicted") {
+        return "This file has conflicts. Open it to resolve them safely.";
+    }
+
+    if (file.isBinary) {
+        return "This file is binary, so Comando can show metadata but not a textual diff.";
+    }
+
+    return "No hunks were produced for this file.";
+}
+
+function formatWorktreeDiffStatusLabel(file: GitWorktreeDiffFile): string {
+    if (file.error) {
+        return "error";
+    }
+
+    if (file.isConflicted || file.scope === "conflicted") {
+        return "conflict";
+    }
+
+    if (file.scope === "staged") {
+        return "staged";
+    }
+
+    if (file.scope === "untracked") {
+        return "untracked";
+    }
+
+    return formatSharedChangeKind(file.kind);
+}
+
 function mapChangeKindToDiffKind(
     change: GitChangeEntry | null,
 ): GitDiffFile["kind"] {
@@ -424,6 +619,23 @@ function mapChangeKindToDiffKind(
 
     switch (change.kind) {
         case "added":
+        case "untracked":
+            return "create";
+        case "deleted":
+            return "delete";
+        case "renamed":
+            return "move";
+        default:
+            return "update";
+    }
+}
+
+function mapSharedChangeKindToDiffKind(
+    kind: GitWorktreeDiffFile["kind"],
+): GitDiffFile["kind"] {
+    switch (kind) {
+        case "added":
+        case "copied":
         case "untracked":
             return "create";
         case "deleted":
@@ -454,6 +666,65 @@ function formatChangeLabel(change: GitChangeEntry | null): string | null {
         default:
             return change.scope === "staged" ? "staged" : "modified";
     }
+}
+
+function formatSharedChangeKind(kind: GitWorktreeDiffFile["kind"]): string {
+    switch (kind) {
+        case "added":
+            return "added";
+        case "deleted":
+            return "deleted";
+        case "renamed":
+            return "renamed";
+        case "conflicted":
+            return "conflict";
+        case "untracked":
+            return "untracked";
+        case "copied":
+            return "copied";
+        case "typechange":
+            return "type changed";
+        default:
+            return "modified";
+    }
+}
+
+function formatWorktreeDiffSectionTitle(scope: GitDiffScope): string {
+    switch (scope) {
+        case "conflicted":
+            return "Conflicts";
+        case "staged":
+            return "Staged";
+        case "untracked":
+            return "Untracked";
+        case "unstaged":
+        default:
+            return "Changes";
+    }
+}
+
+function isGitDiffScope(value: string): value is GitDiffScope {
+    return (
+        value === "conflicted" ||
+        value === "staged" ||
+        value === "unstaged" ||
+        value === "untracked"
+    );
+}
+
+function sumWorktreeDiffStats(files: readonly GitWorktreeDiffFile[]): {
+    readonly additions: number;
+    readonly deletions: number;
+} {
+    let additions = 0;
+    let deletions = 0;
+
+    for (const file of files) {
+        additions += file.additions ?? 0;
+        deletions += file.deletions ?? 0;
+    }
+
+    return { additions, deletions };
 }
 
 function formatGitCountMeta(

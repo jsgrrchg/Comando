@@ -9,6 +9,7 @@ import type {
     WorkspaceChatTab,
     WorkspaceFileTab,
     WorkspaceGitCommitTab,
+    WorkspaceGitWorktreeDiffTab,
     WorkspaceGitHubIssueTab,
     WorkspaceGitHubIssuesTab,
     WorkspaceGitHubPullRequestTab,
@@ -93,6 +94,10 @@ type WorkspaceGitHubPullRequestPayload = Omit<
     "createdAt" | "id" | "title"
 >;
 type WorkspaceGitPayload = Omit<WorkspaceGitTab, "createdAt" | "id" | "title">;
+type WorkspaceGitWorktreeDiffPayload = Omit<
+    WorkspaceGitWorktreeDiffTab,
+    "createdAt" | "id" | "title"
+>;
 type WorkspaceReviewPayload = Omit<
     WorkspaceReviewTab,
     "createdAt" | "id" | "title"
@@ -101,6 +106,8 @@ type WorkspaceTerminalPayload = Omit<
     WorkspaceTerminalTab,
     "createdAt" | "id" | "title"
 >;
+
+const GIT_WORKTREE_DIFF_TAB_TITLE = "Uncommitted Changes";
 
 export interface WorkspaceGateway {
     loadSnapshot(workspaceId: string): Awaitable<WorkspaceSnapshot>;
@@ -414,6 +421,7 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
         | WorkspaceChatPayload
         | WorkspaceChatHistoryPayload
         | WorkspaceGitCommitPayload
+        | WorkspaceGitWorktreeDiffPayload
         | WorkspaceGitHubIssuePayload
         | WorkspaceGitHubIssuesPayload
         | WorkspaceGitHubPullRequestPayload
@@ -532,6 +540,32 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 typeof gitPayload.worktreeId === "string" ||
                 gitPayload.worktreeId === null
                     ? gitPayload.worktreeId
+                    : row.worktree_id,
+        };
+    }
+
+    if (row.kind === "git_worktree_diff") {
+        const gitWorktreeDiffPayload =
+            payload as Partial<WorkspaceGitWorktreeDiffPayload>;
+        const projectId =
+            typeof gitWorktreeDiffPayload.projectId === "string"
+                ? gitWorktreeDiffPayload.projectId
+                : null;
+
+        if (!projectId) {
+            return null;
+        }
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "git_worktree_diff",
+            projectId,
+            title: GIT_WORKTREE_DIFF_TAB_TITLE,
+            worktreeId:
+                typeof gitWorktreeDiffPayload.worktreeId === "string" ||
+                gitWorktreeDiffPayload.worktreeId === null
+                    ? gitWorktreeDiffPayload.worktreeId
                     : row.worktree_id,
         };
     }
@@ -673,6 +707,7 @@ function serializeTab(
     | WorkspaceChatPayload
     | WorkspaceChatHistoryPayload
     | WorkspaceGitCommitPayload
+    | WorkspaceGitWorktreeDiffPayload
     | WorkspaceGitHubIssuePayload
     | WorkspaceGitHubIssuesPayload
     | WorkspaceGitHubPullRequestPayload
@@ -729,6 +764,14 @@ function serializeTab(
     if (tab.kind === "git_commit") {
         return {
             commitSha: tab.commitSha,
+            kind: tab.kind,
+            projectId: tab.projectId,
+            worktreeId: tab.worktreeId ?? null,
+        };
+    }
+
+    if (tab.kind === "git_worktree_diff") {
+        return {
             kind: tab.kind,
             projectId: tab.projectId,
             worktreeId: tab.worktreeId ?? null,

@@ -1,4 +1,10 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import {
+    memo,
+    useCallback,
+    useMemo,
+    useState,
+    type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import { DiffLineView } from "@renderer/components/workspace/review/DiffLineView";
 
@@ -237,6 +243,14 @@ const DiffFileSurface = memo(function DiffFileSurface({
             </div>
         </>
     );
+    const actionButtons =
+        file.actions && file.actions.length > 0 ? (
+            <div className="flex shrink-0 items-center gap-1.5">
+                {file.actions.map((action) => (
+                    <DiffFileActionButton action={action} key={action.id} />
+                ))}
+            </div>
+        ) : null;
 
     return (
         <section
@@ -248,19 +262,24 @@ const DiffFileSurface = memo(function DiffFileSurface({
             ].join(" ")}
         >
             {isCollapsible ? (
-                <button
-                    aria-expanded={!collapsed}
+                <div
                     className={[
                         "flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-bg-secondary/55",
                         surfaceVariant === "panel" && !collapsed
                             ? "border-b border-border"
                             : "",
                     ].join(" ")}
-                    onClick={handleToggle}
-                    type="button"
                 >
-                    {headerContent}
-                </button>
+                    <button
+                        aria-expanded={!collapsed}
+                        className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2 text-left"
+                        onClick={handleToggle}
+                        type="button"
+                    >
+                        {headerContent}
+                    </button>
+                    {actionButtons}
+                </div>
             ) : (
                 <div
                     className={[
@@ -271,6 +290,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
                     ].join(" ")}
                 >
                     {headerContent}
+                    {actionButtons}
                 </div>
             )}
 
@@ -318,13 +338,47 @@ const DiffFileSurface = memo(function DiffFileSurface({
             ) : (
                 <div className="p-3">
                     <GitEmptyState>
-                        No hunks were produced for this file.
+                        {file.emptyState ??
+                            "No hunks were produced for this file."}
                     </GitEmptyState>
                 </div>
             )}
         </section>
     );
 });
+
+function DiffFileActionButton({
+    action,
+}: {
+    readonly action: NonNullable<GitDiffFile["actions"]>[number];
+}) {
+    const handleClick = useCallback(
+        (event: ReactMouseEvent<HTMLButtonElement>) => {
+            event.stopPropagation();
+            action.onClick();
+        },
+        [action],
+    );
+
+    return (
+        <button
+            aria-label={action.ariaLabel}
+            className={[
+                "rounded border px-2 py-1 text-[10px] font-medium transition-colors",
+                action.tone === "danger"
+                    ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
+                    : "border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
+                action.disabled ? "cursor-not-allowed opacity-50" : "",
+            ].join(" ")}
+            disabled={action.disabled || action.busy}
+            onClick={handleClick}
+            title={action.ariaLabel ?? action.label}
+            type="button"
+        >
+            {action.busy ? "..." : action.label}
+        </button>
+    );
+}
 
 function CollapseChevron({ collapsed }: { readonly collapsed: boolean }) {
     return (

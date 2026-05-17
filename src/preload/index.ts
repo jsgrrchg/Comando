@@ -72,6 +72,8 @@ import {
     type GitDiffInput,
     type GitFileDiff,
     type GitFetchInput,
+    type GitWorktreeDiffInput,
+    type GitWorktreeDiffResult,
     type GitHubAuthStatus,
     type GitHubAuthStatusInput,
     type GitHubClearTokenInput,
@@ -721,6 +723,11 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getGitDiff,
             input,
         ) as Promise<GitFileDiff | null>,
+    listGitWorktreeDiff: (input: GitWorktreeDiffInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.listGitWorktreeDiff,
+            input,
+        ) as Promise<GitWorktreeDiffResult | null>,
     getGitCommitDetail: (input: GitCommitDetailInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getGitCommitDetail,
