@@ -1657,7 +1657,27 @@ function createClientRequestId(key: string): string {
 }
 
 function getErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "GitHub request failed.";
+    const message =
+        error instanceof Error ? error.message : "GitHub request failed.";
+    const normalizedMessage = message.toLowerCase();
+
+    if (
+        normalizedMessage.includes("resource not accessible by token") ||
+        normalizedMessage.includes(
+            "resource not accessible by personal access token",
+        )
+    ) {
+        return [
+            "GitHub denied this request.",
+            "Make sure your personal access token has access to this repository and the Issues permission set to Read and write.",
+            "Organization repositories may also require token approval.",
+        ].join(" ");
+    }
+
+    return message.replace(
+        /^Error invoking remote method '[^']+':\s*/u,
+        "",
+    );
 }
 
 function getComandoApi() {

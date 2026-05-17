@@ -252,6 +252,8 @@ describe("github-store", () => {
         const error = new Error("Resource not accessible by token");
         const createGitHubIssue = vi.fn().mockRejectedValue(error);
         stubComando({ createGitHubIssue });
+        const permissionMessage =
+            "GitHub denied this request. Make sure your personal access token has access to this repository and the Issues permission set to Read and write. Organization repositories may also require token approval.";
 
         await expect(
             useGitHubStore.getState().createIssue(repository, {
@@ -262,7 +264,23 @@ describe("github-store", () => {
 
         expect(useGitHubStore.getState().issuesByRepo[repoKey]).toBeUndefined();
         expect(useGitHubStore.getState().errors[`${repoKey}:issue:create`]).toBe(
-            "Resource not accessible by token",
+            permissionMessage,
+        );
+    });
+
+    it("formats Electron-wrapped GitHub token permission errors", async () => {
+        const error = new Error(
+            "Error invoking remote method 'github:comment-issue': GitHubApiError: Resource not accessible by personal access token",
+        );
+        const commentGitHubIssue = vi.fn().mockRejectedValue(error);
+        stubComando({ commentGitHubIssue });
+
+        await expect(
+            useGitHubStore.getState().commentIssue(repository, 4, "Denied"),
+        ).rejects.toThrow("Resource not accessible by personal access token");
+
+        expect(useGitHubStore.getState().errors[`${repoKey}:issue:4:comment`]).toBe(
+            "GitHub denied this request. Make sure your personal access token has access to this repository and the Issues permission set to Read and write. Organization repositories may also require token approval.",
         );
     });
 
