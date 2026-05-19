@@ -12,6 +12,7 @@ import {
     buildSecretPatch,
     createClearSecretDraft,
     createEmptySecretDraft,
+    getAvailableProviderMethods,
     getProviderMethod,
     isMethodIdForProvider,
     normalizeNullableText,
@@ -371,7 +372,10 @@ export function AIProvidersSettings({
                         }
                     />
                     <MethodPicker
-                        methods={AI_PROVIDER_DEFINITIONS.codex.methods}
+                        methods={getAvailableProviderMethods(
+                            "codex",
+                            runtimeStatuses?.codex,
+                        )}
                         value={resolveMethodId(
                             "codex",
                             drafts.codex.authMethod,
@@ -461,7 +465,10 @@ export function AIProvidersSettings({
                         }
                     />
                     <MethodPicker
-                        methods={AI_PROVIDER_DEFINITIONS.claude.methods}
+                        methods={getAvailableProviderMethods(
+                            "claude",
+                            runtimeStatuses?.claude,
+                        )}
                         value={resolveMethodId(
                             "claude",
                             drafts.claude.authMethod,
@@ -521,7 +528,10 @@ export function AIProvidersSettings({
                         }
                     />
                     <MethodPicker
-                        methods={AI_PROVIDER_DEFINITIONS.gemini.methods}
+                        methods={getAvailableProviderMethods(
+                            "gemini",
+                            runtimeStatuses?.gemini,
+                        )}
                         value={resolveMethodId(
                             "gemini",
                             drafts.gemini.authMethod,
@@ -576,7 +586,10 @@ export function AIProvidersSettings({
                         }
                     />
                     <MethodPicker
-                        methods={AI_PROVIDER_DEFINITIONS.kilo.methods}
+                        methods={getAvailableProviderMethods(
+                            "kilo",
+                            runtimeStatuses?.kilo,
+                        )}
                         value={resolveMethodId(
                             "kilo",
                             drafts.kilo.authMethod,
@@ -1729,6 +1742,32 @@ function resolveMethodId<TProviderId extends AiProviderId>(
     draftMethodId: AiProviderAuthMethodById[TProviderId] | null,
     status: AiProviderRuntimeStatus | null | undefined,
 ): AiProviderAuthMethodById[TProviderId] {
+    const methods = getAvailableProviderMethods(providerId, status);
+    const isAvailableMethod = (
+        methodId: string | null | undefined,
+    ): methodId is AiProviderAuthMethodById[TProviderId] =>
+        methods.some((method) => method.id === methodId);
+
+    if (isMethodIdForProvider(providerId, draftMethodId)) {
+        if (!status?.authMethods?.length || isAvailableMethod(draftMethodId)) {
+            return draftMethodId;
+        }
+    }
+
+    if (isMethodIdForProvider(providerId, status?.authMethod)) {
+        if (
+            !status?.authMethods?.length ||
+            isAvailableMethod(status.authMethod)
+        ) {
+            return status.authMethod;
+        }
+    }
+
+    const firstAvailableMethod = methods[0]?.id;
+    if (isMethodIdForProvider(providerId, firstAvailableMethod)) {
+        return firstAvailableMethod;
+    }
+
     if (isMethodIdForProvider(providerId, draftMethodId)) {
         return draftMethodId;
     }

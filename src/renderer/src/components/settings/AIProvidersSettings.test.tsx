@@ -175,6 +175,69 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Optional OPENAI_API_KEY");
     });
 
+    it("filters Claude login methods to the runtime-supported environment", () => {
+        const markup = renderToStaticMarkup(
+            <AIProvidersSettings
+                defaultExpandedProviderIds={["claude"]}
+                runtimeSettings={{
+                    claude: {
+                        authMethod: null,
+                        binaryPath: null,
+                    },
+                }}
+                runtimeStatuses={{
+                    claude: {
+                        authMethod: null,
+                        authMethods: [
+                            {
+                                description:
+                                    "Open a terminal-based Claude subscription login flow.",
+                                id: "claude-ai-login",
+                                name: "Claude subscription",
+                            },
+                            {
+                                description:
+                                    "Open a terminal-based Anthropic Console login flow.",
+                                id: "console-login",
+                                name: "Anthropic Console",
+                            },
+                            {
+                                description:
+                                    "Use an Anthropic API key stored only for Comando on this machine.",
+                                id: "anthropic-api-key",
+                                name: "Anthropic API key",
+                            },
+                            {
+                                description:
+                                    "Use a custom Anthropic-compatible gateway just for Comando.",
+                                id: "gateway",
+                                name: "Custom gateway",
+                            },
+                            {
+                                description:
+                                    "Use a custom Bedrock-compatible Claude gateway just for Comando.",
+                                id: "gateway-bedrock",
+                                name: "Bedrock gateway",
+                            },
+                        ],
+                        authReady: false,
+                        checkedAt: "2026-05-19T12:00:00.000Z",
+                        command: "claude-agent-acp",
+                        runtimeId: "claude",
+                        source: "bundled",
+                        state: "ready",
+                    },
+                }}
+            />,
+        );
+
+        expect(markup).toContain("Claude AI login");
+        expect(markup).toContain("Console login");
+        expect(markup).not.toContain("Claude login");
+        expect(markup).toContain("Anthropic API key");
+        expect(markup).toContain("Bedrock gateway");
+    });
+
     it("does not render default API key fields before a method is selected or detected", () => {
         const markup = renderToStaticMarkup(
             <AIProvidersSettings

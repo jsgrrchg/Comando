@@ -346,6 +346,29 @@ export function getProviderMethod(
     );
 }
 
+export function getAvailableProviderMethods<TProviderId extends AiProviderId>(
+    providerId: TProviderId,
+    status: AiProviderRuntimeStatus | null | undefined,
+): readonly AiProviderMethodDefinition<AiProviderAuthMethodById[TProviderId]>[] {
+    type ProviderMethod = AiProviderMethodDefinition<
+        AiProviderAuthMethodById[TProviderId]
+    >;
+    const methods = AI_PROVIDER_DEFINITIONS[providerId]
+        .methods as unknown as readonly ProviderMethod[];
+    const runtimeMethods = status?.authMethods;
+
+    if (!runtimeMethods || runtimeMethods.length === 0) {
+        return methods;
+    }
+
+    const runtimeMethodIds = new Set(runtimeMethods.map((method) => method.id));
+    const filteredMethods = methods.filter((method) =>
+        runtimeMethodIds.has(method.id),
+    );
+
+    return filteredMethods.length > 0 ? filteredMethods : methods;
+}
+
 export function isMethodIdForProvider<TProviderId extends AiProviderId>(
     providerId: TProviderId,
     methodId: string | null | undefined,
