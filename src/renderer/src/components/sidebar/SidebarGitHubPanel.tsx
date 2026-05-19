@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -33,7 +34,13 @@ import {
     getGitHubRepoKey,
     useGitHubStore,
 } from "@renderer/app/store/github-store";
+import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "@renderer/components/context-menu/ContextMenu";
 import {
     formatGitHubRelativeTime,
     GitHubEmptyState,
@@ -43,11 +50,6 @@ import {
     hasGitHubWritePermission,
     openGitHubWebUrl,
 } from "@renderer/components/workspace/GitHubWorkspacePrimitives";
-import {
-    ContextMenu,
-    type ContextMenuEntry,
-    type ContextMenuState,
-} from "@renderer/components/context-menu/ContextMenu";
 
 import {
     emitSidebarGitHubDrag,
@@ -72,6 +74,12 @@ type SidebarGitHubDragPreview = {
 
 type SidebarIssueContextMenuPayload = {
     readonly issueNumber: number;
+};
+
+type SidebarIssueLabelPickerState = {
+    readonly issueNumber: number;
+    readonly x: number;
+    readonly y: number;
 };
 
 const SIDEBAR_GITHUB_DRAG_THRESHOLD_PX = 6;
@@ -200,8 +208,8 @@ export function SidebarGitHubPanel({
     );
     const [issueContextMenu, setIssueContextMenu] =
         useState<ContextMenuState<SidebarIssueContextMenuPayload> | null>(null);
-    const [labelPickerIssue, setLabelPickerIssue] =
-        useState<GitHubIssueSummary | null>(null);
+    const [labelPicker, setLabelPicker] =
+        useState<SidebarIssueLabelPickerState | null>(null);
     const normalizedSearch = (filter ?? "").trim().toLowerCase();
     const disabledReason = getDisabledReason({
         authError,
@@ -417,10 +425,15 @@ export function SidebarGitHubPanel({
                       issue.number === issueContextMenu.payload.issueNumber,
               ) ?? null)
             : null;
-    const activeLabelPickerIssue = labelPickerIssue
+    const contextMenuPosition = issueContextMenu
+        ? { x: issueContextMenu.x, y: issueContextMenu.y }
+        : null;
+    const activeLabelPickerIssue = labelPicker
         ? (visibleIssues.find(
-              (issue) => issue.number === labelPickerIssue.number,
-          ) ?? labelPickerIssue)
+              (issue) => issue.number === labelPicker.issueNumber,
+          ) ??
+          issues.find((issue) => issue.number === labelPicker.issueNumber) ??
+          null)
         : null;
     const isUpdatingLabelPickerIssue =
         repoKey && activeLabelPickerIssue
@@ -444,34 +457,43 @@ export function SidebarGitHubPanel({
         [openGitHubIssueTab, projectId, repoRef, worktreeId],
     );
     const openIssueLabelPicker = useCallback(
-        (issue: GitHubIssueSummary) => {
+        (issue: GitHubIssueSummary, position: { x: number; y: number }) => {
             if (!repoRef) {
                 return;
             }
 
-            setLabelPickerIssue(issue);
+            setLabelPicker({
+                issueNumber: issue.number,
+                x: position.x,
+                y: position.y,
+            });
             void refreshLabels(repoRef).catch(() => undefined);
         },
         [refreshLabels, repoRef],
     );
-    const issueContextMenuEntries: ContextMenuEntry[] = contextIssue
-        ? [
-              {
-                  label: "Open Issue",
-                  action: () => openIssueTab(contextIssue.number),
-              },
-              {
-                  label: "Open in GitHub",
-                  action: () => openGitHubWebUrl(contextIssue.url),
-              },
-              { type: "separator" },
-              {
-                  label: "Edit Labels...",
-                  action: () => openIssueLabelPicker(contextIssue),
-                  disabled: !canWriteIssues,
-              },
-          ]
-        : [];
+    const issueContextMenuEntries: ContextMenuEntry[] =
+        contextIssue && contextMenuPosition
+            ? [
+                  {
+                      label: "Open Issue",
+                      action: () => openIssueTab(contextIssue.number),
+                  },
+                  {
+                      label: "Open in GitHub",
+                      action: () => openGitHubWebUrl(contextIssue.url),
+                  },
+                  { type: "separator" },
+                  {
+                      label: "Edit Labels...",
+                      action: () =>
+                          openIssueLabelPicker(
+                              contextIssue,
+                              contextMenuPosition,
+                          ),
+                      disabled: !canWriteIssues,
+                  },
+              ]
+            : [];
     const handleIssueContextMenu = useCallback(
         (
             event: ReactMouseEvent<HTMLElement>,
@@ -479,6 +501,7 @@ export function SidebarGitHubPanel({
         ) => {
             event.preventDefault();
             event.stopPropagation();
+            setLabelPicker(null);
             setIssueContextMenu({
                 payload: { issueNumber: issue.number },
                 x: event.clientX,
@@ -496,7 +519,7 @@ export function SidebarGitHubPanel({
             await updateIssue(repoRef, activeLabelPickerIssue.number, {
                 labels: labelNames,
             });
-            setLabelPickerIssue(null);
+            setLabelPicker(null);
         },
         [activeLabelPickerIssue, canWriteIssues, repoRef, updateIssue],
     );
@@ -768,14 +791,15 @@ export function SidebarGitHubPanel({
                     onClose={() => setIssueContextMenu(null)}
                 />
             ) : null}
-            {activeLabelPickerIssue ? (
+            {activeLabelPickerIssue && labelPicker ? (
                 <SidebarGitHubLabelPicker
+                    anchor={{ x: labelPicker.x, y: labelPicker.y }}
                     error={labelsError}
                     issue={activeLabelPickerIssue}
                     isLoading={isLoadingLabels}
                     isSaving={isUpdatingLabelPickerIssue}
                     labels={labels}
-                    onClose={() => setLabelPickerIssue(null)}
+                    onClose={() => setLabelPicker(null)}
                     onSave={(labelNames) => void handleSaveIssueLabels(labelNames)}
                 />
             ) : null}
@@ -939,6 +963,7 @@ function SidebarGitHubPullRequestRow({
 }
 
 function SidebarGitHubLabelPicker({
+    anchor,
     error,
     issue,
     isLoading,
@@ -947,6 +972,7 @@ function SidebarGitHubLabelPicker({
     onClose,
     onSave,
 }: {
+    readonly anchor: { readonly x: number; readonly y: number };
     readonly error: string | null;
     readonly issue: GitHubIssueSummary;
     readonly isLoading: boolean;
@@ -955,10 +981,33 @@ function SidebarGitHubLabelPicker({
     readonly onClose: () => void;
     readonly onSave: (labelNames: readonly string[]) => void;
 }) {
+    const ref = useRef<HTMLDivElement | null>(null);
     const [query, setQuery] = useState("");
+    const [position, setPosition] = useState(anchor);
     const [selectedNames, setSelectedNames] = useState<ReadonlySet<string>>(
         () => new Set(issue.labels.map((label) => label.name)),
     );
+
+    useEffect(() => {
+        const handleMouseDown = (event: MouseEvent) => {
+            if (ref.current && !ref.current.contains(event.target as Node)) {
+                onClose();
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                onClose();
+            }
+        };
+
+        document.addEventListener("mousedown", handleMouseDown);
+        document.addEventListener("keydown", handleKeyDown);
+
+        return () => {
+            document.removeEventListener("mousedown", handleMouseDown);
+            document.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [onClose]);
 
     useEffect(() => {
         setQuery("");
@@ -976,6 +1025,30 @@ function SidebarGitHubLabelPicker({
     const labelNames = labels.map((label) => label.name);
     const selectedLabels = labelNames.filter((name) => selectedNames.has(name));
 
+    useLayoutEffect(() => {
+        const element = ref.current;
+        if (!element) {
+            return;
+        }
+
+        const rect = element.getBoundingClientRect();
+        setPosition(
+            getViewportSafeMenuPosition(
+                anchor.x,
+                anchor.y,
+                rect.width,
+                rect.height,
+            ),
+        );
+    }, [
+        anchor.x,
+        anchor.y,
+        error,
+        isLoading,
+        labels.length,
+        visibleLabels.length,
+    ]);
+
     const toggleLabel = (labelName: string) => {
         setSelectedNames((current) => {
             const next = new Set(current);
@@ -990,98 +1063,98 @@ function SidebarGitHubLabelPicker({
 
     return createPortal(
         <div
-            className="fixed inset-0 flex items-center justify-center bg-black/35 px-4"
-            style={{ zIndex: 10020 }}
+            className="fixed w-[min(320px,calc(100vw-16px))] rounded-lg border border-border bg-bg-panel p-2 shadow-[0_18px_42px_rgba(0,0,0,0.34)]"
+            data-context-menu-root="true"
+            ref={ref}
+            style={{ left: position.x, top: position.y, zIndex: 10020 }}
         >
-            <div className="w-full max-w-sm rounded-xl border border-border bg-bg-panel p-3 shadow-[0_18px_48px_rgba(0,0,0,0.32)]">
-                <div className="flex min-w-0 items-start justify-between gap-3">
-                    <div className="min-w-0">
-                        <div className="text-[12px] font-semibold text-text-primary">
-                            Edit Labels
-                        </div>
-                        <div className="mt-0.5 truncate text-[10px] text-text-secondary">
-                            #{issue.number} {issue.title}
-                        </div>
+            <div className="flex min-w-0 items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="text-[12px] font-semibold text-text-primary">
+                        Edit Labels
                     </div>
+                    <div className="mt-0.5 truncate text-[10px] text-text-secondary">
+                        #{issue.number} {issue.title}
+                    </div>
+                </div>
+                <button
+                    className="review-action-btn"
+                    onClick={onClose}
+                    type="button"
+                >
+                    Close
+                </button>
+            </div>
+            <input
+                className="mt-3 h-[24px] w-full rounded-md border border-border/70 bg-bg-primary px-2 font-mono text-[11px] text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                placeholder="Search labels..."
+                value={query}
+            />
+            {error ? (
+                <div className="mt-2 rounded-md border border-[color-mix(in_srgb,var(--diff-remove)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_8%,transparent)] px-2 py-1.5 text-[11px] text-text-primary">
+                    {error}
+                </div>
+            ) : null}
+            <div className="shell-scrollbar mt-2 max-h-64 space-y-1 overflow-y-auto pr-1">
+                {isLoading ? (
+                    <div className="px-1 py-2 text-[11px] text-text-secondary">
+                        Loading labels...
+                    </div>
+                ) : null}
+                {!isLoading && visibleLabels.length === 0 ? (
+                    <div className="px-1 py-2 text-[11px] text-text-secondary">
+                        No labels match this search.
+                    </div>
+                ) : null}
+                {visibleLabels.map((label) => (
+                    <label
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-text-primary hover:bg-bg-tertiary"
+                        key={label.id || label.name}
+                    >
+                        <input
+                            checked={selectedNames.has(label.name)}
+                            className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                            onChange={() => toggleLabel(label.name)}
+                            type="checkbox"
+                        />
+                        <span
+                            aria-hidden="true"
+                            className="h-2.5 w-2.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: `#${label.color}` }}
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                            {label.name}
+                        </span>
+                    </label>
+                ))}
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-2">
+                <button
+                    className="review-action-btn"
+                    disabled={isSaving || selectedNames.size === 0}
+                    onClick={() => setSelectedNames(new Set())}
+                    type="button"
+                >
+                    Clear
+                </button>
+                <div className="flex items-center gap-2">
                     <button
                         className="review-action-btn"
+                        disabled={isSaving}
                         onClick={onClose}
                         type="button"
                     >
-                        Close
+                        Cancel
                     </button>
-                </div>
-                <input
-                    className="mt-3 h-[24px] w-full rounded-md border border-border/70 bg-bg-primary px-2 font-mono text-[11px] text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
-                    onChange={(event) => setQuery(event.currentTarget.value)}
-                    placeholder="Search labels..."
-                    value={query}
-                />
-                {error ? (
-                    <div className="mt-2 rounded-md border border-[color-mix(in_srgb,var(--diff-remove)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_8%,transparent)] px-2 py-1.5 text-[11px] text-text-primary">
-                        {error}
-                    </div>
-                ) : null}
-                <div className="shell-scrollbar mt-2 max-h-64 space-y-1 overflow-y-auto pr-1">
-                    {isLoading ? (
-                        <div className="px-1 py-2 text-[11px] text-text-secondary">
-                            Loading labels...
-                        </div>
-                    ) : null}
-                    {!isLoading && visibleLabels.length === 0 ? (
-                        <div className="px-1 py-2 text-[11px] text-text-secondary">
-                            No labels match this search.
-                        </div>
-                    ) : null}
-                    {visibleLabels.map((label) => (
-                        <label
-                            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-text-primary hover:bg-bg-tertiary"
-                            key={label.id || label.name}
-                        >
-                            <input
-                                checked={selectedNames.has(label.name)}
-                                className="h-3.5 w-3.5 accent-[var(--color-accent)]"
-                                onChange={() => toggleLabel(label.name)}
-                                type="checkbox"
-                            />
-                            <span
-                                aria-hidden="true"
-                                className="h-2.5 w-2.5 shrink-0 rounded-full"
-                                style={{ backgroundColor: `#${label.color}` }}
-                            />
-                            <span className="min-w-0 flex-1 truncate">
-                                {label.name}
-                            </span>
-                        </label>
-                    ))}
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-2">
                     <button
                         className="review-action-btn"
-                        disabled={isSaving || selectedNames.size === 0}
-                        onClick={() => setSelectedNames(new Set())}
+                        disabled={isSaving || isLoading}
+                        onClick={() => onSave(selectedLabels)}
                         type="button"
                     >
-                        Clear
+                        {isSaving ? "Saving..." : "Save"}
                     </button>
-                    <div className="flex items-center gap-2">
-                        <button
-                            className="review-action-btn"
-                            disabled={isSaving}
-                            onClick={onClose}
-                            type="button"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            className="review-action-btn"
-                            disabled={isSaving || isLoading}
-                            onClick={() => onSave(selectedLabels)}
-                            type="button"
-                        >
-                            {isSaving ? "Saving..." : "Save"}
-                        </button>
-                    </div>
                 </div>
             </div>
         </div>,
