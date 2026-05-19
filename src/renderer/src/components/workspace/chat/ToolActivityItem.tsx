@@ -195,7 +195,7 @@ function isFileToolActivity(
     return false;
 }
 
-function isEditedFileToolActivity(
+export function isEditedFileToolActivity(
     activity: AiToolActivity,
     trackedFiles: readonly AiTrackedFile[],
 ): boolean {

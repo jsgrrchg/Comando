@@ -79,7 +79,10 @@ import {
     serializePromptWithContexts,
 } from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
-import { ToolActivityItem } from "./chat/ToolActivityItem";
+import {
+    isEditedFileToolActivity,
+    ToolActivityItem,
+} from "./chat/ToolActivityItem";
 import { getStopAgentConfirmationMessage } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -1875,17 +1878,27 @@ function ImageAttachmentChip(props: {
     );
 }
 
-function getLatestToolRowId(
+function isEditedFileToolRow(row: ChatTimelineRow): boolean {
+    return (
+        row.kind === "tool" &&
+        isEditedFileToolActivity(
+            row.reviewEntry.activity,
+            row.reviewEntry.trackedFiles,
+        )
+    );
+}
+
+function getLatestEditedFileToolRowId(
     historyRows: readonly ChatTimelineRow[],
     liveTailRow: ChatTimelineRow | null,
 ): string | null {
-    if (liveTailRow?.kind === "tool") {
+    if (liveTailRow && isEditedFileToolRow(liveTailRow)) {
         return liveTailRow.id;
     }
 
     for (let index = historyRows.length - 1; index >= 0; index -= 1) {
         const row = historyRows[index];
-        if (row?.kind === "tool") {
+        if (row && isEditedFileToolRow(row)) {
             return row.id;
         }
     }
@@ -1952,10 +1965,10 @@ const ChatTimeline = memo(function ChatTimeline({
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
-    const latestStreamingToolRowId = useMemo(
+    const latestStreamingEditedFileToolRowId = useMemo(
         () =>
             isStreaming
-                ? getLatestToolRowId(historyRows, liveTailRow)
+                ? getLatestEditedFileToolRowId(historyRows, liveTailRow)
                 : null,
         [historyRows, isStreaming, liveTailRow],
     );
@@ -1990,7 +2003,9 @@ const ChatTimeline = memo(function ChatTimeline({
                     onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
-                    latestStreamingToolRowId={latestStreamingToolRowId}
+                    latestStreamingEditedFileToolRowId={
+                        latestStreamingEditedFileToolRowId
+                    }
                     toolCardExpansionMode={toolCardExpansionMode}
                     worktreeId={worktreeId}
                 />
@@ -2007,7 +2022,9 @@ const ChatTimeline = memo(function ChatTimeline({
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     row={liveTailRow}
-                    latestStreamingToolRowId={latestStreamingToolRowId}
+                    latestStreamingEditedFileToolRowId={
+                        latestStreamingEditedFileToolRowId
+                    }
                     toolCardExpansionMode={toolCardExpansionMode}
                     worktreeId={worktreeId}
                 />
@@ -2032,7 +2049,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     onRevealFileReference,
     projectId,
     resolveFileReference,
-    latestStreamingToolRowId,
+    latestStreamingEditedFileToolRowId,
     toolCardExpansionMode,
     worktreeId,
 }: {
@@ -2064,7 +2081,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
-    readonly latestStreamingToolRowId: string | null;
+    readonly latestStreamingEditedFileToolRowId: string | null;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
@@ -2083,7 +2100,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
-            isLatestStreamingTool={row.id === latestStreamingToolRowId}
+            isLatestStreamingTool={
+                row.id === latestStreamingEditedFileToolRowId
+            }
             toolCardExpansionMode={toolCardExpansionMode}
             worktreeId={worktreeId}
         />
@@ -2105,7 +2124,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     projectId,
     resolveFileReference,
     row,
-    latestStreamingToolRowId,
+    latestStreamingEditedFileToolRowId,
     toolCardExpansionMode,
     worktreeId,
 }: {
@@ -2137,7 +2156,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly row: ChatTimelineRow | null;
-    readonly latestStreamingToolRowId: string | null;
+    readonly latestStreamingEditedFileToolRowId: string | null;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
@@ -2160,7 +2179,9 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
-            isLatestStreamingTool={row.id === latestStreamingToolRowId}
+            isLatestStreamingTool={
+                row.id === latestStreamingEditedFileToolRowId
+            }
             toolCardExpansionMode={toolCardExpansionMode}
             worktreeId={worktreeId}
         />
@@ -2371,7 +2392,7 @@ function areChatTimelineHistoryPropsEqual(
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
-        readonly latestStreamingToolRowId: string | null;
+        readonly latestStreamingEditedFileToolRowId: string | null;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2400,7 +2421,7 @@ function areChatTimelineHistoryPropsEqual(
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
-        readonly latestStreamingToolRowId: string | null;
+        readonly latestStreamingEditedFileToolRowId: string | null;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2418,7 +2439,8 @@ function areChatTimelineHistoryPropsEqual(
         previous.onRevealFileReference === next.onRevealFileReference &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
-        previous.latestStreamingToolRowId === next.latestStreamingToolRowId &&
+        previous.latestStreamingEditedFileToolRowId ===
+            next.latestStreamingEditedFileToolRowId &&
         previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );
@@ -2450,7 +2472,7 @@ function areChatTimelineLiveTailPropsEqual(
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly row: ChatTimelineRow | null;
-        readonly latestStreamingToolRowId: string | null;
+        readonly latestStreamingEditedFileToolRowId: string | null;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2479,7 +2501,7 @@ function areChatTimelineLiveTailPropsEqual(
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly row: ChatTimelineRow | null;
-        readonly latestStreamingToolRowId: string | null;
+        readonly latestStreamingEditedFileToolRowId: string | null;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2497,7 +2519,8 @@ function areChatTimelineLiveTailPropsEqual(
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.row === next.row &&
-        previous.latestStreamingToolRowId === next.latestStreamingToolRowId &&
+        previous.latestStreamingEditedFileToolRowId ===
+            next.latestStreamingEditedFileToolRowId &&
         previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );
