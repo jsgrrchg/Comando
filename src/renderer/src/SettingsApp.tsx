@@ -28,8 +28,6 @@ import {
     type AiProviderDiagnosticsState,
     type AiProviderId,
     type AiProviderRuntimeSettingsInput,
-    type RuntimeActionOption,
-    type RuntimeCardOption,
 } from "./components/settings";
 import {
     saveAiChatSettings,
@@ -549,13 +547,6 @@ export function SettingsApp() {
         [loadEnvironmentDiagnostics],
     );
 
-    const runtimes = useMemo<readonly RuntimeCardOption[]>(
-        () =>
-            (["codex", "claude", "gemini", "kilo"] as const).map((runtimeId) =>
-                mapRuntimeCard(runtimeId, runtimeStatuses[runtimeId]),
-            ),
-        [runtimeStatuses],
-    );
     const aiProviderDiagnostics = useMemo<AiProviderDiagnosticsState>(
         () =>
             mapEnvironmentDiagnostics(
@@ -936,23 +927,7 @@ export function SettingsApp() {
                     rootPath: project.rootPath,
                 })),
             }}
-            onRuntimeAction={(runtimeId, actionId) => {
-                void handleRuntimeAction({
-                    actionId,
-                    loadRuntimeStatuses,
-                    runtimeId: runtimeId as AiRuntimeId,
-                    runtimeStatuses,
-                    projectId: runtimeProjectId,
-                }).catch((error) => {
-                    window.alert(
-                        error instanceof Error
-                            ? error.message
-                            : "Could not complete the runtime action.",
-                    );
-                });
-            }}
             shortcuts={shortcuts}
-            runtimes={runtimes}
             updates={{
                 changelog: appChangelog,
                 onCheckForUpdates: () => {
@@ -990,152 +965,6 @@ function createDefaultGitHubAuthStatus(): GitHubAuthStatus {
     };
 }
 
-async function handleRuntimeAction(options: {
-    readonly actionId: string;
-    readonly loadRuntimeStatuses: () => Promise<void>;
-    readonly projectId: string | null;
-    readonly runtimeId: AiRuntimeId;
-    readonly runtimeStatuses: Record<AiRuntimeId, AiRuntimeStatus | null>;
-}): Promise<void> {
-    if (!window.comando) {
-        return;
-    }
-
-    if (options.actionId === "refresh") {
-        await options.loadRuntimeStatuses();
-        return;
-    }
-
-    if (options.actionId === "logout") {
-        const confirmed = window.confirm(
-            "Log out from the provider? If the remote logout fails, Comando will keep local credentials unchanged.",
-        );
-        if (!confirmed) {
-            return;
-        }
-        await window.comando.logoutAiRuntimeAuth({
-            runtimeId: options.runtimeId,
-        });
-        await options.loadRuntimeStatuses();
-        return;
-    }
-
-    if (options.actionId === "disconnect") {
-        const confirmed = window.confirm(
-            "Disconnect from Comando? This removes Comando-managed credentials or marks external login as signed out. Active sessions may keep credentials loaded at launch.",
-        );
-        if (!confirmed) {
-            return;
-        }
-        await window.comando.disconnectAiRuntimeAuth({
-            runtimeId: options.runtimeId,
-        });
-        await options.loadRuntimeStatuses();
-        return;
-    }
-
-    if (options.actionId !== "connect") {
-        return;
-    }
-
-    const runtimeStatus = options.runtimeStatuses[options.runtimeId];
-    const methodId =
-        options.runtimeId === "codex"
-            ? getCodexLaunchAuthMethodId(runtimeStatus)
-            : (runtimeStatus?.authMethods[0]?.id ??
-              runtimeStatus?.authMethod ??
-              null);
-
-    if (!methodId) {
-        return;
-    }
-
-    await window.comando.launchAiRuntimeAuth({
-        methodId,
-        projectId: options.projectId,
-        runtimeId: options.runtimeId,
-    });
-    await options.loadRuntimeStatuses();
-}
-
-function mapRuntimeCard(
-    runtimeId: AiRuntimeId,
-    status: AiRuntimeStatus | null,
-): RuntimeCardOption {
-    if (!status) {
-        return {
-            actions: [
-                {
-                    id: "refresh",
-                    label: "Refresh",
-                },
-            ],
-            details: "Status not loaded yet.",
-            id: runtimeId,
-            name: getRuntimeName(runtimeId),
-            status: "Unknown",
-        };
-    }
-
-    const actions: RuntimeActionOption[] = [];
-    if (status.authReady) {
-        if (status.canLogoutAuth) {
-            actions.push({
-                id: "logout",
-                label: "Log out from provider",
-                tone: "danger",
-            });
-        }
-        if (status.canDisconnectAuth) {
-            actions.push({
-                id: "disconnect",
-                label: "Disconnect from Comando",
-                tone: status.canLogoutAuth ? undefined : "danger",
-            });
-        }
-    } else {
-        actions.push({
-            id: "connect",
-            label: "Connect",
-            tone: "primary",
-        });
-        if (status.canDisconnectAuth) {
-            actions.push({
-                id: "disconnect",
-                label: "Disconnect from Comando",
-                tone: "danger",
-            });
-        }
-    }
-    actions.push({
-        id: "refresh",
-        label: "Refresh",
-    });
-
-    return {
-        actions,
-        description: getRuntimeDescription(status.runtimeId),
-        details: formatRuntimeDetails(status),
-        id: status.runtimeId,
-        name: getRuntimeName(status.runtimeId),
-        source: status.source ?? "unknown",
-        status: formatRuntimeStatus(status),
-    };
-}
-
-function formatRuntimeDetails(status: AiRuntimeStatus): string {
-    const parts = [
-        status.authCredentialSourceLabel,
-        status.authStorageMessage,
-        status.authSessionMessage,
-        status.message,
-        status.command,
-        status.source ? "Source: " + status.source : null,
-    ].filter((part): part is string => Boolean(part?.trim()));
-
-    return parts.join(" ") || "No details yet.";
-}
-
 function getRuntimeName(runtimeId: AiRuntimeId): string {
     switch (runtimeId) {
         case "claude":
@@ -1148,32 +977,6 @@ function getRuntimeName(runtimeId: AiRuntimeId): string {
         default:
             return "Codex";
     }
-}
-
-function getRuntimeDescription(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude authentication and binary setup.";
-        case "gemini":
-            return "Gemini CLI auth and Google-backed runtime setup.";
-        case "kilo":
-            return "Kilo CLI discovery and sign-in status from the local runtime.";
-        case "codex":
-        default:
-            return "Codex runtime discovery and binary path.";
-    }
-}
-
-function formatRuntimeStatus(status: AiRuntimeStatus): string {
-    if (status.state === "ready") {
-        return status.authReady ? "Ready" : "Needs auth";
-    }
-
-    if (status.state === "missing") {
-        return "Missing";
-    }
-
-    return "Needs attention";
 }
 
 function mapEnvironmentDiagnostics(
@@ -1283,29 +1086,4 @@ function mapEnvironmentDiagnostics(
         loading,
         updatedAt: diagnostics.checkedAt,
     };
-}
-
-function getCodexLaunchAuthMethodId(
-    status: AiRuntimeStatus | null,
-): string | null {
-    if (!status) {
-        return null;
-    }
-
-    if (
-        status.authMethod === "chatgpt" ||
-        status.authMethod === "codex-api-key" ||
-        status.authMethod === "openai-api-key"
-    ) {
-        return status.authMethod;
-    }
-
-    const nextMethod = status.authMethods.find(
-        (method) =>
-            method.id === "chatgpt" ||
-            method.id === "codex-api-key" ||
-            method.id === "openai-api-key",
-    );
-
-    return nextMethod?.id ?? "chatgpt";
 }

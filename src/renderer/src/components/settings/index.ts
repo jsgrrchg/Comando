@@ -26,8 +26,6 @@ export type {
 export type {
     ChatFontFamilyOption,
     EditorFontFamilyOption,
-    RuntimeActionOption,
-    RuntimeCardOption,
     SettingsAiChatState,
     SettingsEditorControlState,
     SettingsPrivacyState,

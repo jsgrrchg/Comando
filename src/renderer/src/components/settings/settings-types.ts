@@ -64,24 +64,6 @@ export interface SettingsEditorControlState {
     readonly onSuggestionsEnabledChange?: (enabled: boolean) => void;
 }
 
-export interface RuntimeActionOption {
-    readonly id: string;
-    readonly label: string;
-    readonly disabled?: boolean;
-    readonly tone?: "default" | "primary" | "danger";
-    readonly hint?: string;
-}
-
-export interface RuntimeCardOption {
-    readonly id: string;
-    readonly name: string;
-    readonly description?: string;
-    readonly status?: string;
-    readonly source?: string;
-    readonly details?: string;
-    readonly actions?: readonly RuntimeActionOption[];
-}
-
 export interface ShortcutEntryOption {
     readonly description: string;
     readonly id: string;
@@ -131,9 +113,7 @@ export interface SettingsWindowProps {
     readonly projects: SettingsProjectsState;
     readonly updates: SettingsUpdatesState;
     readonly shortcuts?: readonly ShortcutEntryOption[];
-    readonly aiProviders?: AIProvidersSettingsProps;
-    readonly runtimes?: readonly RuntimeCardOption[];
-    readonly onRuntimeAction?: (runtimeId: string, actionId: string) => void;
+    readonly aiProviders: AIProvidersSettingsProps;
 }
 
 export interface SettingsProjectOption {
