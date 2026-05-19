@@ -101,24 +101,25 @@ const PROVIDER_CARD_STYLE: CSSProperties = {
 };
 
 const PANEL_STYLE: CSSProperties = {
-    backgroundColor: "color-mix(in srgb, var(--color-bg-secondary) 70%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
-    borderRadius: 10,
+    borderLeft:
+        "1px solid color-mix(in srgb, var(--color-accent) 26%, var(--color-border))",
     display: "grid",
-    gap: 12,
-    marginTop: 12,
-    padding: 12,
+    gap: 10,
+    marginLeft: 15,
+    marginTop: 10,
+    padding: "2px 0 2px 16px",
 };
 
 const FIELD_STYLE: CSSProperties = {
-    backgroundColor: "var(--color-bg-tertiary)",
-    border: "1px solid var(--color-border)",
-    borderRadius: 6,
+    backgroundColor:
+        "color-mix(in srgb, var(--color-bg-tertiary) 58%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)",
+    borderRadius: 4,
     color: "var(--color-text-primary)",
     fontFamily: "inherit",
-    fontSize: 12,
+    fontSize: 11,
     outline: "none",
-    padding: "7px 9px",
+    padding: "6px 8px",
     width: "100%",
 };
 
@@ -810,8 +811,8 @@ function MethodPicker<TMethodId extends AiProviderAuthMethodId>({
             <div
                 style={{
                     display: "grid",
-                    gap: 8,
-                    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                    gap: 6,
+                    gridTemplateColumns: "repeat(auto-fit, minmax(142px, 1fr))",
                 }}
             >
                 {methods.map((method) => {
@@ -823,20 +824,25 @@ function MethodPicker<TMethodId extends AiProviderAuthMethodId>({
                             key={method.id}
                             onClick={() => onChange(method.id)}
                             style={{
+                                alignItems: "flex-start",
                                 backgroundColor: selected
-                                    ? "color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-tertiary))"
-                                    : "var(--color-bg-tertiary)",
+                                    ? "color-mix(in srgb, var(--color-accent) 8%, transparent)"
+                                    : "transparent",
                                 border: selected
-                                    ? "1px solid var(--color-accent)"
-                                    : "1px solid var(--color-border)",
-                                borderRadius: 8,
+                                    ? "1px solid color-mix(in srgb, var(--color-accent) 62%, var(--color-border))"
+                                    : "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)",
+                                borderRadius: 4,
+                                boxShadow: selected
+                                    ? "inset 2px 0 0 var(--color-accent)"
+                                    : "none",
                                 color: selected
                                     ? "var(--color-text-primary)"
                                     : "var(--color-text-secondary)",
                                 cursor: "pointer",
+                                display: "grid",
                                 fontFamily: "inherit",
-                                minHeight: 58,
-                                padding: "9px 10px",
+                                minHeight: 42,
+                                padding: "7px 9px 7px 10px",
                                 textAlign: "left",
                             }}
                             title={method.description}
@@ -845,8 +851,9 @@ function MethodPicker<TMethodId extends AiProviderAuthMethodId>({
                             <span
                                 style={{
                                     display: "block",
-                                    fontSize: 12,
-                                    fontWeight: selected ? 650 : 550,
+                                    fontSize: 11,
+                                    fontWeight: selected ? 650 : 500,
+                                    letterSpacing: "0.01em",
                                 }}
                             >
                                 {method.label}
@@ -856,7 +863,8 @@ function MethodPicker<TMethodId extends AiProviderAuthMethodId>({
                                     display: "block",
                                     fontSize: 10,
                                     lineHeight: 1.35,
-                                    marginTop: 3,
+                                    marginTop: 2,
+                                    opacity: selected ? 0.86 : 0.72,
                                 }}
                             >
                                 {method.terminalAuth
@@ -1397,12 +1405,12 @@ function DiagnosticRow({ entry }: { readonly entry: AiProviderDiagnosticEntry })
         <div
             style={{
                 alignItems: "flex-start",
-                backgroundColor: "var(--color-bg-tertiary)",
-                border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
-                borderRadius: 8,
+                backgroundColor: "transparent",
+                border: "1px solid color-mix(in srgb, var(--color-border) 62%, transparent)",
+                borderRadius: 4,
                 display: "grid",
                 gap: 4,
-                padding: "8px 10px",
+                padding: "7px 8px",
             }}
         >
             <div
@@ -1450,7 +1458,8 @@ function DiagnosticRow({ entry }: { readonly entry: AiProviderDiagnosticEntry })
                 <pre
                     style={{
                         backgroundColor: "var(--color-bg-secondary)",
-                        borderRadius: 6,
+                        border: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
+                        borderRadius: 4,
                         color: "var(--color-text-secondary)",
                         fontFamily: "var(--font-mono)",
                         fontSize: 10,
@@ -1484,12 +1493,12 @@ function RuntimeDetails({
     return (
         <div
             style={{
-                backgroundColor: "var(--color-bg-tertiary)",
-                border: "1px solid color-mix(in srgb, var(--color-border) 65%, transparent)",
-                borderRadius: 8,
+                backgroundColor: "transparent",
+                border: "1px solid color-mix(in srgb, var(--color-border) 56%, transparent)",
+                borderRadius: 4,
                 display: "grid",
                 gap: 4,
-                padding: "7px 9px",
+                padding: "6px 8px",
             }}
         >
             {visibleLines.map(([label, value]) => (
@@ -1545,11 +1554,13 @@ function ActionButton({
                     ? "var(--color-accent)"
                     : danger
                       ? "transparent"
-                      : "var(--color-bg-tertiary)",
+                      : "transparent",
                 border: danger
                     ? "1px solid color-mix(in srgb, var(--diff-remove) 62%, transparent)"
-                    : "1px solid var(--color-border)",
-                borderRadius: 6,
+                    : primary
+                      ? "1px solid var(--color-accent)"
+                      : "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)",
+                borderRadius: 3,
                 color: primary
                     ? "#fff"
                     : danger
@@ -1557,10 +1568,11 @@ function ActionButton({
                       : "var(--color-text-primary)",
                 cursor: disabled ? "not-allowed" : "pointer",
                 fontFamily: "inherit",
-                fontSize: 11,
-                fontWeight: 600,
+                fontSize: 10,
+                fontWeight: 500,
+                lineHeight: "20px",
                 opacity: disabled ? 0.45 : 1,
-                padding: "5px 10px",
+                padding: "0 8px",
             }}
             type="button"
         >
@@ -1651,12 +1663,13 @@ function InfoNote({ children }: { readonly children: ReactNode }) {
         <div
             style={{
                 backgroundColor:
-                    "color-mix(in srgb, var(--color-text-secondary) 7%, transparent)",
-                borderRadius: 7,
+                    "color-mix(in srgb, var(--color-bg-tertiary) 42%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--color-border) 56%, transparent)",
+                borderRadius: 4,
                 color: "var(--color-text-secondary)",
                 fontSize: 11,
                 lineHeight: 1.5,
-                padding: "7px 9px",
+                padding: "6px 8px",
             }}
         >
             {children}
@@ -1671,11 +1684,11 @@ function ErrorNote({ children }: { readonly children: ReactNode }) {
                 backgroundColor:
                     "color-mix(in srgb, var(--diff-remove) 10%, transparent)",
                 border: "1px solid color-mix(in srgb, var(--diff-remove) 28%, transparent)",
-                borderRadius: 7,
+                borderRadius: 4,
                 color: "var(--diff-remove)",
                 fontSize: 11,
                 lineHeight: 1.5,
-                padding: "7px 9px",
+                padding: "6px 8px",
             }}
         >
             {children}
