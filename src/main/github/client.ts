@@ -17,6 +17,8 @@ import type {
     GitHubIssueStateReason,
     GitHubIssueSummary,
     GitHubLabelSummary,
+    GitHubListLabelsInput,
+    GitHubListLabelsResult,
     GitHubListIssuesInput,
     GitHubListIssuesResult,
     GitHubListMilestonesInput,
@@ -530,9 +532,16 @@ export class GitHubApiClient {
     async updateIssue(
         input: GitHubUpdateIssueInput,
     ): Promise<GitHubIssueDetail> {
-        const body: { body?: string; title?: string } = {};
+        const body: {
+            body?: string;
+            labels?: readonly string[];
+            title?: string;
+        } = {};
         if (Object.hasOwn(input, "body")) {
             body.body = input.body ?? "";
+        }
+        if (Object.hasOwn(input, "labels")) {
+            body.labels = input.labels ?? [];
         }
         if (input.title != null) {
             body.title = input.title;
@@ -1083,6 +1092,27 @@ export class GitHubApiClient {
         );
 
         return mapRelease(response.data);
+    }
+
+    async listLabels(
+        input: GitHubListLabelsInput,
+    ): Promise<GitHubListLabelsResult> {
+        const response = await this.#requestJson<readonly RawGitHubLabel[]>(
+            input.repository.host,
+            repoPath(input.repository, "/labels"),
+            {
+                query: {
+                    page: parseCursor(input.cursor),
+                    per_page: clampPageLimit(input.limit),
+                },
+            },
+        );
+
+        return {
+            labels: response.data.map(mapLabel),
+            nextCursor: readNextPageCursor(response.headers),
+            totalCount: null,
+        };
     }
 
     async listMilestones(

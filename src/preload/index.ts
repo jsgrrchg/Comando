@@ -85,6 +85,8 @@ import {
     type GitHubGetIssueInput,
     type GitHubGetPullRequestInput,
     type GitHubIssueDetail,
+    type GitHubListLabelsInput,
+    type GitHubListLabelsResult,
     type GitHubListIssuesInput,
     type GitHubListIssuesResult,
     type GitHubListMilestonesInput,
@@ -1004,6 +1006,11 @@ const comandoApi: ComandoApi = {
         assertIpcObject<GitHubReleaseSummary>(
             IPC_CHANNELS.publishGitHubRelease,
             await ipcRenderer.invoke(IPC_CHANNELS.publishGitHubRelease, input),
+        ),
+    listGitHubLabels: async (input: GitHubListLabelsInput) =>
+        assertIpcObject<GitHubListLabelsResult>(
+            IPC_CHANNELS.listGitHubLabels,
+            await ipcRenderer.invoke(IPC_CHANNELS.listGitHubLabels, input),
         ),
     listGitHubMilestones: async (input: GitHubListMilestonesInput) =>
         assertIpcObject<GitHubListMilestonesResult>(

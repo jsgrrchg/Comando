@@ -58,6 +58,8 @@ import {
     type GitHubGetIssueInput,
     type GitHubGetPullRequestInput,
     type GitHubIssueDetail,
+    type GitHubListLabelsInput,
+    type GitHubListLabelsResult,
     type GitHubListIssuesInput,
     type GitHubListIssuesResult,
     type GitHubListMilestonesInput,
@@ -285,6 +287,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.generateGitHubReleaseNotes);
     ipcMain.removeHandler(IPC_CHANNELS.createGitHubRelease);
     ipcMain.removeHandler(IPC_CHANNELS.publishGitHubRelease);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitHubLabels);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHubMilestones);
     ipcMain.removeHandler(IPC_CHANNELS.listProjects);
     ipcMain.removeHandler(IPC_CHANNELS.openProjects);
@@ -1220,6 +1223,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitHubPublishReleaseInput,
         ): Promise<GitHubReleaseSummary> =>
             options.githubService.publishRelease(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitHubLabels,
+        async (
+            _event,
+            input: GitHubListLabelsInput,
+        ): Promise<GitHubListLabelsResult> =>
+            options.githubService.listLabels(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.listGitHubMilestones,

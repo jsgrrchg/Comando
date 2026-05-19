@@ -91,6 +91,7 @@ export const IPC_CHANNELS = {
     generateGitHubReleaseNotes: "github:generate-release-notes",
     createGitHubRelease: "github:create-release",
     publishGitHubRelease: "github:publish-release",
+    listGitHubLabels: "github:list-labels",
     listGitHubMilestones: "github:list-milestones",
     listProjects: "projects:list",
     openProjects: "projects:open",
@@ -1031,6 +1032,7 @@ export interface GitHubUpdateIssueInput
     extends GitHubRepositoryInput,
         GitHubMutationInput {
     readonly body?: string | null;
+    readonly labels?: readonly string[] | null;
     readonly number: number;
     readonly title?: string | null;
 }
@@ -1460,6 +1462,15 @@ export interface GitHubListMilestonesInput
 
 export interface GitHubListMilestonesResult {
     readonly milestones: readonly GitHubMilestoneSummary[];
+    readonly nextCursor: string | null;
+    readonly totalCount: number | null;
+}
+
+export type GitHubListLabelsInput = GitHubRepositoryInput &
+    GitHubPaginationInput;
+
+export interface GitHubListLabelsResult {
+    readonly labels: readonly GitHubLabelSummary[];
     readonly nextCursor: string | null;
     readonly totalCount: number | null;
 }
@@ -2533,6 +2544,9 @@ export interface ComandoApi {
     publishGitHubRelease: (
         input: GitHubPublishReleaseInput,
     ) => Promise<GitHubReleaseSummary>;
+    listGitHubLabels: (
+        input: GitHubListLabelsInput,
+    ) => Promise<GitHubListLabelsResult>;
     listGitHubMilestones: (
         input: GitHubListMilestonesInput,
     ) => Promise<GitHubListMilestonesResult>;

@@ -4,6 +4,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
     type ReactNode,
 } from "react";
@@ -13,6 +14,7 @@ import type {
     GitHubAuthStatus,
     GitHubIssueState,
     GitHubIssueSummary,
+    GitHubLabelSummary,
     GitHubPullRequestSummary,
     GitHubRepositoryRef,
     GitRepositorySnapshot,
@@ -38,7 +40,14 @@ import {
     GitHubErrorState,
     GitHubLabelPill,
     GitHubUsers,
+    hasGitHubWritePermission,
+    openGitHubWebUrl,
 } from "@renderer/components/workspace/GitHubWorkspacePrimitives";
+import {
+    ContextMenu,
+    type ContextMenuEntry,
+    type ContextMenuState,
+} from "@renderer/components/context-menu/ContextMenu";
 
 import {
     emitSidebarGitHubDrag,
@@ -59,6 +68,10 @@ type SidebarGitHubDragPreview = {
     readonly title: string;
     readonly x: number;
     readonly y: number;
+};
+
+type SidebarIssueContextMenuPayload = {
+    readonly issueNumber: number;
 };
 
 const SIDEBAR_GITHUB_DRAG_THRESHOLD_PX = 6;
@@ -136,6 +149,9 @@ export function SidebarGitHubPanel({
               ] !== undefined
             : false,
     );
+    const labels = useGitHubStore((state): readonly GitHubLabelSummary[] =>
+        repoKey ? (state.labelsByRepo[repoKey] ?? EMPTY_GITHUB_LIST) : EMPTY_GITHUB_LIST,
+    );
     const isCheckingAuth = useGitHubStore((state) =>
         repoRef ? (state.loadingKeys[`auth:${repoRef.host}`] ?? false) : false,
     );
@@ -145,8 +161,14 @@ export function SidebarGitHubPanel({
     const isLoadingPullRequests = useGitHubStore((state) =>
         repoKey ? (state.loadingKeys[`${repoKey}:prs`] ?? false) : false,
     );
+    const isLoadingLabels = useGitHubStore((state) =>
+        repoKey ? (state.loadingKeys[`${repoKey}:labels`] ?? false) : false,
+    );
     const issueError = useGitHubStore((state) =>
         repoKey ? (state.errors[`${repoKey}:issues`] ?? null) : null,
+    );
+    const labelsError = useGitHubStore((state) =>
+        repoKey ? (state.errors[`${repoKey}:labels`] ?? null) : null,
     );
     const pullRequestError = useGitHubStore((state) =>
         repoKey ? (state.errors[`${repoKey}:prs`] ?? null) : null,
@@ -158,9 +180,12 @@ export function SidebarGitHubPanel({
         (state) => state.refreshAuthStatus,
     );
     const refreshIssues = useGitHubStore((state) => state.refreshIssues);
+    const refreshLabels = useGitHubStore((state) => state.refreshLabels);
     const refreshPullRequests = useGitHubStore(
         (state) => state.refreshPullRequests,
     );
+    const updateIssue = useGitHubStore((state) => state.updateIssue);
+    const mutatingKeys = useGitHubStore((state) => state.mutatingKeys);
     const openGitHubIssuesTab = useWorkspaceStore(
         (state) => state.openGitHubIssuesTab,
     );
@@ -173,6 +198,10 @@ export function SidebarGitHubPanel({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
+    const [issueContextMenu, setIssueContextMenu] =
+        useState<ContextMenuState<SidebarIssueContextMenuPayload> | null>(null);
+    const [labelPickerIssue, setLabelPickerIssue] =
+        useState<GitHubIssueSummary | null>(null);
     const normalizedSearch = (filter ?? "").trim().toLowerCase();
     const disabledReason = getDisabledReason({
         authError,
@@ -379,6 +408,97 @@ export function SidebarGitHubPanel({
                   )
                 : 0,
         [currentBranch, pullRequests, repoRef],
+    );
+    const canWriteIssues = hasGitHubWritePermission(authStatus, "issues");
+    const contextIssue =
+        issueContextMenu && kind === "issues"
+            ? (visibleIssues.find(
+                  (issue) =>
+                      issue.number === issueContextMenu.payload.issueNumber,
+              ) ?? null)
+            : null;
+    const activeLabelPickerIssue = labelPickerIssue
+        ? (visibleIssues.find(
+              (issue) => issue.number === labelPickerIssue.number,
+          ) ?? labelPickerIssue)
+        : null;
+    const isUpdatingLabelPickerIssue =
+        repoKey && activeLabelPickerIssue
+            ? (mutatingKeys[
+                  `${repoKey}:issue:${activeLabelPickerIssue.number}:update`
+              ] ?? false)
+            : false;
+    const openIssueTab = useCallback(
+        (issueNumber: number) => {
+            if (!repoRef) {
+                return;
+            }
+
+            void openGitHubIssueTab({
+                issueNumber,
+                projectId,
+                ref: repoRef,
+                worktreeId,
+            });
+        },
+        [openGitHubIssueTab, projectId, repoRef, worktreeId],
+    );
+    const openIssueLabelPicker = useCallback(
+        (issue: GitHubIssueSummary) => {
+            if (!repoRef) {
+                return;
+            }
+
+            setLabelPickerIssue(issue);
+            void refreshLabels(repoRef).catch(() => undefined);
+        },
+        [refreshLabels, repoRef],
+    );
+    const issueContextMenuEntries: ContextMenuEntry[] = contextIssue
+        ? [
+              {
+                  label: "Open Issue",
+                  action: () => openIssueTab(contextIssue.number),
+              },
+              {
+                  label: "Open in GitHub",
+                  action: () => openGitHubWebUrl(contextIssue.url),
+              },
+              { type: "separator" },
+              {
+                  label: "Edit Labels...",
+                  action: () => openIssueLabelPicker(contextIssue),
+                  disabled: !canWriteIssues,
+              },
+          ]
+        : [];
+    const handleIssueContextMenu = useCallback(
+        (
+            event: ReactMouseEvent<HTMLElement>,
+            issue: GitHubIssueSummary,
+        ) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setIssueContextMenu({
+                payload: { issueNumber: issue.number },
+                x: event.clientX,
+                y: event.clientY,
+            });
+        },
+        [],
+    );
+    const handleSaveIssueLabels = useCallback(
+        async (labelNames: readonly string[]) => {
+            if (!repoRef || !activeLabelPickerIssue || !canWriteIssues) {
+                return;
+            }
+
+            await updateIssue(repoRef, activeLabelPickerIssue.number, {
+                labels: labelNames,
+            });
+            setLabelPickerIssue(null);
+        },
+        [activeLabelPickerIssue, canWriteIssues, repoRef, updateIssue],
     );
 
     const handleRefresh = useCallback(async () => {
@@ -603,14 +723,10 @@ export function SidebarGitHubPanel({
                             <li key={issue.id}>
                                 <SidebarGitHubIssueRow
                                     issue={issue}
-                                    onOpen={() =>
-                                        void openGitHubIssueTab({
-                                            issueNumber: issue.number,
-                                            projectId,
-                                            ref: activeRepoRef,
-                                            worktreeId,
-                                        })
+                                    onContextMenu={(event) =>
+                                        handleIssueContextMenu(event, issue)
                                     }
+                                    onOpen={() => openIssueTab(issue.number)}
                                     projectId={projectId}
                                     repoRef={activeRepoRef}
                                     worktreeId={worktreeId}
@@ -644,18 +760,39 @@ export function SidebarGitHubPanel({
                     </ul>
                 ) : null}
             </div>
+            {issueContextMenu && issueContextMenuEntries.length > 0 ? (
+                <ContextMenu
+                    entries={issueContextMenuEntries}
+                    menu={issueContextMenu}
+                    minWidth={170}
+                    onClose={() => setIssueContextMenu(null)}
+                />
+            ) : null}
+            {activeLabelPickerIssue ? (
+                <SidebarGitHubLabelPicker
+                    error={labelsError}
+                    issue={activeLabelPickerIssue}
+                    isLoading={isLoadingLabels}
+                    isSaving={isUpdatingLabelPickerIssue}
+                    labels={labels}
+                    onClose={() => setLabelPickerIssue(null)}
+                    onSave={(labelNames) => void handleSaveIssueLabels(labelNames)}
+                />
+            ) : null}
         </div>
     );
 }
 
 function SidebarGitHubIssueRow({
     issue,
+    onContextMenu,
     onOpen,
     projectId,
     repoRef,
     worktreeId,
 }: {
     readonly issue: GitHubIssueSummary;
+    readonly onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
     readonly projectId: string | null;
     readonly repoRef: GitHubRepositoryRef;
@@ -666,6 +803,7 @@ function SidebarGitHubIssueRow({
             itemKind="issue"
             meta={`#${issue.number} - ${issue.commentCount} comments`}
             number={issue.number}
+            onContextMenu={onContextMenu}
             onOpen={onOpen}
             projectId={projectId}
             repoRef={repoRef}
@@ -777,11 +915,163 @@ function SidebarGitHubPullRequestRow({
     );
 }
 
+function SidebarGitHubLabelPicker({
+    error,
+    issue,
+    isLoading,
+    isSaving,
+    labels,
+    onClose,
+    onSave,
+}: {
+    readonly error: string | null;
+    readonly issue: GitHubIssueSummary;
+    readonly isLoading: boolean;
+    readonly isSaving: boolean;
+    readonly labels: readonly GitHubLabelSummary[];
+    readonly onClose: () => void;
+    readonly onSave: (labelNames: readonly string[]) => void;
+}) {
+    const [query, setQuery] = useState("");
+    const [selectedNames, setSelectedNames] = useState<ReadonlySet<string>>(
+        () => new Set(issue.labels.map((label) => label.name)),
+    );
+
+    useEffect(() => {
+        setQuery("");
+        setSelectedNames(new Set(issue.labels.map((label) => label.name)));
+    }, [issue.number, issue.labels]);
+
+    const normalizedQuery = query.trim().toLowerCase();
+    const visibleLabels = labels.filter(
+        (label) =>
+            !normalizedQuery ||
+            label.name.toLowerCase().includes(normalizedQuery) ||
+            (label.description?.toLowerCase().includes(normalizedQuery) ??
+                false),
+    );
+    const labelNames = labels.map((label) => label.name);
+    const selectedLabels = labelNames.filter((name) => selectedNames.has(name));
+
+    const toggleLabel = (labelName: string) => {
+        setSelectedNames((current) => {
+            const next = new Set(current);
+            if (next.has(labelName)) {
+                next.delete(labelName);
+            } else {
+                next.add(labelName);
+            }
+            return next;
+        });
+    };
+
+    return createPortal(
+        <div
+            className="fixed inset-0 flex items-center justify-center bg-black/35 px-4"
+            style={{ zIndex: 10020 }}
+        >
+            <div className="w-full max-w-sm rounded-xl border border-border bg-bg-panel p-3 shadow-[0_18px_48px_rgba(0,0,0,0.32)]">
+                <div className="flex min-w-0 items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <div className="text-[12px] font-semibold text-text-primary">
+                            Edit Labels
+                        </div>
+                        <div className="mt-0.5 truncate text-[10px] text-text-secondary">
+                            #{issue.number} {issue.title}
+                        </div>
+                    </div>
+                    <button
+                        className="review-action-btn"
+                        onClick={onClose}
+                        type="button"
+                    >
+                        Close
+                    </button>
+                </div>
+                <input
+                    className="mt-3 h-[24px] w-full rounded-md border border-border/70 bg-bg-primary px-2 font-mono text-[11px] text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
+                    onChange={(event) => setQuery(event.currentTarget.value)}
+                    placeholder="Search labels..."
+                    value={query}
+                />
+                {error ? (
+                    <div className="mt-2 rounded-md border border-[color-mix(in_srgb,var(--diff-remove)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_8%,transparent)] px-2 py-1.5 text-[11px] text-text-primary">
+                        {error}
+                    </div>
+                ) : null}
+                <div className="shell-scrollbar mt-2 max-h-64 space-y-1 overflow-y-auto pr-1">
+                    {isLoading ? (
+                        <div className="px-1 py-2 text-[11px] text-text-secondary">
+                            Loading labels...
+                        </div>
+                    ) : null}
+                    {!isLoading && visibleLabels.length === 0 ? (
+                        <div className="px-1 py-2 text-[11px] text-text-secondary">
+                            No labels match this search.
+                        </div>
+                    ) : null}
+                    {visibleLabels.map((label) => (
+                        <label
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-text-primary hover:bg-bg-tertiary"
+                            key={label.id || label.name}
+                        >
+                            <input
+                                checked={selectedNames.has(label.name)}
+                                className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                                onChange={() => toggleLabel(label.name)}
+                                type="checkbox"
+                            />
+                            <span
+                                aria-hidden="true"
+                                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                style={{ backgroundColor: `#${label.color}` }}
+                            />
+                            <span className="min-w-0 flex-1 truncate">
+                                {label.name}
+                            </span>
+                        </label>
+                    ))}
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                    <button
+                        className="review-action-btn"
+                        disabled={isSaving || selectedNames.size === 0}
+                        onClick={() => setSelectedNames(new Set())}
+                        type="button"
+                    >
+                        Clear
+                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            className="review-action-btn"
+                            disabled={isSaving}
+                            onClick={onClose}
+                            type="button"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            className="review-action-btn"
+                            disabled={isSaving || isLoading}
+                            onClick={() => onSave(selectedLabels)}
+                            type="button"
+                        >
+                            {isSaving ? "Saving..." : "Save"}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>,
+        document.body,
+    );
+}
+
 function SidebarGitHubDraggableRow({
     children,
     itemKind,
     meta,
     number,
+    onContextMenu,
     onOpen,
     projectId,
     repoRef,
@@ -792,6 +1082,7 @@ function SidebarGitHubDraggableRow({
     readonly itemKind: SidebarGitHubDragItemKind;
     readonly meta: string;
     readonly number: number;
+    readonly onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
     readonly projectId: string | null;
     readonly repoRef: GitHubRepositoryRef;
@@ -924,6 +1215,13 @@ function SidebarGitHubDraggableRow({
                         event.preventDefault();
                         onOpen();
                     }
+                }}
+                onContextMenu={(event) => {
+                    clearDragState({
+                        emitCancel: true,
+                        event,
+                    });
+                    onContextMenu?.(event);
                 }}
                 onPointerCancel={(event) => {
                     const dragState = dragStateRef.current;

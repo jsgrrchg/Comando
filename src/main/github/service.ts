@@ -17,6 +17,8 @@ import type {
     GitHubGetIssueInput,
     GitHubGetPullRequestInput,
     GitHubIssueDetail,
+    GitHubListLabelsInput,
+    GitHubListLabelsResult,
     GitHubListIssuesInput,
     GitHubListIssuesResult,
     GitHubListMilestonesInput,
@@ -84,6 +86,7 @@ export interface GitHubGateway {
         input: GitHubGetPullRequestInput,
     ): Promise<GitHubPullRequestDetail | null>;
     listIssues(input: GitHubListIssuesInput): Promise<GitHubListIssuesResult>;
+    listLabels(input: GitHubListLabelsInput): Promise<GitHubListLabelsResult>;
     listPullRequests(
         input: GitHubListPullRequestsInput,
     ): Promise<GitHubListPullRequestsResult>;
@@ -179,6 +182,12 @@ export class GitHubService implements GitHubGateway {
         input: GitHubListIssuesInput,
     ): Promise<GitHubListIssuesResult> {
         return await this.#createClient(input.repository.host).listIssues(input);
+    }
+
+    async listLabels(
+        input: GitHubListLabelsInput,
+    ): Promise<GitHubListLabelsResult> {
+        return await this.#createClient(input.repository.host).listLabels(input);
     }
 
     async getIssue(

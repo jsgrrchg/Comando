@@ -5,6 +5,7 @@ import type {
     GitHubCreateIssueInput,
     GitHubIssueDetail,
     GitHubIssueSummary,
+    GitHubLabelSummary,
     GitHubMilestoneSummary,
     GitHubNotificationSummary,
     GitHubPullRequestChecksResult,
@@ -311,6 +312,7 @@ describe("github-store", () => {
             9,
             {
                 body: "After",
+                labels: [],
                 title: "After title",
             },
         );
@@ -319,6 +321,7 @@ describe("github-store", () => {
         const updateInput = updateGitHubIssue.mock.calls[0]?.[0];
         expect(updateInput).toMatchObject({
             body: "After",
+            labels: [],
             number: 9,
             repository,
             title: "After title",
@@ -621,10 +624,16 @@ describe("github-store", () => {
     });
 
     it("loads coordination data into repo and host caches", async () => {
+        const label = createLabel();
         const notification = createNotification();
         const release = createRelease({ draft: true });
         const milestone = createMilestone();
         stubComando({
+            listGitHubLabels: vi.fn().mockResolvedValue({
+                labels: [label],
+                nextCursor: null,
+                totalCount: null,
+            }),
             listGitHubMilestones: vi.fn().mockResolvedValue({
                 milestones: [milestone],
                 nextCursor: null,
@@ -648,18 +657,25 @@ describe("github-store", () => {
         const releases = await useGitHubStore
             .getState()
             .refreshReleases(repository);
+        const labels = await useGitHubStore
+            .getState()
+            .refreshLabels(repository);
         const milestones = await useGitHubStore
             .getState()
             .refreshMilestones(repository);
 
         expect(notifications).toEqual([notification]);
         expect(releases).toEqual([release]);
+        expect(labels).toEqual([label]);
         expect(milestones).toEqual([milestone]);
         expect(
             useGitHubStore.getState().notificationsByHost["github.com"],
         ).toEqual([notification]);
         expect(useGitHubStore.getState().releasesByRepo[repoKey]).toEqual([
             release,
+        ]);
+        expect(useGitHubStore.getState().labelsByRepo[repoKey]).toEqual([
+            label,
         ]);
         expect(useGitHubStore.getState().milestonesByRepo[repoKey]).toEqual([
             milestone,
@@ -686,6 +702,7 @@ describe("github-store", () => {
             issuesByRepoAndState: {
                 [repoKey]: { open: [createIssueSummary()] },
             },
+            labelsByRepo: { [repoKey]: [createLabel()] },
             loadingKeys: { [`${repoKey}:issues`]: true },
         });
 
@@ -698,6 +715,7 @@ describe("github-store", () => {
         expect(
             useGitHubStore.getState().issuesByRepoAndState[repoKey],
         ).toBeUndefined();
+        expect(useGitHubStore.getState().labelsByRepo[repoKey]).toBeUndefined();
         expect(useGitHubStore.getState().errors[`${repoKey}:issues`]).toBeUndefined();
         expect(
             useGitHubStore.getState().loadingKeys[`${repoKey}:issues`],
@@ -742,6 +760,18 @@ function createIssueDetail(
         ...createIssueSummary(overrides),
         body: "",
         comments: [],
+        ...overrides,
+    };
+}
+
+function createLabel(
+    overrides: Partial<GitHubLabelSummary> = {},
+): GitHubLabelSummary {
+    return {
+        color: "d73a4a",
+        description: "Something is not working",
+        id: 208045946,
+        name: "bug",
         ...overrides,
     };
 }

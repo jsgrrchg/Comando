@@ -324,6 +324,7 @@ describe("GitHubService", () => {
         const result = await service.updateIssue({
             body: "Updated body",
             clientRequestId: "update-issue",
+            labels: [],
             number: 5,
             repository,
             title: "Updated title",
@@ -347,6 +348,7 @@ describe("GitHubService", () => {
         }
         expect(JSON.parse(body)).toEqual({
             body: "Updated body",
+            labels: [],
             title: "Updated title",
         });
     });
@@ -606,6 +608,7 @@ describe("GitHubService", () => {
             )
             .mockResolvedValueOnce(jsonResponse(rawRelease({ draft: true })))
             .mockResolvedValueOnce(jsonResponse(rawRelease({ draft: false })))
+            .mockResolvedValueOnce(jsonResponse([rawLabel()]))
             .mockResolvedValueOnce(jsonResponse([rawMilestone()]));
         const service = createService(fetchMock);
 
@@ -628,6 +631,7 @@ describe("GitHubService", () => {
             releaseId: 99,
             repository,
         });
+        const labels = await service.listLabels({ repository });
         const milestones = await service.listMilestones({
             repository,
             state: "all",
@@ -640,6 +644,7 @@ describe("GitHubService", () => {
         expect(notes.body).toBe("Generated notes");
         expect(draft.draft).toBe(true);
         expect(published.draft).toBe(false);
+        expect(labels.labels[0]?.name).toBe("bug");
         expect(milestones.milestones[0]?.title).toBe("MVP");
         expect(fetchMock).toHaveBeenNthCalledWith(
             3,
@@ -718,6 +723,7 @@ function rawUser() {
 function rawIssue(
     overrides: Partial<{
         readonly body: string;
+        readonly labels: readonly ReturnType<typeof rawLabel>[];
         readonly number: number;
         readonly title: string;
     }> = {},
@@ -731,7 +737,7 @@ function rawIssue(
             overrides.number ?? 1
         }`,
         id: overrides.number ?? 1,
-        labels: [],
+        labels: overrides.labels ?? [],
         locked: false,
         node_id: `ISSUE_${overrides.number ?? 1}`,
         number: overrides.number ?? 1,
@@ -740,6 +746,15 @@ function rawIssue(
         title: overrides.title ?? "Issue",
         updated_at: "2026-05-07T00:00:00Z",
         user: rawUser(),
+    };
+}
+
+function rawLabel() {
+    return {
+        color: "d73a4a",
+        description: "Something is not working",
+        id: 208045946,
+        name: "bug",
     };
 }
 

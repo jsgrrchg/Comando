@@ -9,6 +9,7 @@ import type {
     GitHubGetPullRequestInput,
     GitHubIssueDetail,
     GitHubIssueSummary,
+    GitHubLabelSummary,
     GitHubListIssuesInput,
     GitHubMilestoneSummary,
     GitHubNotificationSummary,
@@ -139,6 +140,7 @@ export interface GitHubStoreState {
         string,
         Record<string, { readonly body: string; readonly name: string }>
     >;
+    readonly labelsByRepo: Record<string, readonly GitHubLabelSummary[]>;
     readonly milestonesByRepo: Record<string, readonly GitHubMilestoneSummary[]>;
     clearRepoCache: (ref: GitHubRepositoryRef) => void;
     closeIssue: (
@@ -254,6 +256,10 @@ export interface GitHubStoreState {
         ref: GitHubRepositoryRef,
         options?: { readonly force?: boolean },
     ) => Promise<readonly GitHubReleaseSummary[]>;
+    refreshLabels: (
+        ref: GitHubRepositoryRef,
+        options?: { readonly force?: boolean },
+    ) => Promise<readonly GitHubLabelSummary[]>;
     generateReleaseNotes: (
         ref: GitHubRepositoryRef,
         input: GitHubGenerateReleaseNotesOptions,
@@ -320,6 +326,7 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
     notificationsByHost: {},
     releasesByRepo: {},
     generatedReleaseNotesByRepo: {},
+    labelsByRepo: {},
     milestonesByRepo: {},
 
     clearRepoCache: (ref) => {
@@ -376,6 +383,7 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                 state.generatedReleaseNotesByRepo,
                 repoKey,
             ),
+            labelsByRepo: omitKey(state.labelsByRepo, repoKey),
             milestonesByRepo: omitKey(state.milestonesByRepo, repoKey),
             releasesByRepo: omitKey(state.releasesByRepo, repoKey),
         }));
@@ -924,6 +932,28 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
             },
         ),
 
+    refreshLabels: async (ref, options = {}) => {
+        const repoKey = getRepoKey(ref);
+        const cached = get().labelsByRepo[repoKey];
+        if (!options.force && cached !== undefined) {
+            return cached;
+        }
+
+        return await withLoading(set, `${repoKey}:labels`, async () => {
+            const result = await getComandoApi().listGitHubLabels({
+                limit: 100,
+                repository: ref,
+            });
+            set((state) => ({
+                labelsByRepo: {
+                    ...state.labelsByRepo,
+                    [repoKey]: result.labels,
+                },
+            }));
+            return result.labels;
+        });
+    },
+
     refreshMilestones: async (ref, options = {}) => {
         const repoKey = getRepoKey(ref);
         const cached = get().milestonesByRepo[repoKey];
@@ -1028,6 +1058,7 @@ export function resetGitHubStoreForTests(): void {
         notificationsByHost: {},
         releasesByRepo: {},
         generatedReleaseNotesByRepo: {},
+        labelsByRepo: {},
         milestonesByRepo: {},
     });
 }
