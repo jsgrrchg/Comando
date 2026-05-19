@@ -119,6 +119,7 @@ export const IPC_CHANNELS = {
     writeTerminalInput: "terminals:write-input",
     resizeTerminalSession: "terminals:resize-session",
     closeTerminalSession: "terminals:close-session",
+    getAiEnvironmentDiagnostics: "ai:get-environment-diagnostics",
     getAiRuntimeStatus: "ai:get-runtime-status",
     prepareAiSession: "ai:prepare-session",
     refreshAiProjectScopes: "ai:refresh-project-scopes",
@@ -286,14 +287,16 @@ export interface AiAuthMethod {
 }
 
 export type ClaudeAuthMethodId =
+    | "anthropic-api-key"
     | "claude-ai-login"
     | "claude-login"
     | "console-login"
-    | "gateway";
+    | "gateway"
+    | "gateway-bedrock";
 
 export type GeminiAuthMethodId = "login_with_google" | "use_gemini";
 
-export type KiloAuthMethodId = "kilo-login";
+export type KiloAuthMethodId = "kilo-login" | "kilo-api-key";
 
 export type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
 
@@ -326,14 +329,18 @@ export type SecretValuePatch =
 export interface ClaudeRuntimeSettings {
     readonly authInvalidatedAtMs: number | null;
     readonly authMethod: ClaudeAuthMethodId | null;
+    readonly bedrockGatewayBaseUrl: string | null;
     readonly binaryPath: string | null;
     readonly gatewayBaseUrl: string | null;
+    readonly hasAnthropicApiKey: boolean;
     readonly hasGatewayAuthToken: boolean;
     readonly hasGatewayCustomHeaders: boolean;
 }
 
 export interface ClaudeRuntimeSettingsInput {
     readonly authMethod: ClaudeAuthMethodId | null;
+    readonly anthropicApiKey: SecretValuePatch;
+    readonly bedrockGatewayBaseUrl: string | null;
     readonly binaryPath: string | null;
     readonly gatewayAuthToken: SecretValuePatch;
     readonly gatewayBaseUrl: string | null;
@@ -361,11 +368,15 @@ export interface GeminiRuntimeSettingsInput {
 
 export interface KiloRuntimeSettings {
     readonly authInvalidatedAtMs: number | null;
+    readonly authMethod: KiloAuthMethodId | null;
     readonly binaryPath: string | null;
+    readonly hasKiloApiKey: boolean;
 }
 
 export interface KiloRuntimeSettingsInput {
+    readonly authMethod: KiloAuthMethodId | null;
     readonly binaryPath: string | null;
+    readonly kiloApiKey: SecretValuePatch;
 }
 
 export interface AiSettingsSnapshot {
@@ -417,6 +428,73 @@ export interface AiRuntimeStatus {
     readonly runtimeId: AiRuntimeId;
     readonly source: AiRuntimeSource | null;
     readonly state: AiRuntimeState;
+}
+
+export interface AiResolvedExecutable {
+    readonly command: string;
+    readonly message: string | null;
+    readonly path: string | null;
+    readonly source: AiRuntimeSource | null;
+    readonly state: AiRuntimeState;
+}
+
+export interface AiRuntimeDiagnostic {
+    readonly authCredentialSource: AiAuthCredentialSource | null;
+    readonly authMethod: string | null;
+    readonly authReady: boolean;
+    readonly command: string | null;
+    readonly executablePath: string | null;
+    readonly hasCustomBinaryPath: boolean;
+    readonly message: string | null;
+    readonly onboardingRequired: boolean;
+    readonly preferredPath: string | null;
+    readonly preferredPathEntries: readonly string[];
+    readonly runtimeId: AiRuntimeId;
+    readonly source: AiRuntimeSource | null;
+    readonly state: AiRuntimeState;
+}
+
+export interface AiRuntimePathOverrideDiagnostic {
+    readonly name:
+        | "COMANDO_CLAUDE_ACP_BIN"
+        | "COMANDO_CODEX_ACP_BIN"
+        | "COMANDO_GEMINI_ACP_BIN"
+        | "COMANDO_KILO_ACP_BIN";
+    readonly pathOrCommand: string | null;
+    readonly present: boolean;
+    readonly runtimeId: AiRuntimeId;
+}
+
+export interface AiCredentialEnvironmentDiagnostic {
+    readonly name:
+        | "ANTHROPIC_API_KEY"
+        | "ANTHROPIC_AUTH_TOKEN"
+        | "ANTHROPIC_BASE_URL"
+        | "ANTHROPIC_BEDROCK_BASE_URL"
+        | "ANTHROPIC_CUSTOM_HEADERS"
+        | "CODEX_API_KEY"
+        | "GEMINI_API_KEY"
+        | "GOOGLE_API_KEY"
+        | "KILO_API_KEY"
+        | "OPENAI_API_KEY";
+    readonly present: boolean;
+    readonly runtimeId: AiRuntimeId;
+}
+
+export interface AiEnvironmentPathDiagnostics {
+    readonly inherited: string | null;
+    readonly inheritedEntries: readonly string[];
+    readonly preferred: string | null;
+    readonly preferredEntries: readonly string[];
+}
+
+export interface AiEnvironmentDiagnostics {
+    readonly checkedAt: string;
+    readonly credentialEnvironment: readonly AiCredentialEnvironmentDiagnostic[];
+    readonly executables: readonly AiResolvedExecutable[];
+    readonly path: AiEnvironmentPathDiagnostics;
+    readonly runtimePathOverrides: readonly AiRuntimePathOverrideDiagnostic[];
+    readonly runtimes: readonly AiRuntimeDiagnostic[];
 }
 
 export interface PersistedWindowState {
@@ -2604,6 +2682,7 @@ export interface ComandoApi {
     getChatSessionState: (
         sessionId: string,
     ) => Promise<PersistedChatSessionState | null>;
+    getAiEnvironmentDiagnostics: () => Promise<AiEnvironmentDiagnostics>;
     getAiRuntimeStatus: (runtimeId: AiRuntimeId) => Promise<AiRuntimeStatus>;
     prepareAiSession: (
         input: PrepareAiSessionInput,

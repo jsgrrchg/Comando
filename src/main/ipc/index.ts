@@ -315,6 +315,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.writeTerminalInput);
     ipcMain.removeHandler(IPC_CHANNELS.resizeTerminalSession);
     ipcMain.removeHandler(IPC_CHANNELS.closeTerminalSession);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiEnvironmentDiagnostics);
     ipcMain.removeHandler(IPC_CHANNELS.getAiRuntimeStatus);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
@@ -1581,6 +1582,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, sessionId: string) => {
             options.terminalService.closeSession(sessionId);
         },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getAiEnvironmentDiagnostics,
+        () => options.aiService.getEnvironmentDiagnostics(),
     );
     ipcMain.handle(
         IPC_CHANNELS.getAiRuntimeStatus,

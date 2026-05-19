@@ -49,6 +49,7 @@ import {
     ThemePicker,
     Toggle,
 } from "./primitives";
+import { AIProvidersSettings } from "./AIProvidersSettings";
 
 import type {
     RuntimeActionOption,
@@ -405,20 +406,38 @@ function getDynamicCategorySearchValues(
                 shortcut.keys,
             ]);
         case "runtimes":
-            return context.runtimes.flatMap((runtime) => [
-                runtime.id,
-                runtime.name,
-                runtime.description,
-                runtime.status,
-                runtime.source,
-                runtime.details,
-                ...(runtime.actions?.flatMap((action) => [
-                    action.id,
-                    action.label,
-                    action.hint,
-                    action.tone,
-                ]) ?? []),
-            ]);
+            return [
+                "AI Providers",
+                "Codex",
+                "Claude",
+                "Gemini",
+                "Kilo",
+                "API keys",
+                "terminal sign-in",
+                "Open sign-in terminal",
+                "Anthropic API key",
+                "Bedrock gateway",
+                "Custom gateway",
+                "Google API key",
+                "Google Cloud project",
+                "Google Cloud location",
+                "Kilo API key",
+                "Diagnostics",
+                ...context.runtimes.flatMap((runtime) => [
+                    runtime.id,
+                    runtime.name,
+                    runtime.description,
+                    runtime.status,
+                    runtime.source,
+                    runtime.details,
+                    ...(runtime.actions?.flatMap((action) => [
+                        action.id,
+                        action.label,
+                        action.hint,
+                        action.tone,
+                    ]) ?? []),
+                ]),
+            ];
         case "updates":
             return [
                 context.updates.state.status,
@@ -442,6 +461,7 @@ export function SettingsWindow({
     github,
     privacy,
     projects,
+    aiProviders,
     onRuntimeAction,
     shortcuts = [],
     runtimes = [],
@@ -786,11 +806,17 @@ export function SettingsWindow({
                                 )}
                             {filteredCategories.length > 0 &&
                                 activeCategory === "runtimes" && (
-                                    <RuntimesContent
-                                        runtimes={runtimes}
-                                        onAction={onRuntimeAction}
-                                        searchQuery={activeSearchQuery}
-                                    />
+                                    aiProviders ? (
+                                        <AIProvidersSettings
+                                            {...aiProviders}
+                                        />
+                                    ) : (
+                                        <RuntimesContent
+                                            runtimes={runtimes}
+                                            onAction={onRuntimeAction}
+                                            searchQuery={activeSearchQuery}
+                                        />
+                                    )
                                 )}
                             {filteredCategories.length > 0 &&
                                 activeCategory === "updates" && (

@@ -1,3 +1,4 @@
+export { AIProvidersSettings } from "./AIProvidersSettings";
 export { SettingsWindow } from "./SettingsWindow";
 export {
     NumberStepper,
@@ -9,6 +10,19 @@ export {
     ThemePicker,
     Toggle,
 } from "./primitives";
+export type {
+    AIProvidersSettingsProps,
+} from "./AIProvidersSettings";
+export type {
+    AiProviderDiagnosticEntry,
+    AiProviderAuthMethodId,
+    AiProviderDiagnosticsState,
+    AiProviderId,
+    AiProviderRuntimeSettingsInput,
+    AiProviderRuntimeSettingsMap,
+    AiProviderRuntimeStatus,
+    AiProviderRuntimeStatusMap,
+} from "./aiProviderSettingsModel";
 export type {
     ChatFontFamilyOption,
     EditorFontFamilyOption,

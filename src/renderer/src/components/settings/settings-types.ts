@@ -7,6 +7,8 @@ import type {
     GitHubAuthStatus,
 } from "@shared/ipc";
 
+import type { AIProvidersSettingsProps } from "./AIProvidersSettings";
+
 export type ThemeMode = "system" | "light" | "dark";
 
 export interface EditorFontFamilyOption {
@@ -129,6 +131,7 @@ export interface SettingsWindowProps {
     readonly projects: SettingsProjectsState;
     readonly updates: SettingsUpdatesState;
     readonly shortcuts?: readonly ShortcutEntryOption[];
+    readonly aiProviders?: AIProvidersSettingsProps;
     readonly runtimes?: readonly RuntimeCardOption[];
     readonly onRuntimeAction?: (runtimeId: string, actionId: string) => void;
 }

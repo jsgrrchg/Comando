@@ -468,11 +468,16 @@ class SettingsClient implements SettingsGateway {
         }
     }
 
-    async saveKiloAuth(settings: KiloRuntimeSettings): Promise<void> {
+    async saveKiloAuth(
+        settings: KiloRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        const records = serializeSecretRecordPatches(secrets);
         const previousSettings = this.loadKiloRuntimeSettings();
         this.#setKiloRuntimeSettings(settings);
         try {
             await this.#rpc.call("ai.saveKiloAuth", {
+                secrets: records,
                 settings,
             });
         } catch (error) {

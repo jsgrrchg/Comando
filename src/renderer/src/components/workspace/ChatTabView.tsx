@@ -1874,6 +1874,11 @@ export const ChatTabView = memo(function ChatTabView({
                                     try {
                                         await saveClaudeRuntimeSettings({
                                             authMethod: claudeAuthMethodDraft,
+                                            anthropicApiKey: {
+                                                kind: "unchanged",
+                                            },
+                                            bedrockGatewayBaseUrl:
+                                                claudeSettings.bedrockGatewayBaseUrl,
                                             binaryPath:
                                                 claudeBinaryPathDraft.trim() ||
                                                 null,
@@ -1961,6 +1966,11 @@ export const ChatTabView = memo(function ChatTabView({
                                     try {
                                         await saveClaudeRuntimeSettings({
                                             authMethod: claudeAuthMethodDraft,
+                                            anthropicApiKey: {
+                                                kind: "unchanged",
+                                            },
+                                            bedrockGatewayBaseUrl:
+                                                claudeSettings.bedrockGatewayBaseUrl,
                                             binaryPath:
                                                 claudeBinaryPathDraft.trim() ||
                                                 null,
@@ -2226,9 +2236,13 @@ export const ChatTabView = memo(function ChatTabView({
                                         setIsSavingRuntime(true);
                                         try {
                                             await saveKiloRuntimeSettings({
+                                                authMethod: "kilo-login",
                                                 binaryPath:
                                                     kiloBinaryPathDraft.trim() ||
                                                     null,
+                                                kiloApiKey: {
+                                                    kind: "unchanged",
+                                                },
                                             });
                                         } catch (error) {
                                             setRuntimeConfigError(
@@ -2288,9 +2302,14 @@ export const ChatTabView = memo(function ChatTabView({
                                         setIsSavingRuntime(true);
                                         try {
                                             await saveKiloRuntimeSettings({
+                                                authMethod:
+                                                    kiloSettings.authMethod,
                                                 binaryPath:
                                                     kiloBinaryPathDraft.trim() ||
                                                     null,
+                                                kiloApiKey: {
+                                                    kind: "unchanged",
+                                                },
                                             });
                                         } catch (error) {
                                             setRuntimeConfigError(

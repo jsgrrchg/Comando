@@ -21,7 +21,9 @@ import { debugBenignError } from "@main/observability/logging";
 const CLAUDE_LOGIN_METHOD_ID = "claude-login";
 const CLAUDE_AI_LOGIN_METHOD_ID = "claude-ai-login";
 const CONSOLE_LOGIN_METHOD_ID = "console-login";
+const ANTHROPIC_API_KEY_METHOD_ID = "anthropic-api-key";
 const GATEWAY_METHOD_ID = "gateway";
+const BEDROCK_GATEWAY_METHOD_ID = "gateway-bedrock";
 const REMOTE_CLAUDE_AUTH_ENV_VARS = [
     "NO_BROWSER",
     "SSH_CONNECTION",
@@ -29,6 +31,7 @@ const REMOTE_CLAUDE_AUTH_ENV_VARS = [
     "SSH_TTY",
     "CLAUDE_CODE_REMOTE",
 ] as const;
+const ANTHROPIC_API_KEY_SECRET = "anthropic_api_key";
 const CLAUDE_AUTH_TOKEN_SECRET = "anthropic_auth_token";
 const CLAUDE_CUSTOM_HEADERS_SECRET = "anthropic_custom_headers";
 const INVALID_GATEWAY_URL_MESSAGE = "Enter a valid gateway URL.";
@@ -63,6 +66,7 @@ export interface ResolveClaudeRuntimeOptions {
 }
 
 interface ClaudeSecretBundle {
+    readonly anthropicApiKey: string | null;
     readonly anthropicAuthToken: string | null;
     readonly anthropicCustomHeaders: string | null;
 }
@@ -78,6 +82,10 @@ export function getClaudeRuntimeStatus(
     options: ResolveClaudeRuntimeOptions = {},
 ): AiRuntimeStatus {
     const resolved = resolveClaudeBinary(settings, options);
+    const externalApiKeyPresent = envSecretPresent(
+        process.env,
+        "ANTHROPIC_API_KEY",
+    );
     const externalTokenPresent = envSecretPresent(
         process.env,
         "ANTHROPIC_AUTH_TOKEN",
@@ -90,14 +98,27 @@ export function getClaudeRuntimeStatus(
         process.env,
         "ANTHROPIC_BASE_URL",
     );
+    const externalBedrockBaseUrlPresent = envSecretPresent(
+        process.env,
+        "ANTHROPIC_BEDROCK_BASE_URL",
+    );
     const gatewayIssue = externalBaseUrlPresent
         ? null
         : gatewayValidationError(settings);
-    const authMethod = detectClaudeAuthMethod(settings);
+    const bedrockGatewayIssue = externalBedrockBaseUrlPresent
+        ? null
+        : bedrockGatewayValidationError(settings);
+    const authMethod = detectClaudeAuthMethod(
+        settings,
+        secretStore,
+        process.env,
+    );
     const binaryReady = resolved.state === "ready" && Boolean(resolved.program);
     const hasCustomBinaryPath = Boolean(settings.binaryPath?.trim());
     const authMethods = getClaudeAuthMethods();
     const secretBundle = loadClaudeSecretBundle(secretStore);
+    const anthropicApiKeyReady =
+        externalApiKeyPresent || Boolean(secretBundle.anthropicApiKey);
     const gatewayCredentialsReady =
         externalTokenPresent ||
         externalHeadersPresent ||
@@ -105,17 +126,31 @@ export function getClaudeRuntimeStatus(
             secretBundle.anthropicAuthToken ||
                 secretBundle.anthropicCustomHeaders,
         );
+    const hasCustomGatewayUrl =
+        externalBaseUrlPresent || Boolean(settings.gatewayBaseUrl?.trim());
+    const hasBedrockGatewayUrl =
+        externalBedrockBaseUrlPresent ||
+        Boolean(settings.bedrockGatewayBaseUrl?.trim());
+    const customGatewayReady =
+        gatewayIssue === null && hasCustomGatewayUrl && gatewayCredentialsReady;
+    const bedrockGatewayReady =
+        bedrockGatewayIssue === null && hasBedrockGatewayUrl;
     const authReady =
         authMethod !== null &&
-        (authMethod !== GATEWAY_METHOD_ID || gatewayCredentialsReady);
-    const hasGatewayUrl =
-        externalBaseUrlPresent || Boolean(settings.gatewayBaseUrl?.trim());
-    const hasGatewayConfig =
-        gatewayIssue === null && hasGatewayUrl && gatewayCredentialsReady;
+        (authMethod === ANTHROPIC_API_KEY_METHOD_ID
+            ? anthropicApiKeyReady
+            : authMethod === GATEWAY_METHOD_ID
+              ? customGatewayReady
+              : authMethod === BEDROCK_GATEWAY_METHOD_ID
+                ? bedrockGatewayReady
+                : true);
+    const hasGatewayUrl = hasCustomGatewayUrl || hasBedrockGatewayUrl;
+    const hasGatewayConfig = customGatewayReady || bedrockGatewayReady;
     const credentialSource = getClaudeCredentialSource(
         authMethod,
         secretBundle,
         process.env,
+        settings,
     );
     const storageStatus = secretStore.getStorageStatus?.() ?? {
         encryptionAvailable: true,
@@ -127,22 +162,33 @@ export function getClaudeRuntimeStatus(
 
     let message = resolved.message;
     if (binaryReady) {
-        if (!authReady && gatewayIssue) {
+        if (authMethod === GATEWAY_METHOD_ID && !authReady && gatewayIssue) {
             message = gatewayIssue;
+        } else if (
+            authMethod === BEDROCK_GATEWAY_METHOD_ID &&
+            !authReady &&
+            bedrockGatewayIssue
+        ) {
+            message = bedrockGatewayIssue;
         } else if (!authReady) {
-            message =
-                "Log in with Claude or configure a custom gateway to finish setup.";
+            if (authMethod === ANTHROPIC_API_KEY_METHOD_ID) {
+                message = "Add an Anthropic API key to finish Claude setup.";
+            } else if (authMethod === GATEWAY_METHOD_ID) {
+                message =
+                    "Claude gateway needs a URL plus an auth token or custom headers before it can be used.";
+            } else if (authMethod === BEDROCK_GATEWAY_METHOD_ID) {
+                message =
+                    "Claude Bedrock gateway needs a base URL before it can be used.";
+            } else {
+                message =
+                    "Log in with Claude or configure a Claude credential to finish setup.";
+            }
+        } else if (authMethod === ANTHROPIC_API_KEY_METHOD_ID) {
+            message = "Claude API key setup is ready.";
         } else if (authMethod === GATEWAY_METHOD_ID) {
             message = "Claude gateway setup is ready.";
-        } else if (
-            settings.authMethod === GATEWAY_METHOD_ID &&
-            !(
-                secretBundle.anthropicAuthToken ||
-                secretBundle.anthropicCustomHeaders
-            )
-        ) {
-            message =
-                "Claude gateway needs an auth token or custom headers before it can be used.";
+        } else if (authMethod === BEDROCK_GATEWAY_METHOD_ID) {
+            message = "Claude Bedrock gateway setup is ready.";
         }
     }
 
@@ -158,6 +204,7 @@ export function getClaudeRuntimeStatus(
         authStorageMessage: storageStatus.message,
         canDisconnectAuth:
             settings.authMethod !== null ||
+            Boolean(secretBundle.anthropicApiKey) ||
             Boolean(secretBundle.anthropicAuthToken) ||
             Boolean(secretBundle.anthropicCustomHeaders) ||
             (credentialSource !== "environment" && authMethod !== null),
@@ -201,6 +248,10 @@ export function loadClaudeSecretBundle(
     secretStore: SecretStoreGateway,
 ): ClaudeSecretBundle {
     return {
+        anthropicApiKey: secretStore.loadSecret(
+            "ai.claude",
+            ANTHROPIC_API_KEY_SECRET,
+        ),
         anthropicAuthToken: secretStore.loadSecret(
             "ai.claude",
             CLAUDE_AUTH_TOKEN_SECRET,
@@ -216,18 +267,48 @@ export function getClaudeCredentialSource(
     authMethod: ClaudeAuthMethodId | null,
     secrets: ClaudeSecretBundle,
     env: NodeJS.ProcessEnv = process.env,
+    settings?: ClaudeRuntimeSettings,
 ): AiAuthCredentialSource {
     if (
-        envSecretPresent(env, "ANTHROPIC_BASE_URL") ||
-        envSecretPresent(env, "ANTHROPIC_AUTH_TOKEN") ||
-        envSecretPresent(env, "ANTHROPIC_CUSTOM_HEADERS")
+        authMethod === ANTHROPIC_API_KEY_METHOD_ID &&
+        envSecretPresent(env, "ANTHROPIC_API_KEY")
+    ) {
+        return "environment";
+    }
+
+    if (
+        authMethod === BEDROCK_GATEWAY_METHOD_ID &&
+        envSecretPresent(env, "ANTHROPIC_BEDROCK_BASE_URL")
     ) {
         return "environment";
     }
 
     if (
         authMethod === GATEWAY_METHOD_ID &&
+        (envSecretPresent(env, "ANTHROPIC_BASE_URL") ||
+            envSecretPresent(env, "ANTHROPIC_AUTH_TOKEN") ||
+            envSecretPresent(env, "ANTHROPIC_CUSTOM_HEADERS"))
+    ) {
+        return "environment";
+    }
+
+    if (
+        authMethod === ANTHROPIC_API_KEY_METHOD_ID &&
+        secrets.anthropicApiKey
+    ) {
+        return "comando-secret";
+    }
+
+    if (
+        authMethod === GATEWAY_METHOD_ID &&
         (secrets.anthropicAuthToken || secrets.anthropicCustomHeaders)
+    ) {
+        return "comando-secret";
+    }
+
+    if (
+        authMethod === BEDROCK_GATEWAY_METHOD_ID &&
+        settings?.bedrockGatewayBaseUrl?.trim()
     ) {
         return "comando-secret";
     }
@@ -246,15 +327,27 @@ export function getClaudeCredentialSource(
 export function saveClaudeSecrets(
     secretStore: SecretStoreGateway,
     input: {
+        readonly anthropicApiKey: string | null;
         readonly gatewayAuthToken: string | null;
         readonly gatewayCustomHeaders: string | null;
     },
 ): {
+    readonly hasAnthropicApiKey: boolean;
     readonly hasGatewayAuthToken: boolean;
     readonly hasGatewayCustomHeaders: boolean;
 } {
+    const anthropicApiKey = normalizeOptionalText(input.anthropicApiKey);
     const gatewayCustomHeaders = normalizeGatewayCustomHeaders(
         input.gatewayCustomHeaders,
+    );
+    saveSecretIfChanged(
+        secretStore,
+        "ai.claude",
+        ANTHROPIC_API_KEY_SECRET,
+        normalizeOptionalText(
+            secretStore.loadSecret("ai.claude", ANTHROPIC_API_KEY_SECRET),
+        ),
+        anthropicApiKey,
     );
     saveSecretIfChanged(
         secretStore,
@@ -279,6 +372,7 @@ export function saveClaudeSecrets(
     );
 
     return {
+        hasAnthropicApiKey: Boolean(anthropicApiKey),
         hasGatewayAuthToken: Boolean(input.gatewayAuthToken?.trim()),
         hasGatewayCustomHeaders: Boolean(gatewayCustomHeaders),
     };
@@ -287,43 +381,66 @@ export function saveClaudeSecrets(
 export function buildClaudeSecretPatches(
     secretStore: SecretStoreGateway,
     input: {
-        readonly gatewayAuthToken: string | null;
-        readonly gatewayCustomHeaders: string | null;
+        readonly anthropicApiKey?: string | null;
+        readonly gatewayAuthToken?: string | null;
+        readonly gatewayCustomHeaders?: string | null;
     },
 ): {
     readonly flags: {
+        readonly hasAnthropicApiKey: boolean;
         readonly hasGatewayAuthToken: boolean;
         readonly hasGatewayCustomHeaders: boolean;
     };
     readonly patches: readonly SecretRecordPatch[];
 } {
-    const gatewayAuthToken = normalizeOptionalText(input.gatewayAuthToken);
-    const gatewayCustomHeaders = normalizeGatewayCustomHeaders(
-        input.gatewayCustomHeaders,
+    const currentAnthropicApiKey = normalizeOptionalText(
+        secretStore.loadSecret("ai.claude", ANTHROPIC_API_KEY_SECRET),
     );
+    const currentGatewayAuthToken = normalizeOptionalText(
+        secretStore.loadSecret("ai.claude", CLAUDE_AUTH_TOKEN_SECRET),
+    );
+    const currentGatewayCustomHeaders = safeNormalizeExistingGatewayCustomHeaders(
+        secretStore.loadSecret("ai.claude", CLAUDE_CUSTOM_HEADERS_SECRET),
+    );
+    const anthropicApiKey =
+        input.anthropicApiKey === undefined
+            ? currentAnthropicApiKey
+            : normalizeOptionalText(input.anthropicApiKey);
+    const gatewayAuthToken =
+        input.gatewayAuthToken === undefined
+            ? currentGatewayAuthToken
+            : normalizeOptionalText(input.gatewayAuthToken);
+    const gatewayCustomHeaders =
+        input.gatewayCustomHeaders === undefined
+            ? currentGatewayCustomHeaders
+            : normalizeGatewayCustomHeaders(input.gatewayCustomHeaders);
     const patches: SecretRecordPatch[] = [];
 
     pushSecretPatchIfChanged(
         patches,
         "ai.claude",
+        ANTHROPIC_API_KEY_SECRET,
+        currentAnthropicApiKey,
+        anthropicApiKey,
+    );
+    pushSecretPatchIfChanged(
+        patches,
+        "ai.claude",
         CLAUDE_AUTH_TOKEN_SECRET,
-        normalizeOptionalText(
-            secretStore.loadSecret("ai.claude", CLAUDE_AUTH_TOKEN_SECRET),
-        ),
+        currentGatewayAuthToken,
         gatewayAuthToken,
     );
     pushSecretPatchIfChanged(
         patches,
         "ai.claude",
         CLAUDE_CUSTOM_HEADERS_SECRET,
-        safeNormalizeExistingGatewayCustomHeaders(
-            secretStore.loadSecret("ai.claude", CLAUDE_CUSTOM_HEADERS_SECRET),
-        ),
+        currentGatewayCustomHeaders,
         gatewayCustomHeaders,
     );
 
     return {
         flags: {
+            hasAnthropicApiKey: Boolean(anthropicApiKey),
             hasGatewayAuthToken: Boolean(gatewayAuthToken),
             hasGatewayCustomHeaders: Boolean(gatewayCustomHeaders),
         },
@@ -459,16 +576,68 @@ export function applyClaudeAuthEnv(
 ): NodeJS.ProcessEnv {
     const env = { ...baseEnv };
     const secrets = loadClaudeSecretBundle(secretStore);
+    const authMethod = detectClaudeAuthMethod(settings, secretStore, env);
+    const externalApiKeyPresent = envSecretPresent(env, "ANTHROPIC_API_KEY");
     const externalTokenPresent = envSecretPresent(env, "ANTHROPIC_AUTH_TOKEN");
     const externalHeadersPresent = envSecretPresent(
         env,
         "ANTHROPIC_CUSTOM_HEADERS",
     );
     const externalBaseUrlPresent = envSecretPresent(env, "ANTHROPIC_BASE_URL");
-    const policy = gatewayEnvPolicy(settings, externalBaseUrlPresent);
+    const externalBedrockBaseUrlPresent = envSecretPresent(
+        env,
+        "ANTHROPIC_BEDROCK_BASE_URL",
+    );
+    const shouldApplyApiKeySecret =
+        authMethod === ANTHROPIC_API_KEY_METHOD_ID &&
+        !externalApiKeyPresent &&
+        Boolean(secrets.anthropicApiKey);
+    const policy = gatewayEnvPolicy(
+        settings,
+        externalBaseUrlPresent,
+        authMethod,
+    );
+    const managedBedrockBaseUrl =
+        authMethod === BEDROCK_GATEWAY_METHOD_ID &&
+        !externalBedrockBaseUrlPresent
+            ? validatedBedrockGatewayUrl(settings)
+            : null;
+
+    if (shouldApplyApiKeySecret && secrets.anthropicApiKey) {
+        env.ANTHROPIC_API_KEY = secrets.anthropicApiKey;
+    } else if (!externalApiKeyPresent) {
+        delete env.ANTHROPIC_API_KEY;
+    }
+
+    if (managedBedrockBaseUrl) {
+        env.ANTHROPIC_BEDROCK_BASE_URL = managedBedrockBaseUrl;
+        env.CLAUDE_CODE_USE_BEDROCK = "1";
+
+        if (!externalBaseUrlPresent) {
+            delete env.ANTHROPIC_BASE_URL;
+        }
+        if (!externalTokenPresent) {
+            delete env.ANTHROPIC_AUTH_TOKEN;
+        }
+        if (!externalHeadersPresent) {
+            delete env.ANTHROPIC_CUSTOM_HEADERS;
+        }
+
+        return env;
+    }
+
+    if (
+        authMethod === BEDROCK_GATEWAY_METHOD_ID &&
+        externalBedrockBaseUrlPresent &&
+        !envSecretPresent(env, "CLAUDE_CODE_USE_BEDROCK")
+    ) {
+        env.CLAUDE_CODE_USE_BEDROCK = "1";
+    }
 
     if (policy.managedBaseUrl) {
         env.ANTHROPIC_BASE_URL = policy.managedBaseUrl;
+        delete env.ANTHROPIC_BEDROCK_BASE_URL;
+        delete env.CLAUDE_CODE_USE_BEDROCK;
 
         if (!externalTokenPresent) {
             if (secrets.anthropicAuthToken) {
@@ -523,28 +692,84 @@ export function getClaudeAuthMethods(): readonly AiAuthMethod[] {
         ...methods,
         {
             description:
+                "Use an Anthropic API key stored only for Comando on this machine.",
+            id: ANTHROPIC_API_KEY_METHOD_ID,
+            name: "Anthropic API key",
+        },
+        {
+            description:
                 "Use a custom Anthropic-compatible gateway just for Comando.",
             id: GATEWAY_METHOD_ID,
             name: "Custom gateway",
+        },
+        {
+            description:
+                "Use a custom Bedrock-compatible Claude gateway just for Comando.",
+            id: BEDROCK_GATEWAY_METHOD_ID,
+            name: "Bedrock gateway",
         },
     ];
 }
 
 export function detectClaudeAuthMethod(
     settings: ClaudeRuntimeSettings,
+    secretStoreOrEnv?: SecretStoreGateway | NodeJS.ProcessEnv | null,
     env: NodeJS.ProcessEnv = process.env,
 ): ClaudeAuthMethodId | null {
-    if (
-        (settings.authMethod === GATEWAY_METHOD_ID ||
-            envSecretPresent(env, "ANTHROPIC_BASE_URL")) &&
-        gatewayIsConfigured(settings, env)
-    ) {
+    let secretStore: SecretStoreGateway | null = null;
+    let resolvedEnv = env;
+
+    if (isSecretStoreGateway(secretStoreOrEnv)) {
+        secretStore = secretStoreOrEnv;
+    } else if (secretStoreOrEnv) {
+        resolvedEnv = secretStoreOrEnv;
+    }
+
+    const secrets = secretStore ? loadClaudeSecretBundle(secretStore) : null;
+
+    if (envSecretPresent(resolvedEnv, "ANTHROPIC_BEDROCK_BASE_URL")) {
+        return BEDROCK_GATEWAY_METHOD_ID;
+    }
+
+    if (envSecretPresent(resolvedEnv, "ANTHROPIC_BASE_URL")) {
         return GATEWAY_METHOD_ID;
     }
 
+    if (envSecretPresent(resolvedEnv, "ANTHROPIC_API_KEY")) {
+        return ANTHROPIC_API_KEY_METHOD_ID;
+    }
+
     const normalized = normalizeClaudeAuthMethodId(settings.authMethod);
+    if (normalized === ANTHROPIC_API_KEY_METHOD_ID) {
+        return secrets?.anthropicApiKey || settings.hasAnthropicApiKey
+            ? ANTHROPIC_API_KEY_METHOD_ID
+            : null;
+    }
+
+    if (normalized === GATEWAY_METHOD_ID) {
+        const gatewayReady =
+            (envSecretPresent(resolvedEnv, "ANTHROPIC_BASE_URL") ||
+                validatedGatewayUrl(settings) !== null) &&
+            (Boolean(secrets?.anthropicAuthToken) ||
+                Boolean(secrets?.anthropicCustomHeaders) ||
+                settings.hasGatewayAuthToken ||
+                settings.hasGatewayCustomHeaders);
+
+        return gatewayReady ? GATEWAY_METHOD_ID : null;
+    }
+
+    if (normalized === BEDROCK_GATEWAY_METHOD_ID) {
+        return validatedBedrockGatewayUrl(settings) !== null
+            ? BEDROCK_GATEWAY_METHOD_ID
+            : null;
+    }
+
     if (normalized && claudeLoginAvailable(settings)) {
         return projectTerminalAuthMethodId(normalized);
+    }
+
+    if (secrets?.anthropicApiKey || settings.hasAnthropicApiKey) {
+        return ANTHROPIC_API_KEY_METHOD_ID;
     }
 
     if (claudeLoginAvailable(settings)) {
@@ -599,6 +824,19 @@ export function gatewayValidationError(
 ): string | null {
     try {
         validatedGatewayUrl(settings);
+        return null;
+    } catch (error) {
+        return error instanceof Error
+            ? error.message
+            : INVALID_GATEWAY_URL_MESSAGE;
+    }
+}
+
+export function bedrockGatewayValidationError(
+    settings: ClaudeRuntimeSettings,
+): string | null {
+    try {
+        validatedBedrockGatewayUrl(settings);
         return null;
     } catch (error) {
         return error instanceof Error
@@ -678,43 +916,43 @@ function resolveClaudeBinary(
 function gatewayEnvPolicy(
     settings: ClaudeRuntimeSettings,
     externalBaseUrlPresent: boolean,
+    authMethod: ClaudeAuthMethodId | null,
 ): GatewayEnvPolicy {
     if (externalBaseUrlPresent) {
         return {
-            allowSecretBundle: true,
+            allowSecretBundle: authMethod === GATEWAY_METHOD_ID,
             managedBaseUrl: null,
         };
     }
 
     const managedBaseUrl =
-        settings.authMethod === GATEWAY_METHOD_ID
+        authMethod === GATEWAY_METHOD_ID
             ? validatedGatewayUrl(settings)
             : null;
     const invalidManagedGateway =
-        settings.authMethod === GATEWAY_METHOD_ID &&
+        authMethod === GATEWAY_METHOD_ID &&
         settings.gatewayBaseUrl !== null &&
         managedBaseUrl === null;
 
     return {
         allowSecretBundle:
-            settings.authMethod === GATEWAY_METHOD_ID &&
-            !invalidManagedGateway,
+            authMethod === GATEWAY_METHOD_ID && !invalidManagedGateway,
         managedBaseUrl,
     };
 }
 
-function gatewayIsConfigured(
-    settings: ClaudeRuntimeSettings,
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return (
-        envSecretPresent(env, "ANTHROPIC_BASE_URL") ||
-        validatedGatewayUrl(settings) !== null
-    );
+function validatedGatewayUrl(settings: ClaudeRuntimeSettings): string | null {
+    return validatedGatewayBaseUrl(settings.gatewayBaseUrl);
 }
 
-function validatedGatewayUrl(settings: ClaudeRuntimeSettings): string | null {
-    const raw = settings.gatewayBaseUrl?.trim() ?? "";
+function validatedBedrockGatewayUrl(
+    settings: ClaudeRuntimeSettings,
+): string | null {
+    return validatedGatewayBaseUrl(settings.bedrockGatewayBaseUrl);
+}
+
+function validatedGatewayBaseUrl(rawValue: string | null): string | null {
+    const raw = rawValue?.trim() ?? "";
     if (!raw) {
         return null;
     }
@@ -765,10 +1003,12 @@ function normalizeClaudeAuthMethodId(
     methodId: string | null,
 ): ClaudeAuthMethodId | null {
     switch (methodId) {
+        case ANTHROPIC_API_KEY_METHOD_ID:
         case CLAUDE_LOGIN_METHOD_ID:
         case CLAUDE_AI_LOGIN_METHOD_ID:
         case CONSOLE_LOGIN_METHOD_ID:
         case GATEWAY_METHOD_ID:
+        case BEDROCK_GATEWAY_METHOD_ID:
             return methodId;
         default:
             return null;
@@ -1220,6 +1460,17 @@ function isFile(candidatePath: string): boolean {
 function envSecretPresent(env: NodeJS.ProcessEnv, key: string): boolean {
     const value = env[key];
     return typeof value === "string" && value.trim().length > 0;
+}
+
+function isSecretStoreGateway(
+    value: SecretStoreGateway | NodeJS.ProcessEnv | null | undefined,
+): value is SecretStoreGateway {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        typeof (value as Partial<SecretStoreGateway>).loadSecret ===
+            "function"
+    );
 }
 
 function getCredentialSourceLabel(source: AiAuthCredentialSource): string {

@@ -462,9 +462,12 @@ function dispatchMethod(method: string, params: unknown): unknown {
         case "ai.saveKiloAuth": {
             const settings = requireSettingsService();
             const input = params as {
+                readonly secrets: readonly SecretRecordMutation[];
                 readonly settings: KiloRuntimeSettings;
             };
-            settings.saveKiloRuntimeSettings(input.settings);
+            runAuthSettingsTransaction(input.secrets, () => {
+                settings.saveKiloRuntimeSettings(input.settings);
+            });
             return null;
         }
         case "settings.loadSnapshot":

@@ -58,7 +58,10 @@ const CODEX_BINARY_PATH_KEY = "ai.codex.binary_path";
 const CODEX_HAS_CODEX_API_KEY_KEY = "ai.codex.has_codex_api_key";
 const CODEX_HAS_OPENAI_API_KEY_KEY = "ai.codex.has_openai_api_key";
 const CLAUDE_BINARY_PATH_KEY = "ai.claude.binary_path";
+const CLAUDE_BEDROCK_GATEWAY_BASE_URL_KEY =
+    "ai.claude.bedrock_gateway_base_url";
 const CLAUDE_GATEWAY_BASE_URL_KEY = "ai.claude.gateway_base_url";
+const CLAUDE_HAS_ANTHROPIC_API_KEY_KEY = "ai.claude.has_anthropic_api_key";
 const CLAUDE_HAS_GATEWAY_AUTH_TOKEN_KEY = "ai.claude.has_gateway_auth_token";
 const CLAUDE_HAS_GATEWAY_CUSTOM_HEADERS_KEY =
     "ai.claude.has_gateway_custom_headers";
@@ -70,7 +73,9 @@ const GEMINI_GOOGLE_CLOUD_PROJECT_KEY = "ai.gemini.google_cloud_project";
 const GEMINI_HAS_GEMINI_API_KEY_KEY = "ai.gemini.has_gemini_api_key";
 const GEMINI_HAS_GOOGLE_API_KEY_KEY = "ai.gemini.has_google_api_key";
 const KILO_AUTH_INVALIDATED_AT_KEY = "ai.kilo.auth_invalidated_at_ms";
+const KILO_AUTH_METHOD_KEY = "ai.kilo.auth_method";
 const KILO_BINARY_PATH_KEY = "ai.kilo.binary_path";
+const KILO_HAS_KILO_API_KEY_KEY = "ai.kilo.has_kilo_api_key";
 const APP_BOOST_CODE_CONTRAST_KEY = "appearance.boost_code_contrast";
 const APP_AGENTS_SIDEBAR_SCALE_KEY = "appearance.agents_sidebar_scale";
 const APP_FILE_TREE_SCALE_KEY = "appearance.file_tree_scale";
@@ -190,7 +195,10 @@ export interface SettingsGateway {
         settings: GeminiRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
     ): Promise<void>;
-    saveKiloAuth?(settings: KiloRuntimeSettings): Promise<void>;
+    saveKiloAuth?(
+        settings: KiloRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void>;
     loadSnapshot(): SettingsSnapshot;
     saveSnapshot(snapshot: SettingsSnapshot): void;
     loadAppAppearanceSettings(): AppAppearanceSettings;
@@ -523,9 +531,15 @@ export class SettingsService {
                 (this.#loadStringSetting(
                     CLAUDE_AUTH_METHOD_KEY,
                 ) as ClaudeRuntimeSettings["authMethod"]) ?? null,
+            bedrockGatewayBaseUrl:
+                this.#loadStringSetting(CLAUDE_BEDROCK_GATEWAY_BASE_URL_KEY) ??
+                null,
             binaryPath: this.#loadStringSetting(CLAUDE_BINARY_PATH_KEY) ?? null,
             gatewayBaseUrl:
                 this.#loadStringSetting(CLAUDE_GATEWAY_BASE_URL_KEY) ?? null,
+            hasAnthropicApiKey:
+                this.#loadBooleanSetting(CLAUDE_HAS_ANTHROPIC_API_KEY_KEY) ??
+                false,
             hasGatewayAuthToken:
                 this.#loadBooleanSetting(CLAUDE_HAS_GATEWAY_AUTH_TOKEN_KEY) ??
                 false,
@@ -546,12 +560,20 @@ export class SettingsService {
             settings.authMethod,
         );
         this.#saveOptionalTrimmedStringSetting(
+            CLAUDE_BEDROCK_GATEWAY_BASE_URL_KEY,
+            settings.bedrockGatewayBaseUrl,
+        );
+        this.#saveOptionalTrimmedStringSetting(
             CLAUDE_GATEWAY_BASE_URL_KEY,
             settings.gatewayBaseUrl,
         );
         this.#saveOptionalNumberSetting(
             CLAUDE_AUTH_INVALIDATED_AT_KEY,
             settings.authInvalidatedAtMs,
+        );
+        this.#saveBooleanSetting(
+            CLAUDE_HAS_ANTHROPIC_API_KEY_KEY,
+            settings.hasAnthropicApiKey,
         );
         this.#saveBooleanSetting(
             CLAUDE_HAS_GATEWAY_AUTH_TOKEN_KEY,
@@ -624,11 +646,21 @@ export class SettingsService {
             authInvalidatedAtMs: this.#loadNumberSetting(
                 KILO_AUTH_INVALIDATED_AT_KEY,
             ),
+            authMethod:
+                (this.#loadStringSetting(
+                    KILO_AUTH_METHOD_KEY,
+                ) as KiloRuntimeSettings["authMethod"]) ?? null,
             binaryPath: this.#loadStringSetting(KILO_BINARY_PATH_KEY) ?? null,
+            hasKiloApiKey:
+                this.#loadBooleanSetting(KILO_HAS_KILO_API_KEY_KEY) ?? false,
         };
     }
 
     saveKiloRuntimeSettings(settings: KiloRuntimeSettings): void {
+        this.#saveOptionalTrimmedStringSetting(
+            KILO_AUTH_METHOD_KEY,
+            settings.authMethod,
+        );
         this.#saveOptionalTrimmedStringSetting(
             KILO_BINARY_PATH_KEY,
             settings.binaryPath,
@@ -636,6 +668,10 @@ export class SettingsService {
         this.#saveOptionalNumberSetting(
             KILO_AUTH_INVALIDATED_AT_KEY,
             settings.authInvalidatedAtMs,
+        );
+        this.#saveBooleanSetting(
+            KILO_HAS_KILO_API_KEY_KEY,
+            settings.hasKiloApiKey,
         );
     }
 

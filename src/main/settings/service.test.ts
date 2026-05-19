@@ -188,6 +188,48 @@ describe("SettingsService", () => {
         });
     });
 
+    it("stores and reloads Claude provider settings", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveClaudeRuntimeSettings({
+            authInvalidatedAtMs: 4567,
+            authMethod: "gateway-bedrock",
+            bedrockGatewayBaseUrl: "https://bedrock.example.com",
+            binaryPath: "/usr/local/bin/claude-agent-acp",
+            gatewayBaseUrl: "https://gateway.example.com",
+            hasAnthropicApiKey: true,
+            hasGatewayAuthToken: true,
+            hasGatewayCustomHeaders: false,
+        });
+
+        expect(service.loadClaudeRuntimeSettings()).toEqual({
+            authInvalidatedAtMs: 4567,
+            authMethod: "gateway-bedrock",
+            bedrockGatewayBaseUrl: "https://bedrock.example.com",
+            binaryPath: "/usr/local/bin/claude-agent-acp",
+            gatewayBaseUrl: "https://gateway.example.com",
+            hasAnthropicApiKey: true,
+            hasGatewayAuthToken: true,
+            hasGatewayCustomHeaders: false,
+        });
+        expect(service.loadSnapshot().ai).toEqual({
+            ...createEmptyAiSettings(),
+            claude: {
+                authInvalidatedAtMs: 4567,
+                authMethod: "gateway-bedrock",
+                bedrockGatewayBaseUrl: "https://bedrock.example.com",
+                binaryPath: "/usr/local/bin/claude-agent-acp",
+                gatewayBaseUrl: "https://gateway.example.com",
+                hasAnthropicApiKey: true,
+                hasGatewayAuthToken: true,
+                hasGatewayCustomHeaders: false,
+            },
+        });
+    });
+
     it("stores and reloads Kilo settings", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
@@ -196,18 +238,24 @@ describe("SettingsService", () => {
 
         service.saveKiloRuntimeSettings({
             authInvalidatedAtMs: 5678,
+            authMethod: "kilo-api-key",
             binaryPath: "/opt/homebrew/bin/kilo",
+            hasKiloApiKey: true,
         });
 
         expect(service.loadKiloRuntimeSettings()).toEqual({
             authInvalidatedAtMs: 5678,
+            authMethod: "kilo-api-key",
             binaryPath: "/opt/homebrew/bin/kilo",
+            hasKiloApiKey: true,
         });
         expect(service.loadSnapshot().ai).toEqual({
             ...createEmptyAiSettings(),
             kilo: {
                 authInvalidatedAtMs: 5678,
+                authMethod: "kilo-api-key",
                 binaryPath: "/opt/homebrew/bin/kilo",
+                hasKiloApiKey: true,
             },
         });
     });
@@ -337,8 +385,10 @@ function createEmptyClaudeSettings() {
     return {
         authInvalidatedAtMs: null,
         authMethod: null,
+        bedrockGatewayBaseUrl: null,
         binaryPath: null,
         gatewayBaseUrl: null,
+        hasAnthropicApiKey: false,
         hasGatewayAuthToken: false,
         hasGatewayCustomHeaders: false,
     };
@@ -368,7 +418,9 @@ function createEmptyAiSettings() {
         gemini: createEmptyGeminiSettings(),
         kilo: {
             authInvalidatedAtMs: null,
+            authMethod: null,
             binaryPath: null,
+            hasKiloApiKey: false,
         },
     };
 }
