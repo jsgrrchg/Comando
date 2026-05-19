@@ -954,6 +954,16 @@ button {
     padding-inline: calc(4px * var(--sidebar-list-scale, 1));
 }
 
+.sidebar-github-assignees > div {
+    gap: calc(3px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-github-assignees > div > span {
+    width: calc(18px * var(--sidebar-list-scale, 1));
+    height: calc(18px * var(--sidebar-list-scale, 1));
+    font-size: calc(8px * var(--sidebar-list-scale, 1));
+}
+
 .sidebar-github-label-pill {
     font-size: calc(9.5px * var(--sidebar-list-scale, 1));
     padding: calc(2px * var(--sidebar-list-scale, 1))

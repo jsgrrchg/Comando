@@ -798,6 +798,8 @@ function SidebarGitHubIssueRow({
     readonly repoRef: GitHubRepositoryRef;
     readonly worktreeId: string | null;
 }) {
+    const hasAssignees = issue.assignees.length > 0;
+
     return (
         <SidebarGitHubDraggableRow
             itemKind="issue"
@@ -814,6 +816,11 @@ function SidebarGitHubIssueRow({
                 <span className="sidebar-github-title min-w-0 flex-1 truncate font-medium text-text-primary">
                     {issue.title}
                 </span>
+                {hasAssignees ? (
+                    <div className="sidebar-github-assignees shrink-0">
+                        <GitHubUsers users={issue.assignees} />
+                    </div>
+                ) : null}
                 <span className="sidebar-github-number shrink-0 font-mono text-text-secondary">
                     #{issue.number}
                 </span>
@@ -837,12 +844,14 @@ function SidebarGitHubIssueRow({
                     -
                 </span>
                 <span className="shrink-0">{issue.commentCount} comments</span>
-                <span aria-hidden="true" className="shrink-0">
-                    -
-                </span>
-                <div className="min-w-0">
-                    <GitHubUsers users={issue.assignees} />
-                </div>
+                {!hasAssignees ? (
+                    <>
+                        <span aria-hidden="true" className="shrink-0">
+                            -
+                        </span>
+                        <span className="shrink-0">Unassigned</span>
+                    </>
+                ) : null}
             </div>
         </SidebarGitHubDraggableRow>
     );
