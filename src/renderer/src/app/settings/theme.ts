@@ -1971,8 +1971,9 @@ export function applyAppearance(
         "--file-tree-scale",
         String(clampFileTreeScale(appearance.fileTreeScale)),
     );
-    root.style.setProperty(
-        "--agents-sidebar-scale",
-        String(clampAgentsSidebarScale(appearance.agentsSidebarScale)),
+    const sidebarListScale = String(
+        clampAgentsSidebarScale(appearance.agentsSidebarScale),
     );
+    root.style.setProperty("--sidebar-list-scale", sidebarListScale);
+    root.style.setProperty("--agents-sidebar-scale", sidebarListScale);
 }

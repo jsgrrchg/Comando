@@ -130,8 +130,8 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Workspace",
         "File tree size",
         "Scale the rows, icons, and labels in the file tree.",
-        "Agents sidebar size",
-        "Scale text and rows in the Agents sidebar, in percent.",
+        "Sidebar list size",
+        "Scale text and rows in the Agents, Issues, and Pull Requests sidebars.",
         "Sticky folders",
         "Keep parent folders pinned while scrolling the file tree.",
         "Mode",
@@ -1501,8 +1501,8 @@ function AppearanceContent({
             "Scale the rows, icons, and labels in the file tree.",
         ],
         [
-            "Agents sidebar size",
-            "Scale text and rows in the Agents sidebar, in percent.",
+            "Sidebar list size",
+            "Scale text and rows in the Agents, Issues, and Pull Requests sidebars.",
         ],
         [
             "Sticky folders",
@@ -1562,11 +1562,11 @@ function AppearanceContent({
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Workspace"
-                label="Agents sidebar size"
-                description="Scale text and rows in the Agents sidebar, in percent."
+                label="Sidebar list size"
+                description="Scale text and rows in the Agents, Issues, and Pull Requests sidebars."
                 control={
                     <PercentScaleStepper
-                        label="Agents sidebar size"
+                        label="Sidebar list size"
                         value={state.agentsSidebarScale ?? 1}
                         min={AGENTS_SIDEBAR_SCALE_MIN}
                         max={AGENTS_SIDEBAR_SCALE_MAX}

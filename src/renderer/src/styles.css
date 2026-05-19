@@ -269,7 +269,8 @@
 :root {
     color-scheme: light;
     font-family: var(--font-sans);
-    --agents-sidebar-scale: 1;
+    --sidebar-list-scale: 1;
+    --agents-sidebar-scale: var(--sidebar-list-scale);
     --vibrancy-opacity: 82%;
     background: color-mix(
         in srgb,
@@ -796,10 +797,10 @@ button {
 .sidebar-agents-row {
     display: flex;
     flex-direction: column;
-    gap: calc(4px * var(--agents-sidebar-scale, 1));
+    gap: calc(4px * var(--sidebar-list-scale, 1));
     align-items: flex-start;
-    padding: calc(8px * var(--agents-sidebar-scale, 1))
-        calc(10px * var(--agents-sidebar-scale, 1));
+    padding: calc(8px * var(--sidebar-list-scale, 1))
+        calc(10px * var(--sidebar-list-scale, 1));
     border-radius: 6px;
     border-left: 2px solid transparent;
     background: transparent;
@@ -833,37 +834,37 @@ button {
 }
 
 .sidebar-agents-summary {
-    font-size: calc(11px * var(--agents-sidebar-scale, 1));
-    padding: calc(6px * var(--agents-sidebar-scale, 1))
-        calc(8px * var(--agents-sidebar-scale, 1));
+    font-size: calc(11px * var(--sidebar-list-scale, 1));
+    padding: calc(6px * var(--sidebar-list-scale, 1))
+        calc(8px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-agents-summary-action {
-    font-size: calc(10px * var(--agents-sidebar-scale, 1));
-    padding: calc(2px * var(--agents-sidebar-scale, 1))
-        calc(6px * var(--agents-sidebar-scale, 1));
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    padding: calc(2px * var(--sidebar-list-scale, 1))
+        calc(6px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-agents-section-header {
-    font-size: calc(10px * var(--agents-sidebar-scale, 1));
-    padding: calc(8px * var(--agents-sidebar-scale, 1))
-        calc(10px * var(--agents-sidebar-scale, 1))
-        calc(4px * var(--agents-sidebar-scale, 1));
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    padding: calc(8px * var(--sidebar-list-scale, 1))
+        calc(10px * var(--sidebar-list-scale, 1))
+        calc(4px * var(--sidebar-list-scale, 1));
     letter-spacing: 0.07em;
 }
 
 .sidebar-agents-section-count {
-    font-size: calc(9.5px * var(--agents-sidebar-scale, 1));
+    font-size: calc(9.5px * var(--sidebar-list-scale, 1));
     letter-spacing: 0;
 }
 
 .sidebar-agents-main-line {
-    gap: calc(6px * var(--agents-sidebar-scale, 1));
+    gap: calc(6px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-agents-title,
 .sidebar-agents-rename {
-    font-size: calc(12px * var(--agents-sidebar-scale, 1));
+    font-size: calc(12px * var(--sidebar-list-scale, 1));
     line-height: 1.3;
 }
 
@@ -873,13 +874,13 @@ button {
 }
 
 .sidebar-agents-preview {
-    font-size: calc(11px * var(--agents-sidebar-scale, 1));
+    font-size: calc(11px * var(--sidebar-list-scale, 1));
     line-height: 1.4;
 }
 
 .sidebar-agents-meta,
 .sidebar-agents-timestamp {
-    font-size: calc(10px * var(--agents-sidebar-scale, 1));
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
     line-height: 1.35;
 }
 
@@ -889,12 +890,12 @@ button {
 }
 
 .sidebar-agents-activity-dot {
-    font-size: calc(9px * var(--agents-sidebar-scale, 1));
+    font-size: calc(9px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-agents-pin-button {
-    width: calc(20px * var(--agents-sidebar-scale, 1));
-    height: calc(20px * var(--agents-sidebar-scale, 1));
+    width: calc(20px * var(--sidebar-list-scale, 1));
+    height: calc(20px * var(--sidebar-list-scale, 1));
     opacity: 0;
     transition:
         opacity 120ms ease,
@@ -912,8 +913,8 @@ button {
 }
 
 .sidebar-agents-pin-icon {
-    width: calc(11px * var(--agents-sidebar-scale, 1));
-    height: calc(11px * var(--agents-sidebar-scale, 1));
+    width: calc(11px * var(--sidebar-list-scale, 1));
+    height: calc(11px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-agents-subitem {
@@ -925,7 +926,7 @@ button {
     position: absolute;
     left: calc(
         ((var(--sidebar-agents-depth, 1) - 1) * 14px + 17px) *
-            var(--agents-sidebar-scale, 1)
+            var(--sidebar-list-scale, 1)
     );
     top: 4px;
     bottom: 4px;
@@ -933,6 +934,30 @@ button {
     background: color-mix(in srgb, var(--color-border) 55%, transparent);
     border-radius: 1px;
     pointer-events: none;
+}
+
+.sidebar-github-title {
+    font-size: calc(11.5px * var(--sidebar-list-scale, 1));
+    line-height: 1.3;
+}
+
+.sidebar-github-number,
+.sidebar-github-meta,
+.sidebar-github-branch {
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    line-height: 1.35;
+}
+
+.sidebar-github-branch-badge {
+    font-size: calc(9px * var(--sidebar-list-scale, 1));
+    line-height: 1.3;
+    padding-inline: calc(4px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-github-label-pill {
+    font-size: calc(9.5px * var(--sidebar-list-scale, 1));
+    padding: calc(2px * var(--sidebar-list-scale, 1))
+        calc(6px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-git-scope-trigger {

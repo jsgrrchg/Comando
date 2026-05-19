@@ -314,13 +314,20 @@ export function GitHubConfirmActionButton({
 }
 
 export function GitHubLabelPill({
+    className,
     label,
 }: {
+    readonly className?: string;
     readonly label: GitHubLabelSummary;
 }) {
     return (
         <span
-            className="inline-flex max-w-[140px] items-center rounded-md border px-1.5 py-0.5 text-[9.5px] font-medium"
+            className={[
+                "inline-flex max-w-[140px] items-center rounded-md border px-1.5 py-0.5 text-[9.5px] font-medium",
+                className,
+            ]
+                .filter(Boolean)
+                .join(" ")}
             style={{
                 backgroundColor: `color-mix(in srgb, #${label.color} 10%, transparent)`,
                 borderColor: `color-mix(in srgb, #${label.color} 30%, var(--color-border))`,

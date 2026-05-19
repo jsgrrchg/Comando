@@ -811,21 +811,25 @@ function SidebarGitHubIssueRow({
             worktreeId={worktreeId}
         >
             <div className="flex w-full min-w-0 items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text-primary">
+                <span className="sidebar-github-title min-w-0 flex-1 truncate font-medium text-text-primary">
                     {issue.title}
                 </span>
-                <span className="shrink-0 font-mono text-[10px] text-text-secondary">
+                <span className="sidebar-github-number shrink-0 font-mono text-text-secondary">
                     #{issue.number}
                 </span>
             </div>
             {issue.labels.length > 0 ? (
                 <div className="mt-1 flex w-full flex-wrap gap-1">
                     {issue.labels.slice(0, 3).map((label) => (
-                        <GitHubLabelPill key={label.id} label={label} />
+                        <GitHubLabelPill
+                            className="sidebar-github-label-pill"
+                            key={label.id}
+                            label={label}
+                        />
                     ))}
                 </div>
             ) : null}
-            <div className="mt-1 flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
+            <div className="sidebar-github-meta mt-1 flex w-full min-w-0 items-center gap-1.5 text-text-secondary">
                 <span className="shrink-0">
                     updated {formatGitHubRelativeTime(issue.updatedAt)}
                 </span>
@@ -876,21 +880,21 @@ function SidebarGitHubPullRequestRow({
             worktreeId={worktreeId}
         >
             <div className="flex w-full min-w-0 items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text-primary">
+                <span className="sidebar-github-title min-w-0 flex-1 truncate font-medium text-text-primary">
                     {pullRequest.title}
                 </span>
-                <span className="shrink-0 font-mono text-[10px] text-text-secondary">
+                <span className="sidebar-github-number shrink-0 font-mono text-text-secondary">
                     #{pullRequest.number}
                 </span>
             </div>
-            <div className="mt-1 flex w-full min-w-0 items-center gap-1.5 font-mono text-[10px] text-text-secondary">
+            <div className="sidebar-github-branch mt-1 flex w-full min-w-0 items-center gap-1.5 font-mono text-text-secondary">
                 <span className="min-w-0 truncate">{pullRequest.head.label}</span>
                 <span aria-hidden="true" className="shrink-0">
                     -&gt;
                 </span>
                 <span className="min-w-0 truncate">{pullRequest.base.label}</span>
             </div>
-            <div className="mt-1 flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
+            <div className="sidebar-github-meta mt-1 flex w-full min-w-0 items-center gap-1.5 text-text-secondary">
                 <span className="shrink-0">
                     updated {formatGitHubRelativeTime(pullRequest.updatedAt)}
                 </span>
@@ -905,7 +909,7 @@ function SidebarGitHubPullRequestRow({
                         <span aria-hidden="true" className="shrink-0">
                             -
                         </span>
-                        <span className="shrink-0 rounded-[3px] border border-[color-mix(in_srgb,var(--color-accent)_35%,var(--color-border))] px-1 text-[9px] text-text-primary">
+                        <span className="sidebar-github-branch-badge shrink-0 rounded-[3px] border border-[color-mix(in_srgb,var(--color-accent)_35%,var(--color-border))] text-text-primary">
                             Branch
                         </span>
                     </>
