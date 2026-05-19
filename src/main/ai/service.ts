@@ -57,6 +57,7 @@ import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
 } from "./persistence";
+import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 import { listOpenFileBuffers } from "./openFileBuffers";
 import {
     type AiWorkerGateway,
@@ -118,6 +119,8 @@ import {
     resolveGeminiRuntime,
 } from "./gemini/setup";
 import {
+    applyKiloAuthEnv,
+    buildKiloSecretPatches,
     getKiloRuntimeStatus,
     isKiloAuthenticationError,
     launchKiloLogin,
@@ -261,6 +264,18 @@ export class AiService {
         return status;
     }
 
+    getEnvironmentDiagnostics() {
+        return createAiEnvironmentDiagnostics({
+            secretStore: this.#secretStore,
+            settings: {
+                claude: this.#settingsService.loadClaudeRuntimeSettings(),
+                codex: this.#settingsService.loadCodexRuntimeSettings(),
+                gemini: this.#settingsService.loadGeminiRuntimeSettings(),
+                kilo: this.#settingsService.loadKiloRuntimeSettings(),
+            },
+        });
+    }
+
     async saveCodexRuntimeSettings(
         settings: CodexRuntimeSettingsInput,
     ): Promise<AiRuntimeStatus> {
@@ -295,6 +310,10 @@ export class AiService {
         const currentSettings =
             this.#settingsService.loadClaudeRuntimeSettings();
         const currentSecrets = loadClaudeSecretBundle(this.#secretStore);
+        const anthropicApiKey = applySecretValuePatch(
+            currentSecrets.anthropicApiKey,
+            settings.anthropicApiKey,
+        );
         const gatewayAuthToken = applySecretValuePatch(
             currentSecrets.anthropicAuthToken,
             settings.gatewayAuthToken,
@@ -304,14 +323,19 @@ export class AiService {
             settings.gatewayCustomHeaders,
         );
         const secretPatch = buildClaudeSecretPatches(this.#secretStore, {
+            anthropicApiKey,
             gatewayAuthToken,
             gatewayCustomHeaders,
         });
         const nextSettings = {
             authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
             authMethod: settings.authMethod,
+            bedrockGatewayBaseUrl: normalizeOptionalText(
+                settings.bedrockGatewayBaseUrl,
+            ),
             binaryPath: normalizeOptionalText(settings.binaryPath),
             gatewayBaseUrl: normalizeOptionalText(settings.gatewayBaseUrl),
+            hasAnthropicApiKey: secretPatch.flags.hasAnthropicApiKey,
             hasGatewayAuthToken: secretPatch.flags.hasGatewayAuthToken,
             hasGatewayCustomHeaders: secretPatch.flags.hasGatewayCustomHeaders,
         };
@@ -363,18 +387,27 @@ export class AiService {
         return status;
     }
 
-    saveKiloRuntimeSettings(
+    async saveKiloRuntimeSettings(
         settings: KiloRuntimeSettingsInput,
-    ): AiRuntimeStatus {
+    ): Promise<AiRuntimeStatus> {
         const currentSettings = this.#settingsService.loadKiloRuntimeSettings();
+        const kiloApiKey = applySecretValuePatch(
+            this.#secretStore.loadSecret("ai.kilo", "kilo_api_key"),
+            settings.kiloApiKey,
+        );
+        const secretPatch = buildKiloSecretPatches(this.#secretStore, {
+            kiloApiKey,
+        });
         const nextSettings = {
             authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
+            authMethod: settings.authMethod,
             binaryPath: normalizeOptionalText(settings.binaryPath),
+            hasKiloApiKey: secretPatch.flags.hasKiloApiKey,
         };
 
-        this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+        await this.#saveKiloAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
-            getKiloRuntimeStatus(nextSettings),
+            getKiloRuntimeStatus(nextSettings, this.#secretStore),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -709,6 +742,12 @@ export class AiService {
         }
 
         if (input.runtimeId === "kilo") {
+            if (input.methodId === "kilo-api-key") {
+                throw new Error(
+                    "The Kilo API key does not need a login terminal. Save the API key from settings.",
+                );
+            }
+
             if (input.methodId !== "kilo-login") {
                 throw new Error(
                     "Select Kilo login before opening authentication.",
@@ -716,12 +755,17 @@ export class AiService {
             }
 
             const nextSettings = markKiloAuthInvalidated(
-                this.#settingsService.loadKiloRuntimeSettings(),
+                {
+                    ...this.#settingsService.loadKiloRuntimeSettings(),
+                    authMethod: "kilo-login",
+                },
             );
             await this.#saveKiloAuthSettings(nextSettings);
 
             await launchKiloLogin(nextSettings, cwd);
-            this.#onRuntimeStatus(getKiloRuntimeStatus(nextSettings));
+            this.#onRuntimeStatus(
+                getKiloRuntimeStatus(nextSettings, this.#secretStore),
+            );
             return;
         }
 
@@ -898,16 +942,23 @@ export class AiService {
             const currentSettings =
                 this.#settingsService.loadClaudeRuntimeSettings();
             const secretPatch = buildClaudeSecretPatches(this.#secretStore, {
+                anthropicApiKey: null,
                 gatewayAuthToken: null,
                 gatewayCustomHeaders: null,
             });
+            const shouldInvalidateExternalLogin = ![
+                "anthropic-api-key",
+                "gateway",
+                "gateway-bedrock",
+            ].includes(currentSettings.authMethod ?? "");
             const nextSettings = {
                 ...currentSettings,
                 authInvalidatedAtMs:
-                    currentSettings.authMethod === "gateway"
-                        ? currentSettings.authInvalidatedAtMs
-                        : Date.now(),
+                    shouldInvalidateExternalLogin
+                        ? Date.now()
+                        : currentSettings.authInvalidatedAtMs,
                 authMethod: null,
+                hasAnthropicApiKey: secretPatch.flags.hasAnthropicApiKey,
                 hasGatewayAuthToken: secretPatch.flags.hasGatewayAuthToken,
                 hasGatewayCustomHeaders:
                     secretPatch.flags.hasGatewayCustomHeaders,
@@ -945,12 +996,18 @@ export class AiService {
             return status;
         }
 
-        const nextSettings = markKiloAuthInvalidated(
-            this.#settingsService.loadKiloRuntimeSettings(),
-        );
-        await this.#saveKiloAuthSettings(nextSettings);
+        const currentSettings = this.#settingsService.loadKiloRuntimeSettings();
+        const secretPatch = buildKiloSecretPatches(this.#secretStore, {
+            kiloApiKey: null,
+        });
+        const nextSettings = {
+            ...markKiloAuthInvalidated(currentSettings),
+            authMethod: null,
+            hasKiloApiKey: secretPatch.flags.hasKiloApiKey,
+        };
+        await this.#saveKiloAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
-            getKiloRuntimeStatus(nextSettings),
+            getKiloRuntimeStatus(nextSettings, this.#secretStore),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -1449,6 +1506,7 @@ export class AiService {
         if (runtimeId === "kilo") {
             return getKiloRuntimeStatus(
                 this.#settingsService.loadKiloRuntimeSettings(),
+                this.#secretStore,
             );
         }
 
@@ -1502,12 +1560,15 @@ export class AiService {
 
     async #saveKiloAuthSettings(
         settings: ReturnType<SettingsGateway["loadKiloRuntimeSettings"]>,
+        secrets: readonly SecretRecordPatch[] = [],
     ): Promise<void> {
         if (this.#settingsService.saveKiloAuth) {
-            await this.#settingsService.saveKiloAuth(settings);
+            await this.#settingsService.saveKiloAuth(settings, secrets);
+            this.#secretStore.cacheSecretPatches?.(secrets);
             return;
         }
 
+        await this.#saveSecretPatches(secrets);
         this.#settingsService.saveKiloRuntimeSettings(settings);
     }
 
@@ -1587,12 +1648,15 @@ export class AiService {
 
         if (runtimeId === "kilo") {
             const settings = this.#settingsService.loadKiloRuntimeSettings();
-            const resolved = resolveKiloRuntime(settings);
+            const resolved = resolveKiloRuntime(settings, this.#secretStore);
 
             return {
                 args: resolved.args,
                 command: resolved.command,
-                env: buildRuntimeSpawnEnv(process.env, resolved.program),
+                env: buildRuntimeSpawnEnv(
+                    applyKiloAuthEnv(process.env, settings, this.#secretStore),
+                    resolved.program,
+                ),
                 executable: resolved.program,
                 status: resolved.status,
             };
@@ -1742,11 +1806,14 @@ export class AiService {
             return;
         }
 
-        const nextSettings = markKiloAuthInvalidated(
-            this.#settingsService.loadKiloRuntimeSettings(),
-        );
+        const nextSettings = markKiloAuthInvalidated({
+            ...this.#settingsService.loadKiloRuntimeSettings(),
+            authMethod: "kilo-login",
+        });
         this.#settingsService.saveKiloRuntimeSettings(nextSettings);
-        this.#onRuntimeStatus(getKiloRuntimeStatus(nextSettings));
+        this.#onRuntimeStatus(
+            getKiloRuntimeStatus(nextSettings, this.#secretStore),
+        );
     }
 }
 
@@ -1787,7 +1854,7 @@ function resolveCodexSecretBundle(
         openaiApiKey = null;
     } else if (settings.authMethod === "openai-api-key") {
         codexApiKey = null;
-    } else {
+    } else if (settings.authMethod === "chatgpt") {
         codexApiKey = null;
         openaiApiKey = null;
     }

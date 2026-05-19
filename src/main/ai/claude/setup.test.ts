@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
     applyClaudeAuthEnv,
+    buildClaudeSecretPatches,
     detectClaudeAuthMethod,
     gatewayValidationError,
+    getClaudeAuthMethods,
     getClaudeRuntimeStatus,
     normalizeGatewayCustomHeaders,
     resolveClaudeRuntime,
@@ -28,11 +30,23 @@ const originalUserProfile = process.env.USERPROFILE;
 const originalClaudeEnv = process.env.COMANDO_CLAUDE_ACP_BIN;
 const originalPath = process.env.PATH;
 const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
 const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+const originalAnthropicBedrockBaseUrl =
+    process.env.ANTHROPIC_BEDROCK_BASE_URL;
 const originalAnthropicCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS;
+const originalClaudeCodeUseBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
+const originalAwsBearerTokenBedrock = process.env.AWS_BEARER_TOKEN_BEDROCK;
 
 beforeEach(() => {
     delete process.env.COMANDO_CLAUDE_ACP_BIN;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.AWS_BEARER_TOKEN_BEDROCK;
 });
 
 afterEach(() => {
@@ -62,16 +76,41 @@ afterEach(() => {
         delete process.env.ANTHROPIC_BASE_URL;
     }
 
+    if (typeof originalAnthropicApiKey === "string") {
+        process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+    } else {
+        delete process.env.ANTHROPIC_API_KEY;
+    }
+
     if (typeof originalAnthropicAuthToken === "string") {
         process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuthToken;
     } else {
         delete process.env.ANTHROPIC_AUTH_TOKEN;
     }
 
+    if (typeof originalAnthropicBedrockBaseUrl === "string") {
+        process.env.ANTHROPIC_BEDROCK_BASE_URL =
+            originalAnthropicBedrockBaseUrl;
+    } else {
+        delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    }
+
     if (typeof originalAnthropicCustomHeaders === "string") {
         process.env.ANTHROPIC_CUSTOM_HEADERS = originalAnthropicCustomHeaders;
     } else {
         delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+    }
+
+    if (typeof originalClaudeCodeUseBedrock === "string") {
+        process.env.CLAUDE_CODE_USE_BEDROCK = originalClaudeCodeUseBedrock;
+    } else {
+        delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    }
+
+    if (typeof originalAwsBearerTokenBedrock === "string") {
+        process.env.AWS_BEARER_TOKEN_BEDROCK = originalAwsBearerTokenBedrock;
+    } else {
+        delete process.env.AWS_BEARER_TOKEN_BEDROCK;
     }
 });
 
@@ -263,6 +302,88 @@ describe("Claude setup", () => {
         }
     });
 
+    it("lists Claude API key and Bedrock gateway auth methods", () => {
+        const methodIds = getClaudeAuthMethods().map((method) => method.id);
+
+        expect(methodIds).toEqual(
+            expect.arrayContaining([
+                "anthropic-api-key",
+                "gateway",
+                "gateway-bedrock",
+            ]),
+        );
+        expect(
+            methodIds.includes("claude-login") ||
+                methodIds.includes("claude-ai-login"),
+        ).toBe(true);
+    });
+
+    it("prefers a stored Anthropic API key before external Claude login fallback", () => {
+        const tempHome = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-claude-api-key-home-"),
+        );
+
+        try {
+            fs.writeFileSync(
+                path.join(tempHome, ".claude.json"),
+                '{"session":true}',
+                "utf8",
+            );
+            process.env.HOME = tempHome;
+            delete process.env.USERPROFILE;
+
+            const settings = {
+                ...createEmptyClaudeSettings(),
+                hasAnthropicApiKey: true,
+            };
+            const status = getClaudeRuntimeStatus(
+                settings,
+                createFakeSecretStore({
+                    "ai.claude:anthropic_api_key": "stored-api-key",
+                }) as unknown as SecretStoreService,
+                {
+                    allowPathFallback: false,
+                    appRoot: os.tmpdir(),
+                    debugMode: false,
+                    packagedResourcesPath: null,
+                },
+            );
+
+            expect(detectClaudeAuthMethod(settings)).toBe(
+                "anthropic-api-key",
+            );
+            expect(status.authMethod).toBe("anthropic-api-key");
+            expect(status.authReady).toBe(true);
+            expect(status.authCredentialSource).toBe("comando-secret");
+        } finally {
+            fs.rmSync(tempHome, { force: true, recursive: true });
+        }
+    });
+
+    it("lets Anthropic API key environment override a selected login method", () => {
+        process.env.ANTHROPIC_API_KEY = "external-api-key";
+
+        const settings = {
+            ...createEmptyClaudeSettings(),
+            authMethod: "claude-ai-login" as const,
+        };
+        const status = getClaudeRuntimeStatus(
+            settings,
+            createFakeSecretStore() as unknown as SecretStoreService,
+            {
+                allowPathFallback: false,
+                appRoot: os.tmpdir(),
+                debugMode: false,
+                packagedResourcesPath: null,
+            },
+        );
+
+        expect(detectClaudeAuthMethod(settings)).toBe("anthropic-api-key");
+        expect(status.authMethod).toBe("anthropic-api-key");
+        expect(status.authReady).toBe(true);
+        expect(status.authCredentialSource).toBe("environment");
+    });
+
     it("prefers packaged macOS architecture-specific Node when available", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-claude-packaged-"),
@@ -322,6 +443,7 @@ describe("Claude setup", () => {
         const env = applyClaudeAuthEnv(
             {
                 ANTHROPIC_AUTH_TOKEN: "external-token",
+                AWS_BEARER_TOKEN_BEDROCK: "external-bedrock-token",
             },
             {
                 ...createEmptyClaudeSettings(),
@@ -336,6 +458,75 @@ describe("Claude setup", () => {
         expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/v1");
         expect(env.ANTHROPIC_AUTH_TOKEN).toBe("external-token");
         expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('{"x-test":"1"}');
+        expect(env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+    });
+
+    it("injects a stored Anthropic API key without leaking gateway credentials", () => {
+        const secretStore = createFakeSecretStore({
+            "ai.claude:anthropic_api_key": "stored-api-key",
+            "ai.claude:anthropic_auth_token": "stored-token",
+            "ai.claude:anthropic_custom_headers": '{"x-test":"1"}',
+        });
+
+        const env = applyClaudeAuthEnv(
+            {},
+            {
+                ...createEmptyClaudeSettings(),
+                authMethod: "anthropic-api-key",
+                gatewayBaseUrl: "https://gateway.example/v1",
+                hasAnthropicApiKey: true,
+                hasGatewayAuthToken: true,
+                hasGatewayCustomHeaders: true,
+            },
+            secretStore as unknown as SecretStoreService,
+        );
+
+        expect(env.ANTHROPIC_API_KEY).toBe("stored-api-key");
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+        expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    });
+
+    it("injects Bedrock gateway env with custom headers and Bedrock bearer shim", () => {
+        const secretStore = createFakeSecretStore({
+            "ai.claude:anthropic_auth_token": "stored-token",
+            "ai.claude:anthropic_custom_headers": '{"x-test":"1"}',
+        });
+
+        const env = applyClaudeAuthEnv(
+            {},
+            {
+                ...createEmptyClaudeSettings(),
+                authMethod: "gateway-bedrock",
+                bedrockGatewayBaseUrl: "https://bedrock.example/v1",
+            },
+            secretStore as unknown as SecretStoreService,
+        );
+
+        expect(env.ANTHROPIC_BEDROCK_BASE_URL).toBe(
+            "https://bedrock.example/v1",
+        );
+        expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+        expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe(" ");
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+        expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('{"x-test":"1"}');
+    });
+
+    it("adds the Bedrock bearer shim for external Bedrock gateway env", () => {
+        const env = applyClaudeAuthEnv(
+            {
+                ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example/v1",
+            },
+            createEmptyClaudeSettings(),
+            createFakeSecretStore() as unknown as SecretStoreService,
+        );
+
+        expect(env.ANTHROPIC_BEDROCK_BASE_URL).toBe(
+            "https://bedrock.example/v1",
+        );
+        expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+        expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe(" ");
     });
 
     it("does not inject stored Claude gateway secrets for external login methods", () => {
@@ -361,6 +552,30 @@ describe("Claude setup", () => {
         expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
     });
 
+    it("keeps existing Claude secrets when omitted from a partial patch", () => {
+        const result = buildClaudeSecretPatches(
+            createFakeSecretStore({
+                "ai.claude:anthropic_api_key": "stored-api-key",
+                "ai.claude:anthropic_auth_token": "stored-token",
+            }) as unknown as SecretStoreService,
+            {
+                gatewayCustomHeaders: '{"x-test":"1"}',
+            },
+        );
+
+        expect(result.flags).toEqual({
+            hasAnthropicApiKey: true,
+            hasGatewayAuthToken: true,
+            hasGatewayCustomHeaders: true,
+        });
+        expect(result.patches).toEqual([
+            {
+                key: "secret.ai.claude.anthropic_custom_headers",
+                value: '{"x-test":"1"}',
+            },
+        ]);
+    });
+
     it("treats Anthropic gateway environment variables as ready without Comando secrets", () => {
         process.env.ANTHROPIC_BASE_URL = "https://gateway.example/v1";
         process.env.ANTHROPIC_AUTH_TOKEN = "external-token";
@@ -384,6 +599,31 @@ describe("Claude setup", () => {
         expect(status.authCredentialSource).toBe("environment");
         expect(status.canDisconnectAuth).toBe(false);
         expect(status.hasGatewayConfig).toBe(true);
+    });
+
+    it("treats Anthropic Bedrock gateway environment variables as ready", () => {
+        process.env.ANTHROPIC_BEDROCK_BASE_URL =
+            "https://bedrock.example/v1";
+
+        const status = getClaudeRuntimeStatus(
+            createEmptyClaudeSettings(),
+            createFakeSecretStore() as unknown as SecretStoreService,
+            {
+                allowPathFallback: false,
+                appRoot: os.tmpdir(),
+                debugMode: false,
+                packagedResourcesPath: null,
+            },
+        );
+
+        expect(detectClaudeAuthMethod(createEmptyClaudeSettings())).toBe(
+            "gateway-bedrock",
+        );
+        expect(status.authMethod).toBe("gateway-bedrock");
+        expect(status.authReady).toBe(true);
+        expect(status.authCredentialSource).toBe("environment");
+        expect(status.hasGatewayConfig).toBe(true);
+        expect(status.hasGatewayUrl).toBe(true);
     });
 
     it("lets Anthropic environment gateway override an invalid stored gateway URL", () => {
@@ -422,8 +662,10 @@ function createEmptyClaudeSettings() {
     return {
         authInvalidatedAtMs: null,
         authMethod: null,
+        bedrockGatewayBaseUrl: null,
         binaryPath: null,
         gatewayBaseUrl: null,
+        hasAnthropicApiKey: false,
         hasGatewayAuthToken: false,
         hasGatewayCustomHeaders: false,
     };

@@ -3,12 +3,14 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import type {
+    AiAuthCredentialSource,
     AiAuthMethod,
     AiRuntimeStatus,
     KiloAuthMethodId,
     KiloRuntimeSettings,
 } from "@shared/ipc";
 
+import type { SecretRecordPatch, SecretStoreGateway } from "../secret-store.ts";
 import { launchTerminalLoginCommand } from "../auth/terminal-login.ts";
 import { debugBenignError } from "../../observability/logging.ts";
 
@@ -16,7 +18,11 @@ const KILO_PROGRAM_NAME = "kilo";
 const KILO_ACP_SUBCOMMAND = "acp";
 const KILO_AUTH_LOGIN_SUBCOMMAND = ["auth", "login"] as const;
 const KILO_ENV_BIN = "COMANDO_KILO_ACP_BIN";
-const KILO_LOGIN_METHOD_ID: KiloAuthMethodId = "kilo-login";
+const KILO_API_KEY_ENV = "KILO_API_KEY";
+const KILO_LOGIN_METHOD_ID = "kilo-login" satisfies KiloAuthMethodId;
+const KILO_API_KEY_METHOD_ID = "kilo-api-key" satisfies KiloAuthMethodId;
+const KILO_SECRET_NAMESPACE = "ai.kilo";
+const KILO_API_KEY_SECRET = "kilo_api_key";
 const KILO_MACOS_FALLBACK_DIRS = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -43,33 +49,53 @@ interface KiloAuthStoreStatus {
     readonly modifiedAtMs: number | null;
 }
 
+export interface KiloSecretBundle {
+    readonly kiloApiKey: string | null;
+}
+
 export function getKiloRuntimeStatus(
     settings: KiloRuntimeSettings,
+    secretStore?: SecretStoreGateway | null,
 ): AiRuntimeStatus {
     const resolved = resolveKiloBinary(settings);
     const authMethods = getKiloAuthMethods();
-    const authMethod = detectKiloAuthMethod(settings);
+    const authMethod = detectKiloAuthMethod(settings, secretStore);
+    const secrets = loadKiloSecretBundle(secretStore);
+    const credentialSource = getKiloCredentialSource(
+        authMethod,
+        secrets,
+        process.env,
+    );
+    const storageStatus = secretStore?.getStorageStatus?.() ?? {
+        encryptionAvailable: true,
+        isWeakBackend: false,
+        message: null,
+        platform: process.platform,
+        selectedBackend: null,
+    };
     const binaryReady = resolved.state === "ready" && Boolean(resolved.program);
     const authReady = authMethod !== null;
 
     let message = resolved.message;
     if (binaryReady && !authReady) {
-        message = "Sign in with Kilo to finish setup.";
+        message = "Sign in with Kilo or add a Kilo API key to finish setup.";
     }
 
     return {
         authMethod,
         authMethods,
         authReady,
-        authCredentialSource: authReady ? "external-runtime" : "none",
-        authCredentialSourceLabel: authReady
-            ? "Using external Kilo login"
-            : "Needs authentication",
+        authCredentialSource: credentialSource,
+        authCredentialSourceLabel:
+            getCredentialSourceLabel(credentialSource),
         authSessionMessage:
             "This affects new sessions. Active sessions may keep using credentials loaded at launch.",
-        authStorageMessage: null,
+        authStorageMessage: storageStatus.message,
         canDisconnectAuth:
-            authReady || settings.authInvalidatedAtMs !== null,
+            readSelectedKiloAuthMethod(settings) !== null ||
+            Boolean(secrets.kiloApiKey) ||
+            (credentialSource !== "environment" && authMethod !== null) ||
+            settings.authInvalidatedAtMs !== null,
         canLogoutAuth: false,
         checkedAt: new Date().toISOString(),
         command: resolved.command,
@@ -86,9 +112,10 @@ export function getKiloRuntimeStatus(
 
 export function resolveKiloRuntime(
     settings: KiloRuntimeSettings,
+    secretStore?: SecretStoreGateway | null,
 ): ResolvedKiloRuntimeCommand {
     const resolved = resolveKiloBinary(settings);
-    const status = getKiloRuntimeStatus(settings);
+    const status = getKiloRuntimeStatus(settings, secretStore);
 
     if (resolved.program === null || resolved.command === null) {
         throw new Error(
@@ -106,21 +133,42 @@ export function resolveKiloRuntime(
 
 export function detectKiloAuthMethod(
     settings: KiloRuntimeSettings,
+    secretStore?: SecretStoreGateway | null,
 ): KiloAuthMethodId | null {
-    const status = getKiloAuthStoreStatus();
-    if (!status?.hasActiveAuth) {
-        return null;
+    const secrets = loadKiloSecretBundle(secretStore);
+    const selectedAuthMethod = readSelectedKiloAuthMethod(settings);
+
+    if (envSecretPresent(process.env, KILO_API_KEY_ENV)) {
+        return KILO_API_KEY_METHOD_ID;
     }
 
     if (
-        settings.authInvalidatedAtMs !== null &&
-        status.modifiedAtMs !== null &&
-        status.modifiedAtMs <= settings.authInvalidatedAtMs
+        selectedAuthMethod === KILO_API_KEY_METHOD_ID &&
+        Boolean(secrets.kiloApiKey)
     ) {
+        return KILO_API_KEY_METHOD_ID;
+    }
+
+    if (
+        selectedAuthMethod === KILO_LOGIN_METHOD_ID &&
+        kiloLoginAvailable(settings)
+    ) {
+        return KILO_LOGIN_METHOD_ID;
+    }
+
+    if (selectedAuthMethod !== null) {
         return null;
     }
 
-    return KILO_LOGIN_METHOD_ID;
+    if (secrets.kiloApiKey) {
+        return KILO_API_KEY_METHOD_ID;
+    }
+
+    if (kiloLoginAvailable(settings)) {
+        return KILO_LOGIN_METHOD_ID;
+    }
+
+    return null;
 }
 
 export function getKiloAuthMethods(): readonly AiAuthMethod[] {
@@ -131,7 +179,124 @@ export function getKiloAuthMethods(): readonly AiAuthMethod[] {
             id: KILO_LOGIN_METHOD_ID,
             name: "Kilo login",
         },
+        {
+            description:
+                "Use a Kilo API key stored only for Comando on this machine.",
+            id: KILO_API_KEY_METHOD_ID,
+            name: "Kilo API key",
+        },
     ];
+}
+
+export function getKiloCredentialSource(
+    authMethod: KiloAuthMethodId | null,
+    secrets: KiloSecretBundle,
+    env: NodeJS.ProcessEnv = process.env,
+): AiAuthCredentialSource {
+    if (authMethod === KILO_API_KEY_METHOD_ID) {
+        if (envSecretPresent(env, KILO_API_KEY_ENV)) {
+            return "environment";
+        }
+
+        if (secrets.kiloApiKey) {
+            return "comando-secret";
+        }
+    }
+
+    if (authMethod === KILO_LOGIN_METHOD_ID) {
+        return "external-runtime";
+    }
+
+    return "none";
+}
+
+export function loadKiloSecretBundle(
+    secretStore?: SecretStoreGateway | null,
+): KiloSecretBundle {
+    return {
+        kiloApiKey:
+            secretStore?.loadSecret(
+                KILO_SECRET_NAMESPACE,
+                KILO_API_KEY_SECRET,
+            ) ?? null,
+    };
+}
+
+export function saveKiloSecrets(
+    secretStore: SecretStoreGateway,
+    input: KiloSecretBundle,
+): {
+    readonly hasKiloApiKey: boolean;
+} {
+    const kiloApiKey = normalizeOptionalText(input.kiloApiKey);
+    saveSecretIfChanged(
+        secretStore,
+        KILO_SECRET_NAMESPACE,
+        KILO_API_KEY_SECRET,
+        normalizeOptionalText(
+            secretStore.loadSecret(KILO_SECRET_NAMESPACE, KILO_API_KEY_SECRET),
+        ),
+        kiloApiKey,
+    );
+
+    return {
+        hasKiloApiKey: Boolean(kiloApiKey),
+    };
+}
+
+export function buildKiloSecretPatches(
+    secretStore: SecretStoreGateway,
+    input: KiloSecretBundle,
+): {
+    readonly flags: {
+        readonly hasKiloApiKey: boolean;
+    };
+    readonly patches: readonly SecretRecordPatch[];
+} {
+    const kiloApiKey = normalizeOptionalText(input.kiloApiKey);
+    const patches: SecretRecordPatch[] = [];
+
+    pushSecretPatchIfChanged(
+        patches,
+        KILO_SECRET_NAMESPACE,
+        KILO_API_KEY_SECRET,
+        normalizeOptionalText(
+            secretStore.loadSecret(KILO_SECRET_NAMESPACE, KILO_API_KEY_SECRET),
+        ),
+        kiloApiKey,
+    );
+
+    return {
+        flags: {
+            hasKiloApiKey: Boolean(kiloApiKey),
+        },
+        patches,
+    };
+}
+
+export function applyKiloAuthEnv(
+    baseEnv: NodeJS.ProcessEnv,
+    settings: KiloRuntimeSettings,
+    secretStore?: SecretStoreGateway | null,
+): NodeJS.ProcessEnv {
+    const env = { ...baseEnv };
+
+    if (envSecretPresent(baseEnv, KILO_API_KEY_ENV)) {
+        return env;
+    }
+
+    delete env[KILO_API_KEY_ENV];
+
+    if (readSelectedKiloAuthMethod(settings) === KILO_LOGIN_METHOD_ID) {
+        return env;
+    }
+
+    const secrets = loadKiloSecretBundle(secretStore);
+    if (secrets.kiloApiKey) {
+        env[KILO_API_KEY_ENV] = secrets.kiloApiKey;
+    }
+
+    return env;
 }
 
 export function markKiloAuthInvalidated(
@@ -175,6 +340,98 @@ export function isKiloAuthenticationError(message: string): boolean {
         normalized.includes("you were signed out") ||
         normalized.includes("reconnect kilo")
     );
+}
+
+function saveSecretIfChanged(
+    secretStore: SecretStoreGateway,
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    void secretStore.saveSecret(namespace, secretId, nextValue);
+}
+
+function pushSecretPatchIfChanged(
+    patches: SecretRecordPatch[],
+    namespace: string,
+    secretId: string,
+    currentValue: string | null,
+    nextValue: string | null,
+): void {
+    if (currentValue === nextValue) {
+        return;
+    }
+
+    patches.push({
+        key: buildKiloSecretStorageKey(namespace, secretId),
+        value: nextValue,
+    });
+}
+
+function buildKiloSecretStorageKey(namespace: string, secretId: string): string {
+    return `secret.${namespace}.${secretId}`;
+}
+
+function normalizeOptionalText(
+    value: string | null | undefined,
+): string | null {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function readSelectedKiloAuthMethod(
+    settings: KiloRuntimeSettings,
+): KiloAuthMethodId | null {
+    const authMethod = (settings as { readonly authMethod?: unknown })
+        .authMethod;
+    if (
+        authMethod === KILO_LOGIN_METHOD_ID ||
+        authMethod === KILO_API_KEY_METHOD_ID
+    ) {
+        return authMethod;
+    }
+
+    return null;
+}
+
+function kiloLoginAvailable(settings: KiloRuntimeSettings): boolean {
+    const status = getKiloAuthStoreStatus();
+    if (!status?.hasActiveAuth) {
+        return false;
+    }
+
+    if (
+        settings.authInvalidatedAtMs !== null &&
+        status.modifiedAtMs !== null &&
+        status.modifiedAtMs <= settings.authInvalidatedAtMs
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
+function envSecretPresent(env: NodeJS.ProcessEnv, key: typeof KILO_API_KEY_ENV) {
+    return Boolean(env[key]?.trim());
+}
+
+function getCredentialSourceLabel(source: AiAuthCredentialSource): string {
+    switch (source) {
+        case "comando-secret":
+            return "Using Comando stored credentials";
+        case "environment":
+            return "Using environment variable";
+        case "external-runtime":
+            return "Using external Kilo login";
+        case "none":
+        default:
+            return "Needs authentication";
+    }
 }
 
 function resolveKiloBinary(settings: KiloRuntimeSettings): ResolvedKiloBinary {

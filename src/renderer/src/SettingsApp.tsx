@@ -1,25 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+    AiEnvironmentDiagnostics,
     AiRuntimeId,
     AiRuntimeStatus,
+    AiSettingsSnapshot,
     AppChangelogRelease,
     AppAiChatSettings,
     AppAppearanceSettings,
     AppPrivacyAccessState,
+    ClaudeRuntimeSettingsInput,
+    CodexRuntimeSettingsInput,
     ProjectSummary,
     AppUpdateState,
     AppEditorSettings,
     ChatFontFamily,
+    GeminiRuntimeSettingsInput,
     GitHubAuthStatus,
+    KiloRuntimeSettingsInput,
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
 
 import {
     SettingsWindow,
-    type RuntimeActionOption,
-    type RuntimeCardOption,
+    type AiProviderDiagnosticEntry,
+    type AiProviderDiagnosticsState,
+    type AiProviderId,
+    type AiProviderRuntimeSettingsInput,
 } from "./components/settings";
 import {
     saveAiChatSettings,
@@ -64,6 +72,19 @@ export function SettingsApp() {
         gemini: null,
         kilo: null,
     });
+    const [runtimeSettings, setRuntimeSettings] =
+        useState<AiSettingsSnapshot | null>(null);
+    const [savingRuntimeId, setSavingRuntimeId] =
+        useState<AiProviderId | null>(null);
+    const [runtimeErrorById, setRuntimeErrorById] = useState<
+        Partial<Record<AiProviderId, string | null>>
+    >({});
+    const [environmentDiagnostics, setEnvironmentDiagnostics] =
+        useState<AiEnvironmentDiagnostics | null>(null);
+    const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+    const [diagnosticsError, setDiagnosticsError] = useState<string | null>(
+        null,
+    );
     const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({
         autoUpdatesEnabled: false,
         availableVersion: null,
@@ -112,19 +133,44 @@ export function SettingsApp() {
             return;
         }
 
-        const [codex, claude, gemini, kilo] = await Promise.all([
-            window.comando.getAiRuntimeStatus("codex"),
-            window.comando.getAiRuntimeStatus("claude"),
-            window.comando.getAiRuntimeStatus("gemini"),
-            window.comando.getAiRuntimeStatus("kilo"),
-        ]);
+        const [settingsSnapshot, codex, claude, gemini, kilo] =
+            await Promise.all([
+                window.comando.getSettingsSnapshot(),
+                window.comando.getAiRuntimeStatus("codex"),
+                window.comando.getAiRuntimeStatus("claude"),
+                window.comando.getAiRuntimeStatus("gemini"),
+                window.comando.getAiRuntimeStatus("kilo"),
+            ]);
 
+        setRuntimeSettings(settingsSnapshot.ai ?? null);
         setRuntimeStatuses({
             claude,
             codex,
             gemini,
             kilo,
         });
+    }, []);
+
+    const loadEnvironmentDiagnostics = useCallback(async () => {
+        if (!window.comando) {
+            return;
+        }
+
+        setDiagnosticsLoading(true);
+        try {
+            const diagnostics =
+                await window.comando.getAiEnvironmentDiagnostics();
+            setEnvironmentDiagnostics(diagnostics);
+            setDiagnosticsError(null);
+        } catch (error) {
+            setDiagnosticsError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not load AI runtime diagnostics.",
+            );
+        } finally {
+            setDiagnosticsLoading(false);
+        }
     }, []);
 
     const loadAppUpdateState = useCallback(async () => {
@@ -203,6 +249,7 @@ export function SettingsApp() {
             void Promise.all([
                 hydrateSettings(),
                 loadRuntimeStatuses(),
+                loadEnvironmentDiagnostics(),
                 loadAppUpdateState(),
                 loadAppChangelog(),
                 loadAppPrivacyAccessState(),
@@ -217,6 +264,7 @@ export function SettingsApp() {
     }, [
         hydrateSettings,
         loadAppChangelog,
+        loadEnvironmentDiagnostics,
         loadAppPrivacyAccessState,
         loadAppUpdateState,
         loadGitHubAuthStatus,
@@ -284,7 +332,8 @@ export function SettingsApp() {
 
         latestSettingsRevisionRef.current = settingsRevision;
         void loadRuntimeStatuses();
-    }, [loadRuntimeStatuses, settingsRevision]);
+        void loadEnvironmentDiagnostics();
+    }, [loadEnvironmentDiagnostics, loadRuntimeStatuses, settingsRevision]);
 
     const handleAppThemeModeChange = (themeMode: ThemeMode) => {
         const nextAppearance = {
@@ -428,12 +477,84 @@ export function SettingsApp() {
         void saveAiChatSettings(next);
     };
 
-    const runtimes = useMemo<readonly RuntimeCardOption[]>(
+    const runProviderSettingsAction = useCallback(
+        async (providerId: AiProviderId, action: () => Promise<void>) => {
+            if (!window.comando) {
+                throw new Error("Comando API is not available.");
+            }
+
+            setRuntimeErrorById((current) => ({
+                ...current,
+                [providerId]: null,
+            }));
+            setSavingRuntimeId(providerId);
+            try {
+                await action();
+            } catch (error) {
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : "Could not update AI provider settings.";
+                setRuntimeErrorById((current) => ({
+                    ...current,
+                    [providerId]: message,
+                }));
+                throw error;
+            } finally {
+                setSavingRuntimeId(null);
+            }
+        },
+        [],
+    );
+
+    const saveAiProviderSettings = useCallback(
+        async (
+            runtimeId: AiProviderId,
+            settings: AiProviderRuntimeSettingsInput,
+        ): Promise<AiRuntimeStatus> => {
+            switch (runtimeId) {
+                case "claude":
+                    return await window.comando.saveClaudeRuntimeSettings(
+                        settings as ClaudeRuntimeSettingsInput,
+                    );
+                case "codex":
+                    return await window.comando.saveCodexRuntimeSettings(
+                        settings as CodexRuntimeSettingsInput,
+                    );
+                case "gemini":
+                    return await window.comando.saveGeminiRuntimeSettings(
+                        settings as GeminiRuntimeSettingsInput,
+                    );
+                case "kilo":
+                    return await window.comando.saveKiloRuntimeSettings(
+                        settings as KiloRuntimeSettingsInput,
+                    );
+            }
+        },
+        [],
+    );
+
+    const refreshProviderSettingsState = useCallback(
+        async (runtimeId: AiProviderId, status: AiRuntimeStatus) => {
+            const snapshot = await window.comando.getSettingsSnapshot();
+            setRuntimeSettings(snapshot.ai ?? null);
+            setRuntimeStatuses((current) => ({
+                ...current,
+                [runtimeId]: status,
+            }));
+            await loadEnvironmentDiagnostics();
+        },
+        [loadEnvironmentDiagnostics],
+    );
+
+    const aiProviderDiagnostics = useMemo<AiProviderDiagnosticsState>(
         () =>
-            (["codex", "claude", "gemini", "kilo"] as const).map((runtimeId) =>
-                mapRuntimeCard(runtimeId, runtimeStatuses[runtimeId]),
+            mapEnvironmentDiagnostics(
+                environmentDiagnostics,
+                diagnosticsLoading,
+                diagnosticsError,
             ),
-        [runtimeStatuses],
+        [environmentDiagnostics, diagnosticsError, diagnosticsLoading],
     );
     const appEditorFontFamilies = useMemo(
         () =>
@@ -646,6 +767,78 @@ export function SettingsApp() {
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
             }}
+            aiProviders={{
+                busyProviderId: savingRuntimeId,
+                diagnostics: aiProviderDiagnostics,
+                errorByProviderId: runtimeErrorById,
+                onDisconnectAuth: async (runtimeId) => {
+                    if (
+                        !window.confirm(
+                            "Disconnect from Comando? This removes Comando-managed credentials or marks external login as signed out. Active sessions may keep credentials loaded at launch.",
+                        )
+                    ) {
+                        return;
+                    }
+
+                    await runProviderSettingsAction(runtimeId, async () => {
+                        const status =
+                            await window.comando.disconnectAiRuntimeAuth({
+                                runtimeId,
+                            });
+                        await refreshProviderSettingsState(runtimeId, status);
+                    });
+                },
+                onLaunchAuth: async (runtimeId, authMethod) => {
+                    await runProviderSettingsAction(runtimeId, async () => {
+                        await window.comando.launchAiRuntimeAuth({
+                            methodId: authMethod,
+                            projectId: runtimeProjectId,
+                            runtimeId,
+                        });
+                        await loadRuntimeStatuses();
+                        await loadEnvironmentDiagnostics();
+                    });
+                },
+                onLogoutAuth: async (runtimeId) => {
+                    if (
+                        !window.confirm(
+                            "Log out from the provider? If the remote logout fails, Comando will keep local credentials unchanged.",
+                        )
+                    ) {
+                        return;
+                    }
+
+                    await runProviderSettingsAction(runtimeId, async () => {
+                        const status = await window.comando.logoutAiRuntimeAuth({
+                            runtimeId,
+                        });
+                        await refreshProviderSettingsState(runtimeId, status);
+                    });
+                },
+                onRefreshDiagnostics: loadEnvironmentDiagnostics,
+                onSaveProviderSettings: async (runtimeId, settings) => {
+                    await runProviderSettingsAction(runtimeId, async () => {
+                        const status = await saveAiProviderSettings(
+                            runtimeId,
+                            settings,
+                        );
+                        await refreshProviderSettingsState(runtimeId, status);
+                    });
+                },
+                onVerifyRuntime: async (runtimeId) => {
+                    await runProviderSettingsAction(runtimeId, async () => {
+                        const status =
+                            await window.comando.getAiRuntimeStatus(runtimeId);
+                        setRuntimeStatuses((current) => ({
+                            ...current,
+                            [runtimeId]: status,
+                        }));
+                        await loadEnvironmentDiagnostics();
+                    });
+                },
+                runtimeSettings: runtimeSettings ?? undefined,
+                runtimeStatuses,
+            }}
             github={{
                 error: githubError,
                 loading: githubLoading,
@@ -734,23 +927,7 @@ export function SettingsApp() {
                     rootPath: project.rootPath,
                 })),
             }}
-            onRuntimeAction={(runtimeId, actionId) => {
-                void handleRuntimeAction({
-                    actionId,
-                    loadRuntimeStatuses,
-                    runtimeId: runtimeId as AiRuntimeId,
-                    runtimeStatuses,
-                    projectId: runtimeProjectId,
-                }).catch((error) => {
-                    window.alert(
-                        error instanceof Error
-                            ? error.message
-                            : "Could not complete the runtime action.",
-                    );
-                });
-            }}
             shortcuts={shortcuts}
-            runtimes={runtimes}
             updates={{
                 changelog: appChangelog,
                 onCheckForUpdates: () => {
@@ -788,152 +965,6 @@ function createDefaultGitHubAuthStatus(): GitHubAuthStatus {
     };
 }
 
-async function handleRuntimeAction(options: {
-    readonly actionId: string;
-    readonly loadRuntimeStatuses: () => Promise<void>;
-    readonly projectId: string | null;
-    readonly runtimeId: AiRuntimeId;
-    readonly runtimeStatuses: Record<AiRuntimeId, AiRuntimeStatus | null>;
-}): Promise<void> {
-    if (!window.comando) {
-        return;
-    }
-
-    if (options.actionId === "refresh") {
-        await options.loadRuntimeStatuses();
-        return;
-    }
-
-    if (options.actionId === "logout") {
-        const confirmed = window.confirm(
-            "Log out from the provider? If the remote logout fails, Comando will keep local credentials unchanged.",
-        );
-        if (!confirmed) {
-            return;
-        }
-        await window.comando.logoutAiRuntimeAuth({
-            runtimeId: options.runtimeId,
-        });
-        await options.loadRuntimeStatuses();
-        return;
-    }
-
-    if (options.actionId === "disconnect") {
-        const confirmed = window.confirm(
-            "Disconnect from Comando? This removes Comando-managed credentials or marks external login as signed out. Active sessions may keep credentials loaded at launch.",
-        );
-        if (!confirmed) {
-            return;
-        }
-        await window.comando.disconnectAiRuntimeAuth({
-            runtimeId: options.runtimeId,
-        });
-        await options.loadRuntimeStatuses();
-        return;
-    }
-
-    if (options.actionId !== "connect") {
-        return;
-    }
-
-    const runtimeStatus = options.runtimeStatuses[options.runtimeId];
-    const methodId =
-        options.runtimeId === "codex"
-            ? getCodexLaunchAuthMethodId(runtimeStatus)
-            : (runtimeStatus?.authMethods[0]?.id ??
-              runtimeStatus?.authMethod ??
-              null);
-
-    if (!methodId) {
-        return;
-    }
-
-    await window.comando.launchAiRuntimeAuth({
-        methodId,
-        projectId: options.projectId,
-        runtimeId: options.runtimeId,
-    });
-    await options.loadRuntimeStatuses();
-}
-
-function mapRuntimeCard(
-    runtimeId: AiRuntimeId,
-    status: AiRuntimeStatus | null,
-): RuntimeCardOption {
-    if (!status) {
-        return {
-            actions: [
-                {
-                    id: "refresh",
-                    label: "Refresh",
-                },
-            ],
-            details: "Status not loaded yet.",
-            id: runtimeId,
-            name: getRuntimeName(runtimeId),
-            status: "Unknown",
-        };
-    }
-
-    const actions: RuntimeActionOption[] = [];
-    if (status.authReady) {
-        if (status.canLogoutAuth) {
-            actions.push({
-                id: "logout",
-                label: "Log out from provider",
-                tone: "danger",
-            });
-        }
-        if (status.canDisconnectAuth) {
-            actions.push({
-                id: "disconnect",
-                label: "Disconnect from Comando",
-                tone: status.canLogoutAuth ? undefined : "danger",
-            });
-        }
-    } else {
-        actions.push({
-            id: "connect",
-            label: "Connect",
-            tone: "primary",
-        });
-        if (status.canDisconnectAuth) {
-            actions.push({
-                id: "disconnect",
-                label: "Disconnect from Comando",
-                tone: "danger",
-            });
-        }
-    }
-    actions.push({
-        id: "refresh",
-        label: "Refresh",
-    });
-
-    return {
-        actions,
-        description: getRuntimeDescription(status.runtimeId),
-        details: formatRuntimeDetails(status),
-        id: status.runtimeId,
-        name: getRuntimeName(status.runtimeId),
-        source: status.source ?? "unknown",
-        status: formatRuntimeStatus(status),
-    };
-}
-
-function formatRuntimeDetails(status: AiRuntimeStatus): string {
-    const parts = [
-        status.authCredentialSourceLabel,
-        status.authStorageMessage,
-        status.authSessionMessage,
-        status.message,
-        status.command,
-        status.source ? "Source: " + status.source : null,
-    ].filter((part): part is string => Boolean(part?.trim()));
-
-    return parts.join(" ") || "No details yet.";
-}
-
 function getRuntimeName(runtimeId: AiRuntimeId): string {
     switch (runtimeId) {
         case "claude":
@@ -948,53 +979,111 @@ function getRuntimeName(runtimeId: AiRuntimeId): string {
     }
 }
 
-function getRuntimeDescription(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude authentication and binary setup.";
-        case "gemini":
-            return "Gemini CLI auth and Google-backed runtime setup.";
-        case "kilo":
-            return "Kilo CLI discovery and sign-in status from the local runtime.";
-        case "codex":
-        default:
-            return "Codex runtime discovery and binary path.";
-    }
-}
-
-function formatRuntimeStatus(status: AiRuntimeStatus): string {
-    if (status.state === "ready") {
-        return status.authReady ? "Ready" : "Needs auth";
+function mapEnvironmentDiagnostics(
+    diagnostics: AiEnvironmentDiagnostics | null,
+    loading: boolean,
+    error: string | null,
+): AiProviderDiagnosticsState {
+    if (!diagnostics) {
+        return {
+            entries: [],
+            error,
+            loading,
+            updatedAt: null,
+        };
     }
 
-    if (status.state === "missing") {
-        return "Missing";
-    }
-
-    return "Needs attention";
-}
-
-function getCodexLaunchAuthMethodId(
-    status: AiRuntimeStatus | null,
-): string | null {
-    if (!status) {
-        return null;
-    }
-
-    if (
-        status.authMethod === "chatgpt" ||
-        status.authMethod === "codex-api-key" ||
-        status.authMethod === "openai-api-key"
-    ) {
-        return status.authMethod;
-    }
-
-    const nextMethod = status.authMethods.find(
-        (method) =>
-            method.id === "chatgpt" ||
-            method.id === "codex-api-key" ||
-            method.id === "openai-api-key",
-    );
-
-    return nextMethod?.id ?? "chatgpt";
+    return {
+        entries: [
+            {
+                details: diagnostics.path.inheritedEntries.join("\n"),
+                id: "path-inherited",
+                label: "Inherited PATH",
+                message:
+                    diagnostics.path.inheritedEntries.length > 0
+                        ? `${diagnostics.path.inheritedEntries.length} entries`
+                        : "PATH is empty.",
+                status:
+                    diagnostics.path.inheritedEntries.length > 0
+                        ? "ok"
+                        : "warning",
+            },
+            {
+                details: diagnostics.path.preferredEntries.join("\n"),
+                id: "path-preferred",
+                label: "Preferred runtime PATH",
+                message:
+                    diagnostics.path.preferredEntries.length > 0
+                        ? `${diagnostics.path.preferredEntries.length} entries`
+                        : "No preferred runtime PATH has been resolved yet.",
+                status:
+                    diagnostics.path.preferredEntries.length > 0
+                        ? "ok"
+                        : "pending",
+            },
+            ...diagnostics.runtimes.map((runtime): AiProviderDiagnosticEntry => ({
+                details: [
+                    runtime.command ? `Command: ${runtime.command}` : null,
+                    runtime.executablePath
+                        ? `Executable: ${runtime.executablePath}`
+                        : null,
+                    runtime.source ? `Source: ${runtime.source}` : null,
+                    runtime.preferredPath
+                        ? `Preferred PATH: ${runtime.preferredPath}`
+                        : null,
+                ]
+                    .filter((part): part is string => Boolean(part))
+                    .join("\n"),
+                id: `runtime-${runtime.runtimeId}`,
+                label: `${getRuntimeName(runtime.runtimeId)} runtime`,
+                message:
+                    runtime.message ??
+                    (runtime.authReady
+                        ? "Runtime authentication is ready."
+                        : "Runtime needs authentication."),
+                providerId: runtime.runtimeId,
+                status:
+                    runtime.state === "error"
+                        ? "error"
+                        : runtime.state === "missing" || !runtime.authReady
+                          ? "warning"
+                          : "ok",
+            })),
+            ...diagnostics.executables.map(
+                (executable): AiProviderDiagnosticEntry => ({
+                details: executable.path,
+                id: `executable-${executable.command}`,
+                label: `${executable.command} executable`,
+                message: executable.message,
+                status: executable.state === "ready" ? "ok" : "warning",
+                }),
+            ),
+            ...diagnostics.runtimePathOverrides.map(
+                (override): AiProviderDiagnosticEntry => ({
+                details: override.pathOrCommand,
+                id: `override-${override.name}`,
+                label: override.name,
+                message: override.present
+                    ? "Runtime path override is set."
+                    : "Runtime path override is not set.",
+                providerId: override.runtimeId,
+                status: override.present ? "ok" : "pending",
+                }),
+            ),
+            ...diagnostics.credentialEnvironment.map(
+                (credential): AiProviderDiagnosticEntry => ({
+                id: `credential-${credential.name}`,
+                label: credential.name,
+                message: credential.present
+                    ? "Environment credential is present."
+                    : "Environment credential is not set.",
+                providerId: credential.runtimeId,
+                status: credential.present ? "ok" : "pending",
+                }),
+            ),
+        ],
+        error,
+        loading,
+        updatedAt: diagnostics.checkedAt,
+    };
 }

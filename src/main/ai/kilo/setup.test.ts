@@ -7,12 +7,19 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+    applyKiloAuthEnv,
+    buildKiloSecretPatches,
     detectKiloAuthMethod,
+    getKiloAuthMethods,
     getKiloRuntimeStatus,
     isKiloAuthenticationError,
+    loadKiloSecretBundle,
     resolveKiloRuntime,
 } from "./setup";
+import type { SecretStoreGateway } from "../secret-store";
+import type { KiloRuntimeSettings } from "@shared/ipc";
 
+const originalKiloApiKey = process.env.KILO_API_KEY;
 const originalKiloEnv = process.env.COMANDO_KILO_ACP_BIN;
 const originalHome = process.env.HOME;
 const originalLocalAppData = process.env.LOCALAPPDATA;
@@ -22,6 +29,7 @@ const originalXdgDataHome = process.env.XDG_DATA_HOME;
 
 beforeEach(() => {
     delete process.env.COMANDO_KILO_ACP_BIN;
+    delete process.env.KILO_API_KEY;
     delete process.env.XDG_DATA_HOME;
 });
 
@@ -32,6 +40,12 @@ afterEach(() => {
         process.env.COMANDO_KILO_ACP_BIN = originalKiloEnv;
     } else {
         delete process.env.COMANDO_KILO_ACP_BIN;
+    }
+
+    if (typeof originalKiloApiKey === "string") {
+        process.env.KILO_API_KEY = originalKiloApiKey;
+    } else {
+        delete process.env.KILO_API_KEY;
     }
 
     if (typeof originalHome === "string") {
@@ -60,6 +74,13 @@ afterEach(() => {
 });
 
 describe("Kilo setup", () => {
+    it("exposes terminal login and API key auth methods", () => {
+        expect(getKiloAuthMethods().map((method) => method.id)).toEqual([
+            "kilo-login",
+            "kilo-api-key",
+        ]);
+    });
+
     it("resolves Kilo from COMANDO_KILO_ACP_BIN with acp", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-kilo-env-"),
@@ -121,6 +142,158 @@ describe("Kilo setup", () => {
             expect(resolved.status.source).toBe("path");
         },
     );
+
+    it("loads and patches the stored Kilo API key secret", () => {
+        const secretStore = createSecretStore({
+            "ai.kilo:kilo_api_key": "stored-kilo-key",
+        });
+
+        expect(loadKiloSecretBundle(secretStore)).toEqual({
+            kiloApiKey: "stored-kilo-key",
+        });
+
+        const unchanged = buildKiloSecretPatches(secretStore, {
+            kiloApiKey: "stored-kilo-key",
+        });
+        const changed = buildKiloSecretPatches(secretStore, {
+            kiloApiKey: "next-kilo-key",
+        });
+        const cleared = buildKiloSecretPatches(secretStore, {
+            kiloApiKey: null,
+        });
+
+        expect(unchanged).toEqual({
+            flags: { hasKiloApiKey: true },
+            patches: [],
+        });
+        expect(changed).toEqual({
+            flags: { hasKiloApiKey: true },
+            patches: [
+                {
+                    key: "secret.ai.kilo.kilo_api_key",
+                    value: "next-kilo-key",
+                },
+            ],
+        });
+        expect(cleared).toEqual({
+            flags: { hasKiloApiKey: false },
+            patches: [
+                {
+                    key: "secret.ai.kilo.kilo_api_key",
+                    value: null,
+                },
+            ],
+        });
+    });
+
+    it("prefers KILO_API_KEY from the environment over selected login", () => {
+        process.env.KILO_API_KEY = "env-kilo-key";
+        const secretStore = createSecretStore({
+            "ai.kilo:kilo_api_key": "stored-kilo-key",
+        });
+        const settings = createEmptyKiloSettings({
+            authMethod: "kilo-login",
+        });
+
+        expect(detectKiloAuthMethod(settings, secretStore)).toBe(
+            "kilo-api-key",
+        );
+        expect(
+            applyKiloAuthEnv(
+                {
+                    KILO_API_KEY: "env-kilo-key",
+                },
+                settings,
+                secretStore,
+            ).KILO_API_KEY,
+        ).toBe("env-kilo-key");
+    });
+
+    it("uses a stored Kilo API key before external login when no method is selected", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-kilo-api-key-first-"),
+        );
+
+        try {
+            const binaryPath = path.join(tempDir, "kilo");
+            const dataDir = path.join(tempDir, "xdg");
+            const secretStore = createSecretStore({
+                "ai.kilo:kilo_api_key": "stored-kilo-key",
+            });
+
+            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
+            fs.chmodSync(binaryPath, 0o755);
+            writeActiveKiloLegacyAuthStore(dataDir);
+
+            process.env.COMANDO_KILO_ACP_BIN = binaryPath;
+            process.env.PATH = "";
+            process.env.XDG_DATA_HOME = dataDir;
+
+            const settings = createEmptyKiloSettings();
+            const status = getKiloRuntimeStatus(settings, secretStore);
+
+            expect(detectKiloAuthMethod(settings, secretStore)).toBe(
+                "kilo-api-key",
+            );
+            expect(status.authMethod).toBe("kilo-api-key");
+            expect(status.authCredentialSource).toBe("comando-secret");
+            expect(status.authCredentialSourceLabel).toBe(
+                "Using Comando stored credentials",
+            );
+            expect(
+                applyKiloAuthEnv({}, settings, secretStore).KILO_API_KEY,
+            ).toBe("stored-kilo-key");
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("does not treat external login as explicit Kilo API key credentials", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-kilo-explicit-api-key-"),
+        );
+
+        try {
+            const dataDir = path.join(tempDir, "xdg");
+            writeActiveKiloLegacyAuthStore(dataDir);
+            process.env.XDG_DATA_HOME = dataDir;
+
+            expect(
+                detectKiloAuthMethod(
+                    createEmptyKiloSettings({
+                        authMethod: "kilo-api-key",
+                    }),
+                    createSecretStore(),
+                ),
+            ).toBeNull();
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("keeps explicit Kilo login separate from stored API key credentials", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-kilo-no-login-"),
+        );
+
+        try {
+            const secretStore = createSecretStore({
+                "ai.kilo:kilo_api_key": "stored-kilo-key",
+            });
+            const settings = createEmptyKiloSettings({
+                authMethod: "kilo-login",
+            });
+
+            process.env.XDG_DATA_HOME = tempDir;
+
+            expect(detectKiloAuthMethod(settings, secretStore)).toBeNull();
+            expect(
+                applyKiloAuthEnv({}, settings, secretStore).KILO_API_KEY,
+            ).toBe(undefined);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
 
     it("detects auth from auth.json using HOME/.local/share fallback", () => {
         const tempDir = fs.mkdtempSync(
@@ -264,7 +437,9 @@ describe("Kilo setup", () => {
 
             expect(status.state).toBe("ready");
             expect(status.authReady).toBe(false);
-            expect(status.message).toBe("Sign in with Kilo to finish setup.");
+            expect(status.message).toBe(
+                "Sign in with Kilo or add a Kilo API key to finish setup.",
+            );
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -285,9 +460,61 @@ describe("Kilo setup", () => {
     });
 });
 
-function createEmptyKiloSettings() {
+type KiloSettingsForTest = {
+    readonly authInvalidatedAtMs: number | null;
+    readonly authMethod: "kilo-api-key" | "kilo-login" | null;
+    readonly binaryPath: string | null;
+    readonly hasKiloApiKey: boolean;
+};
+
+function createEmptyKiloSettings(
+    overrides: Partial<KiloSettingsForTest> = {},
+): KiloRuntimeSettings {
     return {
         authInvalidatedAtMs: null,
+        authMethod: null,
         binaryPath: null,
-    } as const;
+        hasKiloApiKey: false,
+        ...overrides,
+    };
+}
+
+function createSecretStore(
+    initialSecrets: Record<string, string | null> = {},
+): SecretStoreGateway {
+    const secrets = new Map<string, string | null>(
+        Object.entries(initialSecrets),
+    );
+
+    return {
+        getStorageStatus: () => ({
+            encryptionAvailable: true,
+            isWeakBackend: false,
+            message: null,
+            platform: process.platform,
+            selectedBackend: null,
+        }),
+        loadSecret: (namespace, secretId) =>
+            secrets.get(`${namespace}:${secretId}`) ?? null,
+        saveSecret: (namespace, secretId, value) => {
+            secrets.set(`${namespace}:${secretId}`, value);
+        },
+    };
+}
+
+function writeActiveKiloLegacyAuthStore(dataDir: string): void {
+    const authDir = path.join(dataDir, "kilo");
+    fs.mkdirSync(authDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(authDir, "auth.json"),
+        JSON.stringify({
+            kilo: {
+                access: "access-token",
+                expires: Date.now() + 60_000,
+                refresh: "refresh-token",
+                type: "oauth",
+            },
+        }),
+        "utf8",
+    );
 }

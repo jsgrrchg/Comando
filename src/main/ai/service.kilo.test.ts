@@ -5,7 +5,7 @@ import type { AiRuntimeStatus, KiloRuntimeSettings } from "@shared/ipc";
 import { AiService } from "./service";
 
 describe("AiService Kilo branch", () => {
-    it("stores Kilo settings and emits runtime status", () => {
+    it("stores Kilo settings and emits runtime status", async () => {
         let savedSettings: KiloRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
 
@@ -13,8 +13,10 @@ describe("AiService Kilo branch", () => {
             loadClaudeRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,
                 authMethod: null,
+                bedrockGatewayBaseUrl: null,
                 binaryPath: null,
                 gatewayBaseUrl: null,
+                hasAnthropicApiKey: false,
                 hasGatewayAuthToken: false,
                 hasGatewayCustomHeaders: false,
             })),
@@ -35,7 +37,9 @@ describe("AiService Kilo branch", () => {
             })),
             loadKiloRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,
+                authMethod: null,
                 binaryPath: null,
+                hasKiloApiKey: false,
             })),
             saveClaudeRuntimeSettings: vi.fn(),
             saveCodexRuntimeSettings: vi.fn(),
@@ -56,20 +60,30 @@ describe("AiService Kilo branch", () => {
                 getProjectRootPath: vi.fn(() => process.cwd()),
             } as never,
             secretStore: {
+                cacheSecretPatches: vi.fn(),
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
             } as never,
             settingsService: settingsService as never,
         });
 
-        const status = service.saveKiloRuntimeSettings({
+        const status = await service.saveKiloRuntimeSettings({
+            authMethod: "kilo-api-key",
             binaryPath: "/opt/homebrew/bin/kilo",
+            kiloApiKey: {
+                kind: "set",
+                value: "stored-kilo-key",
+            },
         });
 
-        expect(savedSettings).toEqual({
-            authInvalidatedAtMs: null,
-            binaryPath: "/opt/homebrew/bin/kilo",
-        });
+        expect(savedSettings).toEqual(
+            expect.objectContaining({
+                authInvalidatedAtMs: null,
+                authMethod: "kilo-api-key",
+                binaryPath: "/opt/homebrew/bin/kilo",
+                hasKiloApiKey: true,
+            }),
+        );
         expect(status.runtimeId).toBe("kilo");
         expect(runtimeStatusEvents.at(-1)?.runtimeId).toBe("kilo");
     });
@@ -95,8 +109,10 @@ describe("AiService Kilo branch", () => {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     authMethod: null,
+                    bedrockGatewayBaseUrl: null,
                     binaryPath: null,
                     gatewayBaseUrl: null,
+                    hasAnthropicApiKey: false,
                     hasGatewayAuthToken: false,
                     hasGatewayCustomHeaders: false,
                 })),
@@ -117,7 +133,9 @@ describe("AiService Kilo branch", () => {
                 })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
+                    authMethod: "kilo-login",
                     binaryPath: "/opt/homebrew/bin/kilo",
+                    hasKiloApiKey: false,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
@@ -133,6 +151,7 @@ describe("AiService Kilo branch", () => {
         expect(savedSettings).not.toBeNull();
         const nextSettings = savedSettings as unknown as KiloRuntimeSettings;
         expect(nextSettings.binaryPath).toBe("/opt/homebrew/bin/kilo");
+        expect(nextSettings.authMethod).toBeNull();
         expect(nextSettings.authInvalidatedAtMs).toEqual(expect.any(Number));
     });
 });

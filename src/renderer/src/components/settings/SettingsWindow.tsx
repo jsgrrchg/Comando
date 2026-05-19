@@ -49,10 +49,9 @@ import {
     ThemePicker,
     Toggle,
 } from "./primitives";
+import { AIProvidersSettings } from "./AIProvidersSettings";
 
 import type {
-    RuntimeActionOption,
-    RuntimeCardOption,
     SettingsAiChatState,
     SettingsEditorControlState,
     SettingsGitHubState,
@@ -116,7 +115,6 @@ interface SettingsSearchContext {
     readonly privacy: SettingsPrivacyState;
     readonly projects: SettingsProjectsState;
     readonly shortcuts: readonly ShortcutEntryOption[];
-    readonly runtimes: readonly RuntimeCardOption[];
     readonly updates: SettingsUpdatesState;
 }
 
@@ -405,20 +403,24 @@ function getDynamicCategorySearchValues(
                 shortcut.keys,
             ]);
         case "runtimes":
-            return context.runtimes.flatMap((runtime) => [
-                runtime.id,
-                runtime.name,
-                runtime.description,
-                runtime.status,
-                runtime.source,
-                runtime.details,
-                ...(runtime.actions?.flatMap((action) => [
-                    action.id,
-                    action.label,
-                    action.hint,
-                    action.tone,
-                ]) ?? []),
-            ]);
+            return [
+                "AI Providers",
+                "Codex",
+                "Claude",
+                "Gemini",
+                "Kilo",
+                "API keys",
+                "terminal sign-in",
+                "Open sign-in terminal",
+                "Anthropic API key",
+                "Bedrock gateway",
+                "Custom gateway",
+                "Google API key",
+                "Google Cloud project",
+                "Google Cloud location",
+                "Kilo API key",
+                "Diagnostics",
+            ];
         case "updates":
             return [
                 context.updates.state.status,
@@ -442,9 +444,8 @@ export function SettingsWindow({
     github,
     privacy,
     projects,
-    onRuntimeAction,
+    aiProviders,
     shortcuts = [],
-    runtimes = [],
     updates,
 }: SettingsWindowProps) {
     const [active, setActive] = useState<Category>("appearance");
@@ -458,7 +459,6 @@ export function SettingsWindow({
         privacy,
         projects,
         shortcuts,
-        runtimes,
         updates,
     };
     const filteredCategories = CATEGORIES.filter((category) =>
@@ -786,11 +786,7 @@ export function SettingsWindow({
                                 )}
                             {filteredCategories.length > 0 &&
                                 activeCategory === "runtimes" && (
-                                    <RuntimesContent
-                                        runtimes={runtimes}
-                                        onAction={onRuntimeAction}
-                                        searchQuery={activeSearchQuery}
-                                    />
+                                    <AIProvidersSettings {...aiProviders} />
                                 )}
                             {filteredCategories.length > 0 &&
                                 activeCategory === "updates" && (
@@ -2342,230 +2338,6 @@ function ShortcutsContent({
                 </div>
             ))}
         </div>
-    );
-}
-
-function RuntimesContent({
-    runtimes,
-    onAction,
-    searchQuery,
-}: {
-    runtimes: readonly RuntimeCardOption[];
-    onAction?: (runtimeId: string, actionId: string) => void;
-    searchQuery: SettingsSearchQuery;
-}) {
-    const filteredRuntimes = runtimes.filter((runtime) =>
-        matchesSearch(
-            searchQuery,
-            runtime.id,
-            runtime.name,
-            runtime.description,
-            runtime.status,
-            runtime.source,
-            runtime.details,
-            ...(runtime.actions?.flatMap((action) => [
-                action.id,
-                action.label,
-                action.hint,
-                action.tone,
-            ]) ?? []),
-        ),
-    );
-
-    if (runtimes.length === 0) {
-        return (
-            <div>
-                <SectionLabel>Runtimes</SectionLabel>
-                <p
-                    style={{
-                        fontSize: 12,
-                        color: "var(--color-text-secondary)",
-                        padding: "12px 0",
-                    }}
-                >
-                    No runtimes configured yet.
-                </p>
-            </div>
-        );
-    }
-
-    if (filteredRuntimes.length === 0) {
-        return <EmptyPanelSearchResult />;
-    }
-
-    return (
-        <div>
-            <SectionLabel>Runtimes</SectionLabel>
-            {filteredRuntimes.map((runtime) => (
-                <RuntimeCard
-                    key={runtime.id}
-                    runtime={runtime}
-                    onAction={onAction}
-                />
-            ))}
-        </div>
-    );
-}
-
-function RuntimeCard({
-    runtime,
-    onAction,
-}: {
-    runtime: RuntimeCardOption;
-    onAction?: (runtimeId: string, actionId: string) => void;
-}) {
-    return (
-        <div
-            style={{
-                borderBottom:
-                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                padding: "14px 0",
-            }}
-        >
-            <div
-                style={{
-                    alignItems: "center",
-                    display: "flex",
-                    gap: 12,
-                    justifyContent: "space-between",
-                }}
-            >
-                <div style={{ minWidth: 0 }}>
-                    <div
-                        style={{
-                            alignItems: "center",
-                            display: "flex",
-                            gap: 8,
-                        }}
-                    >
-                        <span
-                            style={{
-                                color: "var(--color-text-primary)",
-                                fontSize: 13,
-                                fontWeight: 500,
-                            }}
-                        >
-                            {runtime.name}
-                        </span>
-                        {runtime.status && (
-                            <span
-                                style={{
-                                    backgroundColor:
-                                        "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                                    borderRadius: 4,
-                                    color: "var(--color-accent)",
-                                    fontFamily: "var(--font-mono)",
-                                    fontSize: 10,
-                                    fontWeight: 600,
-                                    letterSpacing: "0.06em",
-                                    padding: "2px 6px",
-                                    textTransform: "uppercase",
-                                }}
-                            >
-                                {runtime.status}
-                            </span>
-                        )}
-                    </div>
-                    {runtime.description && (
-                        <div
-                            style={{
-                                color: "var(--color-text-secondary)",
-                                fontSize: 11,
-                                lineHeight: 1.4,
-                                marginTop: 2,
-                            }}
-                        >
-                            {runtime.description}
-                        </div>
-                    )}
-                </div>
-
-                {runtime.actions && runtime.actions.length > 0 && (
-                    <div
-                        style={{
-                            display: "flex",
-                            flexShrink: 0,
-                            gap: 6,
-                        }}
-                    >
-                        {runtime.actions.map((action) => (
-                            <RuntimeActionBtn
-                                action={action}
-                                key={action.id}
-                                onClick={() =>
-                                    onAction?.(runtime.id, action.id)
-                                }
-                            />
-                        ))}
-                    </div>
-                )}
-            </div>
-
-            {runtime.details && (
-                <div
-                    style={{
-                        backgroundColor: "var(--color-bg-secondary)",
-                        border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                        borderRadius: 6,
-                        color: "var(--color-text-secondary)",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11,
-                        lineHeight: 1.5,
-                        marginTop: 6,
-                        padding: "6px 8px",
-                    }}
-                >
-                    {runtime.details}
-                </div>
-            )}
-        </div>
-    );
-}
-
-function RuntimeActionBtn({
-    action,
-    onClick,
-}: {
-    action: RuntimeActionOption;
-    onClick: () => void;
-}) {
-    const isPrimary = action.tone === "primary";
-    const isDanger = action.tone === "danger";
-
-    if (isDanger) {
-        return (
-            <button
-                disabled={action.disabled}
-                onClick={onClick}
-                style={{
-                    background: "transparent",
-                    border: "1px solid color-mix(in srgb, var(--diff-remove) 60%, transparent)",
-                    borderRadius: 3,
-                    color: "var(--diff-remove)",
-                    cursor: action.disabled ? "not-allowed" : "pointer",
-                    fontSize: 10,
-                    fontWeight: 500,
-                    lineHeight: "20px",
-                    opacity: action.disabled ? 0.4 : 1,
-                    padding: "0 8px",
-                }}
-                title={action.hint}
-                type="button"
-            >
-                {action.label.toLowerCase()}
-            </button>
-        );
-    }
-
-    return (
-        <IdeActionButton
-            active={isPrimary}
-            disabled={action.disabled}
-            onClick={onClick}
-            title={action.hint}
-        >
-            {action.label.toLowerCase()}
-        </IdeActionButton>
     );
 }
 

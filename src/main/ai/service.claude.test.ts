@@ -14,8 +14,10 @@ describe("AiService Claude branch", () => {
             loadClaudeRuntimeSettings: () => ({
                 authInvalidatedAtMs: null,
                 authMethod: null,
+                bedrockGatewayBaseUrl: null,
                 binaryPath: null,
                 gatewayBaseUrl: null,
+                hasAnthropicApiKey: false,
                 hasGatewayAuthToken: false,
                 hasGatewayCustomHeaders: false,
             }),
@@ -27,7 +29,9 @@ describe("AiService Claude branch", () => {
             }),
             loadKiloRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,
+                authMethod: null,
                 binaryPath: null,
+                hasKiloApiKey: false,
             })),
             saveClaudeRuntimeSettings: (settings: ClaudeRuntimeSettings) => {
                 savedSettings = settings;
@@ -70,6 +74,10 @@ describe("AiService Claude branch", () => {
 
         const status = await service.saveClaudeRuntimeSettings({
             authMethod: "gateway",
+            anthropicApiKey: {
+                kind: "unchanged",
+            },
+            bedrockGatewayBaseUrl: null,
             binaryPath: null,
             gatewayAuthToken: {
                 kind: "set",
@@ -85,8 +93,10 @@ describe("AiService Claude branch", () => {
         expect(savedSettings).toEqual({
             authInvalidatedAtMs: null,
             authMethod: "gateway",
+            bedrockGatewayBaseUrl: null,
             binaryPath: null,
             gatewayBaseUrl: "https://gateway.example/v1",
+            hasAnthropicApiKey: false,
             hasGatewayAuthToken: true,
             hasGatewayCustomHeaders: true,
         });
@@ -100,9 +110,108 @@ describe("AiService Claude branch", () => {
         expect(runtimeStatusEvents.at(-1)?.runtimeId).toBe("claude");
     });
 
-    it("disconnects Claude by clearing gateway secrets and preserving gateway URL", async () => {
+    it("stores Claude Anthropic API key and Bedrock gateway settings", async () => {
+        let savedSettings: ClaudeRuntimeSettings | null = null;
+        const secretValues = new Map<string, string>();
+
+        const service = new AiService({
+            onRuntimeStatus: vi.fn(),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+            } as never,
+            secretStore: {
+                loadSecret: (namespace: string, secretId: string) =>
+                    secretValues.get(`${namespace}:${secretId}`) ?? null,
+                saveSecret: (
+                    namespace: string,
+                    secretId: string,
+                    value: string | null,
+                ) => {
+                    const key = `${namespace}:${secretId}`;
+                    const normalized = value?.trim() ?? "";
+                    if (!normalized) {
+                        secretValues.delete(key);
+                        return;
+                    }
+
+                    secretValues.set(key, normalized);
+                },
+            } as never,
+            settingsService: {
+                loadClaudeRuntimeSettings: () => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    bedrockGatewayBaseUrl: null,
+                    binaryPath: null,
+                    gatewayBaseUrl: null,
+                    hasAnthropicApiKey: false,
+                    hasGatewayAuthToken: false,
+                    hasGatewayCustomHeaders: false,
+                }),
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: null,
+                    binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
+                })),
+                loadKiloRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    hasKiloApiKey: false,
+                })),
+                saveClaudeRuntimeSettings: (settings: ClaudeRuntimeSettings) => {
+                    savedSettings = settings;
+                },
+                saveCodexRuntimeSettings: vi.fn(),
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        const status = await service.saveClaudeRuntimeSettings({
+            authMethod: "anthropic-api-key",
+            anthropicApiKey: {
+                kind: "set",
+                value: "sk-ant-123",
+            },
+            bedrockGatewayBaseUrl: "https://bedrock.example/v1",
+            binaryPath: null,
+            gatewayAuthToken: {
+                kind: "clear",
+            },
+            gatewayBaseUrl: null,
+            gatewayCustomHeaders: {
+                kind: "clear",
+            },
+        });
+
+        expect(savedSettings).toEqual({
+            authInvalidatedAtMs: null,
+            authMethod: "anthropic-api-key",
+            bedrockGatewayBaseUrl: "https://bedrock.example/v1",
+            binaryPath: null,
+            gatewayBaseUrl: null,
+            hasAnthropicApiKey: true,
+            hasGatewayAuthToken: false,
+            hasGatewayCustomHeaders: false,
+        });
+        expect(secretValues.get("ai.claude:anthropic_api_key")).toBe(
+            "sk-ant-123",
+        );
+        expect(status.authMethod).toBe("anthropic-api-key");
+        expect(status.authReady).toBe(true);
+    });
+
+    it("disconnects Claude by clearing secrets and preserving gateway URLs", async () => {
         let savedSettings: ClaudeRuntimeSettings | null = null;
         const secretValues = new Map<string, string>([
+            ["ai.claude:anthropic_api_key", "sk-ant-123"],
             ["ai.claude:anthropic_auth_token", "token-123"],
             ["ai.claude:anthropic_custom_headers", "not-json"],
         ]);
@@ -136,9 +245,11 @@ describe("AiService Claude branch", () => {
             settingsService: {
                 loadClaudeRuntimeSettings: () => ({
                     authInvalidatedAtMs: null,
-                    authMethod: "gateway",
+                    authMethod: "gateway-bedrock",
+                    bedrockGatewayBaseUrl: "https://bedrock.example/v1",
                     binaryPath: null,
                     gatewayBaseUrl: "https://gateway.example/v1",
+                    hasAnthropicApiKey: true,
                     hasGatewayAuthToken: true,
                     hasGatewayCustomHeaders: true,
                 }),
@@ -159,7 +270,9 @@ describe("AiService Claude branch", () => {
                 })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
+                    authMethod: null,
                     binaryPath: null,
+                    hasKiloApiKey: false,
                 })),
                 saveClaudeRuntimeSettings: (settings: ClaudeRuntimeSettings) => {
                     savedSettings = settings;
@@ -175,8 +288,10 @@ describe("AiService Claude branch", () => {
         expect(savedSettings).toEqual({
             authInvalidatedAtMs: null,
             authMethod: null,
+            bedrockGatewayBaseUrl: "https://bedrock.example/v1",
             binaryPath: null,
             gatewayBaseUrl: "https://gateway.example/v1",
+            hasAnthropicApiKey: false,
             hasGatewayAuthToken: false,
             hasGatewayCustomHeaders: false,
         });

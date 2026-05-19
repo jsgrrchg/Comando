@@ -1599,8 +1599,10 @@ function createEmptyClaudeSettings(): ClaudeRuntimeSettings {
     return {
         authInvalidatedAtMs: null,
         authMethod: null,
+        bedrockGatewayBaseUrl: null,
         binaryPath: null,
         gatewayBaseUrl: null,
+        hasAnthropicApiKey: false,
         hasGatewayAuthToken: false,
         hasGatewayCustomHeaders: false,
     };
@@ -1630,7 +1632,9 @@ function createEmptyGeminiSettings(): GeminiRuntimeSettings {
 function createEmptyKiloSettings(): KiloRuntimeSettings {
     return {
         authInvalidatedAtMs: null,
+        authMethod: null,
         binaryPath: null,
+        hasKiloApiKey: false,
     };
 }
 

@@ -79,13 +79,15 @@ const runtimeIds = [
     "kilo",
 ] as const satisfies readonly AiRuntimeId[];
 
-const bootstrapSecretKeys = [
+export const bootstrapSecretKeys = [
+    "secret.ai.claude.anthropic_api_key",
     "secret.ai.claude.anthropic_auth_token",
     "secret.ai.claude.anthropic_custom_headers",
     "secret.ai.codex.codex_api_key",
     "secret.ai.codex.openai_api_key",
     "secret.ai.gemini.gemini_api_key",
     "secret.ai.gemini.google_api_key",
+    "secret.ai.kilo.kilo_api_key",
     "secret.github.token",
 ] as const;
 
@@ -462,9 +464,12 @@ function dispatchMethod(method: string, params: unknown): unknown {
         case "ai.saveKiloAuth": {
             const settings = requireSettingsService();
             const input = params as {
+                readonly secrets: readonly SecretRecordMutation[];
                 readonly settings: KiloRuntimeSettings;
             };
-            settings.saveKiloRuntimeSettings(input.settings);
+            runAuthSettingsTransaction(input.secrets, () => {
+                settings.saveKiloRuntimeSettings(input.settings);
+            });
             return null;
         }
         case "settings.loadSnapshot":

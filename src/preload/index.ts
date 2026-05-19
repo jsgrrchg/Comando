@@ -16,6 +16,7 @@ import {
     type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
     type AiRuntimeAuthLogoutInput,
+    type AiEnvironmentDiagnostics,
     type AiRuntimeId,
     type AiRuntimeStatus,
     type AiSessionConfigOptionMutationInput,
@@ -1040,6 +1041,11 @@ const comandoApi: ComandoApi = {
                 IPC_CHANNELS.getAiRuntimeStatus,
                 runtimeId,
             ),
+        ),
+    getAiEnvironmentDiagnostics: async () =>
+        assertIpcObject<AiEnvironmentDiagnostics>(
+            IPC_CHANNELS.getAiEnvironmentDiagnostics,
+            await ipcRenderer.invoke(IPC_CHANNELS.getAiEnvironmentDiagnostics),
         ),
     prepareAiSession: (input: PrepareAiSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.prepareAiSession, input),
