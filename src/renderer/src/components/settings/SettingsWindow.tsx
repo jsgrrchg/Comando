@@ -80,12 +80,12 @@ type Category =
 const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "editor", label: "Editor" },
+    { id: "ai", label: "AI" },
+    { id: "runtimes", label: "AI Runtimes" },
     { id: "projects", label: "Projects" },
     { id: "github", label: "GitHub" },
-    { id: "ai", label: "AI" },
-    { id: "privacy", label: "Privacy" },
     { id: "shortcuts", label: "Shortcuts" },
-    { id: "runtimes", label: "AI Runtimes" },
+    { id: "privacy", label: "Privacy" },
     { id: "updates", label: "Updates" },
 ];
 
