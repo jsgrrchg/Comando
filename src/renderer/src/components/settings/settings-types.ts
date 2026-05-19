@@ -1,5 +1,6 @@
 import type {
     AppChangelogRelease,
+    AiToolCardExpansionMode,
     ProjectAppDataSummary,
     AppPrivacyAccessState,
     AppUpdateState,
@@ -105,6 +106,7 @@ export interface SettingsAiChatState {
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
     readonly contextUsageBarEnabled: boolean;
+    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly onChatFontFamilyChange?: (id: string) => void;
     readonly onChatFontSizeChange?: (size: number) => void;
     readonly onComposerFontFamilyChange?: (id: string) => void;
@@ -113,6 +115,9 @@ export interface SettingsAiChatState {
     readonly onScreenshotRetentionChange?: (seconds: number) => void;
     readonly onHistoryRetentionChange?: (days: number) => void;
     readonly onContextUsageBarEnabledChange?: (value: boolean) => void;
+    readonly onToolCardExpansionModeChange?: (
+        value: AiToolCardExpansionMode,
+    ) => void;
 }
 
 export interface SettingsWindowProps {

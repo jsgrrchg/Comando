@@ -195,16 +195,29 @@ function ChangeReviewFileCard({
     activity,
     defaultExpanded = false,
     diffZoom,
+    forceExpanded = false,
     item,
     onOpen,
 }: {
     readonly activity: AiToolActivity;
     readonly defaultExpanded?: boolean;
     readonly diffZoom: number;
+    readonly forceExpanded?: boolean;
     readonly item: ChangeReviewItem;
     readonly onOpen: (() => void) | null;
 }) {
-    const [expanded, setExpanded] = useState(defaultExpanded);
+    const resetKey = `${activity.id}:${item.key}:${
+        defaultExpanded ? "open" : "closed"
+    }:${forceExpanded ? "forced" : "free"}`;
+    const [expansionState, setExpansionState] = useState({
+        expanded: defaultExpanded,
+        resetKey,
+    });
+    const currentExpanded =
+        expansionState.resetKey === resetKey
+            ? expansionState.expanded
+            : defaultExpanded;
+    const resolvedExpanded = forceExpanded ? true : currentExpanded;
     const accent = getPanelAccent(activity);
     const actionLabel = getActivityActionLabel(activity.kind);
     const summaryLabel = `${actionLabel} ${getFileNameFromPath(item.path)}`;
@@ -220,7 +233,7 @@ function ChangeReviewFileCard({
             <div
                 style={{
                     alignItems: "center",
-                    borderBottom: expanded
+                    borderBottom: resolvedExpanded
                         ? `1px solid color-mix(in srgb, ${accent} 14%, var(--color-border))`
                         : "1px solid transparent",
                     display: "grid",
@@ -230,14 +243,34 @@ function ChangeReviewFileCard({
                 }}
             >
                 <button
-                    aria-label={`${expanded ? "Collapse" : "Expand"} inline diff review`}
-                    onClick={() => setExpanded((current) => !current)}
+                    aria-label={
+                        forceExpanded
+                            ? "Inline diff review expanded"
+                            : `${resolvedExpanded ? "Collapse" : "Expand"} inline diff review`
+                    }
+                    onClick={() => {
+                        if (forceExpanded) {
+                            return;
+                        }
+
+                        setExpansionState((current) => {
+                            const expanded =
+                                current.resetKey === resetKey
+                                    ? current.expanded
+                                    : defaultExpanded;
+
+                            return {
+                                expanded: !expanded,
+                                resetKey,
+                            };
+                        });
+                    }}
                     style={{
                         alignItems: "center",
                         background: "none",
                         border: "none",
                         color: "inherit",
-                        cursor: "pointer",
+                        cursor: forceExpanded ? "default" : "pointer",
                         display: "flex",
                         gap: 10,
                         minWidth: 0,
@@ -252,7 +285,7 @@ function ChangeReviewFileCard({
                             flexShrink: 0,
                         }}
                     >
-                        <Chevron expanded={expanded} />
+                        <Chevron expanded={resolvedExpanded} />
                     </span>
                     <span className="shrink-0" style={{ color: accent }}>
                         {activity.status === "failed" ? (
@@ -334,13 +367,13 @@ function ChangeReviewFileCard({
                 </div>
             </div>
 
-            {expanded ? (
+            {resolvedExpanded ? (
                 <ResizableDiffContainer accent={accent}>
                     <EditedFileDiffPreview
                         compactLineNumbers
                         diff={item.diff}
                         diffZoom={diffZoom}
-                        expanded={expanded}
+                        expanded={resolvedExpanded}
                         file={item.file ?? undefined}
                         testId={`change-review-panel:${item.key}`}
                     />
@@ -354,6 +387,7 @@ export interface ChangeReviewPanelProps {
     readonly activity: AiToolActivity;
     readonly defaultExpanded?: boolean;
     readonly defaultExpandedFileKeys?: readonly string[];
+    readonly forceExpanded?: boolean;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -372,6 +406,7 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
     activity,
     defaultExpanded = false,
     defaultExpandedFileKeys = [],
+    forceExpanded = false,
     onOpenFile,
     projectId,
     resolveFileReference,
@@ -430,6 +465,7 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
                 activity={activity}
                 defaultExpanded={defaultExpanded}
                 diffZoom={diffZoom}
+                forceExpanded={forceExpanded}
                 item={singleItem}
                 onOpen={
                     canOpenItem(singleItem, projectId, resolveFileReference)
@@ -453,6 +489,7 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
                             : defaultExpanded
                     }
                     diffZoom={diffZoom}
+                    forceExpanded={forceExpanded}
                     item={item}
                     key={item.key}
                     onOpen={
@@ -476,6 +513,7 @@ function areChangeReviewPanelPropsEqual(
         previous.activity === next.activity &&
         previous.defaultExpanded === next.defaultExpanded &&
         previous.defaultExpandedFileKeys === next.defaultExpandedFileKeys &&
+        previous.forceExpanded === next.forceExpanded &&
         previous.projectId === next.projectId &&
         previous.trackedFiles === next.trackedFiles &&
         previous.worktreeId === next.worktreeId

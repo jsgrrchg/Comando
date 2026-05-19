@@ -28,6 +28,7 @@ vi.mock("@renderer/app/hooks/use-ai-chat-settings", () => ({
         reviewDiffZoom: 0.72,
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,
+        toolCardExpansionMode: "collapsed",
     }),
 }));
 
@@ -166,6 +167,50 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("done");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
+    });
+
+    it("expands file tool details when the card policy is always expanded", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity(),
+                expansionMode: "expanded",
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Updated src/app.ts");
+    });
+
+    it("only expands latest live tool details for the latest policy", () => {
+        const historyMarkup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity(),
+                expansionMode: "latest",
+                isLatestStreamingTool: false,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+        const liveMarkup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity(),
+                expansionMode: "latest",
+                isLatestStreamingTool: true,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(historyMarkup).not.toContain("Updated src/app.ts");
+        expect(liveMarkup).toContain("Updated src/app.ts");
+        expect(liveMarkup).toContain("cursor:pointer");
     });
 
     it("renders read tool titles as clickable internal links when they target a project file", () => {

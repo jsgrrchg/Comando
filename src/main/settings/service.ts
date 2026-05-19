@@ -17,6 +17,7 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppEditorSettings,
+    AiToolCardExpansionMode,
     ChatFontFamily,
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
@@ -100,6 +101,7 @@ const AI_REQUIRE_CMD_ENTER_KEY = "ai.composer.require_cmd_enter";
 const AI_SCREENSHOT_RETENTION_KEY = "ai.composer.screenshot_retention_seconds";
 const AI_HISTORY_RETENTION_KEY = "ai.chat.history_retention_days";
 const AI_CONTEXT_USAGE_BAR_KEY = "ai.composer.context_usage_bar_enabled";
+const AI_TOOL_CARD_EXPANSION_MODE_KEY = "ai.chat.tool_card_expansion_mode";
 
 const DEFAULT_CHAT_FONT_FAMILY: ChatFontFamily = DEFAULT_AI_CHAT_FONT_FAMILY;
 const DEFAULT_CHAT_FONT_SIZE = DEFAULT_AI_CHAT_FONT_SIZE;
@@ -111,12 +113,18 @@ const DEFAULT_REQUIRE_CMD_ENTER = false;
 const DEFAULT_SCREENSHOT_RETENTION = 0;
 const DEFAULT_HISTORY_RETENTION = 0;
 const DEFAULT_CONTEXT_USAGE_BAR = true;
+const DEFAULT_TOOL_CARD_EXPANSION_MODE: AiToolCardExpansionMode = "collapsed";
 const REVIEW_DIFF_ZOOM_MIN = 0.64;
 const REVIEW_DIFF_ZOOM_MAX = 0.96;
 
 const VALID_CHAT_FONT_FAMILIES = new Set<ChatFontFamily>(
     EDITOR_FONT_FAMILY_IDS,
 );
+const VALID_TOOL_CARD_EXPANSION_MODES = new Set<AiToolCardExpansionMode>([
+    "collapsed",
+    "latest",
+    "expanded",
+]);
 
 const DEFAULT_THEME_MODE: ThemeMode = "system";
 const DEFAULT_THEME_PRESET: ThemePreset = "default";
@@ -412,6 +420,9 @@ export class SettingsService {
                     DEFAULT_HISTORY_RETENTION,
             ),
             contextUsageBarEnabled: this.#loadContextUsageBarEnabled(),
+            toolCardExpansionMode: this.#normalizeToolCardExpansionMode(
+                this.#loadStringSetting(AI_TOOL_CARD_EXPANSION_MODE_KEY),
+            ),
         };
     }
 
@@ -452,6 +463,12 @@ export class SettingsService {
         this.#saveSetting(
             AI_CONTEXT_USAGE_BAR_KEY,
             String(settings.contextUsageBarEnabled),
+        );
+        this.#saveSetting(
+            AI_TOOL_CARD_EXPANSION_MODE_KEY,
+            this.#normalizeToolCardExpansionMode(
+                settings.toolCardExpansionMode,
+            ),
         );
     }
 
@@ -857,6 +874,16 @@ export class SettingsService {
         return VALID_CHAT_FONT_FAMILIES.has(normalizedValue as ChatFontFamily)
             ? (normalizedValue as ChatFontFamily)
             : DEFAULT_COMPOSER_FONT_FAMILY;
+    }
+
+    #normalizeToolCardExpansionMode(
+        value: string | null | undefined,
+    ): AiToolCardExpansionMode {
+        return VALID_TOOL_CARD_EXPANSION_MODES.has(
+            value as AiToolCardExpansionMode,
+        )
+            ? (value as AiToolCardExpansionMode)
+            : DEFAULT_TOOL_CARD_EXPANSION_MODE;
     }
 
     #normalizeChatFontSize(value: number | null | undefined): number {

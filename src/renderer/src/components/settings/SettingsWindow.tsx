@@ -198,6 +198,12 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Font used for messages in the chat.",
         "Chat font size",
         "Font size of messages in the chat.",
+        "Tool call cards",
+        "Choose when chat tool call cards open automatically.",
+        "Normal",
+        "Latest expanded",
+        "Always expanded",
+        "collapsed expanded streaming tools",
         "Review",
         "Chat history retention",
         "How long saved chat histories stay on disk before automatic deletion.",
@@ -1948,6 +1954,14 @@ function AiChatContent({
             ...chatFontKeywords,
         ],
         ["Chat font size", "Font size of messages in the chat, in pixels."],
+        [
+            "Tool call cards",
+            "Choose when chat tool call cards open automatically.",
+            "Normal",
+            "Latest expanded",
+            "Always expanded",
+            "collapsed expanded streaming tools",
+        ],
     ]);
     const showReview = sectionHasMatches(searchQuery, "Review", [
         [
@@ -2020,6 +2034,39 @@ function AiChatContent({
                         min={AI_CHAT_FONT_SIZE_MIN}
                         max={AI_CHAT_FONT_SIZE_MAX}
                         onChange={(v) => state.onChatFontSizeChange?.(v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
+                label="Tool call cards"
+                description="Choose when chat tool call cards open automatically."
+                keywords={[
+                    "Normal",
+                    "Latest expanded",
+                    "Always expanded",
+                    "collapsed",
+                    "expanded",
+                    "streaming tools",
+                ]}
+                control={
+                    <SelectField
+                        value={state.toolCardExpansionMode}
+                        options={[
+                            { value: "collapsed", label: "Normal" },
+                            {
+                                value: "latest",
+                                label: "Latest expanded",
+                            },
+                            {
+                                value: "expanded",
+                                label: "Always expanded",
+                            },
+                        ]}
+                        onChange={(v) =>
+                            state.onToolCardExpansionModeChange?.(v)
+                        }
                     />
                 }
             />

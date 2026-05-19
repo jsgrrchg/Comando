@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 
 import type {
+    AiToolCardExpansionMode,
     AiToolActivity,
     AiToolActivityLocation,
     AiTrackedFile,
@@ -433,8 +434,83 @@ function TurnStartedDivider({
 
 /* ─── File tool message (card style) ─── */
 
+function getToolCardExpansionState({
+    defaultExpanded,
+    expansionMode,
+    isLatestStreamingTool,
+}: {
+    readonly defaultExpanded: boolean;
+    readonly expansionMode: AiToolCardExpansionMode;
+    readonly isLatestStreamingTool: boolean;
+}) {
+    if (expansionMode === "expanded") {
+        return { defaultExpanded: true, forceExpanded: true };
+    }
+
+    if (expansionMode === "latest") {
+        return {
+            defaultExpanded: isLatestStreamingTool,
+            forceExpanded: false,
+        };
+    }
+
+    return { defaultExpanded, forceExpanded: false };
+}
+
+function useSyncedToolExpansion({
+    defaultExpanded,
+    forceExpanded,
+    resetKey,
+}: {
+    readonly defaultExpanded: boolean;
+    readonly forceExpanded: boolean;
+    readonly resetKey: string;
+}) {
+    const [expansionState, setExpansionState] = useState({
+        expanded: defaultExpanded,
+        resetKey,
+    });
+    const currentExpanded =
+        expansionState.resetKey === resetKey
+            ? expansionState.expanded
+            : defaultExpanded;
+
+    return {
+        expanded: forceExpanded ? true : currentExpanded,
+        toggleExpanded: () => {
+            if (forceExpanded) {
+                return;
+            }
+
+            setExpansionState((current) => {
+                const expanded =
+                    current.resetKey === resetKey
+                        ? current.expanded
+                        : defaultExpanded;
+
+                return {
+                    expanded: !expanded,
+                    resetKey,
+                };
+            });
+        },
+    };
+}
+
+function getToolExpansionResetKey(
+    activityId: string,
+    expansionMode: AiToolCardExpansionMode,
+    isLatestStreamingTool: boolean,
+): string {
+    return `${activityId}:${expansionMode}:${
+        isLatestStreamingTool ? "latest" : "history"
+    }`;
+}
+
 function FileToolMessage({
     activity,
+    expansionMode,
+    isLatestStreamingTool,
     onOpenFile,
     onOpenFileReference,
     pendingTrackedFiles,
@@ -443,6 +519,8 @@ function FileToolMessage({
     worktreeId,
 }: {
     readonly activity: AiToolActivity;
+    readonly expansionMode: AiToolCardExpansionMode;
+    readonly isLatestStreamingTool: boolean;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -459,7 +537,6 @@ function FileToolMessage({
     ) => ResolvedProjectFileReference | null;
     readonly worktreeId: string | null;
 }) {
-    const [expanded, setExpanded] = useState(false);
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
     const accent = getToolAccent(activity.kind);
@@ -477,12 +554,27 @@ function FileToolMessage({
         activity.locations.length > 0 ||
         activity.diffs.length > 0 ||
         pendingTrackedFiles.length > 0;
+    const expansionState = getToolCardExpansionState({
+        defaultExpanded: false,
+        expansionMode,
+        isLatestStreamingTool,
+    });
+    const { expanded, toggleExpanded: toggleSyncedExpanded } =
+        useSyncedToolExpansion({
+            defaultExpanded: expansionState.defaultExpanded,
+            forceExpanded: expansionState.forceExpanded,
+            resetKey: getToolExpansionResetKey(
+                activity.id,
+                expansionMode,
+                isLatestStreamingTool,
+            ),
+        });
     const toggleExpanded = () => {
         if (!hasDetail) {
             return;
         }
 
-        setExpanded((value) => !value);
+        toggleSyncedExpanded();
     };
 
     return (
@@ -517,7 +609,10 @@ function FileToolMessage({
                         ? `1px solid color-mix(in srgb, ${accent} 15%, var(--color-border))`
                         : "1px solid transparent",
                     color: accent,
-                    cursor: hasDetail ? "pointer" : "default",
+                    cursor:
+                        hasDetail && !expansionState.forceExpanded
+                            ? "pointer"
+                            : "default",
                     fontSize: "0.83em",
                 }}
                 tabIndex={hasDetail ? 0 : undefined}
@@ -787,8 +882,12 @@ function isCommandDuplicatedByTitle(title: string, command: string): boolean {
 
 function TerminalToolMessage({
     activity,
+    expansionMode,
+    isLatestStreamingTool,
 }: {
     readonly activity: AiToolActivity;
+    readonly expansionMode: AiToolCardExpansionMode;
+    readonly isLatestStreamingTool: boolean;
 }) {
     const isFailed = activity.status === "failed";
     const hasNonZeroExit =
@@ -802,9 +901,20 @@ function TerminalToolMessage({
         !!command && !isCommandDuplicatedByTitle(activity.title, command);
     const hasTerminalOutput = !!activity.terminalOutput;
     const hasDetail = shouldShowCommand || hasTerminalOutput;
-    const [expanded, setExpanded] = useState(
-        (isFailed || hasNonZeroExit) && hasTerminalOutput,
-    );
+    const expansionState = getToolCardExpansionState({
+        defaultExpanded: (isFailed || hasNonZeroExit) && hasTerminalOutput,
+        expansionMode,
+        isLatestStreamingTool,
+    });
+    const { expanded, toggleExpanded } = useSyncedToolExpansion({
+        defaultExpanded: expansionState.defaultExpanded,
+        forceExpanded: expansionState.forceExpanded,
+        resetKey: getToolExpansionResetKey(
+            activity.id,
+            expansionMode,
+            isLatestStreamingTool,
+        ),
+    });
 
     return (
         <div
@@ -818,7 +928,7 @@ function TerminalToolMessage({
         >
             <button
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-                onClick={() => hasDetail && setExpanded(!expanded)}
+                onClick={() => hasDetail && toggleExpanded()}
                 style={{
                     background: "none",
                     border: "none",
@@ -826,7 +936,10 @@ function TerminalToolMessage({
                         ? `1px solid color-mix(in srgb, ${accent} 15%, var(--color-border))`
                         : "1px solid transparent",
                     color: accent,
-                    cursor: hasDetail ? "pointer" : "default",
+                    cursor:
+                        hasDetail && !expansionState.forceExpanded
+                            ? "pointer"
+                            : "default",
                     fontSize: "0.83em",
                 }}
                 type="button"
@@ -940,11 +1053,15 @@ function getOpenSessionActionTitle(activity: AiToolActivity): string {
 
 function GenericToolMessage({
     activity,
+    expansionMode,
+    isLatestStreamingTool,
     onOpenFileReference,
     onOpenSession,
     resolveFileReference,
 }: {
     readonly activity: AiToolActivity;
+    readonly expansionMode: AiToolCardExpansionMode;
+    readonly isLatestStreamingTool: boolean;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -954,7 +1071,6 @@ function GenericToolMessage({
     ) => ResolvedProjectFileReference | null;
 }) {
     const isFailed = activity.status === "failed";
-    const [expanded, setExpanded] = useState(isFailed);
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
     const rawInputJson = activity.rawInputJson;
@@ -964,6 +1080,20 @@ function GenericToolMessage({
     const hasRawInput = rawInputJson !== null;
     const hasRawOutput = rawOutputJson !== null;
     const hasDetail = !!activity.summary || hasRawInput || hasRawOutput;
+    const expansionState = getToolCardExpansionState({
+        defaultExpanded: isFailed,
+        expansionMode,
+        isLatestStreamingTool,
+    });
+    const { expanded, toggleExpanded } = useSyncedToolExpansion({
+        defaultExpanded: expansionState.defaultExpanded,
+        forceExpanded: expansionState.forceExpanded,
+        resetKey: getToolExpansionResetKey(
+            activity.id,
+            expansionMode,
+            isLatestStreamingTool,
+        ),
+    });
 
     return (
         <div
@@ -978,12 +1108,15 @@ function GenericToolMessage({
             <div className="flex w-full items-center gap-2">
                 <button
                     className="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left"
-                    onClick={() => hasDetail && setExpanded(!expanded)}
+                    onClick={() => hasDetail && toggleExpanded()}
                     style={{
                         background: "none",
                         border: "none",
                         color: "inherit",
-                        cursor: hasDetail ? "pointer" : "default",
+                        cursor:
+                            hasDetail && !expansionState.forceExpanded
+                                ? "pointer"
+                                : "default",
                     }}
                     type="button"
                 >
@@ -1068,6 +1201,8 @@ function GenericToolMessage({
 
 export const ToolActivityItem = memo(function ToolActivityItem({
     activity,
+    expansionMode = "collapsed",
+    isLatestStreamingTool = false,
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
@@ -1077,6 +1212,8 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     worktreeId = null,
 }: {
     readonly activity: AiToolActivity;
+    readonly expansionMode?: AiToolCardExpansionMode;
+    readonly isLatestStreamingTool?: boolean;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -1113,14 +1250,28 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     }
 
     if (isTerminalToolActivity(activity)) {
-        return <TerminalToolMessage activity={activity} />;
+        return (
+            <TerminalToolMessage
+                activity={activity}
+                expansionMode={expansionMode}
+                isLatestStreamingTool={isLatestStreamingTool}
+            />
+        );
     }
 
     if (isFileToolActivity(activity, trackedFiles)) {
         if (hasInlineReview) {
+            const reviewExpansionState = getToolCardExpansionState({
+                defaultExpanded: false,
+                expansionMode,
+                isLatestStreamingTool,
+            });
+
             return (
                 <ChangeReviewPanel
                     activity={activity}
+                    defaultExpanded={reviewExpansionState.defaultExpanded}
+                    forceExpanded={reviewExpansionState.forceExpanded}
                     onOpenFile={onOpenFile}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
@@ -1133,6 +1284,8 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         return (
             <FileToolMessage
                 activity={activity}
+                expansionMode={expansionMode}
+                isLatestStreamingTool={isLatestStreamingTool}
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenFileReference}
                 pendingTrackedFiles={pendingTrackedFiles}
@@ -1146,6 +1299,8 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     return (
         <GenericToolMessage
             activity={activity}
+            expansionMode={expansionMode}
+            isLatestStreamingTool={isLatestStreamingTool}
             onOpenFileReference={onOpenFileReference}
             onOpenSession={onOpenSession}
             resolveFileReference={resolveFileReference}
@@ -1158,6 +1313,8 @@ ToolActivityItem.displayName = "ToolActivityItem";
 function areToolActivityItemPropsEqual(
     previous: Readonly<{
         readonly activity: AiToolActivity;
+        readonly expansionMode?: AiToolCardExpansionMode;
+        readonly isLatestStreamingTool?: boolean;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -1177,6 +1334,8 @@ function areToolActivityItemPropsEqual(
     }>,
     next: Readonly<{
         readonly activity: AiToolActivity;
+        readonly expansionMode?: AiToolCardExpansionMode;
+        readonly isLatestStreamingTool?: boolean;
         readonly onOpenFile: (
             projectId: string,
             relativePath: string,
@@ -1197,6 +1356,8 @@ function areToolActivityItemPropsEqual(
 ) {
     return (
         previous.activity === next.activity &&
+        previous.expansionMode === next.expansionMode &&
+        previous.isLatestStreamingTool === next.isLatestStreamingTool &&
         previous.onOpenSession === next.onOpenSession &&
         previous.projectId === next.projectId &&
         previous.trackedFiles === next.trackedFiles &&

@@ -313,6 +313,7 @@ describe("SettingsService", () => {
                 screenshotRetentionSeconds: 0,
                 historyRetentionDays: 0,
                 contextUsageBarEnabled: true,
+                toolCardExpansionMode: "expanded",
             },
             shellState: null,
         });
@@ -327,6 +328,7 @@ describe("SettingsService", () => {
             screenshotRetentionSeconds: 0,
             historyRetentionDays: 0,
             contextUsageBarEnabled: true,
+            toolCardExpansionMode: "expanded",
         });
     });
 });
@@ -382,6 +384,7 @@ function createDefaultAiChatSettings() {
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,
         contextUsageBarEnabled: true,
+        toolCardExpansionMode: "collapsed",
     };
 }
 

@@ -17,6 +17,7 @@ import type {
     AiUserInputRequest,
     AiRuntimeStatus,
     AiSessionSnapshot,
+    AiToolCardExpansionMode,
     ClaudeAuthMethodId,
     GeminiAuthMethodId,
     ProjectTreeNode,
@@ -2348,6 +2349,9 @@ export const ChatTabView = memo(function ChatTabView({
                     historyRows={timelineModel.historyRows}
                     isStreaming={isStreaming}
                     liveTailRow={timelineModel.liveTailRow}
+                    toolCardExpansionMode={
+                        aiChatSettings.toolCardExpansionMode
+                    }
                     onAddFileReferenceToChat={
                         handleAddResolvedFileReferenceToChat
                     }
@@ -3549,6 +3553,24 @@ function ImageAttachmentChip(props: {
     );
 }
 
+function getLatestToolRowId(
+    historyRows: readonly ChatTimelineRow[],
+    liveTailRow: ChatTimelineRow | null,
+): string | null {
+    if (liveTailRow?.kind === "tool") {
+        return liveTailRow.id;
+    }
+
+    for (let index = historyRows.length - 1; index >= 0; index -= 1) {
+        const row = historyRows[index];
+        if (row?.kind === "tool") {
+            return row.id;
+        }
+    }
+
+    return null;
+}
+
 const ChatTimeline = memo(function ChatTimeline({
     canRenderRawFileReference,
     chatFontFamily,
@@ -3568,6 +3590,7 @@ const ChatTimeline = memo(function ChatTimeline({
     resolveFileReference,
     scrollRef,
     timelineContentRef,
+    toolCardExpansionMode,
     worktreeId,
 }: {
     readonly canRenderRawFileReference?: (
@@ -3604,8 +3627,17 @@ const ChatTimeline = memo(function ChatTimeline({
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
+    const latestStreamingToolRowId = useMemo(
+        () =>
+            isStreaming
+                ? getLatestToolRowId(historyRows, liveTailRow)
+                : null,
+        [historyRows, isStreaming, liveTailRow],
+    );
+
     useRenderProbe("ChatTimeline", {
         historyRows: historyRows.length,
         isStreaming,
@@ -3636,6 +3668,8 @@ const ChatTimeline = memo(function ChatTimeline({
                     onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
+                    latestStreamingToolRowId={latestStreamingToolRowId}
+                    toolCardExpansionMode={toolCardExpansionMode}
                     worktreeId={worktreeId}
                 />
                 <ChatTimelineLiveTail
@@ -3651,6 +3685,8 @@ const ChatTimeline = memo(function ChatTimeline({
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     row={liveTailRow}
+                    latestStreamingToolRowId={latestStreamingToolRowId}
+                    toolCardExpansionMode={toolCardExpansionMode}
                     worktreeId={worktreeId}
                 />
                 {isStreaming ? <StreamingIndicator elapsed={elapsed} /> : null}
@@ -3674,6 +3710,8 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     onRevealFileReference,
     projectId,
     resolveFileReference,
+    latestStreamingToolRowId,
+    toolCardExpansionMode,
     worktreeId,
 }: {
     readonly canRenderRawFileReference?: (
@@ -3704,6 +3742,8 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
+    readonly latestStreamingToolRowId: string | null;
+    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
     return historyRows.map((row) => (
@@ -3721,6 +3761,8 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
+            isLatestStreamingTool={row.id === latestStreamingToolRowId}
+            toolCardExpansionMode={toolCardExpansionMode}
             worktreeId={worktreeId}
         />
     ));
@@ -3741,6 +3783,8 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     projectId,
     resolveFileReference,
     row,
+    latestStreamingToolRowId,
+    toolCardExpansionMode,
     worktreeId,
 }: {
     readonly canRenderRawFileReference?: (
@@ -3771,6 +3815,8 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly row: ChatTimelineRow | null;
+    readonly latestStreamingToolRowId: string | null;
+    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
     if (!row) {
@@ -3792,6 +3838,8 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             projectId={projectId}
             resolveFileReference={resolveFileReference}
             row={row}
+            isLatestStreamingTool={row.id === latestStreamingToolRowId}
+            toolCardExpansionMode={toolCardExpansionMode}
             worktreeId={worktreeId}
         />
     );
@@ -3812,6 +3860,8 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     projectId,
     resolveFileReference,
     row,
+    isLatestStreamingTool,
+    toolCardExpansionMode,
     worktreeId,
 }: {
     readonly canRenderRawFileReference?: (
@@ -3842,6 +3892,8 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly row: ChatTimelineRow;
+    readonly isLatestStreamingTool: boolean;
+    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
     if (row.kind === "message") {
@@ -3863,6 +3915,8 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     return (
         <ToolActivityItem
             activity={row.reviewEntry.activity}
+            expansionMode={toolCardExpansionMode}
+            isLatestStreamingTool={isLatestStreamingTool}
             onOpenFile={onOpenFile}
             onOpenFileReference={onOpenResolvedFileReference}
             onOpenSession={onOpenSession}
@@ -3908,6 +3962,7 @@ function areChatTimelinePropsEqual(
         ) => ResolvedProjectFileReference | null;
         readonly scrollRef: RefObject<HTMLDivElement | null>;
         readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
     next: Readonly<{
@@ -3941,6 +3996,7 @@ function areChatTimelinePropsEqual(
         ) => ResolvedProjectFileReference | null;
         readonly scrollRef: RefObject<HTMLDivElement | null>;
         readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
 ) {
@@ -3962,6 +4018,7 @@ function areChatTimelinePropsEqual(
         previous.resolveFileReference === next.resolveFileReference &&
         previous.scrollRef === next.scrollRef &&
         previous.timelineContentRef === next.timelineContentRef &&
+        previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );
 }
@@ -3992,6 +4049,8 @@ function areChatTimelineHistoryPropsEqual(
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
+        readonly latestStreamingToolRowId: string | null;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
     next: Readonly<{
@@ -4019,6 +4078,8 @@ function areChatTimelineHistoryPropsEqual(
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
+        readonly latestStreamingToolRowId: string | null;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
 ) {
@@ -4035,6 +4096,8 @@ function areChatTimelineHistoryPropsEqual(
         previous.onRevealFileReference === next.onRevealFileReference &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
+        previous.latestStreamingToolRowId === next.latestStreamingToolRowId &&
+        previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );
 }
@@ -4065,6 +4128,8 @@ function areChatTimelineLiveTailPropsEqual(
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly row: ChatTimelineRow | null;
+        readonly latestStreamingToolRowId: string | null;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
     next: Readonly<{
@@ -4092,6 +4157,8 @@ function areChatTimelineLiveTailPropsEqual(
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly row: ChatTimelineRow | null;
+        readonly latestStreamingToolRowId: string | null;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
 ) {
@@ -4108,6 +4175,8 @@ function areChatTimelineLiveTailPropsEqual(
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.row === next.row &&
+        previous.latestStreamingToolRowId === next.latestStreamingToolRowId &&
+        previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );
 }
@@ -4138,6 +4207,8 @@ function areChatTimelineRowViewPropsEqual(
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly row: ChatTimelineRow;
+        readonly isLatestStreamingTool: boolean;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
     next: Readonly<{
@@ -4165,6 +4236,8 @@ function areChatTimelineRowViewPropsEqual(
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly row: ChatTimelineRow;
+        readonly isLatestStreamingTool: boolean;
+        readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
 ) {
@@ -4181,6 +4254,8 @@ function areChatTimelineRowViewPropsEqual(
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.row === next.row &&
+        previous.isLatestStreamingTool === next.isLatestStreamingTool &&
+        previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );
 }

@@ -15,6 +15,7 @@ import type {
     AiMessage,
     AiSessionSnapshot,
     AiSessionStatus,
+    AiToolCardExpansionMode,
 } from "@shared/ipc";
 import {
     CHAT_TITLE_HISTORY_MAX_CHARS,
@@ -85,6 +86,7 @@ export interface SessionSnapshotState {
 export interface ChatHistoryTabLayoutProps {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
+    readonly toolCardExpansionMode?: AiToolCardExpansionMode;
     readonly isSidebarCollapsed?: boolean;
     readonly onSearchQueryChange?: (value: string) => void;
     readonly onToggleSidebar?: () => void;
@@ -837,6 +839,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
         <ChatHistoryTabLayout
             chatFontFamily={chatFontFamily}
             chatFontSize={aiChatSettings.chatFontSize}
+            toolCardExpansionMode={aiChatSettings.toolCardExpansionMode}
             handleDelete={handleDelete}
             handleOpenFile={handleOpenFile}
             handleOpenImage={handleOpenImage}
@@ -880,6 +883,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 export function ChatHistoryTabLayout({
     chatFontFamily,
     chatFontSize,
+    toolCardExpansionMode = "collapsed",
     handleDelete,
     handleOpenFile,
     handleOpenImage,
@@ -1637,6 +1641,9 @@ export function ChatHistoryTabLayout({
                                             transcriptMessages={
                                                 displayedTranscriptMessages
                                             }
+                                            toolCardExpansionMode={
+                                                toolCardExpansionMode
+                                            }
                                             worktreeId={
                                                 selectedSession.worktreeId ??
                                                 null
@@ -1725,6 +1732,7 @@ interface HistoryTimelineHandlers {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly highlightQuery?: string;
+    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -1751,6 +1759,7 @@ function HistoryTranscriptTimeline({
     projectId,
     resolveFileReference,
     snapshot,
+    toolCardExpansionMode,
     transcriptMessages,
     worktreeId,
 }: {
@@ -1772,6 +1781,7 @@ function HistoryTranscriptTimeline({
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly snapshot: AiSessionSnapshot | null;
+    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly transcriptMessages: readonly AiMessage[];
     readonly worktreeId: string | null;
 }) {
@@ -1794,6 +1804,7 @@ function HistoryTranscriptTimeline({
             chatFontFamily,
             chatFontSize,
             highlightQuery,
+            toolCardExpansionMode,
             onOpenFile: onOpenFile ?? NOOP_OPEN_FILE,
             onOpenImage: onOpenImage ?? NOOP_OPEN_IMAGE,
             onOpenResolvedFileReference:
@@ -1806,6 +1817,7 @@ function HistoryTranscriptTimeline({
             chatFontFamily,
             chatFontSize,
             highlightQuery,
+            toolCardExpansionMode,
             onOpenFile,
             onOpenImage,
             onOpenResolvedFileReference,
@@ -1857,6 +1869,8 @@ function HistoryTimelineRow({
     return (
         <ToolActivityItem
             activity={row.reviewEntry.activity}
+            expansionMode={handlers.toolCardExpansionMode}
+            isLatestStreamingTool={false}
             onOpenFile={handlers.onOpenFile}
             onOpenFileReference={handlers.onOpenResolvedFileReference}
             onOpenSession={handlers.onOpenSession}
