@@ -954,6 +954,10 @@ button {
     padding-inline: calc(4px * var(--sidebar-list-scale, 1));
 }
 
+.sidebar-github-assignees {
+    padding-top: calc(1px * var(--sidebar-list-scale, 1));
+}
+
 .sidebar-github-assignees > div {
     gap: calc(3px * var(--sidebar-list-scale, 1));
 }

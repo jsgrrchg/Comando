@@ -799,6 +799,12 @@ function SidebarGitHubIssueRow({
     readonly worktreeId: string | null;
 }) {
     const hasAssignees = issue.assignees.length > 0;
+    const issueHeaderClassName = [
+        "grid w-full min-w-0 items-start gap-x-2",
+        hasAssignees
+            ? "grid-cols-[minmax(0,1fr)_auto_auto]"
+            : "grid-cols-[minmax(0,1fr)_auto]",
+    ].join(" ");
 
     return (
         <SidebarGitHubDraggableRow
@@ -812,10 +818,42 @@ function SidebarGitHubIssueRow({
             title={issue.title}
             worktreeId={worktreeId}
         >
-            <div className="flex w-full min-w-0 items-center gap-2">
-                <span className="sidebar-github-title min-w-0 flex-1 truncate font-medium text-text-primary">
-                    {issue.title}
-                </span>
+            <div className={issueHeaderClassName}>
+                <div className="min-w-0">
+                    <span className="sidebar-github-title block min-w-0 truncate font-medium text-text-primary">
+                        {issue.title}
+                    </span>
+                    {issue.labels.length > 0 ? (
+                        <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+                            {issue.labels.slice(0, 3).map((label) => (
+                                <GitHubLabelPill
+                                    className="sidebar-github-label-pill"
+                                    key={label.id}
+                                    label={label}
+                                />
+                            ))}
+                        </div>
+                    ) : null}
+                    <div className="sidebar-github-meta mt-1 flex min-w-0 items-center gap-1.5 text-text-secondary">
+                        <span className="shrink-0">
+                            updated {formatGitHubRelativeTime(issue.updatedAt)}
+                        </span>
+                        <span aria-hidden="true" className="shrink-0">
+                            -
+                        </span>
+                        <span className="shrink-0">
+                            {issue.commentCount} comments
+                        </span>
+                        {!hasAssignees ? (
+                            <>
+                                <span aria-hidden="true" className="shrink-0">
+                                    -
+                                </span>
+                                <span className="shrink-0">Unassigned</span>
+                            </>
+                        ) : null}
+                    </div>
+                </div>
                 {hasAssignees ? (
                     <div className="sidebar-github-assignees shrink-0">
                         <GitHubUsers users={issue.assignees} />
@@ -824,34 +862,6 @@ function SidebarGitHubIssueRow({
                 <span className="sidebar-github-number shrink-0 font-mono text-text-secondary">
                     #{issue.number}
                 </span>
-            </div>
-            {issue.labels.length > 0 ? (
-                <div className="mt-1 flex w-full flex-wrap gap-1">
-                    {issue.labels.slice(0, 3).map((label) => (
-                        <GitHubLabelPill
-                            className="sidebar-github-label-pill"
-                            key={label.id}
-                            label={label}
-                        />
-                    ))}
-                </div>
-            ) : null}
-            <div className="sidebar-github-meta mt-1 flex w-full min-w-0 items-center gap-1.5 text-text-secondary">
-                <span className="shrink-0">
-                    updated {formatGitHubRelativeTime(issue.updatedAt)}
-                </span>
-                <span aria-hidden="true" className="shrink-0">
-                    -
-                </span>
-                <span className="shrink-0">{issue.commentCount} comments</span>
-                {!hasAssignees ? (
-                    <>
-                        <span aria-hidden="true" className="shrink-0">
-                            -
-                        </span>
-                        <span className="shrink-0">Unassigned</span>
-                    </>
-                ) : null}
             </div>
         </SidebarGitHubDraggableRow>
     );
