@@ -36,6 +36,7 @@ const originalAnthropicBedrockBaseUrl =
     process.env.ANTHROPIC_BEDROCK_BASE_URL;
 const originalAnthropicCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS;
 const originalClaudeCodeUseBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
+const originalAwsBearerTokenBedrock = process.env.AWS_BEARER_TOKEN_BEDROCK;
 
 beforeEach(() => {
     delete process.env.COMANDO_CLAUDE_ACP_BIN;
@@ -45,6 +46,7 @@ beforeEach(() => {
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.ANTHROPIC_CUSTOM_HEADERS;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.AWS_BEARER_TOKEN_BEDROCK;
 });
 
 afterEach(() => {
@@ -103,6 +105,12 @@ afterEach(() => {
         process.env.CLAUDE_CODE_USE_BEDROCK = originalClaudeCodeUseBedrock;
     } else {
         delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    }
+
+    if (typeof originalAwsBearerTokenBedrock === "string") {
+        process.env.AWS_BEARER_TOKEN_BEDROCK = originalAwsBearerTokenBedrock;
+    } else {
+        delete process.env.AWS_BEARER_TOKEN_BEDROCK;
     }
 });
 
@@ -435,6 +443,7 @@ describe("Claude setup", () => {
         const env = applyClaudeAuthEnv(
             {
                 ANTHROPIC_AUTH_TOKEN: "external-token",
+                AWS_BEARER_TOKEN_BEDROCK: "external-bedrock-token",
             },
             {
                 ...createEmptyClaudeSettings(),
@@ -449,6 +458,7 @@ describe("Claude setup", () => {
         expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/v1");
         expect(env.ANTHROPIC_AUTH_TOKEN).toBe("external-token");
         expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('{"x-test":"1"}');
+        expect(env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
     });
 
     it("injects a stored Anthropic API key without leaking gateway credentials", () => {
@@ -477,7 +487,7 @@ describe("Claude setup", () => {
         expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
     });
 
-    it("injects Bedrock gateway env without leaking custom gateway credentials", () => {
+    it("injects Bedrock gateway env with custom headers and Bedrock bearer shim", () => {
         const secretStore = createFakeSecretStore({
             "ai.claude:anthropic_auth_token": "stored-token",
             "ai.claude:anthropic_custom_headers": '{"x-test":"1"}',
@@ -497,9 +507,26 @@ describe("Claude setup", () => {
             "https://bedrock.example/v1",
         );
         expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+        expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe(" ");
         expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
         expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-        expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+        expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('{"x-test":"1"}');
+    });
+
+    it("adds the Bedrock bearer shim for external Bedrock gateway env", () => {
+        const env = applyClaudeAuthEnv(
+            {
+                ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example/v1",
+            },
+            createEmptyClaudeSettings(),
+            createFakeSecretStore() as unknown as SecretStoreService,
+        );
+
+        expect(env.ANTHROPIC_BEDROCK_BASE_URL).toBe(
+            "https://bedrock.example/v1",
+        );
+        expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+        expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe(" ");
     });
 
     it("does not inject stored Claude gateway secrets for external login methods", () => {

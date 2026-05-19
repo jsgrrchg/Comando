@@ -228,6 +228,30 @@ describe("Gemini setup", () => {
         }
     });
 
+    it("lets Gemini API key environment variables override selected Google login", () => {
+        process.env.GEMINI_API_KEY = "external-gemini-key";
+
+        const status = getGeminiRuntimeStatus(
+            {
+                ...createEmptyGeminiSettings(),
+                authMethod: "login_with_google",
+            },
+            createFakeSecretStore() as unknown as SecretStoreService,
+        );
+
+        expect(
+            detectGeminiAuthMethod(
+                {
+                    ...createEmptyGeminiSettings(),
+                    authMethod: "login_with_google",
+                },
+                createFakeSecretStore() as unknown as SecretStoreService,
+            ),
+        ).toBe("use_gemini");
+        expect(status.authMethod).toBe("use_gemini");
+        expect(status.authCredentialSource).toBe("environment");
+    });
+
     it("injects Gemini env without overwriting external secrets", () => {
         const secretStore = createFakeSecretStore({
             "ai.gemini:gemini_api_key": "stored-gemini-key",
@@ -254,7 +278,7 @@ describe("Gemini setup", () => {
         expect(env.GEMINI_DEFAULT_AUTH_TYPE).toBe("use_gemini");
     });
 
-    it("does not inject stored Gemini API keys for Google login", () => {
+    it("preserves external Gemini API keys even when Google login is selected", () => {
         const secretStore = createFakeSecretStore({
             "ai.gemini:gemini_api_key": "stored-gemini-key",
             "ai.gemini:google_api_key": "stored-google-key",
@@ -265,6 +289,26 @@ describe("Gemini setup", () => {
                 GEMINI_API_KEY: "external-gemini-key",
                 GOOGLE_API_KEY: "external-google-key",
             },
+            {
+                ...createEmptyGeminiSettings(),
+                authMethod: "login_with_google",
+            },
+            secretStore as unknown as SecretStoreService,
+        );
+
+        expect(env.GEMINI_API_KEY).toBe("external-gemini-key");
+        expect(env.GOOGLE_API_KEY).toBe("external-google-key");
+        expect(env.GEMINI_DEFAULT_AUTH_TYPE).toBe("use_gemini");
+    });
+
+    it("does not inject stored Gemini API keys for Google login without environment credentials", () => {
+        const secretStore = createFakeSecretStore({
+            "ai.gemini:gemini_api_key": "stored-gemini-key",
+            "ai.gemini:google_api_key": "stored-google-key",
+        });
+
+        const env = applyGeminiAuthEnv(
+            {},
             {
                 ...createEmptyGeminiSettings(),
                 authMethod: "login_with_google",

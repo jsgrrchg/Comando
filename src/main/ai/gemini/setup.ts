@@ -298,27 +298,27 @@ export function applyGeminiAuthEnv(
 ): NodeJS.ProcessEnv {
     const env = { ...baseEnv };
     const secrets = loadGeminiSecretBundle(secretStore);
-    const shouldApplyApiKeySecrets = settings.authMethod !== "login_with_google";
-
-    if (!shouldApplyApiKeySecrets) {
-        delete env.GEMINI_API_KEY;
-        delete env.GOOGLE_API_KEY;
-    }
+    const externalApiKeyPresent =
+        envSecretPresent(env, "GEMINI_API_KEY") ||
+        envSecretPresent(env, "GOOGLE_API_KEY");
+    let appliedApiKeyCredential = externalApiKeyPresent;
 
     if (
-        shouldApplyApiKeySecrets &&
+        settings.authMethod !== "login_with_google" &&
         !envSecretPresent(env, "GEMINI_API_KEY") &&
         secrets.geminiApiKey
     ) {
         env.GEMINI_API_KEY = secrets.geminiApiKey;
+        appliedApiKeyCredential = true;
     }
 
     if (
-        shouldApplyApiKeySecrets &&
+        settings.authMethod !== "login_with_google" &&
         !envSecretPresent(env, "GOOGLE_API_KEY") &&
         secrets.googleApiKey
     ) {
         env.GOOGLE_API_KEY = secrets.googleApiKey;
+        appliedApiKeyCredential = true;
     }
 
     if (
@@ -335,11 +335,13 @@ export function applyGeminiAuthEnv(
         env.GOOGLE_CLOUD_LOCATION = settings.googleCloudLocation.trim();
     }
 
-    if (
-        !envSecretPresent(env, "GEMINI_DEFAULT_AUTH_TYPE") &&
-        settings.authMethod?.trim()
-    ) {
-        env.GEMINI_DEFAULT_AUTH_TYPE = settings.authMethod;
+    if (!envSecretPresent(env, "GEMINI_DEFAULT_AUTH_TYPE")) {
+        const authType = appliedApiKeyCredential
+            ? "use_gemini"
+            : settings.authMethod?.trim();
+        if (authType) {
+            env.GEMINI_DEFAULT_AUTH_TYPE = authType;
+        }
     }
 
     return env;
@@ -349,6 +351,10 @@ export function detectGeminiAuthMethod(
     settings: GeminiRuntimeSettings,
     secretStore: SecretStoreGateway,
 ): GeminiAuthMethodId | null {
+    if (environmentGeminiApiKeyReady(process.env)) {
+        return "use_gemini";
+    }
+
     if (
         settings.authMethod === "use_gemini" &&
         geminiApiKeyReady(secretStore)
@@ -551,16 +557,19 @@ function commandFromExistingPath(
 }
 
 function geminiApiKeyReady(secretStore: SecretStoreGateway): boolean {
-    if (envSecretPresent(process.env, "GEMINI_API_KEY")) {
-        return true;
-    }
-
-    if (envSecretPresent(process.env, "GOOGLE_API_KEY")) {
+    if (environmentGeminiApiKeyReady(process.env)) {
         return true;
     }
 
     const secrets = loadGeminiSecretBundle(secretStore);
     return Boolean(secrets.geminiApiKey || secrets.googleApiKey);
+}
+
+function environmentGeminiApiKeyReady(env: NodeJS.ProcessEnv): boolean {
+    return (
+        envSecretPresent(env, "GEMINI_API_KEY") ||
+        envSecretPresent(env, "GOOGLE_API_KEY")
+    );
 }
 
 function geminiGoogleLoginAvailable(settings: GeminiRuntimeSettings): boolean {

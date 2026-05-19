@@ -1854,7 +1854,7 @@ function resolveCodexSecretBundle(
         openaiApiKey = null;
     } else if (settings.authMethod === "openai-api-key") {
         codexApiKey = null;
-    } else {
+    } else if (settings.authMethod === "chatgpt") {
         codexApiKey = null;
         openaiApiKey = null;
     }

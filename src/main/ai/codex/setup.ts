@@ -59,7 +59,7 @@ export function getCodexRuntimeStatus(
             settings.authMethod !== null ||
             Boolean(secrets.codexApiKey) ||
             Boolean(secrets.openaiApiKey),
-        canLogoutAuth: settings.authMethod === CHATGPT_AUTH_METHOD_ID,
+        canLogoutAuth: authMethod === CHATGPT_AUTH_METHOD_ID,
         message,
         onboardingRequired: !binaryReady || !authReady,
     };
@@ -70,35 +70,37 @@ export function getCodexCredentialSource(
     secrets: CodexSecretBundle,
     env: NodeJS.ProcessEnv = process.env,
 ): AiAuthCredentialSource {
+    const authMethod = detectCodexAuthMethod(settings, secrets, env);
+
     if (
-        settings.authMethod === CODEX_API_KEY_AUTH_METHOD_ID &&
+        authMethod === CODEX_API_KEY_AUTH_METHOD_ID &&
         envSecretPresent(env, "CODEX_API_KEY")
     ) {
         return "environment";
     }
 
     if (
-        settings.authMethod === OPENAI_API_KEY_AUTH_METHOD_ID &&
+        authMethod === OPENAI_API_KEY_AUTH_METHOD_ID &&
         envSecretPresent(env, "OPENAI_API_KEY")
     ) {
         return "environment";
     }
 
     if (
-        settings.authMethod === CODEX_API_KEY_AUTH_METHOD_ID &&
+        authMethod === CODEX_API_KEY_AUTH_METHOD_ID &&
         Boolean(normalizeOptionalText(secrets.codexApiKey))
     ) {
         return "comando-secret";
     }
 
     if (
-        settings.authMethod === OPENAI_API_KEY_AUTH_METHOD_ID &&
+        authMethod === OPENAI_API_KEY_AUTH_METHOD_ID &&
         Boolean(normalizeOptionalText(secrets.openaiApiKey))
     ) {
         return "comando-secret";
     }
 
-    if (settings.authMethod === CHATGPT_AUTH_METHOD_ID) {
+    if (authMethod === CHATGPT_AUTH_METHOD_ID) {
         return "external-runtime";
     }
 
@@ -353,25 +355,48 @@ export function applyCodexAuthEnv(
     secrets: CodexSecretBundle,
 ): NodeJS.ProcessEnv {
     const env = { ...baseEnv };
+    const externalCodexApiKeyPresent = envSecretPresent(baseEnv, "CODEX_API_KEY");
+    const externalOpenAiApiKeyPresent = envSecretPresent(
+        baseEnv,
+        "OPENAI_API_KEY",
+    );
+
+    if (externalCodexApiKeyPresent || externalOpenAiApiKeyPresent) {
+        return env;
+    }
+
     delete env.CODEX_API_KEY;
     delete env.OPENAI_API_KEY;
 
     if (settings.authMethod === CODEX_API_KEY_AUTH_METHOD_ID) {
-        const codexApiKey =
-            normalizeOptionalText(baseEnv.CODEX_API_KEY) ??
-            normalizeOptionalText(secrets.codexApiKey);
+        const codexApiKey = normalizeOptionalText(secrets.codexApiKey);
         if (codexApiKey) {
             env.CODEX_API_KEY = codexApiKey;
         }
+        return env;
     }
 
     if (settings.authMethod === OPENAI_API_KEY_AUTH_METHOD_ID) {
-        const openAiApiKey =
-            normalizeOptionalText(baseEnv.OPENAI_API_KEY) ??
-            normalizeOptionalText(secrets.openaiApiKey);
+        const openAiApiKey = normalizeOptionalText(secrets.openaiApiKey);
         if (openAiApiKey) {
             env.OPENAI_API_KEY = openAiApiKey;
         }
+        return env;
+    }
+
+    if (settings.authMethod === CHATGPT_AUTH_METHOD_ID) {
+        return env;
+    }
+
+    const codexApiKey = normalizeOptionalText(secrets.codexApiKey);
+    if (codexApiKey) {
+        env.CODEX_API_KEY = codexApiKey;
+        return env;
+    }
+
+    const openAiApiKey = normalizeOptionalText(secrets.openaiApiKey);
+    if (openAiApiKey) {
+        env.OPENAI_API_KEY = openAiApiKey;
     }
 
     return env;
@@ -382,6 +407,14 @@ export function detectCodexAuthMethod(
     secrets: CodexSecretBundle,
     env: NodeJS.ProcessEnv = process.env,
 ): CodexAuthMethodId | null {
+    if (envSecretPresent(env, "CODEX_API_KEY")) {
+        return CODEX_API_KEY_AUTH_METHOD_ID;
+    }
+
+    if (envSecretPresent(env, "OPENAI_API_KEY")) {
+        return OPENAI_API_KEY_AUTH_METHOD_ID;
+    }
+
     if (settings.authMethod === CHATGPT_AUTH_METHOD_ID) {
         return CHATGPT_AUTH_METHOD_ID;
     }
@@ -397,6 +430,18 @@ export function detectCodexAuthMethod(
         settings.authMethod === OPENAI_API_KEY_AUTH_METHOD_ID &&
         openAiApiKeyReady(secrets, env)
     ) {
+        return OPENAI_API_KEY_AUTH_METHOD_ID;
+    }
+
+    if (settings.authMethod !== null) {
+        return null;
+    }
+
+    if (normalizeOptionalText(secrets.codexApiKey)) {
+        return CODEX_API_KEY_AUTH_METHOD_ID;
+    }
+
+    if (normalizeOptionalText(secrets.openaiApiKey)) {
         return OPENAI_API_KEY_AUTH_METHOD_ID;
     }
 

@@ -113,7 +113,7 @@ describe("AiService Codex branch", () => {
         let savedSettings: CodexRuntimeSettings | null = null;
         const secretValues = new Map<string, string | null>();
         const saveCodexAuth = vi.fn(
-            async (settings: CodexRuntimeSettings) => {
+            (settings: CodexRuntimeSettings) => {
                 savedSettings = settings;
             },
         );
@@ -207,6 +207,98 @@ describe("AiService Codex branch", () => {
             hasCodexApiKey: false,
             hasOpenAiApiKey: true,
         });
+    });
+
+    it("preserves stored Codex keys when saving settings without an explicit auth method", async () => {
+        let savedSettings: CodexRuntimeSettings | null = null;
+        const secretValues = new Map<string, string>([
+            ["ai.codex:codex_api_key", "codex-secret"],
+        ]);
+        const service = new AiService({
+            onRuntimeStatus: vi.fn(),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+            } as never,
+            secretStore: {
+                loadSecret: (namespace: string, secretId: string) =>
+                    secretValues.get(`${namespace}:${secretId}`) ?? null,
+                saveSecret: (
+                    namespace: string,
+                    secretId: string,
+                    value: string | null,
+                ) => {
+                    const key = `${namespace}:${secretId}`;
+                    if (!value?.trim()) {
+                        secretValues.delete(key);
+                        return;
+                    }
+
+                    secretValues.set(key, value.trim());
+                },
+            } as never,
+            settingsService: {
+                loadClaudeRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    gatewayBaseUrl: null,
+                    hasGatewayAuthToken: false,
+                    hasGatewayCustomHeaders: false,
+                })),
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: null,
+                    binaryPath: null,
+                    hasCodexApiKey: true,
+                    hasOpenAiApiKey: false,
+                })),
+                loadGeminiRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    googleCloudLocation: null,
+                    googleCloudProject: null,
+                    hasGeminiApiKey: false,
+                    hasGoogleApiKey: false,
+                })),
+                loadKiloRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    binaryPath: null,
+                })),
+                saveClaudeRuntimeSettings: vi.fn(),
+                saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) => {
+                    savedSettings = settings;
+                },
+                saveGeminiRuntimeSettings: vi.fn(),
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        const status = await service.saveCodexRuntimeSettings({
+            authMethod: null,
+            binaryPath: "/usr/local/bin/codex-acp",
+            codexApiKey: {
+                kind: "unchanged",
+            },
+            openaiApiKey: {
+                kind: "unchanged",
+            },
+        });
+
+        expect(secretValues.get("ai.codex:codex_api_key")).toBe("codex-secret");
+        expect(savedSettings).toEqual({
+            authMethod: null,
+            binaryPath: "/usr/local/bin/codex-acp",
+            hasCodexApiKey: true,
+            hasOpenAiApiKey: false,
+        });
+        expect(status.authMethod).toBe("codex-api-key");
+        expect(status.authCredentialSource).toBe("comando-secret");
     });
 
     it("propagates an error when secure storage is unavailable", async () => {

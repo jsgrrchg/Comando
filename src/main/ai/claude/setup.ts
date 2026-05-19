@@ -588,6 +588,10 @@ export function applyClaudeAuthEnv(
         env,
         "ANTHROPIC_BEDROCK_BASE_URL",
     );
+    const externalAwsBearerTokenBedrockPresent = envSecretPresent(
+        env,
+        "AWS_BEARER_TOKEN_BEDROCK",
+    );
     const shouldApplyApiKeySecret =
         authMethod === ANTHROPIC_API_KEY_METHOD_ID &&
         !externalApiKeyPresent &&
@@ -612,6 +616,9 @@ export function applyClaudeAuthEnv(
     if (managedBedrockBaseUrl) {
         env.ANTHROPIC_BEDROCK_BASE_URL = managedBedrockBaseUrl;
         env.CLAUDE_CODE_USE_BEDROCK = "1";
+        if (!externalAwsBearerTokenBedrockPresent) {
+            env.AWS_BEARER_TOKEN_BEDROCK = " ";
+        }
 
         if (!externalBaseUrlPresent) {
             delete env.ANTHROPIC_BASE_URL;
@@ -620,7 +627,12 @@ export function applyClaudeAuthEnv(
             delete env.ANTHROPIC_AUTH_TOKEN;
         }
         if (!externalHeadersPresent) {
-            delete env.ANTHROPIC_CUSTOM_HEADERS;
+            if (secrets.anthropicCustomHeaders) {
+                env.ANTHROPIC_CUSTOM_HEADERS =
+                    secrets.anthropicCustomHeaders;
+            } else {
+                delete env.ANTHROPIC_CUSTOM_HEADERS;
+            }
         }
 
         return env;
@@ -633,11 +645,19 @@ export function applyClaudeAuthEnv(
     ) {
         env.CLAUDE_CODE_USE_BEDROCK = "1";
     }
+    if (
+        authMethod === BEDROCK_GATEWAY_METHOD_ID &&
+        externalBedrockBaseUrlPresent &&
+        !externalAwsBearerTokenBedrockPresent
+    ) {
+        env.AWS_BEARER_TOKEN_BEDROCK = " ";
+    }
 
     if (policy.managedBaseUrl) {
         env.ANTHROPIC_BASE_URL = policy.managedBaseUrl;
         delete env.ANTHROPIC_BEDROCK_BASE_URL;
         delete env.CLAUDE_CODE_USE_BEDROCK;
+        delete env.AWS_BEARER_TOKEN_BEDROCK;
 
         if (!externalTokenPresent) {
             if (secrets.anthropicAuthToken) {

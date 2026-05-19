@@ -97,6 +97,8 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Kilo");
         expect(markup).toContain("Anthropic API key");
         expect(markup).toContain("Bedrock gateway");
+        expect(markup).toContain("Custom headers JSON");
+        expect(markup).not.toContain("Auth token");
         expect(markup).toContain("Gemini API key");
         expect(markup).toContain("Google Cloud project");
         expect(markup).toContain("Kilo API key");
@@ -142,6 +144,64 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Diagnostics");
         expect(markup).toContain("Show");
         expect(markup).toContain("Refresh");
+    });
+
+    it("shows detected auth methods without persisting default drafts first", () => {
+        const markup = renderToStaticMarkup(
+            <AIProvidersSettings
+                defaultExpandedProviderIds={["codex"]}
+                runtimeSettings={{
+                    codex: {
+                        authMethod: null,
+                        binaryPath: null,
+                        hasCodexApiKey: false,
+                        hasOpenAiApiKey: false,
+                    },
+                }}
+                runtimeStatuses={{
+                    codex: {
+                        authMethod: "openai-api-key",
+                        authReady: true,
+                        checkedAt: "2026-05-19T12:00:00.000Z",
+                        command: "codex-acp",
+                        runtimeId: "codex",
+                        source: "env",
+                        state: "ready",
+                    },
+                }}
+            />,
+        );
+
+        expect(markup).toContain("Optional OPENAI_API_KEY");
+    });
+
+    it("does not render default API key fields before a method is selected or detected", () => {
+        const markup = renderToStaticMarkup(
+            <AIProvidersSettings
+                defaultExpandedProviderIds={["codex"]}
+                runtimeSettings={{
+                    codex: {
+                        authMethod: null,
+                        binaryPath: null,
+                        hasCodexApiKey: false,
+                        hasOpenAiApiKey: false,
+                    },
+                }}
+                runtimeStatuses={{
+                    codex: {
+                        authMethod: null,
+                        authReady: false,
+                        checkedAt: "2026-05-19T12:00:00.000Z",
+                        command: "codex-acp",
+                        runtimeId: "codex",
+                        source: "env",
+                        state: "ready",
+                    },
+                }}
+            />,
+        );
+
+        expect(markup).not.toContain("Optional OPENAI_API_KEY");
     });
 });
 

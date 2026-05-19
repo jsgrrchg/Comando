@@ -911,6 +911,7 @@ function ClaudeConditionalFields({
                     onClick={() =>
                         onChange({
                             ...draft,
+                            bedrockGatewayBaseUrl: "",
                             gatewayAuthToken: createClearSecretDraft(),
                             gatewayBaseUrl: "",
                             gatewayCustomHeaders: createClearSecretDraft(),
@@ -924,17 +925,26 @@ function ClaudeConditionalFields({
     if (methodId === "gateway-bedrock") {
         return (
             <div style={{ display: "grid", gap: 10 }}>
-                <LabeledTextField
-                    label="Bedrock gateway base URL"
+                <GatewayFields
+                    baseUrl={draft.bedrockGatewayBaseUrl}
+                    baseUrlLabel="Bedrock gateway base URL"
+                    customHeadersDraft={draft.gatewayCustomHeaders}
+                    hasStoredCustomHeaders={Boolean(
+                        settings?.hasGatewayCustomHeaders,
+                    )}
                     placeholder="https://bedrock-gateway.example.com"
-                    value={draft.bedrockGatewayBaseUrl}
-                    onChange={(bedrockGatewayBaseUrl) =>
+                    showAuthToken={false}
+                    onBaseUrlChange={(bedrockGatewayBaseUrl) =>
                         onChange({ ...draft, bedrockGatewayBaseUrl })
+                    }
+                    onCustomHeadersChange={(gatewayCustomHeaders) =>
+                        onChange({ ...draft, gatewayCustomHeaders })
                     }
                 />
                 <InfoNote>
-                    Bedrock gateway uses the configured base URL and does not
-                    require an Anthropic auth token in Comando.
+                    Bedrock gateway uses the configured base URL and optional
+                    custom headers, and does not require an Anthropic auth token
+                    in Comando.
                 </InfoNote>
                 <ActionButton
                     label="Clear gateway settings"
@@ -942,6 +952,9 @@ function ClaudeConditionalFields({
                         onChange({
                             ...draft,
                             bedrockGatewayBaseUrl: "",
+                            gatewayAuthToken: createClearSecretDraft(),
+                            gatewayBaseUrl: "",
+                            gatewayCustomHeaders: createClearSecretDraft(),
                         })
                     }
                 />
@@ -1011,44 +1024,50 @@ function GeminiFields({
 }
 
 function GatewayFields({
-    authTokenDraft,
+    authTokenDraft = createEmptySecretDraft(),
     baseUrl,
     baseUrlLabel,
     customHeadersDraft,
-    hasStoredAuthToken,
+    hasStoredAuthToken = false,
     hasStoredCustomHeaders,
     onAuthTokenChange,
     onBaseUrlChange,
     onCustomHeadersChange,
-    tokenPlaceholder,
+    placeholder = "https://gateway.example.com",
+    showAuthToken = true,
+    tokenPlaceholder = "Optional gateway auth token",
 }: {
-    readonly authTokenDraft: AiProviderSecretDraft;
+    readonly authTokenDraft?: AiProviderSecretDraft;
     readonly baseUrl: string;
     readonly baseUrlLabel: string;
     readonly customHeadersDraft: AiProviderSecretDraft;
-    readonly hasStoredAuthToken: boolean;
+    readonly hasStoredAuthToken?: boolean;
     readonly hasStoredCustomHeaders: boolean;
-    readonly onAuthTokenChange: (draft: AiProviderSecretDraft) => void;
+    readonly onAuthTokenChange?: (draft: AiProviderSecretDraft) => void;
     readonly onBaseUrlChange: (value: string) => void;
     readonly onCustomHeadersChange: (draft: AiProviderSecretDraft) => void;
-    readonly tokenPlaceholder: string;
+    readonly placeholder?: string;
+    readonly showAuthToken?: boolean;
+    readonly tokenPlaceholder?: string;
 }) {
     return (
         <div style={{ display: "grid", gap: 10 }}>
             <LabeledTextField
                 label={baseUrlLabel}
-                placeholder="https://gateway.example.com"
+                placeholder={placeholder}
                 value={baseUrl}
                 onChange={onBaseUrlChange}
             />
-            <SecretField
-                draft={authTokenDraft}
-                label="Auth token"
-                placeholder={tokenPlaceholder}
-                stored={hasStoredAuthToken}
-                multiline
-                onChange={onAuthTokenChange}
-            />
+            {showAuthToken ? (
+                <SecretField
+                    draft={authTokenDraft}
+                    label="Auth token"
+                    placeholder={tokenPlaceholder}
+                    stored={hasStoredAuthToken}
+                    multiline
+                    onChange={(draft) => onAuthTokenChange?.(draft)}
+                />
+            ) : null}
             <SecretField
                 draft={customHeadersDraft}
                 label="Custom headers JSON"
@@ -1660,12 +1679,17 @@ const twoColumnGridStyle: CSSProperties = {
 function createInitialDrafts(
     settings: AiProviderRuntimeSettingsMap | undefined,
 ): ProviderDrafts {
+    const claudeAuthMethod = settings?.claude?.authMethod;
+    const codexAuthMethod = settings?.codex?.authMethod;
+    const geminiAuthMethod = settings?.gemini?.authMethod;
+    const kiloAuthMethod = settings?.kilo?.authMethod;
+
     return {
         claude: {
             anthropicApiKey: createEmptySecretDraft(),
-            authMethod:
-                settings?.claude?.authMethod ??
-                AI_PROVIDER_DEFINITIONS.claude.defaultMethodId,
+            authMethod: isMethodIdForProvider("claude", claudeAuthMethod)
+                ? claudeAuthMethod
+                : null,
             bedrockGatewayBaseUrl: settings?.claude?.bedrockGatewayBaseUrl ?? "",
             binaryPath: settings?.claude?.binaryPath ?? "",
             gatewayAuthToken: createEmptySecretDraft(),
@@ -1673,17 +1697,17 @@ function createInitialDrafts(
             gatewayCustomHeaders: createEmptySecretDraft(),
         },
         codex: {
-            authMethod:
-                settings?.codex?.authMethod ??
-                AI_PROVIDER_DEFINITIONS.codex.defaultMethodId,
+            authMethod: isMethodIdForProvider("codex", codexAuthMethod)
+                ? codexAuthMethod
+                : null,
             binaryPath: settings?.codex?.binaryPath ?? "",
             codexApiKey: createEmptySecretDraft(),
             openAiApiKey: createEmptySecretDraft(),
         },
         gemini: {
-            authMethod:
-                settings?.gemini?.authMethod ??
-                AI_PROVIDER_DEFINITIONS.gemini.defaultMethodId,
+            authMethod: isMethodIdForProvider("gemini", geminiAuthMethod)
+                ? geminiAuthMethod
+                : null,
             binaryPath: settings?.gemini?.binaryPath ?? "",
             geminiApiKey: createEmptySecretDraft(),
             googleApiKey: createEmptySecretDraft(),
@@ -1691,9 +1715,9 @@ function createInitialDrafts(
             googleCloudProject: settings?.gemini?.googleCloudProject ?? "",
         },
         kilo: {
-            authMethod:
-                settings?.kilo?.authMethod ??
-                AI_PROVIDER_DEFINITIONS.kilo.defaultMethodId,
+            authMethod: isMethodIdForProvider("kilo", kiloAuthMethod)
+                ? kiloAuthMethod
+                : null,
             binaryPath: settings?.kilo?.binaryPath ?? "",
             kiloApiKey: createEmptySecretDraft(),
         },
