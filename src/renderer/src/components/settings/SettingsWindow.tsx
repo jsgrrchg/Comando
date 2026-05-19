@@ -198,8 +198,8 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Font used for messages in the chat.",
         "Chat font size",
         "Font size of messages in the chat.",
-        "Tool call cards",
-        "Choose when chat tool call cards open automatically.",
+        "Edited file cards",
+        "Choose when edited-file tool cards open automatically.",
         "Normal",
         "Latest expanded",
         "Always expanded",
@@ -1955,8 +1955,8 @@ function AiChatContent({
         ],
         ["Chat font size", "Font size of messages in the chat, in pixels."],
         [
-            "Tool call cards",
-            "Choose when chat tool call cards open automatically.",
+            "Edited file cards",
+            "Choose when edited-file tool cards open automatically.",
             "Normal",
             "Latest expanded",
             "Always expanded",
@@ -2040,12 +2040,13 @@ function AiChatContent({
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Chat"
-                label="Tool call cards"
-                description="Choose when chat tool call cards open automatically."
+                label="Edited file cards"
+                description="Choose when edited-file tool cards open automatically."
                 keywords={[
                     "Normal",
                     "Latest expanded",
                     "Always expanded",
+                    "edited files",
                     "collapsed",
                     "expanded",
                     "streaming tools",

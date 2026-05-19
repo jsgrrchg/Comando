@@ -184,6 +184,72 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain("Updated src/app.ts");
     });
 
+    it("does not expand read tool details when the card policy is always expanded", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "read",
+                    summary: "Read-only details stay collapsed.",
+                    title: "Read src/app.ts",
+                }),
+                expansionMode: "expanded",
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Read ");
+        expect(markup).toContain("src/app.ts");
+        expect(markup).not.toContain("Read-only details stay collapsed.");
+    });
+
+    it("does not expand terminal tool details when the card policy is always expanded", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "shell",
+                    rawInputJson: JSON.stringify({ command: "echo hidden" }),
+                    summary: null,
+                    terminalOutput: "terminal hidden output\n",
+                    title: "Run echo",
+                }),
+                expansionMode: "expanded",
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Run echo");
+        expect(markup).not.toContain("terminal hidden output");
+    });
+
+    it("does not expand generic tool details when the card policy is always expanded", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "unknown",
+                    locations: [],
+                    rawInputJson: JSON.stringify({ value: "generic hidden" }),
+                    summary: "Generic hidden summary.",
+                    title: "Run generic tool",
+                }),
+                expansionMode: "expanded",
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Run generic tool");
+        expect(markup).not.toContain("Generic hidden summary.");
+        expect(markup).not.toContain("generic hidden");
+    });
+
     it("only expands latest live tool details for the latest policy", () => {
         const historyMarkup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
