@@ -5,6 +5,7 @@ import {
     buildGitWorktreeDiffSections,
     parseGitDiffFileId,
 } from "@renderer/app/git/presentation";
+import { serializeWorktreeDiffToPatch } from "@renderer/app/git/worktree-diff-patch";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useGitStore } from "@renderer/app/store/git-store";
@@ -168,6 +169,27 @@ export function GitWorktreeDiffTabView({
         void refreshWorktreeDiff(projectId, worktreeId);
     }, [projectId, refreshProject, refreshWorktreeDiff, worktreeId]);
 
+    const handleDownloadAll = useCallback(() => {
+        const patch = serializeWorktreeDiffToPatch(result);
+        if (!patch) {
+            return;
+        }
+
+        const safeName = (project?.name ?? "repository").replace(
+            /[^\w.-]+/g,
+            "-",
+        );
+        const blob = new Blob([patch], { type: "text/x-patch" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${safeName}-uncommitted.patch`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+    }, [project?.name, result]);
+
     const handleStageAll = useCallback(() => {
         const paths = collectActionPaths(result, ["unstaged", "untracked"]);
         if (paths.length > 0) {
@@ -247,6 +269,13 @@ export function GitWorktreeDiffTabView({
                     <div className="flex flex-wrap items-center justify-end gap-2">
                         <IdeActionButton onClick={handleRefresh} title="Refresh diff">
                             {isLoading ? "refreshing" : "refresh"}
+                        </IdeActionButton>
+                        <IdeActionButton
+                            disabled={changedFileCount === 0}
+                            onClick={handleDownloadAll}
+                            title="Download all changes as a .patch file"
+                        >
+                            download all
                         </IdeActionButton>
                         <IdeActionButton
                             disabled={collectActionPaths(result, [
