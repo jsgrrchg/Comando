@@ -19,6 +19,11 @@ import {
     GitEmptyState,
 } from "@renderer/components/git";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
+import {
+    getGitCommitDiffCollapseStorageKey,
+    persistGitCommitDiffCollapseState,
+    readPersistedGitCommitDiffCollapseState,
+} from "./gitCommitDiffCollapsePersistence";
 import { MarkdownContent } from "./MarkdownContent";
 import { IdeActionButton } from "./ide-bar";
 
@@ -90,38 +95,91 @@ export function GitCommitTabView({
         () => diffFiles.map((file) => file.id).join("|"),
         [diffFiles],
     );
+    const diffFileIdSet = useMemo(
+        () => new Set(diffFiles.map((file) => file.id)),
+        [diffFiles],
+    );
+    const diffCollapseStorageKey = useMemo(
+        () =>
+            getGitCommitDiffCollapseStorageKey({
+                commitSha,
+                projectId,
+                surface: tab.kind,
+                worktreeId,
+            }),
+        [commitSha, projectId, tab.kind, worktreeId],
+    );
     const [collapsedFileIds, setCollapsedFileIds] = useState<readonly string[]>(
-        () => diffFiles.map((file) => file.id),
+        () => {
+            const visibleFileIds = new Set(diffFiles.map((file) => file.id));
+            const persistedCollapsedFileIds =
+                readPersistedGitCommitDiffCollapseState(diffCollapseStorageKey)
+                    ?.collapsedFileIds ?? [];
+
+            return persistedCollapsedFileIds.filter((fileId) =>
+                visibleFileIds.has(fileId),
+            );
+        },
     );
     const [lastDiffFileIdsKey, setLastDiffFileIdsKey] =
         useState(diffFileIdsKey);
+    const [lastDiffCollapseStorageKey, setLastDiffCollapseStorageKey] =
+        useState(diffCollapseStorageKey);
 
-    // Reset collapsed state when the file identity set changes (React's
-    // derived-state-from-props pattern: setState during render is cheap and
-    // skips an extra effect pass).
-    if (lastDiffFileIdsKey !== diffFileIdsKey) {
+    // Restore persisted collapse state when the commit or file identity set
+    // changes. Missing persisted state intentionally means "all expanded".
+    if (
+        lastDiffFileIdsKey !== diffFileIdsKey ||
+        lastDiffCollapseStorageKey !== diffCollapseStorageKey
+    ) {
+        const visibleFileIds = new Set(diffFiles.map((file) => file.id));
+        const persistedCollapsedFileIds =
+            readPersistedGitCommitDiffCollapseState(diffCollapseStorageKey)
+                ?.collapsedFileIds ?? [];
+
         setLastDiffFileIdsKey(diffFileIdsKey);
-        setCollapsedFileIds(diffFiles.map((file) => file.id));
+        setLastDiffCollapseStorageKey(diffCollapseStorageKey);
+        setCollapsedFileIds(
+            persistedCollapsedFileIds.filter((fileId) =>
+                visibleFileIds.has(fileId),
+            ),
+        );
     }
 
+    const collapsedFileIdSet = useMemo(
+        () => new Set(collapsedFileIds),
+        [collapsedFileIds],
+    );
     const allCollapsed =
-        diffFiles.length > 0 && collapsedFileIds.length === diffFiles.length;
+        diffFiles.length > 0 &&
+        diffFiles.every((file) => collapsedFileIdSet.has(file.id));
 
-    const handleToggleFileCollapse = useCallback((fileId: string) => {
-        setCollapsedFileIds((currentIds) =>
-            currentIds.includes(fileId)
-                ? currentIds.filter((id) => id !== fileId)
-                : [...currentIds, fileId],
-        );
-    }, []);
+    const handleToggleFileCollapse = useCallback(
+        (fileId: string) => {
+            const visibleCollapsedFileIds = collapsedFileIds.filter((id) =>
+                diffFileIdSet.has(id),
+            );
+            const nextIds = collapsedFileIdSet.has(fileId)
+                ? visibleCollapsedFileIds.filter((id) => id !== fileId)
+                : [...visibleCollapsedFileIds, fileId];
+
+            setCollapsedFileIds(nextIds);
+            persistGitCommitDiffCollapseState(diffCollapseStorageKey, nextIds);
+        },
+        [
+            collapsedFileIds,
+            collapsedFileIdSet,
+            diffCollapseStorageKey,
+            diffFileIdSet,
+        ],
+    );
 
     const handleToggleAllFiles = useCallback(() => {
-        setCollapsedFileIds((currentIds) =>
-            currentIds.length === diffFiles.length
-                ? []
-                : diffFiles.map((file) => file.id),
-        );
-    }, [diffFiles]);
+        const nextIds = allCollapsed ? [] : diffFiles.map((file) => file.id);
+
+        setCollapsedFileIds(nextIds);
+        persistGitCommitDiffCollapseState(diffCollapseStorageKey, nextIds);
+    }, [allCollapsed, diffCollapseStorageKey, diffFiles]);
 
     const handleDiffScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
         const shouldCollapse = e.currentTarget.scrollTop > 0;
