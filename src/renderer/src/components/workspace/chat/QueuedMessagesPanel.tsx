@@ -3,12 +3,32 @@ import { useState } from "react";
 import type { QueuedPrompt } from "@renderer/app/ai/sessionReviewContracts";
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 
+import { ReviewRejectIcon } from "../review/ReviewFileRow";
 import { composerPartsToPlainText } from "./composerParts";
 
 const BASE_TEXT_SIZE_PX = 16;
 
 function toEm(value: number): string {
     return `${value / BASE_TEXT_SIZE_PX}em`;
+}
+
+function QueueEditIcon({ size = 13 }: { readonly size?: number }) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height={size}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+            width={size}
+        >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+    );
 }
 
 function summarizeQueuedPrompt(item: QueuedPrompt): string {
@@ -131,6 +151,8 @@ export function QueuedMessagesPanel({
                         queue ({items.length})
                     </button>
                     <button
+                        aria-label="Clear queue"
+                        className="review-text-btn"
                         disabled={!canClearAll}
                         onClick={onClearAll}
                         style={{
@@ -143,6 +165,7 @@ export function QueuedMessagesPanel({
                             opacity: canClearAll ? 0.6 : 0.25,
                             padding: 0,
                         }}
+                        title="Clear queue"
                         type="button"
                     >
                         [clear]
@@ -182,7 +205,8 @@ export function QueuedMessagesPanel({
                         </span>
                     </div>
                     <button
-                        className="review-action-btn shrink-0"
+                        aria-label="Cancel edit"
+                        className="review-action-btn review-text-btn shrink-0"
                         onClick={onCancelEdit}
                         style={{
                             background: "transparent",
@@ -195,6 +219,7 @@ export function QueuedMessagesPanel({
                             lineHeight: "16px",
                             padding: "0 5px",
                         }}
+                        title="Cancel edit"
                         type="button"
                     >
                         cancel
@@ -266,70 +291,28 @@ export function QueuedMessagesPanel({
                                 <div className="flex shrink-0 items-center gap-1">
                                     <button
                                         aria-label={`Delete ${summary}`}
-                                        className="review-action-btn"
+                                        className="review-icon-btn review-icon-btn--reject"
                                         disabled={sending}
                                         onClick={() => onDelete(item.id)}
-                                        onMouseEnter={(e) => {
-                                            if (!sending) {
-                                                e.currentTarget.style.opacity =
-                                                    "1";
-                                            }
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            if (!sending) {
-                                                e.currentTarget.style.opacity =
-                                                    "0.5";
-                                            }
-                                        }}
-                                        style={{
-                                            background: "transparent",
-                                            border: "none",
-                                            color: "var(--diff-remove)",
-                                            cursor: sending
-                                                ? "not-allowed"
-                                                : "pointer",
-                                            fontSize: toEm(12),
-                                            lineHeight: 1,
-                                            opacity: sending ? 0.2 : 0.5,
-                                            padding: "4px 6px",
-                                            transition: "opacity 100ms ease",
-                                        }}
+                                        title="Delete"
                                         type="button"
                                     >
-                                        ✕
+                                        <ReviewRejectIcon size={13} />
                                     </button>
                                     {!sending ? (
                                         <button
                                             aria-label={`Edit ${summary}`}
-                                            className="review-action-btn"
+                                            className="review-icon-btn"
                                             onClick={() => onEdit(item.id)}
-                                            onMouseEnter={(e) => {
-                                                e.currentTarget.style.opacity =
-                                                    "1";
-                                            }}
-                                            onMouseLeave={(e) => {
-                                                e.currentTarget.style.opacity =
-                                                    "0.5";
-                                            }}
-                                            style={{
-                                                background: "transparent",
-                                                border: "none",
-                                                color: "var(--color-text-secondary)",
-                                                cursor: "pointer",
-                                                fontSize: toEm(12),
-                                                lineHeight: 1,
-                                                opacity: 0.5,
-                                                padding: "4px 6px",
-                                                transition:
-                                                    "opacity 100ms ease",
-                                            }}
+                                            title="Edit"
                                             type="button"
                                         >
-                                            ✎
+                                            <QueueEditIcon size={13} />
                                         </button>
                                     ) : null}
                                     <button
-                                        className="review-action-btn"
+                                        aria-label="Send now"
+                                        className="review-action-btn review-text-btn"
                                         disabled={sending}
                                         onClick={() => onSendNow(item.id)}
                                         style={{
@@ -350,6 +333,7 @@ export function QueuedMessagesPanel({
                                             opacity: sending ? 0.3 : 0.7,
                                             padding: "0 5px",
                                         }}
+                                        title="Send now"
                                         type="button"
                                     >
                                         steer
