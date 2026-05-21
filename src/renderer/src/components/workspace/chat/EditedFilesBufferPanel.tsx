@@ -6,6 +6,8 @@ import {
     COMPACT_REVIEW_ROW_HEIGHT_PX,
     DiffStatBar,
     ReviewFileRow,
+    ReviewKeepIcon,
+    ReviewRejectIcon,
 } from "../review/ReviewFileRow";
 import type {
     ReviewFileItem,
@@ -194,20 +196,21 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                     </>
                 )}
 
-                <div className="ml-auto flex items-center gap-1.5">
+                <div className="ml-auto flex items-center gap-1">
                     <button
-                        className="review-action-btn"
+                        className="review-action-btn review-text-btn"
                         onClick={onOpenReview}
                         style={{
                             background: "transparent",
                             border: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                            borderRadius: 3,
+                            borderRadius: 4,
                             color: "var(--color-text-secondary)",
                             cursor: "pointer",
                             fontSize: toEm(10),
                             fontWeight: 500,
-                            lineHeight: "18px",
-                            padding: "0 6px",
+                            lineHeight: "22px",
+                            marginRight: 2,
+                            padding: "0 8px",
                         }}
                         title="Review"
                         type="button"
@@ -216,65 +219,22 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                     </button>
                     <button
                         aria-label="Reject All"
-                        className="review-action-btn"
+                        className="review-icon-btn review-icon-btn--reject"
                         disabled={rejectableCount === 0}
                         onClick={onRejectAll}
-                        onMouseEnter={(e) => {
-                            if (rejectableCount > 0) {
-                                e.currentTarget.style.opacity = "1";
-                            }
-                        }}
-                        onMouseLeave={(e) => {
-                            if (rejectableCount > 0) {
-                                e.currentTarget.style.opacity = "0.6";
-                            }
-                        }}
-                        style={{
-                            background: "transparent",
-                            border: "none",
-                            color: "var(--diff-remove)",
-                            cursor:
-                                rejectableCount === 0
-                                    ? "not-allowed"
-                                    : "pointer",
-                            fontSize: toEm(13),
-                            fontWeight: 600,
-                            lineHeight: 1,
-                            opacity: rejectableCount === 0 ? 0.25 : 0.6,
-                            padding: "4px 6px",
-                            transition: "opacity 100ms ease",
-                        }}
                         title="Reject All"
                         type="button"
                     >
-                        ✕
+                        <ReviewRejectIcon size={14} />
                     </button>
                     <button
                         aria-label="Keep All"
-                        className="review-action-btn"
+                        className="review-icon-btn review-icon-btn--keep"
                         onClick={onKeepAll}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.opacity = "1";
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.opacity = "0.6";
-                        }}
-                        style={{
-                            background: "transparent",
-                            border: "none",
-                            color: "var(--diff-add)",
-                            cursor: "pointer",
-                            fontSize: toEm(13),
-                            fontWeight: 600,
-                            lineHeight: 1,
-                            opacity: 0.6,
-                            padding: "4px 6px",
-                            transition: "opacity 100ms ease",
-                        }}
                         title="Keep All"
                         type="button"
                     >
-                        ✓
+                        <ReviewKeepIcon size={14} />
                     </button>
                 </div>
             </div>

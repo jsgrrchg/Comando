@@ -27,7 +27,12 @@ import {
     deriveReviewSummary,
     type ReviewFileItem,
 } from "./review/editedFilesPresentationModel";
-import { DiffStatBar, ReviewFileRow } from "./review/ReviewFileRow";
+import {
+    DiffStatBar,
+    ReviewFileRow,
+    ReviewKeepIcon,
+    ReviewRejectIcon,
+} from "./review/ReviewFileRow";
 import { formatDiffStat } from "./review/reviewDiff";
 import {
     createPersistedReviewAnchor,
@@ -1080,7 +1085,12 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                     <ReviewStatChips summary={summary} />
                     <div className="ml-auto flex shrink-0 items-center gap-1.5">
                         <button
-                            className="review-action-btn"
+                            aria-label={
+                                expansion.allExpanded
+                                    ? "Collapse all files"
+                                    : "Expand all files"
+                            }
+                            className="review-action-btn review-text-btn"
                             onClick={
                                 expansion.allExpanded
                                     ? expansion.collapseAll
@@ -1097,12 +1107,18 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 lineHeight: "20px",
                                 padding: "0 8px",
                             }}
+                            title={
+                                expansion.allExpanded
+                                    ? "Collapse all files"
+                                    : "Expand all files"
+                            }
                             type="button"
                         >
                             {expansion.allExpanded ? "collapse" : "expand"}
                         </button>
                         <button
-                            className="review-action-btn"
+                            aria-label="Reject all changes"
+                            className="review-action-btn review-text-btn"
                             disabled={rejectableCount === 0}
                             onClick={() => {
                                 persistedAnchorRef.current = null;
@@ -1110,6 +1126,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 void rejectAllTrackedFiles(tab.sessionId);
                             }}
                             style={{
+                                alignItems: "center",
                                 background: "transparent",
                                 border: "none",
                                 color: "var(--diff-remove)",
@@ -1117,17 +1134,22 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                     rejectableCount === 0
                                         ? "not-allowed"
                                         : "pointer",
+                                display: "inline-flex",
                                 fontSize: "11px",
                                 fontWeight: 600,
+                                gap: 4,
                                 opacity: rejectableCount === 0 ? 0.3 : 0.7,
                                 padding: "4px 6px",
                             }}
+                            title="Reject all changes"
                             type="button"
                         >
-                            ✕ reject all
+                            <ReviewRejectIcon size={12} />
+                            reject all
                         </button>
                         <button
-                            className="review-action-btn"
+                            aria-label="Keep all changes"
+                            className="review-action-btn review-text-btn"
                             disabled={items.length === 0}
                             onClick={() => {
                                 persistedAnchorRef.current = null;
@@ -1135,6 +1157,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 void keepAllTrackedFiles(tab.sessionId);
                             }}
                             style={{
+                                alignItems: "center",
                                 background: "transparent",
                                 border: "none",
                                 color: "var(--diff-add)",
@@ -1142,14 +1165,18 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                     items.length === 0
                                         ? "not-allowed"
                                         : "pointer",
+                                display: "inline-flex",
                                 fontSize: "11px",
                                 fontWeight: 600,
+                                gap: 4,
                                 opacity: items.length === 0 ? 0.3 : 0.7,
                                 padding: "4px 6px",
                             }}
+                            title="Keep all changes"
                             type="button"
                         >
-                            ✓ keep all
+                            <ReviewKeepIcon size={12} />
+                            keep all
                         </button>
                     </div>
                 </div>

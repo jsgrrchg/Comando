@@ -129,7 +129,7 @@ describe("ReviewFileRow", () => {
 
         expect(markup).toContain("app.ts");
         expect(markup).toContain("Open File");
-        expect(markup).toContain("not-allowed");
+        expect(markup).toContain("disabled");
         expect(markup).not.toContain("review-file-diff:file-1");
     });
 });

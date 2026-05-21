@@ -10,11 +10,63 @@ import {
     shouldWrapDiffPreview,
 } from "./reviewDiff";
 
-const BASE_TEXT_SIZE_PX = 16;
 export const COMPACT_REVIEW_ROW_HEIGHT_PX = 28;
 
-function toEm(value: number): string {
-    return `${value / BASE_TEXT_SIZE_PX}em`;
+export function ReviewOpenIcon({ size = 13 }: { readonly size?: number }) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height={size}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+            width={size}
+        >
+            <path d="M14 3h7v7" />
+            <path d="M10 14 21 3" />
+            <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+        </svg>
+    );
+}
+
+export function ReviewRejectIcon({ size = 14 }: { readonly size?: number }) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height={size}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.6"
+            viewBox="0 0 24 24"
+            width={size}
+        >
+            <line x1="18" x2="6" y1="6" y2="18" />
+            <line x1="6" x2="18" y1="6" y2="18" />
+        </svg>
+    );
+}
+
+export function ReviewKeepIcon({ size = 14 }: { readonly size?: number }) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height={size}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.6"
+            viewBox="0 0 24 24"
+            width={size}
+        >
+            <polyline points="20 6 9 17 4 12" />
+        </svg>
+    );
 }
 
 function getReviewBadgeLabel(item: ReviewFileItem): string {
@@ -205,96 +257,32 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                     <div className="flex shrink-0 items-center gap-0.5">
                         <button
                             aria-label="Open File"
-                            className="review-action-btn shrink-0"
+                            className="review-icon-btn shrink-0"
                             disabled={!canShowOpen}
                             onClick={canShowOpen ? onOpen : undefined}
-                            onMouseEnter={(e) => {
-                                if (canShowOpen) {
-                                    e.currentTarget.style.opacity = "1";
-                                }
-                            }}
-                            onMouseLeave={(e) => {
-                                if (canShowOpen) {
-                                    e.currentTarget.style.opacity = "0.65";
-                                }
-                            }}
-                            style={{
-                                background: "transparent",
-                                border: "none",
-                                color: "var(--color-text-secondary)",
-                                cursor: canShowOpen ? "pointer" : "not-allowed",
-                                fontSize: toEm(11),
-                                fontWeight: 500,
-                                opacity: canShowOpen ? 0.65 : 0.25,
-                                padding: "2px 3px",
-                                transition:
-                                    "opacity 100ms ease, filter 100ms ease",
-                            }}
                             title="Open File"
                             type="button"
                         >
-                            open
+                            <ReviewOpenIcon size={13} />
                         </button>
                         <button
                             aria-label="Reject"
-                            className="review-action-btn shrink-0"
+                            className="review-icon-btn review-icon-btn--reject shrink-0"
                             disabled={!item.canReject}
                             onClick={onReject}
-                            onMouseEnter={(e) => {
-                                if (item.canReject) {
-                                    e.currentTarget.style.opacity = "1";
-                                }
-                            }}
-                            onMouseLeave={(e) => {
-                                if (item.canReject) {
-                                    e.currentTarget.style.opacity = "0.6";
-                                }
-                            }}
-                            style={{
-                                background: "transparent",
-                                border: "none",
-                                color: "var(--diff-remove)",
-                                cursor: item.canReject
-                                    ? "pointer"
-                                    : "not-allowed",
-                                fontSize: toEm(13),
-                                lineHeight: 1,
-                                opacity: item.canReject ? 0.6 : 0.2,
-                                padding: "4px 6px",
-                                transition:
-                                    "opacity 100ms ease, filter 100ms ease",
-                            }}
                             title="Reject"
                             type="button"
                         >
-                            ✕
+                            <ReviewRejectIcon size={14} />
                         </button>
                         <button
                             aria-label="Keep"
-                            className="review-action-btn shrink-0"
+                            className="review-icon-btn review-icon-btn--keep shrink-0"
                             onClick={onKeep}
-                            onMouseEnter={(e) => {
-                                e.currentTarget.style.opacity = "1";
-                            }}
-                            onMouseLeave={(e) => {
-                                e.currentTarget.style.opacity = "0.6";
-                            }}
-                            style={{
-                                background: "transparent",
-                                border: "none",
-                                color: "var(--diff-add)",
-                                cursor: "pointer",
-                                fontSize: toEm(13),
-                                lineHeight: 1,
-                                opacity: 0.6,
-                                padding: "4px 6px",
-                                transition:
-                                    "opacity 100ms ease, filter 100ms ease",
-                            }}
                             title="Keep"
                             type="button"
                         >
-                            ✓
+                            <ReviewKeepIcon size={14} />
                         </button>
                     </div>
                 </div>
@@ -443,7 +431,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                 />
                 <div className="flex shrink-0 items-center gap-1.5">
                     <button
-                        className="review-action-btn shrink-0"
+                        className="review-action-btn review-text-btn shrink-0"
                         disabled={!canShowOpen}
                         onClick={canShowOpen ? onOpen : undefined}
                         onMouseEnter={(e) => {
@@ -478,7 +466,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                     </button>
                     {item.canReject ? (
                         <button
-                            className="review-action-btn shrink-0"
+                            className="review-action-btn review-text-btn shrink-0"
                             onClick={onReject}
                             onMouseEnter={(e) => {
                                 e.currentTarget.style.opacity = "1";
@@ -504,7 +492,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                         </button>
                     ) : null}
                     <button
-                        className="review-action-btn shrink-0"
+                        className="review-action-btn review-text-btn shrink-0"
                         onClick={onKeep}
                         onMouseEnter={(e) => {
                             e.currentTarget.style.opacity = "1";

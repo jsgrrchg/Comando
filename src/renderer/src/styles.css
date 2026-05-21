@@ -1784,3 +1784,78 @@ body.resizing-composer {
 .review-action-btn:active:not(:disabled) {
     filter: brightness(0.95);
 }
+
+/*
+ * Icon action buttons for the edited-files review buffer (STAGED panel).
+ * Larger square hit target, hover-tinted backgrounds and keyboard focus
+ * rings replacing the previous text-glyph buttons and inline opacity handlers.
+ */
+.review-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    opacity: 0.72;
+    transition:
+        background-color 120ms ease,
+        opacity 120ms ease,
+        transform 90ms ease,
+        filter 90ms ease;
+}
+.review-icon-btn:hover:not(:disabled) {
+    opacity: 1;
+    background-color: color-mix(
+        in srgb,
+        var(--color-text-secondary) 16%,
+        transparent
+    );
+}
+.review-icon-btn:active:not(:disabled) {
+    filter: brightness(0.88);
+    transform: scale(0.85);
+}
+.review-icon-btn:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+}
+.review-icon-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+    outline-offset: 1px;
+}
+.review-icon-btn--reject {
+    color: var(--diff-remove);
+}
+.review-icon-btn--reject:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--diff-remove) 18%, transparent);
+}
+.review-icon-btn--keep {
+    color: var(--diff-add);
+}
+.review-icon-btn--keep:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--diff-add) 18%, transparent);
+}
+
+/* Text action buttons (full review variant + buffer header) gain focus rings. */
+.review-text-btn {
+    transition:
+        background-color 120ms ease,
+        opacity 120ms ease,
+        transform 90ms ease,
+        filter 90ms ease;
+}
+.review-text-btn:active:not(:disabled) {
+    filter: brightness(0.92);
+    transform: scale(0.94);
+}
+.review-text-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+    outline-offset: 1px;
+    border-radius: 4px;
+}
