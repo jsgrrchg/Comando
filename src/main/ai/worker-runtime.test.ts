@@ -1220,6 +1220,112 @@ describe("AiWorkerRuntime prepareSession", () => {
         ]);
     });
 
+    it("renders Codex subagent user message chunks in the child thread", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent user chunk parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "Inspect the failing chat stream",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                ),
+            ).toEqual([
+                expect.objectContaining({
+                    content: "Inspect the failing chat stream",
+                    kind: "user",
+                }),
+            ]);
+        });
+    });
+
+    it("does not duplicate mirrored subagent prompts when user chunks also arrive", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent user dedupe parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Inspect the failing chat stream",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-dedupe",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "Inspect the failing chat stream",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(
+                messages?.filter(
+                    (message) =>
+                        message.kind === "user" &&
+                        message.content === "Inspect the failing chat stream",
+                ),
+            ).toHaveLength(1);
+        });
+    });
+
     it("mirrors Codex subagent resume breadcrumbs after an explicit close", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),

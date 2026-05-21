@@ -582,14 +582,26 @@ export function setConfigOptionOnSnapshot(
     };
 }
 
+type StreamingMessageKind = "assistant" | "thinking" | "user";
+
 function appendChunkToSnapshot(
     snapshot: AiSessionSnapshot,
-    kind: "assistant" | "thinking",
+    kind: StreamingMessageKind,
     content: string,
     messageId: string | null,
 ): AiSessionSnapshot {
     const messages = [...snapshot.messages];
     const lastMessage = messages.at(-1);
+    const trimmedContent = content.trim();
+
+    if (
+        kind === "user" &&
+        lastMessage?.kind === "user" &&
+        lastMessage.status === "completed" &&
+        lastMessage.content.trim() === trimmedContent
+    ) {
+        return snapshot;
+    }
 
     if (
         lastMessage &&
@@ -626,7 +638,7 @@ function appendChunkToSnapshot(
 
 export function appendContentBlockToSnapshot(
     snapshot: AiSessionSnapshot,
-    kind: "assistant" | "thinking",
+    kind: StreamingMessageKind,
     content: ContentBlock,
     messageId: string | null,
 ): AiSessionSnapshot {
@@ -649,7 +661,7 @@ export function appendContentBlockToSnapshot(
 
 function appendAttachmentToSnapshot(
     snapshot: AiSessionSnapshot,
-    kind: "assistant" | "thinking",
+    kind: StreamingMessageKind,
     attachment: AiImageAttachment,
     messageId: string | null,
 ): AiSessionSnapshot {

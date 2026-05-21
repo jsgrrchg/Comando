@@ -178,6 +178,7 @@ function isDirectStreamingSessionUpdate(
     update: SessionNotification["update"],
 ): boolean {
     return (
+        update.sessionUpdate === "user_message_chunk" ||
         update.sessionUpdate === "agent_message_chunk" ||
         update.sessionUpdate === "agent_thought_chunk" ||
         update.sessionUpdate === "plan"
@@ -1534,7 +1535,8 @@ export class AiWorkerRuntime {
 
         if (
             liveSession.isRestoring &&
-            (update.sessionUpdate === "agent_message_chunk" ||
+            (update.sessionUpdate === "user_message_chunk" ||
+                update.sessionUpdate === "agent_message_chunk" ||
                 update.sessionUpdate === "agent_thought_chunk" ||
                 update.sessionUpdate === "plan" ||
                 update.sessionUpdate === "tool_call" ||
@@ -1548,6 +1550,7 @@ export class AiWorkerRuntime {
         }
 
         const shouldMarkStreaming =
+            update.sessionUpdate === "user_message_chunk" ||
             update.sessionUpdate === "agent_message_chunk" ||
             update.sessionUpdate === "agent_thought_chunk" ||
             update.sessionUpdate === "plan" ||
@@ -1576,6 +1579,14 @@ export class AiWorkerRuntime {
         };
 
         switch (update.sessionUpdate) {
+            case "user_message_chunk":
+                nextSnapshot = appendContentBlockToSnapshot(
+                    nextSnapshot,
+                    "user",
+                    update.content,
+                    update.messageId ?? null,
+                );
+                break;
             case "agent_message_chunk":
                 nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
