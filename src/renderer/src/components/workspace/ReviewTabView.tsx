@@ -1118,7 +1118,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                         </button>
                         <button
                             aria-label="Reject all changes"
-                            className="review-action-btn review-text-btn"
+                            className="review-ghost-btn"
                             disabled={rejectableCount === 0}
                             onClick={() => {
                                 persistedAnchorRef.current = null;
@@ -1127,8 +1127,6 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                             }}
                             style={{
                                 alignItems: "center",
-                                background: "transparent",
-                                border: "none",
                                 color: "var(--diff-remove)",
                                 cursor:
                                     rejectableCount === 0
@@ -1149,7 +1147,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                         </button>
                         <button
                             aria-label="Keep all changes"
-                            className="review-action-btn review-text-btn"
+                            className="review-ghost-btn"
                             disabled={items.length === 0}
                             onClick={() => {
                                 persistedAnchorRef.current = null;
@@ -1158,8 +1156,6 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                             }}
                             style={{
                                 alignItems: "center",
-                                background: "transparent",
-                                border: "none",
                                 color: "var(--diff-add)",
                                 cursor:
                                     items.length === 0

@@ -1859,3 +1859,33 @@ body.resizing-composer {
     outline-offset: 1px;
     border-radius: 4px;
 }
+
+/*
+ * Ghost text buttons: flat at rest, but reveal an outlined button on hover so
+ * borderless actions (reject/accept, reject all/keep all) read as real
+ * buttons. Border colour follows currentColor, keeping the red/green semantics.
+ */
+.review-ghost-btn {
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        opacity 120ms ease,
+        transform 90ms ease,
+        filter 90ms ease;
+}
+.review-ghost-btn:hover:not(:disabled) {
+    opacity: 1;
+    border-color: color-mix(in srgb, currentColor 45%, transparent);
+    background-color: color-mix(in srgb, currentColor 12%, transparent);
+}
+.review-ghost-btn:active:not(:disabled) {
+    filter: brightness(0.92);
+    transform: scale(0.94);
+}
+.review-ghost-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+    outline-offset: 1px;
+}

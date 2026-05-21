@@ -466,51 +466,36 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                     </button>
                     {item.canReject ? (
                         <button
-                            className="review-action-btn review-text-btn shrink-0"
+                            aria-label="Reject"
+                            className="review-ghost-btn shrink-0"
                             onClick={onReject}
-                            onMouseEnter={(e) => {
-                                e.currentTarget.style.opacity = "1";
-                            }}
-                            onMouseLeave={(e) => {
-                                e.currentTarget.style.opacity = "0.6";
-                            }}
                             style={{
-                                background: "transparent",
-                                border: "none",
                                 color: "var(--diff-remove)",
                                 cursor: "pointer",
                                 fontSize: "0.72em",
                                 fontWeight: 600,
                                 opacity: 0.6,
-                                padding: "2px 4px",
-                                transition:
-                                    "opacity 100ms ease, filter 100ms ease",
+                                padding: "2px 5px",
                             }}
+                            title="Reject"
                             type="button"
                         >
                             reject
                         </button>
                     ) : null}
                     <button
-                        className="review-action-btn review-text-btn shrink-0"
+                        aria-label="Accept"
+                        className="review-ghost-btn shrink-0"
                         onClick={onKeep}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.opacity = "1";
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.opacity = "0.6";
-                        }}
                         style={{
-                            background: "transparent",
-                            border: "none",
                             color: "var(--diff-add)",
                             cursor: "pointer",
                             fontSize: "0.72em",
                             fontWeight: 600,
                             opacity: 0.6,
-                            padding: "2px 4px",
-                            transition: "opacity 100ms ease, filter 100ms ease",
+                            padding: "2px 5px",
                         }}
+                        title="Accept"
                         type="button"
                     >
                         accept
