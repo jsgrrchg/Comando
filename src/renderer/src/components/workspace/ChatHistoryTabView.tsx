@@ -6,7 +6,9 @@ import {
     useState,
     type PointerEvent as ReactPointerEvent,
     type ReactNode,
+    type RefCallback,
     type RefObject,
+    type UIEventHandler,
 } from "react";
 
 import type {
@@ -58,6 +60,7 @@ import {
 } from "./chat-history/historyPresentation";
 import { getHistoryPreviewText } from "./chat-history/historyPreview";
 import { buildAiSessionHierarchyGroups } from "./chat-history/sessionHierarchy";
+import { usePersistedWorkspaceScroll } from "./usePersistedWorkspaceScroll";
 
 const HISTORY_PAGE_SIZE = 100;
 const EMPTY_MESSAGES: readonly AiMessage[] = [];
@@ -88,7 +91,11 @@ export interface ChatHistoryTabLayoutProps {
     readonly chatFontSize?: number;
     readonly toolCardExpansionMode?: AiToolCardExpansionMode;
     readonly isSidebarCollapsed?: boolean;
+    readonly historyScrollRef?: RefCallback<HTMLDivElement>;
+    readonly transcriptScrollRef?: RefCallback<HTMLDivElement>;
     readonly onSearchQueryChange?: (value: string) => void;
+    readonly onHistoryScroll?: UIEventHandler<HTMLDivElement>;
+    readonly onTranscriptScroll?: UIEventHandler<HTMLDivElement>;
     readonly onToggleSidebar?: () => void;
     readonly searchQuery?: string;
     readonly totalSessionsCount?: number;
@@ -272,6 +279,23 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
     const sidebarResizeCleanupRef = useRef<(() => void) | null>(null);
     const transcriptRequestIdsRef = useRef<Record<string, number>>({});
     const snapshotRequestIdsRef = useRef<Record<string, number>>({});
+    const {
+        handleScroll: handleHistoryScroll,
+        scrollRef: historyScrollRef,
+    } = usePersistedWorkspaceScroll<HTMLDivElement>({
+        projectId: tab.projectId,
+        surface: tab.kind,
+        worktreeId: tab.worktreeId ?? null,
+    });
+    const {
+        handleScroll: handleTranscriptScroll,
+        scrollRef: transcriptScrollRef,
+    } = usePersistedWorkspaceScroll<HTMLDivElement>({
+        entityId: selectedSessionId,
+        projectId: tab.projectId,
+        surface: `${tab.kind}_transcript`,
+        worktreeId: tab.worktreeId ?? null,
+    });
 
     useEffect(() => {
         return () => {
@@ -848,6 +872,8 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             handleOpenSessionById={handleOpenSessionById}
             handleRefresh={handleRefresh}
             handleRename={handleRename}
+            historyScrollRef={historyScrollRef}
+            transcriptScrollRef={transcriptScrollRef}
             hasMoreMessages={hasMoreMessages}
             isBusy={isBusy}
             isLoadingSessions={isLoadingSessions}
@@ -855,6 +881,8 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             loadSessionSnapshot={loadSessionSnapshot}
             loadTranscriptPage={loadTranscriptPage}
             mutatingSessionId={mutatingSessionId}
+            onHistoryScroll={handleHistoryScroll}
+            onTranscriptScroll={handleTranscriptScroll}
             onSearchQueryChange={setSearchQuery}
             onSidebarResizePointerDown={handleSidebarResizePointerDown}
             onToggleSidebar={toggleSidebarCollapsed}
@@ -892,6 +920,8 @@ export function ChatHistoryTabLayout({
     handleOpenSessionById,
     handleRefresh,
     handleRename,
+    historyScrollRef,
+    transcriptScrollRef,
     hasMoreMessages,
     isBusy,
     isLoadingSessions,
@@ -899,6 +929,8 @@ export function ChatHistoryTabLayout({
     loadSessionSnapshot,
     loadTranscriptPage,
     mutatingSessionId,
+    onHistoryScroll,
+    onTranscriptScroll,
     onSearchQueryChange,
     onSidebarResizePointerDown,
     onToggleSidebar,
@@ -1122,7 +1154,11 @@ export function ChatHistoryTabLayout({
                             </div>
                         </div>
                     ) : null}
-                    <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto p-2">
+                    <div
+                        className="shell-scrollbar min-h-0 flex-1 overflow-y-auto p-2"
+                        onScroll={onHistoryScroll}
+                        ref={historyScrollRef}
+                    >
                         {isLoadingSessions && sessions.length === 0 ? (
                             <HistoryPlaceholder body="Loading history..." />
                         ) : null}
@@ -1564,7 +1600,11 @@ export function ChatHistoryTabLayout({
                                 </div>
                             ) : null}
 
-                            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                            <div
+                                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3"
+                                onScroll={onTranscriptScroll}
+                                ref={transcriptScrollRef}
+                            >
                                 {selectedTranscript?.isLoading &&
                                 transcriptMessages.length === 0 ? (
                                     <HistoryPlaceholder body="Loading transcript..." />

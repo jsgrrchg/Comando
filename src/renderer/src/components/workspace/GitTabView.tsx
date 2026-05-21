@@ -39,6 +39,7 @@ import { openExternalUrl } from "@renderer/app/utils/external-url";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitTab } from "@renderer/app/workspace/tree";
 import { GitAuthorAvatar, GitEmptyState } from "@renderer/components/git";
+import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 
 import {
     IdeActionButton,
@@ -96,6 +97,12 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     const projectId = tab.projectId;
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
+    const { handleScroll: handleGitScroll, scrollRef: gitScrollRef } =
+        usePersistedWorkspaceScroll<HTMLDivElement>({
+            projectId,
+            surface: tab.kind,
+            worktreeId,
+        });
 
     const snapshot = useGitStore((state) =>
         contextKey ? (state.snapshots[contextKey] ?? null) : null,
@@ -777,7 +784,11 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
 
             <div className="flex min-h-0 flex-1" ref={splitContainerRef}>
                 <section className="min-h-0 min-w-0 flex-1 overflow-hidden">
-                    <div className="shell-scrollbar h-full overflow-auto">
+                    <div
+                        className="shell-scrollbar h-full overflow-auto"
+                        onScroll={handleGitScroll}
+                        ref={gitScrollRef}
+                    >
                         <div
                             className="sticky top-0 z-10 grid px-3 py-1.5"
                             style={{

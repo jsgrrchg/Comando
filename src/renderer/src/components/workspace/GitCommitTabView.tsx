@@ -18,6 +18,7 @@ import {
     GitDiffsView,
     GitEmptyState,
 } from "@renderer/components/git";
+import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 import { MarkdownContent } from "./MarkdownContent";
 import { IdeActionButton } from "./ide-bar";
 
@@ -37,6 +38,13 @@ export function GitCommitTabView({
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
     const commitSha = tab.commitSha;
+    const { handleScroll: persistCommitScroll, scrollRef: commitScrollRef } =
+        usePersistedWorkspaceScroll<HTMLDivElement>({
+            entityId: commitSha,
+            projectId,
+            surface: tab.kind,
+            worktreeId,
+        });
 
     const detail = useGitStore((state) =>
         contextKey && projectId
@@ -122,6 +130,17 @@ export function GitCommitTabView({
             setIsBodyCollapsed(shouldCollapse);
         }
     }, []);
+
+    const handleCommitScroll = useCallback(
+        (event: React.UIEvent<HTMLDivElement>) => {
+            persistCommitScroll(event);
+
+            if (detail?.body) {
+                handleDiffScroll(event);
+            }
+        },
+        [detail?.body, handleDiffScroll, persistCommitScroll],
+    );
 
     useEffect(() => {
         if (!projectId) {
@@ -326,8 +345,13 @@ export function GitCommitTabView({
                 </div>
             </div>
 
-            <section className="flex min-h-0 flex-1 px-3 py-3">
+            <section
+                className="shell-scrollbar flex min-h-0 flex-1 overflow-y-auto px-3 py-3"
+                onScroll={handleCommitScroll}
+                ref={commitScrollRef}
+            >
                 <GitDiffsView
+                    className="!overflow-visible"
                     codeFontFamily={codeFontFamily}
                     codeFontSize={codeFontSize}
                     codeLineHeight={codeLineHeight}
@@ -335,7 +359,6 @@ export function GitCommitTabView({
                     displayMode="stack"
                     files={diffFiles}
                     lineWrapping={false}
-                    onScroll={detail.body ? handleDiffScroll : undefined}
                     onToggleFileCollapse={handleToggleFileCollapse}
                     showFileSelector={false}
                     surfaceVariant="flat"

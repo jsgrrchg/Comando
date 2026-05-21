@@ -13,6 +13,7 @@ import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitWorktreeDiffTab } from "@renderer/app/workspace/tree";
 import type { GitWorktreeDiffFile, GitWorktreeDiffResult } from "@shared/ipc";
 import { GitDiffsView, GitEmptyState } from "@renderer/components/git";
+import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 import { IdeActionButton } from "./ide-bar";
 
 const EMPTY_COLLAPSED_FILE_IDS: readonly string[] = [];
@@ -29,6 +30,12 @@ export function GitWorktreeDiffTabView({
     const projectId = tab.projectId;
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = getContextKey(projectId, worktreeId);
+    const { handleScroll: handleDiffScroll, scrollRef: diffScrollRef } =
+        usePersistedWorkspaceScroll<HTMLDivElement>({
+            projectId,
+            surface: tab.kind,
+            worktreeId,
+        });
     const editorSettings = useResolvedEditorSettings();
     const project = useProjectsStore((state) =>
         state.projects.find((candidate) => candidate.id === projectId),
@@ -297,7 +304,11 @@ export function GitWorktreeDiffTabView({
                 </div>
             </header>
 
-            <main className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3">
+            <main
+                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3"
+                onScroll={handleDiffScroll}
+                ref={diffScrollRef}
+            >
                 {isLoading && !result ? (
                     <GitEmptyState>Loading project diff...</GitEmptyState>
                 ) : changedFileCount === 0 ? (

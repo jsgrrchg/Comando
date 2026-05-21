@@ -387,6 +387,12 @@ export function GitHubIssuesTabView({
                     title="Issues"
                 />
             }
+            scrollScope={{
+                entityId: repoKey,
+                projectId: tab.projectId,
+                surface: "github_issues",
+                worktreeId: tab.worktreeId ?? null,
+            }}
         >
             <div className="space-y-3 p-4">
                 <GitHubAuthNotice authStatus={authStatus} />

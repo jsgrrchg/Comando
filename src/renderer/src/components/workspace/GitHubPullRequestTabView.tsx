@@ -436,6 +436,12 @@ export function GitHubPullRequestTabView({
                     title={`PR #${tab.pullRequestNumber}`}
                 />
             }
+            scrollScope={{
+                entityId: `${repoKey}/pulls/${tab.pullRequestNumber}`,
+                projectId: tab.projectId,
+                surface: "github_pull_request",
+                worktreeId: tab.worktreeId ?? null,
+            }}
         >
             <div className="space-y-4 p-4">
                 <GitHubAuthNotice authStatus={authStatus} />

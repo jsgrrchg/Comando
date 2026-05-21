@@ -16,6 +16,10 @@ import type {
 } from "@shared/ipc";
 
 import { openExternalUrl } from "@renderer/app/utils/external-url";
+import {
+    usePersistedWorkspaceScroll,
+    type WorkspaceScrollScope,
+} from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 import { MarkdownContent } from "./MarkdownContent";
 import {
     IdeActionButton,
@@ -32,14 +36,23 @@ export type GitHubMergeableState = "computing" | "conflicts" | "mergeable";
 export function GitHubTabShell({
     children,
     header,
+    scrollScope,
 }: {
     readonly children: ReactNode;
     readonly header: ReactNode;
+    readonly scrollScope: WorkspaceScrollScope;
 }) {
+    const { handleScroll, scrollRef } =
+        usePersistedWorkspaceScroll<HTMLDivElement>(scrollScope);
+
     return (
         <div className="flex h-full min-h-0 flex-col bg-editor text-text-primary">
             {header}
-            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
+            <div
+                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto"
+                onScroll={handleScroll}
+                ref={scrollRef}
+            >
                 {children}
             </div>
         </div>
