@@ -194,6 +194,24 @@ export function SidebarGitPanel({
         }
     }, [changes, projectId, unstagePaths, worktreeId]);
 
+    const handleDiscardAll = useCallback(() => {
+        const paths = Array.from(
+            new Set(allChanges.map((change) => change.path)),
+        );
+        if (paths.length === 0) {
+            return;
+        }
+
+        const confirmed = window.confirm(
+            `Discard all ${paths.length} change${paths.length === 1 ? "" : "s"}?\n\nThis cannot be undone.`,
+        );
+        if (!confirmed) {
+            return;
+        }
+
+        void discardPaths(projectId, paths, worktreeId);
+    }, [allChanges, discardPaths, projectId, worktreeId]);
+
     const handleNodeClick = useCallback(
         (node: GitTreeNode) => {
             if (node.kind === "file") {
@@ -318,6 +336,17 @@ export function SidebarGitPanel({
                             type="button"
                         >
                             {allStaged ? "Unstage All" : "Stage All"}
+                        </button>
+                    )}
+                    {hasChanges && (
+                        <button
+                            aria-label="Discard all changes"
+                            className="review-icon-btn review-icon-btn--reject"
+                            onClick={handleDiscardAll}
+                            title="Discard all changes"
+                            type="button"
+                        >
+                            <TrashIcon size={13} />
                         </button>
                     )}
                 </div>
@@ -495,5 +524,27 @@ function StagingCheckbox({
                 </svg>
             )}
         </button>
+    );
+}
+
+function TrashIcon({ size = 13 }: { readonly size?: number }) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height={size}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+            width={size}
+        >
+            <path d="M3 6h18" />
+            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            <line x1="10" x2="10" y1="11" y2="17" />
+            <line x1="14" x2="14" y1="11" y2="17" />
+        </svg>
     );
 }
