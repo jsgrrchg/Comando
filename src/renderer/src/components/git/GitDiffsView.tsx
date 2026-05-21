@@ -364,7 +364,7 @@ function DiffFileActionButton({
         <button
             aria-label={action.ariaLabel}
             className={[
-                "rounded border px-2 py-1 text-[10px] font-medium transition-colors",
+                "review-text-btn rounded border px-2 py-1 text-[10px] font-medium",
                 action.tone === "danger"
                     ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
                     : "border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",

@@ -65,7 +65,7 @@ export function IdeIconButton({
     return (
         <button
             aria-label={ariaProps["aria-label"]}
-            className="review-action-btn flex items-center justify-center"
+            className="review-action-btn review-text-btn flex items-center justify-center"
             disabled={disabled}
             onClick={onClick}
             style={{
@@ -101,7 +101,7 @@ export function IdeActionButton({
 }) {
     return (
         <button
-            className="review-action-btn"
+            className="review-action-btn review-text-btn"
             disabled={disabled}
             onClick={onClick}
             style={{

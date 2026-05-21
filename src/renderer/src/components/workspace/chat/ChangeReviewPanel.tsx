@@ -353,11 +353,16 @@ function ChangeReviewFileCard({
                     ) : null}
                     {onOpen ? (
                         <button
+                            aria-label="Open File"
+                            className="review-text-btn"
                             onClick={onOpen}
                             style={{
                                 ...getNeutralButtonStyle(),
                                 ...TOOL_ACTION_BUTTON_STYLE,
+                                transition:
+                                    "background-color 100ms ease, opacity 100ms ease, transform 90ms ease, filter 90ms ease",
                             }}
+                            title="Open File"
                             type="button"
                         >
                             Open
