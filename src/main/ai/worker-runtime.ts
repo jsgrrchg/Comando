@@ -119,6 +119,19 @@ export interface AiWorkerRuntimeOptions {
     readonly emitEvent: (message: AiWorkerEventMessage) => void;
 }
 
+interface TrackedPathRollbackBackup {
+    readonly absolutePath: string;
+    readonly bufferContent: string | null;
+    readonly content: Buffer | null;
+    readonly hadBuffer: boolean;
+    readonly mode: number | null;
+}
+
+interface TrackedFileRollbackState {
+    readonly missingDirectories: readonly string[];
+    readonly pathBackups: readonly TrackedPathRollbackBackup[];
+}
+
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
 const TERMINAL_PERMISSION_REJECT_OPTION_ID = "comando.terminal.reject_once";
@@ -654,8 +667,19 @@ export class AiWorkerRuntime {
                 await this.#assertTrackedFileCanBeReverted(session, trackedFile);
             }
 
-            for (const trackedFile of trackedFiles) {
-                await this.#revertTrackedFile(session, trackedFile);
+            const rollbackState =
+                await this.#createTrackedFileRollbackBackups(
+                    session,
+                    trackedFiles,
+                );
+
+            try {
+                for (const trackedFile of trackedFiles) {
+                    await this.#revertTrackedFile(session, trackedFile);
+                }
+            } catch (error) {
+                await this.#restoreTrackedFileRollbackState(rollbackState);
+                throw error;
             }
 
             session.snapshot = {
@@ -2524,6 +2548,217 @@ export class AiWorkerRuntime {
             resolvedPath.absolutePath,
             trackedFile,
         );
+    }
+
+    async #createTrackedFileRollbackBackups(
+        liveSession: LiveAcpSession,
+        trackedFiles: readonly AiTrackedFile[],
+    ): Promise<TrackedFileRollbackState> {
+        const backups = new Map<string, TrackedPathRollbackBackup>();
+        const missingDirectories = new Set<string>();
+        for (const trackedFile of trackedFiles) {
+            for (const absolutePath of this.#getTrackedFileRevertPaths(
+                liveSession,
+                trackedFile,
+            )) {
+                if (backups.has(absolutePath)) {
+                    continue;
+                }
+
+                backups.set(
+                    absolutePath,
+                    await this.#createTrackedPathRollbackBackup(absolutePath),
+                );
+            }
+
+            for (const absolutePath of this.#getTrackedFileRevertWritePaths(
+                liveSession,
+                trackedFile,
+            )) {
+                await this.#rememberMissingParentDirectories(
+                    absolutePath,
+                    missingDirectories,
+                );
+            }
+        }
+
+        return {
+            missingDirectories: Array.from(missingDirectories).sort(
+                (left, right) => right.length - left.length,
+            ),
+            pathBackups: Array.from(backups.values()),
+        };
+    }
+
+    #getTrackedFileRevertPaths(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): readonly string[] {
+        const absolutePaths = [
+            this.#resolveWritableSessionPathInfo(
+                liveSession,
+                trackedFile.path,
+            ).absolutePath,
+        ];
+
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            absolutePaths.push(
+                this.#resolveWritableSessionPathInfo(
+                    liveSession,
+                    trackedFile.previousPath,
+                ).absolutePath,
+            );
+        }
+
+        return absolutePaths;
+    }
+
+    #getTrackedFileRevertWritePaths(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): readonly string[] {
+        if (trackedFile.oldText === null) {
+            return [];
+        }
+
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            return [
+                this.#resolveWritableSessionPathInfo(
+                    liveSession,
+                    trackedFile.previousPath,
+                ).absolutePath,
+            ];
+        }
+
+        if (trackedFile.kind === "create") {
+            return [];
+        }
+
+        return [
+            this.#resolveWritableSessionPathInfo(
+                liveSession,
+                trackedFile.path,
+            ).absolutePath,
+        ];
+    }
+
+    async #rememberMissingParentDirectories(
+        absolutePath: string,
+        missingDirectories: Set<string>,
+    ): Promise<void> {
+        const discoveredDirectories: string[] = [];
+        let currentDirectory = path.dirname(absolutePath);
+
+        while (true) {
+            if (missingDirectories.has(currentDirectory)) {
+                break;
+            }
+
+            try {
+                const stat = await fs.promises.stat(currentDirectory);
+                if (!stat.isDirectory()) {
+                    throw new Error(
+                        `Cannot safely prepare review rollback because ${currentDirectory} is not a directory.`,
+                    );
+                }
+                break;
+            } catch (error) {
+                if (!isNodeError(error) || error.code !== "ENOENT") {
+                    throw error;
+                }
+            }
+
+            discoveredDirectories.push(currentDirectory);
+            const parentDirectory = path.dirname(currentDirectory);
+            if (parentDirectory === currentDirectory) {
+                break;
+            }
+            currentDirectory = parentDirectory;
+        }
+
+        for (const directory of discoveredDirectories) {
+            missingDirectories.add(directory);
+        }
+    }
+
+    async #createTrackedPathRollbackBackup(
+        absolutePath: string,
+    ): Promise<TrackedPathRollbackBackup> {
+        const hadBuffer = this.#fileBuffers.has(absolutePath);
+        const bufferContent = hadBuffer
+            ? (this.#fileBuffers.get(absolutePath) ?? null)
+            : null;
+
+        try {
+            const [content, stat] = await Promise.all([
+                fs.promises.readFile(absolutePath),
+                fs.promises.stat(absolutePath),
+            ]);
+
+            return {
+                absolutePath,
+                bufferContent,
+                content,
+                hadBuffer,
+                mode: stat.mode,
+            };
+        } catch (error) {
+            if (isNodeError(error) && error.code === "ENOENT") {
+                return {
+                    absolutePath,
+                    bufferContent,
+                    content: null,
+                    hadBuffer,
+                    mode: null,
+                };
+            }
+
+            throw error;
+        }
+    }
+
+    async #restoreTrackedFileRollbackState(
+        rollbackState: TrackedFileRollbackState,
+    ): Promise<void> {
+        for (const backup of [...rollbackState.pathBackups].reverse()) {
+            if (backup.content === null) {
+                await fs.promises.rm(backup.absolutePath, { force: true });
+            } else {
+                await fs.promises.mkdir(path.dirname(backup.absolutePath), {
+                    recursive: true,
+                });
+                await fs.promises.writeFile(backup.absolutePath, backup.content);
+                if (backup.mode !== null) {
+                    await fs.promises.chmod(backup.absolutePath, backup.mode);
+                }
+            }
+
+            if (backup.hadBuffer) {
+                this.#fileBuffers.set(
+                    backup.absolutePath,
+                    backup.bufferContent ?? "",
+                );
+            } else {
+                this.#fileBuffers.delete(backup.absolutePath);
+            }
+        }
+
+        for (const directory of rollbackState.missingDirectories) {
+            try {
+                await fs.promises.rmdir(directory);
+            } catch (error) {
+                if (
+                    isNodeError(error) &&
+                    (error.code === "ENOENT" ||
+                        error.code === "ENOTEMPTY" ||
+                        error.code === "EEXIST")
+                ) {
+                    continue;
+                }
+
+                throw error;
+            }
+        }
     }
 
     async #revertTrackedFile(

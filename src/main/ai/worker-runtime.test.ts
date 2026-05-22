@@ -3311,6 +3311,298 @@ describe("AiWorkerRuntime prepareSession", () => {
         );
     });
 
+    it("rolls back reject-all when a later filesystem write fails", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const firstPath = path.join(tempDir, "first.md");
+        const secondPath = path.join(tempDir, "second.md");
+        const firstOriginalText = "first before\n";
+        const firstCurrentText = "first after\n";
+        const secondOriginalText = "second before\n";
+        const secondCurrentText = "second after\n";
+        await fs.writeFile(firstPath, firstCurrentText, "utf8");
+        await fs.writeFile(secondPath, secondCurrentText, "utf8");
+        const runtime = createRuntime();
+        const firstTrackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks(
+                firstOriginalText,
+                firstCurrentText,
+                "first.md",
+            ),
+            identityKey: "first.md",
+            isText: true,
+            kind: "update",
+            newText: firstCurrentText,
+            oldText: firstOriginalText,
+            path: "first.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-first",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const secondTrackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks(
+                secondOriginalText,
+                secondCurrentText,
+                "second.md",
+            ),
+            identityKey: "second.md",
+            isText: true,
+            kind: "update",
+            newText: secondCurrentText,
+            oldText: secondOriginalText,
+            path: "second.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-second",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Transactional reject-all write failure test",
+        });
+        const snapshotWithTrackedFiles = {
+            ...launch.persistedSnapshot,
+            trackedFiles: [firstTrackedFile, secondTrackedFile],
+        };
+        await runtime.dispatchMethod("ai.notifyFileBuffer", {
+            absolutePath: firstPath,
+            content: "first unsaved buffer\n",
+        });
+
+        const originalWriteFile = fs.writeFile.bind(fs);
+        const writeFileSpy = vi.spyOn(fs, "writeFile");
+        let writeCount = 0;
+        writeFileSpy.mockImplementation(async (...args) => {
+            writeCount += 1;
+            if (writeCount === 2) {
+                throw new Error("synthetic write failure");
+            }
+
+            return await originalWriteFile(...args);
+        });
+
+        try {
+            await expect(
+                runtime.dispatchMethod("ai.rejectAllTrackedFiles", {
+                    context: {
+                        additionalRoots: [],
+                        cwd: tempDir,
+                        ownerWindowId: "",
+                        projectRoot: tempDir,
+                        snapshot: snapshotWithTrackedFiles,
+                    },
+                    input: "session-1",
+                }),
+            ).rejects.toThrow("synthetic write failure");
+        } finally {
+            writeFileSpy.mockRestore();
+        }
+
+        await expect(fs.readFile(firstPath, "utf8")).resolves.toBe(
+            firstCurrentText,
+        );
+        await expect(fs.readFile(secondPath, "utf8")).resolves.toBe(
+            secondCurrentText,
+        );
+        expect(snapshotWithTrackedFiles.trackedFiles).toHaveLength(2);
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await expect(
+            client!.readTextFile({
+                path: "first.md",
+            }),
+        ).resolves.toEqual({
+            content: "first unsaved buffer\n",
+        });
+    });
+
+    it("rolls back moved paths when reject-all fails while removing the moved file", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const previousPath = path.join(tempDir, "before.md");
+        const movedPath = path.join(tempDir, "after.md");
+        const originalText = "before move\n";
+        const currentText = "after move\n";
+        await fs.writeFile(movedPath, currentText, "utf8");
+        const runtime = createRuntime();
+        const trackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks(originalText, currentText, "after.md"),
+            identityKey: "after.md",
+            isText: true,
+            kind: "move",
+            newText: currentText,
+            oldText: originalText,
+            path: "after.md",
+            previousPath: "before.md",
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-move",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Transactional reject-all move failure test",
+        }).persistedSnapshot;
+        const snapshotWithTrackedFiles = {
+            ...snapshot,
+            trackedFiles: [trackedFile],
+        };
+
+        const originalRm = fs.rm.bind(fs);
+        const rmSpy = vi.spyOn(fs, "rm");
+        rmSpy.mockImplementation(async (...args) => {
+            if (args[0] === movedPath) {
+                throw new Error("synthetic rm failure");
+            }
+
+            return await originalRm(...args);
+        });
+
+        try {
+            await expect(
+                runtime.dispatchMethod("ai.rejectAllTrackedFiles", {
+                    context: {
+                        additionalRoots: [],
+                        cwd: tempDir,
+                        ownerWindowId: "",
+                        projectRoot: tempDir,
+                        snapshot: snapshotWithTrackedFiles,
+                    },
+                    input: "session-1",
+                }),
+            ).rejects.toThrow("synthetic rm failure");
+        } finally {
+            rmSpy.mockRestore();
+        }
+
+        await expect(fs.readFile(movedPath, "utf8")).resolves.toBe(currentText);
+        await expect(fs.stat(previousPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        expect(snapshotWithTrackedFiles.trackedFiles).toHaveLength(1);
+    });
+
+    it("removes directories created by a failed reject-all rollback", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const restoredPath = path.join(tempDir, "nested", "restored.md");
+        const failingPath = path.join(tempDir, "failing.md");
+        const restoredOriginalText = "deleted before\n";
+        const failingOriginalText = "failing before\n";
+        const failingCurrentText = "failing after\n";
+        await fs.writeFile(failingPath, failingCurrentText, "utf8");
+        const runtime = createRuntime();
+        const restoredTrackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks(
+                restoredOriginalText,
+                "",
+                "nested/restored.md",
+            ),
+            identityKey: "nested/restored.md",
+            isText: true,
+            kind: "delete",
+            newText: null,
+            oldText: restoredOriginalText,
+            path: "nested/restored.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-restored",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const failingTrackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks(
+                failingOriginalText,
+                failingCurrentText,
+                "failing.md",
+            ),
+            identityKey: "failing.md",
+            isText: true,
+            kind: "update",
+            newText: failingCurrentText,
+            oldText: failingOriginalText,
+            path: "failing.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-failing",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Transactional reject-all mkdir rollback test",
+        }).persistedSnapshot;
+
+        const originalWriteFile = fs.writeFile.bind(fs);
+        const writeFileSpy = vi.spyOn(fs, "writeFile");
+        let writeCount = 0;
+        writeFileSpy.mockImplementation(async (...args) => {
+            writeCount += 1;
+            if (writeCount === 2) {
+                throw new Error("synthetic nested rollback failure");
+            }
+
+            return await originalWriteFile(...args);
+        });
+
+        try {
+            await expect(
+                runtime.dispatchMethod("ai.rejectAllTrackedFiles", {
+                    context: {
+                        additionalRoots: [],
+                        cwd: tempDir,
+                        ownerWindowId: "",
+                        projectRoot: tempDir,
+                        snapshot: {
+                            ...snapshot,
+                            trackedFiles: [
+                                restoredTrackedFile,
+                                failingTrackedFile,
+                            ],
+                        },
+                    },
+                    input: "session-1",
+                }),
+            ).rejects.toThrow("synthetic nested rollback failure");
+        } finally {
+            writeFileSpy.mockRestore();
+        }
+
+        await expect(fs.stat(restoredPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        await expect(fs.stat(path.dirname(restoredPath))).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        await expect(fs.readFile(failingPath, "utf8")).resolves.toBe(
+            failingCurrentText,
+        );
+    });
+
     it("refuses partial hunk rejection when the tracked file is snippet-only", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
