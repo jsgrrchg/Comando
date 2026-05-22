@@ -48,6 +48,7 @@ import { toPosixPath } from "./session-core";
 import { debugBenignError } from "@main/observability/logging";
 
 const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
+const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
 const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
 
 interface ClaudeStructuredPatchHunk {
@@ -67,7 +68,9 @@ interface ClaudeStructuredPatchDiffCandidate {
 
 interface DiffResolutionContext {
     readonly meta: unknown;
+    readonly preEditSnapshot?: string;
     readonly readOpenFileBuffer?: (absolutePath: string) => string | null;
+    readonly rawOutput?: unknown;
     readonly sessionUpdate: "tool_call" | "tool_call_update";
     readonly toolCallId: string;
 }
@@ -76,7 +79,9 @@ export function mapToolCallUpdate(
     liveSession: Pick<
         LiveAcpSession,
         "cwd" | "projectRoot" | "processedDiffPaths" | "terminalOutputBuffers"
-    >,
+    > & {
+        readonly preEditSnapshots?: Map<string, string>;
+    },
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
     updateKind: "tool_call" | "tool_call_update",
@@ -147,6 +152,13 @@ export function mapToolCallUpdate(
         normalizeTrackedDiffPath(liveSession, candidatePath);
     const shouldCollectReviewDiffs = !isSubagentBreadcrumbToolUpdate(update);
     const pathsProcessedInThisUpdate = new Set<string>();
+    rememberReadSnapshotFromToolUpdate(
+        liveSession,
+        toolKind,
+        update.rawInput,
+        update.rawOutput,
+        normalizeDiffPath,
+    );
     const updateLocations =
         update.locations?.map(normalizeToolCallLocation) ?? null;
     const readInputLocations = deriveReadInputLocation(
@@ -227,14 +239,6 @@ export function mapToolCallUpdate(
                   return acc;
               }
               pathsProcessedInThisUpdate.add(normalizedPath);
-              if (processedPaths) {
-                  processedPaths.add(normalizedPath);
-              } else {
-                  liveSession.processedDiffPaths.set(
-                      update.toolCallId,
-                      new Set([normalizedPath]),
-                  );
-              }
 
               const existing = acc.find(
                   (candidate) =>
@@ -248,11 +252,29 @@ export function mapToolCallUpdate(
                   normalizedPath,
                   {
                       meta: update._meta,
+                      preEditSnapshot:
+                          liveSession.preEditSnapshots?.get(normalizedPath),
+                      rawOutput: update.rawOutput,
                       readOpenFileBuffer: options.readOpenFileBuffer,
                       sessionUpdate: updateKind,
                       toolCallId: update.toolCallId,
                   },
               );
+              const anchoredHunks =
+                  anchoredHunksByContentIndex.get(contentIndex) ?? null;
+              if (
+                  shouldDedupResolvedDiff(entry, resolvedDiff) ||
+                  anchoredHunks !== null
+              ) {
+                  if (processedPaths) {
+                      processedPaths.add(normalizedPath);
+                  } else {
+                      liveSession.processedDiffPaths.set(
+                          update.toolCallId,
+                          new Set([normalizedPath]),
+                      );
+                  }
+              }
               return upsertTrackedFile(
                   acc,
                   diffToTrackedFile(
@@ -261,7 +283,7 @@ export function mapToolCallUpdate(
                       toolKind,
                       update.toolCallId,
                       updatedAt,
-                      anchoredHunksByContentIndex.get(contentIndex) ?? null,
+                      anchoredHunks,
                       normalizeDiffPath,
                   ),
               );
@@ -1048,7 +1070,7 @@ function deriveReadInputLocation(
         return null;
     }
 
-    const pathValue = rawInput.file_path ?? rawInput.path;
+    const pathValue = rawInput.file_path ?? rawInput.filePath ?? rawInput.path;
     if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
         return null;
     }
@@ -1115,6 +1137,107 @@ function normalizeNonNegativeLineNumber(value: unknown): number | null {
     }
 
     return value;
+}
+
+function rememberReadSnapshotFromToolUpdate(
+    liveSession: { readonly preEditSnapshots?: Map<string, string> },
+    toolKind: string,
+    rawInput: unknown,
+    rawOutput: unknown,
+    normalizePath: (candidatePath: string) => string,
+): void {
+    if (toolKind.toLowerCase() !== "read" || !isRecord(rawInput)) {
+        return;
+    }
+
+    const pathValue = rawInput.file_path ?? rawInput.filePath ?? rawInput.path;
+    if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
+        return;
+    }
+
+    const snapshot = parseCompleteNumberedFileOutput(rawOutput);
+    if (snapshot === null || snapshot.length > TRACKED_DIFF_MAX_READ_BYTES) {
+        return;
+    }
+
+    const snapshots = liveSession.preEditSnapshots;
+    if (!snapshots) {
+        return;
+    }
+
+    const normalizedPath = normalizePath(pathValue);
+    if (snapshots.has(normalizedPath)) {
+        return;
+    }
+
+    if (snapshots.size >= PRE_EDIT_SNAPSHOT_MAX_ENTRIES) {
+        const oldestKey = snapshots.keys().next().value;
+        if (oldestKey !== undefined) {
+            snapshots.delete(oldestKey);
+        }
+    }
+
+    snapshots.set(normalizedPath, snapshot);
+}
+
+function parseCompleteNumberedFileOutput(rawOutput: unknown): string | null {
+    const output =
+        typeof rawOutput === "string"
+            ? rawOutput
+            : isRecord(rawOutput) && typeof rawOutput.output === "string"
+              ? rawOutput.output
+              : null;
+    if (!output) {
+        return null;
+    }
+
+    const contentStart = output.indexOf("<content>");
+    const contentEnd = output.lastIndexOf("</content>");
+    if (contentStart === -1 || contentEnd === -1 || contentEnd <= contentStart) {
+        return null;
+    }
+
+    const body = output
+        .slice(contentStart + "<content>".length, contentEnd)
+        .replace(/^\r?\n/, "")
+        .replace(/\r\n/g, "\n");
+    const lines = body.split("\n");
+    const footerIndex = lines.findIndex((line) =>
+        /^\(End of file - total \d+ lines?\)$/.test(line.trim()),
+    );
+    if (footerIndex === -1) {
+        return null;
+    }
+
+    const totalMatch = lines[footerIndex]
+        ?.trim()
+        .match(/^\(End of file - total (\d+) lines?\)$/);
+    const totalLines = totalMatch ? Number(totalMatch[1]) : NaN;
+    if (!Number.isInteger(totalLines) || totalLines < 0) {
+        return null;
+    }
+
+    const numberedLines = lines.slice(0, footerIndex);
+    while (numberedLines.at(-1) === "") {
+        numberedLines.pop();
+    }
+
+    if (numberedLines.length !== totalLines) {
+        return null;
+    }
+
+    const contentLines: string[] = [];
+    for (let index = 0; index < numberedLines.length; index += 1) {
+        const expectedLineNumber = index + 1;
+        const line = numberedLines[index] ?? "";
+        const match = line.match(/^(\d+): ?(.*)$/);
+        if (!match || Number(match[1]) !== expectedLineNumber) {
+            return null;
+        }
+        contentLines.push(match[2]);
+    }
+
+    return contentLines.join("\n");
 }
 
 function buildToolSummary(
@@ -1333,6 +1456,285 @@ function isAlreadyAppliedSnippetDiff(
     return newSnippet.length === 0 || base.includes(newSnippet);
 }
 
+function resolveAlreadyAppliedPreEditSnapshotDiff(
+    diff: { readonly newText: string; readonly oldText: string },
+    base: string,
+    preEditSnapshot: string | undefined,
+): { readonly newText: string; readonly oldText: string } | null {
+    if (!preEditSnapshot || diff.oldText.length === 0) {
+        return null;
+    }
+
+    const first = preEditSnapshot.indexOf(diff.oldText);
+    if (
+        first === -1 ||
+        first !== preEditSnapshot.lastIndexOf(diff.oldText)
+    ) {
+        return null;
+    }
+
+    const spliced =
+        preEditSnapshot.slice(0, first) +
+        diff.newText +
+        preEditSnapshot.slice(first + diff.oldText.length);
+    if (spliced !== base) {
+        return null;
+    }
+
+    return {
+        oldText: preEditSnapshot,
+        newText: base,
+    };
+}
+
+interface UnifiedPatchHunk {
+    readonly oldStart: number;
+    readonly newStart: number;
+    readonly lines: readonly string[];
+}
+
+function resolveAlreadyAppliedUnifiedPatchDiff(
+    diff: { readonly newText: string; readonly oldText: string },
+    base: string,
+    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    normalizedPath: string,
+    rawOutput: unknown,
+): { readonly newText: string; readonly oldText: string } | null {
+    const patch = readOpenCodeFileDiffPatch(rawOutput);
+    if (!patch) {
+        return null;
+    }
+
+    const patchPath = readOpenCodeFileDiffPath(rawOutput);
+    if (patchPath) {
+        const normalizedPatchPath = normalizeTrackedDiffPath(
+            liveSession,
+            patchPath,
+        );
+        if (normalizedPatchPath !== normalizedPath) {
+            return null;
+        }
+    }
+
+    const hunks = parseUnifiedPatchHunks(patch);
+    if (hunks.length === 0) {
+        return null;
+    }
+
+    const oldText = applyUnifiedPatch(base, hunks, "reverse");
+    if (oldText === null) {
+        return null;
+    }
+
+    const validatedBase = applyUnifiedPatch(oldText, hunks, "forward");
+    if (validatedBase !== base) {
+        return null;
+    }
+
+    if (diff.oldText.length > 0 && !oldText.includes(diff.oldText)) {
+        return null;
+    }
+
+    if (diff.newText.length > 0 && !base.includes(diff.newText)) {
+        return null;
+    }
+
+    return { oldText, newText: base };
+}
+
+function readOpenCodeFileDiffPatch(rawOutput: unknown): string | null {
+    if (!isRecord(rawOutput) || !isRecord(rawOutput.metadata)) {
+        return null;
+    }
+
+    const filediff = rawOutput.metadata.filediff;
+    if (!isRecord(filediff) || typeof filediff.patch !== "string") {
+        return null;
+    }
+
+    return filediff.patch;
+}
+
+function readOpenCodeFileDiffPath(rawOutput: unknown): string | null {
+    if (!isRecord(rawOutput) || !isRecord(rawOutput.metadata)) {
+        return null;
+    }
+
+    const filediff = rawOutput.metadata.filediff;
+    return isRecord(filediff) && typeof filediff.file === "string"
+        ? filediff.file
+        : null;
+}
+
+function parseUnifiedPatchHunks(patch: string): UnifiedPatchHunk[] {
+    const hunks: UnifiedPatchHunk[] = [];
+    const lines = patch.replace(/\r\n/g, "\n").split("\n");
+    let current: { oldStart: number; newStart: number; lines: string[] } | null =
+        null;
+
+    for (const line of lines) {
+        const header = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (header) {
+            if (current) {
+                hunks.push(current);
+            }
+            current = {
+                lines: [],
+                newStart: Number(header[2]),
+                oldStart: Number(header[1]),
+            };
+            continue;
+        }
+
+        if (!current) {
+            continue;
+        }
+
+        if (
+            line.startsWith(" ") ||
+            line.startsWith("-") ||
+            line.startsWith("+")
+        ) {
+            current.lines.push(line);
+        }
+    }
+
+    if (current) {
+        hunks.push(current);
+    }
+
+    return hunks.filter(
+        (hunk) =>
+            Number.isInteger(hunk.oldStart) &&
+            Number.isInteger(hunk.newStart) &&
+            hunk.lines.length > 0,
+    );
+}
+
+function applyUnifiedPatch(
+    text: string,
+    hunks: readonly UnifiedPatchHunk[],
+    direction: "forward" | "reverse",
+): string | null {
+    let lines = splitPatchTextLines(text);
+    const orderedHunks = [...hunks].reverse();
+
+    for (const hunk of orderedHunks) {
+        const matchLines =
+            direction === "forward"
+                ? getUnifiedPatchOldLines(hunk)
+                : getUnifiedPatchNewLines(hunk);
+        const replacementLines =
+            direction === "forward"
+                ? getUnifiedPatchNewLines(hunk)
+                : getUnifiedPatchOldLines(hunk);
+        const preferredIndex =
+            Math.max(
+                1,
+                direction === "forward" ? hunk.oldStart : hunk.newStart,
+            ) - 1;
+        const matchIndex = findPatchLineSequence(
+            lines,
+            matchLines,
+            preferredIndex,
+        );
+        if (matchIndex === null) {
+            return null;
+        }
+
+        lines = [
+            ...lines.slice(0, matchIndex),
+            ...replacementLines,
+            ...lines.slice(matchIndex + matchLines.length),
+        ];
+    }
+
+    return joinPatchTextLines(lines, text.endsWith("\n"));
+}
+
+function splitPatchTextLines(text: string): string[] {
+    if (text.length === 0) {
+        return [];
+    }
+
+    const lines = text.split("\n");
+    if (text.endsWith("\n")) {
+        lines.pop();
+    }
+    return lines;
+}
+
+function joinPatchTextLines(
+    lines: readonly string[],
+    trailingNewline: boolean,
+): string {
+    if (lines.length === 0) {
+        return trailingNewline ? "\n" : "";
+    }
+
+    return lines.join("\n") + (trailingNewline ? "\n" : "");
+}
+
+function getUnifiedPatchOldLines(hunk: UnifiedPatchHunk): string[] {
+    return hunk.lines
+        .filter((line) => line.startsWith(" ") || line.startsWith("-"))
+        .map((line) => line.slice(1));
+}
+
+function getUnifiedPatchNewLines(hunk: UnifiedPatchHunk): string[] {
+    return hunk.lines
+        .filter((line) => line.startsWith(" ") || line.startsWith("+"))
+        .map((line) => line.slice(1));
+}
+
+function findPatchLineSequence(
+    lines: readonly string[],
+    sequence: readonly string[],
+    preferredIndex: number,
+): number | null {
+    if (sequence.length === 0) {
+        return Math.min(Math.max(preferredIndex, 0), lines.length);
+    }
+
+    if (matchesPatchLineSequence(lines, sequence, preferredIndex)) {
+        return preferredIndex;
+    }
+
+    let matchIndex: number | null = null;
+    for (let index = 0; index <= lines.length - sequence.length; index += 1) {
+        if (!matchesPatchLineSequence(lines, sequence, index)) {
+            continue;
+        }
+
+        if (matchIndex !== null) {
+            return null;
+        }
+        matchIndex = index;
+    }
+
+    return matchIndex;
+}
+
+function matchesPatchLineSequence(
+    lines: readonly string[],
+    sequence: readonly string[],
+    index: number,
+): boolean {
+    if (index < 0 || index + sequence.length > lines.length) {
+        return false;
+    }
+
+    return sequence.every((line, offset) => lines[index + offset] === line);
+}
+
+function shouldDedupResolvedDiff(original: Diff, resolved: Diff): boolean {
+    return (
+        resolved !== original &&
+        (resolved.oldText !== original.oldText ||
+            resolved.newText !== original.newText)
+    );
+}
+
 export function resolveDiffToFullTexts(
     diff: Diff,
     existing: AiTrackedFile | undefined,
@@ -1373,6 +1775,37 @@ export function resolveDiffToFullTexts(
 
     const first = base.indexOf(oldSnippet);
     if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
+        if (!existing && first === -1) {
+            const resolvedFromUnifiedPatch =
+                resolveAlreadyAppliedUnifiedPatchDiff(
+                    { newText: newSnippet, oldText: oldSnippet },
+                    base,
+                    liveSession,
+                    normalizedPath,
+                    context?.rawOutput,
+                );
+            if (resolvedFromUnifiedPatch) {
+                return {
+                    ...diff,
+                    oldText: resolvedFromUnifiedPatch.oldText,
+                    newText: resolvedFromUnifiedPatch.newText,
+                };
+            }
+
+            const resolvedFromPreEditSnapshot =
+                resolveAlreadyAppliedPreEditSnapshotDiff(
+                    { newText: newSnippet, oldText: oldSnippet },
+                    base,
+                    context?.preEditSnapshot,
+                );
+            if (resolvedFromPreEditSnapshot) {
+                return {
+                    ...diff,
+                    oldText: resolvedFromPreEditSnapshot.oldText,
+                    newText: resolvedFromPreEditSnapshot.newText,
+                };
+            }
+        }
         if (
             existing &&
             (isClaudeEditReEmission(diff, existing, base, context) ||

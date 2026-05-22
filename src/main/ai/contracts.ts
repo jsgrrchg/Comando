@@ -205,6 +205,7 @@ export interface LiveAcpSession {
     pendingAdditionalRoots: readonly string[] | null;
     pendingLaunch: AiWorkerSessionLaunchInput | null;
     pendingPersistTimer: ReturnType<typeof setTimeout> | null;
+    preEditSnapshots: Map<string, string>;
     processedDiffPaths: Map<string, Set<string>>;
     projectRoot: string | null;
     resolvedRuntime: ResolvedAcpRuntime;

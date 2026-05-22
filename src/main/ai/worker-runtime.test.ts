@@ -2583,6 +2583,61 @@ describe("AiWorkerRuntime prepareSession", () => {
         );
     });
 
+    it("uses a pre-edit read snapshot for snippet-only external edits", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("OpenCode external snippet");
+        const targetPath = path.join(tempDir, "notes.md");
+        const originalContent = ["alpha", "remove me", "omega"].join("\n");
+        const nextContent = ["alpha", "omega"].join("\n");
+
+        await fs.writeFile(targetPath, originalContent, "utf8");
+        await expect(
+            client.readTextFile({
+                line: 2,
+                limit: 1,
+                path: "notes.md",
+            }),
+        ).resolves.toEqual({
+            content: "remove me",
+        });
+        await fs.writeFile(targetPath, nextContent, "utf8");
+
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: [
+                    {
+                        newText: "",
+                        oldText: "remove me\n",
+                        path: "notes.md",
+                        type: "diff",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Edited notes.md",
+                toolCallId: "opencode-external-edit",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const trackedFile = getLatestTrackedFiles(
+                emittedEvents,
+                "session-1",
+            )?.find((candidate) => candidate.path === "notes.md");
+            expect(trackedFile).toEqual(
+                expect.objectContaining({
+                    currentText: nextContent,
+                    diffBase: originalContent,
+                    newText: nextContent,
+                    oldText: originalContent,
+                    toolCallId: "opencode-external-edit",
+                }),
+            );
+        });
+    });
+
     it("writes directly to additional roots inside the allowed scope", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -3079,6 +3134,161 @@ describe("AiWorkerRuntime prepareSession", () => {
                 trackedFiles: [],
             }),
         });
+    });
+
+    it("refuses to reject a snippet-only tracked file over a larger disk file", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const filePath = path.join(tempDir, "notes.md");
+        const diskText = "alpha\nremove me\nomega\n";
+        await fs.writeFile(filePath, diskText, "utf8");
+        const runtime = createRuntime();
+        const trackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks("remove me\n", "", "notes.md"),
+            identityKey: "notes.md",
+            isText: true,
+            kind: "update",
+            newText: "",
+            oldText: "remove me\n",
+            path: "notes.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Snippet review safety test",
+        }).persistedSnapshot;
+
+        await expect(
+            runtime.dispatchMethod("ai.rejectTrackedFile", {
+                context: {
+                    additionalRoots: [],
+                    cwd: tempDir,
+                    ownerWindowId: "",
+                    projectRoot: tempDir,
+                    snapshot: {
+                        ...snapshot,
+                        trackedFiles: [trackedFile],
+                    },
+                },
+                input: {
+                    path: "notes.md",
+                    sessionId: "session-1",
+                },
+            }),
+        ).rejects.toThrow("Cannot safely apply this review change");
+
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe(diskText);
+    });
+
+    it("refuses reject-all when a tracked file is snippet-only", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const filePath = path.join(tempDir, "notes.md");
+        const diskText = "alpha\nremove me\nomega\n";
+        await fs.writeFile(filePath, diskText, "utf8");
+        const runtime = createRuntime();
+        const trackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks("remove me\n", "", "notes.md"),
+            identityKey: "notes.md",
+            isText: true,
+            kind: "update",
+            newText: "",
+            oldText: "remove me\n",
+            path: "notes.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Snippet reject-all safety test",
+        }).persistedSnapshot;
+
+        await expect(
+            runtime.dispatchMethod("ai.rejectAllTrackedFiles", {
+                context: {
+                    additionalRoots: [],
+                    cwd: tempDir,
+                    ownerWindowId: "",
+                    projectRoot: tempDir,
+                    snapshot: {
+                        ...snapshot,
+                        trackedFiles: [trackedFile],
+                    },
+                },
+                input: "session-1",
+            }),
+        ).rejects.toThrow("Cannot safely apply this review change");
+
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe(diskText);
+    });
+
+    it("refuses partial hunk rejection when the tracked file is snippet-only", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const filePath = path.join(tempDir, "notes.md");
+        const diskText = "alpha\nremove me\nomega\n";
+        await fs.writeFile(filePath, diskText, "utf8");
+        const runtime = createRuntime();
+        const hunks = computeDiffHunks("remove me\n", "", "notes.md");
+        const trackedFile: AiTrackedFile = {
+            hunks,
+            identityKey: "notes.md",
+            isText: true,
+            kind: "update",
+            newText: "",
+            oldText: "remove me\n",
+            path: "notes.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Snippet hunk review safety test",
+        }).persistedSnapshot;
+
+        await expect(
+            runtime.dispatchMethod("ai.rejectTrackedFileHunks", {
+                context: {
+                    additionalRoots: [],
+                    cwd: tempDir,
+                    ownerWindowId: "",
+                    projectRoot: tempDir,
+                    snapshot: {
+                        ...snapshot,
+                        trackedFiles: [trackedFile],
+                    },
+                },
+                input: {
+                    hunkIds: hunks.map((hunk) => hunk.id),
+                    path: "notes.md",
+                    sessionId: "session-1",
+                },
+            }),
+        ).rejects.toThrow("Cannot safely apply this review change");
+
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe(diskText);
     });
 
     it("applies partial hunk rejections inside additional roots", async () => {

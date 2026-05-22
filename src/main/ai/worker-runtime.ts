@@ -38,6 +38,7 @@ import {
 } from "@shared/ai-attachments";
 import {
     computeDiffHunks,
+    getTrackedFileCurrentText,
     replaceTrackedFile,
     resolveTrackedFileHunks,
     syncTrackedFile,
@@ -128,6 +129,8 @@ const CODEX_ACP_SUBAGENT_RESUME_BEGIN_EVENT_TYPE = "resume_begin";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE = "resume_end";
 const CODEX_ACP_SUBAGENT_WAITING_END_EVENT_TYPE = "waiting_end";
 const MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION = 16;
+const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
+const PRE_EDIT_SNAPSHOT_MAX_BYTES = 5 * 1024 * 1024;
 
 function setDesiredConfigValue(
     values: Map<string, boolean | string>,
@@ -375,6 +378,7 @@ export class AiWorkerRuntime {
             throw new Error("Type a prompt before sending it.");
         }
 
+        liveSession.preEditSnapshots.clear();
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: now,
@@ -610,7 +614,11 @@ export class AiWorkerRuntime {
             if (!nextTrackedFile) {
                 await this.#revertTrackedFile(session, trackedFile);
             } else if (nextTrackedFile.newText !== null) {
-                await this.#applyTrackedFileText(session, nextTrackedFile);
+                await this.#applyTrackedFileText(
+                    session,
+                    nextTrackedFile,
+                    trackedFile,
+                );
             }
 
             session.snapshot = {
@@ -1090,6 +1098,7 @@ export class AiWorkerRuntime {
             },
             terminals: new Map(),
             terminalOutputBuffers: new Map(),
+            preEditSnapshots: new Map(),
             stderrChunks: [],
             stderrHandler: null,
         } satisfies LiveAcpSession);
@@ -1477,6 +1486,7 @@ export class AiWorkerRuntime {
             pendingPermission: null,
             pendingPermissions: new Map(),
             pendingPersistTimer: null,
+            preEditSnapshots: new Map(),
             processedDiffPaths: new Map(),
             projectRoot: parentSession.projectRoot,
             resolvedRuntime: liveConnection.resolvedRuntime,
@@ -1799,6 +1809,7 @@ export class AiWorkerRuntime {
         turnId: string | null,
         updatedAt: string,
     ): void {
+        liveSession.preEditSnapshots.clear();
         liveSession.activeTurnId = turnId;
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
@@ -2127,13 +2138,21 @@ export class AiWorkerRuntime {
         liveSession: LiveAcpSession,
         params: ReadTextFileRequest,
     ): Promise<{ content: string }> {
-        const absolutePath = this.#resolveReadableSessionPath(
+        const resolvedPath = this.#resolveSessionPathInfo(
             liveSession,
             params.path,
+            {
+                allowAdditionalRoots: true,
+            },
         );
         const fullContent =
-            this.#fileBuffers.get(absolutePath) ??
-            (await fs.promises.readFile(absolutePath, "utf8"));
+            this.#fileBuffers.get(resolvedPath.absolutePath) ??
+            (await fs.promises.readFile(resolvedPath.absolutePath, "utf8"));
+        this.#rememberPreEditSnapshot(
+            liveSession,
+            resolvedPath.relativePath ?? resolvedPath.displayPath,
+            fullContent,
+        );
 
         if (!params.line && !params.limit) {
             return {
@@ -2164,6 +2183,13 @@ export class AiWorkerRuntime {
         const previousContent =
             this.#fileBuffers.get(resolvedPath.absolutePath) ??
             (await readTextIfExists(resolvedPath.absolutePath));
+        if (previousContent !== null) {
+            this.#rememberPreEditSnapshot(
+                liveSession,
+                resolvedPath.relativePath ?? resolvedPath.displayPath,
+                previousContent,
+            );
+        }
 
         await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
             recursive: true,
@@ -2447,6 +2473,7 @@ export class AiWorkerRuntime {
             pendingPermission: null,
             pendingPermissions: new Map(),
             pendingPersistTimer: null,
+            preEditSnapshots: new Map(),
             processedDiffPaths: new Map(),
             projectRoot: context.projectRoot,
             resolvedRuntime: {
@@ -2494,6 +2521,11 @@ export class AiWorkerRuntime {
                 trackedFile.previousPath,
             );
 
+            await this.#assertTrackedFileCurrentState(
+                nextPath.absolutePath,
+                trackedFile,
+            );
+
             if (trackedFile.oldText !== null) {
                 await fs.promises.mkdir(path.dirname(previousPath.absolutePath), {
                     recursive: true,
@@ -2517,6 +2549,11 @@ export class AiWorkerRuntime {
         const resolvedPath = this.#resolveWritableSessionPathInfo(
             liveSession,
             trackedFile.path,
+        );
+
+        await this.#assertTrackedFileCurrentState(
+            resolvedPath.absolutePath,
+            trackedFile,
         );
 
         if (trackedFile.kind === "create") {
@@ -2543,6 +2580,7 @@ export class AiWorkerRuntime {
     async #applyTrackedFileText(
         liveSession: LiveAcpSession,
         trackedFile: AiTrackedFile,
+        expectedCurrentState: AiTrackedFile = trackedFile,
     ): Promise<void> {
         if (trackedFile.newText === null) {
             return;
@@ -2551,6 +2589,11 @@ export class AiWorkerRuntime {
         const resolvedPath = this.#resolveWritableSessionPathInfo(
             liveSession,
             trackedFile.path,
+        );
+
+        await this.#assertTrackedFileCurrentState(
+            resolvedPath.absolutePath,
+            expectedCurrentState,
         );
 
         await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
@@ -2562,6 +2605,45 @@ export class AiWorkerRuntime {
             "utf8",
         );
         this.#fileBuffers.set(resolvedPath.absolutePath, trackedFile.newText);
+    }
+
+    async #assertTrackedFileCurrentState(
+        absolutePath: string,
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        const expectedCurrentText =
+            trackedFile.newText === null
+                ? null
+                : getTrackedFileCurrentText(trackedFile);
+
+        try {
+            const currentText = await fs.promises.readFile(
+                absolutePath,
+                "utf8",
+            );
+            if (
+                expectedCurrentText !== null &&
+                currentText === expectedCurrentText
+            ) {
+                return;
+            }
+        } catch (error) {
+            if (
+                isNodeError(error) &&
+                error.code === "ENOENT" &&
+                (expectedCurrentText === null || trackedFile.kind === "create")
+            ) {
+                return;
+            }
+
+            if (!isNodeError(error) || error.code !== "ENOENT") {
+                throw error;
+            }
+        }
+
+        throw new Error(
+            "Cannot safely apply this review change because the file no longer matches the reviewed content. Reopen the diff or rerun the agent before accepting or rejecting it.",
+        );
     }
 
     #markSnapshotExternallySynchronized(liveSession: LiveAcpSession): void {
@@ -3138,13 +3220,29 @@ export class AiWorkerRuntime {
         return liveSession.snapshot.runtimeSessionId;
     }
 
-    #resolveReadableSessionPath(
+    #rememberPreEditSnapshot(
         liveSession: LiveAcpSession,
-        candidatePath: string,
-    ): string {
-        return this.#resolveSessionPathInfo(liveSession, candidatePath, {
-            allowAdditionalRoots: true,
-        }).absolutePath;
+        trackedPath: string,
+        content: string,
+    ): void {
+        if (
+            liveSession.preEditSnapshots.has(trackedPath) ||
+            Buffer.byteLength(content, "utf8") > PRE_EDIT_SNAPSHOT_MAX_BYTES
+        ) {
+            return;
+        }
+
+        while (
+            liveSession.preEditSnapshots.size >= PRE_EDIT_SNAPSHOT_MAX_ENTRIES
+        ) {
+            const oldestKey = liveSession.preEditSnapshots.keys().next().value;
+            if (typeof oldestKey !== "string") {
+                break;
+            }
+            liveSession.preEditSnapshots.delete(oldestKey);
+        }
+
+        liveSession.preEditSnapshots.set(trackedPath, content);
     }
 
     #resolveWritableSessionPathInfo(
@@ -3983,4 +4081,8 @@ function stringifyJson(value: unknown): string | null {
 
 function isRecordValue(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+    return typeof error === "object" && error !== null && "code" in error;
 }

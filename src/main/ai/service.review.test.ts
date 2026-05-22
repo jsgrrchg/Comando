@@ -619,6 +619,108 @@ describe("resolveDiffToFullTexts", () => {
         expect(resolved.newText).toBe("new");
     });
 
+    it("uses a pre-edit snapshot when a snippet diff was already applied externally", () => {
+        const originalContent = "alpha\nremove me\nomega\n";
+        const nextContent = "alpha\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "remove me\n",
+                newText: "",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                preEditSnapshot: originalContent,
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("uses OpenCode filediff patches when a snippet diff was already applied externally", () => {
+        const originalContent = "alpha\nbeta\nremove me\nomega\n";
+        const nextContent = "alpha\nbeta\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "remove me\n",
+                newText: "",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                rawOutput: {
+                    metadata: {
+                        filediff: {
+                            file: absolutePath,
+                            patch: [
+                                `Index: ${absolutePath}`,
+                                "===================================================================",
+                                `--- ${absolutePath}`,
+                                `+++ ${absolutePath}`,
+                                "@@ -1,4 +1,3 @@",
+                                " alpha",
+                                " beta",
+                                "-remove me",
+                                " omega",
+                                "",
+                            ].join("\n"),
+                        },
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("does not use an ambiguous pre-edit snapshot for external snippet diffs", () => {
+        const originalContent = "alpha\nremove me\nomega\nremove me\nend\n";
+        const nextContent = "alpha\nomega\nend\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "remove me\n",
+                newText: "",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                preEditSnapshot: originalContent,
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe("remove me\n");
+        expect(resolved.newText).toBe("");
+    });
+
     it("prefers the in-editor buffer over the disk when the file is open with unsaved changes", () => {
         const diskContent = "alpha\nbeta\ngamma\n";
         const bufferContent = "alpha\nbeta-WIP\ngamma\n";
@@ -773,6 +875,7 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
     function makeLiveSession() {
         return {
             cwd: tempDir,
+            preEditSnapshots: new Map<string, string>(),
             projectRoot: tempDir,
             processedDiffPaths: new Map<string, Set<string>>(),
             terminalOutputBuffers: new Map<string, string>(),
@@ -981,6 +1084,74 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
             20,
         ]);
         expect(liveSession.processedDiffPaths.has("edit-1")).toBe(false);
+    });
+
+    it("records complete OpenCode read output as a pre-edit snapshot", () => {
+        const absolutePath = path.join(tempDir, "foo.ts");
+        const originalContent = "alpha\nremove me\nomega\n";
+        const nextContent = "alpha\nomega\n";
+        fs.writeFileSync(absolutePath, originalContent, "utf8");
+        const liveSession = makeLiveSession();
+        const afterRead = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                kind: "read",
+                rawInput: {
+                    filePath: absolutePath,
+                },
+                rawOutput: {
+                    output: [
+                        `<path>${absolutePath}</path>`,
+                        "<type>file</type>",
+                        "<content>",
+                        "1: alpha",
+                        "2: remove me",
+                        "3: omega",
+                        "4: ",
+                        "",
+                        "(End of file - total 4 lines)",
+                        "</content>",
+                    ].join("\n"),
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Read foo.ts",
+                toolCallId: "read-1",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:01.000Z",
+        );
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+
+        const afterEdit = __testing.mapToolCallUpdate(
+            liveSession,
+            afterRead,
+            {
+                content: [
+                    {
+                        newText: "",
+                        oldText: "remove me\n",
+                        path: absolutePath,
+                        type: "diff",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Edited foo.ts",
+                toolCallId: "opencode-edit",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:02.000Z",
+        );
+
+        expect(afterEdit.trackedFiles[0]).toMatchObject({
+            newText: nextContent,
+            oldText: originalContent,
+            path: "foo.ts",
+            toolCallId: "opencode-edit",
+        });
     });
 
     it("records the active turn start from Codex status turn activities", () => {
