@@ -1,26 +1,27 @@
 # ACP (Agent Client Protocol) — Architecture Reference
 
-Comando currently integrates four AI runtimes through the Agent Client Protocol:
+Comando currently integrates five AI runtimes through the Agent Client Protocol:
 
 - **Claude**
 - **Codex**
 - **Gemini**
 - **Kilo**
+- **OpenCode**
 
-All four communicate with the app over ACP / JSON-RPC on stdio.
+All five communicate with the app over ACP / JSON-RPC on stdio.
 
 ---
 
 ## Runtimes at a Glance
 
-| | Claude | Codex | Gemini | Kilo |
-|---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.35.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.15.0`, vendored on top of `openai/codex` `rust-v0.133.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
-| **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` |
-| **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today |
-| **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` |
-| **Runtime discovery** | env, settings, vendor JS, embedded bundle, PATH fallback | env, settings, bundled binary, embedded target cache, legacy vendor target cache, PATH fallback | env, settings, PATH | env, settings, PATH |
-| **Notes** | Debug builds prefer vendored JS directly. Gateway auth is supported. | Detects and rejects plain `codex` CLI because current integration still expects ACP. | Login readiness is inferred from `~/.gemini/settings.json`. | Login readiness is inferred from system-level Kilo auth stores (`XDG_DATA_HOME`, `LOCALAPPDATA`, `~/.local/share`). |
+| | Claude | Codex | Gemini | Kilo | OpenCode |
+|---|---|---|---|---|---|
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.35.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.15.0`, vendored on top of `openai/codex` `rust-v0.133.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary | External OpenCode CLI binary |
+| **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` | `opencode acp` |
+| **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today | Not bundled today |
+| **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` | `opencode-login` |
+| **Runtime discovery** | env, settings, vendor JS, embedded bundle, PATH fallback | env, settings, bundled binary, embedded target cache, legacy vendor target cache, PATH fallback | env, settings, PATH | env, settings, PATH | env, settings, PATH |
+| **Notes** | Debug builds prefer vendored JS directly. Gateway auth is supported. | Detects and rejects plain `codex` CLI because current integration still expects ACP. | Login readiness is inferred from `~/.gemini/settings.json`. | Login readiness is inferred from system-level Kilo auth stores (`XDG_DATA_HOME`, `LOCALAPPDATA`, `~/.local/share`). | Auth is owned by the OpenCode CLI. Comando treats `OPENCODE_API_KEY`, `auth.json`, and selected external auth as valid setup signals without storing OpenCode secrets. |
 
 Notes:
 
@@ -31,7 +32,7 @@ Notes:
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - The vendored Codex ACP snapshot also carries a local image-generation bridge: live Codex `ImageGenerationBegin` / `ImageGenerationEnd` events and replayed `ResponseItem::ImageGenerationCall` items are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity. `TurnItem::ImageGeneration` is intentionally ignored for the live bridge because Codex also emits the begin/end events, and handling both would duplicate image cards.
 - The current Codex vendor also carries compatibility glue for the `rust-v0.133.0` runtime API shape, including state DB/thread-store wiring, installation IDs, async auth reload/logout, permission-profile modes, newer event payloads, and local custom prompt handling.
-- Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
+- Gemini, Kilo and OpenCode are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Status metadata currently uses `codexAcp*` names while Comando keeps app-branded `comando*` aliases for compatibility paths it owns.
 
 ---
@@ -64,6 +65,7 @@ Credential precedence is runtime-specific:
 | Gemini | `use_gemini` | `GEMINI_API_KEY`/`GOOGLE_API_KEY` environment variables, then Comando-managed secrets |
 | Gemini | `login_with_google` | External Gemini CLI login |
 | Kilo | `kilo-login` | External Kilo auth stores |
+| OpenCode | `opencode-login` | External OpenCode auth state, `OPENCODE_API_KEY`, provider env vars, project `.env`, or providers configured with `/connect` |
 
 Comando stores secrets through Electron `safeStorage`. On macOS this delegates protection to Keychain, on Windows to DPAPI, and on Linux to the selected keyring backend. Linux `basic_text` and `unknown` backends are treated as weak: Comando still reads existing secrets best-effort for compatibility, but blocks new secret writes and reports the storage warning through runtime status.
 
@@ -145,6 +147,33 @@ so the effective command is:
 kilo acp
 ```
 
+### OpenCode (`opencode/setup.ts` → `resolveOpenCodeBinary`)
+
+1. `COMANDO_OPENCODE_ACP_BIN`
+2. Custom path from settings
+3. `opencode` in PATH
+4. On macOS, common Homebrew installs such as `/opt/homebrew/bin/opencode` and `/usr/local/bin/opencode`
+
+When spawned, Comando appends:
+
+```text
+acp
+```
+
+so the effective command is:
+
+```text
+opencode acp
+```
+
+OpenCode auth remains external to Comando. The primary setup flow opens:
+
+```text
+opencode auth login
+```
+
+Comando also treats `OPENCODE_API_KEY` as an external environment credential. It does not persist an OpenCode API key in V1, and disconnecting OpenCode from Comando only clears the selected Comando auth method and invalidates the local readiness marker; it does not delete OpenCode CLI credentials.
+
 ---
 
 ## Binary Staging (build-time)
@@ -163,7 +192,7 @@ Today `stage:ai` stages:
 - **Codex**
 - **Claude**
 
-It does **not** stage Gemini or Kilo.
+It does **not** stage Gemini, Kilo, or OpenCode.
 
 ### Codex staging (`scripts/ai/stage-codex-runtime.mjs`)
 
