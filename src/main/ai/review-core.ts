@@ -1301,6 +1301,38 @@ function isClaudeEditReEmission(
     return newSnippet.length === 0 || base.includes(newSnippet);
 }
 
+function isAlreadyAppliedSnippetDiff(
+    diff: { readonly newText: string; readonly oldText: string },
+    existing: AiTrackedFile | undefined,
+    base: string,
+    context: DiffResolutionContext | undefined,
+): boolean {
+    if (!existing || !context) {
+        return false;
+    }
+
+    if (existing.toolCallId && existing.toolCallId !== context.toolCallId) {
+        return false;
+    }
+
+    const oldSnippet = diff.oldText;
+    const newSnippet = diff.newText;
+    if (oldSnippet.length === 0 && newSnippet.length === 0) {
+        return false;
+    }
+
+    if (oldSnippet.length > 0 && base.includes(oldSnippet)) {
+        return false;
+    }
+
+    const diffBase = getTrackedFileDiffBase(existing);
+    if (oldSnippet.length > 0 && !diffBase.includes(oldSnippet)) {
+        return false;
+    }
+
+    return newSnippet.length === 0 || base.includes(newSnippet);
+}
+
 export function resolveDiffToFullTexts(
     diff: Diff,
     existing: AiTrackedFile | undefined,
@@ -1341,7 +1373,16 @@ export function resolveDiffToFullTexts(
 
     const first = base.indexOf(oldSnippet);
     if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
-        if (existing && isClaudeEditReEmission(diff, existing, base, context)) {
+        if (
+            existing &&
+            (isClaudeEditReEmission(diff, existing, base, context) ||
+                isAlreadyAppliedSnippetDiff(
+                    { newText: newSnippet, oldText: oldSnippet },
+                    existing,
+                    base,
+                    context,
+                ))
+        ) {
             return {
                 ...diff,
                 oldText: getTrackedFileDiffBase(existing),

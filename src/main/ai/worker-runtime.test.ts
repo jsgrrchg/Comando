@@ -2521,6 +2521,68 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).resolves.toBe("worker-write");
     });
 
+    it("keeps full-file review state when a runtime re-emits an already-applied snippet diff", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("OpenCode snippet replay");
+        const targetPath = path.join(tempDir, "notes.md");
+        const originalContent = [
+            "alpha",
+            "**ALIANZA: PROVISORIA**",
+            "**INTERFAZ: MANIFIESTA DEUDA**",
+            "omega",
+        ].join("\n");
+        const nextContent = ["alpha", "omega"].join("\n");
+        const removedSnippet = [
+            "**ALIANZA: PROVISORIA**",
+            "**INTERFAZ: MANIFIESTA DEUDA**",
+        ].join("\n");
+
+        await fs.writeFile(targetPath, originalContent, "utf8");
+        await client.writeTextFile({
+            content: nextContent,
+            path: targetPath,
+        });
+        emittedEvents.length = 0;
+
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: [
+                    {
+                        newText: "",
+                        oldText: removedSnippet,
+                        path: targetPath,
+                        type: "diff",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Edited notes.md",
+                toolCallId: "opencode-edit",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const trackedFile = getLatestTrackedFiles(
+                emittedEvents,
+                "session-1",
+            )?.find((candidate) => candidate.path === "notes.md");
+            expect(trackedFile).toEqual(
+                expect.objectContaining({
+                    currentText: nextContent,
+                    diffBase: originalContent,
+                    newText: nextContent,
+                    oldText: originalContent,
+                    toolCallId: "opencode-edit",
+                }),
+            );
+        });
+        await expect(fs.readFile(targetPath, "utf8")).resolves.toBe(
+            nextContent,
+        );
+    });
+
     it("writes directly to additional roots inside the allowed scope", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
