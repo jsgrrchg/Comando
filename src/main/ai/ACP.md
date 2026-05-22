@@ -172,7 +172,7 @@ OpenCode auth remains external to Comando. The primary setup flow opens:
 opencode auth login
 ```
 
-Comando also treats `OPENCODE_API_KEY` as an external environment credential. It does not persist an OpenCode API key in V1, and disconnecting OpenCode from Comando only clears the selected Comando auth method and invalidates the local readiness marker; it does not delete OpenCode CLI credentials.
+Comando also treats `OPENCODE_API_KEY` and common provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `CODEX_API_KEY`) as external environment credentials for OpenCode readiness. It does not persist an OpenCode API key in V1, and disconnecting OpenCode from Comando only clears the selected Comando auth method and invalidates the local readiness marker; it does not delete OpenCode CLI credentials.
 
 ---
 
@@ -695,6 +695,11 @@ On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` a
 | `GOOGLE_CLOUD_LOCATION` | Gemini process | Google Cloud location hint |
 | `GEMINI_DEFAULT_AUTH_TYPE` | Gemini process | Default Gemini auth mode |
 | `OPENCODE_API_KEY` | OpenCode process | External OpenCode API key recognized by diagnostics/status but not stored by Comando |
+| `OPENAI_API_KEY` | OpenCode process | Provider API key recognized by OpenCode readiness when OpenCode owns provider selection |
+| `ANTHROPIC_API_KEY` | OpenCode process | Provider API key recognized by OpenCode readiness when OpenCode owns provider selection |
+| `GEMINI_API_KEY` | OpenCode process | Provider API key recognized by OpenCode readiness when OpenCode owns provider selection |
+| `GOOGLE_API_KEY` | OpenCode process | Provider API key recognized by OpenCode readiness when OpenCode owns provider selection |
+| `CODEX_API_KEY` | OpenCode process | Provider API key recognized by OpenCode readiness when OpenCode owns provider selection |
 | `NO_BROWSER` | Claude/Codex auth UX | Forces remote-style Claude auth behavior and hides the Codex ChatGPT browser login option |
 | `SSH_CONNECTION` | Claude auth UX | Marks the environment as remote |
 | `SSH_CLIENT` | Claude auth UX | Marks the environment as remote |

@@ -1082,7 +1082,7 @@ function mapEnvironmentDiagnostics(
             ),
             ...diagnostics.credentialEnvironment.map(
                 (credential): AiProviderDiagnosticEntry => ({
-                id: `credential-${credential.name}`,
+                id: `credential-${credential.runtimeId}-${credential.name}`,
                 label: credential.name,
                 message: credential.present
                     ? "Environment credential is present."
