@@ -28,6 +28,8 @@ import type {
     GeminiRuntimeSettingsInput,
     KiloRuntimeSettings,
     KiloRuntimeSettingsInput,
+    OpenCodeRuntimeSettings,
+    OpenCodeRuntimeSettingsInput,
     SecretValuePatch,
 } from "@shared/ipc";
 import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
@@ -131,6 +133,7 @@ interface AiStore {
     readonly codexSettings: CodexRuntimeSettings;
     readonly geminiSettings: GeminiRuntimeSettings;
     readonly kiloSettings: KiloRuntimeSettings;
+    readonly opencodeSettings: OpenCodeRuntimeSettings;
     readonly runtimeCatalogById: Partial<Record<AiRuntimeId, AiRuntimeCatalog>>;
     readonly runtimeStatusById: Partial<Record<AiRuntimeId, AiRuntimeStatus>>;
     readonly sessions: Record<string, AiSessionClientState>;
@@ -202,6 +205,9 @@ interface AiStore {
     saveKiloRuntimeSettings: (
         settings: KiloRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
+    saveOpenCodeRuntimeSettings: (
+        settings: OpenCodeRuntimeSettingsInput,
+    ) => Promise<AiRuntimeStatus>;
     saveCodexRuntimeSettings: (
         settings: CodexRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
@@ -252,6 +258,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     codexSettings: createEmptyCodexSettings(),
     geminiSettings: createEmptyGeminiSettings(),
     kiloSettings: createEmptyKiloSettings(),
+    opencodeSettings: createEmptyOpenCodeSettings(),
     runtimeCatalogById: {},
     runtimeStatusById: {},
     sessions: {},
@@ -816,6 +823,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
             codexSettings: settings?.codex ?? createEmptyCodexSettings(),
             geminiSettings: settings?.gemini ?? createEmptyGeminiSettings(),
             kiloSettings: settings?.kilo ?? createEmptyKiloSettings(),
+            opencodeSettings:
+                settings?.opencode ?? createEmptyOpenCodeSettings(),
         });
     },
 
@@ -1090,6 +1099,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
             codexSettings: snapshot.ai?.codex ?? state.codexSettings,
             geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
             kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
+            opencodeSettings:
+                snapshot.ai?.opencode ?? state.opencodeSettings,
             runtimeStatusById: {
                 ...state.runtimeStatusById,
                 [input.runtimeId]: status,
@@ -1108,6 +1119,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
             codexSettings: snapshot.ai?.codex ?? state.codexSettings,
             geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
             kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
+            opencodeSettings:
+                snapshot.ai?.opencode ?? state.opencodeSettings,
             runtimeStatusById: {
                 ...state.runtimeStatusById,
                 [input.runtimeId]: status,
@@ -1208,6 +1221,23 @@ export const useAiStore = create<AiStore>((set, get) => ({
             runtimeStatusById: {
                 ...state.runtimeStatusById,
                 kilo: status,
+            },
+        }));
+
+        return status;
+    },
+
+    saveOpenCodeRuntimeSettings: async (settings) => {
+        const status =
+            await getComandoApi().saveOpenCodeRuntimeSettings(settings);
+        const snapshot = await getComandoApi().getSettingsSnapshot();
+
+        set((state) => ({
+            opencodeSettings:
+                snapshot.ai?.opencode ?? state.opencodeSettings,
+            runtimeStatusById: {
+                ...state.runtimeStatusById,
+                opencode: status,
             },
         }));
 
@@ -1635,6 +1665,14 @@ function createEmptyKiloSettings(): KiloRuntimeSettings {
         authMethod: null,
         binaryPath: null,
         hasKiloApiKey: false,
+    };
+}
+
+function createEmptyOpenCodeSettings(): OpenCodeRuntimeSettings {
+    return {
+        authInvalidatedAtMs: null,
+        authMethod: null,
+        binaryPath: null,
     };
 }
 
@@ -2538,6 +2576,8 @@ function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
             return "Gemini";
         case "kilo":
             return "Kilo";
+        case "opencode":
+            return "OpenCode";
         case "codex":
         default:
             return "Codex";

@@ -18,6 +18,7 @@ import type {
     GeminiRuntimeSettingsInput,
     GitHubAuthStatus,
     KiloRuntimeSettingsInput,
+    OpenCodeRuntimeSettingsInput,
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
@@ -71,6 +72,7 @@ export function SettingsApp() {
         codex: null,
         gemini: null,
         kilo: null,
+        opencode: null,
     });
     const [runtimeSettings, setRuntimeSettings] =
         useState<AiSettingsSnapshot | null>(null);
@@ -133,13 +135,14 @@ export function SettingsApp() {
             return;
         }
 
-        const [settingsSnapshot, codex, claude, gemini, kilo] =
+        const [settingsSnapshot, codex, claude, gemini, kilo, opencode] =
             await Promise.all([
                 window.comando.getSettingsSnapshot(),
                 window.comando.getAiRuntimeStatus("codex"),
                 window.comando.getAiRuntimeStatus("claude"),
                 window.comando.getAiRuntimeStatus("gemini"),
                 window.comando.getAiRuntimeStatus("kilo"),
+                window.comando.getAiRuntimeStatus("opencode"),
             ]);
 
         setRuntimeSettings(settingsSnapshot.ai ?? null);
@@ -148,6 +151,7 @@ export function SettingsApp() {
             codex,
             gemini,
             kilo,
+            opencode,
         });
     }, []);
 
@@ -528,6 +532,10 @@ export function SettingsApp() {
                 case "kilo":
                     return await window.comando.saveKiloRuntimeSettings(
                         settings as KiloRuntimeSettingsInput,
+                    );
+                case "opencode":
+                    return await window.comando.saveOpenCodeRuntimeSettings(
+                        settings as OpenCodeRuntimeSettingsInput,
                     );
             }
         },
@@ -973,6 +981,8 @@ function getRuntimeName(runtimeId: AiRuntimeId): string {
             return "Gemini";
         case "kilo":
             return "Kilo";
+        case "opencode":
+            return "OpenCode";
         case "codex":
         default:
             return "Codex";

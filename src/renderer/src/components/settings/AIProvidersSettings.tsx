@@ -31,6 +31,7 @@ import {
     type CodexProviderAuthMethodId,
     type GeminiProviderAuthMethodId,
     type KiloProviderAuthMethodId,
+    type OpenCodeProviderAuthMethodId,
 } from "./aiProviderSettingsModel";
 
 export interface AIProvidersSettingsProps {
@@ -60,6 +61,7 @@ interface ProviderDrafts {
     readonly codex: CodexProviderDraft;
     readonly gemini: GeminiProviderDraft;
     readonly kilo: KiloProviderDraft;
+    readonly opencode: OpenCodeProviderDraft;
 }
 
 interface CodexProviderDraft {
@@ -92,6 +94,11 @@ interface KiloProviderDraft {
     readonly authMethod: KiloProviderAuthMethodId | null;
     readonly binaryPath: string;
     readonly kiloApiKey: AiProviderSecretDraft;
+}
+
+interface OpenCodeProviderDraft {
+    readonly authMethod: OpenCodeProviderAuthMethodId | null;
+    readonly binaryPath: string;
 }
 
 const PROVIDER_CARD_STYLE: CSSProperties = {
@@ -286,6 +293,15 @@ export function AIProvidersSettings({
                     kiloApiKey: createEmptySecretDraft(),
                 },
             }));
+        });
+    };
+
+    const saveOpenCode = () => {
+        runProviderAction("opencode", async () => {
+            await onSaveProviderSettings?.("opencode", {
+                authMethod: drafts.opencode.authMethod,
+                binaryPath: normalizeNullableText(drafts.opencode.binaryPath),
+            });
         });
     };
 
@@ -635,6 +651,71 @@ export function AIProvidersSettings({
                         ),
                         providerId: "kilo",
                         save: saveKilo,
+                    })}
+                </ProviderCard>
+
+                <ProviderCard
+                    error={
+                        errorByProviderId?.opencode ?? localErrors.opencode
+                    }
+                    expanded={expandedProviderIds.has("opencode")}
+                    methodId={resolveMethodId(
+                        "opencode",
+                        drafts.opencode.authMethod,
+                        runtimeStatuses?.opencode,
+                    )}
+                    providerId="opencode"
+                    status={runtimeStatuses?.opencode ?? null}
+                    onToggle={() => toggleExpanded("opencode")}
+                >
+                    <CommonFields
+                        binaryPath={drafts.opencode.binaryPath}
+                        binaryPathPlaceholder="Custom OpenCode runtime path, for example opencode"
+                        notice={getRuntimeNotice(runtimeStatuses?.opencode)}
+                        onBinaryPathChange={(binaryPath) =>
+                            setDrafts((current) => ({
+                                ...current,
+                                opencode: {
+                                    ...current.opencode,
+                                    binaryPath,
+                                },
+                            }))
+                        }
+                    />
+                    <MethodPicker
+                        methods={getAvailableProviderMethods(
+                            "opencode",
+                            runtimeStatuses?.opencode,
+                        )}
+                        value={resolveMethodId(
+                            "opencode",
+                            drafts.opencode.authMethod,
+                            runtimeStatuses?.opencode,
+                        )}
+                        onChange={(authMethod) =>
+                            setDrafts((current) => ({
+                                ...current,
+                                opencode: {
+                                    ...current.opencode,
+                                    authMethod,
+                                },
+                            }))
+                        }
+                    />
+                    <InfoNote>
+                        OpenCode uses providers and credentials configured by
+                        the OpenCode CLI. Run OpenCode auth login, use /connect
+                        in OpenCode, set environment variables, or rely on a
+                        project .env.
+                    </InfoNote>
+                    {renderActions({
+                        methodId: resolveMethodId(
+                            "opencode",
+                            drafts.opencode.authMethod,
+                            runtimeStatuses?.opencode,
+                        ),
+                        providerId: "opencode",
+                        save: saveOpenCode,
                     })}
                 </ProviderCard>
             </div>
@@ -1709,6 +1790,7 @@ function createInitialDrafts(
     const codexAuthMethod = settings?.codex?.authMethod;
     const geminiAuthMethod = settings?.gemini?.authMethod;
     const kiloAuthMethod = settings?.kilo?.authMethod;
+    const opencodeAuthMethod = settings?.opencode?.authMethod;
 
     return {
         claude: {
@@ -1746,6 +1828,12 @@ function createInitialDrafts(
                 : null,
             binaryPath: settings?.kilo?.binaryPath ?? "",
             kiloApiKey: createEmptySecretDraft(),
+        },
+        opencode: {
+            authMethod: isMethodIdForProvider("opencode", opencodeAuthMethod)
+                ? opencodeAuthMethod
+                : null,
+            binaryPath: settings?.opencode?.binaryPath ?? "",
         },
     };
 }

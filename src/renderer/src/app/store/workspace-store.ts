@@ -90,6 +90,7 @@ export type WorkspaceQuickCreateAction =
     | "git"
     | "history"
     | "kilo"
+    | "opencode"
     | "file"
     | "terminal";
 
@@ -485,14 +486,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         runtimeId: AiRuntimeId = "codex",
     ) => {
         const paneId = get().activePaneId;
-        const runtimeTitle =
-            runtimeId === "claude"
-                ? "Claude"
-                : runtimeId === "gemini"
-                  ? "Gemini"
-                  : runtimeId === "kilo"
-                    ? "Kilo"
-                    : "Codex";
+        const runtimeTitle = getRuntimeDisplayName(runtimeId);
         const tab: WorkspaceChatTab = {
             createdAt: new Date().toISOString(),
             draft: "",
@@ -3033,6 +3027,22 @@ function countRuntimeChatTabs(
     return Object.values(get().tabsById).filter(
         (tab) => tab.kind === "chat" && tab.runtimeId === runtimeId,
     ).length;
+}
+
+function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
+    switch (runtimeId) {
+        case "claude":
+            return "Claude";
+        case "gemini":
+            return "Gemini";
+        case "kilo":
+            return "Kilo";
+        case "opencode":
+            return "OpenCode";
+        case "codex":
+        default:
+            return "Codex";
+    }
 }
 
 function getFileTitle(relativePath: string): string {

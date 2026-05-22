@@ -74,7 +74,7 @@ function createWorkspaceFileTab(id: string, relativePath: string) {
 function createWorkspaceChatTab(
     id: string,
     sessionId: string,
-    runtimeId: "claude" | "codex" | "gemini" | "kilo",
+    runtimeId: "claude" | "codex" | "gemini" | "kilo" | "opencode",
 ) {
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
@@ -221,6 +221,25 @@ describe("workspace file opening", () => {
             true,
         );
         vi.unstubAllGlobals();
+    });
+
+    it("creates OpenCode chat tabs with OpenCode titles", async () => {
+        await useWorkspaceStore
+            .getState()
+            .createChatTab("project-1", null, "opencode");
+
+        const state = useWorkspaceStore.getState();
+        const chatTab = Object.values(state.tabsById).find(
+            (tab) => tab.kind === "chat" && tab.runtimeId === "opencode",
+        );
+
+        expect(chatTab).toMatchObject({
+            kind: "chat",
+            runtimeId: "opencode",
+            title: "OpenCode 1",
+        });
+        expect(state.lastFocusedRuntimeId).toBe("opencode");
+        expect(state.lastQuickCreateAction).toBe("opencode");
     });
 
     it("opens a file in the requested pane instead of the globally active pane", async () => {

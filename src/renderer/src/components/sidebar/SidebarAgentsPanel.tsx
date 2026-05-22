@@ -85,6 +85,7 @@ const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
     "claude",
     "gemini",
     "kilo",
+    "opencode",
 ];
 const SIDEBAR_AGENT_DRAG_THRESHOLD_PX = 6;
 
