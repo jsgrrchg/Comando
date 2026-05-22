@@ -60,8 +60,8 @@ use codex_protocol::{
         ImageGenerationEndEvent, ItemCompletedEvent, ItemStartedEvent, McpInvocation,
         McpStartupCompleteEvent, McpStartupUpdateEvent, McpToolCallBeginEvent, McpToolCallEndEvent,
         ModelRerouteEvent, NetworkApprovalContext, NetworkPolicyRuleAction, Op,
-        PatchApplyBeginEvent, PatchApplyEndEvent, PatchApplyStatus, PlanDeltaEvent,
-        ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent, ReviewDecision,
+        PatchApplyBeginEvent, PatchApplyEndEvent, PatchApplyStatus, PatchApplyUpdatedEvent,
+        PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent, ReviewDecision,
         ReviewOutputEvent, ReviewRequest, ReviewTarget, RolloutItem, StreamErrorEvent,
         TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent,
         ThreadSettingsOverrides, TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent,
@@ -1550,13 +1550,13 @@ impl PromptState {
                         _ => RequestPermissionsResponse {
                             permissions: RequestPermissionProfile::default(),
                             scope: PermissionGrantScope::Turn,
-                            strict_auto_review: false,
+                            strict_auto_review: true,
                         },
                     },
                     RequestPermissionOutcome::Cancelled | _ => RequestPermissionsResponse {
                         permissions: RequestPermissionProfile::default(),
                         scope: PermissionGrantScope::Turn,
-                        strict_auto_review: false,
+                        strict_auto_review: true,
                     },
                 };
 
@@ -1760,6 +1760,7 @@ impl PromptState {
             | EventMsg::McpToolCallEnd(..)
             | EventMsg::ApplyPatchApprovalRequest(..)
             | EventMsg::PatchApplyBegin(..)
+            | EventMsg::PatchApplyUpdated(..)
             | EventMsg::PatchApplyEnd(..)
             | EventMsg::TurnStarted(..)
             | EventMsg::TurnComplete(..)
@@ -2063,6 +2064,10 @@ impl PromptState {
                 );
                 self.start_patch_apply(client, event).await;
             }
+            EventMsg::PatchApplyUpdated(event) => {
+                info!("Patch apply updated: call_id={}", event.call_id);
+                self.update_patch_apply(client, event).await;
+            }
             EventMsg::PatchApplyEnd(event) => {
                 info!(
                     "Patch apply end: call_id={}, success={}",
@@ -2348,8 +2353,7 @@ impl PromptState {
             | EventMsg::ModelVerification(..)
             | EventMsg::GuardianWarning(..)
             | EventMsg::HookStarted(..)
-            | EventMsg::HookCompleted(..)
-            | EventMsg::PatchApplyUpdated(..) => {}
+            | EventMsg::HookCompleted(..) => {}
             e @ (EventMsg::RealtimeConversationListVoicesResponse(..)
             | EventMsg::DeprecationNotice(..)) => {
                 warn!("Unexpected event: {:?}", e);
@@ -2644,6 +2648,30 @@ impl PromptState {
                     .content(content.collect())
                     .raw_input(raw_input),
             )
+            .await;
+    }
+
+    async fn update_patch_apply(&self, client: &SessionClient, event: PatchApplyUpdatedEvent) {
+        let raw_input = serde_json::json!(&event);
+        let PatchApplyUpdatedEvent { call_id, changes } = event;
+
+        if changes.is_empty() {
+            return;
+        }
+
+        let (title, locations, content) = extract_tool_call_content_from_changes(changes);
+
+        client
+            .send_tool_call_update(ToolCallUpdate::new(
+                call_id,
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::InProgress)
+                    .title(title)
+                    .locations(locations)
+                    .content(content.collect::<Vec<_>>())
+                    .raw_input(raw_input),
+            ))
             .await;
     }
 

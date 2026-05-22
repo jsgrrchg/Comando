@@ -15,7 +15,7 @@ All four communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini | Kilo |
 |---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.35.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.14.0`, vendored on top of `openai/codex` `rust-v0.129.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.35.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.15.0`, vendored on top of `openai/codex` `rust-v0.133.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary |
 | **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today |
 | **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` |
@@ -27,10 +27,10 @@ Notes:
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
 - The vendored Claude ACP snapshot follows upstream reasoning support. Comando maps upstream `thought_level` and legacy `effort` config options into the UI's reasoning controls and keeps compatibility with older saved `effort_level` preferences.
 - The current Claude vendor is `@agentclientprotocol/claude-agent-acp` `0.35.0`, with `@anthropic-ai/claude-agent-sdk` `0.3.143`. Compared with the previous Comando baseline (`0.31.4`), it honors `availableModels` from Claude settings, emits real diffs when `Write` overwrites existing files, preserves task-notification result origins so autonomous followups do not incorrectly drive the user-turn lifecycle, resolves defaults through the Claude SDK settings engine, mirrors SDK task hooks into ACP plan updates, and renders local command stdout messages instead of dropping them.
-- The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.14.0`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.129.0` and `agent-client-protocol` `0.11.1`.
+- The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.15.0`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.133.0` and `agent-client-protocol` `0.12.1`.
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - The vendored Codex ACP snapshot also carries a local image-generation bridge: live Codex `ImageGenerationBegin` / `ImageGenerationEnd` events and replayed `ResponseItem::ImageGenerationCall` items are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity. `TurnItem::ImageGeneration` is intentionally ignored for the live bridge because Codex also emits the begin/end events, and handling both would duplicate image cards.
-- The current Codex vendor also carries compatibility glue for the `rust-v0.129.0` runtime API shape, including state DB/thread-store wiring, installation IDs, async auth reload/logout, permission-profile modes, newer event payloads, and local custom prompt handling.
+- The current Codex vendor also carries compatibility glue for the `rust-v0.133.0` runtime API shape, including state DB/thread-store wiring, installation IDs, async auth reload/logout, permission-profile modes, newer event payloads, and local custom prompt handling.
 - Gemini and Kilo are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Status metadata currently uses `codexAcp*` names while Comando keeps app-branded `comando*` aliases for compatibility paths it owns.
 
@@ -202,7 +202,7 @@ resources/ai/embedded/codex-acp/target/
 
 Current local snapshot note:
 
-- `vendor/codex-acp/` is currently based on `codex-acp` `0.14.0`, with vendored Rust runtime dependencies pinned to `openai/codex` `rust-v0.129.0` and `agent-client-protocol` `0.11.1`.
+- `vendor/codex-acp/` is currently based on `codex-acp` `0.15.0`, with vendored Rust runtime dependencies pinned to `openai/codex` `rust-v0.133.0` and `agent-client-protocol` `0.12.1`.
 - `vendor/codex-acp/` includes a local Fast Mode patch carried over into Comando, adding ACP `service_tier` config handling, `/fast` command support, and session `service_tier` rehydration.
 - `vendor/codex-acp/` includes a local generated-image patch. Live image generation begin/end events are converted into structured ACP tool call updates with `image_generation` metadata, preserving `status`, `path`, `result`, `revised_prompt`, and `error` fields for the Comando chat pipeline. Replay also maps stored `ImageGenerationCall` response items back into `codex-acp:image:` tool calls.
 - `vendor/codex-acp/` includes local subagent projection: spawned Codex child threads are registered as ACP sessions and parent-thread breadcrumbs are mirrored through `codex-acp:subagent:` tool updates.

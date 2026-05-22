@@ -10,4 +10,4 @@ Generated paths under here are build inputs, not source:
   - embedded Node plus the staged Claude ACP JavaScript project
 
 These outputs are prepared by the scripts in `scripts/ai/`.
-The current vendored Codex sidecar is built from `vendor/codex-acp` (`codex-acp` 0.14.0 on OpenAI Codex Rust `rust-v0.129.0`) and staged with `pnpm run stage:codex-runtime` or `pnpm run stage:ai`.
+The current vendored Codex sidecar is built from `vendor/codex-acp` (`codex-acp` 0.15.0 on OpenAI Codex Rust `rust-v0.133.0`) and staged with `pnpm run stage:codex-runtime` or `pnpm run stage:ai`.

@@ -735,6 +735,128 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("keeps concurrent ACP permission requests independently resolvable", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Concurrent permissions",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+
+        const firstPermissionPromise = client!.requestPermission({
+            options: [
+                {
+                    kind: "allow_once",
+                    name: "Allow first",
+                    optionId: "allow-first",
+                },
+            ],
+            sessionId: "runtime-session-1",
+            toolCall: {
+                rawInput: {
+                    command: "echo first",
+                },
+                status: "pending",
+                title: "First permission",
+                toolCallId: "first-tool",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(getLatestPendingPermission(emittedEvents)).toEqual(
+                expect.objectContaining({
+                    title: "First permission",
+                }),
+            );
+        });
+        const firstPermission = getLatestPendingPermission(emittedEvents);
+        expect(firstPermission).not.toBeNull();
+
+        const secondPermissionPromise = client!.requestPermission({
+            options: [
+                {
+                    kind: "allow_once",
+                    name: "Allow second",
+                    optionId: "allow-second",
+                },
+            ],
+            sessionId: "runtime-session-1",
+            toolCall: {
+                rawInput: {
+                    command: "echo second",
+                },
+                status: "pending",
+                title: "Second permission",
+                toolCallId: "second-tool",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(getLatestPendingPermission(emittedEvents)).toEqual(
+                expect.objectContaining({
+                    title: "Second permission",
+                }),
+            );
+        });
+        const secondPermission = getLatestPendingPermission(emittedEvents);
+        expect(secondPermission).not.toBeNull();
+
+        await runtime.dispatchMethod("ai.respondPermission", {
+            input: {
+                optionId: "allow-first",
+                requestId: firstPermission!.requestId,
+                sessionId: "session-1",
+            },
+        });
+
+        await expect(firstPermissionPromise).resolves.toMatchObject({
+            outcome: {
+                optionId: "allow-first",
+                outcome: "selected",
+            },
+        });
+        expect(getLatestPendingPermission(emittedEvents)).toEqual(
+            expect.objectContaining({
+                requestId: secondPermission!.requestId,
+                title: "Second permission",
+            }),
+        );
+
+        await runtime.dispatchMethod("ai.respondPermission", {
+            input: {
+                optionId: "allow-second",
+                requestId: secondPermission!.requestId,
+                sessionId: "session-1",
+            },
+        });
+
+        await expect(secondPermissionPromise).resolves.toMatchObject({
+            outcome: {
+                optionId: "allow-second",
+                outcome: "selected",
+            },
+        });
+        await vi.waitFor(() => {
+            expect(getLatestPendingPermission(emittedEvents)).toBeNull();
+        });
+    });
+
     it("uses Codex turn lifecycle as the primary subagent streaming state", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent lifecycle parent");

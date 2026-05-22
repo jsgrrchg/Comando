@@ -657,26 +657,39 @@ export class AiWorkerRuntime {
         params: AiWorkerRpcMethodMap["ai.respondPermission"]["params"],
     ): Promise<void> {
         const liveSession = this.#sessions.get(params.input.sessionId);
-        if (!liveSession?.pendingPermission) {
+        if (!liveSession) {
             throw new Error("There is no pending permission request.");
         }
 
-        if (
-            liveSession.pendingPermission.requestId !== params.input.requestId
-        ) {
+        const pendingPermission = liveSession.pendingPermissions.get(
+            params.input.requestId,
+        );
+        if (!pendingPermission) {
             throw new Error("The permission request no longer matches.");
         }
 
+        liveSession.pendingPermissions.delete(params.input.requestId);
+        const visiblePendingPermission =
+            this.#latestPendingPermission(liveSession);
+        const visiblePendingEntry = visiblePendingPermission
+            ? liveSession.pendingPermissions.get(visiblePendingPermission.requestId)
+            : null;
+        liveSession.pendingPermission =
+            visiblePendingPermission && visiblePendingEntry
+                ? {
+                      requestId: visiblePendingPermission.requestId,
+                      resolve: visiblePendingEntry.resolve,
+                  }
+                : null;
         liveSession.snapshot = {
             ...liveSession.snapshot,
-            pendingPermission: null,
-            status: "streaming",
+            pendingPermission: visiblePendingPermission,
+            status: visiblePendingPermission ? "waiting_permission" : "streaming",
             updatedAt: new Date().toISOString(),
         };
         this.#queueSnapshotFlush(liveSession);
 
-        this.#resolvePendingPermission(
-            liveSession,
+        pendingPermission.resolve(
             params.input.optionId
                 ? {
                       _meta: null,
@@ -1055,6 +1068,7 @@ export class AiWorkerRuntime {
             pendingAdditionalRoots: null,
             pendingLaunch: null,
             pendingPermission: null,
+            pendingPermissions: new Map(),
             pendingPersistTimer: null,
             processedDiffPaths: new Map(),
             projectRoot: launch.projectRoot,
@@ -1266,6 +1280,10 @@ export class AiWorkerRuntime {
         this.#queueSnapshotFlush(liveSession);
 
         return await new Promise<RequestPermissionResponse>((resolve) => {
+            liveSession.pendingPermissions.set(requestId, {
+                request: pendingPermission,
+                resolve,
+            });
             liveSession.pendingPermission = {
                 requestId,
                 resolve,
@@ -1457,6 +1475,7 @@ export class AiWorkerRuntime {
             pendingAdditionalRoots: null,
             pendingLaunch: null,
             pendingPermission: null,
+            pendingPermissions: new Map(),
             pendingPersistTimer: null,
             processedDiffPaths: new Map(),
             projectRoot: parentSession.projectRoot,
@@ -2426,6 +2445,7 @@ export class AiWorkerRuntime {
             pendingAdditionalRoots: null,
             pendingLaunch: null,
             pendingPermission: null,
+            pendingPermissions: new Map(),
             pendingPersistTimer: null,
             processedDiffPaths: new Map(),
             projectRoot: context.projectRoot,
@@ -2966,19 +2986,32 @@ export class AiWorkerRuntime {
         liveSession: LiveAcpSession,
         response: RequestPermissionResponse | null,
     ): void {
-        if (!liveSession.pendingPermission) {
+        if (liveSession.pendingPermissions.size === 0) {
             return;
         }
 
-        liveSession.pendingPermission.resolve(
-            response ?? {
-                _meta: null,
-                outcome: {
-                    outcome: "cancelled",
-                },
+        const resolvedResponse = response ?? {
+            _meta: null,
+            outcome: {
+                outcome: "cancelled",
             },
-        );
+        };
+
+        for (const pendingPermission of liveSession.pendingPermissions.values()) {
+            pendingPermission.resolve(resolvedResponse);
+        }
+        liveSession.pendingPermissions.clear();
         liveSession.pendingPermission = null;
+    }
+
+    #latestPendingPermission(
+        liveSession: LiveAcpSession,
+    ): AiPermissionRequest | null {
+        let latest: AiPermissionRequest | null = null;
+        for (const pendingPermission of liveSession.pendingPermissions.values()) {
+            latest = pendingPermission.request;
+        }
+        return latest;
     }
 
     #registerRuntimeSessionMapping(

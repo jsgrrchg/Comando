@@ -13,6 +13,7 @@ import type {
     TerminalExitStatus,
 } from "@agentclientprotocol/sdk";
 import type {
+    AiPermissionRequest,
     AiPermissionResponseInput,
     AiPromptResult,
     AiSessionConfigOption,
@@ -190,6 +191,13 @@ export interface LiveAcpSession {
     desiredSelections: AiWorkerDesiredSelections;
     isRestoring: boolean;
     ownerWindowId: string;
+    pendingPermissions: Map<
+        string,
+        {
+            readonly request: AiPermissionRequest;
+            readonly resolve: (response: RequestPermissionResponse) => void;
+        }
+    >;
     pendingPermission: {
         readonly requestId: string;
         readonly resolve: (response: RequestPermissionResponse) => void;

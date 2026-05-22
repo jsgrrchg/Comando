@@ -15,8 +15,10 @@ use agent_client_protocol as acp;
 use codex_config::{McpServerConfig, McpServerTransportConfig};
 use codex_core::{
     NewThread, RolloutRecorder, SortDirection, StateDbHandle, ThreadConfigSnapshot, ThreadManager,
-    ThreadSortKey, config::Config, find_thread_path_by_id_str, init_state_db, parse_cursor,
-    resolve_installation_id, thread_store_from_config,
+    ThreadSortKey,
+    config::{Config, PermissionProfileSnapshot},
+    find_thread_path_by_id_str, init_state_db, parse_cursor, resolve_installation_id,
+    thread_store_from_config,
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
 use codex_extension_api::empty_extension_registry;
@@ -341,15 +343,14 @@ impl CodexAgent {
             .cloned()
             .unwrap_or_else(|| self.config.cwd.to_path_buf());
 
-        let rollout_path =
-            find_thread_path_by_id_str(
-                &self.config.codex_home,
-                session_id.0.as_ref(),
-                self.state_db.as_deref(),
-            )
-                .await
-                .map_err(|e| Error::internal_error().data(e.to_string()))?
-                .ok_or_else(|| Error::resource_not_found(None))?;
+        let rollout_path = find_thread_path_by_id_str(
+            &self.config.codex_home,
+            session_id.0.as_ref(),
+            self.state_db.as_deref(),
+        )
+        .await
+        .map_err(|e| Error::internal_error().data(e.to_string()))?
+        .ok_or_else(|| Error::resource_not_found(None))?;
 
         let history = RolloutRecorder::get_rollout_history(&rollout_path)
             .await
@@ -582,15 +583,19 @@ impl CodexAgent {
         config.model_provider_id = session_configured.model_provider_id.clone();
         config.model_reasoning_effort = session_configured.reasoning_effort;
         config.service_tier = session_configured.service_tier.clone();
+        config.approvals_reviewer = session_configured.approvals_reviewer;
         config
             .permissions
             .approval_policy
             .set(session_configured.approval_policy)
             .map_err(Error::into_internal_error)?;
-        config
-            .permissions
-            .set_permission_profile(session_configured.permission_profile.clone())
-            .map_err(Error::into_internal_error)?;
+        Self::sync_permission_profile_snapshot(
+            config,
+            PermissionProfileSnapshot::from_session_snapshot(
+                session_configured.permission_profile.clone(),
+                session_configured.active_permission_profile.clone(),
+            ),
+        )?;
         Ok(())
     }
 
@@ -603,16 +608,43 @@ impl CodexAgent {
         config.model_provider_id = snapshot.model_provider_id.clone();
         config.model_reasoning_effort = snapshot.reasoning_effort;
         config.service_tier = snapshot.service_tier.clone();
+        config.approvals_reviewer = snapshot.approvals_reviewer;
+        config
+            .permissions
+            .set_workspace_roots(snapshot.workspace_roots.clone());
         config
             .permissions
             .approval_policy
             .set(snapshot.approval_policy)
             .map_err(Error::into_internal_error)?;
+        let permission_snapshot =
+            if let Some(active_permission_profile) = snapshot.active_permission_profile.clone() {
+                PermissionProfileSnapshot::active_with_profile_workspace_roots(
+                    snapshot.permission_profile.clone(),
+                    active_permission_profile,
+                    snapshot.profile_workspace_roots.clone(),
+                )
+            } else {
+                PermissionProfileSnapshot::legacy(snapshot.permission_profile.clone())
+            };
+        Self::sync_permission_profile_snapshot(config, permission_snapshot)?;
+        Ok(())
+    }
+
+    fn sync_permission_profile_snapshot(
+        config: &mut Config,
+        snapshot: PermissionProfileSnapshot,
+    ) -> Result<(), Error> {
+        let replacement_snapshot = snapshot.clone();
         config
             .permissions
-            .set_permission_profile(snapshot.permission_profile.clone())
-            .map_err(Error::into_internal_error)?;
-        Ok(())
+            .set_permission_profile_from_session_snapshot(snapshot)
+            .or_else(|_| {
+                config
+                    .permissions
+                    .replace_permission_profile_from_session_snapshot(replacement_snapshot)
+            })
+            .map_err(Error::into_internal_error)
     }
 }
 
