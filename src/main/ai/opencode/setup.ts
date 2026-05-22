@@ -18,6 +18,14 @@ const OPENCODE_ACP_SUBCOMMAND = "acp";
 const OPENCODE_AUTH_LOGIN_SUBCOMMAND = ["auth", "login"] as const;
 const OPENCODE_ENV_BIN = "COMANDO_OPENCODE_ACP_BIN";
 const OPENCODE_API_KEY_ENV = "OPENCODE_API_KEY";
+const OPENCODE_PROVIDER_API_KEY_ENVS = [
+    OPENCODE_API_KEY_ENV,
+    "ANTHROPIC_API_KEY",
+    "CODEX_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENAI_API_KEY",
+] as const;
 const OPENCODE_LOGIN_METHOD_ID =
     "opencode-login" satisfies OpenCodeAuthMethodId;
 const OPENCODE_MACOS_FALLBACK_DIRS = [
@@ -72,7 +80,7 @@ export function getOpenCodeRuntimeStatus(
         binaryReady &&
         authMethod === OPENCODE_LOGIN_METHOD_ID &&
         !openCodeLoginAvailable(settings) &&
-        !environmentOpenCodeApiKeyReady(process.env)
+        !environmentOpenCodeCredentialReady(process.env)
     ) {
         message =
             "OpenCode auth is selected. Comando could not verify local OpenCode credentials, but OpenCode may still load providers from /connect, environment variables, or a project .env.";
@@ -184,12 +192,15 @@ export function isOpenCodeAuthenticationError(message: string): boolean {
 function detectOpenCodeAuthMethod(
     settings: OpenCodeRuntimeSettings,
 ): OpenCodeAuthMethodId | null {
-    if (environmentOpenCodeApiKeyReady(process.env)) {
+    if (environmentOpenCodeCredentialReady(process.env)) {
         return OPENCODE_LOGIN_METHOD_ID;
     }
 
     const selectedAuthMethod = readSelectedOpenCodeAuthMethod(settings);
-    if (selectedAuthMethod === OPENCODE_LOGIN_METHOD_ID) {
+    if (
+        selectedAuthMethod === OPENCODE_LOGIN_METHOD_ID &&
+        settings.authInvalidatedAtMs === null
+    ) {
         return OPENCODE_LOGIN_METHOD_ID;
     }
 
@@ -219,7 +230,7 @@ function getOpenCodeCredentialSource(
         return "none";
     }
 
-    if (environmentOpenCodeApiKeyReady(env)) {
+    if (environmentOpenCodeCredentialReady(env)) {
         return "environment";
     }
 
@@ -271,10 +282,7 @@ function getOpenCodeAuthStoreStatus(): OpenCodeAuthStoreStatus | null {
         return null;
     }
 
-    return {
-        hasActiveAuth: true,
-        modifiedAtMs: getFileModifiedAtMs(authPath),
-    };
+    return readOpenCodeAuthStoreStatus(authPath);
 }
 
 function getOpenCodeAuthStorePath(): string | null {
@@ -304,8 +312,47 @@ function getOpenCodeDataDir(): string | null {
     return path.join(homeDir, ".local", "share");
 }
 
-function environmentOpenCodeApiKeyReady(env: NodeJS.ProcessEnv): boolean {
-    return Boolean(env[OPENCODE_API_KEY_ENV]?.trim());
+function environmentOpenCodeCredentialReady(env: NodeJS.ProcessEnv): boolean {
+    return OPENCODE_PROVIDER_API_KEY_ENVS.some((name) =>
+        Boolean(env[name]?.trim()),
+    );
+}
+
+function readOpenCodeAuthStoreStatus(
+    authPath: string,
+): OpenCodeAuthStoreStatus | null {
+    try {
+        const raw = fs.readFileSync(authPath, "utf8").trim();
+        if (!raw) {
+            return {
+                hasActiveAuth: false,
+                modifiedAtMs: getFileModifiedAtMs(authPath),
+            };
+        }
+
+        return {
+            hasActiveAuth: hasNonEmptyAuthPayload(JSON.parse(raw)),
+            modifiedAtMs: getFileModifiedAtMs(authPath),
+        };
+    } catch (error) {
+        debugBenignError("ai.opencode.readAuthStoreStatus", error);
+        return {
+            hasActiveAuth: false,
+            modifiedAtMs: getFileModifiedAtMs(authPath),
+        };
+    }
+}
+
+function hasNonEmptyAuthPayload(value: unknown): boolean {
+    if (!value || typeof value !== "object") {
+        return false;
+    }
+
+    if (Array.isArray(value)) {
+        return value.length > 0;
+    }
+
+    return Object.keys(value).length > 0;
 }
 
 function resolveOpenCodeBinary(

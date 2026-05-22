@@ -15,6 +15,7 @@ import {
 
 const originalOpenCodeApiKey = process.env.OPENCODE_API_KEY;
 const originalOpenCodeEnv = process.env.COMANDO_OPENCODE_ACP_BIN;
+const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 const originalHome = process.env.HOME;
 const originalLocalAppData = process.env.LOCALAPPDATA;
 const originalPath = process.env.PATH;
@@ -24,6 +25,7 @@ const originalXdgDataHome = process.env.XDG_DATA_HOME;
 beforeEach(() => {
     delete process.env.COMANDO_OPENCODE_ACP_BIN;
     delete process.env.OPENCODE_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     delete process.env.XDG_DATA_HOME;
 });
 
@@ -31,6 +33,7 @@ afterEach(() => {
     process.env.PATH = originalPath;
     restoreEnv("COMANDO_OPENCODE_ACP_BIN", originalOpenCodeEnv);
     restoreEnv("OPENCODE_API_KEY", originalOpenCodeApiKey);
+    restoreEnv("OPENAI_API_KEY", originalOpenAiApiKey);
     restoreEnv("HOME", originalHome);
     restoreEnv("LOCALAPPDATA", originalLocalAppData);
     restoreEnv("USERPROFILE", originalUserProfile);
@@ -130,6 +133,16 @@ describe("OpenCode setup", () => {
         expect(status.authCredentialSource).toBe("environment");
     });
 
+    it("detects provider API keys as external OpenCode environment auth", () => {
+        process.env.OPENAI_API_KEY = "env-openai-key";
+
+        const status = getOpenCodeRuntimeStatus(createOpenCodeSettings());
+
+        expect(status.authMethod).toBe("opencode-login");
+        expect(status.authReady).toBe(true);
+        expect(status.authCredentialSource).toBe("environment");
+    });
+
     it("treats the selected OpenCode auth method as ready even without a verifiable auth file", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-selected-auth-"),
@@ -153,6 +166,30 @@ describe("OpenCode setup", () => {
         }
     });
 
+    it("does not treat a selected OpenCode auth method as ready after invalidation", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-invalid-selected-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
+            const status = getOpenCodeRuntimeStatus(
+                createOpenCodeSettings({
+                    authInvalidatedAtMs: Date.now(),
+                    authMethod: "opencode-login",
+                    binaryPath,
+                }),
+            );
+
+            expect(status.authReady).toBe(false);
+            expect(status.authMethod).toBeNull();
+            expect(status.onboardingRequired).toBe(true);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("ignores auth.json when it was invalidated after the file changed", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-invalidated-"),
@@ -171,6 +208,29 @@ describe("OpenCode setup", () => {
 
             expect(status.authReady).toBe(false);
             expect(status.authMethod).toBeNull();
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("does not treat empty or corrupt auth.json files as active auth", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-empty-auth-"),
+        );
+
+        try {
+            process.env.XDG_DATA_HOME = tempDir;
+            const authPath = writeOpenCodeAuthFile(tempDir);
+
+            fs.writeFileSync(authPath, "", "utf8");
+            expect(
+                getOpenCodeRuntimeStatus(createOpenCodeSettings()).authReady,
+            ).toBe(false);
+
+            fs.writeFileSync(authPath, "{not-json", "utf8");
+            expect(
+                getOpenCodeRuntimeStatus(createOpenCodeSettings()).authReady,
+            ).toBe(false);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }

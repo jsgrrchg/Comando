@@ -429,7 +429,10 @@ export class AiService {
         const currentSettings =
             this.#settingsService.loadOpenCodeRuntimeSettings();
         const nextSettings = {
-            authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
+            authInvalidatedAtMs:
+                settings.authMethod === "opencode-login"
+                    ? null
+                    : currentSettings.authInvalidatedAtMs,
             authMethod: settings.authMethod,
             binaryPath: normalizeOptionalText(settings.binaryPath),
         };
