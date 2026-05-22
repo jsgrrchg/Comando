@@ -20,6 +20,7 @@ describe("isDefaultChatTitle", () => {
         expect(isDefaultChatTitle("Gemini 12")).toBe(true);
         expect(isDefaultChatTitle("Codex 3")).toBe(true);
         expect(isDefaultChatTitle("Kilo 4")).toBe(true);
+        expect(isDefaultChatTitle("OpenCode 5")).toBe(true);
         expect(isDefaultChatTitle("Agent 9")).toBe(true);
     });
 
