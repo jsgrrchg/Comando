@@ -24,6 +24,7 @@ import type {
     EditorFontFamily,
     GeminiRuntimeSettings,
     KiloRuntimeSettings,
+    OpenCodeRuntimeSettings,
     PersistedShellState,
     ProjectSettingsSnapshot,
     SettingsSnapshot,
@@ -76,6 +77,10 @@ const KILO_AUTH_INVALIDATED_AT_KEY = "ai.kilo.auth_invalidated_at_ms";
 const KILO_AUTH_METHOD_KEY = "ai.kilo.auth_method";
 const KILO_BINARY_PATH_KEY = "ai.kilo.binary_path";
 const KILO_HAS_KILO_API_KEY_KEY = "ai.kilo.has_kilo_api_key";
+const OPENCODE_AUTH_INVALIDATED_AT_KEY =
+    "ai.opencode.auth_invalidated_at_ms";
+const OPENCODE_AUTH_METHOD_KEY = "ai.opencode.auth_method";
+const OPENCODE_BINARY_PATH_KEY = "ai.opencode.binary_path";
 const APP_BOOST_CODE_CONTRAST_KEY = "appearance.boost_code_contrast";
 const APP_AGENTS_SIDEBAR_SCALE_KEY = "appearance.agents_sidebar_scale";
 const APP_FILE_TREE_SCALE_KEY = "appearance.file_tree_scale";
@@ -199,6 +204,10 @@ export interface SettingsGateway {
         settings: KiloRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
     ): Promise<void>;
+    saveOpenCodeAuth?(
+        settings: OpenCodeRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void>;
     loadSnapshot(): SettingsSnapshot;
     saveSnapshot(snapshot: SettingsSnapshot): void;
     loadAppAppearanceSettings(): AppAppearanceSettings;
@@ -217,6 +226,8 @@ export interface SettingsGateway {
     saveGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void;
     loadKiloRuntimeSettings(): KiloRuntimeSettings;
     saveKiloRuntimeSettings(settings: KiloRuntimeSettings): void;
+    loadOpenCodeRuntimeSettings(): OpenCodeRuntimeSettings;
+    saveOpenCodeRuntimeSettings(settings: OpenCodeRuntimeSettings): void;
 }
 
 export class SettingsService {
@@ -237,6 +248,7 @@ export class SettingsService {
                 codex: this.loadCodexRuntimeSettings(),
                 gemini: this.loadGeminiRuntimeSettings(),
                 kilo: this.loadKiloRuntimeSettings(),
+                opencode: this.loadOpenCodeRuntimeSettings(),
             },
             aiChat: this.loadAiChatSettings(),
             appearance: this.loadAppAppearanceSettings(),
@@ -270,6 +282,10 @@ export class SettingsService {
 
         if (snapshot.ai?.kilo) {
             this.saveKiloRuntimeSettings(snapshot.ai.kilo);
+        }
+
+        if (snapshot.ai?.opencode) {
+            this.saveOpenCodeRuntimeSettings(snapshot.ai.opencode);
         }
 
         if (snapshot.aiChat) {
@@ -672,6 +688,35 @@ export class SettingsService {
         this.#saveBooleanSetting(
             KILO_HAS_KILO_API_KEY_KEY,
             settings.hasKiloApiKey,
+        );
+    }
+
+    loadOpenCodeRuntimeSettings(): OpenCodeRuntimeSettings {
+        return {
+            authInvalidatedAtMs: this.#loadNumberSetting(
+                OPENCODE_AUTH_INVALIDATED_AT_KEY,
+            ),
+            authMethod:
+                (this.#loadStringSetting(
+                    OPENCODE_AUTH_METHOD_KEY,
+                ) as OpenCodeRuntimeSettings["authMethod"]) ?? null,
+            binaryPath:
+                this.#loadStringSetting(OPENCODE_BINARY_PATH_KEY) ?? null,
+        };
+    }
+
+    saveOpenCodeRuntimeSettings(settings: OpenCodeRuntimeSettings): void {
+        this.#saveOptionalTrimmedStringSetting(
+            OPENCODE_AUTH_METHOD_KEY,
+            settings.authMethod,
+        );
+        this.#saveOptionalTrimmedStringSetting(
+            OPENCODE_BINARY_PATH_KEY,
+            settings.binaryPath,
+        );
+        this.#saveOptionalNumberSetting(
+            OPENCODE_AUTH_INVALIDATED_AT_KEY,
+            settings.authInvalidatedAtMs,
         );
     }
 

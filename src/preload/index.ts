@@ -138,6 +138,7 @@ import {
     type GitWorktreeSummary,
     type KiloRuntimeSettingsInput,
     type ListProjectEntriesInput,
+    type OpenCodeRuntimeSettingsInput,
     type RenameProjectEntryInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
@@ -1119,6 +1120,11 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveGeminiRuntimeSettings, settings),
     saveKiloRuntimeSettings: (settings: KiloRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveKiloRuntimeSettings, settings),
+    saveOpenCodeRuntimeSettings: (settings: OpenCodeRuntimeSettingsInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.saveOpenCodeRuntimeSettings,
+            settings,
+        ),
     closeTerminalSession: (sessionId: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.closeTerminalSession, sessionId),
     touchProject: (projectId: string) =>

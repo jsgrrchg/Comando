@@ -27,6 +27,7 @@ export const IPC_CHANNELS = {
     saveClaudeRuntimeSettings: "settings:save-claude-runtime-settings",
     saveGeminiRuntimeSettings: "settings:save-gemini-runtime-settings",
     saveKiloRuntimeSettings: "settings:save-kilo-runtime-settings",
+    saveOpenCodeRuntimeSettings: "settings:save-opencode-runtime-settings",
     getSystemTheme: "app:get-system-theme",
     saveSettingsSnapshot: "settings:save-snapshot",
     saveProjectSettings: "settings:save-project-settings",
@@ -278,7 +279,12 @@ export interface PersistedShellState {
         | "pull_requests";
 }
 
-export type AiRuntimeId = "claude" | "codex" | "gemini" | "kilo";
+export type AiRuntimeId =
+    | "claude"
+    | "codex"
+    | "gemini"
+    | "kilo"
+    | "opencode";
 
 export interface AiAuthMethod {
     readonly description: string;
@@ -297,6 +303,8 @@ export type ClaudeAuthMethodId =
 export type GeminiAuthMethodId = "login_with_google" | "use_gemini";
 
 export type KiloAuthMethodId = "kilo-login" | "kilo-api-key";
+
+export type OpenCodeAuthMethodId = "opencode-login";
 
 export type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
 
@@ -379,11 +387,23 @@ export interface KiloRuntimeSettingsInput {
     readonly kiloApiKey: SecretValuePatch;
 }
 
+export interface OpenCodeRuntimeSettings {
+    readonly authInvalidatedAtMs: number | null;
+    readonly authMethod: OpenCodeAuthMethodId | null;
+    readonly binaryPath: string | null;
+}
+
+export interface OpenCodeRuntimeSettingsInput {
+    readonly authMethod: OpenCodeAuthMethodId | null;
+    readonly binaryPath: string | null;
+}
+
 export interface AiSettingsSnapshot {
     readonly claude: ClaudeRuntimeSettings;
     readonly codex: CodexRuntimeSettings;
     readonly gemini: GeminiRuntimeSettings;
     readonly kilo: KiloRuntimeSettings;
+    readonly opencode: OpenCodeRuntimeSettings;
 }
 
 export type AiRuntimeSource =
@@ -459,7 +479,8 @@ export interface AiRuntimePathOverrideDiagnostic {
         | "COMANDO_CLAUDE_ACP_BIN"
         | "COMANDO_CODEX_ACP_BIN"
         | "COMANDO_GEMINI_ACP_BIN"
-        | "COMANDO_KILO_ACP_BIN";
+        | "COMANDO_KILO_ACP_BIN"
+        | "COMANDO_OPENCODE_ACP_BIN";
     readonly pathOrCommand: string | null;
     readonly present: boolean;
     readonly runtimeId: AiRuntimeId;
@@ -476,6 +497,7 @@ export interface AiCredentialEnvironmentDiagnostic {
         | "GEMINI_API_KEY"
         | "GOOGLE_API_KEY"
         | "KILO_API_KEY"
+        | "OPENCODE_API_KEY"
         | "OPENAI_API_KEY";
     readonly present: boolean;
     readonly runtimeId: AiRuntimeId;
@@ -2741,6 +2763,9 @@ export interface ComandoApi {
     ) => Promise<AiRuntimeStatus>;
     saveKiloRuntimeSettings: (
         settings: KiloRuntimeSettingsInput,
+    ) => Promise<AiRuntimeStatus>;
+    saveOpenCodeRuntimeSettings: (
+        settings: OpenCodeRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     createTerminalSession: (
         input: CreateTerminalSessionInput,

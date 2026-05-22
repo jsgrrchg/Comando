@@ -226,6 +226,11 @@ function createSettings(
             binaryPath: null,
             hasKiloApiKey: false,
         },
+        opencode: {
+            authInvalidatedAtMs: null,
+            authMethod: null,
+            binaryPath: null,
+        },
         ...overrides,
     };
 }

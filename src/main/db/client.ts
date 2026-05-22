@@ -19,6 +19,7 @@ import type {
     CodexRuntimeSettings,
     GeminiRuntimeSettings,
     KiloRuntimeSettings,
+    OpenCodeRuntimeSettings,
     PersistedShellState,
     ProjectAppDataSummary,
     ProjectSettingsSnapshot,
@@ -94,6 +95,7 @@ const runtimeIds = [
     "codex",
     "gemini",
     "kilo",
+    "opencode",
 ] as const satisfies readonly AiRuntimeId[];
 
 const DB_WORKER_METHOD_TIMEOUTS_MS: Readonly<Record<string, number>> = {
@@ -414,6 +416,15 @@ class SettingsClient implements SettingsGateway {
         this.#dispatch("settings.saveKiloRuntimeSettings", settings);
     }
 
+    loadOpenCodeRuntimeSettings(): OpenCodeRuntimeSettings {
+        return requireAiSettings(this.#snapshot.ai).opencode;
+    }
+
+    saveOpenCodeRuntimeSettings(settings: OpenCodeRuntimeSettings): void {
+        this.#setOpenCodeRuntimeSettings(settings);
+        this.#dispatch("settings.saveOpenCodeRuntimeSettings", settings);
+    }
+
     async saveCodexAuth(
         settings: CodexRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
@@ -486,6 +497,24 @@ class SettingsClient implements SettingsGateway {
         }
     }
 
+    async saveOpenCodeAuth(
+        settings: OpenCodeRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        const records = serializeSecretRecordPatches(secrets);
+        const previousSettings = this.loadOpenCodeRuntimeSettings();
+        this.#setOpenCodeRuntimeSettings(settings);
+        try {
+            await this.#rpc.call("ai.saveOpenCodeAuth", {
+                secrets: records,
+                settings,
+            });
+        } catch (error) {
+            this.#setOpenCodeRuntimeSettings(previousSettings);
+            throw error;
+        }
+    }
+
     #setCodexRuntimeSettings(settings: CodexRuntimeSettings): void {
         this.#snapshot = {
             ...this.#snapshot,
@@ -522,6 +551,16 @@ class SettingsClient implements SettingsGateway {
             ai: {
                 ...requireAiSettings(this.#snapshot.ai),
                 kilo: settings,
+            },
+        };
+    }
+
+    #setOpenCodeRuntimeSettings(settings: OpenCodeRuntimeSettings): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            ai: {
+                ...requireAiSettings(this.#snapshot.ai),
+                opencode: settings,
             },
         };
     }

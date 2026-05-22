@@ -260,6 +260,33 @@ describe("SettingsService", () => {
         });
     });
 
+    it("stores and reloads OpenCode settings", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveOpenCodeRuntimeSettings({
+            authInvalidatedAtMs: 9012,
+            authMethod: "opencode-login",
+            binaryPath: "/opt/homebrew/bin/opencode",
+        });
+
+        expect(service.loadOpenCodeRuntimeSettings()).toEqual({
+            authInvalidatedAtMs: 9012,
+            authMethod: "opencode-login",
+            binaryPath: "/opt/homebrew/bin/opencode",
+        });
+        expect(service.loadSnapshot().ai).toEqual({
+            ...createEmptyAiSettings(),
+            opencode: {
+                authInvalidatedAtMs: 9012,
+                authMethod: "opencode-login",
+                binaryPath: "/opt/homebrew/bin/opencode",
+            },
+        });
+    });
+
     it("ignores project-specific settings and clears legacy overrides", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
@@ -421,6 +448,11 @@ function createEmptyAiSettings() {
             authMethod: null,
             binaryPath: null,
             hasKiloApiKey: false,
+        },
+        opencode: {
+            authInvalidatedAtMs: null,
+            authMethod: null,
+            binaryPath: null,
         },
     };
 }

@@ -2203,7 +2203,8 @@ function normalizeRuntimeId(
     return value === "claude" ||
         value === "codex" ||
         value === "gemini" ||
-        value === "kilo"
+        value === "kilo" ||
+        value === "opencode"
         ? value
         : "codex";
 }

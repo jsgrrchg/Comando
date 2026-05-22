@@ -454,7 +454,8 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 chatPayload.runtimeId === "claude" ||
                 chatPayload.runtimeId === "codex" ||
                 chatPayload.runtimeId === "gemini" ||
-                chatPayload.runtimeId === "kilo"
+                chatPayload.runtimeId === "kilo" ||
+                chatPayload.runtimeId === "opencode"
                     ? chatPayload.runtimeId
                     : "codex",
             sessionId:
