@@ -508,7 +508,8 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 reviewPayload.runtimeId === "claude" ||
                 reviewPayload.runtimeId === "codex" ||
                 reviewPayload.runtimeId === "gemini" ||
-                reviewPayload.runtimeId === "kilo"
+                reviewPayload.runtimeId === "kilo" ||
+                reviewPayload.runtimeId === "opencode"
                     ? reviewPayload.runtimeId
                     : "codex",
             sessionId:

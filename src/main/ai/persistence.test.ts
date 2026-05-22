@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AiSessionSnapshot } from "@shared/ipc";
+import type { AiRuntimeId, AiSessionSnapshot } from "@shared/ipc";
 
 import { databaseMigrations } from "@main/db/migrations";
 import {
@@ -1288,7 +1288,7 @@ function seedChatSession(
         readonly pinnedAt?: string | null;
         readonly preview?: string | null;
         readonly projectId?: string | null;
-        readonly runtimeId: "claude" | "codex" | "gemini" | "kilo";
+        readonly runtimeId: AiRuntimeId;
         readonly sessionId: string;
         readonly transcript: Record<string, unknown>;
         readonly updatedAt: string;

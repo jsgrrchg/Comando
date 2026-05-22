@@ -665,9 +665,10 @@ External auth state also used:
 ~/.gemini/settings.json
 ~/.local/share/kilo/auth.json
 ~/.local/share/kilo/kilo.db
+~/.local/share/opencode/auth.json
 ```
 
-On Linux and Windows, the Kilo paths vary through `XDG_DATA_HOME` and `LOCALAPPDATA`.
+On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` and `LOCALAPPDATA`.
 
 ---
 
@@ -680,6 +681,7 @@ On Linux and Windows, the Kilo paths vary through `XDG_DATA_HOME` and `LOCALAPPD
 | `COMANDO_CODEX_ACP_BUNDLE_BIN` | Codex staging | Override the binary copied into bundled resources |
 | `COMANDO_GEMINI_ACP_BIN` | Gemini runtime | Override Gemini CLI path or command |
 | `COMANDO_KILO_ACP_BIN` | Kilo runtime | Override Kilo CLI path or command |
+| `COMANDO_OPENCODE_ACP_BIN` | OpenCode runtime | Override OpenCode CLI path or command |
 | `COMANDO_EMBEDDED_NODE_BIN` | Claude staging | Override the Node binary embedded for Claude |
 | `COMANDO_APP_CHANNEL` | App runtime | Forces `dev` or `release` channel identity |
 | `ANTHROPIC_BASE_URL` | Claude process | Custom Anthropic-compatible gateway URL |
@@ -692,6 +694,7 @@ On Linux and Windows, the Kilo paths vary through `XDG_DATA_HOME` and `LOCALAPPD
 | `GOOGLE_CLOUD_PROJECT` | Gemini process | Google Cloud project hint |
 | `GOOGLE_CLOUD_LOCATION` | Gemini process | Google Cloud location hint |
 | `GEMINI_DEFAULT_AUTH_TYPE` | Gemini process | Default Gemini auth mode |
+| `OPENCODE_API_KEY` | OpenCode process | External OpenCode API key recognized by diagnostics/status but not stored by Comando |
 | `NO_BROWSER` | Claude/Codex auth UX | Forces remote-style Claude auth behavior and hides the Codex ChatGPT browser login option |
 | `SSH_CONNECTION` | Claude auth UX | Marks the environment as remote |
 | `SSH_CLIENT` | Claude auth UX | Marks the environment as remote |
