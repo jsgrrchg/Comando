@@ -2548,6 +2548,16 @@ export class AiWorkerRuntime {
             resolvedPath.absolutePath,
             trackedFile,
         );
+
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            const previousPath = this.#resolveWritableSessionPathInfo(
+                liveSession,
+                trackedFile.previousPath,
+            );
+            await this.#assertTrackedMovePreviousPathAvailable(
+                previousPath.absolutePath,
+            );
+        }
     }
 
     async #createTrackedFileRollbackBackups(
@@ -2781,13 +2791,19 @@ export class AiWorkerRuntime {
             );
 
             if (trackedFile.oldText !== null) {
+                await this.#assertTrackedMovePreviousPathAvailable(
+                    previousPath.absolutePath,
+                );
                 await fs.promises.mkdir(path.dirname(previousPath.absolutePath), {
                     recursive: true,
                 });
                 await fs.promises.writeFile(
                     previousPath.absolutePath,
                     trackedFile.oldText,
-                    "utf8",
+                    {
+                        encoding: "utf8",
+                        flag: "wx",
+                    },
                 );
                 this.#fileBuffers.set(
                     previousPath.absolutePath,
@@ -2897,6 +2913,30 @@ export class AiWorkerRuntime {
 
         throw new Error(
             "Cannot safely apply this review change because the file no longer matches the reviewed content. Reopen the diff or rerun the agent before accepting or rejecting it.",
+        );
+    }
+
+    async #assertTrackedMovePreviousPathAvailable(
+        absolutePath: string,
+    ): Promise<void> {
+        if (this.#fileBuffers.has(absolutePath)) {
+            throw new Error(
+                "Cannot safely apply this review change because the original path for a moved file already exists. Reopen the diff or rerun the agent before accepting or rejecting it.",
+            );
+        }
+
+        try {
+            await fs.promises.lstat(absolutePath);
+        } catch (error) {
+            if (isNodeError(error) && error.code === "ENOENT") {
+                return;
+            }
+
+            throw error;
+        }
+
+        throw new Error(
+            "Cannot safely apply this review change because the original path for a moved file already exists. Reopen the diff or rerun the agent before accepting or rejecting it.",
         );
     }
 
