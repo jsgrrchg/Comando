@@ -3237,6 +3237,80 @@ describe("AiWorkerRuntime prepareSession", () => {
         await expect(fs.readFile(filePath, "utf8")).resolves.toBe(diskText);
     });
 
+    it("does not partially revert reject-all when a later tracked file fails safety validation", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const safePath = path.join(tempDir, "safe.md");
+        const unsafePath = path.join(tempDir, "unsafe.md");
+        const safeOriginalText = "before\n";
+        const safeCurrentText = "after\n";
+        const unsafeDiskText = "alpha\nremove me\nomega\n";
+        await fs.writeFile(safePath, safeCurrentText, "utf8");
+        await fs.writeFile(unsafePath, unsafeDiskText, "utf8");
+        const runtime = createRuntime();
+        const safeTrackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks(safeOriginalText, safeCurrentText, "safe.md"),
+            identityKey: "safe.md",
+            isText: true,
+            kind: "update",
+            newText: safeCurrentText,
+            oldText: safeOriginalText,
+            path: "safe.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-safe",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const unsafeTrackedFile: AiTrackedFile = {
+            hunks: computeDiffHunks("remove me\n", "", "unsafe.md"),
+            identityKey: "unsafe.md",
+            isText: true,
+            kind: "update",
+            newText: "",
+            oldText: "remove me\n",
+            path: "unsafe.md",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: "tool-unsafe",
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            version: 1,
+        };
+        const snapshot = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Atomic reject-all safety test",
+        }).persistedSnapshot;
+
+        await expect(
+            runtime.dispatchMethod("ai.rejectAllTrackedFiles", {
+                context: {
+                    additionalRoots: [],
+                    cwd: tempDir,
+                    ownerWindowId: "",
+                    projectRoot: tempDir,
+                    snapshot: {
+                        ...snapshot,
+                        trackedFiles: [safeTrackedFile, unsafeTrackedFile],
+                    },
+                },
+                input: "session-1",
+            }),
+        ).rejects.toThrow("Cannot safely apply this review change");
+
+        await expect(fs.readFile(safePath, "utf8")).resolves.toBe(
+            safeCurrentText,
+        );
+        await expect(fs.readFile(unsafePath, "utf8")).resolves.toBe(
+            unsafeDiskText,
+        );
+    });
+
     it("refuses partial hunk rejection when the tracked file is snippet-only", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),

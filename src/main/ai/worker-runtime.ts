@@ -649,7 +649,12 @@ export class AiWorkerRuntime {
         params: AiWorkerRpcMethodMap["ai.rejectAllTrackedFiles"]["params"],
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, async (session) => {
-            for (const trackedFile of session.snapshot.trackedFiles) {
+            const trackedFiles = session.snapshot.trackedFiles;
+            for (const trackedFile of trackedFiles) {
+                await this.#assertTrackedFileCanBeReverted(session, trackedFile);
+            }
+
+            for (const trackedFile of trackedFiles) {
                 await this.#revertTrackedFile(session, trackedFile);
             }
 
@@ -2505,6 +2510,20 @@ export class AiWorkerRuntime {
             terminals: new Map(),
             terminalOutputBuffers: new Map(),
         };
+    }
+
+    async #assertTrackedFileCanBeReverted(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        const resolvedPath = this.#resolveWritableSessionPathInfo(
+            liveSession,
+            trackedFile.path,
+        );
+        await this.#assertTrackedFileCurrentState(
+            resolvedPath.absolutePath,
+            trackedFile,
+        );
     }
 
     async #revertTrackedFile(

@@ -1488,9 +1488,36 @@ function resolveAlreadyAppliedPreEditSnapshotDiff(
 }
 
 interface UnifiedPatchHunk {
+    readonly newTrailingNewline?: boolean;
     readonly oldStart: number;
+    readonly oldTrailingNewline?: boolean;
     readonly newStart: number;
     readonly lines: readonly string[];
+}
+
+function resolveAlreadyAppliedExternalDiff(
+    diff: { readonly newText: string; readonly oldText: string },
+    base: string,
+    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    normalizedPath: string,
+    context: DiffResolutionContext | undefined,
+): { readonly newText: string; readonly oldText: string } | null {
+    const resolvedFromUnifiedPatch = resolveAlreadyAppliedUnifiedPatchDiff(
+        diff,
+        base,
+        liveSession,
+        normalizedPath,
+        context?.rawOutput,
+    );
+    if (resolvedFromUnifiedPatch) {
+        return resolvedFromUnifiedPatch;
+    }
+
+    return resolveAlreadyAppliedPreEditSnapshotDiff(
+        diff,
+        base,
+        context?.preEditSnapshot,
+    );
 }
 
 function resolveAlreadyAppliedUnifiedPatchDiff(
@@ -1569,8 +1596,14 @@ function readOpenCodeFileDiffPath(rawOutput: unknown): string | null {
 function parseUnifiedPatchHunks(patch: string): UnifiedPatchHunk[] {
     const hunks: UnifiedPatchHunk[] = [];
     const lines = patch.replace(/\r\n/g, "\n").split("\n");
-    let current: { oldStart: number; newStart: number; lines: string[] } | null =
-        null;
+    let current: {
+        lines: string[];
+        newStart: number;
+        newTrailingNewline?: boolean;
+        oldStart: number;
+        oldTrailingNewline?: boolean;
+    } | null = null;
+    let previousPatchLine: string | null = null;
 
     for (const line of lines) {
         const header = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
@@ -1583,10 +1616,23 @@ function parseUnifiedPatchHunks(patch: string): UnifiedPatchHunk[] {
                 newStart: Number(header[2]),
                 oldStart: Number(header[1]),
             };
+            previousPatchLine = null;
             continue;
         }
 
         if (!current) {
+            continue;
+        }
+
+        if (line === "\\ No newline at end of file") {
+            if (previousPatchLine?.startsWith(" ")) {
+                current.oldTrailingNewline = false;
+                current.newTrailingNewline = false;
+            } else if (previousPatchLine?.startsWith("-")) {
+                current.oldTrailingNewline = false;
+            } else if (previousPatchLine?.startsWith("+")) {
+                current.newTrailingNewline = false;
+            }
             continue;
         }
 
@@ -1596,6 +1642,7 @@ function parseUnifiedPatchHunks(patch: string): UnifiedPatchHunk[] {
             line.startsWith("+")
         ) {
             current.lines.push(line);
+            previousPatchLine = line;
         }
     }
 
@@ -1617,6 +1664,7 @@ function applyUnifiedPatch(
     direction: "forward" | "reverse",
 ): string | null {
     let lines = splitPatchTextLines(text);
+    let trailingNewline = text.endsWith("\n");
     const orderedHunks = [...hunks].reverse();
 
     for (const hunk of orderedHunks) {
@@ -1641,15 +1689,53 @@ function applyUnifiedPatch(
         if (matchIndex === null) {
             return null;
         }
+        const nextTrailingNewline = resolvePatchTrailingNewline(
+            hunk,
+            direction,
+            trailingNewline,
+        );
+        if (nextTrailingNewline === null) {
+            return null;
+        }
 
         lines = [
             ...lines.slice(0, matchIndex),
             ...replacementLines,
             ...lines.slice(matchIndex + matchLines.length),
         ];
+        trailingNewline = nextTrailingNewline;
     }
 
-    return joinPatchTextLines(lines, text.endsWith("\n"));
+    return joinPatchTextLines(lines, trailingNewline);
+}
+
+function resolvePatchTrailingNewline(
+    hunk: UnifiedPatchHunk,
+    direction: "forward" | "reverse",
+    inputTrailingNewline: boolean,
+): boolean | null {
+    const inputMissingTrailingNewline =
+        direction === "forward"
+            ? hunk.oldTrailingNewline === false
+            : hunk.newTrailingNewline === false;
+    const outputMissingTrailingNewline =
+        direction === "forward"
+            ? hunk.newTrailingNewline === false
+            : hunk.oldTrailingNewline === false;
+
+    if (inputMissingTrailingNewline && inputTrailingNewline) {
+        return null;
+    }
+
+    if (outputMissingTrailingNewline) {
+        return false;
+    }
+
+    if (inputMissingTrailingNewline) {
+        return true;
+    }
+
+    return inputTrailingNewline;
 }
 
 function splitPatchTextLines(text: string): string[] {
@@ -1774,38 +1860,28 @@ export function resolveDiffToFullTexts(
     }
 
     const first = base.indexOf(oldSnippet);
-    if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
-        if (!existing && first === -1) {
-            const resolvedFromUnifiedPatch =
-                resolveAlreadyAppliedUnifiedPatchDiff(
-                    { newText: newSnippet, oldText: oldSnippet },
-                    base,
-                    liveSession,
-                    normalizedPath,
-                    context?.rawOutput,
-                );
-            if (resolvedFromUnifiedPatch) {
-                return {
-                    ...diff,
-                    oldText: resolvedFromUnifiedPatch.oldText,
-                    newText: resolvedFromUnifiedPatch.newText,
-                };
-            }
-
-            const resolvedFromPreEditSnapshot =
-                resolveAlreadyAppliedPreEditSnapshotDiff(
-                    { newText: newSnippet, oldText: oldSnippet },
-                    base,
-                    context?.preEditSnapshot,
-                );
-            if (resolvedFromPreEditSnapshot) {
-                return {
-                    ...diff,
-                    oldText: resolvedFromPreEditSnapshot.oldText,
-                    newText: resolvedFromPreEditSnapshot.newText,
-                };
-            }
+    const shouldTryExternalResolution =
+        !existing &&
+        (first === -1 ||
+            (newSnippet.length > 0 && base.includes(newSnippet)));
+    if (shouldTryExternalResolution) {
+        const resolvedAlreadyApplied = resolveAlreadyAppliedExternalDiff(
+            { newText: newSnippet, oldText: oldSnippet },
+            base,
+            liveSession,
+            normalizedPath,
+            context,
+        );
+        if (resolvedAlreadyApplied) {
+            return {
+                ...diff,
+                oldText: resolvedAlreadyApplied.oldText,
+                newText: resolvedAlreadyApplied.newText,
+            };
         }
+    }
+
+    if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
         if (
             existing &&
             (isClaudeEditReEmission(diff, existing, base, context) ||

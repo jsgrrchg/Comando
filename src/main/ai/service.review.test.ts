@@ -693,6 +693,128 @@ describe("resolveDiffToFullTexts", () => {
         expect(resolved.newText).toBe(nextContent);
     });
 
+    it("uses OpenCode filediff patches for already-applied insertions that keep the old snippet", () => {
+        const originalContent = "alpha\nanchor\nomega\n";
+        const nextContent = "alpha\nanchor\ninserted\nomega\n";
+        const duplicatedContent = "alpha\nanchor\ninserted\ninserted\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "anchor\n",
+                newText: "anchor\ninserted\n",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                rawOutput: {
+                    metadata: {
+                        filediff: {
+                            file: absolutePath,
+                            patch: [
+                                `Index: ${absolutePath}`,
+                                "===================================================================",
+                                `--- ${absolutePath}`,
+                                `+++ ${absolutePath}`,
+                                "@@ -1,3 +1,4 @@",
+                                " alpha",
+                                " anchor",
+                                "+inserted",
+                                " omega",
+                                "",
+                            ].join("\n"),
+                        },
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+        expect(resolved.newText).not.toBe(duplicatedContent);
+    });
+
+    it("uses pre-edit snapshots for already-applied insertions that keep the old snippet", () => {
+        const originalContent = "alpha\nanchor\nomega\n";
+        const nextContent = "alpha\nanchor\ninserted\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "anchor\n",
+                newText: "anchor\ninserted\n",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                preEditSnapshot: originalContent,
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("preserves trailing newline changes from OpenCode filediff patches", () => {
+        const originalContent = "alpha\nbeta\n";
+        const nextContent = "alpha\nbeta";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "beta\n",
+                newText: "beta",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                rawOutput: {
+                    metadata: {
+                        filediff: {
+                            file: absolutePath,
+                            patch: [
+                                `Index: ${absolutePath}`,
+                                "===================================================================",
+                                `--- ${absolutePath}`,
+                                `+++ ${absolutePath}`,
+                                "@@ -1,2 +1,2 @@",
+                                " alpha",
+                                "-beta",
+                                "+beta",
+                                "\\ No newline at end of file",
+                                "",
+                            ].join("\n"),
+                        },
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
     it("does not use an ambiguous pre-edit snapshot for external snippet diffs", () => {
         const originalContent = "alpha\nremove me\nomega\nremove me\nend\n";
         const nextContent = "alpha\nomega\nend\n";
