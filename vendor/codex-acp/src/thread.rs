@@ -41,11 +41,14 @@ use codex_protocol::{
     items::TurnItem,
     mcp::CallToolResult,
     models::{
-        ActivePermissionProfile, AdditionalPermissionProfile, FileSystemPermissions,
-        PermissionProfile, ResponseItem, WebSearchAction,
+        ActivePermissionProfile, AdditionalPermissionProfile, PermissionProfile, ResponseItem,
+        WebSearchAction,
     },
     openai_models::{ModelPreset, ReasoningEffort, ReasoningEffortPreset},
     parse_command::ParsedCommand,
+    permissions::{
+        FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSpecialPath,
+    },
     plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs},
     protocol::{
         AgentMessageContentDeltaEvent, AgentMessageEvent, AgentReasoningEvent,
@@ -60,9 +63,10 @@ use codex_protocol::{
         PatchApplyBeginEvent, PatchApplyEndEvent, PatchApplyStatus, PlanDeltaEvent,
         ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent, ReviewDecision,
         ReviewOutputEvent, ReviewRequest, ReviewTarget, RolloutItem, StreamErrorEvent,
-        TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent, TokenCountEvent,
-        TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
-        ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
+        TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent,
+        ThreadSettingsOverrides, TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent,
+        TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent,
+        WebSearchBeginEvent, WebSearchEndEvent,
     },
     request_permissions::{
         PermissionGrantScope, RequestPermissionProfile, RequestPermissionsEvent,
@@ -182,7 +186,7 @@ fn untrusted_read_only_mode_id(config: &Config) -> Option<SessionModeId> {
 }
 
 fn semantic_session_mode_id_for_permission_profile(config: &Config) -> Option<&'static str> {
-    let permission_profile = config.permissions.permission_profile.get();
+    let permission_profile = config.permissions.permission_profile();
 
     match permission_profile {
         PermissionProfile::Managed { .. } => {
@@ -218,7 +222,7 @@ fn current_session_mode_id(config: &Config) -> Option<SessionModeId> {
 
     if let Some(preset) = APPROVAL_PRESETS.iter().find(|preset| {
         approval_matches_current_config(preset, config)
-            && &preset.permission_profile == config.permissions.permission_profile.get()
+            && preset.permission_profile == *config.permissions.permission_profile()
     }) {
         return Some(SessionModeId::new(preset.id));
     }
@@ -332,6 +336,7 @@ enum ThreadMessage {
     },
     PermissionRequestResolved {
         submission_id: String,
+        interaction_id: u64,
         request_key: String,
         response: Result<RequestPermissionResponse, Error>,
     },
@@ -523,21 +528,27 @@ impl SubmissionState {
     async fn handle_permission_request_resolved(
         &mut self,
         client: &SessionClient,
+        interaction_id: u64,
         request_key: String,
         response: Result<RequestPermissionResponse, Error>,
     ) -> Result<(), Error> {
         match self {
             Self::Prompt(state) => {
                 state
-                    .handle_permission_request_resolved(client, request_key, response)
+                    .handle_permission_request_resolved(
+                        client,
+                        interaction_id,
+                        request_key,
+                        response,
+                    )
                     .await
             }
         }
     }
 
-    fn abort_pending_interactions(&mut self) {
+    fn detach_pending_interactions(&mut self) {
         let Self::Prompt(state) = self;
-        state.abort_pending_interactions();
+        state.detach_pending_interactions();
     }
 
     fn fail(&mut self, err: Error) {
@@ -559,8 +570,8 @@ struct ActiveCommand {
 }
 
 struct PendingPermissionInteraction {
+    id: u64,
     request: PendingPermissionRequest,
-    task: tokio::task::JoinHandle<()>,
 }
 
 enum PendingPermissionRequest {
@@ -866,6 +877,8 @@ fn format_thread_goal_update(event: &ThreadGoalUpdatedEvent) -> String {
         ThreadGoalStatus::Active => "active",
         ThreadGoalStatus::Paused => "paused",
         ThreadGoalStatus::BudgetLimited => "budget limited",
+        ThreadGoalStatus::Blocked => "blocked",
+        ThreadGoalStatus::UsageLimited => "usage limited",
         ThreadGoalStatus::Complete => "complete",
     };
 
@@ -886,6 +899,7 @@ struct PromptState {
     thread: Arc<dyn CodexThreadImpl>,
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     pending_permission_interactions: HashMap<String, PendingPermissionInteraction>,
+    next_permission_interaction_id: u64,
     event_count: usize,
     response_tx: Option<oneshot::Sender<Result<StopReason, Error>>>,
     seen_message_deltas: bool,
@@ -1012,6 +1026,45 @@ fn format_file_changes(changes: &HashMap<PathBuf, FileChange>) -> String {
         .join("\n")
 }
 
+fn format_file_system_entries<'a>(
+    entries: impl Iterator<Item = &'a FileSystemSandboxEntry>,
+) -> String {
+    entries
+        .map(format_file_system_entry)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_file_system_entry(entry: &FileSystemSandboxEntry) -> String {
+    match &entry.path {
+        FileSystemPath::Path { path } => path.display().to_string(),
+        FileSystemPath::GlobPattern { pattern } => format!("glob `{pattern}`"),
+        FileSystemPath::Special { value } => format_file_system_special(value),
+    }
+}
+
+fn format_file_system_special(value: &FileSystemSpecialPath) -> String {
+    match value {
+        FileSystemSpecialPath::Root => ":root".to_string(),
+        FileSystemSpecialPath::Minimal => ":minimal".to_string(),
+        FileSystemSpecialPath::ProjectRoots { subpath } => {
+            format_file_system_subpath(":project_roots", subpath.as_deref())
+        }
+        FileSystemSpecialPath::Tmpdir => ":tmpdir".to_string(),
+        FileSystemSpecialPath::SlashTmp => "/tmp".to_string(),
+        FileSystemSpecialPath::Unknown { path, subpath } => {
+            format_file_system_subpath(path, subpath.as_deref())
+        }
+    }
+}
+
+fn format_file_system_subpath(base: &str, subpath: Option<&Path>) -> String {
+    match subpath {
+        Some(subpath) => format!("{base}/{}", subpath.display()),
+        None => base.to_string(),
+    }
+}
+
 fn format_permission_rule(permissions: &RequestPermissionProfile) -> Option<String> {
     let mut parts = Vec::new();
 
@@ -1024,30 +1077,34 @@ fn format_permission_rule(permissions: &RequestPermissionProfile) -> Option<Stri
         parts.push("network".to_string());
     }
 
-    if let Some((read, write)) = permissions
-        .file_system
-        .as_ref()
-        .and_then(FileSystemPermissions::legacy_read_write_roots)
-    {
-        if let Some(read) = read.as_ref().filter(|paths| !paths.is_empty()) {
-            parts.push(format!(
-                "read {}",
-                read.iter()
-                    .map(|path| format!("`{}`", path.display()))
-                    .join(", ")
-            ));
+    if let Some(file_system) = permissions.file_system.as_ref() {
+        let reads = format_file_system_entries(
+            file_system
+                .entries
+                .iter()
+                .filter(|entry| entry.access == FileSystemAccessMode::Read),
+        );
+        if !reads.is_empty() {
+            parts.push(format!("read {reads}"));
         }
-        if let Some(write) = write.as_ref().filter(|paths| !paths.is_empty()) {
-            parts.push(format!(
-                "write {}",
-                write
-                    .iter()
-                    .map(|path| format!("`{}`", path.display()))
-                    .join(", ")
-            ));
+        let writes = format_file_system_entries(
+            file_system
+                .entries
+                .iter()
+                .filter(|entry| entry.access == FileSystemAccessMode::Write),
+        );
+        if !writes.is_empty() {
+            parts.push(format!("write {writes}"));
         }
-    } else if permissions.file_system.is_some() {
-        parts.push("filesystem".to_string());
+        let denies = format_file_system_entries(
+            file_system
+                .entries
+                .iter()
+                .filter(|entry| entry.access == FileSystemAccessMode::Deny),
+        );
+        if !denies.is_empty() {
+            parts.push(format!("deny {denies}"));
+        }
     }
 
     if parts.is_empty() {
@@ -1309,6 +1366,7 @@ impl PromptState {
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
+            next_permission_interaction_id: 0,
             event_count: 0,
             response_tx: Some(response_tx),
             seen_message_deltas: false,
@@ -1331,6 +1389,7 @@ impl PromptState {
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
+            next_permission_interaction_id: 0,
             event_count: 0,
             response_tx: None,
             seen_message_deltas: false,
@@ -1354,36 +1413,37 @@ impl PromptState {
         tool_call: ToolCallUpdate,
         options: Vec<PermissionOption>,
     ) {
+        let interaction_id = self.next_permission_interaction_id;
+        self.next_permission_interaction_id = self.next_permission_interaction_id.wrapping_add(1);
         let client = client.clone();
         let resolution_tx = self.resolution_tx.clone();
         let submission_id = self.submission_id.clone();
         let resolved_request_key = request_key.clone();
-        let handle = tokio::spawn(async move {
+        drop(tokio::spawn(async move {
             let response = client.request_permission(tool_call, options).await;
             drop(
                 resolution_tx.send(ThreadMessage::PermissionRequestResolved {
                     submission_id,
+                    interaction_id,
                     request_key: resolved_request_key,
                     response,
                 }),
             );
-        });
+        }));
 
-        if let Some(interaction) = self.pending_permission_interactions.insert(
+        self.pending_permission_interactions.insert(
             request_key,
             PendingPermissionInteraction {
+                id: interaction_id,
                 request: pending_request,
-                task: handle,
             },
-        ) {
-            interaction.task.abort();
-        }
+        );
     }
 
-    fn abort_pending_interactions(&mut self) {
-        for (_, interaction) in self.pending_permission_interactions.drain() {
-            interaction.task.abort();
-        }
+    fn detach_pending_interactions(&mut self) {
+        // Keep detached permission request tasks running so ACP can route the
+        // client's required `Cancelled` response after session cancellation.
+        self.pending_permission_interactions.clear();
     }
 
     fn fail(&mut self, err: Error) {
@@ -1395,14 +1455,28 @@ impl PromptState {
     async fn handle_permission_request_resolved(
         &mut self,
         _client: &SessionClient,
+        interaction_id: u64,
         request_key: String,
         response: Result<RequestPermissionResponse, Error>,
     ) -> Result<(), Error> {
-        let Some(interaction) = self.pending_permission_interactions.remove(&request_key) else {
+        let Some(pending_interaction_id) = self
+            .pending_permission_interactions
+            .get(&request_key)
+            .map(|interaction| interaction.id)
+        else {
             warn!("Ignoring permission response for unknown request key: {request_key}");
             return Ok(());
         };
 
+        if pending_interaction_id != interaction_id {
+            warn!("Ignoring stale permission response for request key: {request_key}");
+            return Ok(());
+        }
+
+        let Some(interaction) = self.pending_permission_interactions.remove(&request_key) else {
+            warn!("Ignoring permission response for unknown request key: {request_key}");
+            return Ok(());
+        };
         let pending_request = interaction.request;
         let response = response?;
         match pending_request {
@@ -1763,6 +1837,7 @@ impl PromptState {
                 images: _,
                 text_elements: _,
                 local_images: _,
+                ..
             }) => {
                 info!("User message: {message:?}");
                 if self.project_user_messages {
@@ -2047,7 +2122,7 @@ impl PromptState {
                 client
                     .send_turn_lifecycle(CODEX_ACP_TURN_COMPLETE_EVENT_TYPE, Some(&turn_id))
                     .await;
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::EndTurn)).ok();
                 }
@@ -2079,7 +2154,7 @@ impl PromptState {
                 codex_error_info,
             }) => {
                 error!("Unhandled error during turn: {message} {codex_error_info:?}");
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx
                         .send(Err(Error::internal_error().data(
@@ -2097,7 +2172,7 @@ impl PromptState {
                 client
                     .send_turn_lifecycle(CODEX_ACP_TURN_ABORTED_EVENT_TYPE, turn_id.as_deref())
                     .await;
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
                 }
@@ -2107,7 +2182,7 @@ impl PromptState {
                 client
                     .send_turn_lifecycle(CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE, None)
                     .await;
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
                 }
@@ -2248,10 +2323,10 @@ impl PromptState {
 
             // Ignore these events
             EventMsg::AgentReasoningRawContent(..)
+            | EventMsg::ThreadSettingsApplied(..)
             | EventMsg::ThreadRolledBack(..)
             // we already have a way to diff the turn, so ignore
             | EventMsg::TurnDiff(..)
-            | EventMsg::SkillsUpdateAvailable
             // Old events
             | EventMsg::RawResponseItem(..)
             | EventMsg::SessionConfigured(..)
@@ -2512,6 +2587,7 @@ impl PromptState {
             // grant_root doesn't seem to be set anywhere on the codex side
             grant_root: _,
             turn_id: _,
+            ..
         } = event;
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
         let request_key = patch_request_key(&call_id);
@@ -3759,15 +3835,21 @@ impl<A: Auth> ThreadActor<A> {
             }
             ThreadMessage::PermissionRequestResolved {
                 submission_id,
+                interaction_id,
                 request_key,
                 response,
             } => {
                 if let Some(submission) = self.submissions.get_mut(&submission_id) {
                     if let Err(err) = submission
-                        .handle_permission_request_resolved(&self.client, request_key, response)
+                        .handle_permission_request_resolved(
+                            &self.client,
+                            interaction_id,
+                            request_key,
+                            response,
+                        )
                         .await
                     {
-                        submission.abort_pending_interactions();
+                        submission.detach_pending_interactions();
                         submission.fail(err);
                     }
                     return;
@@ -3781,10 +3863,15 @@ impl<A: Auth> ThreadActor<A> {
                 };
 
                 if let Err(err) = projection
-                    .handle_permission_request_resolved(&self.client, request_key, response)
+                    .handle_permission_request_resolved(
+                        &self.client,
+                        interaction_id,
+                        request_key,
+                        response,
+                    )
                     .await
                 {
-                    projection.abort_pending_interactions();
+                    projection.detach_pending_interactions();
                     projection.fail(err);
                 }
             }
@@ -4118,19 +4205,12 @@ impl<A: Auth> ThreadActor<A> {
         };
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: Some(model_to_use.clone()),
-                effort: Some(effort_to_use),
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    model: Some(model_to_use.clone()),
+                    effort: Some(effort_to_use),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4166,19 +4246,11 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: None,
-                effort: Some(Some(effort)),
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    effort: Some(Some(effort)),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4200,19 +4272,11 @@ impl<A: Auth> ThreadActor<A> {
         };
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: None,
-                effort: None,
-                summary: None,
-                service_tier: Some(service_tier.clone()),
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(service_tier.clone()),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4293,6 +4357,7 @@ impl<A: Auth> ThreadActor<A> {
                         }],
                         final_output_json_schema: None,
                         responsesapi_client_metadata: None,
+                        thread_settings: Default::default(),
                     }
                 }
                 "fast" => {
@@ -4420,6 +4485,7 @@ impl<A: Auth> ThreadActor<A> {
                             }],
                             final_output_json_schema: None,
                             responsesapi_client_metadata: None,
+                            thread_settings: Default::default(),
                         }
                     } else {
                         op = Op::UserInput {
@@ -4427,6 +4493,7 @@ impl<A: Auth> ThreadActor<A> {
                             items,
                             final_output_json_schema: None,
                             responsesapi_client_metadata: None,
+                            thread_settings: Default::default(),
                         }
                     }
                 }
@@ -4437,6 +4504,7 @@ impl<A: Auth> ThreadActor<A> {
                 items,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             }
         }
 
@@ -4468,19 +4536,14 @@ impl<A: Auth> ThreadActor<A> {
             .ok_or_else(Error::invalid_params)?;
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: Some(preset.approval),
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: Some(preset.permission_profile.clone()),
-                windows_sandbox_level: None,
-                model: None,
-                effort: None,
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    approval_policy: Some(preset.approval),
+                    permission_profile: Some(preset.permission_profile.clone()),
+                    active_permission_profile: active_profile_id_for_session_mode(preset.id)
+                        .map(ActivePermissionProfile::new),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4492,10 +4555,7 @@ impl<A: Auth> ThreadActor<A> {
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
         self.config
             .permissions
-            .set_permission_profile_with_active_profile(
-                preset.permission_profile.clone(),
-                active_profile_id_for_session_mode(preset.id).map(ActivePermissionProfile::new),
-            )
+            .set_permission_profile(preset.permission_profile.clone())
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
 
         if mode_trusts_project(preset.id) {
@@ -4532,19 +4592,12 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: Some(model_to_use.clone()),
-                effort: Some(effort_to_use),
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    model: Some(model_to_use.clone()),
+                    effort: Some(effort_to_use),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4556,7 +4609,7 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_cancel(&mut self) -> Result<(), Error> {
-        self.abort_pending_interactions();
+        self.detach_pending_interactions();
         self.thread
             .submit(Op::Interrupt)
             .await
@@ -4565,7 +4618,7 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_shutdown(&mut self) -> Result<(), Error> {
-        self.abort_pending_interactions();
+        self.detach_pending_interactions();
         self.thread
             .submit(Op::Shutdown)
             .await
@@ -4573,9 +4626,12 @@ impl<A: Auth> ThreadActor<A> {
         Ok(())
     }
 
-    fn abort_pending_interactions(&mut self) {
+    fn detach_pending_interactions(&mut self) {
         for submission in self.submissions.values_mut() {
-            submission.abort_pending_interactions();
+            submission.detach_pending_interactions();
+        }
+        for projection in self.event_projections.values_mut() {
+            projection.detach_pending_interactions();
         }
     }
 
@@ -5035,6 +5091,7 @@ fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<UserInput> {
             }),
             ContentBlock::Image(image_block) => Some(UserInput::Image {
                 image_url: format!("data:{};base64,{}", image_block.mime_type, image_block.data),
+                detail: None,
             }),
             ContentBlock::ResourceLink(ResourceLink { name, uri, .. }) => Some(UserInput::Text {
                 text: format_uri_as_link(Some(name), uri),
@@ -6040,8 +6097,11 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            Op::OverrideTurnContext {
-                service_tier: Some(Some(value)),
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(Some(value)),
+                    ..
+                },
                 ..
             } if value == ServiceTier::Fast.request_value()
         ));
@@ -6088,8 +6148,11 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            Op::OverrideTurnContext {
-                service_tier: Some(Some(value)),
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(Some(value)),
+                    ..
+                },
                 ..
             } if value == ServiceTier::Fast.request_value()
         ));
@@ -6164,15 +6227,21 @@ mod tests {
         assert_eq!(ops.len(), 2);
         assert!(matches!(
             &ops[0],
-            Op::OverrideTurnContext {
-                service_tier: Some(Some(value)),
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(Some(value)),
+                    ..
+                },
                 ..
             } if value == ServiceTier::Fast.request_value()
         ));
         assert!(matches!(
             &ops[1],
-            Op::OverrideTurnContext {
-                service_tier: Some(None),
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(None),
+                    ..
+                },
                 ..
             }
         ));
@@ -6223,6 +6292,7 @@ mod tests {
                 environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             }],
             "ops don't match {ops:?}"
         );
@@ -6507,6 +6577,7 @@ mod tests {
                 environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             }],
             "ops don't match {ops:?}"
         );
@@ -6758,8 +6829,10 @@ mod tests {
             msg: EventMsg::UserMessage(UserMessageEvent {
                 message: "child prompt".to_string(),
                 images: None,
+                image_details: vec![],
                 text_elements: vec![],
                 local_images: vec![],
+                local_image_details: vec![],
             }),
         })?;
         thread.op_tx.send(Event {
@@ -7301,7 +7374,7 @@ mod tests {
                         })
                         .unwrap();
                 }
-                Op::OverrideTurnContext { .. } => {}
+                Op::ThreadSettings { .. } => {}
                 _ => {
                     unimplemented!()
                 }

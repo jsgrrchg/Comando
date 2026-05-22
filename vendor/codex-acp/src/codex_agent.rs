@@ -18,7 +18,8 @@ use codex_core::{
     ThreadSortKey, config::Config, find_thread_path_by_id_str, init_state_db, parse_cursor,
     resolve_installation_id, thread_store_from_config,
 };
-use codex_exec_server::{EnvironmentManager, EnvironmentManagerArgs, ExecServerRuntimePaths};
+use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
+use codex_extension_api::empty_extension_registry;
 use codex_login::{
     CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
     auth::{AuthManager, CodexAuth, read_codex_api_key_from_env, read_openai_api_key_from_env},
@@ -91,12 +92,12 @@ impl CodexAgent {
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
         let state_db = init_state_db(&config).await;
+        let local_runtime_paths =
+            ExecServerRuntimePaths::new(std::env::current_exe()?, codex_linux_sandbox_exe)?;
         let environment_manager = Arc::new(
-            EnvironmentManager::new(EnvironmentManagerArgs::new(ExecServerRuntimePaths::new(
-                std::env::current_exe()?,
-                codex_linux_sandbox_exe,
-            )?))
-            .await,
+            EnvironmentManager::from_codex_home(&config.codex_home, Some(local_runtime_paths))
+                .await
+                .map_err(std::io::Error::other)?,
         );
         let thread_store = thread_store_from_config(&config, state_db.clone());
         let installation_id = resolve_installation_id(&config.codex_home).await?;
@@ -105,10 +106,12 @@ impl CodexAgent {
             auth_manager.clone(),
             SessionSource::Unknown,
             environment_manager,
+            empty_extension_registry(),
             None,
             thread_store,
             state_db.clone(),
             installation_id,
+            None,
         ));
         Ok(Self {
             auth_manager,
@@ -470,7 +473,6 @@ impl CodexAgent {
         mcp_servers: Vec<McpServer>,
     ) -> Result<Config, Error> {
         let mut config = self.config.clone();
-        config.include_apply_patch_tool = true;
         config.cwd = cwd.try_into().map_err(Error::into_internal_error)?;
         let cwd = config.cwd.clone();
 
@@ -506,6 +508,7 @@ impl CodexAgent {
                             enabled_tools: None,
                             disabled_reason: None,
                             scopes: None,
+                            oauth: None,
                             oauth_resource: None,
                             tools: Default::default(),
                             experimental_environment: None,
@@ -545,6 +548,7 @@ impl CodexAgent {
                             enabled_tools: None,
                             disabled_reason: None,
                             scopes: None,
+                            oauth: None,
                             oauth_resource: None,
                             tools: Default::default(),
                             experimental_environment: None,
@@ -585,10 +589,7 @@ impl CodexAgent {
             .map_err(Error::into_internal_error)?;
         config
             .permissions
-            .set_permission_profile_with_active_profile(
-                session_configured.permission_profile.clone(),
-                session_configured.active_permission_profile.clone(),
-            )
+            .set_permission_profile(session_configured.permission_profile.clone())
             .map_err(Error::into_internal_error)?;
         Ok(())
     }
@@ -609,10 +610,7 @@ impl CodexAgent {
             .map_err(Error::into_internal_error)?;
         config
             .permissions
-            .set_permission_profile_with_active_profile(
-                snapshot.permission_profile.clone(),
-                snapshot.active_permission_profile.clone(),
-            )
+            .set_permission_profile(snapshot.permission_profile.clone())
             .map_err(Error::into_internal_error)?;
         Ok(())
     }
@@ -1313,7 +1311,7 @@ mod tests {
             AskForApproval::OnFailure
         );
         assert!(matches!(
-            config.permissions.permission_profile.get(),
+            config.permissions.permission_profile(),
             PermissionProfile::Disabled
         ));
         assert_eq!(config.cwd.to_path_buf(), std::env::current_dir()?);

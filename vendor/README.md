@@ -12,10 +12,11 @@ Current scope in Comando:
 ## Current Baselines
 
 - `codex-acp/`
-  - upstream baseline: `zed-industries/codex-acp` `0.14.0`
-  - synced against upstream commit `156cb0da12f6c7b1c697f90b5f22d5e14be31165`
-  - OpenAI Codex Rust crates: `rust-v0.129.0` (`2808a4deb181e5ca2b1293a1a5980938cb746861`)
-  - vendor ACP SDK: `agent-client-protocol` `0.11.1`
+  - upstream baseline: `zed-industries/codex-acp` `0.15.0`
+  - synced against upstream commit `863d433fc91855d0b5427372bf635c894bf68cb6`
+  - OpenAI Codex Rust crates: `rust-v0.133.0`
+  - vendor ACP SDK: `agent-client-protocol` `0.12.1`
+  - includes upstream's local `codex-utils-pty` patch under `vendor/codex-acp/vendor/codex-utils-pty`
   - local Comando delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/Cargo.toml`
     - `vendor/codex-acp/src/lib.rs`
@@ -45,11 +46,11 @@ The remaining Comando-specific delta exists to preserve desktop product behavior
 - generated-image bridge that emits live Codex image generation begin/end events and replayed image generation response items as ACP `image_generation` tool updates for inline chat rendering
 - session-config synchronization from Codex `SessionConfiguredEvent` back into the ACP session config
 - subagent session registration and breadcrumb notifications for spawned Codex child threads
-- state DB/thread-store/installation ID wiring required by the `rust-v0.129.0` Codex runtime API
+- state DB/thread-store/installation ID wiring required by the `rust-v0.133.0` Codex runtime API
 - async auth reload/logout compatibility for ChatGPT and API-key auth flows
 - O(N²) exec-output fallback fix from upstream while preserving Comando's exec snapshot diff reconstruction
 
-When updating Codex again, treat `156cb0d` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
+When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
 Comando's ACP client lives in TypeScript/Electron under `src/main/ai/` and currently uses `@agentclientprotocol/sdk` from npm. Do not copy a Rust workspace ACP client migration unless Comando gains an equivalent Rust backend.
 
