@@ -131,6 +131,7 @@ import {
 import {
     applyOpenCodeAuthEnv,
     getOpenCodeRuntimeStatus,
+    isOpenCodeEnvironmentCredentialReady,
     isOpenCodeAuthenticationError,
     launchOpenCodeLogin,
     markOpenCodeAuthInvalidated,
@@ -428,13 +429,22 @@ export class AiService {
     ): Promise<AiRuntimeStatus> {
         const currentSettings =
             this.#settingsService.loadOpenCodeRuntimeSettings();
+        const binaryPath = normalizeOptionalText(settings.binaryPath);
+        const settingsChanged =
+            currentSettings.authMethod !== settings.authMethod ||
+            normalizeOptionalText(currentSettings.binaryPath) !== binaryPath;
+        const shouldClearInvalidation =
+            settings.authMethod === "opencode-login" &&
+            (currentSettings.authInvalidatedAtMs === null ||
+                settingsChanged ||
+                isOpenCodeEnvironmentCredentialReady(process.env));
         const nextSettings = {
             authInvalidatedAtMs:
-                settings.authMethod === "opencode-login"
+                shouldClearInvalidation
                     ? null
                     : currentSettings.authInvalidatedAtMs,
             authMethod: settings.authMethod,
-            binaryPath: normalizeOptionalText(settings.binaryPath),
+            binaryPath,
         };
 
         await this.#saveOpenCodeAuthSettings(nextSettings);

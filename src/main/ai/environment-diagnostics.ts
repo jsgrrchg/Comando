@@ -125,6 +125,26 @@ const CREDENTIAL_ENVIRONMENT: readonly {
         runtimeId: "opencode",
     },
     {
+        name: "ANTHROPIC_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "CODEX_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "GEMINI_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "GOOGLE_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "OPENAI_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
         name: "OPENAI_API_KEY",
         runtimeId: "codex",
     },

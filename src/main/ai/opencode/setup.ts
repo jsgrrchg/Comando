@@ -189,6 +189,12 @@ export function isOpenCodeAuthenticationError(message: string): boolean {
     );
 }
 
+export function isOpenCodeEnvironmentCredentialReady(
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    return environmentOpenCodeCredentialReady(env);
+}
+
 function detectOpenCodeAuthMethod(
     settings: OpenCodeRuntimeSettings,
 ): OpenCodeAuthMethodId | null {

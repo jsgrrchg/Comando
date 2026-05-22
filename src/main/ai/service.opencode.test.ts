@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
     AiRuntimeStatus,
@@ -12,6 +12,33 @@ import type {
 
 import { AiService } from "./service";
 import type { AiWorkerGateway } from "./contracts";
+
+const OPENCODE_ENV_CREDENTIAL_NAMES = [
+    "ANTHROPIC_API_KEY",
+    "CODEX_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENCODE_API_KEY",
+] as const;
+const originalEnvCredentials = Object.fromEntries(
+    OPENCODE_ENV_CREDENTIAL_NAMES.map((name) => [name, process.env[name]]),
+) as Record<(typeof OPENCODE_ENV_CREDENTIAL_NAMES)[number], string | undefined>;
+const originalXdgDataHome = process.env.XDG_DATA_HOME;
+
+beforeEach(() => {
+    for (const name of OPENCODE_ENV_CREDENTIAL_NAMES) {
+        delete process.env[name];
+    }
+    delete process.env.XDG_DATA_HOME;
+});
+
+afterEach(() => {
+    for (const name of OPENCODE_ENV_CREDENTIAL_NAMES) {
+        restoreEnv(name, originalEnvCredentials[name]);
+    }
+    restoreEnv("XDG_DATA_HOME", originalXdgDataHome);
+});
 
 describe("AiService OpenCode branch", () => {
     it("stores OpenCode settings and emits runtime status", async () => {
@@ -44,6 +71,88 @@ describe("AiService OpenCode branch", () => {
         });
         expect(status.runtimeId).toBe("opencode");
         expect(runtimeStatusEvents.at(-1)?.runtimeId).toBe("opencode");
+    });
+
+    it("does not clear an invalidated OpenCode login on an unchanged save", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-unchanged-save-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
+            let savedSettings: OpenCodeRuntimeSettings | null = null;
+            const currentSettings = createOpenCodeSettings({
+                authInvalidatedAtMs: 12345,
+                authMethod: "opencode-login",
+                binaryPath,
+            });
+            const service = createService({
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() => currentSettings),
+                    saveOpenCodeRuntimeSettings: (
+                        settings: OpenCodeRuntimeSettings,
+                    ) => {
+                        savedSettings = settings;
+                    },
+                }),
+            });
+
+            const status = await service.saveOpenCodeRuntimeSettings({
+                authMethod: "opencode-login",
+                binaryPath,
+            });
+
+            expect(savedSettings).toEqual(currentSettings);
+            expect(status.authReady).toBe(false);
+            expect(status.onboardingRequired).toBe(true);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("clears OpenCode invalidation when settings change explicitly", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-changed-save-"),
+        );
+
+        try {
+            const currentBinaryPath = writeExecutable(tempDir, "opencode");
+            const nextBinaryPath = writeExecutable(tempDir, "next-opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
+            let savedSettings: OpenCodeRuntimeSettings | null = null;
+            const service = createService({
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authInvalidatedAtMs: 12345,
+                            authMethod: "opencode-login",
+                            binaryPath: currentBinaryPath,
+                        }),
+                    ),
+                    saveOpenCodeRuntimeSettings: (
+                        settings: OpenCodeRuntimeSettings,
+                    ) => {
+                        savedSettings = settings;
+                    },
+                }),
+            });
+
+            const status = await service.saveOpenCodeRuntimeSettings({
+                authMethod: "opencode-login",
+                binaryPath: nextBinaryPath,
+            });
+
+            expect(savedSettings).toMatchObject({
+                authInvalidatedAtMs: null,
+                authMethod: "opencode-login",
+                binaryPath: nextBinaryPath,
+            });
+            expect(status.authReady).toBe(true);
+            expect(status.onboardingRequired).toBe(false);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
     });
 
     it("disconnects OpenCode from Comando without deleting external credentials", async () => {
@@ -81,6 +190,7 @@ describe("AiService OpenCode branch", () => {
 
         try {
             const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
             const preparedSnapshot = createSessionSnapshot();
             const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
                 async () => preparedSnapshot,
@@ -280,4 +390,12 @@ function writeExecutable(dir: string, name: string): string {
     fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
     fs.chmodSync(binaryPath, 0o755);
     return binaryPath;
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+    if (typeof value === "string") {
+        process.env[name] = value;
+    } else {
+        delete process.env[name];
+    }
 }

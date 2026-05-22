@@ -346,7 +346,14 @@ export const AI_PROVIDER_DEFINITIONS = {
     opencode: {
         defaultMethodId: "opencode-login",
         description: "OpenCode runtime using the local CLI auth state.",
-        envVars: ["OPENCODE_API_KEY"],
+        envVars: [
+            "OPENCODE_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "CODEX_API_KEY",
+        ],
         id: "opencode",
         methods: [
             {
