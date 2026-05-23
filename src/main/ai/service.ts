@@ -1924,14 +1924,22 @@ export class AiService {
             return;
         }
 
-        if (runtimeId !== "kilo" || !isKiloAuthenticationError(message)) {
-            if (
-                runtimeId !== "opencode" ||
-                !isOpenCodeAuthenticationError(message)
-            ) {
-                return;
-            }
+        if (runtimeId === "kilo" && isKiloAuthenticationError(message)) {
+            const nextSettings = markKiloAuthInvalidated({
+                ...this.#settingsService.loadKiloRuntimeSettings(),
+                authMethod: "kilo-login",
+            });
+            this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                getKiloRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            return;
+        }
 
+        if (
+            runtimeId === "opencode" &&
+            isOpenCodeAuthenticationError(message)
+        ) {
             const nextSettings = markOpenCodeAuthInvalidated({
                 ...this.#settingsService.loadOpenCodeRuntimeSettings(),
                 authMethod: "opencode-login",
@@ -1940,17 +1948,7 @@ export class AiService {
             this.#onRuntimeStatus(
                 getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
             );
-            return;
         }
-
-        const nextSettings = markKiloAuthInvalidated({
-            ...this.#settingsService.loadKiloRuntimeSettings(),
-            authMethod: "kilo-login",
-        });
-        this.#settingsService.saveKiloRuntimeSettings(nextSettings);
-        this.#onRuntimeStatus(
-            getKiloRuntimeStatus(nextSettings, this.#secretStore),
-        );
     }
 }
 
