@@ -1180,7 +1180,22 @@ function rememberReadSnapshotFromToolUpdate(
     snapshots.set(normalizedPath, snapshot);
 }
 
-function parseCompleteNumberedFileOutput(rawOutput: unknown): string | null {
+// Parses the numbered file body that OpenCode's Read tool emits, for example:
+//
+//   <content>
+//   1: alpha
+//   2: beta
+//   (End of file - total 2 lines)
+//   </content>
+//
+// Returns the raw file contents (with newlines preserved) when the body is a
+// complete, consistent snapshot, or null otherwise — including when the wrapper
+// tags are missing, the trailing line count differs from the parsed numbered
+// lines, or the numbering is not strictly 1..N. Callers treat null as "fall
+// back to other diff-resolution paths" (filediff.patch, prior tracked state).
+export function parseCompleteNumberedFileOutput(
+    rawOutput: unknown,
+): string | null {
     const output =
         typeof rawOutput === "string"
             ? rawOutput

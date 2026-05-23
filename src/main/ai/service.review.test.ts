@@ -1481,3 +1481,70 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         });
     });
 });
+
+describe("parseCompleteNumberedFileOutput", () => {
+    function buildOpenCodeReadOutput(
+        body: readonly string[],
+        footer: string,
+    ): string {
+        return ["<content>", ...body, footer, "</content>"].join("\n");
+    }
+
+    it("parses a single-line file body with singular footer wording", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: only line"],
+            "(End of file - total 1 line)",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBe(
+            "only line",
+        );
+    });
+
+    it("accepts a rawOutput record whose `output` field carries the body", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: alpha", "2: beta"],
+            "(End of file - total 2 lines)",
+        );
+
+        expect(
+            __testing.parseCompleteNumberedFileOutput({ output }),
+        ).toBe("alpha\nbeta");
+    });
+
+    it("returns null when the <content> wrapper tags are missing", () => {
+        const output = [
+            "1: alpha",
+            "2: beta",
+            "(End of file - total 2 lines)",
+        ].join("\n");
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
+    });
+
+    it("returns null when the footer line count is missing", () => {
+        const output = ["<content>", "1: alpha", "2: beta", "</content>"].join(
+            "\n",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
+    });
+
+    it("returns null when the declared line count does not match the body", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: alpha", "2: beta"],
+            "(End of file - total 5 lines)",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
+    });
+
+    it("returns null when the line numbering skips a value", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: alpha", "3: gamma"],
+            "(End of file - total 2 lines)",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
+    });
+});

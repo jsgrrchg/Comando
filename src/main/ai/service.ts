@@ -86,6 +86,7 @@ import {
     diffToAiFileDiff,
     mapToolCallUpdate,
     normalizeTrackedDiffPath,
+    parseCompleteNumberedFileOutput,
     resolveDiffToFullTexts,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
@@ -2026,6 +2027,7 @@ export const __testing = {
     diffToAiFileDiff,
     mapToolCallUpdate,
     normalizeTrackedDiffPath,
+    parseCompleteNumberedFileOutput,
     resolveDiffToFullTexts,
     resolveTrackedFileHunks,
     shouldSuppressToolActivityUpdate,
