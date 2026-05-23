@@ -12,6 +12,7 @@ import type {
 
 import type { SecretRecordPatch, SecretStoreGateway } from "../secret-store.ts";
 import { launchTerminalLoginCommand } from "../auth/terminal-login.ts";
+import { resolveXdgDataDir } from "../data-dir.ts";
 import { debugBenignError } from "../../observability/logging.ts";
 
 const KILO_PROGRAM_NAME = "kilo";
@@ -837,35 +838,13 @@ function normalizeTimestampToMillis(value: number | null): number | null {
 }
 
 function getKiloAuthStorePath(): string | null {
-    const baseDir = getKiloDataDir();
+    const baseDir = resolveXdgDataDir();
     return baseDir ? path.join(baseDir, "kilo", "auth.json") : null;
 }
 
 function getKiloSqliteStorePath(): string | null {
-    const baseDir = getKiloDataDir();
+    const baseDir = resolveXdgDataDir();
     return baseDir ? path.join(baseDir, "kilo", "kilo.db") : null;
-}
-
-function getKiloDataDir(): string | null {
-    const xdgDataHome = process.env.XDG_DATA_HOME?.trim() ?? "";
-    if (xdgDataHome) {
-        return xdgDataHome;
-    }
-
-    if (process.platform === "win32") {
-        const localAppData = process.env.LOCALAPPDATA?.trim() ?? "";
-        if (localAppData) {
-            return localAppData;
-        }
-    }
-
-    const homeDir =
-        process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || "";
-    if (!homeDir) {
-        return null;
-    }
-
-    return path.join(homeDir, ".local", "share");
 }
 
 function getFileModifiedAtMs(filePath: string): number | null {

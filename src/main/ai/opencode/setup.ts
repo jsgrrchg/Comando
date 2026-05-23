@@ -10,6 +10,7 @@ import type {
 } from "@shared/ipc";
 
 import { launchTerminalLoginCommand } from "../auth/terminal-login";
+import { resolveXdgDataDir } from "../data-dir";
 import type { SecretStoreGateway } from "../secret-store";
 import { debugBenignError } from "../../observability/logging";
 
@@ -292,30 +293,8 @@ function getOpenCodeAuthStoreStatus(): OpenCodeAuthStoreStatus | null {
 }
 
 function getOpenCodeAuthStorePath(): string | null {
-    const baseDir = getOpenCodeDataDir();
+    const baseDir = resolveXdgDataDir();
     return baseDir ? path.join(baseDir, "opencode", "auth.json") : null;
-}
-
-function getOpenCodeDataDir(): string | null {
-    const xdgDataHome = process.env.XDG_DATA_HOME?.trim() ?? "";
-    if (xdgDataHome) {
-        return xdgDataHome;
-    }
-
-    if (process.platform === "win32") {
-        const localAppData = process.env.LOCALAPPDATA?.trim() ?? "";
-        if (localAppData) {
-            return localAppData;
-        }
-    }
-
-    const homeDir =
-        process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || "";
-    if (!homeDir) {
-        return null;
-    }
-
-    return path.join(homeDir, ".local", "share");
 }
 
 function environmentOpenCodeCredentialReady(env: NodeJS.ProcessEnv): boolean {
