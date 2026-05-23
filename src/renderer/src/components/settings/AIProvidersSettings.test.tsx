@@ -52,6 +52,16 @@ const RUNTIME_STATUSES: AiProviderRuntimeStatusMap = {
         source: "bundled",
         state: "missing",
     },
+    opencode: {
+        authCredentialSourceLabel: "Using external OpenCode auth",
+        authMethod: "opencode-login",
+        authReady: true,
+        checkedAt: "2026-05-19T12:00:00.000Z",
+        command: "opencode acp",
+        runtimeId: "opencode",
+        source: "path",
+        state: "ready",
+    },
 };
 
 const RUNTIME_SETTINGS: AiProviderRuntimeSettingsMap = {
@@ -79,6 +89,10 @@ const RUNTIME_SETTINGS: AiProviderRuntimeSettingsMap = {
         binaryPath: null,
         hasKiloApiKey: true,
     },
+    opencode: {
+        authMethod: "opencode-login",
+        binaryPath: null,
+    },
 };
 
 describe("AIProvidersSettings", () => {
@@ -95,6 +109,7 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Claude");
         expect(markup).toContain("Gemini");
         expect(markup).toContain("Kilo");
+        expect(markup).toContain("OpenCode");
         expect(markup).toContain("Anthropic API key");
         expect(markup).toContain("Bedrock gateway");
         expect(markup).toContain("Custom headers JSON");
@@ -102,6 +117,8 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Gemini API key");
         expect(markup).toContain("Google Cloud project");
         expect(markup).toContain("Kilo API key");
+        expect(markup).toContain("OpenCode auth");
+        expect(markup).toContain("project .env");
         expect(markup).toContain("Open sign-in terminal");
     });
 

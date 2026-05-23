@@ -26,6 +26,7 @@ describe("AI environment diagnostics", () => {
             const codexPath = writeExecutable(binDir, "codex-acp");
             const geminiPath = writeExecutable(binDir, "gemini");
             const kiloPath = writeExecutable(binDir, "kilo");
+            const opencodePath = writeExecutable(binDir, "opencode");
             const diagnostics = createAiEnvironmentDiagnostics({
                 env: {
                     CODEX_API_KEY: "codex-secret-value",
@@ -33,8 +34,10 @@ describe("AI environment diagnostics", () => {
                     COMANDO_CODEX_ACP_BIN: codexPath,
                     COMANDO_GEMINI_ACP_BIN: geminiPath,
                     COMANDO_KILO_ACP_BIN: kiloPath,
+                    COMANDO_OPENCODE_ACP_BIN: opencodePath,
                     GEMINI_API_KEY: "gemini-secret-value",
                     HOME: homeDir,
+                    OPENAI_API_KEY: "openai-secret-value",
                     PATH: binDir,
                 },
                 now: () => new Date("2026-05-19T12:00:00.000Z"),
@@ -118,11 +121,37 @@ describe("AI environment diagnostics", () => {
                     (runtime) => runtime.runtimeId === "gemini",
                 )?.preferredPathEntries[0],
             ).toBe(binDir);
+            expect(
+                diagnostics.runtimes.find(
+                    (runtime) => runtime.runtimeId === "opencode",
+                ),
+            ).toMatchObject({
+                authCredentialSource: "environment",
+                authMethod: "opencode-login",
+                authReady: true,
+                command: `${opencodePath} acp`,
+                executablePath: opencodePath,
+                source: "env",
+                state: "ready",
+            });
+            expect(
+                diagnostics.credentialEnvironment.find(
+                    (entry) =>
+                        entry.name === "OPENAI_API_KEY" &&
+                        entry.runtimeId === "opencode",
+                ),
+            ).toMatchObject({
+                present: true,
+                runtimeId: "opencode",
+            });
             expect(JSON.stringify(diagnostics)).not.toContain(
                 "codex-secret-value",
             );
             expect(JSON.stringify(diagnostics)).not.toContain(
                 "gemini-secret-value",
+            );
+            expect(JSON.stringify(diagnostics)).not.toContain(
+                "openai-secret-value",
             );
             expect(process.env.PATH).toBe(previousPath);
         } finally {
@@ -225,6 +254,11 @@ function createSettings(
             authMethod: null,
             binaryPath: null,
             hasKiloApiKey: false,
+        },
+        opencode: {
+            authInvalidatedAtMs: null,
+            authMethod: null,
+            binaryPath: null,
         },
         ...overrides,
     };

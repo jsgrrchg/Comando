@@ -169,6 +169,53 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
+    it("does not revive historical diffs as inline review after tracked files are cleared", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    diffs: [
+                        {
+                            hunks: [
+                                {
+                                    id: "hunk-1",
+                                    lines: [
+                                        {
+                                            id: "line-1",
+                                            text: "const before = true;",
+                                            type: "remove",
+                                        },
+                                    ],
+                                    newCount: 0,
+                                    newStart: 8,
+                                    oldCount: 1,
+                                    oldStart: 8,
+                                },
+                            ],
+                            isText: true,
+                            kind: "update",
+                            newText: "",
+                            oldText: "const before = true;\n",
+                            path: "src/app.ts",
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                }),
+                expansionMode: "expanded",
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Edit file");
+        expect(markup).not.toContain("Edited app.ts");
+        expect(markup).not.toContain("change-review-panel:");
+        expect(markup).not.toContain("Accept");
+        expect(markup).not.toContain("Reject");
+    });
+
     it("expands file tool details when the card policy is always expanded", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {

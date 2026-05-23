@@ -454,7 +454,8 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 chatPayload.runtimeId === "claude" ||
                 chatPayload.runtimeId === "codex" ||
                 chatPayload.runtimeId === "gemini" ||
-                chatPayload.runtimeId === "kilo"
+                chatPayload.runtimeId === "kilo" ||
+                chatPayload.runtimeId === "opencode"
                     ? chatPayload.runtimeId
                     : "codex",
             sessionId:
@@ -507,7 +508,8 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 reviewPayload.runtimeId === "claude" ||
                 reviewPayload.runtimeId === "codex" ||
                 reviewPayload.runtimeId === "gemini" ||
-                reviewPayload.runtimeId === "kilo"
+                reviewPayload.runtimeId === "kilo" ||
+                reviewPayload.runtimeId === "opencode"
                     ? reviewPayload.runtimeId
                     : "codex",
             sessionId:

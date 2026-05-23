@@ -129,6 +129,7 @@ import {
     type GeminiRuntimeSettingsInput,
     type KiloRuntimeSettingsInput,
     type RenameProjectEntryInput,
+    type OpenCodeRuntimeSettingsInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
     type SearchProjectEntriesInput,
@@ -344,6 +345,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveClaudeRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.saveGeminiRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.saveKiloRuntimeSettings);
+    ipcMain.removeHandler(IPC_CHANNELS.saveOpenCodeRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.verifyCodexRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.launchAiRuntimeAuth);
 
@@ -1739,6 +1741,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveKiloRuntimeSettings,
         (_event, settings: KiloRuntimeSettingsInput) =>
             options.aiService.saveKiloRuntimeSettings(settings),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.saveOpenCodeRuntimeSettings,
+        (_event, settings: OpenCodeRuntimeSettingsInput) =>
+            options.aiService.saveOpenCodeRuntimeSettings(settings),
     );
     ipcMain.handle(
         IPC_CHANNELS.verifyCodexRuntimeSettings,

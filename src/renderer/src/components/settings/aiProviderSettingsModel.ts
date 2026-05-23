@@ -1,4 +1,10 @@
-export const AI_PROVIDER_IDS = ["codex", "claude", "gemini", "kilo"] as const;
+export const AI_PROVIDER_IDS = [
+    "codex",
+    "claude",
+    "gemini",
+    "kilo",
+    "opencode",
+] as const;
 
 export type AiProviderId = (typeof AI_PROVIDER_IDS)[number];
 
@@ -19,11 +25,14 @@ export type GeminiProviderAuthMethodId = "login_with_google" | "use_gemini";
 
 export type KiloProviderAuthMethodId = "kilo-login" | "kilo-api-key";
 
+export type OpenCodeProviderAuthMethodId = "opencode-login";
+
 export interface AiProviderAuthMethodById {
     readonly codex: CodexProviderAuthMethodId;
     readonly claude: ClaudeProviderAuthMethodId;
     readonly gemini: GeminiProviderAuthMethodId;
     readonly kilo: KiloProviderAuthMethodId;
+    readonly opencode: OpenCodeProviderAuthMethodId;
 }
 
 export type AiProviderAuthMethodId =
@@ -145,11 +154,23 @@ export interface KiloProviderSettingsInput {
     readonly kiloApiKey: AiProviderSecretPatch;
 }
 
+export interface OpenCodeProviderSettings {
+    readonly authInvalidatedAtMs?: number | null;
+    readonly authMethod?: OpenCodeProviderAuthMethodId | null;
+    readonly binaryPath?: string | null;
+}
+
+export interface OpenCodeProviderSettingsInput {
+    readonly authMethod: OpenCodeProviderAuthMethodId | null;
+    readonly binaryPath: string | null;
+}
+
 export interface AiProviderRuntimeSettingsById {
     readonly codex: CodexProviderSettings;
     readonly claude: ClaudeProviderSettings;
     readonly gemini: GeminiProviderSettings;
     readonly kilo: KiloProviderSettings;
+    readonly opencode: OpenCodeProviderSettings;
 }
 
 export interface AiProviderRuntimeSettingsInputById {
@@ -157,6 +178,7 @@ export interface AiProviderRuntimeSettingsInputById {
     readonly claude: ClaudeProviderSettingsInput;
     readonly gemini: GeminiProviderSettingsInput;
     readonly kilo: KiloProviderSettingsInput;
+    readonly opencode: OpenCodeProviderSettingsInput;
 }
 
 export type AiProviderRuntimeSettingsMap = Partial<{
@@ -320,6 +342,29 @@ export const AI_PROVIDER_DEFINITIONS = {
             },
         ],
         name: "Kilo",
+    },
+    opencode: {
+        defaultMethodId: "opencode-login",
+        description: "OpenCode runtime using the local CLI auth state.",
+        envVars: [
+            "OPENCODE_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "CODEX_API_KEY",
+        ],
+        id: "opencode",
+        methods: [
+            {
+                description:
+                    "Use providers and credentials configured by the OpenCode CLI.",
+                id: "opencode-login",
+                label: "OpenCode auth",
+                terminalAuth: true,
+            },
+        ],
+        name: "OpenCode",
     },
 } satisfies {
     readonly [K in AiProviderId]: AiProviderDefinition<K>;

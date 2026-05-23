@@ -23,6 +23,10 @@ import {
 import { getGeminiRuntimeStatus, resolveGeminiRuntime } from "./gemini/setup";
 import { getKiloRuntimeStatus, resolveKiloRuntime } from "./kilo/setup";
 import {
+    getOpenCodeRuntimeStatus,
+    resolveOpenCodeRuntime,
+} from "./opencode/setup";
+import {
     resolveCodexRuntime,
     type ResolveCodexRuntimeOptions,
 } from "./resolver/runtime-resolver";
@@ -46,6 +50,7 @@ const EXECUTABLE_PROBES = [
     "codex",
     "gemini",
     "kilo",
+    "opencode",
     "node",
 ] as const;
 
@@ -69,8 +74,16 @@ const RUNTIME_PATH_OVERRIDES: readonly {
         name: "COMANDO_KILO_ACP_BIN",
         runtimeId: "kilo",
     },
+    {
+        name: "COMANDO_OPENCODE_ACP_BIN",
+        runtimeId: "opencode",
+    },
 ];
 
+// Entries with the same env var name but different runtimeId are intentional:
+// a single variable (e.g. OPENAI_API_KEY) can satisfy multiple runtimes. The
+// diagnostics consumer renders one row per (runtimeId, name) pair; React keys
+// in SettingsApp use `credential-${runtimeId}-${name}` to avoid collisions.
 const CREDENTIAL_ENVIRONMENT: readonly {
     readonly name: CredentialEnvironmentName;
     readonly runtimeId: AiRuntimeId;
@@ -110,6 +123,30 @@ const CREDENTIAL_ENVIRONMENT: readonly {
     {
         name: "KILO_API_KEY",
         runtimeId: "kilo",
+    },
+    {
+        name: "OPENCODE_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "ANTHROPIC_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "CODEX_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "GEMINI_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "GOOGLE_API_KEY",
+        runtimeId: "opencode",
+    },
+    {
+        name: "OPENAI_API_KEY",
+        runtimeId: "opencode",
     },
     {
         name: "OPENAI_API_KEY",
@@ -186,6 +223,11 @@ function createRuntimeDiagnostics(
     const kiloStatus = readRuntimeStatus("kilo", settings.kilo, () =>
         getKiloRuntimeStatus(settings.kilo, secretStore),
     );
+    const opencodeStatus = readRuntimeStatus(
+        "opencode",
+        settings.opencode,
+        () => getOpenCodeRuntimeStatus(settings.opencode, secretStore),
+    );
 
     return [
         toRuntimeDiagnostic(
@@ -206,6 +248,11 @@ function createRuntimeDiagnostics(
         toRuntimeDiagnostic(
             kiloStatus,
             resolveRuntimeExecutable("kilo", input),
+            env,
+        ),
+        toRuntimeDiagnostic(
+            opencodeStatus,
+            resolveRuntimeExecutable("opencode", input),
             env,
         ),
     ];
@@ -262,6 +309,11 @@ function resolveRuntimeExecutable(
             case "kilo":
                 return resolveKiloRuntime(
                     input.settings.kilo,
+                    input.secretStore,
+                ).program;
+            case "opencode":
+                return resolveOpenCodeRuntime(
+                    input.settings.opencode,
                     input.secretStore,
                 ).program;
         }

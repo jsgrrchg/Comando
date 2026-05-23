@@ -38,6 +38,7 @@ import {
 } from "@shared/ai-attachments";
 import {
     computeDiffHunks,
+    getTrackedFileCurrentText,
     replaceTrackedFile,
     resolveTrackedFileHunks,
     syncTrackedFile,
@@ -118,6 +119,19 @@ export interface AiWorkerRuntimeOptions {
     readonly emitEvent: (message: AiWorkerEventMessage) => void;
 }
 
+interface TrackedPathRollbackBackup {
+    readonly absolutePath: string;
+    readonly bufferContent: string | null;
+    readonly content: Buffer | null;
+    readonly hadBuffer: boolean;
+    readonly mode: number | null;
+}
+
+interface TrackedFileRollbackState {
+    readonly missingDirectories: readonly string[];
+    readonly pathBackups: readonly TrackedPathRollbackBackup[];
+}
+
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
 const TERMINAL_PERMISSION_REJECT_OPTION_ID = "comando.terminal.reject_once";
@@ -128,6 +142,8 @@ const CODEX_ACP_SUBAGENT_RESUME_BEGIN_EVENT_TYPE = "resume_begin";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE = "resume_end";
 const CODEX_ACP_SUBAGENT_WAITING_END_EVENT_TYPE = "waiting_end";
 const MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION = 16;
+const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
+const PRE_EDIT_SNAPSHOT_MAX_BYTES = 5 * 1024 * 1024;
 
 function setDesiredConfigValue(
     values: Map<string, boolean | string>,
@@ -375,6 +391,7 @@ export class AiWorkerRuntime {
             throw new Error("Type a prompt before sending it.");
         }
 
+        liveSession.preEditSnapshots.clear();
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: now,
@@ -610,7 +627,11 @@ export class AiWorkerRuntime {
             if (!nextTrackedFile) {
                 await this.#revertTrackedFile(session, trackedFile);
             } else if (nextTrackedFile.newText !== null) {
-                await this.#applyTrackedFileText(session, nextTrackedFile);
+                await this.#applyTrackedFileText(
+                    session,
+                    nextTrackedFile,
+                    trackedFile,
+                );
             }
 
             session.snapshot = {
@@ -641,8 +662,24 @@ export class AiWorkerRuntime {
         params: AiWorkerRpcMethodMap["ai.rejectAllTrackedFiles"]["params"],
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, async (session) => {
-            for (const trackedFile of session.snapshot.trackedFiles) {
-                await this.#revertTrackedFile(session, trackedFile);
+            const trackedFiles = session.snapshot.trackedFiles;
+            for (const trackedFile of trackedFiles) {
+                await this.#assertTrackedFileCanBeReverted(session, trackedFile);
+            }
+
+            const rollbackState =
+                await this.#createTrackedFileRollbackBackups(
+                    session,
+                    trackedFiles,
+                );
+
+            try {
+                for (const trackedFile of trackedFiles) {
+                    await this.#revertTrackedFile(session, trackedFile);
+                }
+            } catch (error) {
+                await this.#restoreTrackedFileRollbackState(rollbackState);
+                throw error;
             }
 
             session.snapshot = {
@@ -1090,6 +1127,7 @@ export class AiWorkerRuntime {
             },
             terminals: new Map(),
             terminalOutputBuffers: new Map(),
+            preEditSnapshots: new Map(),
             stderrChunks: [],
             stderrHandler: null,
         } satisfies LiveAcpSession);
@@ -1477,6 +1515,7 @@ export class AiWorkerRuntime {
             pendingPermission: null,
             pendingPermissions: new Map(),
             pendingPersistTimer: null,
+            preEditSnapshots: new Map(),
             processedDiffPaths: new Map(),
             projectRoot: parentSession.projectRoot,
             resolvedRuntime: liveConnection.resolvedRuntime,
@@ -1799,6 +1838,7 @@ export class AiWorkerRuntime {
         turnId: string | null,
         updatedAt: string,
     ): void {
+        liveSession.preEditSnapshots.clear();
         liveSession.activeTurnId = turnId;
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
@@ -2127,13 +2167,21 @@ export class AiWorkerRuntime {
         liveSession: LiveAcpSession,
         params: ReadTextFileRequest,
     ): Promise<{ content: string }> {
-        const absolutePath = this.#resolveReadableSessionPath(
+        const resolvedPath = this.#resolveSessionPathInfo(
             liveSession,
             params.path,
+            {
+                allowAdditionalRoots: true,
+            },
         );
         const fullContent =
-            this.#fileBuffers.get(absolutePath) ??
-            (await fs.promises.readFile(absolutePath, "utf8"));
+            this.#fileBuffers.get(resolvedPath.absolutePath) ??
+            (await fs.promises.readFile(resolvedPath.absolutePath, "utf8"));
+        this.#rememberPreEditSnapshot(
+            liveSession,
+            resolvedPath.relativePath ?? resolvedPath.displayPath,
+            fullContent,
+        );
 
         if (!params.line && !params.limit) {
             return {
@@ -2164,6 +2212,13 @@ export class AiWorkerRuntime {
         const previousContent =
             this.#fileBuffers.get(resolvedPath.absolutePath) ??
             (await readTextIfExists(resolvedPath.absolutePath));
+        if (previousContent !== null) {
+            this.#rememberPreEditSnapshot(
+                liveSession,
+                resolvedPath.relativePath ?? resolvedPath.displayPath,
+                previousContent,
+            );
+        }
 
         await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
             recursive: true,
@@ -2447,6 +2502,7 @@ export class AiWorkerRuntime {
             pendingPermission: null,
             pendingPermissions: new Map(),
             pendingPersistTimer: null,
+            preEditSnapshots: new Map(),
             processedDiffPaths: new Map(),
             projectRoot: context.projectRoot,
             resolvedRuntime: {
@@ -2480,6 +2536,241 @@ export class AiWorkerRuntime {
         };
     }
 
+    async #assertTrackedFileCanBeReverted(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        const resolvedPath = this.#resolveWritableSessionPathInfo(
+            liveSession,
+            trackedFile.path,
+        );
+        await this.#assertTrackedFileCurrentState(
+            resolvedPath.absolutePath,
+            trackedFile,
+        );
+
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            const previousPath = this.#resolveWritableSessionPathInfo(
+                liveSession,
+                trackedFile.previousPath,
+            );
+            await this.#assertTrackedMovePreviousPathAvailable(
+                previousPath.absolutePath,
+            );
+        }
+    }
+
+    async #createTrackedFileRollbackBackups(
+        liveSession: LiveAcpSession,
+        trackedFiles: readonly AiTrackedFile[],
+    ): Promise<TrackedFileRollbackState> {
+        const backups = new Map<string, TrackedPathRollbackBackup>();
+        const missingDirectories = new Set<string>();
+        for (const trackedFile of trackedFiles) {
+            for (const absolutePath of this.#getTrackedFileRevertPaths(
+                liveSession,
+                trackedFile,
+            )) {
+                if (backups.has(absolutePath)) {
+                    continue;
+                }
+
+                backups.set(
+                    absolutePath,
+                    await this.#createTrackedPathRollbackBackup(absolutePath),
+                );
+            }
+
+            for (const absolutePath of this.#getTrackedFileRevertWritePaths(
+                liveSession,
+                trackedFile,
+            )) {
+                await this.#rememberMissingParentDirectories(
+                    absolutePath,
+                    missingDirectories,
+                );
+            }
+        }
+
+        return {
+            missingDirectories: Array.from(missingDirectories).sort(
+                (left, right) => right.length - left.length,
+            ),
+            pathBackups: Array.from(backups.values()),
+        };
+    }
+
+    #getTrackedFileRevertPaths(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): readonly string[] {
+        const absolutePaths = [
+            this.#resolveWritableSessionPathInfo(
+                liveSession,
+                trackedFile.path,
+            ).absolutePath,
+        ];
+
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            absolutePaths.push(
+                this.#resolveWritableSessionPathInfo(
+                    liveSession,
+                    trackedFile.previousPath,
+                ).absolutePath,
+            );
+        }
+
+        return absolutePaths;
+    }
+
+    #getTrackedFileRevertWritePaths(
+        liveSession: LiveAcpSession,
+        trackedFile: AiTrackedFile,
+    ): readonly string[] {
+        if (trackedFile.oldText === null) {
+            return [];
+        }
+
+        if (trackedFile.kind === "move" && trackedFile.previousPath) {
+            return [
+                this.#resolveWritableSessionPathInfo(
+                    liveSession,
+                    trackedFile.previousPath,
+                ).absolutePath,
+            ];
+        }
+
+        if (trackedFile.kind === "create") {
+            return [];
+        }
+
+        return [
+            this.#resolveWritableSessionPathInfo(
+                liveSession,
+                trackedFile.path,
+            ).absolutePath,
+        ];
+    }
+
+    async #rememberMissingParentDirectories(
+        absolutePath: string,
+        missingDirectories: Set<string>,
+    ): Promise<void> {
+        const discoveredDirectories: string[] = [];
+        let currentDirectory = path.dirname(absolutePath);
+
+        while (true) {
+            if (missingDirectories.has(currentDirectory)) {
+                break;
+            }
+
+            try {
+                const stat = await fs.promises.stat(currentDirectory);
+                if (!stat.isDirectory()) {
+                    throw new Error(
+                        `Cannot safely prepare review rollback because ${currentDirectory} is not a directory.`,
+                    );
+                }
+                break;
+            } catch (error) {
+                if (!isNodeError(error) || error.code !== "ENOENT") {
+                    throw error;
+                }
+            }
+
+            discoveredDirectories.push(currentDirectory);
+            const parentDirectory = path.dirname(currentDirectory);
+            if (parentDirectory === currentDirectory) {
+                break;
+            }
+            currentDirectory = parentDirectory;
+        }
+
+        for (const directory of discoveredDirectories) {
+            missingDirectories.add(directory);
+        }
+    }
+
+    async #createTrackedPathRollbackBackup(
+        absolutePath: string,
+    ): Promise<TrackedPathRollbackBackup> {
+        const hadBuffer = this.#fileBuffers.has(absolutePath);
+        const bufferContent = hadBuffer
+            ? (this.#fileBuffers.get(absolutePath) ?? null)
+            : null;
+
+        try {
+            const [content, stat] = await Promise.all([
+                fs.promises.readFile(absolutePath),
+                fs.promises.stat(absolutePath),
+            ]);
+
+            return {
+                absolutePath,
+                bufferContent,
+                content,
+                hadBuffer,
+                mode: stat.mode,
+            };
+        } catch (error) {
+            if (isNodeError(error) && error.code === "ENOENT") {
+                return {
+                    absolutePath,
+                    bufferContent,
+                    content: null,
+                    hadBuffer,
+                    mode: null,
+                };
+            }
+
+            throw error;
+        }
+    }
+
+    async #restoreTrackedFileRollbackState(
+        rollbackState: TrackedFileRollbackState,
+    ): Promise<void> {
+        for (const backup of [...rollbackState.pathBackups].reverse()) {
+            if (backup.content === null) {
+                await fs.promises.rm(backup.absolutePath, { force: true });
+            } else {
+                await fs.promises.mkdir(path.dirname(backup.absolutePath), {
+                    recursive: true,
+                });
+                await fs.promises.writeFile(backup.absolutePath, backup.content);
+                if (backup.mode !== null) {
+                    await fs.promises.chmod(backup.absolutePath, backup.mode);
+                }
+            }
+
+            if (backup.hadBuffer) {
+                this.#fileBuffers.set(
+                    backup.absolutePath,
+                    backup.bufferContent ?? "",
+                );
+            } else {
+                this.#fileBuffers.delete(backup.absolutePath);
+            }
+        }
+
+        for (const directory of rollbackState.missingDirectories) {
+            try {
+                await fs.promises.rmdir(directory);
+            } catch (error) {
+                if (
+                    isNodeError(error) &&
+                    (error.code === "ENOENT" ||
+                        error.code === "ENOTEMPTY" ||
+                        error.code === "EEXIST")
+                ) {
+                    continue;
+                }
+
+                throw error;
+            }
+        }
+    }
+
     async #revertTrackedFile(
         liveSession: LiveAcpSession,
         trackedFile: AiTrackedFile,
@@ -2494,14 +2785,25 @@ export class AiWorkerRuntime {
                 trackedFile.previousPath,
             );
 
+            await this.#assertTrackedFileCurrentState(
+                nextPath.absolutePath,
+                trackedFile,
+            );
+
             if (trackedFile.oldText !== null) {
+                await this.#assertTrackedMovePreviousPathAvailable(
+                    previousPath.absolutePath,
+                );
                 await fs.promises.mkdir(path.dirname(previousPath.absolutePath), {
                     recursive: true,
                 });
                 await fs.promises.writeFile(
                     previousPath.absolutePath,
                     trackedFile.oldText,
-                    "utf8",
+                    {
+                        encoding: "utf8",
+                        flag: "wx",
+                    },
                 );
                 this.#fileBuffers.set(
                     previousPath.absolutePath,
@@ -2517,6 +2819,11 @@ export class AiWorkerRuntime {
         const resolvedPath = this.#resolveWritableSessionPathInfo(
             liveSession,
             trackedFile.path,
+        );
+
+        await this.#assertTrackedFileCurrentState(
+            resolvedPath.absolutePath,
+            trackedFile,
         );
 
         if (trackedFile.kind === "create") {
@@ -2543,6 +2850,7 @@ export class AiWorkerRuntime {
     async #applyTrackedFileText(
         liveSession: LiveAcpSession,
         trackedFile: AiTrackedFile,
+        expectedCurrentState: AiTrackedFile = trackedFile,
     ): Promise<void> {
         if (trackedFile.newText === null) {
             return;
@@ -2551,6 +2859,11 @@ export class AiWorkerRuntime {
         const resolvedPath = this.#resolveWritableSessionPathInfo(
             liveSession,
             trackedFile.path,
+        );
+
+        await this.#assertTrackedFileCurrentState(
+            resolvedPath.absolutePath,
+            expectedCurrentState,
         );
 
         await fs.promises.mkdir(path.dirname(resolvedPath.absolutePath), {
@@ -2562,6 +2875,69 @@ export class AiWorkerRuntime {
             "utf8",
         );
         this.#fileBuffers.set(resolvedPath.absolutePath, trackedFile.newText);
+    }
+
+    async #assertTrackedFileCurrentState(
+        absolutePath: string,
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        const expectedCurrentText =
+            trackedFile.newText === null
+                ? null
+                : getTrackedFileCurrentText(trackedFile);
+
+        try {
+            const currentText = await fs.promises.readFile(
+                absolutePath,
+                "utf8",
+            );
+            if (
+                expectedCurrentText !== null &&
+                currentText === expectedCurrentText
+            ) {
+                return;
+            }
+        } catch (error) {
+            if (
+                isNodeError(error) &&
+                error.code === "ENOENT" &&
+                (expectedCurrentText === null || trackedFile.kind === "create")
+            ) {
+                return;
+            }
+
+            if (!isNodeError(error) || error.code !== "ENOENT") {
+                throw error;
+            }
+        }
+
+        throw new Error(
+            "Cannot safely apply this review change because the file no longer matches the reviewed content. Reopen the diff or rerun the agent before accepting or rejecting it.",
+        );
+    }
+
+    async #assertTrackedMovePreviousPathAvailable(
+        absolutePath: string,
+    ): Promise<void> {
+        if (this.#fileBuffers.has(absolutePath)) {
+            throw new Error(
+                "Cannot safely apply this review change because the original path for a moved file already exists. Reopen the diff or rerun the agent before accepting or rejecting it.",
+            );
+        }
+
+        try {
+            await fs.promises.lstat(absolutePath);
+        } catch (error) {
+            if (isNodeError(error) && error.code === "ENOENT") {
+                return;
+            }
+
+            throw error;
+        }
+
+        throw new Error(
+            "Cannot safely apply this review change because the original path for a moved file already exists. Reopen the diff or rerun the agent before accepting or rejecting it.",
+        );
     }
 
     #markSnapshotExternallySynchronized(liveSession: LiveAcpSession): void {
@@ -3138,13 +3514,29 @@ export class AiWorkerRuntime {
         return liveSession.snapshot.runtimeSessionId;
     }
 
-    #resolveReadableSessionPath(
+    #rememberPreEditSnapshot(
         liveSession: LiveAcpSession,
-        candidatePath: string,
-    ): string {
-        return this.#resolveSessionPathInfo(liveSession, candidatePath, {
-            allowAdditionalRoots: true,
-        }).absolutePath;
+        trackedPath: string,
+        content: string,
+    ): void {
+        if (
+            liveSession.preEditSnapshots.has(trackedPath) ||
+            Buffer.byteLength(content, "utf8") > PRE_EDIT_SNAPSHOT_MAX_BYTES
+        ) {
+            return;
+        }
+
+        while (
+            liveSession.preEditSnapshots.size >= PRE_EDIT_SNAPSHOT_MAX_ENTRIES
+        ) {
+            const oldestKey = liveSession.preEditSnapshots.keys().next().value;
+            if (typeof oldestKey !== "string") {
+                break;
+            }
+            liveSession.preEditSnapshots.delete(oldestKey);
+        }
+
+        liveSession.preEditSnapshots.set(trackedPath, content);
     }
 
     #resolveWritableSessionPathInfo(
@@ -3983,4 +4375,8 @@ function stringifyJson(value: unknown): string | null {
 
 function isRecordValue(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+    return typeof error === "object" && error !== null && "code" in error;
 }

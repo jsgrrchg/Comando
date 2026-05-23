@@ -9,6 +9,7 @@ import type {
     GetAiSessionTranscriptPageInput,
     KiloRuntimeSettings,
     ListAiSessionHistoryInput,
+    OpenCodeRuntimeSettings,
     PersistenceSnapshot,
 } from "@shared/ipc";
 
@@ -77,6 +78,7 @@ const runtimeIds = [
     "codex",
     "gemini",
     "kilo",
+    "opencode",
 ] as const satisfies readonly AiRuntimeId[];
 
 export const bootstrapSecretKeys = [
@@ -472,6 +474,17 @@ function dispatchMethod(method: string, params: unknown): unknown {
             });
             return null;
         }
+        case "ai.saveOpenCodeAuth": {
+            const settings = requireSettingsService();
+            const input = params as {
+                readonly secrets: readonly SecretRecordMutation[];
+                readonly settings: OpenCodeRuntimeSettings;
+            };
+            runAuthSettingsTransaction(input.secrets, () => {
+                settings.saveOpenCodeRuntimeSettings(input.settings);
+            });
+            return null;
+        }
         case "settings.loadSnapshot":
             return settingsService.loadSnapshot();
         case "settings.saveSnapshot":
@@ -528,6 +541,13 @@ function dispatchMethod(method: string, params: unknown): unknown {
             settingsService.saveKiloRuntimeSettings(
                 params as Parameters<
                     SettingsService["saveKiloRuntimeSettings"]
+                >[0],
+            );
+            return null;
+        case "settings.saveOpenCodeRuntimeSettings":
+            settingsService.saveOpenCodeRuntimeSettings(
+                params as Parameters<
+                    SettingsService["saveOpenCodeRuntimeSettings"]
                 >[0],
             );
             return null;

@@ -619,6 +619,230 @@ describe("resolveDiffToFullTexts", () => {
         expect(resolved.newText).toBe("new");
     });
 
+    it("uses a pre-edit snapshot when a snippet diff was already applied externally", () => {
+        const originalContent = "alpha\nremove me\nomega\n";
+        const nextContent = "alpha\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "remove me\n",
+                newText: "",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                preEditSnapshot: originalContent,
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("uses OpenCode filediff patches when a snippet diff was already applied externally", () => {
+        const originalContent = "alpha\nbeta\nremove me\nomega\n";
+        const nextContent = "alpha\nbeta\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "remove me\n",
+                newText: "",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                rawOutput: {
+                    metadata: {
+                        filediff: {
+                            file: absolutePath,
+                            patch: [
+                                `Index: ${absolutePath}`,
+                                "===================================================================",
+                                `--- ${absolutePath}`,
+                                `+++ ${absolutePath}`,
+                                "@@ -1,4 +1,3 @@",
+                                " alpha",
+                                " beta",
+                                "-remove me",
+                                " omega",
+                                "",
+                            ].join("\n"),
+                        },
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("uses OpenCode filediff patches for already-applied insertions that keep the old snippet", () => {
+        const originalContent = "alpha\nanchor\nomega\n";
+        const nextContent = "alpha\nanchor\ninserted\nomega\n";
+        const duplicatedContent = "alpha\nanchor\ninserted\ninserted\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "anchor\n",
+                newText: "anchor\ninserted\n",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                rawOutput: {
+                    metadata: {
+                        filediff: {
+                            file: absolutePath,
+                            patch: [
+                                `Index: ${absolutePath}`,
+                                "===================================================================",
+                                `--- ${absolutePath}`,
+                                `+++ ${absolutePath}`,
+                                "@@ -1,3 +1,4 @@",
+                                " alpha",
+                                " anchor",
+                                "+inserted",
+                                " omega",
+                                "",
+                            ].join("\n"),
+                        },
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+        expect(resolved.newText).not.toBe(duplicatedContent);
+    });
+
+    it("uses pre-edit snapshots for already-applied insertions that keep the old snippet", () => {
+        const originalContent = "alpha\nanchor\nomega\n";
+        const nextContent = "alpha\nanchor\ninserted\nomega\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "anchor\n",
+                newText: "anchor\ninserted\n",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                preEditSnapshot: originalContent,
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("preserves trailing newline changes from OpenCode filediff patches", () => {
+        const originalContent = "alpha\nbeta\n";
+        const nextContent = "alpha\nbeta";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "beta\n",
+                newText: "beta",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                rawOutput: {
+                    metadata: {
+                        filediff: {
+                            file: absolutePath,
+                            patch: [
+                                `Index: ${absolutePath}`,
+                                "===================================================================",
+                                `--- ${absolutePath}`,
+                                `+++ ${absolutePath}`,
+                                "@@ -1,2 +1,2 @@",
+                                " alpha",
+                                "-beta",
+                                "+beta",
+                                "\\ No newline at end of file",
+                                "",
+                            ].join("\n"),
+                        },
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("does not use an ambiguous pre-edit snapshot for external snippet diffs", () => {
+        const originalContent = "alpha\nremove me\nomega\nremove me\nend\n";
+        const nextContent = "alpha\nomega\nend\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "remove me\n",
+                newText: "",
+            } as never,
+            undefined,
+            liveSession,
+            "foo.ts",
+            {
+                meta: null,
+                preEditSnapshot: originalContent,
+                sessionUpdate: "tool_call_update",
+                toolCallId: "opencode-edit",
+            },
+        );
+
+        expect(resolved.oldText).toBe("remove me\n");
+        expect(resolved.newText).toBe("");
+    });
+
     it("prefers the in-editor buffer over the disk when the file is open with unsaved changes", () => {
         const diskContent = "alpha\nbeta\ngamma\n";
         const bufferContent = "alpha\nbeta-WIP\ngamma\n";
@@ -773,6 +997,7 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
     function makeLiveSession() {
         return {
             cwd: tempDir,
+            preEditSnapshots: new Map<string, string>(),
             projectRoot: tempDir,
             processedDiffPaths: new Map<string, Set<string>>(),
             terminalOutputBuffers: new Map<string, string>(),
@@ -983,6 +1208,74 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         expect(liveSession.processedDiffPaths.has("edit-1")).toBe(false);
     });
 
+    it("records complete OpenCode read output as a pre-edit snapshot", () => {
+        const absolutePath = path.join(tempDir, "foo.ts");
+        const originalContent = "alpha\nremove me\nomega\n";
+        const nextContent = "alpha\nomega\n";
+        fs.writeFileSync(absolutePath, originalContent, "utf8");
+        const liveSession = makeLiveSession();
+        const afterRead = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                kind: "read",
+                rawInput: {
+                    filePath: absolutePath,
+                },
+                rawOutput: {
+                    output: [
+                        `<path>${absolutePath}</path>`,
+                        "<type>file</type>",
+                        "<content>",
+                        "1: alpha",
+                        "2: remove me",
+                        "3: omega",
+                        "4: ",
+                        "",
+                        "(End of file - total 4 lines)",
+                        "</content>",
+                    ].join("\n"),
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Read foo.ts",
+                toolCallId: "read-1",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:01.000Z",
+        );
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+
+        const afterEdit = __testing.mapToolCallUpdate(
+            liveSession,
+            afterRead,
+            {
+                content: [
+                    {
+                        newText: "",
+                        oldText: "remove me\n",
+                        path: absolutePath,
+                        type: "diff",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Edited foo.ts",
+                toolCallId: "opencode-edit",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:02.000Z",
+        );
+
+        expect(afterEdit.trackedFiles[0]).toMatchObject({
+            newText: nextContent,
+            oldText: originalContent,
+            path: "foo.ts",
+            toolCallId: "opencode-edit",
+        });
+    });
+
     it("records the active turn start from Codex status turn activities", () => {
         const snapshot = __testing.mapToolCallUpdate(
             makeLiveSession(),
@@ -1186,5 +1479,72 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
             status: "failed",
             title: "Image generation failed",
         });
+    });
+});
+
+describe("parseCompleteNumberedFileOutput", () => {
+    function buildOpenCodeReadOutput(
+        body: readonly string[],
+        footer: string,
+    ): string {
+        return ["<content>", ...body, footer, "</content>"].join("\n");
+    }
+
+    it("parses a single-line file body with singular footer wording", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: only line"],
+            "(End of file - total 1 line)",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBe(
+            "only line",
+        );
+    });
+
+    it("accepts a rawOutput record whose `output` field carries the body", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: alpha", "2: beta"],
+            "(End of file - total 2 lines)",
+        );
+
+        expect(
+            __testing.parseCompleteNumberedFileOutput({ output }),
+        ).toBe("alpha\nbeta");
+    });
+
+    it("returns null when the <content> wrapper tags are missing", () => {
+        const output = [
+            "1: alpha",
+            "2: beta",
+            "(End of file - total 2 lines)",
+        ].join("\n");
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
+    });
+
+    it("returns null when the footer line count is missing", () => {
+        const output = ["<content>", "1: alpha", "2: beta", "</content>"].join(
+            "\n",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
+    });
+
+    it("returns null when the declared line count does not match the body", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: alpha", "2: beta"],
+            "(End of file - total 5 lines)",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
+    });
+
+    it("returns null when the line numbering skips a value", () => {
+        const output = buildOpenCodeReadOutput(
+            ["1: alpha", "3: gamma"],
+            "(End of file - total 2 lines)",
+        );
+
+        expect(__testing.parseCompleteNumberedFileOutput(output)).toBeNull();
     });
 });

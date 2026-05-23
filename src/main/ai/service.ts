@@ -36,6 +36,7 @@ import type {
     GetAiSessionTranscriptPageInput,
     KiloRuntimeSettingsInput,
     ListAiSessionHistoryInput,
+    OpenCodeRuntimeSettingsInput,
     SecretValuePatch,
     SendAiPromptInput,
 } from "@shared/ipc";
@@ -85,6 +86,7 @@ import {
     diffToAiFileDiff,
     mapToolCallUpdate,
     normalizeTrackedDiffPath,
+    parseCompleteNumberedFileOutput,
     resolveDiffToFullTexts,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
@@ -127,6 +129,15 @@ import {
     markKiloAuthInvalidated,
     resolveKiloRuntime,
 } from "./kilo/setup";
+import {
+    applyOpenCodeAuthEnv,
+    getOpenCodeRuntimeStatus,
+    isOpenCodeEnvironmentCredentialReady,
+    isOpenCodeAuthenticationError,
+    launchOpenCodeLogin,
+    markOpenCodeAuthInvalidated,
+    resolveOpenCodeRuntime,
+} from "./opencode/setup";
 
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
@@ -272,6 +283,7 @@ export class AiService {
                 codex: this.#settingsService.loadCodexRuntimeSettings(),
                 gemini: this.#settingsService.loadGeminiRuntimeSettings(),
                 kilo: this.#settingsService.loadKiloRuntimeSettings(),
+                opencode: this.#settingsService.loadOpenCodeRuntimeSettings(),
             },
         });
     }
@@ -408,6 +420,37 @@ export class AiService {
         await this.#saveKiloAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
             getKiloRuntimeStatus(nextSettings, this.#secretStore),
+        );
+        this.#onRuntimeStatus(status);
+        return status;
+    }
+
+    async saveOpenCodeRuntimeSettings(
+        settings: OpenCodeRuntimeSettingsInput,
+    ): Promise<AiRuntimeStatus> {
+        const currentSettings =
+            this.#settingsService.loadOpenCodeRuntimeSettings();
+        const binaryPath = normalizeOptionalText(settings.binaryPath);
+        const settingsChanged =
+            currentSettings.authMethod !== settings.authMethod ||
+            normalizeOptionalText(currentSettings.binaryPath) !== binaryPath;
+        const shouldClearInvalidation =
+            settings.authMethod === "opencode-login" &&
+            (currentSettings.authInvalidatedAtMs === null ||
+                settingsChanged ||
+                isOpenCodeEnvironmentCredentialReady(process.env));
+        const nextSettings = {
+            authInvalidatedAtMs:
+                shouldClearInvalidation
+                    ? null
+                    : currentSettings.authInvalidatedAtMs,
+            authMethod: settings.authMethod,
+            binaryPath,
+        };
+
+        await this.#saveOpenCodeAuthSettings(nextSettings);
+        const status = this.#withPersistedRuntimeCatalog(
+            getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -769,6 +812,26 @@ export class AiService {
             return;
         }
 
+        if (input.runtimeId === "opencode") {
+            if (input.methodId !== "opencode-login") {
+                throw new Error(
+                    "Select OpenCode auth before opening authentication.",
+                );
+            }
+
+            const nextSettings = markOpenCodeAuthInvalidated({
+                ...this.#settingsService.loadOpenCodeRuntimeSettings(),
+                authMethod: "opencode-login",
+            });
+            await this.#saveOpenCodeAuthSettings(nextSettings);
+
+            await launchOpenCodeLogin(nextSettings, cwd);
+            this.#onRuntimeStatus(
+                getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            return;
+        }
+
         if (input.runtimeId === "codex") {
             const currentSettings =
                 this.#settingsService.loadCodexRuntimeSettings();
@@ -991,6 +1054,21 @@ export class AiService {
             await this.#saveGeminiAuthSettings(nextSettings, secretPatch.patches);
             const status = this.#withPersistedRuntimeCatalog(
                 getGeminiRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
+        if (input.runtimeId === "opencode") {
+            const nextSettings = {
+                ...markOpenCodeAuthInvalidated(
+                    this.#settingsService.loadOpenCodeRuntimeSettings(),
+                ),
+                authMethod: null,
+            };
+            await this.#saveOpenCodeAuthSettings(nextSettings);
+            const status = this.#withPersistedRuntimeCatalog(
+                getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
             );
             this.#onRuntimeStatus(status);
             return status;
@@ -1510,6 +1588,13 @@ export class AiService {
             );
         }
 
+        if (runtimeId === "opencode") {
+            return getOpenCodeRuntimeStatus(
+                this.#settingsService.loadOpenCodeRuntimeSettings(),
+                this.#secretStore,
+            );
+        }
+
         return getCodexRuntimeStatus(
             this.#settingsService.loadCodexRuntimeSettings(),
             loadCodexSecretBundle(this.#secretStore),
@@ -1570,6 +1655,20 @@ export class AiService {
 
         await this.#saveSecretPatches(secrets);
         this.#settingsService.saveKiloRuntimeSettings(settings);
+    }
+
+    async #saveOpenCodeAuthSettings(
+        settings: ReturnType<SettingsGateway["loadOpenCodeRuntimeSettings"]>,
+        secrets: readonly SecretRecordPatch[] = [],
+    ): Promise<void> {
+        if (this.#settingsService.saveOpenCodeAuth) {
+            await this.#settingsService.saveOpenCodeAuth(settings, secrets);
+            this.#secretStore.cacheSecretPatches?.(secrets);
+            return;
+        }
+
+        await this.#saveSecretPatches(secrets);
+        this.#settingsService.saveOpenCodeRuntimeSettings(settings);
     }
 
     async #saveSecretPatches(
@@ -1655,6 +1754,30 @@ export class AiService {
                 command: resolved.command,
                 env: buildRuntimeSpawnEnv(
                     applyKiloAuthEnv(process.env, settings, this.#secretStore),
+                    resolved.program,
+                ),
+                executable: resolved.program,
+                status: resolved.status,
+            };
+        }
+
+        if (runtimeId === "opencode") {
+            const settings =
+                this.#settingsService.loadOpenCodeRuntimeSettings();
+            const resolved = resolveOpenCodeRuntime(
+                settings,
+                this.#secretStore,
+            );
+
+            return {
+                args: resolved.args,
+                command: resolved.command,
+                env: buildRuntimeSpawnEnv(
+                    applyOpenCodeAuthEnv(
+                        process.env,
+                        settings,
+                        this.#secretStore,
+                    ),
                     resolved.program,
                 ),
                 executable: resolved.program,
@@ -1802,18 +1925,31 @@ export class AiService {
             return;
         }
 
-        if (runtimeId !== "kilo" || !isKiloAuthenticationError(message)) {
+        if (runtimeId === "kilo" && isKiloAuthenticationError(message)) {
+            const nextSettings = markKiloAuthInvalidated({
+                ...this.#settingsService.loadKiloRuntimeSettings(),
+                authMethod: "kilo-login",
+            });
+            this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                getKiloRuntimeStatus(nextSettings, this.#secretStore),
+            );
             return;
         }
 
-        const nextSettings = markKiloAuthInvalidated({
-            ...this.#settingsService.loadKiloRuntimeSettings(),
-            authMethod: "kilo-login",
-        });
-        this.#settingsService.saveKiloRuntimeSettings(nextSettings);
-        this.#onRuntimeStatus(
-            getKiloRuntimeStatus(nextSettings, this.#secretStore),
-        );
+        if (
+            runtimeId === "opencode" &&
+            isOpenCodeAuthenticationError(message)
+        ) {
+            const nextSettings = markOpenCodeAuthInvalidated({
+                ...this.#settingsService.loadOpenCodeRuntimeSettings(),
+                authMethod: "opencode-login",
+            });
+            this.#settingsService.saveOpenCodeRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
+            );
+        }
     }
 }
 
@@ -1891,6 +2027,7 @@ export const __testing = {
     diffToAiFileDiff,
     mapToolCallUpdate,
     normalizeTrackedDiffPath,
+    parseCompleteNumberedFileOutput,
     resolveDiffToFullTexts,
     resolveTrackedFileHunks,
     shouldSuppressToolActivityUpdate,

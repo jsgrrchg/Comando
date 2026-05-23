@@ -1832,6 +1832,13 @@ function WorkspacePaneView({
                     "kilo",
                 );
                 return;
+            case "opencode":
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "opencode",
+                );
+                return;
             case "terminal":
                 void createTerminalTab(
                     defaultProjectId,
@@ -1927,6 +1934,15 @@ function WorkspacePaneView({
                                 "kilo",
                             ),
                         label: "Kilo",
+                    },
+                    {
+                        action: () =>
+                            void createChatTab(
+                                defaultProjectId,
+                                defaultWorktreeId ?? null,
+                                "opencode",
+                            ),
+                        label: "OpenCode",
                     },
                 ],
             },
@@ -2862,6 +2878,8 @@ function getQuickCreateButtonTitle(
             return "Open last item: Gemini chat";
         case "kilo":
             return "Open last item: Kilo chat";
+        case "opencode":
+            return "Open last item: OpenCode chat";
         case "terminal":
             return "Open last item: terminal";
         case "git":
@@ -6148,6 +6166,25 @@ function ChatProviderIcon({ runtimeId }: { readonly runtimeId: AiRuntimeId }) {
                 width={12}
             >
                 <path d="M8 1.2c.25 3.55 1.6 5.35 6.8 6.8-5.2 1.45-6.55 3.25-6.8 6.8-.25-3.55-1.6-5.35-6.8-6.8C6.4 6.55 7.75 4.75 8 1.2Z" />
+            </svg>
+        );
+    }
+
+    if (runtimeId === "opencode") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <circle cx="8" cy="8" r="5.25" strokeWidth="1.1" />
+                <path d="M4.9 8h6.2M8 4.9v6.2" strokeWidth="1.1" />
+                <path d="M11.1 4.9 4.9 11.1" strokeWidth="0.9" />
             </svg>
         );
     }

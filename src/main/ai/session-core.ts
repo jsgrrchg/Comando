@@ -123,6 +123,8 @@ export function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
             return "Gemini";
         case "kilo":
             return "Kilo";
+        case "opencode":
+            return "OpenCode";
         case "codex":
         default:
             return "Codex";
