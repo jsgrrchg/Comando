@@ -80,6 +80,10 @@ const RUNTIME_PATH_OVERRIDES: readonly {
     },
 ];
 
+// Entries with the same env var name but different runtimeId are intentional:
+// a single variable (e.g. OPENAI_API_KEY) can satisfy multiple runtimes. The
+// diagnostics consumer renders one row per (runtimeId, name) pair; React keys
+// in SettingsApp use `credential-${runtimeId}-${name}` to avoid collisions.
 const CREDENTIAL_ENVIRONMENT: readonly {
     readonly name: CredentialEnvironmentName;
     readonly runtimeId: AiRuntimeId;
