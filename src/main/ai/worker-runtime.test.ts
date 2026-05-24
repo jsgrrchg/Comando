@@ -1781,6 +1781,213 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("completes a streaming subagent user prefix when the mirrored prompt arrives later", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent late prompt parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "Inspect the ",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Inspect the failing chat stream",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-late-prompt",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "failing chat stream",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(messages?.filter((message) => message.kind === "user")).toEqual(
+                [
+                    expect.objectContaining({
+                        content: "Inspect the failing chat stream",
+                        status: "completed",
+                    }),
+                ],
+            );
+        });
+    });
+
+    it("does not rewrite completed subagent user messages when a later prompt shares a prefix", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent prefix prompt parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "Fix",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+        await sendTurnLifecycle(client, {
+            eventType: "turn_complete",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Fix tests",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-prefix",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(
+                messages
+                    ?.filter((message) => message.kind === "user")
+                    .map((message) => message.content),
+            ).toEqual(["Fix", "Fix tests"]);
+        });
+    });
+
+    it("clears mirrored prompt echo state when a subagent turn aborts", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent abort cleanup parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Fix tests",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-abort-cleanup",
+            },
+        });
+        await sendTurnLifecycle(client, {
+            eventType: "turn_aborted",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-abort",
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "Fix",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(
+                messages
+                    ?.filter((message) => message.kind === "user")
+                    .map((message) => message.content),
+            ).toEqual(["Fix tests", "Fix"]);
+        });
+    });
+
     it("does not append mirrored interaction responses after real child assistant output", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent assistant dedupe parent");
@@ -2973,6 +3180,118 @@ describe("AiWorkerRuntime prepareSession", () => {
             }),
         ).rejects.toThrow("You can attach up to 12 images per message.");
         expect(promptMock).not.toHaveBeenCalled();
+    });
+
+    it("does not duplicate direct user image attachments when ACP echoes prompt blocks", async () => {
+        const { client, emittedEvents, launch, runtime } =
+            await setupPreparedRuntimeWithClient("Prompt image echo");
+        emittedEvents.length = 0;
+        const attachment = {
+            dataBase64: "ZmFrZQ==",
+            id: "attachment-1",
+            mimeType: "image/png",
+            name: "attachment.png",
+            sizeBytes: 4,
+        };
+        promptMock.mockImplementationOnce(
+            async (...args: readonly unknown[]) => {
+                const params = args[0] as { readonly messageId: string };
+                await client.sessionUpdate({
+                    sessionId: "runtime-session-1",
+                    update: {
+                        content: {
+                            data: attachment.dataBase64,
+                            mimeType: attachment.mimeType,
+                            type: "image",
+                        },
+                        messageId: params.messageId,
+                        sessionUpdate: "user_message_chunk",
+                    },
+                });
+                return {
+                    stopReason: "completed",
+                };
+            },
+        );
+
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [attachment],
+                projectId: null,
+                prompt: "hello",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Prompt image echo",
+                worktreeId: null,
+            },
+            launch,
+        });
+
+        await vi.waitFor(() => {
+            const userMessages =
+                getLatestPatchMessages(emittedEvents, "session-1")?.filter(
+                    (message) => message.kind === "user",
+                ) ?? [];
+            expect(userMessages).toEqual([
+                expect.objectContaining({
+                    attachments: [
+                        expect.objectContaining({
+                            dataBase64: attachment.dataBase64,
+                            mimeType: attachment.mimeType,
+                        }),
+                    ],
+                    content: "hello",
+                }),
+            ]);
+        });
+    });
+
+    it("does not suppress non-echo user content that reuses the prompt message id", async () => {
+        const { client, emittedEvents, launch, runtime } =
+            await setupPreparedRuntimeWithClient("Prompt resource same id");
+        emittedEvents.length = 0;
+        promptMock.mockImplementationOnce(async (...args: readonly unknown[]) => {
+            const params = args[0] as { readonly messageId: string };
+            await client.sessionUpdate({
+                sessionId: "runtime-session-1",
+                update: {
+                    content: {
+                        name: "legit-context",
+                        type: "resource_link",
+                        uri: "file:///tmp/legit-context.md",
+                    },
+                    messageId: params.messageId,
+                    sessionUpdate: "user_message_chunk",
+                },
+            });
+            return {
+                stopReason: "completed",
+            };
+        });
+
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [],
+                projectId: null,
+                prompt: "hello",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Prompt resource same id",
+                worktreeId: null,
+            },
+            launch,
+        });
+
+        await vi.waitFor(() => {
+            const userMessages =
+                getLatestPatchMessages(emittedEvents, "session-1")?.filter(
+                    (message) => message.kind === "user",
+                ) ?? [];
+            expect(userMessages.map((message) => message.content)).toEqual([
+                "hello",
+                "file:///tmp/legit-context.md",
+            ]);
+        });
     });
 
     it("reads unsaved buffer content before hitting disk", async () => {

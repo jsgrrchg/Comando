@@ -137,8 +137,10 @@ interface TrackedFileRollbackState {
 
 interface PendingUserTextEcho {
     bufferedText: string;
+    readonly expectedContentBlocks: readonly ContentBlock[];
     readonly expectedTexts: readonly string[];
     readonly messageId: string | null;
+    textMatched: boolean;
 }
 
 interface SubagentMirrorTurnState {
@@ -420,9 +422,14 @@ export class AiWorkerRuntime {
         }
 
         const userMessageId = randomUUID();
+        const promptContentBlocks = buildPromptContentBlocks(
+            promptText,
+            params.input.attachments,
+        );
         liveSession.preEditSnapshots.clear();
         this.#clearSubagentMirrorTurn(liveSession);
         this.#setPendingUserTextEcho(liveSession, {
+            expectedContentBlocks: promptContentBlocks,
             expectedTexts: [promptText, displayContent],
             messageId: userMessageId,
         });
@@ -461,10 +468,7 @@ export class AiWorkerRuntime {
         try {
             const response = await liveSession.connection.prompt({
                 messageId: userMessageId,
-                prompt: buildPromptContentBlocks(
-                    promptText,
-                    params.input.attachments,
-                ),
+                prompt: promptContentBlocks,
                 sessionId: this.#requireRuntimeSessionId(liveSession),
             });
 
@@ -1867,6 +1871,7 @@ export class AiWorkerRuntime {
     #setPendingUserTextEcho(
         liveSession: LiveAcpSession,
         input: {
+            readonly expectedContentBlocks?: readonly ContentBlock[];
             readonly expectedTexts: readonly string[];
             readonly messageId: string | null;
         },
@@ -1874,15 +1879,20 @@ export class AiWorkerRuntime {
         const expectedTexts = [
             ...new Set(input.expectedTexts.map((text) => text.trim()).filter(Boolean)),
         ];
-        if (expectedTexts.length === 0) {
+        const expectedContentBlocks = (input.expectedContentBlocks ?? []).filter(
+            (content) => content.type !== "text",
+        );
+        if (expectedTexts.length === 0 && expectedContentBlocks.length === 0) {
             this.#clearPendingUserTextEcho(liveSession);
             return;
         }
 
         this.#pendingUserTextEchoes.set(liveSession.snapshot.sessionId, {
             bufferedText: "",
+            expectedContentBlocks,
             expectedTexts,
             messageId: input.messageId,
+            textMatched: false,
         });
     }
 
@@ -1899,8 +1909,31 @@ export class AiWorkerRuntime {
         const pending = this.#pendingUserTextEchoes.get(
             liveSession.snapshot.sessionId,
         );
-        const text = readContentBlockText(content);
-        if (!pending || text === null) {
+        if (!pending) {
+            return {
+                handled: false,
+                snapshot,
+            };
+        }
+
+        const hasMatchingMessageId =
+            Boolean(messageId) &&
+            Boolean(pending.messageId) &&
+            messageId === pending.messageId;
+        if (content.type !== "text") {
+            const matchesExpectedContent = pending.expectedContentBlocks.some(
+                (expectedContent) =>
+                    isSamePromptEchoContentBlock(expectedContent, content),
+            );
+            return {
+                handled: matchesExpectedContent,
+                snapshot,
+            };
+        }
+
+        const text = content.text;
+        if (pending.textMatched && !hasMatchingMessageId) {
+            this.#clearPendingUserTextEcho(liveSession);
             return {
                 handled: false,
                 snapshot,
@@ -1912,10 +1945,6 @@ export class AiWorkerRuntime {
         const normalizedExpectedTexts = pending.expectedTexts
             .map(normalizeEchoText)
             .filter(Boolean);
-        const hasMatchingMessageId =
-            Boolean(messageId) &&
-            Boolean(pending.messageId) &&
-            messageId === pending.messageId;
         const matchesExpectedText = normalizedExpectedTexts.some(
             (expectedText) => expectedText === normalizedBufferedText,
         );
@@ -1927,7 +1956,10 @@ export class AiWorkerRuntime {
 
         if (hasMatchingMessageId || isExpectedPrefix) {
             if (matchesExpectedText) {
-                this.#clearPendingUserTextEcho(liveSession);
+                pending.textMatched = true;
+                if (pending.expectedContentBlocks.length === 0) {
+                    this.#clearPendingUserTextEcho(liveSession);
+                }
             }
             return {
                 handled: true,
@@ -2019,6 +2051,12 @@ export class AiWorkerRuntime {
             turnEventType === CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE
         ) {
             this.#endLiveSessionTurn(liveSession, turnId, updatedAt);
+            if (
+                turnEventType === CODEX_ACP_TURN_ABORTED_EVENT_TYPE ||
+                turnEventType === CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE
+            ) {
+                this.#clearSubagentMirrorTurn(liveSession);
+            }
         }
 
         return true;
@@ -2059,6 +2097,7 @@ export class AiWorkerRuntime {
         }
 
         liveSession.activeTurnId = null;
+        this.#clearPendingUserTextEcho(liveSession);
         this.#resolvePendingPermission(liveSession, null);
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
@@ -2237,6 +2276,16 @@ export class AiWorkerRuntime {
         }
 
         const prompt = readSubagentTurnPrompt(update);
+        const latestMessage = childSession.snapshot.messages.at(-1) ?? null;
+        const promptMergePrefix =
+            prompt &&
+            latestMessage?.kind === "user" &&
+            latestMessage.status === "streaming" &&
+            isNormalizedPrefixOf(latestMessage.content, prompt)
+                ? latestMessage.content
+                : null;
+        const promptMergeMessageId =
+            promptMergePrefix && latestMessage ? latestMessage.id : null;
         this.#setSubagentMirrorTurn(childSession, update.toolCallId);
         let nextSnapshot = finalizeStreamingMessages({
             ...childSession.snapshot,
@@ -2250,8 +2299,11 @@ export class AiWorkerRuntime {
         });
 
         if (prompt) {
+            const pendingPromptText = promptMergePrefix
+                ? getPromptRemainderAfterPrefix(promptMergePrefix, prompt)
+                : prompt;
             this.#setPendingUserTextEcho(childSession, {
-                expectedTexts: [prompt],
+                expectedTexts: [pendingPromptText],
                 messageId: null,
             });
             nextSnapshot = appendMirroredSubagentPrompt(
@@ -2259,6 +2311,7 @@ export class AiWorkerRuntime {
                 prompt,
                 `subagent:${update.toolCallId}:user`,
                 updatedAt,
+                promptMergeMessageId,
             );
         }
 
@@ -3821,7 +3874,10 @@ export class AiWorkerRuntime {
             `${getRuntimeDisplayName(liveConnection.runtimeId)} ACP ended unexpectedly (${code ?? "null"}${signal ? ` / ${signal}` : ""}).`;
 
         for (const liveSession of liveConnection.sessionsByAppSessionId.values()) {
-            this.#sessions.delete(liveSession.snapshot.sessionId);
+            const sessionId = liveSession.snapshot.sessionId;
+            this.#sessions.delete(sessionId);
+            this.#pendingUserTextEchoes.delete(sessionId);
+            this.#subagentMirrorTurns.delete(sessionId);
             this.#releaseAllTerminals(liveSession);
             if (liveSession.closing || liveConnection.closing) {
                 continue;
@@ -4147,12 +4203,87 @@ function setReasoningEffortOnSnapshot(
     return nextSnapshot;
 }
 
-function readContentBlockText(content: ContentBlock): string | null {
-    return content.type === "text" ? content.text : null;
+function isSamePromptEchoContentBlock(
+    expected: ContentBlock,
+    candidate: ContentBlock,
+): boolean {
+    switch (expected.type) {
+        case "text":
+            return candidate.type === "text" && expected.text === candidate.text;
+        case "image":
+            return (
+                candidate.type === "image" &&
+                expected.data === candidate.data &&
+                expected.mimeType === candidate.mimeType &&
+                (expected.uri ?? null) === (candidate.uri ?? null)
+            );
+        case "audio":
+            return (
+                candidate.type === "audio" &&
+                expected.data === candidate.data &&
+                expected.mimeType === candidate.mimeType
+            );
+        case "resource_link":
+            return (
+                candidate.type === "resource_link" &&
+                expected.uri === candidate.uri &&
+                expected.name === candidate.name &&
+                (expected.description ?? null) ===
+                    (candidate.description ?? null) &&
+                (expected.mimeType ?? null) === (candidate.mimeType ?? null) &&
+                (expected.size ?? null) === (candidate.size ?? null) &&
+                (expected.title ?? null) === (candidate.title ?? null)
+            );
+        case "resource":
+            return (
+                candidate.type === "resource" &&
+                isSameEmbeddedResource(expected.resource, candidate.resource)
+            );
+    }
+}
+
+function isSameEmbeddedResource(
+    expected: Extract<ContentBlock, { type: "resource" }>["resource"],
+    candidate: Extract<ContentBlock, { type: "resource" }>["resource"],
+): boolean {
+    if ("text" in expected || "text" in candidate) {
+        return (
+            "text" in expected &&
+            "text" in candidate &&
+            expected.text === candidate.text &&
+            expected.uri === candidate.uri &&
+            (expected.mimeType ?? null) === (candidate.mimeType ?? null)
+        );
+    }
+
+    return (
+        expected.blob === candidate.blob &&
+        expected.uri === candidate.uri &&
+        (expected.mimeType ?? null) === (candidate.mimeType ?? null)
+    );
 }
 
 function normalizeEchoText(value: string): string {
     return value.trim().replace(/\s+/g, " ");
+}
+
+function getPromptRemainderAfterPrefix(prefix: string, prompt: string): string {
+    if (prompt.startsWith(prefix)) {
+        return prompt.slice(prefix.length);
+    }
+
+    const trimmedPrefix = prefix.trim();
+    if (trimmedPrefix && prompt.startsWith(trimmedPrefix)) {
+        return prompt.slice(trimmedPrefix.length).trimStart();
+    }
+
+    const normalizedPrefix = normalizeEchoText(prefix);
+    const normalizedPrompt = normalizeEchoText(prompt);
+    if (normalizedPrefix && normalizedPrompt.startsWith(normalizedPrefix)) {
+        return normalizedPrompt.slice(normalizedPrefix.length).trimStart();
+    }
+
+    return prompt;
 }
 
 function isNormalizedPrefixOf(value: string, expected: string): boolean {
@@ -4170,6 +4301,7 @@ function appendMirroredSubagentPrompt(
     content: string,
     id: string,
     createdAt: string,
+    mergeMessageId: string | null = null,
 ): AiSessionSnapshot {
     const trimmedContent = content.trim();
     if (!trimmedContent) {
@@ -4180,6 +4312,8 @@ function appendMirroredSubagentPrompt(
     const latestMessage = messages[messages.length - 1] ?? null;
     if (
         latestMessage?.kind === "user" &&
+        (latestMessage.status === "streaming" ||
+            latestMessage.id === mergeMessageId) &&
         isNormalizedPrefixOf(latestMessage.content, trimmedContent)
     ) {
         messages[messages.length - 1] = {
