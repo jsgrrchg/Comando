@@ -9,6 +9,7 @@ import {
     PROTOCOL_VERSION,
     ndJsonStream,
     type Client,
+    type ContentBlock,
     type CreateTerminalRequest,
     type CreateTerminalResponse,
     type KillTerminalRequest,
@@ -134,6 +135,17 @@ interface TrackedFileRollbackState {
     readonly pathBackups: readonly TrackedPathRollbackBackup[];
 }
 
+interface PendingUserTextEcho {
+    bufferedText: string;
+    readonly expectedTexts: readonly string[];
+    readonly messageId: string | null;
+}
+
+interface SubagentMirrorTurnState {
+    assistantOutputSeen: boolean;
+    readonly toolCallId: string;
+}
+
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
 const TERMINAL_PERMISSION_REJECT_OPTION_ID = "comando.terminal.reject_once";
@@ -228,7 +240,9 @@ export class AiWorkerRuntime {
     readonly #emitEvent: (message: AiWorkerEventMessage) => void;
     readonly #connections = new Map<string, LiveAcpConnection>();
     readonly #fileBuffers = new Map<string, string>();
+    readonly #pendingUserTextEchoes = new Map<string, PendingUserTextEcho>();
     readonly #sessions = new Map<string, LiveAcpSession>();
+    readonly #subagentMirrorTurns = new Map<string, SubagentMirrorTurnState>();
     readonly #startedAt = new Date().toISOString();
 
     constructor(options: AiWorkerRuntimeOptions) {
@@ -405,7 +419,13 @@ export class AiWorkerRuntime {
             throw new Error("Type a prompt before sending it.");
         }
 
+        const userMessageId = randomUUID();
         liveSession.preEditSnapshots.clear();
+        this.#clearSubagentMirrorTurn(liveSession);
+        this.#setPendingUserTextEcho(liveSession, {
+            expectedTexts: [promptText, displayContent],
+            messageId: userMessageId,
+        });
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: now,
@@ -416,7 +436,7 @@ export class AiWorkerRuntime {
                     attachments: params.input.attachments,
                     content: displayContent,
                     createdAt: now,
-                    id: randomUUID(),
+                    id: userMessageId,
                     kind: "user",
                     status: "completed",
                 },
@@ -440,7 +460,7 @@ export class AiWorkerRuntime {
 
         try {
             const response = await liveSession.connection.prompt({
-                messageId: randomUUID(),
+                messageId: userMessageId,
                 prompt: buildPromptContentBlocks(
                     promptText,
                     params.input.attachments,
@@ -458,12 +478,14 @@ export class AiWorkerRuntime {
             });
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
+            this.#clearPendingUserTextEcho(liveSession);
 
             return {
                 sessionId: params.input.sessionId,
                 stopReason: response.stopReason,
             };
         } catch (error) {
+            this.#clearPendingUserTextEcho(liveSession);
             const message =
                 error instanceof Error
                     ? error.message
@@ -516,6 +538,8 @@ export class AiWorkerRuntime {
 
     #markLiveSessionIdle(liveSession: LiveAcpSession): void {
         liveSession.activeTurnId = null;
+        this.#clearPendingUserTextEcho(liveSession);
+        this.#clearSubagentMirrorTurn(liveSession);
         if (
             liveSession.snapshot.status !== "streaming" &&
             liveSession.snapshot.status !== "starting" &&
@@ -1661,15 +1685,26 @@ export class AiWorkerRuntime {
         };
 
         switch (update.sessionUpdate) {
-            case "user_message_chunk":
-                nextSnapshot = appendContentBlockToSnapshot(
+            case "user_message_chunk": {
+                const echoResult = this.#applyPendingUserTextEcho(
+                    liveSession,
                     nextSnapshot,
-                    "user",
                     update.content,
                     update.messageId ?? null,
                 );
+                nextSnapshot = echoResult.snapshot;
+                if (!echoResult.handled) {
+                    nextSnapshot = appendContentBlockToSnapshot(
+                        nextSnapshot,
+                        "user",
+                        update.content,
+                        update.messageId ?? null,
+                    );
+                }
                 break;
+            }
             case "agent_message_chunk":
+                this.#markSubagentAssistantOutputSeen(liveSession);
                 nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
                     "assistant",
@@ -1827,6 +1862,128 @@ export class AiWorkerRuntime {
         }
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
         return Promise.resolve();
+    }
+
+    #setPendingUserTextEcho(
+        liveSession: LiveAcpSession,
+        input: {
+            readonly expectedTexts: readonly string[];
+            readonly messageId: string | null;
+        },
+    ): void {
+        const expectedTexts = [
+            ...new Set(input.expectedTexts.map((text) => text.trim()).filter(Boolean)),
+        ];
+        if (expectedTexts.length === 0) {
+            this.#clearPendingUserTextEcho(liveSession);
+            return;
+        }
+
+        this.#pendingUserTextEchoes.set(liveSession.snapshot.sessionId, {
+            bufferedText: "",
+            expectedTexts,
+            messageId: input.messageId,
+        });
+    }
+
+    #clearPendingUserTextEcho(liveSession: LiveAcpSession): void {
+        this.#pendingUserTextEchoes.delete(liveSession.snapshot.sessionId);
+    }
+
+    #applyPendingUserTextEcho(
+        liveSession: LiveAcpSession,
+        snapshot: AiSessionSnapshot,
+        content: ContentBlock,
+        messageId: string | null,
+    ): { readonly handled: boolean; readonly snapshot: AiSessionSnapshot } {
+        const pending = this.#pendingUserTextEchoes.get(
+            liveSession.snapshot.sessionId,
+        );
+        const text = readContentBlockText(content);
+        if (!pending || text === null) {
+            return {
+                handled: false,
+                snapshot,
+            };
+        }
+
+        pending.bufferedText = `${pending.bufferedText}${text}`;
+        const normalizedBufferedText = normalizeEchoText(pending.bufferedText);
+        const normalizedExpectedTexts = pending.expectedTexts
+            .map(normalizeEchoText)
+            .filter(Boolean);
+        const hasMatchingMessageId =
+            Boolean(messageId) &&
+            Boolean(pending.messageId) &&
+            messageId === pending.messageId;
+        const matchesExpectedText = normalizedExpectedTexts.some(
+            (expectedText) => expectedText === normalizedBufferedText,
+        );
+        const isExpectedPrefix =
+            normalizedBufferedText.length === 0 ||
+            normalizedExpectedTexts.some((expectedText) =>
+                expectedText.startsWith(normalizedBufferedText),
+            );
+
+        if (hasMatchingMessageId || isExpectedPrefix) {
+            if (matchesExpectedText) {
+                this.#clearPendingUserTextEcho(liveSession);
+            }
+            return {
+                handled: true,
+                snapshot,
+            };
+        }
+
+        const bufferedText = pending.bufferedText;
+        this.#clearPendingUserTextEcho(liveSession);
+        return {
+            handled: true,
+            snapshot: appendContentBlockToSnapshot(
+                snapshot,
+                "user",
+                {
+                    text: bufferedText,
+                    type: "text",
+                },
+                messageId,
+            ),
+        };
+    }
+
+    #setSubagentMirrorTurn(
+        liveSession: LiveAcpSession,
+        toolCallId: string,
+    ): void {
+        this.#subagentMirrorTurns.set(liveSession.snapshot.sessionId, {
+            assistantOutputSeen: false,
+            toolCallId,
+        });
+    }
+
+    #clearSubagentMirrorTurn(liveSession: LiveAcpSession): void {
+        this.#subagentMirrorTurns.delete(liveSession.snapshot.sessionId);
+    }
+
+    #markSubagentAssistantOutputSeen(liveSession: LiveAcpSession): void {
+        if (!isSubagentLiveSession(liveSession)) {
+            return;
+        }
+
+        const state = this.#subagentMirrorTurns.get(
+            liveSession.snapshot.sessionId,
+        );
+        if (state) {
+            state.assistantOutputSeen = true;
+        }
+    }
+
+    #getSubagentMirrorTurn(
+        liveSession: LiveAcpSession,
+    ): SubagentMirrorTurnState | null {
+        return (
+            this.#subagentMirrorTurns.get(liveSession.snapshot.sessionId) ?? null
+        );
     }
 
     #handleTurnLifecycleUpdate(
@@ -2056,8 +2213,10 @@ export class AiWorkerRuntime {
             subagentEventType === CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE ||
             subagentEventType === CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE
         ) {
+            const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
             if (
                 !childSession.activeTurnId &&
+                (!mirrorTurn || mirrorTurn.toolCallId === update.toolCallId) &&
                 isTerminalSubagentBreadcrumb(meta, update)
             ) {
                 this.#mirrorSubagentTurnEnd(childSession, update, updatedAt);
@@ -2078,6 +2237,7 @@ export class AiWorkerRuntime {
         }
 
         const prompt = readSubagentTurnPrompt(update);
+        this.#setSubagentMirrorTurn(childSession, update.toolCallId);
         let nextSnapshot = finalizeStreamingMessages({
             ...childSession.snapshot,
             activeTurnStartedAt:
@@ -2090,9 +2250,12 @@ export class AiWorkerRuntime {
         });
 
         if (prompt) {
-            nextSnapshot = appendMirroredSubagentMessage(
+            this.#setPendingUserTextEcho(childSession, {
+                expectedTexts: [prompt],
+                messageId: null,
+            });
+            nextSnapshot = appendMirroredSubagentPrompt(
                 nextSnapshot,
-                "user",
                 prompt,
                 `subagent:${update.toolCallId}:user`,
                 updatedAt,
@@ -2117,6 +2280,7 @@ export class AiWorkerRuntime {
         }
 
         const response = readSubagentTurnResponse(update);
+        const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
         let nextSnapshot = finalizeStreamingMessages({
             ...childSession.snapshot,
             activeTurnStartedAt: null,
@@ -2126,7 +2290,7 @@ export class AiWorkerRuntime {
             updatedAt,
         });
 
-        if (response) {
+        if (response && !mirrorTurn?.assistantOutputSeen) {
             nextSnapshot = appendMirroredSubagentMessage(
                 nextSnapshot,
                 "assistant",
@@ -2137,6 +2301,8 @@ export class AiWorkerRuntime {
         }
 
         childSession.activeTurnId = null;
+        this.#clearPendingUserTextEcho(childSession);
+        this.#clearSubagentMirrorTurn(childSession);
         childSession.snapshot = nextSnapshot;
         this.#queueSnapshotFlush(childSession);
         this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
@@ -2161,6 +2327,7 @@ export class AiWorkerRuntime {
             meta,
         );
         for (const childSession of childSessions) {
+            const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
             if (childSession.activeTurnId) {
                 continue;
             }
@@ -2180,7 +2347,7 @@ export class AiWorkerRuntime {
                 updatedAt,
             });
 
-            if (response) {
+            if (response && !mirrorTurn?.assistantOutputSeen) {
                 nextSnapshot = appendMirroredSubagentMessage(
                     nextSnapshot,
                     "assistant",
@@ -2191,6 +2358,8 @@ export class AiWorkerRuntime {
             }
 
             childSession.activeTurnId = null;
+            this.#clearPendingUserTextEcho(childSession);
+            this.#clearSubagentMirrorTurn(childSession);
             childSession.snapshot = nextSnapshot;
             this.#queueSnapshotFlush(childSession);
             this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
@@ -3685,6 +3854,8 @@ export class AiWorkerRuntime {
     ): void {
         const liveConnection = liveSession.runtimeConnection;
         this.#sessions.delete(sessionId);
+        this.#pendingUserTextEchoes.delete(sessionId);
+        this.#subagentMirrorTurns.delete(sessionId);
         liveConnection.sessionsByAppSessionId.delete(sessionId);
         if (liveSession.snapshot.runtimeSessionId) {
             liveConnection.appSessionIdByRuntimeSessionId.delete(
@@ -3738,7 +3909,10 @@ export class AiWorkerRuntime {
         liveConnection.closing = true;
         this.#connections.delete(liveConnection.connectionId);
         for (const liveSession of liveConnection.sessionsByAppSessionId.values()) {
-            this.#sessions.delete(liveSession.snapshot.sessionId);
+            const sessionId = liveSession.snapshot.sessionId;
+            this.#sessions.delete(sessionId);
+            this.#pendingUserTextEchoes.delete(sessionId);
+            this.#subagentMirrorTurns.delete(sessionId);
             liveSession.closing = true;
             this.#flushSnapshotEvent(liveSession);
             this.#resolvePendingPermission(liveSession, null);
@@ -3971,6 +4145,61 @@ function setReasoningEffortOnSnapshot(
     }
 
     return nextSnapshot;
+}
+
+function readContentBlockText(content: ContentBlock): string | null {
+    return content.type === "text" ? content.text : null;
+}
+
+function normalizeEchoText(value: string): string {
+    return value.trim().replace(/\s+/g, " ");
+}
+
+function isNormalizedPrefixOf(value: string, expected: string): boolean {
+    const normalizedValue = normalizeEchoText(value);
+    const normalizedExpected = normalizeEchoText(expected);
+    return (
+        normalizedValue.length > 0 &&
+        normalizedExpected.length > 0 &&
+        normalizedExpected.startsWith(normalizedValue)
+    );
+}
+
+function appendMirroredSubagentPrompt(
+    snapshot: AiSessionSnapshot,
+    content: string,
+    id: string,
+    createdAt: string,
+): AiSessionSnapshot {
+    const trimmedContent = content.trim();
+    if (!trimmedContent) {
+        return snapshot;
+    }
+
+    const messages = [...snapshot.messages];
+    const latestMessage = messages[messages.length - 1] ?? null;
+    if (
+        latestMessage?.kind === "user" &&
+        isNormalizedPrefixOf(latestMessage.content, trimmedContent)
+    ) {
+        messages[messages.length - 1] = {
+            ...latestMessage,
+            content: trimmedContent,
+            status: "completed",
+        };
+        return {
+            ...snapshot,
+            messages,
+        };
+    }
+
+    return appendMirroredSubagentMessage(
+        snapshot,
+        "user",
+        trimmedContent,
+        id,
+        createdAt,
+    );
 }
 
 function appendMirroredSubagentMessage(

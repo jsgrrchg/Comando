@@ -1633,6 +1633,337 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("does not duplicate direct subagent prompts when ACP echoes split user chunks", async () => {
+        const { client, emittedEvents, launch, runtime, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent direct user dedupe parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        promptMock.mockImplementationOnce(async () => {
+            await client.sessionUpdate({
+                sessionId: "runtime-subagent-1",
+                update: {
+                    content: {
+                        text: "hello ",
+                        type: "text",
+                    },
+                    sessionUpdate: "user_message_chunk",
+                },
+            });
+            await client.sessionUpdate({
+                sessionId: "runtime-subagent-1",
+                update: {
+                    content: {
+                        text: "child",
+                        type: "text",
+                    },
+                    sessionUpdate: "user_message_chunk",
+                },
+            });
+            return {
+                stopReason: "completed",
+            };
+        });
+
+        const childLaunch: AiWorkerSessionLaunchInput = {
+            ...launch,
+            input: {
+                ...launch.input,
+                sessionId: childSnapshot.sessionId,
+                title: childSnapshot.title,
+            },
+            persistedSnapshot: childSnapshot,
+        };
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [],
+                projectId: null,
+                prompt: "hello child",
+                runtimeId: "codex",
+                sessionId: childSnapshot.sessionId,
+                title: childSnapshot.title,
+                worktreeId: null,
+            },
+            launch: childLaunch,
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(messages?.filter((message) => message.kind === "user")).toEqual(
+                [
+                    expect.objectContaining({
+                        content: "hello child",
+                    }),
+                ],
+            );
+        });
+    });
+
+    it("does not duplicate mirrored subagent prompts when split user chunks arrive", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent split user dedupe parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Inspect the failing chat stream",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-split-dedupe",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "Inspect the ",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "failing chat stream",
+                    type: "text",
+                },
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(messages?.filter((message) => message.kind === "user")).toEqual(
+                [
+                    expect.objectContaining({
+                        content: "Inspect the failing chat stream",
+                    }),
+                ],
+            );
+        });
+    });
+
+    it("does not append mirrored interaction responses after real child assistant output", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent assistant dedupe parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Report on the chat stream",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-assistant-dedupe",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "real child answer",
+                    type: "text",
+                },
+                sessionUpdate: "agent_message_chunk",
+            },
+        });
+
+        const interactionEndMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_end",
+        };
+        await client.sessionUpdate({
+            _meta: interactionEndMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionEndMeta,
+                rawOutput: {
+                    status: {
+                        completed: "fallback status answer",
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Galileo responded",
+                toolCallId: "codex-acp:subagent:interaction-assistant-dedupe",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(
+                messages?.filter(
+                    (message) =>
+                        message.kind === "assistant" &&
+                        message.content === "real child answer",
+                ),
+            ).toHaveLength(1);
+            expect(
+                messages?.some(
+                    (message) => message.content === "fallback status answer",
+                ),
+            ).toBe(false);
+        });
+    });
+
+    it("does not append mirrored waiting-end responses after real child assistant output", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent waiting dedupe parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        const interactionBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionBeginMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Keep working until wait finishes",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-waiting-dedupe",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: {
+                    text: "real waiting answer",
+                    type: "text",
+                },
+                sessionUpdate: "agent_message_chunk",
+            },
+        });
+
+        const waitingEndMeta = {
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "waiting_end",
+        };
+        await client.sessionUpdate({
+            _meta: waitingEndMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: waitingEndMeta,
+                rawOutput: {
+                    agent_statuses: [
+                        {
+                            agent_nickname: "Galileo",
+                            status: {
+                                completed: "fallback waiting answer",
+                            },
+                            thread_id: "runtime-subagent-1",
+                        },
+                    ],
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Subagents finished",
+                toolCallId: "codex-acp:subagent:waiting-dedupe",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(
+                messages?.filter(
+                    (message) =>
+                        message.kind === "assistant" &&
+                        message.content === "real waiting answer",
+                ),
+            ).toHaveLength(1);
+            expect(
+                messages?.some(
+                    (message) => message.content === "fallback waiting answer",
+                ),
+            ).toBe(false);
+        });
+    });
+
     it("mirrors Codex subagent resume breadcrumbs after an explicit close", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -4151,6 +4482,8 @@ function createCodexCatalogResponse(
 async function setupPreparedRuntimeWithClient(title: string): Promise<{
     readonly client: MockAcpClient;
     readonly emittedEvents: AiWorkerEventMessage[];
+    readonly launch: AiWorkerSessionLaunchInput;
+    readonly runtime: InstanceType<typeof AiWorkerRuntime>;
     readonly tempDir: string;
 }> {
     const tempDir = await fs.mkdtemp(
@@ -4179,6 +4512,8 @@ async function setupPreparedRuntimeWithClient(title: string): Promise<{
     return {
         client: client!,
         emittedEvents,
+        launch,
+        runtime,
         tempDir,
     };
 }
