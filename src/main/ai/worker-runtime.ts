@@ -64,7 +64,9 @@ import {
     CODEX_ACP_CHILD_SESSION_ID_KEY,
     CODEX_ACP_CHILD_THREAD_ID_KEY,
     CODEX_ACP_CWD_KEY,
+    CODEX_ACP_MODEL_KEY,
     CODEX_ACP_PARENT_SESSION_ID_KEY,
+    CODEX_ACP_REASONING_EFFORT_KEY,
     CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
     CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
@@ -141,6 +143,18 @@ const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE = "interaction_end";
 const CODEX_ACP_SUBAGENT_RESUME_BEGIN_EVENT_TYPE = "resume_begin";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE = "resume_end";
 const CODEX_ACP_SUBAGENT_WAITING_END_EVENT_TYPE = "waiting_end";
+const CODEX_ACP_REASONING_CONFIG_OPTION_IDS = [
+    "reasoning_effort",
+    "effort",
+    "effort_level",
+] as const;
+const CODEX_ACP_REASONING_EFFORT_SUFFIXES = [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+] as const;
 const MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION = 16;
 const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
 const PRE_EDIT_SNAPSHOT_MAX_BYTES = 5 * 1024 * 1024;
@@ -1473,7 +1487,7 @@ export class AiWorkerRuntime {
         const cwd =
             readMetaString(meta, CODEX_ACP_CWD_KEY)?.trim() ||
             parentSession.cwd;
-        const snapshot: AiSessionSnapshot = {
+        let snapshot: AiSessionSnapshot = {
             activeTurnStartedAt: null,
             availableCommands: parentSession.snapshot.availableCommands,
             configOptions: parentSession.snapshot.configOptions,
@@ -1499,6 +1513,11 @@ export class AiWorkerRuntime {
             updatedAt: now,
             worktreeId: parentSession.snapshot.worktreeId ?? null,
         };
+        snapshot = applyCodexAcpSubagentModelMetadataToSnapshot(
+            snapshot,
+            meta,
+            now,
+        );
         const subagentSession: LiveAcpSession = {
             additionalRoots: parentSession.additionalRoots,
             activeTurnId: null,
@@ -1573,6 +1592,11 @@ export class AiWorkerRuntime {
                 updatedAt: now,
             };
         }
+        nextSnapshot = applyCodexAcpSubagentModelMetadataToSnapshot(
+            nextSnapshot,
+            meta,
+            now,
+        );
 
         if (nextSnapshot !== childSession.snapshot) {
             childSession.snapshot = nextSnapshot;
@@ -1736,16 +1760,26 @@ export class AiWorkerRuntime {
                     },
                 );
                 break;
-            case "session_info_update":
+            case "session_info_update": {
+                const updatedAt = update.updatedAt ?? now;
                 nextSnapshot = {
                     ...nextSnapshot,
                     title:
                         typeof update.title === "string" && update.title.trim()
                             ? update.title.trim()
                             : nextSnapshot.title,
-                    updatedAt: update.updatedAt ?? now,
+                    updatedAt,
                 };
+                if (isSubagentLiveSession(liveSession)) {
+                    nextSnapshot =
+                        applyCodexAcpSubagentModelMetadataToSnapshot(
+                            nextSnapshot,
+                            meta,
+                            updatedAt,
+                        );
+                }
                 break;
+            }
             case "usage_update": {
                 const size = Number(update.size);
                 const used = Number(update.used);
@@ -3802,6 +3836,141 @@ function readSessionInfoTitle(
     return typeof update.title === "string" && update.title.trim().length > 0
         ? update.title.trim()
         : null;
+}
+
+function applyCodexAcpSubagentModelMetadataToSnapshot(
+    snapshot: AiSessionSnapshot,
+    meta: Record<string, unknown>,
+    updatedAt: string,
+): AiSessionSnapshot {
+    const modelId = normalizeCodexAcpModelId(
+        readMetaString(meta, CODEX_ACP_MODEL_KEY),
+        snapshot,
+        readMetaString(meta, CODEX_ACP_REASONING_EFFORT_KEY),
+    );
+    const reasoningEffort = readMetaString(
+        meta,
+        CODEX_ACP_REASONING_EFFORT_KEY,
+    );
+    let nextSnapshot = snapshot;
+
+    if (modelId) {
+        const modelConfig = getModelConfigOption(nextSnapshot.configOptions);
+        const shouldUpdateModel =
+            nextSnapshot.modelId !== modelId ||
+            (modelConfig?.type === "select" &&
+                modelConfig.value !== modelId &&
+                hasSelectConfigValue(modelConfig, modelId));
+        if (shouldUpdateModel) {
+            nextSnapshot = setModelOnSnapshot(nextSnapshot, modelId, updatedAt);
+        }
+    }
+
+    if (reasoningEffort) {
+        nextSnapshot = setReasoningEffortOnSnapshot(
+            nextSnapshot,
+            reasoningEffort,
+            updatedAt,
+        );
+    }
+
+    return nextSnapshot;
+}
+
+function normalizeCodexAcpModelId(
+    rawModelId: string | null,
+    snapshot: AiSessionSnapshot,
+    explicitReasoningEffort: string | null,
+): string | null {
+    if (!rawModelId) {
+        return null;
+    }
+
+    if (hasKnownModelSelection(snapshot, rawModelId)) {
+        return rawModelId;
+    }
+
+    const suffix = parseCodexAcpModelEffortSuffix(rawModelId);
+    if (!suffix) {
+        return rawModelId;
+    }
+
+    if (
+        suffix.kind !== "dash" ||
+        explicitReasoningEffort === suffix.effort ||
+        hasKnownModelSelection(snapshot, suffix.base)
+    ) {
+        return suffix.base;
+    }
+
+    return rawModelId;
+}
+
+function parseCodexAcpModelEffortSuffix(
+    modelId: string,
+): { readonly base: string; readonly effort: string; readonly kind: string } | null {
+    for (const effort of CODEX_ACP_REASONING_EFFORT_SUFFIXES) {
+        const slashSuffix = `/${effort}`;
+        if (modelId.endsWith(slashSuffix)) {
+            const base = modelId.slice(0, -slashSuffix.length).trim();
+            return base ? { base, effort, kind: "slash" } : null;
+        }
+
+        const parentheticalSuffix = ` (${effort})`;
+        if (modelId.endsWith(parentheticalSuffix)) {
+            const base = modelId.slice(0, -parentheticalSuffix.length).trim();
+            return base ? { base, effort, kind: "parenthetical" } : null;
+        }
+
+        const dashSuffix = `-${effort}`;
+        if (modelId.endsWith(dashSuffix)) {
+            const base = modelId.slice(0, -dashSuffix.length).trim();
+            return base ? { base, effort, kind: "dash" } : null;
+        }
+    }
+
+    return null;
+}
+
+function hasKnownModelSelection(
+    snapshot: AiSessionSnapshot,
+    modelId: string,
+): boolean {
+    if (snapshot.models.some((model) => model.id === modelId)) {
+        return true;
+    }
+
+    const modelConfig = getModelConfigOption(snapshot.configOptions);
+    return modelConfig ? hasSelectConfigValue(modelConfig, modelId) : false;
+}
+
+function setReasoningEffortOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    reasoningEffort: string,
+    updatedAt: string,
+): AiSessionSnapshot {
+    let nextSnapshot = snapshot;
+    for (const optionId of CODEX_ACP_REASONING_CONFIG_OPTION_IDS) {
+        const option = nextSnapshot.configOptions.find(
+            (candidate) => candidate.id === optionId,
+        );
+        if (
+            option?.type !== "select" ||
+            option.value === reasoningEffort ||
+            !hasSelectConfigValue(option, reasoningEffort)
+        ) {
+            continue;
+        }
+
+        nextSnapshot = setConfigOptionOnSnapshot(
+            nextSnapshot,
+            option.id,
+            reasoningEffort,
+            updatedAt,
+        );
+    }
+
+    return nextSnapshot;
 }
 
 function appendMirroredSubagentMessage(

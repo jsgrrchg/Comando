@@ -20,7 +20,12 @@ import { computeDiffHunks } from "@shared/ai-tracked-file";
 import type { AiWorkerEventMessage, AiWorkerSessionLaunchInput } from "./contracts";
 
 const initializeMock = vi.fn(() => Promise.resolve(undefined));
-const loadSessionMock = vi.fn(() =>
+type MockSessionCatalogResponse = {
+    readonly configOptions: readonly Record<string, unknown>[];
+    readonly modes: unknown;
+    readonly models: unknown;
+};
+const loadSessionMock = vi.fn<() => Promise<MockSessionCatalogResponse>>(() =>
     Promise.resolve({
         configOptions: [],
         modes: [],
@@ -732,6 +737,186 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).resolves.toEqual({
             sessionId: "session-1",
             stopReason: "completed",
+        });
+    });
+
+    it("applies Codex subagent model metadata to the initial child snapshot", async () => {
+        loadSessionMock.mockResolvedValueOnce(createCodexCatalogResponse());
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Subagent metadata parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpModel: "gpt-5-mini/high",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpReasoningEffort: "high",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot).toEqual(
+            expect.objectContaining({
+                modelId: "gpt-5-mini",
+                runtimeSessionId: "runtime-subagent-1",
+                title: "Galileo",
+            }),
+        );
+        expect(
+            readSelectConfigValue(childSnapshot?.configOptions, "model"),
+        ).toBe("gpt-5-mini");
+        expect(
+            readSelectConfigValue(
+                childSnapshot?.configOptions,
+                "reasoning_effort",
+            ),
+        ).toBe("high");
+    });
+
+    it("keeps known dash-suffixed Codex subagent model metadata intact", async () => {
+        loadSessionMock.mockResolvedValueOnce(
+            createCodexCatalogResponse({
+                modelId: "foo",
+                modelOptions: [
+                    {
+                        id: "foo",
+                        name: "Foo",
+                    },
+                    {
+                        id: "foo-high",
+                        name: "Foo High",
+                    },
+                ],
+                reasoningOptionId: "effort",
+            }),
+        );
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent dash model parent");
+
+        const subagentMeta = {
+            codexAcpAgentNickname: "Ada",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpModel: "foo-high",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpReasoningEffort: "high",
+        };
+        await client.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Ada",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) => snapshot.parentSessionId === "session-1",
+        );
+        expect(childSnapshot).toEqual(
+            expect.objectContaining({
+                modelId: "foo-high",
+                runtimeSessionId: "runtime-subagent-1",
+                title: "Ada",
+            }),
+        );
+        expect(
+            readSelectConfigValue(childSnapshot?.configOptions, "model"),
+        ).toBe("foo-high");
+        expect(readSelectConfigValue(childSnapshot?.configOptions, "effort")).toBe(
+            "high",
+        );
+    });
+
+    it("updates Codex subagent model metadata from later session info updates", async () => {
+        loadSessionMock.mockResolvedValueOnce(
+            createCodexCatalogResponse({
+                reasoningOptionId: "effort_level",
+            }),
+        );
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent metadata update parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        expect(childSnapshot.modelId).toBe("gpt-5");
+        expect(
+            readSelectConfigValue(childSnapshot.configOptions, "effort_level"),
+        ).toBe("medium");
+
+        emittedEvents.length = 0;
+        const metadataUpdate = {
+            codexAcpModel: "gpt-5-mini",
+            codexAcpReasoningEffort: "low",
+        };
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: metadataUpdate,
+                sessionUpdate: "session_info_update",
+                title: "Galileo updated",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const changes = getLatestPatchChanges(
+                emittedEvents,
+                childSnapshot.sessionId,
+            );
+            expect(changes).toEqual(
+                expect.objectContaining({
+                    modelId: "gpt-5-mini",
+                    title: "Galileo updated",
+                }),
+            );
+            expect(readSelectConfigValue(changes?.configOptions, "model")).toBe(
+                "gpt-5-mini",
+            );
+            expect(
+                readSelectConfigValue(changes?.configOptions, "effort_level"),
+            ).toBe("low");
         });
     });
 
@@ -3884,6 +4069,85 @@ function createRuntime() {
     });
 }
 
+function createCodexCatalogResponse(
+    input: {
+        readonly modelId?: string;
+        readonly modelOptions?: readonly {
+            readonly description?: string | null;
+            readonly id: string;
+            readonly name: string;
+        }[];
+        readonly reasoningEffort?: string;
+        readonly reasoningOptionId?: string;
+    } = {},
+) {
+    const modelId = input.modelId ?? "gpt-5";
+    const modelOptions = input.modelOptions ?? [
+        {
+            id: "gpt-5",
+            name: "GPT-5",
+        },
+        {
+            id: "gpt-5-mini",
+            name: "GPT-5 mini",
+        },
+    ];
+    const reasoningEffort = input.reasoningEffort ?? "medium";
+    const reasoningOptionId = input.reasoningOptionId ?? "reasoning_effort";
+
+    return {
+        configOptions: [
+            {
+                category: "model",
+                currentValue: modelId,
+                description: null,
+                id: "model",
+                name: "Model",
+                options: modelOptions.map((option) => ({
+                    description: option.description ?? null,
+                    name: option.name,
+                    value: option.id,
+                })),
+                type: "select",
+            },
+            {
+                category: "effort",
+                currentValue: reasoningEffort,
+                description: null,
+                id: reasoningOptionId,
+                name: "Reasoning effort",
+                options: [
+                    {
+                        description: null,
+                        name: "Low",
+                        value: "low",
+                    },
+                    {
+                        description: null,
+                        name: "Medium",
+                        value: "medium",
+                    },
+                    {
+                        description: null,
+                        name: "High",
+                        value: "high",
+                    },
+                ],
+                type: "select",
+            },
+        ],
+        modes: null,
+        models: {
+            availableModels: modelOptions.map((option) => ({
+                description: option.description ?? null,
+                modelId: option.id,
+                name: option.name,
+            })),
+            currentModelId: modelId,
+        },
+    };
+}
+
 async function setupPreparedRuntimeWithClient(title: string): Promise<{
     readonly client: MockAcpClient;
     readonly emittedEvents: AiWorkerEventMessage[];
@@ -4086,6 +4350,14 @@ function getLatestSnapshot(
     }
 
     return null;
+}
+
+function readSelectConfigValue(
+    configOptions: AiSessionSnapshot["configOptions"] | undefined,
+    optionId: string,
+): string | null {
+    const option = configOptions?.find((candidate) => candidate.id === optionId);
+    return option?.type === "select" ? option.value : null;
 }
 
 function getLatestPatchChanges(
