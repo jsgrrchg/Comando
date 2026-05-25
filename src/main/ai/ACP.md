@@ -479,7 +479,7 @@ For the SQLite store, Comando inspects `account_state`, `account`, and `control_
 - `authenticate` during Codex auth launch
 - `session/new`
 - `session/load`
-- `session/close` through `unstable_closeSession`
+- `session/close` through `closeSession`
 - `unstable_logout` during Codex ChatGPT logout
 - `prompt`
 - `setSessionMode`

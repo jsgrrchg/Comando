@@ -3927,18 +3927,15 @@ export class AiWorkerRuntime {
                 liveSession.snapshot.runtimeSessionId
             ) {
                 void liveConnection.connection
-                    .unstable_closeSession({
+                    .closeSession({
                         sessionId: liveSession.snapshot.runtimeSessionId,
                     })
-                    .catch((error) => {
-                        debugBenignError(
-                            "ai.worker.unstableCloseSession",
-                            error,
-                        );
+                    .catch((error: unknown) => {
+                        debugBenignError("ai.worker.closeSession", error);
                     });
             }
         } catch (error) {
-            debugBenignError("ai.worker.unstableCloseSession", error);
+            debugBenignError("ai.worker.closeSession", error);
         }
         this.#releaseAllTerminals(liveSession);
         liveSession.terminalOutputBuffers.clear();

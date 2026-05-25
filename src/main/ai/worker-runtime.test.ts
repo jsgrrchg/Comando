@@ -184,7 +184,7 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         loadSession = loadSessionMock;
         newSession = newSessionMock;
         prompt = promptMock;
-        unstable_closeSession = closeRuntimeSessionMock;
+        closeSession = closeRuntimeSessionMock;
     },
     PROTOCOL_VERSION: "test-protocol-version",
     ndJsonStream: vi.fn(() => ({})),
