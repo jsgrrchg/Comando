@@ -990,6 +990,8 @@ export type GitHubAuthState =
     | "missing"
     | "unknown";
 
+export type GitHubTokenSource = "gh_cli" | "stored_token";
+
 export type GitHubErrorCode =
     | "forbidden"
     | "invalid_auth"
@@ -1025,6 +1027,7 @@ export interface GitHubAuthStatus {
     readonly host: string;
     readonly readOnly: boolean;
     readonly state: GitHubAuthState;
+    readonly tokenSource: GitHubTokenSource | null;
     readonly user: GitHubUserSummary | null;
 }
 

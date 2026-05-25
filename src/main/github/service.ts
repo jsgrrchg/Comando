@@ -1,5 +1,5 @@
 import type { SecretStoreGateway } from "@main/ai/secret-store";
-import { GitHubAuthStore, normalizeGitHubHost } from "@main/github/auth";
+import { GitHubAuthStore, loadGhCliToken, normalizeGitHubHost } from "@main/github/auth";
 import {
     GitHubApiClient,
     GitHubApiError,
@@ -53,6 +53,7 @@ import type {
     GitHubWorkflowRunJobsInput,
     GitHubWorkflowRunJobsResult,
     GitHubWorkflowRunMutationInput,
+    GitHubTokenSource,
     GitHubWorkflowRunsInput,
     GitHubWorkflowRunsResult,
 } from "@shared/ipc";
@@ -153,15 +154,16 @@ export class GitHubService implements GitHubGateway {
         input: GitHubAuthStatusInput,
     ): Promise<GitHubAuthStatus> {
         const host = normalizeGitHubHost(input.host);
-        const token = this.#authStore.loadToken(host);
-        if (!token) {
+        const resolved = this.#resolveToken(host);
+        if (!resolved) {
             return createMissingAuthStatus(host);
         }
 
-        return await new GitHubApiClient({
+        const status = await new GitHubApiClient({
             fetch: this.#fetch,
-            token,
+            token: resolved.token,
         }).getAuthStatus(host);
+        return { ...status, tokenSource: resolved.source };
     }
 
     async saveToken(input: GitHubSaveTokenInput): Promise<GitHubAuthStatus> {
@@ -436,10 +438,24 @@ export class GitHubService implements GitHubGateway {
         );
     }
 
+    #resolveToken(
+        host: string,
+    ): { token: string; source: GitHubTokenSource } | null {
+        const storedToken = this.#authStore.loadToken(host);
+        if (storedToken) {
+            return { token: storedToken, source: "stored_token" };
+        }
+        const ghCliToken = loadGhCliToken(host);
+        if (ghCliToken) {
+            return { token: ghCliToken, source: "gh_cli" };
+        }
+        return null;
+    }
+
     #createClient(hostInput: string | null | undefined): GitHubApiClient {
         const host = normalizeGitHubHost(hostInput);
-        const token = this.#authStore.loadToken(host);
-        if (!token) {
+        const resolved = this.#resolveToken(host);
+        if (!resolved) {
             throw new GitHubApiError(
                 "GitHub token is missing.",
                 "missing_auth",
@@ -449,7 +465,7 @@ export class GitHubService implements GitHubGateway {
 
         return new GitHubApiClient({
             fetch: this.#fetch,
-            token,
+            token: resolved.token,
         });
     }
 
@@ -458,8 +474,8 @@ export class GitHubService implements GitHubGateway {
         run: (client: GitHubApiClient) => Promise<T>,
     ): Promise<T> {
         const host = normalizeGitHubHost(hostInput);
-        const token = this.#authStore.loadToken(host);
-        if (!token) {
+        const resolved = this.#resolveToken(host);
+        if (!resolved) {
             throw new GitHubApiError(
                 "GitHub token is missing.",
                 "missing_auth",
@@ -468,7 +484,7 @@ export class GitHubService implements GitHubGateway {
         }
         const client = new GitHubApiClient({
             fetch: this.#fetch,
-            token,
+            token: resolved.token,
         });
         const status = await client.getAuthStatus(host);
         if (status.state !== "authenticated" || !status.canWriteActions) {
@@ -516,6 +532,7 @@ function createMissingAuthStatus(host: string): GitHubAuthStatus {
         host,
         readOnly: true,
         state: "missing",
+        tokenSource: null,
         user: null,
     };
 }

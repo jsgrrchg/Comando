@@ -969,6 +969,7 @@ function createDefaultGitHubAuthStatus(): GitHubAuthStatus {
         host: "github.com",
         readOnly: true,
         state: "missing",
+        tokenSource: null,
         user: null,
     };
 }

@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+
 import type { SecretStoreGateway } from "@main/ai/secret-store";
 
 export const DEFAULT_GITHUB_HOST = "github.com";
@@ -37,6 +39,23 @@ export class GitHubAuthStore {
             token,
         );
     }
+}
+
+export function loadGhCliToken(hostInput?: string | null): string | null {
+    const host = normalizeGitHubHost(hostInput);
+    const args = ["auth", "token"];
+    if (host !== DEFAULT_GITHUB_HOST) {
+        args.push("--hostname", host);
+    }
+    try {
+        const result = spawnSync("gh", args, { encoding: "utf-8", timeout: 5000 });
+        if (result.status === 0 && result.stdout) {
+            return result.stdout.trim() || null;
+        }
+    } catch {
+        // gh not installed or otherwise inaccessible
+    }
+    return null;
 }
 
 export function buildGitHubApiBaseUrl(hostInput?: string | null): string {
