@@ -15,16 +15,26 @@ const aliases = {
     "@shared": path.resolve(rootDir, "src/shared"),
 };
 
+interface PackageJson {
+    readonly dependencies?: Record<string, string>;
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // In Vite 8 / Rolldown, ssr.noExternal:true (set by electron-vite's preset) overrides
 // externals added via plugin config() hooks. Static rollupOptions.external still works,
 // so we compute the list here rather than relying solely on externalizeDepsPlugin().
 const pkg = JSON.parse(
     readFileSync(new URL("./package.json", import.meta.url), "utf-8"),
-);
+) as PackageJson;
+const dependencies = Object.keys(pkg.dependencies ?? {});
 const mainExternal = [
     "electron",
     /^electron\/.+/,
-    ...Object.keys(pkg.dependencies ?? {}),
+    ...dependencies,
+    new RegExp(`^(${dependencies.map(escapeRegExp).join("|")})/.+`),
 ];
 
 export default defineConfig({
