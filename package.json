@@ -80,7 +80,6 @@
         "better-sqlite3": "^12.10.0",
         "electron-updater": "^6.8.3",
         "monaco-editor": "^0.55.1",
-        "ms": "^2.1.3",
         "node-pty": "^1.1.0",
         "react": "^19.2.6",
         "react-dom": "^19.2.6",
@@ -152,6 +151,9 @@
         ],
         "mac": {
             "category": "public.app-category.developer-tools",
+            "entitlements": "resources/entitlements.mac.plist",
+            "entitlementsInherit": "resources/entitlements.mac.inherit.plist",
+            "hardenedRuntime": true,
             "icon": "resources/icons/macos.icon",
             "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/app.asar.unpacked/node_modules/**/*}",
             "target": [

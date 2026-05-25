@@ -9,6 +9,9 @@ dist-electron/
 out/
 coverage/
 *.log
+.env
+.env.*
+!.env.example
 *.tsbuildinfo
 electron.vite.config.js
 electron.vite.config.d.ts

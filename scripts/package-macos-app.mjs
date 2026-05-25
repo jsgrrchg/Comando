@@ -77,6 +77,11 @@ const bundledArm64CodexBinary = path.join(
     "codex-acp",
 );
 const legacyMacIconPath = path.join(repoRoot, "resources", "icons", "macos.icns");
+const macEntitlementsPath = path.join(
+    repoRoot,
+    "resources",
+    "entitlements.mac.plist",
+);
 const desktopAiRoot = path.join(desktopAppPath, "Contents", "Resources", "ai");
 const desktopClaudeRoot = path.join(
     desktopAiRoot,
@@ -91,6 +96,13 @@ const pnpmCommand = resolveRequiredCommand(
 const codesignCommand = resolveRequiredCommand("codesign", [
     "/usr/bin/codesign",
 ]);
+const dittoCommand = resolveRequiredCommand("ditto", ["/usr/bin/ditto"]);
+const xattrCommand = resolveRequiredCommand("xattr", ["/usr/bin/xattr"]);
+const macSigningIdentity =
+    process.env.COMANDO_MAC_SIGN_IDENTITY ??
+    (process.env.CSC_NAME
+        ? `Developer ID Application: ${process.env.CSC_NAME}`
+        : "-");
 const macTargets = [{ arch: "arm64" }, { arch: "x64" }];
 const builtinModuleNames = new Set(
     builtinModules.flatMap((moduleName) => [
@@ -147,12 +159,7 @@ function main() {
     verifyReleaseArtifacts();
 
     if (shouldCopyPackagedAppToDesktop()) {
-        fs.rmSync(desktopAppPath, { force: true, recursive: true });
-        fs.cpSync(standalonePackagedAppPath, desktopAppPath, {
-            recursive: true,
-        });
-        repairMovedMacAppBundle(desktopAppPath);
-        console.log(`[package:mac] App copied to ${desktopAppPath}`);
+        copyPackagedAppToDesktop(standalonePackagedAppPath);
     }
 
     console.log(
@@ -164,6 +171,24 @@ function main() {
     console.log(
         `[package:mac] Release ZIP available at ${standaloneZipArtifactPath}`,
     );
+}
+
+function copyPackagedAppToDesktop(packagedAppPath) {
+    try {
+        fs.rmSync(desktopAppPath, { force: true, recursive: true });
+        run(dittoCommand, [packagedAppPath, desktopAppPath]);
+        run(xattrCommand, ["-cr", desktopAppPath]);
+        repairMovedMacAppBundle(desktopAppPath);
+        console.log(`[package:mac] App copied to ${desktopAppPath}`);
+    } catch (error) {
+        console.warn(
+            `[package:mac] Could not copy app to ${desktopAppPath}: ${formatError(error)}`,
+        );
+    }
+}
+
+function formatError(error) {
+    return error instanceof Error ? error.message : String(error);
 }
 
 function resolveElectronBuilderArgs(rawArgs) {
@@ -649,6 +674,14 @@ function stageStandaloneProject(copiedPackages) {
         path.join(repoRoot, "resources", "icons"),
         path.join(standaloneResourcesRoot, "icons"),
     );
+    fs.copyFileSync(
+        macEntitlementsPath,
+        path.join(standaloneResourcesRoot, "entitlements.mac.plist"),
+    );
+    fs.copyFileSync(
+        path.join(repoRoot, "resources", "entitlements.mac.inherit.plist"),
+        path.join(standaloneResourcesRoot, "entitlements.mac.inherit.plist"),
+    );
     copyTree(packageResourcesRoot, standalonePackageResourcesRoot, {
         dereference: true,
     });
@@ -751,7 +784,8 @@ function verifyPackagedApplication(packagedAppPath) {
                 const { createRequire } = require("node:module");
                 const appPath = process.argv[1];
                 const appRequire = createRequire(path.join(appPath, "package.json"));
-                for (const packageName of ["ms", "debug", "simple-git", "zod"]) {
+                appRequire("debug");
+                for (const packageName of ["simple-git", "zod"]) {
                     appRequire.resolve(packageName);
                 }
             `,
@@ -820,9 +854,23 @@ function replaceLegacyMacIcon(packagedAppPath) {
 
 function repairMovedMacAppBundle(appPath) {
     repairFrameworkSymlinks(path.join(appPath, "Contents", "Frameworks"));
-    run(codesignCommand, ["--force", "--deep", "--sign", "-", appPath], {
-        cwd: repoRoot,
-    });
+    run(
+        codesignCommand,
+        [
+            "--force",
+            "--deep",
+            "--options",
+            "runtime",
+            "--entitlements",
+            macEntitlementsPath,
+            "--sign",
+            macSigningIdentity,
+            appPath,
+        ],
+        {
+            cwd: repoRoot,
+        },
+    );
 }
 
 function repairFrameworkSymlinks(rootPath) {
