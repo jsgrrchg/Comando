@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 import type { SecretStoreGateway } from "@main/ai/secret-store";
 
@@ -6,6 +6,7 @@ export const DEFAULT_GITHUB_HOST = "github.com";
 export const GITHUB_SECRET_NAMESPACE = "github";
 
 const DEFAULT_GITHUB_TOKEN_SECRET_ID = "token";
+const GH_CLI_TOKEN_TIMEOUT_MS = 5000;
 
 export class GitHubAuthStore {
     readonly #secretStore: SecretStoreGateway;
@@ -41,21 +42,59 @@ export class GitHubAuthStore {
     }
 }
 
-export function loadGhCliToken(hostInput?: string | null): string | null {
+export async function loadGhCliToken(
+    hostInput?: string | null,
+): Promise<string | null> {
     const host = normalizeGitHubHost(hostInput);
     const args = ["auth", "token"];
     if (host !== DEFAULT_GITHUB_HOST) {
         args.push("--hostname", host);
     }
-    try {
-        const result = spawnSync("gh", args, { encoding: "utf-8", timeout: 5000 });
-        if (result.status === 0 && result.stdout) {
-            return result.stdout.trim() || null;
+
+    return await new Promise((resolve) => {
+        let stdout = "";
+        let settled = false;
+        let child: ReturnType<typeof spawn>;
+
+        const finish = (token: string | null) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timeout);
+            resolve(token);
+        };
+
+        const timeout = setTimeout(() => {
+            child?.kill();
+            finish(null);
+        }, GH_CLI_TOKEN_TIMEOUT_MS);
+
+        try {
+            child = spawn("gh", args, {
+                stdio: ["ignore", "pipe", "ignore"],
+            });
+        } catch {
+            finish(null);
+            return;
         }
-    } catch {
-        // gh not installed or otherwise inaccessible
-    }
-    return null;
+
+        if (!child.stdout) {
+            finish(null);
+            return;
+        }
+
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+            stdout += chunk;
+        });
+        child.on("error", () => {
+            finish(null);
+        });
+        child.on("close", (code) => {
+            finish(code === 0 ? stdout.trim() || null : null);
+        });
+    });
 }
 
 export function buildGitHubApiBaseUrl(hostInput?: string | null): string {

@@ -62,7 +62,6 @@ import type {
     SettingsUpdatesState,
     SettingsWindowProps,
     ShortcutEntryOption,
-    ThemeMode,
 } from "./settings-types";
 
 type Category =
@@ -176,9 +175,19 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
     github: [
         "GitHub",
         "Connect GitHub",
+        "Token source",
+        "gh CLI",
+        "gh auth login",
+        "stored_token",
+        "PAT",
+        "stored PAT",
+        "Token read from the gh CLI",
+        "A stored PAT takes priority if both are present.",
+        "No token found. Add a PAT below or run gh auth login.",
         "Personal access token",
         "Save Token",
         "Disconnect",
+        "gh auth logout",
         "Token saved securely on this machine.",
         "Missing token",
         "Invalid token",
@@ -360,6 +369,7 @@ function getDynamicCategorySearchValues(
                 context.github.status.errorCode,
                 context.github.status.host,
                 context.github.status.state,
+                context.github.status.tokenSource,
                 context.github.status.user?.login,
                 context.github.status.readOnly ? "Read-only access" : null,
                 context.github.status.canReadActions
@@ -1182,6 +1192,10 @@ function GitHubContent({
     state: SettingsGitHubState;
 }) {
     const canSave = state.tokenDraft.trim().length > 0 && !state.saving;
+    const canDisconnect =
+        state.status.tokenSource === "stored_token" &&
+        state.status.state !== "missing" &&
+        state.status.state !== "unknown";
     const isConnected = state.status.state === "authenticated";
     const showConnection = sectionHasMatches(searchQuery, "Connection", [
         [
@@ -1192,8 +1206,14 @@ function GitHubContent({
             "Token saved securely on this machine.",
             "Missing token",
             "Invalid token",
+            "Token source",
             "gh CLI",
             "gh auth login",
+            "stored_token",
+            "PAT",
+            "stored PAT",
+            "Token read from the gh CLI",
+            "No token found. Add a PAT below or run gh auth login.",
             state.status.state,
             state.status.tokenSource,
             state.status.user?.login,
@@ -1379,11 +1399,14 @@ function GitHubContent({
                 control={
                     <IdeActionButton
                         disabled={
-                            state.loading ||
-                            state.status.state === "missing" ||
-                            state.status.state === "unknown"
+                            state.loading || !canDisconnect
                         }
                         onClick={() => state.onDisconnect?.()}
+                        title={
+                            state.status.tokenSource === "gh_cli"
+                                ? "Use gh auth logout to revoke gh CLI access"
+                                : "Remove stored GitHub token"
+                        }
                     >
                         disconnect
                     </IdeActionButton>
@@ -1518,7 +1541,7 @@ function formatGitHubStatusDescription(state: SettingsGitHubState): string {
                 : `Connected to ${state.status.host}${source}.`;
         }
         case "invalid":
-            return "The saved token is invalid or expired. Paste a new token to reconnect.";
+            return "The GitHub token is invalid or expired. Paste a new token to reconnect.";
         case "missing":
             return "No token found. Paste a PAT below or log in with the gh CLI.";
         case "unknown":
@@ -1649,9 +1672,9 @@ function AppearanceContent({
                     <SegmentedControl
                         value={state.mode}
                         options={[
-                            { value: "system" as ThemeMode, label: "System" },
-                            { value: "light" as ThemeMode, label: "Light" },
-                            { value: "dark" as ThemeMode, label: "Dark" },
+                            { value: "system", label: "System" },
+                            { value: "light", label: "Light" },
+                            { value: "dark", label: "Dark" },
                         ]}
                         onChange={(v) => state.onModeChange?.(v)}
                     />

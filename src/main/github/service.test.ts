@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GitHubFetch } from "@main/github/client";
 import { loadGhCliToken } from "@main/github/auth";
@@ -9,7 +9,7 @@ import type { GitHubRepositoryRef } from "@shared/ipc";
 vi.mock("@main/github/auth", async (importOriginal) => {
     const original =
         await importOriginal<typeof import("@main/github/auth")>();
-    return { ...original, loadGhCliToken: vi.fn().mockReturnValue(null) };
+    return { ...original, loadGhCliToken: vi.fn().mockResolvedValue(null) };
 });
 
 const repository: GitHubRepositoryRef = {
@@ -19,6 +19,10 @@ const repository: GitHubRepositoryRef = {
 };
 
 describe("GitHubService", () => {
+    afterEach(() => {
+        vi.mocked(loadGhCliToken).mockResolvedValue(null);
+    });
+
     it("lists issues with a saved token and filters pull requests", async () => {
         const fetchMock = vi.fn<GitHubFetch>().mockResolvedValue(
             jsonResponse(
@@ -176,7 +180,7 @@ describe("GitHubService", () => {
     });
 
     it("falls back to gh CLI when no PAT is stored", async () => {
-        vi.mocked(loadGhCliToken).mockReturnValue("gho_cli_token");
+        vi.mocked(loadGhCliToken).mockResolvedValue("gho_cli_token");
         const fetchMock = vi.fn<GitHubFetch>().mockResolvedValue(
             jsonResponse(rawUser(), { headers: { "x-oauth-scopes": "" } }),
         );
@@ -195,8 +199,6 @@ describe("GitHubService", () => {
             throw new Error("Expected GitHub fetch headers record.");
         }
         expect(init.headers.Authorization).toBe("Bearer gho_cli_token");
-
-        vi.mocked(loadGhCliToken).mockReturnValue(null);
     });
 
     it("reports tokenSource:null when neither PAT nor gh CLI is available", async () => {
@@ -206,6 +208,28 @@ describe("GitHubService", () => {
 
         expect(status.state).toBe("missing");
         expect(status.tokenSource).toBeNull();
+    });
+
+    it("falls back to gh CLI after clearing a stored PAT", async () => {
+        vi.mocked(loadGhCliToken).mockResolvedValue("gho_cli_token");
+        const fetchMock = vi.fn<GitHubFetch>().mockResolvedValue(
+            jsonResponse(rawUser(), { headers: { "x-oauth-scopes": "" } }),
+        );
+        const service = createService(fetchMock);
+
+        const status = await service.clearToken({ host: "github.com" });
+
+        expect(status.state).toBe("authenticated");
+        expect(status.tokenSource).toBe("gh_cli");
+        const [, init] = fetchMock.mock.calls[0] ?? [];
+        if (
+            !init?.headers ||
+            init.headers instanceof Headers ||
+            Array.isArray(init.headers)
+        ) {
+            throw new Error("Expected GitHub fetch headers record.");
+        }
+        expect(init.headers.Authorization).toBe("Bearer gho_cli_token");
     });
 
     it("maps forbidden responses distinctly from rate limits", async () => {

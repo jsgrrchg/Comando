@@ -1,5 +1,9 @@
 import type { SecretStoreGateway } from "@main/ai/secret-store";
-import { GitHubAuthStore, loadGhCliToken, normalizeGitHubHost } from "@main/github/auth";
+import {
+    GitHubAuthStore,
+    loadGhCliToken,
+    normalizeGitHubHost,
+} from "@main/github/auth";
 import {
     GitHubApiClient,
     GitHubApiError,
@@ -154,7 +158,7 @@ export class GitHubService implements GitHubGateway {
         input: GitHubAuthStatusInput,
     ): Promise<GitHubAuthStatus> {
         const host = normalizeGitHubHost(input.host);
-        const resolved = this.#resolveToken(host);
+        const resolved = await this.#resolveToken(host);
         if (!resolved) {
             return createMissingAuthStatus(host);
         }
@@ -177,56 +181,62 @@ export class GitHubService implements GitHubGateway {
         const host = normalizeGitHubHost(input.host);
         await this.#authStore.clearToken(host);
 
-        return createMissingAuthStatus(host);
+        return await this.getAuthStatus({ host });
     }
 
     async listIssues(
         input: GitHubListIssuesInput,
     ): Promise<GitHubListIssuesResult> {
-        return await this.#createClient(input.repository.host).listIssues(input);
+        return await (
+            await this.#createClient(input.repository.host)
+        ).listIssues(input);
     }
 
     async listLabels(
         input: GitHubListLabelsInput,
     ): Promise<GitHubListLabelsResult> {
-        return await this.#createClient(input.repository.host).listLabels(input);
+        return await (
+            await this.#createClient(input.repository.host)
+        ).listLabels(input);
     }
 
     async getIssue(
         input: GitHubGetIssueInput,
     ): Promise<GitHubIssueDetail | null> {
-        return await this.#createClient(input.repository.host).getIssue(input);
+        return await (await this.#createClient(input.repository.host)).getIssue(
+            input,
+        );
     }
 
     async createIssue(
         input: GitHubCreateIssueInput,
     ): Promise<GitHubIssueDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).createIssue(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).createIssue(input),
         );
     }
 
     async updateIssue(
         input: GitHubUpdateIssueInput,
     ): Promise<GitHubIssueDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).updateIssue(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).updateIssue(input),
         );
     }
 
     async commentIssue(
         input: GitHubCommentIssueInput,
     ): Promise<GitHubCommentSummary> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).commentIssue(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).commentIssue(input),
         );
     }
 
     async closeIssue(
         input: GitHubSetIssueStateInput,
     ): Promise<GitHubIssueDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).setIssueState({
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).setIssueState({
                 ...input,
                 state: "closed",
             }),
@@ -236,8 +246,8 @@ export class GitHubService implements GitHubGateway {
     async reopenIssue(
         input: GitHubSetIssueStateInput,
     ): Promise<GitHubIssueDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).setIssueState({
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).setIssueState({
                 ...input,
                 state: "open",
             }),
@@ -247,104 +257,112 @@ export class GitHubService implements GitHubGateway {
     async listPullRequests(
         input: GitHubListPullRequestsInput,
     ): Promise<GitHubListPullRequestsResult> {
-        return await this.#createClient(input.repository.host).listPullRequests(
-            input,
-        );
+        return await (
+            await this.#createClient(input.repository.host)
+        ).listPullRequests(input);
     }
 
     async getPullRequest(
         input: GitHubGetPullRequestInput,
     ): Promise<GitHubPullRequestDetail | null> {
-        return await this.#createClient(input.repository.host).getPullRequest(
-            input,
-        );
+        return await (
+            await this.#createClient(input.repository.host)
+        ).getPullRequest(input);
     }
 
     async listPullRequestChecks(
         input: GitHubPullRequestChecksInput,
     ): Promise<GitHubPullRequestChecksResult> {
-        return await this.#createClient(
-            input.repository.host,
+        return await (
+            await this.#createClient(input.repository.host)
         ).listPullRequestChecks(input);
     }
 
     async listWorkflowRuns(
         input: GitHubWorkflowRunsInput,
     ): Promise<GitHubWorkflowRunsResult> {
-        return await this.#createClient(input.repository.host).listWorkflowRuns(
-            input,
-        );
+        return await (
+            await this.#createClient(input.repository.host)
+        ).listWorkflowRuns(input);
     }
 
     async listWorkflowRunJobs(
         input: GitHubWorkflowRunJobsInput,
     ): Promise<GitHubWorkflowRunJobsResult> {
-        return await this.#createClient(
-            input.repository.host,
+        return await (
+            await this.#createClient(input.repository.host)
         ).listWorkflowRunJobs(input);
     }
 
     async getWorkflowJobLogs(
         input: GitHubWorkflowJobLogsInput,
     ): Promise<GitHubWorkflowJobLogsResult> {
-        return await this.#createClient(input.repository.host).getWorkflowJobLogs(
-            input,
-        );
+        return await (
+            await this.#createClient(input.repository.host)
+        ).getWorkflowJobLogs(input);
     }
 
     async listWorkflowRunArtifacts(
         input: GitHubWorkflowRunArtifactsInput,
     ): Promise<GitHubWorkflowRunArtifactsResult> {
-        return await this.#createClient(
-            input.repository.host,
+        return await (
+            await this.#createClient(input.repository.host)
         ).listWorkflowRunArtifacts(input);
     }
 
     async listCheckRunAnnotations(
         input: GitHubCheckRunAnnotationsInput,
     ): Promise<GitHubCheckRunAnnotationsResult> {
-        return await this.#createClient(
-            input.repository.host,
+        return await (
+            await this.#createClient(input.repository.host)
         ).listCheckRunAnnotations(input);
     }
 
     async createPullRequest(
         input: GitHubCreatePullRequestInput,
     ): Promise<GitHubPullRequestDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).createPullRequest(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).createPullRequest(
+                input,
+            ),
         );
     }
 
     async updatePullRequest(
         input: GitHubUpdatePullRequestInput,
     ): Promise<GitHubPullRequestDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).updatePullRequest(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).updatePullRequest(
+                input,
+            ),
         );
     }
 
     async commentPullRequest(
         input: GitHubCommentPullRequestInput,
     ): Promise<GitHubCommentSummary> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).commentPullRequest(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).commentPullRequest(
+                input,
+            ),
         );
     }
 
     async updateComment(
         input: GitHubUpdateCommentInput,
     ): Promise<GitHubCommentSummary> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).updateComment(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).updateComment(input),
         );
     }
 
     async markPullRequestReady(
         input: GitHubSetPullRequestDraftStateInput,
     ): Promise<GitHubPullRequestDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).setPullRequestDraftState({
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (
+                await this.#createClient(input.repository.host)
+            ).setPullRequestDraftState({
                 ...input,
                 draft: false,
             }),
@@ -354,8 +372,10 @@ export class GitHubService implements GitHubGateway {
     async convertPullRequestToDraft(
         input: GitHubSetPullRequestDraftStateInput,
     ): Promise<GitHubPullRequestDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).setPullRequestDraftState({
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (
+                await this.#createClient(input.repository.host)
+            ).setPullRequestDraftState({
                 ...input,
                 draft: true,
             }),
@@ -365,10 +385,10 @@ export class GitHubService implements GitHubGateway {
     async requestPullRequestReviewers(
         input: GitHubRequestPullRequestReviewInput,
     ): Promise<GitHubPullRequestDetail> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).requestPullRequestReviewers(
-                input,
-            ),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (
+                await this.#createClient(input.repository.host)
+            ).requestPullRequestReviewers(input),
         );
     }
 
@@ -395,66 +415,70 @@ export class GitHubService implements GitHubGateway {
     async listNotifications(
         input: GitHubNotificationsInput,
     ): Promise<GitHubNotificationsResult> {
-        return await this.#createClient(input.host).listNotifications(input);
+        return await (await this.#createClient(input.host)).listNotifications(
+            input,
+        );
     }
 
     async listReleases(
         input: GitHubListReleasesInput,
     ): Promise<GitHubListReleasesResult> {
-        return await this.#createClient(input.repository.host).listReleases(
-            input,
-        );
+        return await (
+            await this.#createClient(input.repository.host)
+        ).listReleases(input);
     }
 
     async generateReleaseNotes(
         input: GitHubGenerateReleaseNotesInput,
     ): Promise<GitHubGeneratedReleaseNotes> {
-        return await this.#createClient(
-            input.repository.host,
+        return await (
+            await this.#createClient(input.repository.host)
         ).generateReleaseNotes(input);
     }
 
     async createRelease(
         input: GitHubCreateReleaseInput,
     ): Promise<GitHubReleaseSummary> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).createRelease(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).createRelease(input),
         );
     }
 
     async publishRelease(
         input: GitHubPublishReleaseInput,
     ): Promise<GitHubReleaseSummary> {
-        return await this.#dedupeMutation(input.clientRequestId, () =>
-            this.#createClient(input.repository.host).publishRelease(input),
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).publishRelease(input),
         );
     }
 
     async listMilestones(
         input: GitHubListMilestonesInput,
     ): Promise<GitHubListMilestonesResult> {
-        return await this.#createClient(input.repository.host).listMilestones(
-            input,
-        );
+        return await (
+            await this.#createClient(input.repository.host)
+        ).listMilestones(input);
     }
 
-    #resolveToken(
+    async #resolveToken(
         host: string,
-    ): { token: string; source: GitHubTokenSource } | null {
+    ): Promise<{ token: string; source: GitHubTokenSource } | null> {
         const storedToken = this.#authStore.loadToken(host);
         if (storedToken) {
             return { token: storedToken, source: "stored_token" };
         }
-        const ghCliToken = loadGhCliToken(host);
+        const ghCliToken = await loadGhCliToken(host);
         if (ghCliToken) {
             return { token: ghCliToken, source: "gh_cli" };
         }
         return null;
     }
 
-    #createClient(hostInput: string | null | undefined): GitHubApiClient {
+    async #createClient(
+        hostInput: string | null | undefined,
+    ): Promise<GitHubApiClient> {
         const host = normalizeGitHubHost(hostInput);
-        const resolved = this.#resolveToken(host);
+        const resolved = await this.#resolveToken(host);
         if (!resolved) {
             throw new GitHubApiError(
                 "GitHub token is missing.",
@@ -474,7 +498,7 @@ export class GitHubService implements GitHubGateway {
         run: (client: GitHubApiClient) => Promise<T>,
     ): Promise<T> {
         const host = normalizeGitHubHost(hostInput);
-        const resolved = this.#resolveToken(host);
+        const resolved = await this.#resolveToken(host);
         if (!resolved) {
             throw new GitHubApiError(
                 "GitHub token is missing.",
