@@ -693,6 +693,7 @@ describe("github-store", () => {
             host: "github.com",
             readOnly: false,
             state: "authenticated" as const,
+            tokenSource: null,
             user: null,
         };
         useGitHubStore.setState({

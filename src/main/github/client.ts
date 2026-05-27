@@ -437,6 +437,7 @@ export class GitHubApiClient {
                 host,
                 readOnly: !canWriteIssues && !canWritePullRequests,
                 state: "authenticated",
+                tokenSource: null,
                 user: mapUser(response.data),
             };
         } catch (error) {
@@ -452,6 +453,7 @@ export class GitHubApiClient {
                     readOnly: true,
                     state:
                         error.code === "invalid_auth" ? "invalid" : "unknown",
+                    tokenSource: null,
                     user: null,
                 };
             }

@@ -662,6 +662,11 @@ export function SettingsApp() {
             return;
         }
 
+        if (githubAuthStatus.tokenSource === "gh_cli") {
+            setGitHubNotice("Use gh auth logout to revoke gh CLI access.");
+            return;
+        }
+
         if (
             !window.confirm(
                 "Disconnect GitHub?\n\nThis removes the saved token from this machine.",
@@ -679,7 +684,11 @@ export function SettingsApp() {
             });
             setGitHubAuthStatus(nextStatus);
             setGitHubTokenDraft("");
-            setGitHubNotice("GitHub token removed from this machine.");
+            setGitHubNotice(
+                nextStatus.tokenSource === "gh_cli"
+                    ? "Stored GitHub token removed. Using gh CLI fallback."
+                    : "GitHub token removed from this machine.",
+            );
         } catch (error) {
             setGitHubError(
                 error instanceof Error
@@ -689,7 +698,7 @@ export function SettingsApp() {
         } finally {
             setGitHubLoading(false);
         }
-    }, []);
+    }, [githubAuthStatus.tokenSource]);
 
     return (
         <SettingsWindow
@@ -969,6 +978,7 @@ function createDefaultGitHubAuthStatus(): GitHubAuthStatus {
         host: "github.com",
         readOnly: true,
         state: "missing",
+        tokenSource: null,
         user: null,
     };
 }

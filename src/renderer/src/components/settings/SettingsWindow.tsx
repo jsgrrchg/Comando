@@ -62,7 +62,6 @@ import type {
     SettingsUpdatesState,
     SettingsWindowProps,
     ShortcutEntryOption,
-    ThemeMode,
 } from "./settings-types";
 
 type Category =
@@ -176,9 +175,19 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
     github: [
         "GitHub",
         "Connect GitHub",
+        "Token source",
+        "gh CLI",
+        "gh auth login",
+        "stored_token",
+        "PAT",
+        "stored PAT",
+        "Token read from the gh CLI",
+        "A stored PAT takes priority if both are present.",
+        "No token found. Add a PAT below or run gh auth login.",
         "Personal access token",
         "Save Token",
         "Disconnect",
+        "gh auth logout",
         "Token saved securely on this machine.",
         "Missing token",
         "Invalid token",
@@ -360,6 +369,7 @@ function getDynamicCategorySearchValues(
                 context.github.status.errorCode,
                 context.github.status.host,
                 context.github.status.state,
+                context.github.status.tokenSource,
                 context.github.status.user?.login,
                 context.github.status.readOnly ? "Read-only access" : null,
                 context.github.status.canReadActions
@@ -1182,6 +1192,10 @@ function GitHubContent({
     state: SettingsGitHubState;
 }) {
     const canSave = state.tokenDraft.trim().length > 0 && !state.saving;
+    const canDisconnect =
+        state.status.tokenSource === "stored_token" &&
+        state.status.state !== "missing" &&
+        state.status.state !== "unknown";
     const isConnected = state.status.state === "authenticated";
     const showConnection = sectionHasMatches(searchQuery, "Connection", [
         [
@@ -1192,7 +1206,16 @@ function GitHubContent({
             "Token saved securely on this machine.",
             "Missing token",
             "Invalid token",
+            "Token source",
+            "gh CLI",
+            "gh auth login",
+            "stored_token",
+            "PAT",
+            "stored PAT",
+            "Token read from the gh CLI",
+            "No token found. Add a PAT below or run gh auth login.",
             state.status.state,
+            state.status.tokenSource,
             state.status.user?.login,
             state.error,
             state.notice,
@@ -1250,8 +1273,41 @@ function GitHubContent({
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Connection"
+                label="Token source"
+                description={
+                    state.status.tokenSource === "gh_cli"
+                        ? "Token read from the gh CLI (gh auth login). A stored PAT takes priority if both are present."
+                        : state.status.tokenSource === "stored_token"
+                          ? "Using a personal access token stored securely on this machine."
+                          : "No token found. Add a PAT below or run gh auth login."
+                }
+                keywords={["gh CLI", "gh auth login", "stored_token", "PAT"]}
+                control={
+                    <span
+                        style={{
+                            color:
+                                state.status.tokenSource === "gh_cli"
+                                    ? "var(--color-success)"
+                                    : state.status.tokenSource === "stored_token"
+                                      ? "var(--color-success)"
+                                      : "var(--color-muted)",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.85em",
+                        }}
+                    >
+                        {state.status.tokenSource === "gh_cli"
+                            ? "gh CLI"
+                            : state.status.tokenSource === "stored_token"
+                              ? "PAT"
+                              : "none"}
+                    </span>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Connection"
                 label="Personal access token"
-                description="Paste a fine-grained PAT. Comando stores it securely on this machine and never exposes the saved token to the renderer."
+                description="Paste a fine-grained PAT. Stored tokens take priority over gh CLI. Comando stores it securely on this machine and never exposes the saved token to the renderer."
                 keywords={[
                     "Connect GitHub",
                     "Save Token",
@@ -1334,16 +1390,23 @@ function GitHubContent({
                 searchQuery={searchQuery}
                 section="Connection"
                 label="Disconnect"
-                description="Remove the saved GitHub token from this machine. Existing workspace tabs stay open, but GitHub refreshes will require a new token."
+                description={
+                    state.status.tokenSource === "gh_cli"
+                        ? "No stored PAT to remove. To revoke gh CLI access run: gh auth logout."
+                        : "Remove the stored PAT from this machine. If gh CLI is logged in, it will be used as a fallback automatically."
+                }
                 keywords={["clear token", "remove token", "logout"]}
                 control={
                     <IdeActionButton
                         disabled={
-                            state.loading ||
-                            state.status.state === "missing" ||
-                            state.status.state === "unknown"
+                            state.loading || !canDisconnect
                         }
                         onClick={() => state.onDisconnect?.()}
+                        title={
+                            state.status.tokenSource === "gh_cli"
+                                ? "Use gh auth logout to revoke gh CLI access"
+                                : "Remove stored GitHub token"
+                        }
                     >
                         disconnect
                     </IdeActionButton>
@@ -1469,15 +1532,18 @@ function StatusText({
 
 function formatGitHubStatusDescription(state: SettingsGitHubState): string {
     const login = state.status.user?.login;
+    const viaGhCli = state.status.tokenSource === "gh_cli";
     switch (state.status.state) {
-        case "authenticated":
+        case "authenticated": {
+            const source = viaGhCli ? " via gh CLI" : "";
             return login
-                ? `Connected to ${state.status.host} as ${login}.`
-                : `Connected to ${state.status.host}.`;
+                ? `Connected to ${state.status.host} as ${login}${source}.`
+                : `Connected to ${state.status.host}${source}.`;
+        }
         case "invalid":
-            return "The saved token is invalid or expired. Paste a new token to reconnect.";
+            return "The GitHub token is invalid or expired. Paste a new token to reconnect.";
         case "missing":
-            return "Missing token. Connect GitHub to enable Issues and Pull Requests.";
+            return "No token found. Paste a PAT below or log in with the gh CLI.";
         case "unknown":
         default:
             return "GitHub auth status could not be verified yet.";
@@ -1606,9 +1672,9 @@ function AppearanceContent({
                     <SegmentedControl
                         value={state.mode}
                         options={[
-                            { value: "system" as ThemeMode, label: "System" },
-                            { value: "light" as ThemeMode, label: "Light" },
-                            { value: "dark" as ThemeMode, label: "Dark" },
+                            { value: "system", label: "System" },
+                            { value: "light", label: "Light" },
+                            { value: "dark", label: "Dark" },
                         ]}
                         onChange={(v) => state.onModeChange?.(v)}
                     />
