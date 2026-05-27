@@ -74,7 +74,7 @@ describe("AiService Gemini branch", () => {
             projectService: {
                 getProjectRootPath: vi.fn(() => process.cwd()),
             } as never,
-            secretStore: secretStore as never,
+            secretStore: secretStore,
             settingsService: settingsService as never,
         });
 
@@ -144,7 +144,7 @@ describe("AiService Gemini branch", () => {
                         secretValues.set(key, value.trim());
                     }
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,

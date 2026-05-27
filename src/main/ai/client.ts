@@ -55,7 +55,7 @@ export interface AiWorkerClientOptions {
     ) => void | Promise<void>;
 }
 
-export interface AiWorkerClient extends AiWorkerGateway {}
+export type AiWorkerClient = AiWorkerGateway;
 
 class AiRpcClient {
     readonly #supervisor: RpcWorkerSupervisor<AiWorkerBootstrapState>;

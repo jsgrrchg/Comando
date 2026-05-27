@@ -278,7 +278,7 @@ export class AiWorkerRuntime {
                     params as AiWorkerRpcMethodMap["ai.prepareSession"]["params"],
                 );
             case "ai.renameSession":
-                await this.#renameSession(
+                this.#renameSession(
                     params as AiWorkerRpcMethodMap["ai.renameSession"]["params"],
                 );
                 return;
@@ -292,12 +292,12 @@ export class AiWorkerRuntime {
                 );
                 return null;
             case "ai.closeSession":
-                await this.#closeSession(
+                this.#closeSession(
                     params as AiWorkerRpcMethodMap["ai.closeSession"]["params"],
                 );
                 return null;
             case "ai.closeOwnedByWindow":
-                await this.#closeOwnedByWindow(
+                this.#closeOwnedByWindow(
                     params as AiWorkerRpcMethodMap["ai.closeOwnedByWindow"]["params"],
                 );
                 return null;
@@ -326,7 +326,7 @@ export class AiWorkerRuntime {
                     params as AiWorkerRpcMethodMap["ai.rejectAllTrackedFiles"]["params"],
                 );
             case "ai.respondPermission":
-                await this.#respondPermission(
+                this.#respondPermission(
                     params as AiWorkerRpcMethodMap["ai.respondPermission"]["params"],
                 );
                 return null;
@@ -529,7 +529,7 @@ export class AiWorkerRuntime {
         }
     }
 
-    async #closeSession(sessionId: string): Promise<void> {
+    #closeSession(sessionId: string): void {
         const liveSession = this.#sessions.get(sessionId);
         if (!liveSession) {
             return;
@@ -565,7 +565,7 @@ export class AiWorkerRuntime {
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
     }
 
-    async #closeOwnedByWindow(ownerWindowId: string): Promise<void> {
+    #closeOwnedByWindow(ownerWindowId: string): void {
         const sessionIds = [...this.#sessions.entries()]
             .filter(
                 ([, liveSession]) =>
@@ -588,7 +588,7 @@ export class AiWorkerRuntime {
     async #keepTrackedFile(
         params: AiWorkerRpcMethodMap["ai.keepTrackedFile"]["params"],
     ): Promise<AiWorkerReviewMutationResult> {
-        return await this.#withReviewSession(params.context, async (session) => {
+        return await this.#withReviewSession(params.context, (session) => {
             session.snapshot = {
                 ...session.snapshot,
                 trackedFiles: session.snapshot.trackedFiles.filter(
@@ -624,7 +624,7 @@ export class AiWorkerRuntime {
     async #keepTrackedFileHunks(
         params: AiWorkerRpcMethodMap["ai.keepTrackedFileHunks"]["params"],
     ): Promise<AiWorkerReviewMutationResult> {
-        return await this.#withReviewSession(params.context, async (session) => {
+        return await this.#withReviewSession(params.context, (session) => {
             const trackedFile = session.snapshot.trackedFiles.find(
                 (candidate) => candidate.path === params.input.path,
             );
@@ -691,7 +691,7 @@ export class AiWorkerRuntime {
     async #keepAllTrackedFiles(
         params: AiWorkerRpcMethodMap["ai.keepAllTrackedFiles"]["params"],
     ): Promise<AiWorkerReviewMutationResult> {
-        return await this.#withReviewSession(params.context, async (session) => {
+        return await this.#withReviewSession(params.context, (session) => {
             session.snapshot = {
                 ...session.snapshot,
                 trackedFiles: [],
@@ -732,9 +732,9 @@ export class AiWorkerRuntime {
         });
     }
 
-    async #respondPermission(
+    #respondPermission(
         params: AiWorkerRpcMethodMap["ai.respondPermission"]["params"],
-    ): Promise<void> {
+    ): void {
         const liveSession = this.#sessions.get(params.input.sessionId);
         if (!liveSession) {
             throw new Error("There is no pending permission request.");
@@ -988,9 +988,9 @@ export class AiWorkerRuntime {
         this.#queueSnapshotFlush(liveSession);
     }
 
-    async #renameSession(
+    #renameSession(
         input: AiWorkerRpcMethodMap["ai.renameSession"]["params"],
-    ): Promise<void> {
+    ): void {
         const liveSession = this.#sessions.get(input.sessionId);
         if (!liveSession) {
             throw new Error("The AI session was not found.");

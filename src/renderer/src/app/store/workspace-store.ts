@@ -1923,7 +1923,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
                     return [tabId, tab] as const;
                 }),
-            ) as Record<string, RuntimeWorkspaceTab>,
+            ),
         }));
         await persistWorkspaceState(get);
     },

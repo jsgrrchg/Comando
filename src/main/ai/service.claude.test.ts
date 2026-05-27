@@ -68,7 +68,7 @@ describe("AiService Claude branch", () => {
             projectService: {
                 getProjectRootPath: vi.fn(() => process.cwd()),
             } as never,
-            secretStore: secretStore as never,
+            secretStore: secretStore,
             settingsService: settingsService as never,
         });
 
@@ -142,7 +142,7 @@ describe("AiService Claude branch", () => {
 
                     secretValues.set(key, normalized);
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: () => ({
                     authInvalidatedAtMs: null,
@@ -241,7 +241,7 @@ describe("AiService Claude branch", () => {
                         secretValues.set(key, value.trim());
                     }
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: () => ({
                     authInvalidatedAtMs: null,

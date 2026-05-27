@@ -14,7 +14,7 @@ const mockAiStoreState = vi.hoisted(() => ({
         rejectAllTrackedFiles: vi.fn(async () => {}),
         rejectTrackedFile: vi.fn(async () => {}),
         rejectTrackedFileHunks: vi.fn(async () => {}),
-        sessions: {} as Record<string, unknown>,
+        sessions: {},
         setSessionDiffZoom: vi.fn(),
     },
 }));

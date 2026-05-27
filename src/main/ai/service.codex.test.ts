@@ -78,7 +78,7 @@ describe("AiService Codex branch", () => {
             projectService: {
                 getProjectRootPath: vi.fn(() => process.cwd()),
             } as never,
-            secretStore: secretStore as never,
+            secretStore: secretStore,
             settingsService: settingsService as never,
         });
 
@@ -146,7 +146,7 @@ describe("AiService Codex branch", () => {
                 loadSecret: (namespace: string, secretId: string) =>
                     secretValues.get(`secret.${namespace}.${secretId}`) ?? null,
                 saveSecret,
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -241,7 +241,7 @@ describe("AiService Codex branch", () => {
 
                     secretValues.set(key, value.trim());
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -320,7 +320,7 @@ describe("AiService Codex branch", () => {
                         "Secure secret storage is unavailable on this machine.",
                     );
                 }),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -405,7 +405,7 @@ describe("AiService Codex branch", () => {
                         secretValues.set(key, value.trim());
                     }
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -488,7 +488,7 @@ describe("AiService Codex branch", () => {
                         secretValues.set(key, value.trim());
                     }
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -566,7 +566,7 @@ describe("AiService Codex branch", () => {
 
                     secretValues.set(key, normalized);
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -653,7 +653,7 @@ describe("AiService Codex branch", () => {
 
                     secretValues.set(key, normalized);
                 },
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -724,7 +724,7 @@ describe("AiService Codex branch", () => {
                 loadSecret: (namespace: string, secretId: string) =>
                     secretValues.get(`${namespace}:${secretId}`) ?? null,
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -845,7 +845,7 @@ describe("AiService Codex branch", () => {
             secretStore: {
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -969,7 +969,7 @@ describe("AiService Codex branch", () => {
             secretStore: {
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,

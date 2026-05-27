@@ -290,7 +290,7 @@ function mapTokenTypes(
             selector,
             standardTokenTypeByName[tokenType],
         ]),
-    ) as IGrammarConfiguration["tokenTypes"];
+    );
 }
 
 function createTextMateGrammarConfiguration(

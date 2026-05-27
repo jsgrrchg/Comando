@@ -8,7 +8,7 @@ import { ToolActivityItem } from "./ToolActivityItem";
 
 const mockAiStoreState = vi.hoisted(() => ({
     current: {
-        sessions: {} as Record<string, unknown>,
+        sessions: {},
     },
 }));
 

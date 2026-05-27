@@ -84,8 +84,10 @@ describe("AiService prepareSession", () => {
             status: "idle",
             updatedAt: "2026-04-16T00:00:00.000Z",
         };
-        const prepareSession = vi.fn(async () => workerSnapshot);
-        const renameSession = vi.fn(async () => {});
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(() =>
+            Promise.resolve(workerSnapshot),
+        );
+        const renameSession = vi.fn(() => Promise.resolve());
         const aiWorker: AiWorkerGateway = {
             cancelSession: vi.fn(),
             close: vi.fn(),
@@ -134,7 +136,7 @@ describe("AiService prepareSession", () => {
             secretStore: {
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -182,34 +184,33 @@ describe("AiService prepareSession", () => {
         );
 
         expect(snapshot).toBe(workerSnapshot);
-        expect(prepareSession).toHaveBeenCalledWith({
+        const [prepareSessionInput] = prepareSession.mock.calls[0] ?? [];
+        expect(prepareSessionInput?.input).toEqual({
+            projectId: null,
+            runtimeId: "codex",
+            sessionId: "session-1",
+            title: "Codex 1",
+            worktreeId: null,
+        });
+        expect(prepareSessionInput?.launch).toMatchObject({
+            additionalRoots: [],
+            cwd: process.cwd(),
             input: {
+                additionalRoots: [],
                 projectId: null,
                 runtimeId: "codex",
                 sessionId: "session-1",
                 title: "Codex 1",
                 worktreeId: null,
             },
-            launch: expect.objectContaining({
-                additionalRoots: [],
-                cwd: process.cwd(),
-                input: {
-                    additionalRoots: [],
-                    projectId: null,
-                    runtimeId: "codex",
-                    sessionId: "session-1",
-                    title: "Codex 1",
-                    worktreeId: null,
-                },
-                ownerWindowId: "window-1",
-                persistedSnapshot,
-                projectRoot: null,
-                resolvedRuntime: expect.objectContaining({
-                    command: "mock-codex-acp",
-                    executable: "mock-codex-acp",
-                    status: readyStatus,
-                }),
-            }),
+            ownerWindowId: "window-1",
+            persistedSnapshot,
+            projectRoot: null,
+            resolvedRuntime: {
+                command: "mock-codex-acp",
+                executable: "mock-codex-acp",
+                status: readyStatus,
+            },
         });
         expect(saveSessionSnapshot).toHaveBeenCalledWith(workerSnapshot);
         expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
@@ -241,10 +242,10 @@ describe("AiService prepareSession", () => {
             worktreeId: null,
         };
         const workerPrepareError = new Error("worker startup failed");
-        const prepareSession = vi.fn(async () => {
-            throw workerPrepareError;
-        });
-        const renameSession = vi.fn(async () => {});
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(() =>
+            Promise.reject(workerPrepareError),
+        );
+        const renameSession = vi.fn(() => Promise.resolve());
         const setSessionMode = vi.fn();
         const saveSessionSnapshot = vi.fn();
         const saveRuntimeModePreference = vi.fn();
@@ -293,7 +294,7 @@ describe("AiService prepareSession", () => {
             secretStore: {
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
@@ -385,8 +386,10 @@ describe("AiService prepareSession", () => {
             updatedAt: "2026-04-16T00:00:00.000Z",
             worktreeId: null,
         };
-        const prepareSession = vi.fn(async () => snapshot);
-        const renameSession = vi.fn(async () => {});
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(() =>
+            Promise.resolve(snapshot),
+        );
+        const renameSession = vi.fn(() => Promise.resolve());
         const saveSessionSnapshot = vi.fn();
         const service = new AiService({
             aiWorker: {
@@ -433,7 +436,7 @@ describe("AiService prepareSession", () => {
             secretStore: {
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,

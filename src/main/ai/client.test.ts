@@ -59,7 +59,7 @@ describe("createAiWorkerClient", () => {
         };
 
         const client = await createAiWorkerClient({
-            connect: async () => ({
+            connect: () => Promise.resolve({
                 port: port as unknown as MessagePort,
                 readyValue: bootstrap,
                 worker: worker as unknown as Worker,

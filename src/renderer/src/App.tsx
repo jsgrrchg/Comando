@@ -907,6 +907,10 @@ export function App() {
         setQuickOpenSelectedIndex(0);
     }, [isQuickOpenOpen, quickOpenQuery]);
 
+    const stopDragging = useEffectEvent(() => {
+        setDragState(null);
+    });
+
     const handlePointerMove = useEffectEvent((event: PointerEvent) => {
         if (!dragState) {
             return;
@@ -923,10 +927,6 @@ export function App() {
                 : dragState.startWidth - delta;
 
         resizePanel(dragState.side, nextWidth);
-    });
-
-    const stopDragging = useEffectEvent(() => {
-        setDragState(null);
     });
 
     useEffect(() => {

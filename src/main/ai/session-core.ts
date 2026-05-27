@@ -110,9 +110,7 @@ function createAiSessionPatchChanges(
         }
     }
 
-    return changes as Partial<
-        Omit<AiSessionSnapshot, "runtimeId" | "sessionId">
-    >;
+    return changes;
 }
 
 export function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {

@@ -1102,6 +1102,21 @@ function WorkspaceSplitView({
         null,
     );
 
+    const stopDragging = useEffectEvent(() => {
+        if (
+            node &&
+            dragState &&
+            previewSizes &&
+            previewSizes.length > 0 &&
+            !areSplitSizesEqual(previewSizes, dragState.startSizes)
+        ) {
+            void resizeSplit(node.id, previewSizes);
+        }
+
+        setPreviewSizes(null);
+        setDragState(null);
+    });
+
     const handlePointerMove = useEffectEvent((event: PointerEvent) => {
         if (!node || !dragState || !containerRef.current) {
             return;
@@ -1134,21 +1149,6 @@ function WorkspaceSplitView({
         }
 
         setPreviewSizes(nextSizes);
-    });
-
-    const stopDragging = useEffectEvent(() => {
-        if (
-            node &&
-            dragState &&
-            previewSizes &&
-            previewSizes.length > 0 &&
-            !areSplitSizesEqual(previewSizes, dragState.startSizes)
-        ) {
-            void resizeSplit(node.id, previewSizes);
-        }
-
-        setPreviewSizes(null);
-        setDragState(null);
     });
 
     useEffect(() => {

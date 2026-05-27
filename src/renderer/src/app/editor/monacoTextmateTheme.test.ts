@@ -126,7 +126,7 @@ function createFixtureGrammar(): IRawGrammar {
             $self: {},
         },
         scopeName: "source.comando-fixture",
-    } as IRawGrammar;
+    };
 }
 
 function getRawGrammarScopeName(grammar: unknown): string | null {

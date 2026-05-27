@@ -193,7 +193,7 @@ describe("AiService OpenCode branch", () => {
             process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
             const preparedSnapshot = createSessionSnapshot();
             const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
-                async () => preparedSnapshot,
+                () => Promise.resolve(preparedSnapshot),
             );
             const aiWorker = createAiWorker({ prepareSession });
             const service = createService({
@@ -270,7 +270,7 @@ function createService(overrides: {
             })),
             loadSecret: vi.fn(() => null),
             saveSecret: vi.fn(),
-        } as never,
+        },
         settingsService: (overrides.settingsService ??
             createSettingsService({})) as never,
     });

@@ -35,6 +35,11 @@ export interface StoredSecretRecord {
     readonly value: string;
 }
 
+interface SerializedSecretRecord {
+    readonly scheme?: string;
+    readonly value?: string;
+}
+
 export interface SecretStorageStatus {
     readonly encryptionAvailable: boolean;
     readonly isWeakBackend: boolean;
@@ -163,9 +168,12 @@ export function deserializeStoredSecretValue(
     }
 
     try {
-        const stored = JSON.parse(storedValue) as StoredSecretRecord;
+        const stored = JSON.parse(storedValue) as SerializedSecretRecord;
         switch (stored.scheme) {
             case "electron-safe-storage-v1": {
+                if (typeof stored.value !== "string") {
+                    return null;
+                }
                 const decrypted = safeStorage.decryptString(
                     Buffer.from(stored.value, "base64"),
                 );
@@ -173,6 +181,9 @@ export function deserializeStoredSecretValue(
                 return decrypted.trim() ? decrypted : null;
             }
             case "plain-text-v1":
+                if (typeof stored.value !== "string") {
+                    return null;
+                }
                 return stored.value.trim() ? stored.value : null;
             default:
                 debugBenignError(
