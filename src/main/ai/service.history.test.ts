@@ -138,7 +138,7 @@ function createService(overrides: {
         secretStore: {
             loadSecret: vi.fn(() => null),
             saveSecret: vi.fn(),
-        } as never,
+        },
         settingsService: {
             loadClaudeRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,

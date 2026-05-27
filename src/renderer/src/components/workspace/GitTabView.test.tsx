@@ -7,31 +7,22 @@ import type { RuntimeWorkspaceGitTab } from "@renderer/app/workspace/tree";
 
 const mockGitStoreState = vi.hoisted(() => ({
     current: {
-        commitDetailsByContext: {} as Record<
-            string,
-            Record<string, unknown> | undefined
-        >,
+        commitDetailsByContext: {},
         ensureCommitDetail: vi.fn(() => Promise.resolve(null)),
-        errors: {} as Record<string, string | null | undefined>,
-        historyByContext: {} as Record<
-            string,
-            readonly GitHistoryCommitSummary[] | undefined
-        >,
-        historyLimitsByContext: {} as Record<string, number | undefined>,
-        historyMatchedCountsByContext: {} as Record<
-            string,
-            number | undefined
-        >,
-        historyTotalsByContext: {} as Record<string, number | undefined>,
-        loadingCommitShas: {} as Record<string, readonly string[] | undefined>,
-        loadingContexts: {} as Record<string, boolean | undefined>,
-        loadingHistoryContexts: {} as Record<string, boolean | undefined>,
+        errors: {},
+        historyByContext: {},
+        historyLimitsByContext: {},
+        historyMatchedCountsByContext: {},
+        historyTotalsByContext: {},
+        loadingCommitShas: {},
+        loadingContexts: {},
+        loadingHistoryContexts: {},
         loadMoreHistory: vi.fn(() => Promise.resolve([])),
         refreshHistory: vi.fn(() => Promise.resolve([])),
         refreshProject: vi.fn(() => Promise.resolve(null)),
         selectCommit: vi.fn(() => Promise.resolve(null)),
-        selectedCommitShas: {} as Record<string, string | null | undefined>,
-        snapshots: {} as Record<string, unknown>,
+        selectedCommitShas: {},
+        snapshots: {},
     },
 }));
 

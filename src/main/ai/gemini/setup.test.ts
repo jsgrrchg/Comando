@@ -81,7 +81,7 @@ describe("Gemini setup", () => {
 
             const resolved = resolveGeminiRuntime(
                 createEmptyGeminiSettings(),
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
             );
 
             expect(resolved.program).toBe(binaryPath);
@@ -110,11 +110,11 @@ describe("Gemini setup", () => {
                     ...createEmptyGeminiSettings(),
                     binaryPath,
                 },
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
             );
             const fromPath = resolveGeminiRuntime(
                 createEmptyGeminiSettings(),
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
             );
 
             expect(fromSettings.program).toBe(binaryPath);
@@ -133,7 +133,7 @@ describe("Gemini setup", () => {
 
             const resolved = resolveGeminiRuntime(
                 createEmptyGeminiSettings(),
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
             );
 
             expect(resolved.program).toBe("/opt/homebrew/bin/gemini");
@@ -148,7 +148,7 @@ describe("Gemini setup", () => {
 
         const status = getGeminiRuntimeStatus(
             createEmptyGeminiSettings(),
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(
@@ -197,11 +197,11 @@ describe("Gemini setup", () => {
                     ...createEmptyGeminiSettings(),
                     authMethod: "login_with_google",
                 },
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
             );
             const fallbackStatus = getGeminiRuntimeStatus(
                 createEmptyGeminiSettings(),
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
             );
             const staleStatus = getGeminiRuntimeStatus(
                 {
@@ -209,7 +209,7 @@ describe("Gemini setup", () => {
                     authInvalidatedAtMs: Date.now() + 60_000,
                     authMethod: "login_with_google",
                 },
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
             );
 
             expect(readyStatus.authMethod).toBe("login_with_google");
@@ -236,7 +236,7 @@ describe("Gemini setup", () => {
                 ...createEmptyGeminiSettings(),
                 authMethod: "login_with_google",
             },
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
         );
 
         expect(
@@ -268,7 +268,7 @@ describe("Gemini setup", () => {
                 googleCloudLocation: "us-central1",
                 googleCloudProject: "demo-project",
             },
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(env.GEMINI_API_KEY).toBe("external-gemini-key");
@@ -293,7 +293,7 @@ describe("Gemini setup", () => {
                 ...createEmptyGeminiSettings(),
                 authMethod: "login_with_google",
             },
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(env.GEMINI_API_KEY).toBe("external-gemini-key");
@@ -313,7 +313,7 @@ describe("Gemini setup", () => {
                 ...createEmptyGeminiSettings(),
                 authMethod: "login_with_google",
             },
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(env.GEMINI_API_KEY).toBeUndefined();
@@ -326,7 +326,7 @@ describe("Gemini setup", () => {
 
         const status = getGeminiRuntimeStatus(
             createEmptyGeminiSettings(),
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
         );
 
         expect(status.authMethod).toBe("use_gemini");
@@ -347,7 +347,7 @@ describe("Gemini setup", () => {
                 googleCloudLocation: "us-central1",
                 googleCloudProject: "demo-project",
             },
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
         );
 
         expect(env.GEMINI_DEFAULT_AUTH_TYPE).toBe("external-auth-type");

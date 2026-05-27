@@ -7,6 +7,7 @@ import type {
     AiSessionUpdate,
 } from "@shared/ipc";
 import { forgetOpenFileBuffer, recordOpenFileBuffer } from "./openFileBuffers";
+import type { AiWorkerGateway } from "./contracts";
 
 const readyStatus: AiRuntimeStatus = {
     authMethod: "chatgpt",
@@ -142,8 +143,8 @@ describe("AiService hybrid persistence", () => {
             title: "Restartable",
         });
         const saveSessionSnapshot = vi.fn();
-        const prepareSession = vi.fn(async () => persistedSnapshot);
-        const notifyFileBuffer = vi.fn(async () => undefined);
+        const prepareSession = vi.fn(() => Promise.resolve(persistedSnapshot));
+        const notifyFileBuffer = vi.fn(() => Promise.resolve(undefined));
         const absolutePath = "/tmp/comando-phase-4-buffer.txt";
         const service = createService({
             aiWorker: {
@@ -212,7 +213,7 @@ describe("AiService hybrid persistence", () => {
             sessionId: "session-child",
             title: "Child",
         });
-        const prepareSession = vi.fn(async () => parentSnapshot);
+        const prepareSession = vi.fn(() => Promise.resolve(parentSnapshot));
         const service = createService({
             aiWorker: createMockWorker({ prepareSession }),
             loadSessionSnapshot: vi.fn((sessionId: string) =>
@@ -324,10 +325,10 @@ describe("AiService hybrid persistence", () => {
             sessionId: "session-child",
             title: "Child",
         });
-        const refreshProjectScopes = vi.fn(async () => undefined);
+        const refreshProjectScopes = vi.fn(() => Promise.resolve(undefined));
         const service = createService({
             aiWorker: createMockWorker({
-                prepareSession: vi.fn(async () => parentSnapshot),
+                prepareSession: vi.fn(() => Promise.resolve(parentSnapshot)),
                 refreshProjectScopes,
             }),
             loadSessionSnapshot: vi.fn((sessionId: string) =>
@@ -394,14 +395,16 @@ describe("AiService hybrid persistence", () => {
         });
         const saveSessionSnapshot = vi.fn();
         const onSessionSnapshot = vi.fn();
-        const keepTrackedFile = vi.fn(async () => ({
-            ownerWindowId: "",
-            snapshot: {
-                ...persistedSnapshot,
-                trackedFiles: [],
-                updatedAt: "2026-04-16T03:00:00.000Z",
-            },
-        }));
+        const keepTrackedFile = vi.fn<AiWorkerGateway["keepTrackedFile"]>(() =>
+            Promise.resolve({
+                ownerWindowId: "",
+                snapshot: {
+                    ...persistedSnapshot,
+                    trackedFiles: [],
+                    updatedAt: "2026-04-16T03:00:00.000Z",
+                },
+            }),
+        );
         const service = createService({
             aiWorker: {
                 cancelSession: vi.fn(),
@@ -434,15 +437,12 @@ describe("AiService hybrid persistence", () => {
             sessionId: "session-1",
         });
 
-        expect(keepTrackedFile).toHaveBeenCalledWith({
-            context: expect.objectContaining({
-                ownerWindowId: "",
-                snapshot: persistedSnapshot,
-            }),
-            input: {
-                path: "notes.md",
-                sessionId: "session-1",
-            },
+        const [keepTrackedFileInput] = keepTrackedFile.mock.calls[0] ?? [];
+        expect(keepTrackedFileInput?.context.ownerWindowId).toBe("");
+        expect(keepTrackedFileInput?.context.snapshot).toBe(persistedSnapshot);
+        expect(keepTrackedFileInput?.input).toEqual({
+            path: "notes.md",
+            sessionId: "session-1",
         });
         expect(saveSessionSnapshot).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -517,7 +517,7 @@ function createService(overrides: {
         secretStore: {
             loadSecret: vi.fn(() => null),
             saveSecret: vi.fn(),
-        } as never,
+        },
         settingsService: {
             loadClaudeRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,

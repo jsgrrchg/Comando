@@ -699,7 +699,7 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
             payload.worktreeId === null
                 ? payload.worktreeId
                 : row.worktree_id,
-    } as WorkspaceTab;
+    };
 }
 
 function serializeTab(

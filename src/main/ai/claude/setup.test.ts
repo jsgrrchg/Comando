@@ -14,8 +14,6 @@ import {
     normalizeGatewayCustomHeaders,
     resolveClaudeRuntime,
 } from "./setup";
-import type { SecretStoreService } from "../secret-store";
-
 type FakeSecretStore = {
     loadSecret: (namespace: string, secretId: string) => string | null;
     saveSecret: (
@@ -156,7 +154,7 @@ describe("Claude setup", () => {
 
             const resolved = resolveClaudeRuntime(
                 createEmptyClaudeSettings(),
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
                 {
                     allowPathFallback: false,
                     currentFilePath: path.join(
@@ -224,7 +222,7 @@ describe("Claude setup", () => {
             };
             const status = getClaudeRuntimeStatus(
                 settings,
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
                 {
                     allowPathFallback: false,
                     appRoot: tempRoot,
@@ -284,7 +282,7 @@ describe("Claude setup", () => {
 
             const status = getClaudeRuntimeStatus(
                 createEmptyClaudeSettings(),
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
                 {
                     allowPathFallback: false,
                     appRoot: tempRoot,
@@ -340,7 +338,7 @@ describe("Claude setup", () => {
                 settings,
                 createFakeSecretStore({
                     "ai.claude:anthropic_api_key": "stored-api-key",
-                }) as unknown as SecretStoreService,
+                }),
                 {
                     allowPathFallback: false,
                     appRoot: os.tmpdir(),
@@ -369,7 +367,7 @@ describe("Claude setup", () => {
         };
         const status = getClaudeRuntimeStatus(
             settings,
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
             {
                 allowPathFallback: false,
                 appRoot: os.tmpdir(),
@@ -417,7 +415,7 @@ describe("Claude setup", () => {
 
             const resolved = resolveClaudeRuntime(
                 createEmptyClaudeSettings(),
-                createFakeSecretStore() as unknown as SecretStoreService,
+                createFakeSecretStore(),
                 {
                     allowPathFallback: false,
                     appRoot: tempRoot,
@@ -452,7 +450,7 @@ describe("Claude setup", () => {
                 hasGatewayAuthToken: true,
                 hasGatewayCustomHeaders: true,
             },
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/v1");
@@ -478,7 +476,7 @@ describe("Claude setup", () => {
                 hasGatewayAuthToken: true,
                 hasGatewayCustomHeaders: true,
             },
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(env.ANTHROPIC_API_KEY).toBe("stored-api-key");
@@ -500,7 +498,7 @@ describe("Claude setup", () => {
                 authMethod: "gateway-bedrock",
                 bedrockGatewayBaseUrl: "https://bedrock.example/v1",
             },
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(env.ANTHROPIC_BEDROCK_BASE_URL).toBe(
@@ -519,7 +517,7 @@ describe("Claude setup", () => {
                 ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example/v1",
             },
             createEmptyClaudeSettings(),
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
         );
 
         expect(env.ANTHROPIC_BEDROCK_BASE_URL).toBe(
@@ -544,7 +542,7 @@ describe("Claude setup", () => {
                 hasGatewayAuthToken: true,
                 hasGatewayCustomHeaders: true,
             },
-            secretStore as unknown as SecretStoreService,
+            secretStore,
         );
 
         expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
@@ -557,7 +555,7 @@ describe("Claude setup", () => {
             createFakeSecretStore({
                 "ai.claude:anthropic_api_key": "stored-api-key",
                 "ai.claude:anthropic_auth_token": "stored-token",
-            }) as unknown as SecretStoreService,
+            }),
             {
                 gatewayCustomHeaders: '{"x-test":"1"}',
             },
@@ -582,7 +580,7 @@ describe("Claude setup", () => {
 
         const status = getClaudeRuntimeStatus(
             createEmptyClaudeSettings(),
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
             {
                 allowPathFallback: false,
                 appRoot: os.tmpdir(),
@@ -607,7 +605,7 @@ describe("Claude setup", () => {
 
         const status = getClaudeRuntimeStatus(
             createEmptyClaudeSettings(),
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
             {
                 allowPathFallback: false,
                 appRoot: os.tmpdir(),
@@ -637,7 +635,7 @@ describe("Claude setup", () => {
                 authMethod: "gateway",
                 gatewayBaseUrl: "http://gateway.example",
             },
-            createFakeSecretStore() as unknown as SecretStoreService,
+            createFakeSecretStore(),
         );
 
         expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/v1");

@@ -63,7 +63,7 @@ describe("AiService Kilo branch", () => {
                 cacheSecretPatches: vi.fn(),
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: settingsService as never,
         });
 
@@ -104,7 +104,7 @@ describe("AiService Kilo branch", () => {
             secretStore: {
                 loadSecret: vi.fn(() => null),
                 saveSecret: vi.fn(),
-            } as never,
+            },
             settingsService: {
                 loadClaudeRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,

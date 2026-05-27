@@ -138,9 +138,11 @@ export function resolveOpenCodeRuntime(
 
 export function applyOpenCodeAuthEnv(
     baseEnv: NodeJS.ProcessEnv,
-    _settings: OpenCodeRuntimeSettings,
-    _secretStore?: SecretStoreGateway | null,
+    settings: OpenCodeRuntimeSettings,
+    secretStore?: SecretStoreGateway | null,
 ): NodeJS.ProcessEnv {
+    void settings;
+    void secretStore;
     return { ...baseEnv };
 }
 

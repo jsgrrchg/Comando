@@ -1409,7 +1409,7 @@ function updateMatchingFileTabs(
 
                 return [currentTabId, updateTab(tab)];
             }),
-        ) as Record<string, RuntimeWorkspaceTab>,
+        ),
     };
 }
 
@@ -1548,7 +1548,7 @@ function omitTabFromMap(
         Object.entries(tabsById).filter(
             ([currentTabId]) => currentTabId !== tabId,
         ),
-    ) as Record<string, RuntimeWorkspaceTab>;
+    );
 }
 
 function formatExitDetails(

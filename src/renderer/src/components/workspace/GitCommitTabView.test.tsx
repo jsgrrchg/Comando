@@ -12,15 +12,12 @@ import {
 
 const mockGitStoreState = vi.hoisted(() => ({
     current: {
-        commitDetailsByContext: {} as Record<
-            string,
-            Record<string, unknown> | undefined
-        >,
+        commitDetailsByContext: {},
         ensureCommitDetail: vi.fn(() => Promise.resolve(null)),
-        errors: {} as Record<string, string | null | undefined>,
-        loadingCommitShas: {} as Record<string, readonly string[] | undefined>,
+        errors: {},
+        loadingCommitShas: {},
         selectCommit: vi.fn(() => Promise.resolve(null)),
-        snapshots: {} as Record<string, unknown>,
+        snapshots: {},
     },
 }));
 

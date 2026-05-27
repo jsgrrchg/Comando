@@ -163,7 +163,7 @@ describe("AiPersistence", () => {
                 access: "read-only",
                 modelId: "gpt-5",
                 reasoning: "high",
-            }).models as AiSessionSnapshot["models"],
+            }).models,
             pendingPermission: null,
             pendingUserInput: null,
             plan: null,

@@ -294,9 +294,7 @@ function GitTreeNodeRow({
     const canToggle = !isEditing && Boolean(isDirectory && onToggleDirectory);
     const isDraggable =
         !isEditing && enableNodeDrag === true && !node.isProjectRoot;
-    const dragStartHandler = onNodeDragStart as
-        | ((node: GitTreeNode, dataTransfer: DataTransfer | null) => void)
-        | undefined;
+    const dragStartHandler = onNodeDragStart;
     const isDropTarget = dropTargetPath === node.path;
     const statusTint = node.status ? statusColor(node.status) : null;
     const titleColor = statusTint

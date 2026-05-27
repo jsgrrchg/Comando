@@ -3118,21 +3118,23 @@ describe("AiWorkerRuntime prepareSession", () => {
         spawnedChildren[0]?.emit("exit", 1, null);
 
         await vi.waitFor(() => {
-            expect(
-                getLatestPatchChanges(emittedEvents, "session-1"),
-            ).toMatchObject({
-                lastError: expect.stringContaining("connection died"),
-                status: "error",
-            });
-            expect(
-                getLatestPatchChanges(
-                    emittedEvents,
-                    childSnapshot!.sessionId,
-                ),
-            ).toMatchObject({
-                lastError: expect.stringContaining("connection died"),
-                status: "error",
-            });
+            const parentChanges = getLatestPatchChanges(
+                emittedEvents,
+                "session-1",
+            );
+            const childChanges = getLatestPatchChanges(
+                emittedEvents,
+                childSnapshot!.sessionId,
+            );
+
+            expect(parentChanges?.lastError).toEqual(
+                expect.stringContaining("connection died"),
+            );
+            expect(parentChanges?.status).toBe("error");
+            expect(childChanges?.lastError).toEqual(
+                expect.stringContaining("connection died"),
+            );
+            expect(childChanges?.status).toBe("error");
         });
 
         const closedSessionIds = emittedEvents
@@ -3904,11 +3906,11 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
 
         await expect(fs.readFile(filePath, "utf8")).resolves.toBe("before\n");
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ownerWindowId: "",
-            snapshot: expect.objectContaining({
+            snapshot: {
                 trackedFiles: [],
-            }),
+            },
         });
     });
 
@@ -3963,11 +3965,11 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
 
         await expect(fs.readFile(filePath, "utf8")).resolves.toBe("before\n");
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ownerWindowId: "",
-            snapshot: expect.objectContaining({
+            snapshot: {
                 trackedFiles: [],
-            }),
+            },
         });
     });
 
@@ -4690,7 +4692,7 @@ describe("AiWorkerRuntime prepareSession", () => {
                 },
             },
             input: {
-                hunkIds: [hunks[0]!.id],
+                hunkIds: [hunks[0].id],
                 path: filePath,
                 sessionId: "session-1",
             },
@@ -4699,16 +4701,16 @@ describe("AiWorkerRuntime prepareSession", () => {
         await expect(fs.readFile(filePath, "utf8")).resolves.toBe(
             "one\ntwo\nTHREE\n",
         );
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ownerWindowId: "",
-            snapshot: expect.objectContaining({
+            snapshot: {
                 trackedFiles: [
-                    expect.objectContaining({
+                    {
                         newText: "one\ntwo\nTHREE\n",
                         path: filePath,
-                    }),
+                    },
                 ],
-            }),
+            },
         });
     });
 });
