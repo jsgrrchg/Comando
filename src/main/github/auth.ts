@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 
 import type { SecretStoreGateway } from "@main/ai/secret-store";
 
@@ -7,6 +8,11 @@ export const GITHUB_SECRET_NAMESPACE = "github";
 
 const DEFAULT_GITHUB_TOKEN_SECRET_ID = "token";
 const GH_CLI_TOKEN_TIMEOUT_MS = 5000;
+const GH_CLI_EXTRA_PATH_ENTRIES = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+] as const;
 
 export class GitHubAuthStore {
     readonly #secretStore: SecretStoreGateway;
@@ -72,6 +78,7 @@ export async function loadGhCliToken(
 
         try {
             child = spawn("gh", args, {
+                env: buildGhCliSpawnEnv(process.env),
                 stdio: ["ignore", "pipe", "ignore"],
             });
         } catch {
@@ -95,6 +102,19 @@ export async function loadGhCliToken(
             finish(code === 0 ? stdout.trim() || null : null);
         });
     });
+}
+
+function buildGhCliSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    const pathEntries = [
+        ...GH_CLI_EXTRA_PATH_ENTRIES,
+        ...(env.PATH?.split(path.delimiter).filter(Boolean) ?? []),
+    ];
+    const dedupedPathEntries = [...new Set(pathEntries)];
+
+    return {
+        ...env,
+        PATH: dedupedPathEntries.join(path.delimiter),
+    };
 }
 
 export function buildGitHubApiBaseUrl(hostInput?: string | null): string {
