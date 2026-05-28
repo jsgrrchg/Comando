@@ -23,6 +23,7 @@ import {
     type TerminalExitStatus,
     type TerminalOutputRequest,
     type TerminalOutputResponse,
+    type ToolCallContent,
     type WaitForTerminalExitRequest,
     type WaitForTerminalExitResponse,
     type WriteTextFileRequest,
@@ -145,6 +146,11 @@ interface PendingUserTextEcho {
     textMatched: boolean;
 }
 
+interface SuppressedInternalUserInputEcho {
+    bufferedText: string;
+    readonly messageId: string | null;
+}
+
 interface SubagentMirrorTurnState {
     assistantOutputSeen: boolean;
     suppressedAssistantEchoText: string;
@@ -248,6 +254,10 @@ export class AiWorkerRuntime {
     readonly #fileBuffers = new Map<string, string>();
     readonly #pendingUserTextEchoes = new Map<string, PendingUserTextEcho>();
     readonly #sessions = new Map<string, LiveAcpSession>();
+    readonly #suppressedInternalUserInputEchoes = new Map<
+        string,
+        SuppressedInternalUserInputEcho
+    >();
     readonly #subagentMirrorTurns = new Map<string, SubagentMirrorTurnState>();
     readonly #startedAt = new Date().toISOString();
 
@@ -1666,8 +1676,12 @@ export class AiWorkerRuntime {
 
         if (
             update.sessionUpdate === "user_message_chunk" &&
-            isInternalUserInputResponseEcho(update.content) &&
-            !this.#pendingUserTextEchoes.has(liveSession.snapshot.sessionId)
+            !this.#pendingUserTextEchoes.has(liveSession.snapshot.sessionId) &&
+            this.#shouldSuppressInternalUserInputResponseEcho(
+                liveSession,
+                update.content,
+                update.messageId ?? null,
+            )
         ) {
             return Promise.resolve();
         }
@@ -1711,7 +1725,13 @@ export class AiWorkerRuntime {
                 );
                 nextSnapshot = echoResult.snapshot;
                 if (!echoResult.handled) {
-                    if (!isInternalUserInputResponseEcho(update.content)) {
+                    if (
+                        !this.#shouldSuppressInternalUserInputResponseEcho(
+                            liveSession,
+                            update.content,
+                            update.messageId ?? null,
+                        )
+                    ) {
                         nextSnapshot = appendContentBlockToSnapshot(
                             nextSnapshot,
                             "user",
@@ -1921,6 +1941,49 @@ export class AiWorkerRuntime {
 
     #clearPendingUserTextEcho(liveSession: LiveAcpSession): void {
         this.#pendingUserTextEchoes.delete(liveSession.snapshot.sessionId);
+    }
+
+    #shouldSuppressInternalUserInputResponseEcho(
+        liveSession: LiveAcpSession,
+        content: ContentBlock,
+        messageId: string | null,
+    ): boolean {
+        if (content.type !== "text") {
+            return false;
+        }
+
+        const sessionId = liveSession.snapshot.sessionId;
+        const existing =
+            this.#suppressedInternalUserInputEchoes.get(sessionId) ?? null;
+        if (existing) {
+            if (
+                existing.messageId &&
+                messageId &&
+                existing.messageId !== messageId
+            ) {
+                this.#suppressedInternalUserInputEchoes.delete(sessionId);
+                return false;
+            }
+
+            existing.bufferedText = `${existing.bufferedText}${content.text}`;
+            if (isCompleteInternalUserInputResponseEcho(existing.bufferedText)) {
+                this.#suppressedInternalUserInputEchoes.delete(sessionId);
+            }
+            return true;
+        }
+
+        if (!isInternalUserInputResponseEcho(content)) {
+            return false;
+        }
+
+        const suppressedEcho: SuppressedInternalUserInputEcho = {
+            bufferedText: content.text,
+            messageId,
+        };
+        if (!isCompleteInternalUserInputResponseEcho(suppressedEcho.bufferedText)) {
+            this.#suppressedInternalUserInputEchoes.set(sessionId, suppressedEcho);
+        }
+        return true;
     }
 
     #applyPendingUserTextEcho(
@@ -4045,6 +4108,7 @@ export class AiWorkerRuntime {
             const sessionId = liveSession.snapshot.sessionId;
             this.#sessions.delete(sessionId);
             this.#pendingUserTextEchoes.delete(sessionId);
+            this.#suppressedInternalUserInputEchoes.delete(sessionId);
             this.#subagentMirrorTurns.delete(sessionId);
             this.#releaseAllTerminals(liveSession);
             if (liveSession.closing || liveConnection.closing) {
@@ -4079,6 +4143,7 @@ export class AiWorkerRuntime {
         const liveConnection = liveSession.runtimeConnection;
         this.#sessions.delete(sessionId);
         this.#pendingUserTextEchoes.delete(sessionId);
+        this.#suppressedInternalUserInputEchoes.delete(sessionId);
         this.#subagentMirrorTurns.delete(sessionId);
         liveConnection.sessionsByAppSessionId.delete(sessionId);
         if (liveSession.snapshot.runtimeSessionId) {
@@ -4133,6 +4198,7 @@ export class AiWorkerRuntime {
             const sessionId = liveSession.snapshot.sessionId;
             this.#sessions.delete(sessionId);
             this.#pendingUserTextEchoes.delete(sessionId);
+            this.#suppressedInternalUserInputEchoes.delete(sessionId);
             this.#subagentMirrorTurns.delete(sessionId);
             liveSession.closing = true;
             this.#flushSnapshotEvent(liveSession);
@@ -4463,6 +4529,27 @@ function isInternalUserInputResponseEcho(content: ContentBlock): boolean {
     );
 }
 
+function isCompleteInternalUserInputResponseEcho(value: string): boolean {
+    const trimmedValue = value.trimStart();
+    if (!trimmedValue.startsWith(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX)) {
+        return false;
+    }
+
+    const payloadText = trimmedValue.slice(
+        CODEX_ACP_USER_INPUT_RESPONSE_PREFIX.length,
+    );
+    if (!payloadText.trim()) {
+        return false;
+    }
+
+    try {
+        JSON.parse(payloadText);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function normalizeEchoText(value: string): string {
     return value.trim().replace(/\s+/g, " ");
 }
@@ -4578,7 +4665,51 @@ function readSubagentTurnPrompt(
         return null;
     }
 
-    return readRecordString(update.rawInput, "prompt");
+    return (
+        readRecordString(update.rawInput, "prompt") ??
+        readRecordString(update.rawInput, "message") ??
+        readRecordString(update.rawInput, "input") ??
+        readPromptFromToolCallContent(update.content)
+    );
+}
+
+function readPromptFromToolCallContent(
+    content: readonly ToolCallContent[] | null | undefined,
+): string | null {
+    if (!Array.isArray(content)) {
+        return null;
+    }
+
+    for (const entry of content) {
+        if (!isRecordValue(entry) || entry.type !== "content") {
+            continue;
+        }
+
+        const block = entry.content;
+        if (!isRecordValue(block) || block.type !== "text") {
+            continue;
+        }
+
+        const text = typeof block.text === "string" ? block.text : "";
+        const prompt = readPromptLineFromText(text);
+        if (prompt) {
+            return prompt;
+        }
+    }
+
+    return null;
+}
+
+function readPromptLineFromText(value: string): string | null {
+    for (const line of value.split(/\r?\n/)) {
+        const match = /^Prompt:\s*(.+)$/i.exec(line.trim());
+        const prompt = match ? match[1].trim() : "";
+        if (prompt) {
+            return prompt;
+        }
+    }
+
+    return null;
 }
 
 function readSubagentTurnResponse(

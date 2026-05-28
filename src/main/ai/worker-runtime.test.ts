@@ -1896,6 +1896,63 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("mirrors subagent prompts from breadcrumb content when raw input lacks prompt", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent prompt content fallback");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        const resumeBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "resume_begin",
+        };
+        await client.sessionUpdate({
+            _meta: resumeBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: resumeBeginMeta,
+                content: [
+                    {
+                        content: {
+                            text: "Receiver: runtime-subagent-1\nPrompt: sin cambios",
+                            type: "text",
+                        },
+                        type: "content",
+                    },
+                ],
+                kind: "other",
+                rawInput: {
+                    receiver_thread_id: "runtime-subagent-1",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Resuming Galileo",
+                toolCallId: "codex-acp:subagent:resume-content-prompt",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const userMessages =
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                )?.filter((message) => message.kind === "user") ?? [];
+            expect(userMessages.map((message) => message.content)).toEqual([
+                "sin cambios",
+            ]);
+        });
+    });
+
     it("does not duplicate mirrored subagent prompts when user chunks also arrive", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent user dedupe parent");
@@ -3722,6 +3779,56 @@ describe("AiWorkerRuntime prepareSession", () => {
                     message.content.includes(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX),
                 ),
             ).toBe(false);
+        });
+    });
+
+    it("suppresses late chunked internal guided-input payload echoes", async () => {
+        const { client, emittedEvents } =
+            await setupPreparedRuntimeWithClient("Late chunked guided input echo");
+        emittedEvents.length = 0;
+
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: `${CODEX_ACP_USER_INPUT_RESPONSE_PREFIX}{"response":`,
+                    type: "text",
+                },
+                messageId: "late-guided-echo",
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: '{"answers":{"choice":{"answers":["yes"]}}},"turn_id":"turn-1"}',
+                    type: "text",
+                },
+                messageId: "late-guided-echo",
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: "visible answer",
+                    type: "text",
+                },
+                messageId: "assistant-after-guided-echo",
+                sessionUpdate: "agent_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(emittedEvents, "session-1");
+            expect(messages).toEqual([
+                expect.objectContaining({
+                    content: "visible answer",
+                    kind: "assistant",
+                }),
+            ]);
         });
     });
 
