@@ -1484,6 +1484,29 @@ describe("AiWorkerRuntime prepareSession", () => {
                 ),
             ).toHaveLength(1);
         });
+        for (const text of ["terminal response ", "before lifecycle end"]) {
+            await client.sessionUpdate({
+                sessionId: "runtime-subagent-1",
+                update: {
+                    content: {
+                        text,
+                        type: "text",
+                    },
+                    messageId: "child-terminal-echo",
+                    sessionUpdate: "agent_message_chunk",
+                },
+            });
+        }
+        await vi.waitFor(() => {
+            const assistantMessages =
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                )?.filter((message) => message.kind === "assistant") ?? [];
+            expect(assistantMessages.map((message) => message.content)).toEqual([
+                "terminal response before lifecycle end",
+            ]);
+        });
         expect(
             hasPatchChangesMatching(
                 emittedEvents,

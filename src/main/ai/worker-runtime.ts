@@ -147,6 +147,8 @@ interface PendingUserTextEcho {
 
 interface SubagentMirrorTurnState {
     assistantOutputSeen: boolean;
+    suppressedAssistantEchoText: string;
+    terminalAssistantContent: string | null;
     readonly toolCallId: string;
 }
 
@@ -1721,6 +1723,14 @@ export class AiWorkerRuntime {
                 break;
             }
             case "agent_message_chunk":
+                if (
+                    this.#shouldSuppressMirroredSubagentAssistantEcho(
+                        liveSession,
+                        update.content,
+                    )
+                ) {
+                    break;
+                }
                 this.#markSubagentAssistantOutputSeen(liveSession);
                 nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
@@ -2016,6 +2026,8 @@ export class AiWorkerRuntime {
     ): void {
         this.#subagentMirrorTurns.set(liveSession.snapshot.sessionId, {
             assistantOutputSeen: false,
+            suppressedAssistantEchoText: "",
+            terminalAssistantContent: null,
             toolCallId,
         });
     }
@@ -2035,6 +2047,50 @@ export class AiWorkerRuntime {
         if (state) {
             state.assistantOutputSeen = true;
         }
+    }
+
+    #rememberMirroredSubagentTerminalResponse(
+        liveSession: LiveAcpSession,
+        response: string,
+    ): void {
+        const state = this.#subagentMirrorTurns.get(
+            liveSession.snapshot.sessionId,
+        );
+        if (state) {
+            state.assistantOutputSeen = true;
+            state.terminalAssistantContent = response;
+            state.suppressedAssistantEchoText = "";
+        }
+    }
+
+    #shouldSuppressMirroredSubagentAssistantEcho(
+        liveSession: LiveAcpSession,
+        content: ContentBlock,
+    ): boolean {
+        if (!isSubagentLiveSession(liveSession) || content.type !== "text") {
+            return false;
+        }
+
+        const state = this.#subagentMirrorTurns.get(
+            liveSession.snapshot.sessionId,
+        );
+        const terminalContent = state?.terminalAssistantContent;
+        if (!state || !terminalContent) {
+            return false;
+        }
+
+        const nextEchoText = `${state.suppressedAssistantEchoText}${content.text}`;
+        const normalizedEchoText = normalizeEchoText(nextEchoText);
+        const normalizedTerminalContent = normalizeEchoText(terminalContent);
+        if (
+            normalizedEchoText.length === 0 ||
+            normalizedTerminalContent.startsWith(normalizedEchoText)
+        ) {
+            state.suppressedAssistantEchoText = nextEchoText;
+            return true;
+        }
+
+        return false;
     }
 
     #getSubagentMirrorTurn(
@@ -2420,7 +2476,7 @@ export class AiWorkerRuntime {
             `subagent:${update.toolCallId}:assistant`,
             updatedAt,
         );
-        this.#markSubagentAssistantOutputSeen(childSession);
+        this.#rememberMirroredSubagentTerminalResponse(childSession, response);
         this.#queueSnapshotFlush(childSession);
         this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
     }
