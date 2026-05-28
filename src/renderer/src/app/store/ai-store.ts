@@ -748,12 +748,17 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ? runtimeCatalog
                         : (state.runtimeCatalogById[tab.runtimeId] ??
                           extractRuntimeCatalog(resolvedSnapshot));
-                const nextSnapshot = hasRuntimeCatalog(nextCatalog)
+                const incomingSnapshot = hasRuntimeCatalog(nextCatalog)
                     ? mergeRuntimeCatalogIntoSnapshot(
                           resolvedSnapshot,
                           nextCatalog,
                       )
                     : resolvedSnapshot;
+                const currentSession = state.sessions[tab.sessionId];
+                const nextSnapshot = resolveIncomingSessionSnapshot(
+                    incomingSnapshot,
+                    currentSession,
+                );
 
                 return {
                     runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
@@ -1783,6 +1788,119 @@ function mergeRuntimeCatalogIntoSnapshot(
         modelId: snapshot.modelId ?? catalog.modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
+}
+
+function resolveIncomingSessionSnapshot(
+    incomingSnapshot: AiSessionSnapshot,
+    currentSession: AiSessionClientState | null | undefined,
+): AiSessionSnapshot {
+    const currentSnapshot = currentSession?.snapshot ?? null;
+    if (
+        !currentSnapshot ||
+        currentSnapshot.sessionId !== incomingSnapshot.sessionId
+    ) {
+        return incomingSnapshot;
+    }
+
+    const shouldPreserveCurrent =
+        hasMoreTranscript(currentSnapshot, incomingSnapshot) ||
+        (currentSession?.hydrated === true &&
+            isSnapshotUpdatedAfter(currentSnapshot, incomingSnapshot));
+    if (!shouldPreserveCurrent) {
+        return incomingSnapshot;
+    }
+
+    return mergeHydrationMetadataIntoCurrent(
+        currentSnapshot,
+        incomingSnapshot,
+    );
+}
+
+function mergeHydrationMetadataIntoCurrent(
+    currentSnapshot: AiSessionSnapshot,
+    incomingSnapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    const incomingCatalog = extractRuntimeCatalog(incomingSnapshot);
+    const snapshotWithCatalog = hasRuntimeCatalog(incomingCatalog)
+        ? mergeRuntimeCatalogIntoSnapshot(currentSnapshot, incomingCatalog)
+        : currentSnapshot;
+
+    if (
+        snapshotWithCatalog.runtimeSessionId ||
+        !incomingSnapshot.runtimeSessionId
+    ) {
+        return snapshotWithCatalog;
+    }
+
+    return {
+        ...snapshotWithCatalog,
+        runtimeSessionId: incomingSnapshot.runtimeSessionId,
+    };
+}
+
+function isSnapshotUpdatedAfter(
+    currentSnapshot: Pick<AiSessionSnapshot, "updatedAt">,
+    incomingSnapshot: Pick<AiSessionSnapshot, "updatedAt">,
+): boolean {
+    const currentUpdatedAt = Date.parse(currentSnapshot.updatedAt);
+    const incomingUpdatedAt = Date.parse(incomingSnapshot.updatedAt);
+    return (
+        Number.isFinite(currentUpdatedAt) &&
+        Number.isFinite(incomingUpdatedAt) &&
+        currentUpdatedAt > incomingUpdatedAt
+    );
+}
+
+function hasMoreTranscript(
+    currentSnapshot: Pick<AiSessionSnapshot, "messages">,
+    incomingSnapshot: Pick<AiSessionSnapshot, "messages">,
+): boolean {
+    if (
+        currentSnapshot.messages.length < incomingSnapshot.messages.length ||
+        !hasCompatibleTranscriptPrefix(incomingSnapshot, currentSnapshot)
+    ) {
+        return false;
+    }
+
+    if (currentSnapshot.messages.length > incomingSnapshot.messages.length) {
+        return true;
+    }
+
+    return (
+        getTranscriptWeight(currentSnapshot) >
+        getTranscriptWeight(incomingSnapshot)
+    );
+}
+
+function hasCompatibleTranscriptPrefix(
+    prefixSnapshot: Pick<AiSessionSnapshot, "messages">,
+    candidateSnapshot: Pick<AiSessionSnapshot, "messages">,
+): boolean {
+    return prefixSnapshot.messages.every((message, index) => {
+        const candidate = candidateSnapshot.messages[index];
+        if (!candidate || candidate.kind !== message.kind) {
+            return false;
+        }
+
+        if (message.id && candidate.id && message.id !== candidate.id) {
+            return false;
+        }
+
+        return (
+            candidate.content.startsWith(message.content) &&
+            candidate.attachments.length >= message.attachments.length
+        );
+    });
+}
+
+function getTranscriptWeight(
+    snapshot: Pick<AiSessionSnapshot, "messages">,
+): number {
+    return snapshot.messages.reduce(
+        (total, message) =>
+            total + message.content.length + message.attachments.length,
+        0,
+    );
 }
 
 function applyCatalogPatchToCatalog(

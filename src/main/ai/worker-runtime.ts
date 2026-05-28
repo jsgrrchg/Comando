@@ -79,6 +79,7 @@ import {
     CODEX_ACP_TURN_ID_KEY,
     CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
     CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+    CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
     type LiveAcpConnection,
     type LiveAcpSession,
     type LiveAcpTerminal,
@@ -825,8 +826,13 @@ export class AiWorkerRuntime {
             pendingUserInput.turnId,
             answers,
         );
+        const responseMessageId = randomUUID();
         const now = new Date().toISOString();
 
+        this.#setPendingUserTextEcho(liveSession, {
+            expectedTexts: [promptText],
+            messageId: responseMessageId,
+        });
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: liveSession.snapshot.activeTurnStartedAt ?? now,
@@ -853,7 +859,7 @@ export class AiWorkerRuntime {
 
         try {
             await liveSession.connection.prompt({
-                messageId: randomUUID(),
+                messageId: responseMessageId,
                 prompt: [
                     {
                         text: promptText,
@@ -871,7 +877,9 @@ export class AiWorkerRuntime {
             });
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
+            this.#clearPendingUserTextEcho(liveSession);
         } catch (error) {
+            this.#clearPendingUserTextEcho(liveSession);
             const message =
                 error instanceof Error
                     ? error.message
@@ -1659,6 +1667,14 @@ export class AiWorkerRuntime {
             return Promise.resolve();
         }
 
+        if (
+            update.sessionUpdate === "user_message_chunk" &&
+            isInternalUserInputResponseEcho(update.content) &&
+            !this.#pendingUserTextEchoes.has(liveSession.snapshot.sessionId)
+        ) {
+            return Promise.resolve();
+        }
+
         const shouldMarkStreaming =
             update.sessionUpdate === "user_message_chunk" ||
             update.sessionUpdate === "agent_message_chunk" ||
@@ -1698,12 +1714,14 @@ export class AiWorkerRuntime {
                 );
                 nextSnapshot = echoResult.snapshot;
                 if (!echoResult.handled) {
-                    nextSnapshot = appendContentBlockToSnapshot(
-                        nextSnapshot,
-                        "user",
-                        update.content,
-                        update.messageId ?? null,
-                    );
+                    if (!isInternalUserInputResponseEcho(update.content)) {
+                        nextSnapshot = appendContentBlockToSnapshot(
+                            nextSnapshot,
+                            "user",
+                            update.content,
+                            update.messageId ?? null,
+                        );
+                    }
                 }
                 break;
             }
@@ -1925,6 +1943,19 @@ export class AiWorkerRuntime {
                 (expectedContent) =>
                     isSamePromptEchoContentBlock(expectedContent, content),
             );
+            if (!matchesExpectedContent && hasMatchingMessageId) {
+                this.#clearPendingUserTextEcho(liveSession);
+                return {
+                    handled: true,
+                    snapshot: appendContentBlockToSnapshot(
+                        snapshot,
+                        "user",
+                        content,
+                        null,
+                    ),
+                };
+            }
+
             return {
                 handled: matchesExpectedContent,
                 snapshot,
@@ -1940,6 +1971,7 @@ export class AiWorkerRuntime {
             };
         }
 
+        const wasTextMatched = pending.textMatched;
         pending.bufferedText = `${pending.bufferedText}${text}`;
         const normalizedBufferedText = normalizeEchoText(pending.bufferedText);
         const normalizedExpectedTexts = pending.expectedTexts
@@ -1954,7 +1986,7 @@ export class AiWorkerRuntime {
                 expectedText.startsWith(normalizedBufferedText),
             );
 
-        if (hasMatchingMessageId || isExpectedPrefix) {
+        if (isExpectedPrefix) {
             if (matchesExpectedText) {
                 pending.textMatched = true;
                 if (pending.expectedContentBlocks.length === 0) {
@@ -1967,7 +1999,7 @@ export class AiWorkerRuntime {
             };
         }
 
-        const bufferedText = pending.bufferedText;
+        const bufferedText = wasTextMatched ? text : pending.bufferedText;
         this.#clearPendingUserTextEcho(liveSession);
         return {
             handled: true,
@@ -1978,7 +2010,7 @@ export class AiWorkerRuntime {
                     text: bufferedText,
                     type: "text",
                 },
-                messageId,
+                hasMatchingMessageId ? null : messageId,
             ),
         };
     }
@@ -3656,6 +3688,10 @@ export class AiWorkerRuntime {
             appSessionId,
         );
         this.#drainPendingSessionUpdates(liveConnection, runtimeSessionId);
+        this.#drainPendingSubagentCreatesForParent(
+            liveConnection,
+            runtimeSessionId,
+        );
     }
 
     #bufferPendingSessionUpdate(
@@ -3711,6 +3747,46 @@ export class AiWorkerRuntime {
 
         for (const update of pending) {
             void this.#handleSessionUpdate(liveSession, update);
+        }
+    }
+
+    #drainPendingSubagentCreatesForParent(
+        liveConnection: LiveAcpConnection,
+        runtimeParentSessionId: string,
+    ): void {
+        const pendingSubagentCreates: SessionNotification[] = [];
+
+        for (const [
+            pendingRuntimeSessionId,
+            pendingUpdates,
+        ] of liveConnection.pendingSessionUpdatesByRuntimeSessionId) {
+            const remainingUpdates = pendingUpdates.filter((pendingUpdate) => {
+                const meta = getSessionNotificationMeta(pendingUpdate);
+                const shouldRetry =
+                    readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
+                        CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE &&
+                    readMetaString(meta, CODEX_ACP_PARENT_SESSION_ID_KEY) ===
+                        runtimeParentSessionId;
+                if (shouldRetry) {
+                    pendingSubagentCreates.push(pendingUpdate);
+                }
+                return !shouldRetry;
+            });
+
+            if (remainingUpdates.length > 0) {
+                liveConnection.pendingSessionUpdatesByRuntimeSessionId.set(
+                    pendingRuntimeSessionId,
+                    remainingUpdates,
+                );
+            } else {
+                liveConnection.pendingSessionUpdatesByRuntimeSessionId.delete(
+                    pendingRuntimeSessionId,
+                );
+            }
+        }
+
+        for (const pendingCreate of pendingSubagentCreates) {
+            void this.#handleRuntimeSessionUpdate(liveConnection, pendingCreate);
         }
     }
 
@@ -4260,6 +4336,13 @@ function isSameEmbeddedResource(
     );
 }
 
+function isInternalUserInputResponseEcho(content: ContentBlock): boolean {
+    return (
+        content.type === "text" &&
+        content.text.trimStart().startsWith(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX)
+    );
+}
+
 function normalizeEchoText(value: string): string {
     return value.trim().replace(/\s+/g, " ");
 }
@@ -4346,14 +4429,6 @@ function appendMirroredSubagentMessage(
     }
 
     if (snapshot.messages.some((message) => message.id === id)) {
-        return snapshot;
-    }
-
-    const latestMessage = snapshot.messages[snapshot.messages.length - 1] ?? null;
-    if (
-        latestMessage?.kind === kind &&
-        latestMessage.content.trim() === trimmedContent
-    ) {
         return snapshot;
     }
 
