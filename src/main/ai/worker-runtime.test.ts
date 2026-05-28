@@ -823,6 +823,124 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("preserves buffered subagent creation when early child updates overflow the buffer", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Buffered subagent overflow parent",
+        });
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-overflow",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        loadSessionMock.mockImplementationOnce(async () => {
+            const client = latestClientFactory?.();
+            await client?.sessionUpdate({
+                _meta: subagentMeta,
+                sessionId: "runtime-subagent-overflow",
+                update: {
+                    _meta: subagentMeta,
+                    sessionUpdate: "session_info_update",
+                    title: "Galileo",
+                },
+            });
+            for (let index = 0; index < 20; index += 1) {
+                await client?.sessionUpdate({
+                    sessionId: "runtime-subagent-overflow",
+                    update: {
+                        content: {
+                            text: `buffered child output ${index}`,
+                            type: "text",
+                        },
+                        messageId: `overflow-child-message-${index}`,
+                        sessionUpdate: "agent_message_chunk",
+                    },
+                });
+            }
+            return {
+                configOptions: [],
+                modes: [],
+                models: [],
+            };
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        await vi.waitFor(() => {
+            const childSnapshot = getLatestSnapshot(
+                emittedEvents,
+                (snapshot) =>
+                    snapshot.parentSessionId === "session-1" &&
+                    snapshot.runtimeSessionId === "runtime-subagent-overflow",
+            );
+            expect(childSnapshot).toEqual(
+                expect.objectContaining({
+                    parentSessionId: "session-1",
+                    runtimeSessionId: "runtime-subagent-overflow",
+                    title: "Galileo",
+                }),
+            );
+            expect(childSnapshot?.messages).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        content: "buffered child output 19",
+                        kind: "assistant",
+                    }),
+                ]),
+            );
+        });
+    });
+
+    it("registers Codex subagent sessions from thread metadata when session metadata is absent", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent thread metadata parent");
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildThreadId: "runtime-subagent-thread-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentThreadId: "runtime-session-1",
+        };
+        await client.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-thread-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) =>
+                snapshot.parentSessionId === "session-1" &&
+                snapshot.runtimeSessionId === "runtime-subagent-thread-1",
+        );
+        expect(childSnapshot).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-1",
+                runtimeSessionId: "runtime-subagent-thread-1",
+                title: "Galileo",
+            }),
+        );
+    });
+
     it("applies Codex subagent model metadata to the initial child snapshot", async () => {
         loadSessionMock.mockResolvedValueOnce(createCodexCatalogResponse());
         const tempDir = await fs.mkdtemp(
@@ -1288,6 +1406,106 @@ describe("AiWorkerRuntime prepareSession", () => {
                 (changes) => changes.status === "streaming" || changes.status === "idle",
             ),
         ).toBe(false);
+    });
+
+    it("keeps a terminal subagent breadcrumb response that arrives before turn complete", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent terminal before complete");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        const interactionMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Inspect the failing stream",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-terminal-race",
+            },
+        });
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+
+        emittedEvents.length = 0;
+        const endMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_end",
+        };
+        await client.sessionUpdate({
+            _meta: endMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: endMeta,
+                rawOutput: {
+                    status: {
+                        completed: "terminal response before lifecycle end",
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Galileo responded",
+                toolCallId: "codex-acp:subagent:interaction-terminal-race",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                )?.filter(
+                    (message) =>
+                        message.kind === "assistant" &&
+                        message.content ===
+                            "terminal response before lifecycle end",
+                ),
+            ).toHaveLength(1);
+        });
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (changes) => changes.status === "idle",
+            ),
+        ).toBe(false);
+
+        await sendTurnLifecycle(client, {
+            eventType: "turn_complete",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
     });
 
     it("attaches open-session actions to Codex subagent breadcrumbs", async () => {

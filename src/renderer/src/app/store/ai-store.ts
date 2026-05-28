@@ -503,9 +503,13 @@ export const useAiStore = create<AiStore>((set, get) => ({
                           existingCatalog,
                       )
                     : baseSnapshot;
-            const nextSnapshot = applySessionPatch(
+            const incomingSnapshot = applySessionPatch(
                 snapshotForPatch,
                 update.patch,
+            );
+            const nextSnapshot = resolveIncomingSessionSnapshot(
+                incomingSnapshot,
+                session,
             );
             const nextCatalog = hasCatalogChanges(update.patch.changes)
                 ? extractRuntimeCatalog(nextSnapshot)
@@ -552,7 +556,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionSnapshot: (snapshot) => {
-        let titleChanged = false;
+        let syncedTitle: string | null = null;
         set((state) => {
             const session =
                 state.sessions[snapshot.sessionId] ?? createSessionState();
@@ -565,13 +569,19 @@ export const useAiStore = create<AiStore>((set, get) => ({
                           existingCatalog,
                       )
                     : snapshot;
+            const resolvedSnapshot = resolveIncomingSessionSnapshot(
+                nextSnapshot,
+                session,
+            );
             const nextMeta = session.meta
-                ? session.meta.title === nextSnapshot.title
+                ? session.meta.title === resolvedSnapshot.title
                     ? session.meta
-                    : { ...session.meta, title: nextSnapshot.title }
+                    : { ...session.meta, title: resolvedSnapshot.title }
                 : session.meta;
-            titleChanged = nextMeta !== session.meta;
-            const nextCatalog = extractRuntimeCatalog(nextSnapshot);
+            if (nextMeta !== session.meta) {
+                syncedTitle = resolvedSnapshot.title;
+            }
+            const nextCatalog = extractRuntimeCatalog(resolvedSnapshot);
 
             return {
                 runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
@@ -587,21 +597,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         hydrated: true,
                         isDispatching: false,
                         isHydrating: false,
-                        localError: nextSnapshot.lastError,
+                        localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
-                        snapshot: nextSnapshot,
+                        snapshot: resolvedSnapshot,
                     },
                 },
             };
         });
 
-        if (titleChanged) {
+        if (syncedTitle !== null) {
             void useWorkspaceStore
                 .getState()
-                .updateSessionTabTitles(
-                    snapshot.sessionId,
-                    snapshot.title,
-                );
+                .updateSessionTabTitles(snapshot.sessionId, syncedTitle);
         }
 
         void drainQueueIfNeeded(snapshot.sessionId, get, set);
@@ -1802,10 +1809,10 @@ function resolveIncomingSessionSnapshot(
         return incomingSnapshot;
     }
 
-    const shouldPreserveCurrent =
-        hasMoreTranscript(currentSnapshot, incomingSnapshot) ||
-        (currentSession?.hydrated === true &&
-            isSnapshotUpdatedAfter(currentSnapshot, incomingSnapshot));
+    const shouldPreserveCurrent = hasMoreTranscript(
+        currentSnapshot,
+        incomingSnapshot,
+    );
     if (!shouldPreserveCurrent) {
         return incomingSnapshot;
     }
@@ -1836,19 +1843,6 @@ function mergeHydrationMetadataIntoCurrent(
         ...snapshotWithCatalog,
         runtimeSessionId: incomingSnapshot.runtimeSessionId,
     };
-}
-
-function isSnapshotUpdatedAfter(
-    currentSnapshot: Pick<AiSessionSnapshot, "updatedAt">,
-    incomingSnapshot: Pick<AiSessionSnapshot, "updatedAt">,
-): boolean {
-    const currentUpdatedAt = Date.parse(currentSnapshot.updatedAt);
-    const incomingUpdatedAt = Date.parse(incomingSnapshot.updatedAt);
-    return (
-        Number.isFinite(currentUpdatedAt) &&
-        Number.isFinite(incomingUpdatedAt) &&
-        currentUpdatedAt > incomingUpdatedAt
-    );
 }
 
 function hasMoreTranscript(

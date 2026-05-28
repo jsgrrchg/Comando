@@ -277,6 +277,97 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("does not let a stale full snapshot overwrite a newer transcript", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [
+                    {
+                        attachments: [],
+                        content: "newer message",
+                        createdAt: "2026-04-14T00:00:02.000Z",
+                        id: "msg-newer",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+                status: "streaming",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [],
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot,
+        ).toEqual(
+            expect.objectContaining({
+                messages: [
+                    expect.objectContaining({
+                        content: "newer message",
+                        id: "msg-newer",
+                    }),
+                ],
+                status: "streaming",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+    });
+
+    it("does not let a stale patch overwrite a newer transcript", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [
+                    {
+                        attachments: [],
+                        content: "newer patch message",
+                        createdAt: "2026-04-14T00:00:02.000Z",
+                        id: "msg-newer-patch",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+                status: "streaming",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        useAiStore.getState().applySessionUpdate({
+            kind: "patch",
+            patch: {
+                changes: {
+                    messages: [],
+                    status: "idle",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                },
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+            },
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot,
+        ).toEqual(
+            expect.objectContaining({
+                messages: [
+                    expect.objectContaining({
+                        content: "newer patch message",
+                        id: "msg-newer-patch",
+                    }),
+                ],
+                status: "streaming",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+    });
+
     it("keeps commands from an early catalog patch even before the session is registered", () => {
         const availableCommands = [
             {

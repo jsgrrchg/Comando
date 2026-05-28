@@ -67,6 +67,7 @@ import {
     CODEX_ACP_CWD_KEY,
     CODEX_ACP_MODEL_KEY,
     CODEX_ACP_PARENT_SESSION_ID_KEY,
+    CODEX_ACP_PARENT_THREAD_ID_KEY,
     CODEX_ACP_REASONING_EFFORT_KEY,
     CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
@@ -1393,10 +1394,8 @@ export class AiWorkerRuntime {
                 readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
                 CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
             ) {
-                const runtimeParentSessionId = readMetaString(
-                    meta,
-                    CODEX_ACP_PARENT_SESSION_ID_KEY,
-                );
+                const runtimeParentSessionId =
+                    readSubagentParentRuntimeSessionId(meta);
                 const parentAppSessionId = runtimeParentSessionId
                     ? (liveConnection.appSessionIdByRuntimeSessionId.get(
                           runtimeParentSessionId,
@@ -1460,12 +1459,8 @@ export class AiWorkerRuntime {
         meta: Record<string, unknown>,
     ): LiveAcpSession | null {
         const runtimeChildSessionId =
-            readMetaString(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) ??
-            params.sessionId;
-        const runtimeParentSessionId = readMetaString(
-            meta,
-            CODEX_ACP_PARENT_SESSION_ID_KEY,
-        );
+            readSubagentChildRuntimeSessionId(meta) ?? params.sessionId;
+        const runtimeParentSessionId = readSubagentParentRuntimeSessionId(meta);
         if (!runtimeParentSessionId) {
             this.#emitLog("warn", "Ignoring subagent session without parent.", {
                 runtimeChildSessionId,
@@ -2164,10 +2159,7 @@ export class AiWorkerRuntime {
             return snapshot;
         }
 
-        const runtimeChildSessionId = readMetaString(
-            meta,
-            CODEX_ACP_CHILD_SESSION_ID_KEY,
-        );
+        const runtimeChildSessionId = readSubagentChildRuntimeSessionId(meta);
         if (!runtimeChildSessionId) {
             return snapshot;
         }
@@ -2245,10 +2237,7 @@ export class AiWorkerRuntime {
             return;
         }
 
-        const runtimeChildSessionId = readMetaString(
-            meta,
-            CODEX_ACP_CHILD_SESSION_ID_KEY,
-        );
+        const runtimeChildSessionId = readSubagentChildRuntimeSessionId(meta);
         if (!runtimeChildSessionId) {
             return;
         }
@@ -2291,6 +2280,16 @@ export class AiWorkerRuntime {
                 isTerminalSubagentBreadcrumb(meta, update)
             ) {
                 this.#mirrorSubagentTurnEnd(childSession, update, updatedAt);
+            } else if (
+                childSession.activeTurnId &&
+                mirrorTurn?.toolCallId === update.toolCallId &&
+                isTerminalSubagentBreadcrumb(meta, update)
+            ) {
+                this.#mirrorSubagentTerminalResponse(
+                    childSession,
+                    update,
+                    updatedAt,
+                );
             }
         }
     }
@@ -2389,6 +2388,39 @@ export class AiWorkerRuntime {
         this.#clearPendingUserTextEcho(childSession);
         this.#clearSubagentMirrorTurn(childSession);
         childSession.snapshot = nextSnapshot;
+        this.#queueSnapshotFlush(childSession);
+        this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
+    }
+
+    #mirrorSubagentTerminalResponse(
+        childSession: LiveAcpSession,
+        update: SessionNotification["update"],
+        updatedAt: string,
+    ): void {
+        if (
+            update.sessionUpdate !== "tool_call" &&
+            update.sessionUpdate !== "tool_call_update"
+        ) {
+            return;
+        }
+
+        const response = readSubagentTurnResponse(update);
+        const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
+        if (!response || mirrorTurn?.assistantOutputSeen) {
+            return;
+        }
+
+        childSession.snapshot = appendMirroredSubagentMessage(
+            {
+                ...childSession.snapshot,
+                updatedAt,
+            },
+            "assistant",
+            response,
+            `subagent:${update.toolCallId}:assistant`,
+            updatedAt,
+        );
+        this.#markSubagentAssistantOutputSeen(childSession);
         this.#queueSnapshotFlush(childSession);
         this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
     }
@@ -3704,7 +3736,11 @@ export class AiWorkerRuntime {
             ) ?? [];
 
         if (pending.length >= MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION) {
-            pending.shift();
+            const dropIndex = pending.findIndex(
+                (pendingUpdate) =>
+                    !isSubagentSessionCreatedNotification(pendingUpdate),
+            );
+            pending.splice(dropIndex >= 0 ? dropIndex : 0, 1);
             this.#emitLog(
                 "warn",
                 "Dropping the oldest pending ACP update for an unmapped runtime session.",
@@ -3765,7 +3801,7 @@ export class AiWorkerRuntime {
                 const shouldRetry =
                     readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
                         CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE &&
-                    readMetaString(meta, CODEX_ACP_PARENT_SESSION_ID_KEY) ===
+                    readSubagentParentRuntimeSessionId(meta) ===
                         runtimeParentSessionId;
                 if (shouldRetry) {
                     pendingSubagentCreates.push(pendingUpdate);
@@ -4336,6 +4372,34 @@ function isSameEmbeddedResource(
     );
 }
 
+function readSubagentParentRuntimeSessionId(
+    meta: Record<string, unknown>,
+): string | null {
+    return (
+        readMetaString(meta, CODEX_ACP_PARENT_SESSION_ID_KEY) ??
+        readMetaString(meta, CODEX_ACP_PARENT_THREAD_ID_KEY)
+    );
+}
+
+function readSubagentChildRuntimeSessionId(
+    meta: Record<string, unknown>,
+): string | null {
+    return (
+        readMetaString(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) ??
+        readMetaString(meta, CODEX_ACP_CHILD_THREAD_ID_KEY)
+    );
+}
+
+function isSubagentSessionCreatedNotification(
+    params: SessionNotification,
+): boolean {
+    const meta = getSessionNotificationMeta(params);
+    return (
+        readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
+        CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
+    );
+}
+
 function isInternalUserInputResponseEcho(content: ContentBlock): boolean {
     return (
         content.type === "text" &&
@@ -4535,10 +4599,7 @@ function readSubagentStatusRecords(
         records.push(...metaStatuses.filter(isRecordValue));
     }
 
-    const runtimeChildSessionId = readMetaString(
-        meta,
-        CODEX_ACP_CHILD_SESSION_ID_KEY,
-    );
+    const runtimeChildSessionId = readSubagentChildRuntimeSessionId(meta);
     if (runtimeChildSessionId && meta[CODEX_ACP_AGENT_STATUS_KEY] !== undefined) {
         records.push({
             [CODEX_ACP_AGENT_STATUS_KEY]: meta[CODEX_ACP_AGENT_STATUS_KEY],
