@@ -1851,6 +1851,119 @@ describe("AiWorkerRuntime prepareSession", () => {
         ]);
     });
 
+    it("hides internal tool activity rows from Codex subagent child sessions", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent hidden tools parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+
+        emittedEvents.length = 0;
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                kind: "execute",
+                rawInput: {
+                    command: "pnpm test",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "child-exec",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: {
+                    terminal_output: {
+                        data: "running\n",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Tool call",
+                toolCallId: "child-exec",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                kind: "plan",
+                sessionUpdate: "tool_call",
+                status: "completed",
+                title: "update_plan",
+                toolCallId: "child-plan",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (activity) =>
+                    activity.id === "child-exec" ||
+                    activity.id === "child-plan" ||
+                    activity.title === "exec_command" ||
+                    activity.title === "update_plan",
+            ),
+        ).toBe(false);
+
+        emittedEvents.length = 0;
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: [
+                    {
+                        newText: "export const value = 2;\n",
+                        oldText: "export const value = 1;\n",
+                        path: path.join(tempDir, "src/subagent-tool.ts"),
+                        type: "diff",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Edit",
+                toolCallId: "child-edit",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasTrackedFileEvent(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    "src/subagent-tool.ts",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (activity) => activity.id === "child-edit",
+            ),
+        ).toBe(false);
+    });
+
     it("renders Codex subagent user message chunks in the child thread", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent user chunk parent");
