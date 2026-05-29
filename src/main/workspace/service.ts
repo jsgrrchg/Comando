@@ -391,7 +391,7 @@ export class WorkspaceService {
                 sequence: event.sequence,
                 sessionId: event.session_id,
             })),
-            messageCount: row.message_count ?? 0,
+            messageCount: row.message_count,
             projectId: row.project_id,
             reviewArtifacts: reviewArtifacts.map((artifact) => ({
                 artifactType: artifact.artifact_type,

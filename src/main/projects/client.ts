@@ -282,11 +282,11 @@ export async function createProjectWorkerClient(
                 },
                 [channel.port2],
             );
-            const readyValue = await waitForWorkerReady(worker, channel.port1);
+            await waitForWorkerReady(worker, channel.port1);
 
             return {
                 port: channel.port1,
-                readyValue,
+                readyValue: undefined,
                 worker,
             };
         },
@@ -298,15 +298,8 @@ export async function createProjectWorkerClient(
         },
         onMessage: (message) => {
             const payload = message as ProjectWorkerEventMessage;
-            if (
-                payload.type === "event" &&
-                payload.event === "project.invalidated"
-            ) {
-                options.onProjectTreeInvalidated(payload.payload);
-                return true;
-            }
-
-            return false;
+            options.onProjectTreeInvalidated(payload.payload);
+            return true;
         },
         timeoutMs: WORKER_TIMEOUTS_MS.projects,
     });
@@ -328,7 +321,7 @@ function waitForWorkerReady(worker: Worker, port: MessagePort): Promise<void> {
                 ),
             );
         }, WORKER_TIMEOUTS_MS.projects);
-        timeout.unref?.();
+        timeout.unref();
         const cleanup = () => {
             clearTimeout(timeout);
             port.off("message", handleMessage);
@@ -352,15 +345,13 @@ function waitForWorkerReady(worker: Worker, port: MessagePort): Promise<void> {
                 return;
             }
 
-            if (payload.type === "ready") {
-                cleanup();
-                resolve();
-            }
+            cleanup();
+            resolve();
         };
 
         port.on("message", handleMessage);
         worker.on("error", handleError);
-        port.start?.();
+        port.start();
     });
 }
 

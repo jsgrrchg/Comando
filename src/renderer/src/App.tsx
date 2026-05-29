@@ -147,6 +147,19 @@ type FileTreeFilterSource =
           readonly kind: "backend";
       };
 
+function scheduleEffectStateUpdate(update: () => void): () => void {
+    let cancelled = false;
+    queueMicrotask(() => {
+        if (!cancelled) {
+            update();
+        }
+    });
+
+    return () => {
+        cancelled = true;
+    };
+}
+
 function selectActiveWorkspaceTab(
     state: ReturnType<typeof useWorkspaceStore.getState>,
 ): RuntimeWorkspaceTab | null {
@@ -331,7 +344,6 @@ export function App() {
     >(null);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const fileTreeInlineSubmitPendingRef = useRef(false);
-    const fileTreeFilterSourceRef = useRef<FileTreeFilterSource | null>(null);
     const fileTreeEntryIndexGenerationsRef = useRef(new Map<string, number>());
     const fileTreeEntryIndexRequestsRef = useRef(new Map<string, number>());
     const fileTreeBackendSearchRequestRef = useRef(0);
@@ -737,18 +749,19 @@ export function App() {
     );
 
     useEffect(() => {
-        setFileTreeFilter("");
-        fileTreeFilterSourceRef.current = null;
-        setFileTreeBackendSearchResults([]);
-        setFileTreeContextMenu(null);
-        setFileTreeSelectedPaths([]);
-        setFileTreeSelectionAnchorPath(null);
-        setIsFileTreeSearchOpen(false);
-        setIsQuickOpenLoading(false);
-        setIsQuickOpenOpen(false);
-        setQuickOpenQuery("");
-        setQuickOpenSearchResults([]);
-        setQuickOpenSelectedIndex(0);
+        return scheduleEffectStateUpdate(() => {
+            setFileTreeFilter("");
+            setFileTreeBackendSearchResults([]);
+            setFileTreeContextMenu(null);
+            setFileTreeSelectedPaths([]);
+            setFileTreeSelectionAnchorPath(null);
+            setIsFileTreeSearchOpen(false);
+            setIsQuickOpenLoading(false);
+            setIsQuickOpenOpen(false);
+            setQuickOpenQuery("");
+            setQuickOpenSearchResults([]);
+            setQuickOpenSelectedIndex(0);
+        });
     }, [activeProjectId, activeWorktreeId]);
 
     useEffect(() => {
@@ -847,12 +860,15 @@ export function App() {
             !window.comando
         ) {
             quickOpenSearchRequestRef.current += 1;
-            setQuickOpenSearchResults([]);
-            setIsQuickOpenLoading(false);
-            return;
+            return scheduleEffectStateUpdate(() => {
+                setQuickOpenSearchResults([]);
+                setIsQuickOpenLoading(false);
+            });
         }
 
-        setIsQuickOpenLoading(true);
+        const cancelLoadingUpdate = scheduleEffectStateUpdate(() => {
+            setIsQuickOpenLoading(true);
+        });
         const requestId = quickOpenSearchRequestRef.current + 1;
         quickOpenSearchRequestRef.current = requestId;
         const search = () => {
@@ -889,12 +905,13 @@ export function App() {
         const delayMs = getProjectSearchDelayMs(normalizedQuery);
         if (delayMs === 0) {
             search();
-            return;
+            return cancelLoadingUpdate;
         }
 
         const timeoutId = window.setTimeout(search, delayMs);
 
         return () => {
+            cancelLoadingUpdate();
             window.clearTimeout(timeoutId);
         };
     }, [activeProjectId, activeWorktreeId, isQuickOpenOpen, quickOpenQuery]);
@@ -904,7 +921,9 @@ export function App() {
             return;
         }
 
-        setQuickOpenSelectedIndex(0);
+        return scheduleEffectStateUpdate(() => {
+            setQuickOpenSelectedIndex(0);
+        });
     }, [isQuickOpenOpen, quickOpenQuery]);
 
     const stopDragging = useEffectEvent(() => {
@@ -1182,23 +1201,15 @@ export function App() {
     const isFilteringFileTree = normalizedFileTreeFilter.length > 0;
     const cachedFileTreeEntryIndex =
         fileTreeEntryIndexByContext[activeProjectContextKey] ?? null;
-    const fileTreeFilterSource = useMemo(() => {
+    const fileTreeFilterSource = useMemo<FileTreeFilterSource | null>(() => {
         if (!isFilteringFileTree) {
-            fileTreeFilterSourceRef.current = null;
             return null;
         }
 
-        const currentSource = fileTreeFilterSourceRef.current;
-        if (currentSource?.contextKey === activeProjectContextKey) {
-            return currentSource;
-        }
-
-        const nextSource: FileTreeFilterSource = {
+        return {
             contextKey: activeProjectContextKey,
             kind: cachedFileTreeEntryIndex ? "full" : "backend",
         };
-        fileTreeFilterSourceRef.current = nextSource;
-        return nextSource;
     }, [activeProjectContextKey, cachedFileTreeEntryIndex, isFilteringFileTree]);
 
     useEffect(() => {
@@ -1208,8 +1219,9 @@ export function App() {
             !window.comando
         ) {
             fileTreeBackendSearchRequestRef.current += 1;
-            setFileTreeBackendSearchResults([]);
-            return;
+            return scheduleEffectStateUpdate(() => {
+                setFileTreeBackendSearchResults([]);
+            });
         }
 
         const requestId = fileTreeBackendSearchRequestRef.current + 1;
@@ -1298,13 +1310,16 @@ export function App() {
     );
     useEffect(() => {
         if (quickOpenResults.length === 0) {
-            setQuickOpenSelectedIndex(0);
-            return;
+            return scheduleEffectStateUpdate(() => {
+                setQuickOpenSelectedIndex(0);
+            });
         }
 
-        setQuickOpenSelectedIndex((currentIndex) =>
-            Math.min(currentIndex, quickOpenResults.length - 1),
-        );
+        return scheduleEffectStateUpdate(() => {
+            setQuickOpenSelectedIndex((currentIndex) =>
+                Math.min(currentIndex, quickOpenResults.length - 1),
+            );
+        });
     }, [quickOpenResults.length]);
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
@@ -1336,8 +1351,10 @@ export function App() {
         .join(" ");
 
     useEffect(() => {
-        setFileTreeInlineEditor(null);
-        fileTreeInlineSubmitPendingRef.current = false;
+        return scheduleEffectStateUpdate(() => {
+            setFileTreeInlineEditor(null);
+            fileTreeInlineSubmitPendingRef.current = false;
+        });
     }, [activeProjectContextKey]);
 
     const cancelFileTreeInlineEditor = useCallback(() => {
@@ -1833,19 +1850,21 @@ export function App() {
     );
 
     useEffect(() => {
-        setFileTreeSelectedPaths((currentPaths) => {
-            const nextPaths = currentPaths.filter((path) =>
-                visibleSidebarNodePathSet.has(path),
+        return scheduleEffectStateUpdate(() => {
+            setFileTreeSelectedPaths((currentPaths) => {
+                const nextPaths = currentPaths.filter((path) =>
+                    visibleSidebarNodePathSet.has(path),
+                );
+                return nextPaths.length === currentPaths.length
+                    ? currentPaths
+                    : nextPaths;
+            });
+            setFileTreeSelectionAnchorPath((currentPath) =>
+                currentPath && visibleSidebarNodePathSet.has(currentPath)
+                    ? currentPath
+                    : null,
             );
-            return nextPaths.length === currentPaths.length
-                ? currentPaths
-                : nextPaths;
         });
-        setFileTreeSelectionAnchorPath((currentPath) =>
-            currentPath && visibleSidebarNodePathSet.has(currentPath)
-                ? currentPath
-                : null,
-        );
     }, [visibleSidebarNodePathSet]);
 
     const handleFileTreeNodeClick = useCallback(

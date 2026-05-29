@@ -180,7 +180,7 @@ function mapSessionModes(
     state: SessionModeState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionMode[] {
-    if (state?.availableModes?.length) {
+    if (state && state.availableModes.length > 0) {
         return state.availableModes.map((mode) => ({
             description: mode.description ?? null,
             id: mode.id,
@@ -195,7 +195,7 @@ function mapSessionModels(
     state: SessionModelState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionModel[] {
-    if (state?.availableModels?.length) {
+    if (state && state.availableModels.length > 0) {
         return state.availableModels.map((model) => ({
             description: model.description ?? null,
             id: model.modelId,
@@ -298,7 +298,7 @@ function deriveModeId(
         return modeConfig.value;
     }
 
-    if (state?.currentModeId?.trim()) {
+    if (state && state.currentModeId.trim()) {
         return state.currentModeId;
     }
 
@@ -311,7 +311,8 @@ function deriveModelId(
     fallback: string | null,
 ): string | null {
     if (
-        state?.currentModelId?.trim() &&
+        state &&
+        state.currentModelId.trim() &&
         !state.currentModelId.includes("/")
     ) {
         return state.currentModelId;
@@ -926,7 +927,7 @@ export function normalizeAdditionalRoots(
     const normalizedRoots: string[] = [];
 
     for (const rootPath of roots) {
-        if (!rootPath?.trim()) {
+        if (!rootPath.trim()) {
             continue;
         }
 

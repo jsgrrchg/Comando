@@ -87,7 +87,7 @@ export function GitHubActionsPanel({
     checksState,
     checksUrl,
     headSha,
-    ref,
+    repo,
 }: {
     readonly authStatus: GitHubAuthStatus | null;
     readonly branch: string | null;
@@ -95,9 +95,9 @@ export function GitHubActionsPanel({
     readonly checksState?: GitHubPullRequestChecksState | "loading";
     readonly checksUrl?: string | null;
     readonly headSha: string;
-    readonly ref: GitHubRepositoryRef;
+    readonly repo: GitHubRepositoryRef;
 }) {
-    const repoKey = getGitHubRepoKey(ref);
+    const repoKey = getGitHubRepoKey(repo);
     const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
     const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
     const runs = useGitHubStore(
@@ -142,12 +142,15 @@ export function GitHubActionsPanel({
     const cancelWorkflowRun = useGitHubStore(
         (state) => state.cancelWorkflowRun,
     );
-    const runsKey = getGitHubWorkflowRunsKey(ref, headSha);
+    const runsKey = getGitHubWorkflowRunsKey(repo, headSha);
     const selectedRun = useMemo(
         () => runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null,
         [runs, selectedRunId],
     );
-    const jobs = selectedRun ? (jobsByRun[selectedRun.id] ?? []) : [];
+    const jobs = useMemo(
+        () => (selectedRun ? (jobsByRun[selectedRun.id] ?? []) : []),
+        [jobsByRun, selectedRun],
+    );
     const selectedJob = useMemo(
         () =>
             jobs.find((job) => job.id === selectedJobId) ??
@@ -165,17 +168,17 @@ export function GitHubActionsPanel({
             ? (annotationsByCheckRun[selectedJob.checkRunId] ?? [])
             : [];
     const jobsKey = selectedRun
-        ? getGitHubWorkflowRunJobsKey(ref, selectedRun.id)
+        ? getGitHubWorkflowRunJobsKey(repo, selectedRun.id)
         : null;
     const artifactsKey = selectedRun
-        ? getGitHubWorkflowRunArtifactsKey(ref, selectedRun.id)
+        ? getGitHubWorkflowRunArtifactsKey(repo, selectedRun.id)
         : null;
     const logsKey = selectedJob
-        ? getGitHubWorkflowJobLogsKey(ref, selectedJob.id)
+        ? getGitHubWorkflowJobLogsKey(repo, selectedJob.id)
         : null;
     const annotationsKey =
         selectedJob?.checkRunId != null
-            ? getGitHubCheckRunAnnotationsKey(ref, selectedJob.checkRunId)
+            ? getGitHubCheckRunAnnotationsKey(repo, selectedJob.checkRunId)
             : null;
     const actionsError =
         errors[runsKey] ??
@@ -193,7 +196,7 @@ export function GitHubActionsPanel({
             return;
         }
 
-        void refreshWorkflowRuns(ref, {
+        void refreshWorkflowRuns(repo, {
             branch,
             headSha,
             limit: 20,
@@ -203,7 +206,7 @@ export function GitHubActionsPanel({
         canReadActions,
         headSha,
         isAuthenticated,
-        ref,
+        repo,
         refreshWorkflowRuns,
     ]);
 
@@ -212,13 +215,13 @@ export function GitHubActionsPanel({
             return;
         }
 
-        void refreshWorkflowRunJobs(ref, selectedRun.id).catch(() => undefined);
-        void refreshWorkflowRunArtifacts(ref, selectedRun.id).catch(
+        void refreshWorkflowRunJobs(repo, selectedRun.id).catch(() => undefined);
+        void refreshWorkflowRunArtifacts(repo, selectedRun.id).catch(
             () => undefined,
         );
     }, [
         jobsByRun,
-        ref,
+        repo,
         refreshWorkflowRunArtifacts,
         refreshWorkflowRunJobs,
         selectedRun,
@@ -232,19 +235,19 @@ export function GitHubActionsPanel({
             return;
         }
 
-        void refreshCheckRunAnnotations(ref, selectedJob.checkRunId).catch(
+        void refreshCheckRunAnnotations(repo, selectedJob.checkRunId).catch(
             () => undefined,
         );
     }, [
         annotationsByCheckRun,
-        ref,
+        repo,
         refreshCheckRunAnnotations,
         selectedJob?.checkRunId,
     ]);
 
     const handleRefresh = async () => {
         await refreshWorkflowRuns(
-            ref,
+            repo,
             {
                 branch,
                 headSha,
@@ -254,8 +257,8 @@ export function GitHubActionsPanel({
         );
         if (selectedRun) {
             await Promise.all([
-                refreshWorkflowRunJobs(ref, selectedRun.id, { force: true }),
-                refreshWorkflowRunArtifacts(ref, selectedRun.id, {
+                refreshWorkflowRunJobs(repo, selectedRun.id, { force: true }),
+                refreshWorkflowRunArtifacts(repo, selectedRun.id, {
                     force: true,
                 }),
             ]);
@@ -263,7 +266,7 @@ export function GitHubActionsPanel({
     };
 
     const handleLoadLogs = async (job: GitHubWorkflowJobSummary) => {
-        await refreshWorkflowJobLogs(ref, job.id);
+        await refreshWorkflowJobLogs(repo, job.id);
     };
 
     const handleRerunFailedJobs = async (run: GitHubWorkflowRunSummary) => {
@@ -271,10 +274,10 @@ export function GitHubActionsPanel({
             return;
         }
 
-        await rerunWorkflowRunFailedJobs(ref, run.id);
+        await rerunWorkflowRunFailedJobs(repo, run.id);
         await Promise.all([
             refreshWorkflowRuns(
-                ref,
+                repo,
                 {
                     branch,
                     headSha,
@@ -282,8 +285,8 @@ export function GitHubActionsPanel({
                 },
                 { force: true },
             ),
-            refreshWorkflowRunJobs(ref, run.id, { force: true }),
-            refreshWorkflowRunArtifacts(ref, run.id, { force: true }),
+            refreshWorkflowRunJobs(repo, run.id, { force: true }),
+            refreshWorkflowRunArtifacts(repo, run.id, { force: true }),
         ]);
     };
 
@@ -292,10 +295,10 @@ export function GitHubActionsPanel({
             return;
         }
 
-        await cancelWorkflowRun(ref, run.id);
+        await cancelWorkflowRun(repo, run.id);
         await Promise.all([
             refreshWorkflowRuns(
-                ref,
+                repo,
                 {
                     branch,
                     headSha,
@@ -303,8 +306,8 @@ export function GitHubActionsPanel({
                 },
                 { force: true },
             ),
-            refreshWorkflowRunJobs(ref, run.id, { force: true }),
-            refreshWorkflowRunArtifacts(ref, run.id, { force: true }),
+            refreshWorkflowRunJobs(repo, run.id, { force: true }),
+            refreshWorkflowRunArtifacts(repo, run.id, { force: true }),
         ]);
     };
 

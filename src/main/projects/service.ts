@@ -178,7 +178,7 @@ export class ProjectService {
 
     touchProject(projectId: string): void {
         const project = this.#getProjectById(projectId);
-        void this.#store.touchProject(projectId);
+        this.#store.touchProject(projectId);
         this.#onProjectTouched?.(project.rootPath);
     }
 

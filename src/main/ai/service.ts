@@ -698,9 +698,11 @@ export class AiService {
             )
             .map(([sessionId]) => sessionId);
 
-        void this.#aiWorker?.closeOwnedByWindow(ownerWindowId).catch((error) => {
-            debugBenignError("ai.service.closeOwnedByWindow", error);
-        });
+        void this.#aiWorker
+            ?.closeOwnedByWindow(ownerWindowId)
+            .catch((error: unknown) => {
+                debugBenignError("ai.service.closeOwnedByWindow", error);
+            });
         for (const sessionId of sessionIds) {
             this.#clearLiveSession(sessionId);
         }
@@ -832,75 +834,66 @@ export class AiService {
             return;
         }
 
-        if (input.runtimeId === "codex") {
-            const currentSettings =
-                this.#settingsService.loadCodexRuntimeSettings();
-            const authMethod = getCodexAuthMethods().some(
-                (method) => method.id === input.methodId,
-            )
-                ? (input.methodId as CodexRuntimeSettings["authMethod"])
-                : null;
+        const currentSettings = this.#settingsService.loadCodexRuntimeSettings();
+        const authMethod = getCodexAuthMethods().some(
+            (method) => method.id === input.methodId,
+        )
+            ? (input.methodId as CodexRuntimeSettings["authMethod"])
+            : null;
 
-            if (authMethod === null) {
-                throw new Error(
-                    "Choose a valid Codex login method before opening authentication.",
-                );
-            }
-
-            const nextSettings = {
-                ...currentSettings,
-                authMethod,
-            } satisfies CodexRuntimeSettings;
-            await this.#runRuntimeAuthConnection(
-                "codex",
-                cwd,
-                async (connection) => {
-                    const initializeResponse = await connection.initialize({
-                        clientCapabilities: {
-                            fs: {
-                                readTextFile: true,
-                                writeTextFile: true,
-                            },
-                        },
-                        clientInfo: {
-                            name: "comando",
-                            title: "Comando",
-                            version: process.versions.electron,
-                        },
-                        protocolVersion: PROTOCOL_VERSION,
-                    });
-
-                    const advertisedMethods =
-                        initializeResponse.authMethods?.map(
-                            (method) => method.id,
-                        ) ?? [];
-                    if (!advertisedMethods.includes(authMethod)) {
-                        throw new Error(
-                            `Codex does not support the authentication method \`${authMethod}\` on this machine.`,
-                        );
-                    }
-
-                    await connection.authenticate({
-                        methodId: authMethod,
-                    });
-                },
-                nextSettings,
+        if (authMethod === null) {
+            throw new Error(
+                "Choose a valid Codex login method before opening authentication.",
             );
-
-            await this.#saveCodexAuthSettings(nextSettings, []);
-            this.#onRuntimeStatus(
-                this.#withPersistedRuntimeCatalog(
-                    getCodexRuntimeStatus(
-                        nextSettings,
-                        loadCodexSecretBundle(this.#secretStore),
-                    ),
-                ),
-            );
-            return;
         }
 
-        throw new Error(
-            `${getRuntimeDisplayName(input.runtimeId)} does not support this authentication flow yet.`,
+        const nextSettings = {
+            ...currentSettings,
+            authMethod,
+        } satisfies CodexRuntimeSettings;
+        await this.#runRuntimeAuthConnection(
+            "codex",
+            cwd,
+            async (connection) => {
+                const initializeResponse = await connection.initialize({
+                    clientCapabilities: {
+                        fs: {
+                            readTextFile: true,
+                            writeTextFile: true,
+                        },
+                    },
+                    clientInfo: {
+                        name: "comando",
+                        title: "Comando",
+                        version: process.versions.electron,
+                    },
+                    protocolVersion: PROTOCOL_VERSION,
+                });
+
+                const advertisedMethods =
+                    initializeResponse.authMethods?.map((method) => method.id) ??
+                    [];
+                if (!advertisedMethods.includes(authMethod)) {
+                    throw new Error(
+                        `Codex does not support the authentication method \`${authMethod}\` on this machine.`,
+                    );
+                }
+
+                await connection.authenticate({
+                    methodId: authMethod,
+                });
+            },
+            nextSettings,
+        );
+
+        await this.#saveCodexAuthSettings(nextSettings, []);
+        this.#onRuntimeStatus(
+            this.#withPersistedRuntimeCatalog(
+                getCodexRuntimeStatus(
+                    nextSettings,
+                    loadCodexSecretBundle(this.#secretStore),
+                ),
+            ),
         );
     }
 
@@ -921,36 +914,34 @@ export class AiService {
             );
         }
 
-        if (currentSettings.authMethod === "chatgpt") {
-            await this.#runRuntimeAuthConnection(
-                "codex",
-                process.cwd(),
-                async (connection) => {
-                    const initializeResponse = await connection.initialize({
-                        clientCapabilities: {
-                            fs: {
-                                readTextFile: true,
-                                writeTextFile: true,
-                            },
+        await this.#runRuntimeAuthConnection(
+            "codex",
+            process.cwd(),
+            async (connection) => {
+                const initializeResponse = await connection.initialize({
+                    clientCapabilities: {
+                        fs: {
+                            readTextFile: true,
+                            writeTextFile: true,
                         },
-                        clientInfo: {
-                            name: "comando",
-                            title: "Comando",
-                            version: process.versions.electron,
-                        },
-                        protocolVersion: PROTOCOL_VERSION,
-                    });
+                    },
+                    clientInfo: {
+                        name: "comando",
+                        title: "Comando",
+                        version: process.versions.electron,
+                    },
+                    protocolVersion: PROTOCOL_VERSION,
+                });
 
-                    if (!initializeResponse.agentCapabilities?.auth?.logout) {
-                        throw new Error(
-                            "Codex does not advertise logout support on this machine.",
-                        );
-                    }
+                if (!initializeResponse.agentCapabilities?.auth?.logout) {
+                    throw new Error(
+                        "Codex does not advertise logout support on this machine.",
+                    );
+                }
 
-                    await connection.unstable_logout({});
-                },
-            );
-        }
+                await connection.unstable_logout({});
+            },
+        );
 
         const secretPatch = buildCodexSecretPatches(this.#secretStore, {
             codexApiKey: null,
@@ -1874,11 +1865,11 @@ export class AiService {
                 },
             );
         } finally {
-            child.stderr?.off("data", stderrHandler);
+            child.stderr.off("data", stderrHandler);
             child.kill();
-            child.stdin?.destroy();
-            child.stdout?.destroy();
-            child.stderr?.destroy();
+            child.stdin.destroy();
+            child.stdout.destroy();
+            child.stderr.destroy();
         }
     }
 

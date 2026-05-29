@@ -170,6 +170,8 @@ export function deserializeStoredSecretValue(
     try {
         const stored = JSON.parse(storedValue) as SerializedSecretRecord;
         switch (stored.scheme) {
+            case undefined:
+                return null;
             case "electron-safe-storage-v1": {
                 if (typeof stored.value !== "string") {
                     return null;

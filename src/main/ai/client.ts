@@ -215,10 +215,6 @@ export async function createAiWorkerClient(
         },
         onMessage: (message) => {
             const payload = message as AiWorkerEventMessage;
-            if (payload.type !== "event") {
-                return false;
-            }
-
             switch (payload.event) {
                 case "ai.snapshot.updated":
                     options.onSessionSnapshot?.(
@@ -284,7 +280,7 @@ function waitForWorkerReady(
                 ),
             );
         }, WORKER_TIMEOUTS_MS.ai);
-        timeout.unref?.();
+        timeout.unref();
         const cleanup = () => {
             clearTimeout(timeout);
             port.off("message", handleMessage);
@@ -306,15 +302,13 @@ function waitForWorkerReady(
                 return;
             }
 
-            if (payload.type === "ready") {
-                cleanup();
-                resolve(payload.bootstrap);
-            }
+            cleanup();
+            resolve(payload.bootstrap);
         };
 
         port.on("message", handleMessage);
         worker.on("error", handleError);
-        port.start?.();
+        port.start();
     });
 }
 

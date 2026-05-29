@@ -507,7 +507,7 @@ export class ProjectRuntime {
                 worktreeId,
             });
         }, 140);
-        timeout.unref?.();
+        timeout.unref();
 
         this.#pendingInvalidations.set(invalidationKey, {
             relativePaths: mergedRelativePaths,
@@ -730,10 +730,7 @@ function findProjectSearchInsertIndex(
     while (low < high) {
         const middle = Math.floor((low + high) / 2);
         const current = entries[middle];
-        if (
-            current &&
-            compareScoredProjectSearchEntries(candidate, current) < 0
-        ) {
+        if (compareScoredProjectSearchEntries(candidate, current) < 0) {
             high = middle;
         } else {
             low = middle + 1;

@@ -336,11 +336,11 @@ export async function createGitWorkerClient(): Promise<GitWorkerClient> {
                 },
                 [channel.port2],
             );
-            const readyValue = await waitForWorkerReady(worker, channel.port1);
+            await waitForWorkerReady(worker, channel.port1);
 
             return {
                 port: channel.port1,
-                readyValue,
+                readyValue: undefined,
                 worker,
             };
         },
@@ -365,7 +365,7 @@ function waitForWorkerReady(worker: Worker, port: MessagePort): Promise<void> {
                 ),
             );
         }, WORKER_TIMEOUTS_MS.git);
-        timeout.unref?.();
+        timeout.unref();
         const cleanup = () => {
             clearTimeout(timeout);
             port.off("message", handleMessage);
@@ -389,15 +389,13 @@ function waitForWorkerReady(worker: Worker, port: MessagePort): Promise<void> {
                 return;
             }
 
-            if (payload.type === "ready") {
-                cleanup();
-                resolve();
-            }
+            cleanup();
+            resolve();
         };
 
         port.on("message", handleMessage);
         worker.on("error", handleError);
-        port.start?.();
+        port.start();
     });
 }
 

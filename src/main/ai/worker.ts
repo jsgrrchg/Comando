@@ -56,7 +56,7 @@ function initializeWorker(message: AiWorkerInitMessage): void {
         rpcPort.on("message", (request: unknown) => {
             void handleRequest(request as AiWorkerRequest);
         });
-        rpcPort.start?.();
+        rpcPort.start();
         rpcPort.postMessage({
             bootstrap: aiWorkerRuntime.getBootstrapState(),
             type: "ready",
@@ -67,11 +67,7 @@ function initializeWorker(message: AiWorkerInitMessage): void {
             type: "fatal",
         } satisfies AiWorkerFatalMessage;
 
-        if (message.port) {
-            message.port.postMessage(payload);
-        } else {
-            parentPort?.postMessage(payload);
-        }
+        message.port.postMessage(payload);
     }
 }
 

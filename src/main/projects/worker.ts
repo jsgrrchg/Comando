@@ -64,7 +64,7 @@ function initializeWorker(message: ProjectWorkerInitMessage): void {
         rpcPort.on("message", (request: unknown) => {
             void handleRequest(request as ProjectWorkerRequest);
         });
-        rpcPort.start?.();
+        rpcPort.start();
         rpcPort.postMessage({
             type: "ready",
         } satisfies ProjectWorkerReadyMessage);
@@ -74,11 +74,7 @@ function initializeWorker(message: ProjectWorkerInitMessage): void {
             type: "fatal",
         } satisfies ProjectWorkerFatalMessage;
 
-        if (message.port) {
-            message.port.postMessage(payload);
-        } else {
-            parentPort?.postMessage(payload);
-        }
+        message.port.postMessage(payload);
     }
 }
 
@@ -153,9 +149,10 @@ async function dispatchMethod(method: string, params: unknown): Promise<unknown>
                 params as Parameters<ProjectRuntime["renameProjectEntry"]>[0],
             );
         case "projects.deleteProjectEntry":
-            return await projectRuntime.deleteProjectEntry(
+            await projectRuntime.deleteProjectEntry(
                 params as Parameters<ProjectRuntime["deleteProjectEntry"]>[0],
             );
+            return;
         case "projects.searchProjectEntries":
             return await projectRuntime.searchProjectEntries(
                 params as Parameters<ProjectRuntime["searchProjectEntries"]>[0],

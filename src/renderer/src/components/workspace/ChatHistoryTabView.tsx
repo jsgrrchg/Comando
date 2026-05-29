@@ -986,8 +986,16 @@ export function ChatHistoryTabLayout({
 
     useEffect(() => {
         if (!selectedSession) {
-            setIsTranscriptSearchOpen(false);
-            setTranscriptSearchQuery("");
+            let cancelled = false;
+            queueMicrotask(() => {
+                if (!cancelled) {
+                    setIsTranscriptSearchOpen(false);
+                    setTranscriptSearchQuery("");
+                }
+            });
+            return () => {
+                cancelled = true;
+            };
         }
     }, [selectedSession]);
 

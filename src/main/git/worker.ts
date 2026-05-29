@@ -48,7 +48,7 @@ function initializeWorker(message: GitWorkerInitMessage): void {
         rpcPort.on("message", (request: unknown) => {
             void handleRequest(request as GitWorkerRequest);
         });
-        rpcPort.start?.();
+        rpcPort.start();
         rpcPort.postMessage({
             type: "ready",
         } satisfies GitWorkerReadyMessage);
@@ -58,11 +58,7 @@ function initializeWorker(message: GitWorkerInitMessage): void {
             type: "fatal",
         } satisfies GitWorkerFatalMessage;
 
-        if (message.port) {
-            message.port.postMessage(payload);
-        } else {
-            parentPort?.postMessage(payload);
-        }
+        message.port.postMessage(payload);
     }
 }
 

@@ -2335,30 +2335,31 @@ export class AiWorkerRuntime {
         }
 
         const resolvedChildAppSessionId = childAppSessionId;
-        let changed = false;
-        const toolActivity = snapshot.toolActivity.map((activity) => {
-            if (activity.id !== update.toolCallId) {
-                return activity;
-            }
+        const activityIndex = snapshot.toolActivity.findIndex(
+            (activity) => activity.id === update.toolCallId,
+        );
+        if (activityIndex === -1) {
+            return snapshot;
+        }
 
-            if (
-                activity.action?.kind === "open_session" &&
-                activity.action.sessionId === resolvedChildAppSessionId
-            ) {
-                return activity;
-            }
+        const activity = snapshot.toolActivity[activityIndex];
+        if (
+            activity.action?.kind === "open_session" &&
+            activity.action.sessionId === resolvedChildAppSessionId
+        ) {
+            return snapshot;
+        }
 
-            changed = true;
-            return {
-                ...activity,
-                action: {
-                    kind: "open_session" as const,
-                    sessionId: resolvedChildAppSessionId,
-                },
-            };
-        });
+        const toolActivity = [...snapshot.toolActivity];
+        toolActivity[activityIndex] = {
+            ...activity,
+            action: {
+                kind: "open_session" as const,
+                sessionId: resolvedChildAppSessionId,
+            },
+        };
 
-        return changed ? { ...snapshot, toolActivity } : snapshot;
+        return { ...snapshot, toolActivity };
     }
 
     #handleSubagentLifecycleBreadcrumb(
@@ -3133,7 +3134,7 @@ export class AiWorkerRuntime {
         const discoveredDirectories: string[] = [];
         let currentDirectory = path.dirname(absolutePath);
 
-        while (true) {
+        for (;;) {
             if (missingDirectories.has(currentDirectory)) {
                 break;
             }
@@ -4249,15 +4250,15 @@ export class AiWorkerRuntime {
         liveConnection.pendingSessionUpdatesByRuntimeSessionId.clear();
         this.#detachChildStreams(liveConnection);
         liveConnection.child.kill();
-        liveConnection.child.stdin?.destroy();
-        liveConnection.child.stdout?.destroy();
-        liveConnection.child.stderr?.destroy();
+        liveConnection.child.stdin.destroy();
+        liveConnection.child.stdout.destroy();
+        liveConnection.child.stderr.destroy();
     }
 
     #detachChildStreams(liveConnection: LiveAcpConnection): void {
         const handler = liveConnection.stderrHandler;
         if (handler) {
-            liveConnection.child.stderr?.off("data", handler);
+            liveConnection.child.stderr.off("data", handler);
             liveConnection.stderrHandler = null;
         }
     }
@@ -4631,7 +4632,7 @@ function appendMirroredSubagentPrompt(
     }
 
     const messages = [...snapshot.messages];
-    const latestMessage = messages[messages.length - 1] ?? null;
+    const latestMessage = messages.at(-1) ?? null;
     if (
         latestMessage?.kind === "user" &&
         (latestMessage.status === "streaming" ||
@@ -5114,7 +5115,7 @@ function readCompletedStatusFromToolContent(content: unknown): string | null {
     }
 
     const match = text.match(/(?:^|\n)\s*Status:\s*(completed(?::\s*[\s\S]+)?)/i);
-    return match ? parseCompletedStatusText(match[1] ?? "") : null;
+    return match ? parseCompletedStatusText(match[1]) : null;
 }
 
 function parseCompletedStatusText(value: string): string | null {
