@@ -292,9 +292,9 @@ function parseHunkHeader(
     }
 
     return {
-        newCount: Number(match[4] ?? "1"),
+        newCount: Number(match.at(4) ?? "1"),
         newStart: Number(match[3]),
-        oldCount: Number(match[2] ?? "1"),
+        oldCount: Number(match.at(2) ?? "1"),
         oldStart: Number(match[1]),
     };
 }

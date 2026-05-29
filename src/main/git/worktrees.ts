@@ -94,9 +94,6 @@ export async function listGitBranches(
     return [...summary.all]
         .map((branchName) => {
             const branch = summary.branches[branchName];
-            if (!branch) {
-                return null;
-            }
 
             return {
                 commit: branch.commit,
@@ -113,7 +110,6 @@ export async function listGitBranches(
                     null,
             } satisfies GitBranchSummary;
         })
-        .filter((branch): branch is GitBranchSummary => branch !== null)
         .sort((left, right) => {
             if (left.current !== right.current) {
                 return left.current ? -1 : 1;

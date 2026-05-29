@@ -1023,6 +1023,8 @@ function normalizeClaudeAuthMethodId(
     methodId: string | null,
 ): ClaudeAuthMethodId | null {
     switch (methodId) {
+        case null:
+            return null;
         case ANTHROPIC_API_KEY_METHOD_ID:
         case CLAUDE_LOGIN_METHOD_ID:
         case CLAUDE_AI_LOGIN_METHOD_ID:
@@ -1096,14 +1098,17 @@ function getFileModifiedAtMs(filePath: string): number | null {
 
 function getClaudeLoginArgs(methodId: string): readonly string[] {
     switch (normalizeClaudeAuthMethodId(methodId)) {
+        case null:
+        case ANTHROPIC_API_KEY_METHOD_ID:
+        case GATEWAY_METHOD_ID:
+        case BEDROCK_GATEWAY_METHOD_ID:
+            throw new Error(`Unsupported Claude auth method: ${methodId}`);
         case CLAUDE_LOGIN_METHOD_ID:
             return ["--cli"];
         case CLAUDE_AI_LOGIN_METHOD_ID:
             return ["--cli", "auth", "login", "--claudeai"];
         case CONSOLE_LOGIN_METHOD_ID:
             return ["--cli", "auth", "login", "--console"];
-        default:
-            throw new Error(`Unsupported Claude auth method: ${methodId}`);
     }
 }
 
@@ -1403,7 +1408,7 @@ function getVendorClaudeEntryPath(appRoot: string): string {
 function findAppRoot(startDir: string): string | null {
     let currentDir = path.resolve(startDir);
 
-    while (true) {
+    for (;;) {
         if (isAppRootDirectory(currentDir)) {
             return currentDir;
         }

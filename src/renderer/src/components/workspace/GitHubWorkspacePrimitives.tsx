@@ -273,7 +273,15 @@ export function GitHubConfirmActionButton({
 
     useEffect(() => {
         if (disabled && armed) {
-            setArmed(false);
+            let cancelled = false;
+            queueMicrotask(() => {
+                if (!cancelled) {
+                    setArmed(false);
+                }
+            });
+            return () => {
+                cancelled = true;
+            };
         }
     }, [armed, disabled]);
 
@@ -635,7 +643,15 @@ export function GitHubCommentComposer({
 
     useEffect(() => {
         if (trimmed.length === 0) {
-            setIsPreviewExpanded(initialPreviewExpanded);
+            let cancelled = false;
+            queueMicrotask(() => {
+                if (!cancelled) {
+                    setIsPreviewExpanded(initialPreviewExpanded);
+                }
+            });
+            return () => {
+                cancelled = true;
+            };
         }
     }, [initialPreviewExpanded, trimmed.length]);
 

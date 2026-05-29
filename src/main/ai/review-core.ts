@@ -506,7 +506,7 @@ export function diffToAiFileDiff(
         : null;
     const kind = inferDiffKind(diff, toolKind, previousPath);
     const oldText = normalizeOldText(diff.oldText ?? null);
-    const newText = normalizeNewText(kind, diff.newText ?? null);
+    const newText = normalizeNewText(kind, diff.newText);
 
     return {
         hunks: anchoredHunks ?? computeTextDiffHunks(path, oldText, newText),
@@ -571,10 +571,7 @@ function inferDiffKind(
     }
 
     if (
-        toolKind === "delete" ||
-        (diff.oldText !== null &&
-            diff.oldText !== undefined &&
-            diff.newText == null)
+        toolKind === "delete"
     ) {
         return "delete";
     }
@@ -1427,7 +1424,7 @@ function isClaudeEditReEmission(
     }
 
     const oldSnippet = diff.oldText ?? "";
-    const newSnippet = diff.newText ?? "";
+    const newSnippet = diff.newText;
     if (oldSnippet.length === 0 && newSnippet.length === 0) {
         return false;
     }
@@ -1843,7 +1840,7 @@ export function resolveDiffToFullTexts(
     normalizedPath: string,
     context?: DiffResolutionContext,
 ): Diff {
-    if (diff.oldText == null || diff.newText == null) {
+    if (diff.oldText == null) {
         return diff;
     }
 

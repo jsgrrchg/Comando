@@ -1178,7 +1178,7 @@ function waitForWorkerReady(
                 ),
             );
         }, WORKER_TIMEOUTS_MS.db);
-        timeout.unref?.();
+        timeout.unref();
         const cleanup = () => {
             clearTimeout(timeout);
             port.off("message", handleMessage);
@@ -1202,15 +1202,13 @@ function waitForWorkerReady(
                 return;
             }
 
-            if (payload.type === "ready") {
-                cleanup();
-                resolve(payload.bootstrap);
-            }
+            cleanup();
+            resolve(payload.bootstrap);
         };
 
         port.on("message", handleMessage);
         worker.on("error", handleError);
-        port.start?.();
+        port.start();
     });
 }
 

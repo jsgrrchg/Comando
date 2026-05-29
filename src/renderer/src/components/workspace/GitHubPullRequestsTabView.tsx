@@ -299,7 +299,15 @@ export function GitHubPullRequestsTabView({
 
     useEffect(() => {
         if (!newHead && currentBranch) {
-            setNewHead(currentBranch);
+            let cancelled = false;
+            queueMicrotask(() => {
+                if (!cancelled) {
+                    setNewHead(currentBranch);
+                }
+            });
+            return () => {
+                cancelled = true;
+            };
         }
     }, [currentBranch, newHead]);
 

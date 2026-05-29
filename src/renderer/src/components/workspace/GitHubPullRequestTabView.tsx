@@ -47,7 +47,13 @@ export function GitHubPullRequestTabView({
 }: {
     readonly tab: RuntimeWorkspaceGitHubPullRequestTab;
 }) {
-    const repoKey = getGitHubRepoKey(tab.ref);
+    const {
+        projectId,
+        pullRequestNumber,
+        ref: repo,
+        worktreeId,
+    } = tab;
+    const repoKey = getGitHubRepoKey(repo);
     const [commentDraft, setCommentDraft] = useState("");
     const [showAllCommits, setShowAllCommits] = useState(false);
     const [isEditingDescription, setIsEditingDescription] = useState(false);
@@ -56,9 +62,8 @@ export function GitHubPullRequestTabView({
 
     const detail = useGitHubStore(
         (state) =>
-            state.pullRequestDetailsByRepo[repoKey]?.[
-                tab.pullRequestNumber
-            ] ?? null,
+            state.pullRequestDetailsByRepo[repoKey]?.[pullRequestNumber] ??
+            null,
     );
     const checks = useGitHubStore(
         (state): GitHubPullRequestChecksResult | null | undefined =>
@@ -67,20 +72,20 @@ export function GitHubPullRequestTabView({
                 : undefined,
     );
     const authStatus = useGitHubStore(
-        (state) => state.authStatusByHost[tab.ref.host] ?? null,
+        (state) => state.authStatusByHost[repo.host] ?? null,
     );
     const commentMutatingKeys = useGitHubStore((state) => state.mutatingKeys);
     const commentErrors = useGitHubStore((state) => state.errors);
 
     const checksKey = detail?.head.sha
-        ? getGitHubPullRequestChecksKey(tab.ref, detail.head.sha)
+        ? getGitHubPullRequestChecksKey(repo, detail.head.sha)
         : null;
 
     const { isLoading, isLoadingChecks } = useGitHubStore(
         useShallow((state) => ({
             isLoading:
                 state.loadingKeys[
-                    `${repoKey}:pr:${tab.pullRequestNumber}`
+                    `${repoKey}:pr:${pullRequestNumber}`
                 ] ?? false,
             isLoadingChecks: checksKey
                 ? (state.loadingKeys[checksKey] ?? false)
@@ -98,23 +103,23 @@ export function GitHubPullRequestTabView({
         useShallow((state) => ({
             isCommenting:
                 state.mutatingKeys[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:comment`
+                    `${repoKey}:pr:${pullRequestNumber}:comment`
                 ] ?? false,
             isConvertingDraft:
                 state.mutatingKeys[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:draft`
+                    `${repoKey}:pr:${pullRequestNumber}:draft`
                 ] ?? false,
             isMarkingReady:
                 state.mutatingKeys[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:ready`
+                    `${repoKey}:pr:${pullRequestNumber}:ready`
                 ] ?? false,
             isRequestingReview:
                 state.mutatingKeys[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:request-review`
+                    `${repoKey}:pr:${pullRequestNumber}:request-review`
                 ] ?? false,
             isUpdatingPullRequest:
                 state.mutatingKeys[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:update`
+                    `${repoKey}:pr:${pullRequestNumber}:update`
                 ] ?? false,
         })),
     );
@@ -132,26 +137,25 @@ export function GitHubPullRequestTabView({
             checksError: checksKey ? (state.errors[checksKey] ?? null) : null,
             commentError:
                 state.errors[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:comment`
+                    `${repoKey}:pr:${pullRequestNumber}:comment`
                 ] ?? null,
             detailError:
-                state.errors[`${repoKey}:pr:${tab.pullRequestNumber}`] ??
-                null,
+                state.errors[`${repoKey}:pr:${pullRequestNumber}`] ?? null,
             draftError:
                 state.errors[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:draft`
+                    `${repoKey}:pr:${pullRequestNumber}:draft`
                 ] ?? null,
             readyError:
                 state.errors[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:ready`
+                    `${repoKey}:pr:${pullRequestNumber}:ready`
                 ] ?? null,
             requestReviewError:
                 state.errors[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:request-review`
+                    `${repoKey}:pr:${pullRequestNumber}:request-review`
                 ] ?? null,
             updateError:
                 state.errors[
-                    `${repoKey}:pr:${tab.pullRequestNumber}:update`
+                    `${repoKey}:pr:${pullRequestNumber}:update`
                 ] ?? null,
         })),
     );
@@ -202,17 +206,17 @@ export function GitHubPullRequestTabView({
         async function loadInitialData() {
             if (
                 useGitHubStore.getState().pullRequestDetailsByRepo[repoKey]?.[
-                    tab.pullRequestNumber
+                    pullRequestNumber
                 ] !== undefined
             ) {
                 return;
             }
 
             const status =
-                useGitHubStore.getState().authStatusByHost[tab.ref.host] ??
-                (await refreshAuthStatus(tab.ref));
+                useGitHubStore.getState().authStatusByHost[repo.host] ??
+                (await refreshAuthStatus(repo));
             if (!cancelled && status.state === "authenticated") {
-                await ensurePullRequestDetail(tab.ref, tab.pullRequestNumber);
+                await ensurePullRequestDetail(repo, pullRequestNumber);
             }
         }
 
@@ -223,10 +227,10 @@ export function GitHubPullRequestTabView({
         };
     }, [
         ensurePullRequestDetail,
+        pullRequestNumber,
         refreshAuthStatus,
+        repo,
         repoKey,
-        tab.pullRequestNumber,
-        tab.ref,
     ]);
 
     useEffect(() => {
@@ -240,7 +244,7 @@ export function GitHubPullRequestTabView({
             return;
         }
 
-        void refreshPullRequestChecks(tab.ref, {
+        void refreshPullRequestChecks(repo, {
             headSha: detail.head.sha,
             pullRequestNumber: detail.number,
         }).catch(() => undefined);
@@ -252,15 +256,15 @@ export function GitHubPullRequestTabView({
         detail?.number,
         isLoadingChecks,
         refreshPullRequestChecks,
-        tab.ref,
+        repo,
     ]);
 
     const handleRefresh = async () => {
-        const status = await refreshAuthStatus(tab.ref);
+        const status = await refreshAuthStatus(repo);
         if (status.state === "authenticated") {
             const refreshedDetail = await ensurePullRequestDetail(
-                tab.ref,
-                tab.pullRequestNumber,
+                repo,
+                pullRequestNumber,
                 {
                     force: true,
                 },
@@ -268,7 +272,7 @@ export function GitHubPullRequestTabView({
             const checksTarget = refreshedDetail ?? detail;
             if (checksTarget?.head.sha) {
                 await refreshPullRequestChecks(
-                    tab.ref,
+                    repo,
                     {
                         headSha: checksTarget.head.sha,
                         pullRequestNumber: checksTarget.number,
@@ -287,7 +291,7 @@ export function GitHubPullRequestTabView({
             return;
         }
 
-        await commentPullRequest(tab.ref, tab.pullRequestNumber, body);
+        await commentPullRequest(repo, pullRequestNumber, body);
         setCommentDraft("");
     };
 
@@ -295,7 +299,7 @@ export function GitHubPullRequestTabView({
         comment: GitHubCommentSummary,
         body: string,
     ) => {
-        await updateComment(tab.ref, {
+        await updateComment(repo, {
             body,
             commentId: comment.id,
         });
@@ -305,14 +309,14 @@ export function GitHubPullRequestTabView({
         if (!canWritePullRequests) {
             return;
         }
-        await markPullRequestReady(tab.ref, tab.pullRequestNumber);
+        await markPullRequestReady(repo, pullRequestNumber);
     };
 
     const handleConvertToDraft = async () => {
         if (!canWritePullRequests) {
             return;
         }
-        await convertPullRequestToDraft(tab.ref, tab.pullRequestNumber);
+        await convertPullRequestToDraft(repo, pullRequestNumber);
     };
 
     const handleRequestReview = async (
@@ -326,7 +330,7 @@ export function GitHubPullRequestTabView({
             return;
         }
 
-        await requestPullRequestReviewers(tab.ref, tab.pullRequestNumber, {
+        await requestPullRequestReviewers(repo, pullRequestNumber, {
             reviewers: reviewers.length > 0 ? reviewers : null,
             teamReviewers: teamReviewers.length > 0 ? teamReviewers : null,
         });
@@ -354,7 +358,7 @@ export function GitHubPullRequestTabView({
             return;
         }
 
-        await updatePullRequest(tab.ref, tab.pullRequestNumber, {
+        await updatePullRequest(repo, pullRequestNumber, {
             body: descriptionDraft,
             title,
         });
@@ -406,8 +410,8 @@ export function GitHubPullRequestTabView({
                                     openGitHubWebUrl(
                                         detail?.url ??
                                             buildGitHubWebUrl(
-                                                tab.ref,
-                                                `/pull/${tab.pullRequestNumber}`,
+                                                repo,
+                                                `/pull/${pullRequestNumber}`,
                                             ),
                                     )
                                 }
@@ -432,15 +436,15 @@ export function GitHubPullRequestTabView({
                             </span>
                         ) : null
                     }
-                    repo={tab.ref}
-                    title={`PR #${tab.pullRequestNumber}`}
+                    repo={repo}
+                    title={`PR #${pullRequestNumber}`}
                 />
             }
             scrollScope={{
-                entityId: `${repoKey}/pulls/${tab.pullRequestNumber}`,
-                projectId: tab.projectId,
+                entityId: `${repoKey}/pulls/${pullRequestNumber}`,
+                projectId,
                 surface: "github_pull_request",
-                worktreeId: tab.worktreeId ?? null,
+                worktreeId: worktreeId ?? null,
             }}
         >
             <div className="space-y-4 p-4">
@@ -451,7 +455,7 @@ export function GitHubPullRequestTabView({
                 {isLoading && !detail ? <PullRequestOverviewSkeleton /> : null}
                 {!isLoading && !detail ? (
                     <GitHubEmptyState>
-                        PR #{tab.pullRequestNumber} could not be loaded.
+                        PR #{pullRequestNumber} could not be loaded.
                     </GitHubEmptyState>
                 ) : null}
                 {detail ? (
@@ -698,13 +702,13 @@ export function GitHubPullRequestTabView({
                                         onClick={() =>
                                             void openGitCommitTab({
                                                 commitSha: commit.sha,
-                                                projectId: tab.projectId,
+                                                projectId,
                                                 subject:
                                                     commit.message.split(
                                                         "\n",
                                                     )[0] ?? commit.shortSha,
                                                 worktreeId:
-                                                    tab.worktreeId ?? null,
+                                                    worktreeId ?? null,
                                             })
                                         }
                                         type="button"
@@ -801,7 +805,7 @@ export function GitHubPullRequestTabView({
                             checksState={checksState}
                             checksUrl={checks?.url ?? null}
                             headSha={detail.head.sha}
-                            ref={tab.ref}
+                            repo={repo}
                         />
                         {checksError ? (
                             <GitHubErrorState>

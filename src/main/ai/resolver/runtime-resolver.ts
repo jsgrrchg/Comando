@@ -218,9 +218,7 @@ function createMissingResolvedCommand(
         appRoot,
         packagedResourcesPath,
     );
-    const vendorCandidates = getVendorCandidates(appRoot);
-    const firstExpectedCandidate =
-        bundledCandidates[0] ?? vendorCandidates[0] ?? "codex-acp";
+    const firstExpectedCandidate = bundledCandidates[0];
 
     return {
         args: [],
@@ -362,7 +360,7 @@ function getVendorCandidates(appRoot: string): readonly string[] {
 function findAppRoot(startDir: string): string | null {
     let currentDir = path.resolve(startDir);
 
-    while (true) {
+    for (;;) {
         if (isAppRootDirectory(currentDir)) {
             return currentDir;
         }

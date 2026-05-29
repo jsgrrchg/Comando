@@ -121,9 +121,9 @@ function initializeWorker(message: DbWorkerInitMessage): void {
         projectStore = new SqliteProjectStore(database.connection);
 
         rpcPort.on("message", (request: unknown) => {
-            void handleRequest(request as DbWorkerRequest);
+            handleRequest(request as DbWorkerRequest);
         });
-        rpcPort.start?.();
+        rpcPort.start();
         rpcPort.postMessage({
             bootstrap: buildBootstrapState(),
             type: "ready",
@@ -134,11 +134,7 @@ function initializeWorker(message: DbWorkerInitMessage): void {
             type: "fatal",
         } satisfies DbWorkerFatalMessage;
 
-        if (message.port) {
-            message.port.postMessage(payload);
-        } else {
-            parentPort?.postMessage(payload);
-        }
+        message.port.postMessage(payload);
     }
 }
 

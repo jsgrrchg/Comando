@@ -247,6 +247,19 @@ const semanticHighlightingEditorOptions: SemanticHighlightingEditorOptions = {
     "semanticHighlighting.enabled": true,
 };
 
+function scheduleEffectStateUpdate(update: () => void): () => void {
+    let cancelled = false;
+    queueMicrotask(() => {
+        if (!cancelled) {
+            update();
+        }
+    });
+
+    return () => {
+        cancelled = true;
+    };
+}
+
 function createReviewTabHandleKey(reviewTab: WorkspaceReviewTabHandle): string {
     return JSON.stringify([reviewTab.id, reviewTab.sessionId]);
 }
@@ -2013,7 +2026,19 @@ function WorkspacePaneView({
         paneNodeId,
         selectAdjacentTab,
     });
-    paneShortcutHandlersRef.current = {
+    useEffect(() => {
+        paneShortcutHandlersRef.current = {
+            createTerminalTab,
+            defaultProjectId,
+            defaultWorktreeId,
+            handleCreateAgentFromFocusedProvider,
+            handleCreateFile,
+            openChatHistoryTab,
+            openGitTab,
+            paneNodeId,
+            selectAdjacentTab,
+        };
+    }, [
         createTerminalTab,
         defaultProjectId,
         defaultWorktreeId,
@@ -2023,7 +2048,7 @@ function WorkspacePaneView({
         openGitTab,
         paneNodeId,
         selectAdjacentTab,
-    };
+    ]);
 
     useEffect(() => {
         if (!isActivePane) {
@@ -4330,8 +4355,9 @@ function FileTabView({
             !canEdit ||
             !shouldShowGitGutter
         ) {
-            setGitGutterDiff(null);
-            return;
+            return scheduleEffectStateUpdate(() => {
+                setGitGutterDiff(null);
+            });
         }
 
         const controller = new AbortController();
@@ -5130,7 +5156,11 @@ function useMonacoSurfaceRuntime(enabled: boolean): {
         }
 
         let cancelled = false;
-        setLoadError(null);
+        queueMicrotask(() => {
+            if (!cancelled) {
+                setLoadError(null);
+            }
+        });
 
         void Promise.all([
             import("@monaco-editor/react"),
@@ -5200,7 +5230,11 @@ function useXtermSurfaceRuntime(): {
         }
 
         let cancelled = false;
-        setLoadError(null);
+        queueMicrotask(() => {
+            if (!cancelled) {
+                setLoadError(null);
+            }
+        });
 
         void Promise.all([
             import("@xterm/xterm/css/xterm.css"),
@@ -5390,7 +5424,8 @@ function ImageFileView({
     const imageSrc = buildImageDataUrl(document);
     const [scale, setScale] = useState(1);
     const [translate, setTranslate] = useState({ x: 0, y: 0 });
-    const isDragging = useRef(false);
+    const [isDragging, setIsDragging] = useState(false);
+    const isDraggingRef = useRef(false);
     const lastPointer = useRef({ x: 0, y: 0 });
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -5403,7 +5438,7 @@ function ImageFileView({
 
     // Reset view when document changes
     useEffect(() => {
-        resetView();
+        return scheduleEffectStateUpdate(resetView);
     }, [document.absolutePath, resetView]);
 
     // Attach a non-passive wheel listener so preventDefault() works.
@@ -5448,7 +5483,8 @@ function ImageFileView({
     const handlePointerDown = useCallback(
         (event: React.PointerEvent<HTMLDivElement>) => {
             if (!isZoomed) return;
-            isDragging.current = true;
+            isDraggingRef.current = true;
+            setIsDragging(true);
             lastPointer.current = { x: event.clientX, y: event.clientY };
             (event.currentTarget as HTMLElement).setPointerCapture(
                 event.pointerId,
@@ -5459,7 +5495,7 @@ function ImageFileView({
 
     const handlePointerMove = useCallback(
         (event: React.PointerEvent<HTMLDivElement>) => {
-            if (!isDragging.current) return;
+            if (!isDraggingRef.current) return;
             const dx = event.clientX - lastPointer.current.x;
             const dy = event.clientY - lastPointer.current.y;
             lastPointer.current = { x: event.clientX, y: event.clientY };
@@ -5469,7 +5505,8 @@ function ImageFileView({
     );
 
     const handlePointerUp = useCallback(() => {
-        isDragging.current = false;
+        isDraggingRef.current = false;
+        setIsDragging(false);
     }, []);
 
     return (
@@ -5498,7 +5535,7 @@ function ImageFileView({
                             maxWidth: scale === 1 ? "100%" : undefined,
                             transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
                             transformOrigin: "center center",
-                            transition: isDragging.current
+                            transition: isDragging
                                 ? undefined
                                 : "transform 0.1s ease-out",
                         }}

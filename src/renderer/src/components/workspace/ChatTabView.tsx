@@ -649,15 +649,27 @@ export const ChatTabView = memo(function ChatTabView({
     useEffect(() => {
         if (activeTurnKey === null || activeTurnStartedAt === null) {
             streamStartTimeRef.current = null;
-            setElapsed("");
-            return undefined;
+            let cancelled = false;
+            queueMicrotask(() => {
+                if (!cancelled) {
+                    setElapsed("");
+                }
+            });
+            return () => {
+                cancelled = true;
+            };
         }
 
+        let cancelled = false;
         const startedAtMs = Date.parse(activeTurnStartedAt);
         streamStartTimeRef.current = Number.isFinite(startedAtMs)
             ? startedAtMs
             : Date.now();
         const updateElapsed = () => {
+            if (cancelled) {
+                return;
+            }
+
             const startedAt = streamStartTimeRef.current;
             if (startedAt === null) return;
             const totalSec = Math.max(
@@ -672,15 +684,20 @@ export const ChatTabView = memo(function ChatTabView({
                     : `${sec}s`,
             );
         };
-        updateElapsed();
+        queueMicrotask(updateElapsed);
         const interval = window.setInterval(updateElapsed, 500);
-        return () => window.clearInterval(interval);
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
     }, [activeTurnKey, activeTurnStartedAt]);
 
+    /* eslint-disable react-hooks/refs -- The timeline reconciler needs the last committed model to preserve row identity during render. */
     const timelineModel = useMemo(() => {
+        const previousTimelineState = stableTimelineRef.current;
         const previousTimelineModel =
-            stableTimelineRef.current.sessionId === tab.sessionId
-                ? stableTimelineRef.current.model
+            previousTimelineState.sessionId === tab.sessionId
+                ? previousTimelineState.model
                 : null;
         return reconcileChatTimelineModel(previousTimelineModel, {
             messages: snapshot.messages,
@@ -695,6 +712,7 @@ export const ChatTabView = memo(function ChatTabView({
         snapshot.trackedFiles,
         tab.sessionId,
     ]);
+    /* eslint-enable react-hooks/refs */
     // Commit the reconciled timeline to the ref after render so StrictMode's
     // double-render cannot leave a stale/discarded model written during memo.
     useEffect(() => {
@@ -1118,8 +1136,16 @@ export const ChatTabView = memo(function ChatTabView({
 
         const clonedParts = cloneComposerPartsForDraft(draftComposerParts);
         composerPartsRef.current = clonedParts;
-        setComposerParts(clonedParts);
         flushChatDraft(composerPartsToPlainText(draftComposerParts));
+        let cancelled = false;
+        queueMicrotask(() => {
+            if (!cancelled) {
+                setComposerParts(clonedParts);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
     }, [composerParts, draftComposerParts, flushChatDraft]);
 
     const handleClearQueuedPrompts = useCallback(() => {
