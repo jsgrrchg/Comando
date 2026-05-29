@@ -228,23 +228,6 @@ function shouldSuppressSessionToolActivityUpdate(
     return shouldSuppressToolActivityUpdate(update, title);
 }
 
-function suppressSubagentToolActivityRows(
-    liveSession: LiveAcpSession,
-    previousSnapshot: AiSessionSnapshot,
-    nextSnapshot: AiSessionSnapshot,
-): AiSessionSnapshot {
-    if (!isSubagentLiveSession(liveSession)) {
-        return nextSnapshot;
-    }
-
-    // Subagent tool calls are implementation details; keep their side effects
-    // such as tracked files and pending input without rendering tool rows.
-    return {
-        ...nextSnapshot,
-        toolActivity: previousSnapshot.toolActivity,
-    };
-}
-
 function isDirectStreamingSessionUpdate(
     update: SessionNotification["update"],
 ): boolean {
@@ -1786,52 +1769,34 @@ export class AiWorkerRuntime {
                 break;
             case "tool_call":
                 nextSnapshot = finalizeStreamingMessages(nextSnapshot);
-                {
-                    const previousSnapshot = nextSnapshot;
-                    const mappedSnapshot = isImageGenerationToolUpdate(update)
-                        ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
-                        : mapToolCallUpdate(
-                              liveSession,
-                              nextSnapshot,
-                              update,
-                              "tool_call",
-                              now,
-                              {
-                                  readOpenFileBuffer: (absolutePath) =>
-                                      this.#fileBuffers.get(absolutePath) ??
-                                      null,
-                              },
-                          );
-                    nextSnapshot = suppressSubagentToolActivityRows(
-                        liveSession,
-                        previousSnapshot,
-                        mappedSnapshot,
-                    );
-                }
+                nextSnapshot = isImageGenerationToolUpdate(update)
+                    ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
+                    : mapToolCallUpdate(
+                          liveSession,
+                          nextSnapshot,
+                          update,
+                          "tool_call",
+                          now,
+                          {
+                              readOpenFileBuffer: (absolutePath) =>
+                                  this.#fileBuffers.get(absolutePath) ?? null,
+                          },
+                      );
                 break;
             case "tool_call_update":
-                {
-                    const previousSnapshot = nextSnapshot;
-                    const mappedSnapshot = isImageGenerationToolUpdate(update)
-                        ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
-                        : mapToolCallUpdate(
-                              liveSession,
-                              nextSnapshot,
-                              update,
-                              "tool_call_update",
-                              now,
-                              {
-                                  readOpenFileBuffer: (absolutePath) =>
-                                      this.#fileBuffers.get(absolutePath) ??
-                                      null,
-                              },
-                          );
-                    nextSnapshot = suppressSubagentToolActivityRows(
-                        liveSession,
-                        previousSnapshot,
-                        mappedSnapshot,
-                    );
-                }
+                nextSnapshot = isImageGenerationToolUpdate(update)
+                    ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
+                    : mapToolCallUpdate(
+                          liveSession,
+                          nextSnapshot,
+                          update,
+                          "tool_call_update",
+                          now,
+                          {
+                              readOpenFileBuffer: (absolutePath) =>
+                                  this.#fileBuffers.get(absolutePath) ?? null,
+                          },
+                      );
                 break;
             case "plan":
                 nextSnapshot = {
