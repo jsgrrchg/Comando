@@ -23,6 +23,7 @@ import {
     type TerminalExitStatus,
     type TerminalOutputRequest,
     type TerminalOutputResponse,
+    type ToolCallContent,
     type WaitForTerminalExitRequest,
     type WaitForTerminalExitResponse,
     type WriteTextFileRequest,
@@ -67,6 +68,7 @@ import {
     CODEX_ACP_CWD_KEY,
     CODEX_ACP_MODEL_KEY,
     CODEX_ACP_PARENT_SESSION_ID_KEY,
+    CODEX_ACP_PARENT_THREAD_ID_KEY,
     CODEX_ACP_REASONING_EFFORT_KEY,
     CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
@@ -79,6 +81,7 @@ import {
     CODEX_ACP_TURN_ID_KEY,
     CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
     CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+    CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
     type LiveAcpConnection,
     type LiveAcpSession,
     type LiveAcpTerminal,
@@ -143,8 +146,15 @@ interface PendingUserTextEcho {
     textMatched: boolean;
 }
 
+interface SuppressedInternalUserInputEcho {
+    bufferedText: string;
+    readonly messageId: string | null;
+}
+
 interface SubagentMirrorTurnState {
     assistantOutputSeen: boolean;
+    suppressedAssistantEchoText: string;
+    terminalAssistantContent: string | null;
     readonly toolCallId: string;
 }
 
@@ -218,6 +228,23 @@ function shouldSuppressSessionToolActivityUpdate(
     return shouldSuppressToolActivityUpdate(update, title);
 }
 
+function suppressSubagentToolActivityRows(
+    liveSession: LiveAcpSession,
+    previousSnapshot: AiSessionSnapshot,
+    nextSnapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (!isSubagentLiveSession(liveSession)) {
+        return nextSnapshot;
+    }
+
+    // Subagent tool calls are implementation details; keep their side effects
+    // such as tracked files and pending input without rendering tool rows.
+    return {
+        ...nextSnapshot,
+        toolActivity: previousSnapshot.toolActivity,
+    };
+}
+
 function isDirectStreamingSessionUpdate(
     update: SessionNotification["update"],
 ): boolean {
@@ -244,6 +271,10 @@ export class AiWorkerRuntime {
     readonly #fileBuffers = new Map<string, string>();
     readonly #pendingUserTextEchoes = new Map<string, PendingUserTextEcho>();
     readonly #sessions = new Map<string, LiveAcpSession>();
+    readonly #suppressedInternalUserInputEchoes = new Map<
+        string,
+        SuppressedInternalUserInputEcho
+    >();
     readonly #subagentMirrorTurns = new Map<string, SubagentMirrorTurnState>();
     readonly #startedAt = new Date().toISOString();
 
@@ -825,8 +856,13 @@ export class AiWorkerRuntime {
             pendingUserInput.turnId,
             answers,
         );
+        const responseMessageId = randomUUID();
         const now = new Date().toISOString();
 
+        this.#setPendingUserTextEcho(liveSession, {
+            expectedTexts: [promptText],
+            messageId: responseMessageId,
+        });
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: liveSession.snapshot.activeTurnStartedAt ?? now,
@@ -853,7 +889,7 @@ export class AiWorkerRuntime {
 
         try {
             await liveSession.connection.prompt({
-                messageId: randomUUID(),
+                messageId: responseMessageId,
                 prompt: [
                     {
                         text: promptText,
@@ -871,7 +907,9 @@ export class AiWorkerRuntime {
             });
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
+            this.#clearPendingUserTextEcho(liveSession);
         } catch (error) {
+            this.#clearPendingUserTextEcho(liveSession);
             const message =
                 error instanceof Error
                     ? error.message
@@ -1385,10 +1423,8 @@ export class AiWorkerRuntime {
                 readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
                 CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
             ) {
-                const runtimeParentSessionId = readMetaString(
-                    meta,
-                    CODEX_ACP_PARENT_SESSION_ID_KEY,
-                );
+                const runtimeParentSessionId =
+                    readSubagentParentRuntimeSessionId(meta);
                 const parentAppSessionId = runtimeParentSessionId
                     ? (liveConnection.appSessionIdByRuntimeSessionId.get(
                           runtimeParentSessionId,
@@ -1452,12 +1488,8 @@ export class AiWorkerRuntime {
         meta: Record<string, unknown>,
     ): LiveAcpSession | null {
         const runtimeChildSessionId =
-            readMetaString(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) ??
-            params.sessionId;
-        const runtimeParentSessionId = readMetaString(
-            meta,
-            CODEX_ACP_PARENT_SESSION_ID_KEY,
-        );
+            readSubagentChildRuntimeSessionId(meta) ?? params.sessionId;
+        const runtimeParentSessionId = readSubagentParentRuntimeSessionId(meta);
         if (!runtimeParentSessionId) {
             this.#emitLog("warn", "Ignoring subagent session without parent.", {
                 runtimeChildSessionId,
@@ -1659,6 +1691,18 @@ export class AiWorkerRuntime {
             return Promise.resolve();
         }
 
+        if (
+            update.sessionUpdate === "user_message_chunk" &&
+            !this.#pendingUserTextEchoes.has(liveSession.snapshot.sessionId) &&
+            this.#shouldSuppressInternalUserInputResponseEcho(
+                liveSession,
+                update.content,
+                update.messageId ?? null,
+            )
+        ) {
+            return Promise.resolve();
+        }
+
         const shouldMarkStreaming =
             update.sessionUpdate === "user_message_chunk" ||
             update.sessionUpdate === "agent_message_chunk" ||
@@ -1698,16 +1742,32 @@ export class AiWorkerRuntime {
                 );
                 nextSnapshot = echoResult.snapshot;
                 if (!echoResult.handled) {
-                    nextSnapshot = appendContentBlockToSnapshot(
-                        nextSnapshot,
-                        "user",
-                        update.content,
-                        update.messageId ?? null,
-                    );
+                    if (
+                        !this.#shouldSuppressInternalUserInputResponseEcho(
+                            liveSession,
+                            update.content,
+                            update.messageId ?? null,
+                        )
+                    ) {
+                        nextSnapshot = appendContentBlockToSnapshot(
+                            nextSnapshot,
+                            "user",
+                            update.content,
+                            update.messageId ?? null,
+                        );
+                    }
                 }
                 break;
             }
             case "agent_message_chunk":
+                if (
+                    this.#shouldSuppressMirroredSubagentAssistantEcho(
+                        liveSession,
+                        update.content,
+                    )
+                ) {
+                    break;
+                }
                 this.#markSubagentAssistantOutputSeen(liveSession);
                 nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
@@ -1726,34 +1786,52 @@ export class AiWorkerRuntime {
                 break;
             case "tool_call":
                 nextSnapshot = finalizeStreamingMessages(nextSnapshot);
-                nextSnapshot = isImageGenerationToolUpdate(update)
-                    ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
-                    : mapToolCallUpdate(
-                          liveSession,
-                          nextSnapshot,
-                          update,
-                          "tool_call",
-                          now,
-                          {
-                              readOpenFileBuffer: (absolutePath) =>
-                                  this.#fileBuffers.get(absolutePath) ?? null,
-                          },
-                      );
+                {
+                    const previousSnapshot = nextSnapshot;
+                    const mappedSnapshot = isImageGenerationToolUpdate(update)
+                        ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
+                        : mapToolCallUpdate(
+                              liveSession,
+                              nextSnapshot,
+                              update,
+                              "tool_call",
+                              now,
+                              {
+                                  readOpenFileBuffer: (absolutePath) =>
+                                      this.#fileBuffers.get(absolutePath) ??
+                                      null,
+                              },
+                          );
+                    nextSnapshot = suppressSubagentToolActivityRows(
+                        liveSession,
+                        previousSnapshot,
+                        mappedSnapshot,
+                    );
+                }
                 break;
             case "tool_call_update":
-                nextSnapshot = isImageGenerationToolUpdate(update)
-                    ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
-                    : mapToolCallUpdate(
-                          liveSession,
-                          nextSnapshot,
-                          update,
-                          "tool_call_update",
-                          now,
-                          {
-                              readOpenFileBuffer: (absolutePath) =>
-                                  this.#fileBuffers.get(absolutePath) ?? null,
-                          },
-                      );
+                {
+                    const previousSnapshot = nextSnapshot;
+                    const mappedSnapshot = isImageGenerationToolUpdate(update)
+                        ? mapImageGenerationToolUpdate(nextSnapshot, update, now)
+                        : mapToolCallUpdate(
+                              liveSession,
+                              nextSnapshot,
+                              update,
+                              "tool_call_update",
+                              now,
+                              {
+                                  readOpenFileBuffer: (absolutePath) =>
+                                      this.#fileBuffers.get(absolutePath) ??
+                                      null,
+                              },
+                          );
+                    nextSnapshot = suppressSubagentToolActivityRows(
+                        liveSession,
+                        previousSnapshot,
+                        mappedSnapshot,
+                    );
+                }
                 break;
             case "plan":
                 nextSnapshot = {
@@ -1900,6 +1978,49 @@ export class AiWorkerRuntime {
         this.#pendingUserTextEchoes.delete(liveSession.snapshot.sessionId);
     }
 
+    #shouldSuppressInternalUserInputResponseEcho(
+        liveSession: LiveAcpSession,
+        content: ContentBlock,
+        messageId: string | null,
+    ): boolean {
+        if (content.type !== "text") {
+            return false;
+        }
+
+        const sessionId = liveSession.snapshot.sessionId;
+        const existing =
+            this.#suppressedInternalUserInputEchoes.get(sessionId) ?? null;
+        if (existing) {
+            if (
+                existing.messageId &&
+                messageId &&
+                existing.messageId !== messageId
+            ) {
+                this.#suppressedInternalUserInputEchoes.delete(sessionId);
+                return false;
+            }
+
+            existing.bufferedText = `${existing.bufferedText}${content.text}`;
+            if (isCompleteInternalUserInputResponseEcho(existing.bufferedText)) {
+                this.#suppressedInternalUserInputEchoes.delete(sessionId);
+            }
+            return true;
+        }
+
+        if (!isInternalUserInputResponseEcho(content)) {
+            return false;
+        }
+
+        const suppressedEcho: SuppressedInternalUserInputEcho = {
+            bufferedText: content.text,
+            messageId,
+        };
+        if (!isCompleteInternalUserInputResponseEcho(suppressedEcho.bufferedText)) {
+            this.#suppressedInternalUserInputEchoes.set(sessionId, suppressedEcho);
+        }
+        return true;
+    }
+
     #applyPendingUserTextEcho(
         liveSession: LiveAcpSession,
         snapshot: AiSessionSnapshot,
@@ -1925,6 +2046,19 @@ export class AiWorkerRuntime {
                 (expectedContent) =>
                     isSamePromptEchoContentBlock(expectedContent, content),
             );
+            if (!matchesExpectedContent && hasMatchingMessageId) {
+                this.#clearPendingUserTextEcho(liveSession);
+                return {
+                    handled: true,
+                    snapshot: appendContentBlockToSnapshot(
+                        snapshot,
+                        "user",
+                        content,
+                        null,
+                    ),
+                };
+            }
+
             return {
                 handled: matchesExpectedContent,
                 snapshot,
@@ -1940,6 +2074,7 @@ export class AiWorkerRuntime {
             };
         }
 
+        const wasTextMatched = pending.textMatched;
         pending.bufferedText = `${pending.bufferedText}${text}`;
         const normalizedBufferedText = normalizeEchoText(pending.bufferedText);
         const normalizedExpectedTexts = pending.expectedTexts
@@ -1954,7 +2089,7 @@ export class AiWorkerRuntime {
                 expectedText.startsWith(normalizedBufferedText),
             );
 
-        if (hasMatchingMessageId || isExpectedPrefix) {
+        if (isExpectedPrefix) {
             if (matchesExpectedText) {
                 pending.textMatched = true;
                 if (pending.expectedContentBlocks.length === 0) {
@@ -1967,7 +2102,7 @@ export class AiWorkerRuntime {
             };
         }
 
-        const bufferedText = pending.bufferedText;
+        const bufferedText = wasTextMatched ? text : pending.bufferedText;
         this.#clearPendingUserTextEcho(liveSession);
         return {
             handled: true,
@@ -1978,7 +2113,7 @@ export class AiWorkerRuntime {
                     text: bufferedText,
                     type: "text",
                 },
-                messageId,
+                hasMatchingMessageId ? null : messageId,
             ),
         };
     }
@@ -1989,6 +2124,8 @@ export class AiWorkerRuntime {
     ): void {
         this.#subagentMirrorTurns.set(liveSession.snapshot.sessionId, {
             assistantOutputSeen: false,
+            suppressedAssistantEchoText: "",
+            terminalAssistantContent: null,
             toolCallId,
         });
     }
@@ -2008,6 +2145,50 @@ export class AiWorkerRuntime {
         if (state) {
             state.assistantOutputSeen = true;
         }
+    }
+
+    #rememberMirroredSubagentTerminalResponse(
+        liveSession: LiveAcpSession,
+        response: string,
+    ): void {
+        const state = this.#subagentMirrorTurns.get(
+            liveSession.snapshot.sessionId,
+        );
+        if (state) {
+            state.assistantOutputSeen = true;
+            state.terminalAssistantContent = response;
+            state.suppressedAssistantEchoText = "";
+        }
+    }
+
+    #shouldSuppressMirroredSubagentAssistantEcho(
+        liveSession: LiveAcpSession,
+        content: ContentBlock,
+    ): boolean {
+        if (!isSubagentLiveSession(liveSession) || content.type !== "text") {
+            return false;
+        }
+
+        const state = this.#subagentMirrorTurns.get(
+            liveSession.snapshot.sessionId,
+        );
+        const terminalContent = state?.terminalAssistantContent;
+        if (!state || !terminalContent) {
+            return false;
+        }
+
+        const nextEchoText = `${state.suppressedAssistantEchoText}${content.text}`;
+        const normalizedEchoText = normalizeEchoText(nextEchoText);
+        const normalizedTerminalContent = normalizeEchoText(terminalContent);
+        if (
+            normalizedEchoText.length === 0 ||
+            normalizedTerminalContent.startsWith(normalizedEchoText)
+        ) {
+            state.suppressedAssistantEchoText = nextEchoText;
+            return true;
+        }
+
+        return false;
     }
 
     #getSubagentMirrorTurn(
@@ -2132,10 +2313,7 @@ export class AiWorkerRuntime {
             return snapshot;
         }
 
-        const runtimeChildSessionId = readMetaString(
-            meta,
-            CODEX_ACP_CHILD_SESSION_ID_KEY,
-        );
+        const runtimeChildSessionId = readSubagentChildRuntimeSessionId(meta);
         if (!runtimeChildSessionId) {
             return snapshot;
         }
@@ -2213,10 +2391,7 @@ export class AiWorkerRuntime {
             return;
         }
 
-        const runtimeChildSessionId = readMetaString(
-            meta,
-            CODEX_ACP_CHILD_SESSION_ID_KEY,
-        );
+        const runtimeChildSessionId = readSubagentChildRuntimeSessionId(meta);
         if (!runtimeChildSessionId) {
             return;
         }
@@ -2259,6 +2434,16 @@ export class AiWorkerRuntime {
                 isTerminalSubagentBreadcrumb(meta, update)
             ) {
                 this.#mirrorSubagentTurnEnd(childSession, update, updatedAt);
+            } else if (
+                childSession.activeTurnId &&
+                mirrorTurn?.toolCallId === update.toolCallId &&
+                isTerminalSubagentBreadcrumb(meta, update)
+            ) {
+                this.#mirrorSubagentTerminalResponse(
+                    childSession,
+                    update,
+                    updatedAt,
+                );
             }
         }
     }
@@ -2357,6 +2542,39 @@ export class AiWorkerRuntime {
         this.#clearPendingUserTextEcho(childSession);
         this.#clearSubagentMirrorTurn(childSession);
         childSession.snapshot = nextSnapshot;
+        this.#queueSnapshotFlush(childSession);
+        this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
+    }
+
+    #mirrorSubagentTerminalResponse(
+        childSession: LiveAcpSession,
+        update: SessionNotification["update"],
+        updatedAt: string,
+    ): void {
+        if (
+            update.sessionUpdate !== "tool_call" &&
+            update.sessionUpdate !== "tool_call_update"
+        ) {
+            return;
+        }
+
+        const response = readSubagentTurnResponse(update);
+        const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
+        if (!response || mirrorTurn?.assistantOutputSeen) {
+            return;
+        }
+
+        childSession.snapshot = appendMirroredSubagentMessage(
+            {
+                ...childSession.snapshot,
+                updatedAt,
+            },
+            "assistant",
+            response,
+            `subagent:${update.toolCallId}:assistant`,
+            updatedAt,
+        );
+        this.#rememberMirroredSubagentTerminalResponse(childSession, response);
         this.#queueSnapshotFlush(childSession);
         this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
     }
@@ -3656,6 +3874,10 @@ export class AiWorkerRuntime {
             appSessionId,
         );
         this.#drainPendingSessionUpdates(liveConnection, runtimeSessionId);
+        this.#drainPendingSubagentCreatesForParent(
+            liveConnection,
+            runtimeSessionId,
+        );
     }
 
     #bufferPendingSessionUpdate(
@@ -3668,7 +3890,11 @@ export class AiWorkerRuntime {
             ) ?? [];
 
         if (pending.length >= MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION) {
-            pending.shift();
+            const dropIndex = pending.findIndex(
+                (pendingUpdate) =>
+                    !isSubagentSessionCreatedNotification(pendingUpdate),
+            );
+            pending.splice(dropIndex >= 0 ? dropIndex : 0, 1);
             this.#emitLog(
                 "warn",
                 "Dropping the oldest pending ACP update for an unmapped runtime session.",
@@ -3711,6 +3937,46 @@ export class AiWorkerRuntime {
 
         for (const update of pending) {
             void this.#handleSessionUpdate(liveSession, update);
+        }
+    }
+
+    #drainPendingSubagentCreatesForParent(
+        liveConnection: LiveAcpConnection,
+        runtimeParentSessionId: string,
+    ): void {
+        const pendingSubagentCreates: SessionNotification[] = [];
+
+        for (const [
+            pendingRuntimeSessionId,
+            pendingUpdates,
+        ] of liveConnection.pendingSessionUpdatesByRuntimeSessionId) {
+            const remainingUpdates = pendingUpdates.filter((pendingUpdate) => {
+                const meta = getSessionNotificationMeta(pendingUpdate);
+                const shouldRetry =
+                    readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
+                        CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE &&
+                    readSubagentParentRuntimeSessionId(meta) ===
+                        runtimeParentSessionId;
+                if (shouldRetry) {
+                    pendingSubagentCreates.push(pendingUpdate);
+                }
+                return !shouldRetry;
+            });
+
+            if (remainingUpdates.length > 0) {
+                liveConnection.pendingSessionUpdatesByRuntimeSessionId.set(
+                    pendingRuntimeSessionId,
+                    remainingUpdates,
+                );
+            } else {
+                liveConnection.pendingSessionUpdatesByRuntimeSessionId.delete(
+                    pendingRuntimeSessionId,
+                );
+            }
+        }
+
+        for (const pendingCreate of pendingSubagentCreates) {
+            void this.#handleRuntimeSessionUpdate(liveConnection, pendingCreate);
         }
     }
 
@@ -3877,6 +4143,7 @@ export class AiWorkerRuntime {
             const sessionId = liveSession.snapshot.sessionId;
             this.#sessions.delete(sessionId);
             this.#pendingUserTextEchoes.delete(sessionId);
+            this.#suppressedInternalUserInputEchoes.delete(sessionId);
             this.#subagentMirrorTurns.delete(sessionId);
             this.#releaseAllTerminals(liveSession);
             if (liveSession.closing || liveConnection.closing) {
@@ -3911,6 +4178,7 @@ export class AiWorkerRuntime {
         const liveConnection = liveSession.runtimeConnection;
         this.#sessions.delete(sessionId);
         this.#pendingUserTextEchoes.delete(sessionId);
+        this.#suppressedInternalUserInputEchoes.delete(sessionId);
         this.#subagentMirrorTurns.delete(sessionId);
         liveConnection.sessionsByAppSessionId.delete(sessionId);
         if (liveSession.snapshot.runtimeSessionId) {
@@ -3965,6 +4233,7 @@ export class AiWorkerRuntime {
             const sessionId = liveSession.snapshot.sessionId;
             this.#sessions.delete(sessionId);
             this.#pendingUserTextEchoes.delete(sessionId);
+            this.#suppressedInternalUserInputEchoes.delete(sessionId);
             this.#subagentMirrorTurns.delete(sessionId);
             liveSession.closing = true;
             this.#flushSnapshotEvent(liveSession);
@@ -4260,6 +4529,62 @@ function isSameEmbeddedResource(
     );
 }
 
+function readSubagentParentRuntimeSessionId(
+    meta: Record<string, unknown>,
+): string | null {
+    return (
+        readMetaString(meta, CODEX_ACP_PARENT_SESSION_ID_KEY) ??
+        readMetaString(meta, CODEX_ACP_PARENT_THREAD_ID_KEY)
+    );
+}
+
+function readSubagentChildRuntimeSessionId(
+    meta: Record<string, unknown>,
+): string | null {
+    return (
+        readMetaString(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) ??
+        readMetaString(meta, CODEX_ACP_CHILD_THREAD_ID_KEY)
+    );
+}
+
+function isSubagentSessionCreatedNotification(
+    params: SessionNotification,
+): boolean {
+    const meta = getSessionNotificationMeta(params);
+    return (
+        readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
+        CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
+    );
+}
+
+function isInternalUserInputResponseEcho(content: ContentBlock): boolean {
+    return (
+        content.type === "text" &&
+        content.text.trimStart().startsWith(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX)
+    );
+}
+
+function isCompleteInternalUserInputResponseEcho(value: string): boolean {
+    const trimmedValue = value.trimStart();
+    if (!trimmedValue.startsWith(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX)) {
+        return false;
+    }
+
+    const payloadText = trimmedValue.slice(
+        CODEX_ACP_USER_INPUT_RESPONSE_PREFIX.length,
+    );
+    if (!payloadText.trim()) {
+        return false;
+    }
+
+    try {
+        JSON.parse(payloadText);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function normalizeEchoText(value: string): string {
     return value.trim().replace(/\s+/g, " ");
 }
@@ -4349,14 +4674,6 @@ function appendMirroredSubagentMessage(
         return snapshot;
     }
 
-    const latestMessage = snapshot.messages[snapshot.messages.length - 1] ?? null;
-    if (
-        latestMessage?.kind === kind &&
-        latestMessage.content.trim() === trimmedContent
-    ) {
-        return snapshot;
-    }
-
     return {
         ...snapshot,
         messages: [
@@ -4383,7 +4700,70 @@ function readSubagentTurnPrompt(
         return null;
     }
 
-    return readRecordString(update.rawInput, "prompt");
+    return (
+        readRecordString(update.rawInput, "prompt") ??
+        readRecordString(update.rawInput, "message") ??
+        readRecordString(update.rawInput, "input") ??
+        readPromptFromToolCallContent(update.content)
+    );
+}
+
+function readPromptFromToolCallContent(
+    content: readonly ToolCallContent[] | null | undefined,
+): string | null {
+    if (!Array.isArray(content)) {
+        return null;
+    }
+
+    for (const entry of content) {
+        if (!isRecordValue(entry) || entry.type !== "content") {
+            continue;
+        }
+
+        const block = entry.content;
+        if (!isRecordValue(block) || block.type !== "text") {
+            continue;
+        }
+
+        const text = typeof block.text === "string" ? block.text : "";
+        const prompt = readPromptBlockFromText(text);
+        if (prompt) {
+            return prompt;
+        }
+    }
+
+    return null;
+}
+
+function readPromptBlockFromText(value: string): string | null {
+    const promptLines: string[] = [];
+    let isReadingPrompt = false;
+
+    for (const line of value.split(/\r?\n/)) {
+        const match = /^\s*Prompt:\s*(.*)$/i.exec(line);
+        if (match) {
+            isReadingPrompt = true;
+            promptLines.push(match[1]);
+            continue;
+        }
+
+        if (!isReadingPrompt) {
+            continue;
+        }
+
+        if (isSubagentPromptDetailMetadataLine(line)) {
+            break;
+        }
+
+        promptLines.push(line);
+    }
+
+    const prompt = promptLines.join("\n").trim();
+    return prompt || null;
+}
+
+function isSubagentPromptDetailMetadataLine(line: string): boolean {
+    return /^\s*(?:Model|Reasoning effort):\s*/i.test(line);
 }
 
 function readSubagentTurnResponse(
@@ -4460,10 +4840,7 @@ function readSubagentStatusRecords(
         records.push(...metaStatuses.filter(isRecordValue));
     }
 
-    const runtimeChildSessionId = readMetaString(
-        meta,
-        CODEX_ACP_CHILD_SESSION_ID_KEY,
-    );
+    const runtimeChildSessionId = readSubagentChildRuntimeSessionId(meta);
     if (runtimeChildSessionId && meta[CODEX_ACP_AGENT_STATUS_KEY] !== undefined) {
         records.push({
             [CODEX_ACP_AGENT_STATUS_KEY]: meta[CODEX_ACP_AGENT_STATUS_KEY],

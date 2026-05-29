@@ -503,9 +503,13 @@ export const useAiStore = create<AiStore>((set, get) => ({
                           existingCatalog,
                       )
                     : baseSnapshot;
-            const nextSnapshot = applySessionPatch(
+            const incomingSnapshot = applySessionPatch(
                 snapshotForPatch,
                 update.patch,
+            );
+            const nextSnapshot = resolveIncomingSessionSnapshot(
+                incomingSnapshot,
+                session,
             );
             const nextCatalog = hasCatalogChanges(update.patch.changes)
                 ? extractRuntimeCatalog(nextSnapshot)
@@ -552,7 +556,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionSnapshot: (snapshot) => {
-        let titleChanged = false;
+        let syncedTitle: string | null = null;
         set((state) => {
             const session =
                 state.sessions[snapshot.sessionId] ?? createSessionState();
@@ -565,13 +569,19 @@ export const useAiStore = create<AiStore>((set, get) => ({
                           existingCatalog,
                       )
                     : snapshot;
+            const resolvedSnapshot = resolveIncomingSessionSnapshot(
+                nextSnapshot,
+                session,
+            );
             const nextMeta = session.meta
-                ? session.meta.title === nextSnapshot.title
+                ? session.meta.title === resolvedSnapshot.title
                     ? session.meta
-                    : { ...session.meta, title: nextSnapshot.title }
+                    : { ...session.meta, title: resolvedSnapshot.title }
                 : session.meta;
-            titleChanged = nextMeta !== session.meta;
-            const nextCatalog = extractRuntimeCatalog(nextSnapshot);
+            if (nextMeta !== session.meta) {
+                syncedTitle = resolvedSnapshot.title;
+            }
+            const nextCatalog = extractRuntimeCatalog(resolvedSnapshot);
 
             return {
                 runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
@@ -587,21 +597,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         hydrated: true,
                         isDispatching: false,
                         isHydrating: false,
-                        localError: nextSnapshot.lastError,
+                        localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
-                        snapshot: nextSnapshot,
+                        snapshot: resolvedSnapshot,
                     },
                 },
             };
         });
 
-        if (titleChanged) {
+        if (syncedTitle !== null) {
             void useWorkspaceStore
                 .getState()
-                .updateSessionTabTitles(
-                    snapshot.sessionId,
-                    snapshot.title,
-                );
+                .updateSessionTabTitles(snapshot.sessionId, syncedTitle);
         }
 
         void drainQueueIfNeeded(snapshot.sessionId, get, set);
@@ -748,12 +755,17 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ? runtimeCatalog
                         : (state.runtimeCatalogById[tab.runtimeId] ??
                           extractRuntimeCatalog(resolvedSnapshot));
-                const nextSnapshot = hasRuntimeCatalog(nextCatalog)
+                const incomingSnapshot = hasRuntimeCatalog(nextCatalog)
                     ? mergeRuntimeCatalogIntoSnapshot(
                           resolvedSnapshot,
                           nextCatalog,
                       )
                     : resolvedSnapshot;
+                const currentSession = state.sessions[tab.sessionId];
+                const nextSnapshot = resolveIncomingSessionSnapshot(
+                    incomingSnapshot,
+                    currentSession,
+                );
 
                 return {
                     runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
@@ -1783,6 +1795,106 @@ function mergeRuntimeCatalogIntoSnapshot(
         modelId: snapshot.modelId ?? catalog.modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
+}
+
+function resolveIncomingSessionSnapshot(
+    incomingSnapshot: AiSessionSnapshot,
+    currentSession: AiSessionClientState | null | undefined,
+): AiSessionSnapshot {
+    const currentSnapshot = currentSession?.snapshot ?? null;
+    if (
+        !currentSnapshot ||
+        currentSnapshot.sessionId !== incomingSnapshot.sessionId
+    ) {
+        return incomingSnapshot;
+    }
+
+    const shouldPreserveCurrent = hasMoreTranscript(
+        currentSnapshot,
+        incomingSnapshot,
+    );
+    if (!shouldPreserveCurrent) {
+        return incomingSnapshot;
+    }
+
+    return mergeHydrationMetadataIntoCurrent(
+        currentSnapshot,
+        incomingSnapshot,
+    );
+}
+
+function mergeHydrationMetadataIntoCurrent(
+    currentSnapshot: AiSessionSnapshot,
+    incomingSnapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    const incomingCatalog = extractRuntimeCatalog(incomingSnapshot);
+    const snapshotWithCatalog = hasRuntimeCatalog(incomingCatalog)
+        ? mergeRuntimeCatalogIntoSnapshot(currentSnapshot, incomingCatalog)
+        : currentSnapshot;
+
+    if (
+        snapshotWithCatalog.runtimeSessionId ||
+        !incomingSnapshot.runtimeSessionId
+    ) {
+        return snapshotWithCatalog;
+    }
+
+    return {
+        ...snapshotWithCatalog,
+        runtimeSessionId: incomingSnapshot.runtimeSessionId,
+    };
+}
+
+function hasMoreTranscript(
+    currentSnapshot: Pick<AiSessionSnapshot, "messages">,
+    incomingSnapshot: Pick<AiSessionSnapshot, "messages">,
+): boolean {
+    if (
+        currentSnapshot.messages.length < incomingSnapshot.messages.length ||
+        !hasCompatibleTranscriptPrefix(incomingSnapshot, currentSnapshot)
+    ) {
+        return false;
+    }
+
+    if (currentSnapshot.messages.length > incomingSnapshot.messages.length) {
+        return true;
+    }
+
+    return (
+        getTranscriptWeight(currentSnapshot) >
+        getTranscriptWeight(incomingSnapshot)
+    );
+}
+
+function hasCompatibleTranscriptPrefix(
+    prefixSnapshot: Pick<AiSessionSnapshot, "messages">,
+    candidateSnapshot: Pick<AiSessionSnapshot, "messages">,
+): boolean {
+    return prefixSnapshot.messages.every((message, index) => {
+        const candidate = candidateSnapshot.messages[index];
+        if (!candidate || candidate.kind !== message.kind) {
+            return false;
+        }
+
+        if (message.id && candidate.id && message.id !== candidate.id) {
+            return false;
+        }
+
+        return (
+            candidate.content.startsWith(message.content) &&
+            candidate.attachments.length >= message.attachments.length
+        );
+    });
+}
+
+function getTranscriptWeight(
+    snapshot: Pick<AiSessionSnapshot, "messages">,
+): number {
+    return snapshot.messages.reduce(
+        (total, message) =>
+            total + message.content.length + message.attachments.length,
+        0,
+    );
 }
 
 function applyCatalogPatchToCatalog(

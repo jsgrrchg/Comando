@@ -17,7 +17,11 @@ import type {
 } from "@shared/ipc";
 import { computeDiffHunks } from "@shared/ai-tracked-file";
 
-import type { AiWorkerEventMessage, AiWorkerSessionLaunchInput } from "./contracts";
+import {
+    CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
+    type AiWorkerEventMessage,
+    type AiWorkerSessionLaunchInput,
+} from "./contracts";
 
 const initializeMock = vi.fn(() => Promise.resolve(undefined));
 type MockSessionCatalogResponse = {
@@ -740,6 +744,203 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("retries buffered subagent creation after the parent runtime session mapping is registered", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Buffered subagent parent",
+        });
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-early",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        loadSessionMock.mockImplementationOnce(async () => {
+            const client = latestClientFactory?.();
+            await client?.sessionUpdate({
+                _meta: subagentMeta,
+                sessionId: "runtime-subagent-early",
+                update: {
+                    _meta: subagentMeta,
+                    sessionUpdate: "session_info_update",
+                    title: "Galileo",
+                },
+            });
+            await client?.sessionUpdate({
+                sessionId: "runtime-subagent-early",
+                update: {
+                    content: {
+                        text: "early child output",
+                        type: "text",
+                    },
+                    messageId: "early-child-message-1",
+                    sessionUpdate: "agent_message_chunk",
+                },
+            });
+            return {
+                configOptions: [],
+                modes: [],
+                models: [],
+            };
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        await vi.waitFor(() => {
+            const childSnapshot = getLatestSnapshot(
+                emittedEvents,
+                (snapshot) =>
+                    snapshot.parentSessionId === "session-1" &&
+                    snapshot.runtimeSessionId === "runtime-subagent-early",
+            );
+            expect(childSnapshot).toEqual(
+                expect.objectContaining({
+                    messages: [
+                        expect.objectContaining({
+                            content: "early child output",
+                            kind: "assistant",
+                        }),
+                    ],
+                    parentSessionId: "session-1",
+                    runtimeSessionId: "runtime-subagent-early",
+                    title: "Galileo",
+                }),
+            );
+        });
+    });
+
+    it("preserves buffered subagent creation when early child updates overflow the buffer", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Buffered subagent overflow parent",
+        });
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-overflow",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        loadSessionMock.mockImplementationOnce(async () => {
+            const client = latestClientFactory?.();
+            await client?.sessionUpdate({
+                _meta: subagentMeta,
+                sessionId: "runtime-subagent-overflow",
+                update: {
+                    _meta: subagentMeta,
+                    sessionUpdate: "session_info_update",
+                    title: "Galileo",
+                },
+            });
+            for (let index = 0; index < 20; index += 1) {
+                await client?.sessionUpdate({
+                    sessionId: "runtime-subagent-overflow",
+                    update: {
+                        content: {
+                            text: `buffered child output ${index}`,
+                            type: "text",
+                        },
+                        messageId: `overflow-child-message-${index}`,
+                        sessionUpdate: "agent_message_chunk",
+                    },
+                });
+            }
+            return {
+                configOptions: [],
+                modes: [],
+                models: [],
+            };
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        await vi.waitFor(() => {
+            const childSnapshot = getLatestSnapshot(
+                emittedEvents,
+                (snapshot) =>
+                    snapshot.parentSessionId === "session-1" &&
+                    snapshot.runtimeSessionId === "runtime-subagent-overflow",
+            );
+            expect(childSnapshot).toEqual(
+                expect.objectContaining({
+                    parentSessionId: "session-1",
+                    runtimeSessionId: "runtime-subagent-overflow",
+                    title: "Galileo",
+                }),
+            );
+            expect(childSnapshot?.messages).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        content: "buffered child output 19",
+                        kind: "assistant",
+                    }),
+                ]),
+            );
+        });
+    });
+
+    it("registers Codex subagent sessions from thread metadata when session metadata is absent", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent thread metadata parent");
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildThreadId: "runtime-subagent-thread-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentThreadId: "runtime-session-1",
+        };
+        await client.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-thread-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        const childSnapshot = getLatestSnapshot(
+            emittedEvents,
+            (snapshot) =>
+                snapshot.parentSessionId === "session-1" &&
+                snapshot.runtimeSessionId === "runtime-subagent-thread-1",
+        );
+        expect(childSnapshot).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-1",
+                runtimeSessionId: "runtime-subagent-thread-1",
+                title: "Galileo",
+            }),
+        );
+    });
+
     it("applies Codex subagent model metadata to the initial child snapshot", async () => {
         loadSessionMock.mockResolvedValueOnce(createCodexCatalogResponse());
         const tempDir = await fs.mkdtemp(
@@ -1207,6 +1408,129 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(false);
     });
 
+    it("keeps a terminal subagent breadcrumb response that arrives before turn complete", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent terminal before complete");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        const interactionMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_begin",
+        };
+        await client.sessionUpdate({
+            _meta: interactionMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: interactionMeta,
+                kind: "other",
+                rawInput: {
+                    prompt: "Inspect the failing stream",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Contacting subagent",
+                toolCallId: "codex-acp:subagent:interaction-terminal-race",
+            },
+        });
+        await sendTurnLifecycle(client, {
+            eventType: "turn_started",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+
+        emittedEvents.length = 0;
+        const endMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "interaction_end",
+        };
+        await client.sessionUpdate({
+            _meta: endMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: endMeta,
+                rawOutput: {
+                    status: {
+                        completed: "terminal response before lifecycle end",
+                    },
+                },
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Galileo responded",
+                toolCallId: "codex-acp:subagent:interaction-terminal-race",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                )?.filter(
+                    (message) =>
+                        message.kind === "assistant" &&
+                        message.content ===
+                            "terminal response before lifecycle end",
+                ),
+            ).toHaveLength(1);
+        });
+        for (const text of ["terminal response ", "before lifecycle end"]) {
+            await client.sessionUpdate({
+                sessionId: "runtime-subagent-1",
+                update: {
+                    content: {
+                        text,
+                        type: "text",
+                    },
+                    messageId: "child-terminal-echo",
+                    sessionUpdate: "agent_message_chunk",
+                },
+            });
+        }
+        await vi.waitFor(() => {
+            const assistantMessages =
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                )?.filter((message) => message.kind === "assistant") ?? [];
+            expect(assistantMessages.map((message) => message.content)).toEqual([
+                "terminal response before lifecycle end",
+            ]);
+        });
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (changes) => changes.status === "idle",
+            ),
+        ).toBe(false);
+
+        await sendTurnLifecycle(client, {
+            eventType: "turn_complete",
+            runtimeSessionId: "runtime-subagent-1",
+            turnId: "turn-1",
+        });
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "idle",
+                ),
+            ).toBe(true);
+        });
+    });
+
     it("attaches open-session actions to Codex subagent breadcrumbs", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -1527,6 +1851,119 @@ describe("AiWorkerRuntime prepareSession", () => {
         ]);
     });
 
+    it("hides internal tool activity rows from Codex subagent child sessions", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent hidden tools parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+
+        emittedEvents.length = 0;
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                kind: "execute",
+                rawInput: {
+                    command: "pnpm test",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "child-exec",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: {
+                    terminal_output: {
+                        data: "running\n",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Tool call",
+                toolCallId: "child-exec",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                kind: "plan",
+                sessionUpdate: "tool_call",
+                status: "completed",
+                title: "update_plan",
+                toolCallId: "child-plan",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (changes) => changes.status === "streaming",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (activity) =>
+                    activity.id === "child-exec" ||
+                    activity.id === "child-plan" ||
+                    activity.title === "exec_command" ||
+                    activity.title === "update_plan",
+            ),
+        ).toBe(false);
+
+        emittedEvents.length = 0;
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
+                content: [
+                    {
+                        newText: "export const value = 2;\n",
+                        oldText: "export const value = 1;\n",
+                        path: path.join(tempDir, "src/subagent-tool.ts"),
+                        type: "diff",
+                    },
+                ],
+                kind: "edit",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "Edit",
+                toolCallId: "child-edit",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasTrackedFileEvent(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    "src/subagent-tool.ts",
+                ),
+            ).toBe(true);
+        });
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                childSnapshot.sessionId,
+                (activity) => activity.id === "child-edit",
+            ),
+        ).toBe(false);
+    });
+
     it("renders Codex subagent user message chunks in the child thread", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent user chunk parent");
@@ -1568,6 +2005,63 @@ describe("AiWorkerRuntime prepareSession", () => {
                     content: "Inspect the failing chat stream",
                     kind: "user",
                 }),
+            ]);
+        });
+    });
+
+    it("mirrors subagent prompts from breadcrumb content when raw input lacks prompt", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent prompt content fallback");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        const resumeBeginMeta = {
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpEventType: "subagent_breadcrumb",
+            codexAcpParentSessionId: "runtime-session-1",
+            codexAcpSubagentEventType: "resume_begin",
+        };
+        await client.sessionUpdate({
+            _meta: resumeBeginMeta,
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: resumeBeginMeta,
+                content: [
+                    {
+                        content: {
+                            text: "Receiver: runtime-subagent-1\nPrompt: sin cambios\ncon contexto adicional",
+                            type: "text",
+                        },
+                        type: "content",
+                    },
+                ],
+                kind: "other",
+                rawInput: {
+                    receiver_thread_id: "runtime-subagent-1",
+                },
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "Resuming Galileo",
+                toolCallId: "codex-acp:subagent:resume-content-prompt",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const userMessages =
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                )?.filter((message) => message.kind === "user") ?? [];
+            expect(userMessages.map((message) => message.content)).toEqual([
+                "sin cambios\ncon contexto adicional",
             ]);
         });
     });
@@ -1630,6 +2124,60 @@ describe("AiWorkerRuntime prepareSession", () => {
                         message.content === "Inspect the failing chat stream",
                 ),
             ).toHaveLength(1);
+        });
+    });
+
+    it("mirrors repeated subagent prompts with distinct tool call ids", async () => {
+        const { client, emittedEvents, tempDir } =
+            await setupPreparedRuntimeWithClient("Subagent repeated prompt parent");
+        const childSnapshot = await registerSubagentSession(
+            client,
+            emittedEvents,
+            tempDir,
+            {
+                nickname: "Galileo",
+                runtimeSessionId: "runtime-subagent-1",
+            },
+        );
+        emittedEvents.length = 0;
+
+        for (const toolCallId of [
+            "codex-acp:subagent:interaction-repeat-1",
+            "codex-acp:subagent:interaction-repeat-2",
+        ]) {
+            const interactionBeginMeta = {
+                codexAcpChildSessionId: "runtime-subagent-1",
+                codexAcpEventType: "subagent_breadcrumb",
+                codexAcpParentSessionId: "runtime-session-1",
+                codexAcpSubagentEventType: "interaction_begin",
+            };
+            await client.sessionUpdate({
+                _meta: interactionBeginMeta,
+                sessionId: "runtime-session-1",
+                update: {
+                    _meta: interactionBeginMeta,
+                    kind: "other",
+                    rawInput: {
+                        prompt: "Repeat this prompt",
+                    },
+                    sessionUpdate: "tool_call",
+                    status: "in_progress",
+                    title: "Contacting subagent",
+                    toolCallId,
+                },
+            });
+        }
+
+        await vi.waitFor(() => {
+            const userMessages =
+                getLatestPatchMessages(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                )?.filter((message) => message.kind === "user") ?? [];
+            expect(userMessages.map((message) => message.content)).toEqual([
+                "Repeat this prompt",
+                "Repeat this prompt",
+            ]);
         });
     });
 
@@ -3244,6 +3792,202 @@ describe("AiWorkerRuntime prepareSession", () => {
                     ],
                     content: "hello",
                 }),
+            ]);
+        });
+    });
+
+    it("suppresses internal guided-input payload echoes while keeping the human summary", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const baseLaunch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Guided input echo",
+        });
+        const launch: AiWorkerSessionLaunchInput = {
+            ...baseLaunch,
+            persistedSnapshot: {
+                ...baseLaunch.persistedSnapshot,
+                pendingUserInput: {
+                    questions: [
+                        {
+                            header: "Choice",
+                            id: "choice",
+                            isOther: false,
+                            isSecret: false,
+                            options: [],
+                            question: "Pick one",
+                        },
+                    ],
+                    requestId: "guided-input-1",
+                    sessionId: "session-1",
+                    title: "Guided input",
+                    toolCallId: "guided-tool-1",
+                    turnId: "turn-1",
+                    updatedAt: "2026-04-15T22:23:13.719838Z",
+                },
+                status: "waiting_user_input",
+            },
+        };
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        promptMock.mockImplementationOnce(async (...args: readonly unknown[]) => {
+            const params = args[0] as {
+                readonly messageId: string;
+                readonly prompt: readonly { readonly text: string; readonly type: string }[];
+            };
+            await client!.sessionUpdate({
+                sessionId: "runtime-session-1",
+                update: {
+                    content: {
+                        text: params.prompt[0]?.text ?? "",
+                        type: "text",
+                    },
+                    messageId: params.messageId,
+                    sessionUpdate: "user_message_chunk",
+                },
+            });
+            return {
+                stopReason: "completed",
+            };
+        });
+
+        await runtime.dispatchMethod("ai.respondUserInput", {
+            input: {
+                answers: [
+                    {
+                        answers: ["yes"],
+                        questionId: "choice",
+                    },
+                ],
+                requestId: "guided-input-1",
+                sessionId: "session-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const userMessages =
+                getLatestPatchMessages(emittedEvents, "session-1")?.filter(
+                    (message) => message.kind === "user",
+                ) ?? [];
+            expect(userMessages.map((message) => message.content)).toEqual([
+                "Choice: yes",
+            ]);
+            expect(
+                userMessages.some((message) =>
+                    message.content.includes(CODEX_ACP_USER_INPUT_RESPONSE_PREFIX),
+                ),
+            ).toBe(false);
+        });
+    });
+
+    it("suppresses late chunked internal guided-input payload echoes", async () => {
+        const { client, emittedEvents } =
+            await setupPreparedRuntimeWithClient("Late chunked guided input echo");
+        emittedEvents.length = 0;
+
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: `${CODEX_ACP_USER_INPUT_RESPONSE_PREFIX}{"response":`,
+                    type: "text",
+                },
+                messageId: "late-guided-echo",
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: '{"answers":{"choice":{"answers":["yes"]}}},"turn_id":"turn-1"}',
+                    type: "text",
+                },
+                messageId: "late-guided-echo",
+                sessionUpdate: "user_message_chunk",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: "visible answer",
+                    type: "text",
+                },
+                messageId: "assistant-after-guided-echo",
+                sessionUpdate: "agent_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(emittedEvents, "session-1");
+            expect(messages).toEqual([
+                expect.objectContaining({
+                    content: "visible answer",
+                    kind: "assistant",
+                }),
+            ]);
+        });
+    });
+
+    it("does not suppress unexpected text that reuses the prompt message id", async () => {
+        const { client, emittedEvents, launch, runtime } =
+            await setupPreparedRuntimeWithClient("Prompt text same id");
+        emittedEvents.length = 0;
+        promptMock.mockImplementationOnce(async (...args: readonly unknown[]) => {
+            const params = args[0] as { readonly messageId: string };
+            await client.sessionUpdate({
+                sessionId: "runtime-session-1",
+                update: {
+                    content: {
+                        text: "unexpected user echo",
+                        type: "text",
+                    },
+                    messageId: params.messageId,
+                    sessionUpdate: "user_message_chunk",
+                },
+            });
+            return {
+                stopReason: "completed",
+            };
+        });
+
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [],
+                projectId: null,
+                prompt: "hello",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Prompt text same id",
+                worktreeId: null,
+            },
+            launch,
+        });
+
+        await vi.waitFor(() => {
+            const userMessages =
+                getLatestPatchMessages(emittedEvents, "session-1")?.filter(
+                    (message) => message.kind === "user",
+                ) ?? [];
+            expect(userMessages.map((message) => message.content)).toEqual([
+                "hello",
+                "unexpected user echo",
             ]);
         });
     });
