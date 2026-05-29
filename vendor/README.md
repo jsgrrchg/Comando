@@ -25,10 +25,10 @@ Current scope in Comando:
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.33.1`
-  - synced against upstream commit `e0ea9d8` (`chore(main): release 0.33.1 (#638)`)
-  - uses `@anthropic-ai/claude-agent-sdk` `0.2.132`
-  - includes upstream fixes for `availableModels` allowlists, real `Write` overwrite diffs, and task-notification result origins
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.37.0`
+  - synced against upstream commit `36822c2b75b6e1cd5406a5ab40fe603fc380ee10`
+  - local runtime update keeps `@agentclientprotocol/sdk` at `0.22.1` and updates `@anthropic-ai/claude-agent-sdk` to `0.3.154` (Claude Code `2.1.154`)
+  - includes upstream fixes for `availableModels` allowlists, real `Write` overwrite diffs, task-notification result origins, SDK settings defaults, task-hook mirroring and local command stdout rendering
 
 ## Current Codex Delta
 
@@ -53,6 +53,17 @@ The remaining Comando-specific delta exists to preserve desktop product behavior
 When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
 Comando's ACP client lives in TypeScript/Electron under `src/main/ai/` and currently uses `@agentclientprotocol/sdk` from npm. Do not copy a Rust workspace ACP client migration unless Comando gains an equivalent Rust backend.
+
+## Current Claude Delta
+
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
+`0.37.0`, with a narrow local runtime bump to `@anthropic-ai/claude-agent-sdk`
+`0.3.154` so the embedded Claude Code runtime is `2.1.154`.
+
+The only source-level compatibility delta is treating the SDK's
+`thinking_tokens` system event as a no-op. The event is streaming telemetry for
+thinking-token estimates, not assistant content, tool calls, file edits, or final
+usage. `dist/` is rebuilt from the vendored source after applying that delta.
 
 ## Updating Vendored Runtimes
 
