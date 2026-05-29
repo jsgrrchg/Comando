@@ -4726,7 +4726,7 @@ function readPromptFromToolCallContent(
         }
 
         const text = typeof block.text === "string" ? block.text : "";
-        const prompt = readPromptLineFromText(text);
+        const prompt = readPromptBlockFromText(text);
         if (prompt) {
             return prompt;
         }
@@ -4735,16 +4735,35 @@ function readPromptFromToolCallContent(
     return null;
 }
 
-function readPromptLineFromText(value: string): string | null {
+function readPromptBlockFromText(value: string): string | null {
+    const promptLines: string[] = [];
+    let isReadingPrompt = false;
+
     for (const line of value.split(/\r?\n/)) {
-        const match = /^Prompt:\s*(.+)$/i.exec(line.trim());
-        const prompt = match ? match[1].trim() : "";
-        if (prompt) {
-            return prompt;
+        const match = /^\s*Prompt:\s*(.*)$/i.exec(line);
+        if (match) {
+            isReadingPrompt = true;
+            promptLines.push(match[1]);
+            continue;
         }
+
+        if (!isReadingPrompt) {
+            continue;
+        }
+
+        if (isSubagentPromptDetailMetadataLine(line)) {
+            break;
+        }
+
+        promptLines.push(line);
     }
 
-    return null;
+    const prompt = promptLines.join("\n").trim();
+    return prompt || null;
+}
+
+function isSubagentPromptDetailMetadataLine(line: string): boolean {
+    return /^\s*(?:Model|Reasoning effort):\s*/i.test(line);
 }
 
 function readSubagentTurnResponse(

@@ -2037,7 +2037,7 @@ describe("AiWorkerRuntime prepareSession", () => {
                 content: [
                     {
                         content: {
-                            text: "Receiver: runtime-subagent-1\nPrompt: sin cambios",
+                            text: "Receiver: runtime-subagent-1\nPrompt: sin cambios\ncon contexto adicional",
                             type: "text",
                         },
                         type: "content",
@@ -2061,7 +2061,7 @@ describe("AiWorkerRuntime prepareSession", () => {
                     childSnapshot.sessionId,
                 )?.filter((message) => message.kind === "user") ?? [];
             expect(userMessages.map((message) => message.content)).toEqual([
-                "sin cambios",
+                "sin cambios\ncon contexto adicional",
             ]);
         });
     });
