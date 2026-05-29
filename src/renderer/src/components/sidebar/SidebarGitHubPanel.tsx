@@ -102,9 +102,18 @@ export function SidebarGitHubPanel({
             ? getProjectSnapshot(state.snapshots, projectId, worktreeId)
             : null,
     );
+    const githubSnapshot = useGitStore((state) =>
+        projectId
+            ? getGitHubRepositorySnapshot(
+                  state.snapshots,
+                  projectId,
+                  worktreeId,
+              )
+            : null,
+    );
     const repoRef = useMemo(
-        () => resolveGitHubRepositoryRef(snapshot?.remotes ?? []),
-        [snapshot?.remotes],
+        () => resolveGitHubRepositoryRef(githubSnapshot?.remotes ?? []),
+        [githubSnapshot?.remotes],
     );
     const repoKey = repoRef ? getGitHubRepoKey(repoRef) : null;
     const authStatus = useGitHubStore((state) =>
@@ -217,7 +226,7 @@ export function SidebarGitHubPanel({
         isCheckingAuth,
         projectId,
         repoRef,
-        snapshot,
+        snapshot: githubSnapshot,
     });
 
     useEffect(() => {
@@ -1612,7 +1621,7 @@ function getContextKey(projectId: string, worktreeId: string | null): string {
     return getGitContextKey(projectId, worktreeId);
 }
 
-function getProjectSnapshot(
+export function getProjectSnapshot(
     snapshots: Record<string, GitRepositorySnapshot | null>,
     projectId: string,
     worktreeId: string | null,
@@ -1631,6 +1640,29 @@ function getProjectSnapshot(
             (snapshot) =>
                 snapshot?.projectId === projectId &&
                 snapshot.currentWorktreeId === null,
+        ) ?? null
+    );
+}
+
+export function getGitHubRepositorySnapshot(
+    snapshots: Record<string, GitRepositorySnapshot | null>,
+    projectId: string,
+    worktreeId: string | null,
+): GitRepositorySnapshot | null {
+    const directMatch = getProjectSnapshot(snapshots, projectId, worktreeId);
+    if (directMatch) {
+        return directMatch;
+    }
+
+    return (
+        Object.values(snapshots).find(
+            (snapshot) =>
+                snapshot?.projectId === projectId &&
+                (worktreeId === null ||
+                    snapshot.worktrees.some(
+                        (entry) => entry.id === worktreeId,
+                    ) ||
+                    snapshot.currentWorktreeId === null),
         ) ?? null
     );
 }
