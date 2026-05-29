@@ -926,6 +926,7 @@ export class ClaudeAcpAgent implements Agent {
               case "api_retry":
               case "mirror_error":
               case "permission_denied":
+              case "thinking_tokens":
                 // Todo: process via status api: https://docs.claude.com/en/docs/claude-code/hooks#hook-output
                 break;
               default:
