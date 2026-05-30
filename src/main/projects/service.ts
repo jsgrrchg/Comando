@@ -474,6 +474,22 @@ export class ProjectService {
         );
     }
 
+    async recordProjectEntryMutation(
+        projectId: string,
+        relativePath: string,
+        worktreeId: string | null = null,
+    ): Promise<void> {
+        await this.#ensureWorkerRegistry();
+        const project = this.#resolveProjectScope(projectId, worktreeId);
+        this.touchProject(projectId);
+        await this.#worker.recordProjectEntryMutation({
+            projectId,
+            relativePaths: [relativePath],
+            rootPath: project.rootPath,
+            worktreeId: project.worktreeId,
+        });
+    }
+
     getProjectRootPath(
         projectId: string,
         worktreeId: string | null = null,

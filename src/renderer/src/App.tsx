@@ -1973,6 +1973,57 @@ export function App() {
         ],
     );
 
+    const handleImportExternalTreeEntries = useCallback(
+        async (
+            sourcePaths: readonly string[],
+            destinationNode: GitTreeNode | null,
+        ) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const destinationParentRelativePath = destinationNode?.isProjectRoot
+                ? null
+                : (destinationNode?.path ?? null);
+
+            try {
+                const result = await copyExternalEntries(
+                    activeProjectId,
+                    sourcePaths,
+                    destinationParentRelativePath,
+                    activeWorktreeId,
+                );
+                const firstImportedEntry = result.entries[0] ?? null;
+
+                if (firstImportedEntry) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        firstImportedEntry.relativePath,
+                        activeWorktreeId,
+                    );
+                } else if (destinationParentRelativePath) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        destinationParentRelativePath,
+                        activeWorktreeId,
+                    );
+                }
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not import the dropped entries.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            copyExternalEntries,
+            revealPathInTree,
+        ],
+    );
+
     const handleDuplicateTreeEntries = useCallback(
         async (nodes: readonly GitTreeNode[]) => {
             if (!activeProjectId) {
@@ -3702,18 +3753,9 @@ export function App() {
                                             sourcePaths,
                                             destinationNode,
                                         ) => {
-                                            if (!activeProjectId) {
-                                                return;
-                                            }
-
-                                            void copyExternalEntries(
-                                                activeProjectId,
+                                            void handleImportExternalTreeEntries(
                                                 sourcePaths,
-                                                destinationNode?.isProjectRoot
-                                                    ? null
-                                                    : (destinationNode?.path ??
-                                                      null),
-                                                activeWorktreeId,
+                                                destinationNode,
                                             );
                                         }}
                                         selectedPaths={selectedFileTreePathSet}
@@ -3790,18 +3832,9 @@ export function App() {
                                         isFilteringFileTree
                                             ? undefined
                                             : (sourcePaths, destinationNode) => {
-                                                  if (!activeProjectId) {
-                                                      return;
-                                                  }
-
-                                                  void copyExternalEntries(
-                                                      activeProjectId,
+                                                  void handleImportExternalTreeEntries(
                                                       sourcePaths,
-                                                      destinationNode?.isProjectRoot
-                                                          ? null
-                                                          : (destinationNode?.path ??
-                                                            null),
-                                                      activeWorktreeId,
+                                                      destinationNode,
                                                   );
                                               }
                                     }

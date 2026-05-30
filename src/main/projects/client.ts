@@ -13,6 +13,7 @@ import {
     type ProjectRuntimeCopyEntriesInput,
     type ProjectRuntimeCreateEntryInput,
     type ProjectRuntimeDeleteEntryInput,
+    type ProjectRuntimeEntryMutationInput,
     type ProjectRuntimeListEntriesInput,
     type ProjectRuntimeOpenFileInput,
     type ProjectRuntimeRegistrySnapshot,
@@ -76,6 +77,9 @@ export interface ProjectWorkerGateway {
         input: ProjectRuntimeRenameEntryInput,
     ): Promise<ProjectEntryMutationResult>;
     deleteProjectEntry(input: ProjectRuntimeDeleteEntryInput): Promise<void>;
+    recordProjectEntryMutation(
+        input: ProjectRuntimeEntryMutationInput,
+    ): Promise<void>;
     searchProjectEntries(
         input: ProjectRuntimeSearchInput,
     ): Promise<ProjectRuntimeSearchResponse>;
@@ -180,6 +184,12 @@ class RemoteProjectWorkerClient implements ProjectWorkerGateway {
         await this.#rpc.call("projects.deleteProjectEntry", input);
     }
 
+    async recordProjectEntryMutation(
+        input: ProjectRuntimeEntryMutationInput,
+    ): Promise<void> {
+        await this.#rpc.call("projects.recordProjectEntryMutation", input);
+    }
+
     async searchProjectEntries(
         input: ProjectRuntimeSearchInput,
     ): Promise<ProjectRuntimeSearchResponse> {
@@ -270,6 +280,13 @@ class LocalProjectWorkerClient implements ProjectWorkerGateway {
         input: ProjectRuntimeDeleteEntryInput,
     ): Promise<void> {
         await this.#runtime.deleteProjectEntry(input);
+    }
+
+    recordProjectEntryMutation(
+        input: ProjectRuntimeEntryMutationInput,
+    ): Promise<void> {
+        this.#runtime.recordProjectEntryMutation(input);
+        return Promise.resolve();
     }
 
     async searchProjectEntries(

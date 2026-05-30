@@ -1533,8 +1533,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 input.relativePath,
                 input.worktreeId ?? null,
             );
-            options.projectService.touchProject(input.projectId);
             await shell.trashItem(absolutePath);
+            await options.projectService.recordProjectEntryMutation(
+                input.projectId,
+                input.relativePath,
+                input.worktreeId ?? null,
+            );
         },
     );
     ipcMain.handle(

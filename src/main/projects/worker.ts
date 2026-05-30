@@ -163,6 +163,13 @@ async function dispatchMethod(method: string, params: unknown): Promise<unknown>
                 params as Parameters<ProjectRuntime["deleteProjectEntry"]>[0],
             );
             return;
+        case "projects.recordProjectEntryMutation":
+            projectRuntime.recordProjectEntryMutation(
+                params as Parameters<
+                    ProjectRuntime["recordProjectEntryMutation"]
+                >[0],
+            );
+            return;
         case "projects.searchProjectEntries":
             return await projectRuntime.searchProjectEntries(
                 params as Parameters<ProjectRuntime["searchProjectEntries"]>[0],

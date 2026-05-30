@@ -132,6 +132,11 @@ export interface ProjectRuntimeDeleteEntryInput extends ProjectRuntimeScopeInput
     readonly relativePath: string;
 }
 
+export interface ProjectRuntimeEntryMutationInput
+    extends ProjectRuntimeScopeInput {
+    readonly relativePaths: readonly string[];
+}
+
 export interface ProjectRuntimeSearchInput extends ProjectRuntimeScopeInput {
     readonly limit?: number;
     readonly query: string;
@@ -318,6 +323,11 @@ export class ProjectRuntime {
         });
 
         this.#handleRootMutation(input, [input.relativePath]);
+    }
+
+    recordProjectEntryMutation(input: ProjectRuntimeEntryMutationInput): void {
+        this.#ensureRootContext(input);
+        this.#handleRootMutation(input, input.relativePaths);
     }
 
     async searchProjectEntries(
