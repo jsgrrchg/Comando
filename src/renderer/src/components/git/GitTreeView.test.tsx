@@ -16,6 +16,64 @@ function createFileNode(overrides: Partial<GitTreeNode> = {}): GitTreeNode {
 }
 
 describe("GitTreeView", () => {
+    it("renders children for expanded directories", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                expandedPaths={["src"]}
+                nodes={[
+                    createFileNode({
+                        children: [
+                            createFileNode({
+                                id: "file-2",
+                                name: "App.tsx",
+                                path: "src/App.tsx",
+                            }),
+                        ],
+                        hasChildren: true,
+                        id: "dir-1",
+                        kind: "directory",
+                        name: "src",
+                        path: "src",
+                        status: "modified",
+                    }),
+                ]}
+            />,
+        );
+
+        expect(markup).toContain("src");
+        expect(markup).toContain("App.tsx");
+        expect(markup).toContain('data-path="src/App.tsx"');
+    });
+
+    it("does not render children for collapsed directories", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                expandedPaths={[]}
+                nodes={[
+                    createFileNode({
+                        children: [
+                            createFileNode({
+                                id: "file-2",
+                                name: "App.tsx",
+                                path: "src/App.tsx",
+                            }),
+                        ],
+                        hasChildren: true,
+                        id: "dir-1",
+                        kind: "directory",
+                        name: "src",
+                        path: "src",
+                        status: "modified",
+                    }),
+                ]}
+            />,
+        );
+
+        expect(markup).toContain("src");
+        expect(markup).not.toContain("App.tsx");
+        expect(markup).not.toContain('data-path="src/App.tsx"');
+    });
+
     it("uses git status color on file title without rendering the status letter when disabled", () => {
         const markup = renderToStaticMarkup(
             <GitTreeView
