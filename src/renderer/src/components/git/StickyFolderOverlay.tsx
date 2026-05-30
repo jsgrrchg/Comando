@@ -5,12 +5,14 @@ import {
 } from "react";
 
 import {
+    COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
+    parseComposerProjectEntryListDragData,
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
 
-import type { GitTreeDragData, GitTreeNode } from "./types";
-import { canDropProjectEntryIntoDirectory } from "./tree-dnd";
+import type { GitTreeDragPayload, GitTreeNode } from "./types";
+import { canDropProjectEntriesIntoDirectory } from "./tree-dnd";
 import {
     BASE_PADDING,
     ChevronIcon,
@@ -66,7 +68,7 @@ export function StickyFolderOverlay({
         dataTransfer: DataTransfer | null,
     ) => void;
     readonly onNodeDrop?: (
-        dragData: GitTreeDragData,
+        dragData: GitTreeDragPayload,
         node: GitTreeNode,
     ) => void;
     readonly selectedPaths?: ReadonlySet<string>;
@@ -133,7 +135,7 @@ function StickyFolderRow({
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
     ) => void;
-    readonly onDrop?: (dragData: GitTreeDragData, node: GitTreeNode) => void;
+    readonly onDrop?: (dragData: GitTreeDragPayload, node: GitTreeNode) => void;
     readonly selectedPaths?: ReadonlySet<string>;
 }) {
     const [isDropTarget, setIsDropTarget] = useState(false);
@@ -195,10 +197,8 @@ function StickyFolderRow({
             onDragOver={(event) => {
                 if (!onDrop) return;
 
-                const dragData = parseComposerProjectEntryDragData(
-                    event.dataTransfer.getData(COMPOSER_PROJECT_ENTRY_MIME),
-                );
-                const canAccept = canDropProjectEntryIntoDirectory(
+                const dragData = getStickyFolderDragData(event.dataTransfer);
+                const canAccept = canDropProjectEntriesIntoDirectory(
                     dragData,
                     node.isProjectRoot ? null : node.path,
                 );
@@ -222,11 +222,9 @@ function StickyFolderRow({
                 setIsDropTarget(false);
                 if (!onDrop) return;
 
-                const dragData = parseComposerProjectEntryDragData(
-                    event.dataTransfer.getData(COMPOSER_PROJECT_ENTRY_MIME),
-                );
+                const dragData = getStickyFolderDragData(event.dataTransfer);
                 if (
-                    !canDropProjectEntryIntoDirectory(
+                    !canDropProjectEntriesIntoDirectory(
                         dragData,
                         node.isProjectRoot ? null : node.path,
                     )
@@ -253,5 +251,20 @@ function StickyFolderRow({
                 {node.name}
             </span>
         </div>
+    );
+}
+
+function getStickyFolderDragData(
+    dataTransfer: DataTransfer,
+): GitTreeDragPayload | null {
+    const listData = parseComposerProjectEntryListDragData(
+        dataTransfer.getData(COMPOSER_PROJECT_ENTRY_LIST_MIME),
+    );
+    if (listData) {
+        return listData.entries;
+    }
+
+    return parseComposerProjectEntryDragData(
+        dataTransfer.getData(COMPOSER_PROJECT_ENTRY_MIME),
     );
 }

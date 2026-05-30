@@ -9,6 +9,7 @@ import {
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 
 import type {
     ComandoApi,
@@ -65,10 +66,10 @@ import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
 import {
     compactGitTreeEntriesByAncestor,
     compactGitTreeEntriesForDeletion,
+    compactGitTreeDragEntriesByAncestor,
     flattenVisibleGitTreeNodes,
-    getProjectEntryParentRelativePath,
+    getProjectEntryMoveValidation,
     GitTreeView,
-    normalizeGitTreeDragPayload,
     resolveGitTreeDragPaths,
     type GitTreeDragData,
     type GitTreeDragPayload,
@@ -77,6 +78,7 @@ import {
 } from "./components/git";
 import { StickyFolderOverlay } from "./components/git/StickyFolderOverlay";
 import { useStickyFolders } from "./components/git/useStickyFolders";
+import { FolderTypeIcon } from "./components/icons/FolderTypeIcon";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -149,6 +151,15 @@ interface FileTreeClipboardState {
     readonly operation: "copy";
     readonly projectId: string;
     readonly worktreeId: string | null;
+}
+
+interface FileTreeMoveDestination {
+    readonly canMove: boolean;
+    readonly depth: number;
+    readonly invalidReason: string | null;
+    readonly name: string;
+    readonly path: string | null;
+    readonly pathLabel: string;
 }
 
 function getProjectSearchDelayMs(query: string): number {
@@ -342,6 +353,12 @@ export function App() {
         useState<FileTreeInlineEditorState | null>(null);
     const [fileTreeClipboard, setFileTreeClipboard] =
         useState<FileTreeClipboardState | null>(null);
+    const [fileTreeMovePickerEntries, setFileTreeMovePickerEntries] = useState<
+        readonly GitTreeDragData[] | null
+    >(null);
+    const [fileTreeMovePickerQuery, setFileTreeMovePickerQuery] = useState("");
+    const [fileTreeMovePickerSelectedIndex, setFileTreeMovePickerSelectedIndex] =
+        useState(0);
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
@@ -1543,6 +1560,35 @@ export function App() {
         [activeProjectId, beginFileTreeInlineRename],
     );
 
+    const closeFileTreeMovePicker = useCallback(() => {
+        setFileTreeMovePickerEntries(null);
+        setFileTreeMovePickerQuery("");
+        setFileTreeMovePickerSelectedIndex(0);
+    }, []);
+
+    const openFileTreeMovePicker = useCallback(
+        (nodes: readonly GitTreeNode[]) => {
+            const entries = compactGitTreeDragEntriesByAncestor(
+                nodes
+                    .filter((node) => !node.isProjectRoot)
+                    .map((node) => ({
+                        kind: node.kind,
+                        name: node.name,
+                        relativePath: node.path,
+                    })),
+            );
+
+            if (entries.length === 0) {
+                return;
+            }
+
+            setFileTreeMovePickerEntries(entries);
+            setFileTreeMovePickerQuery("");
+            setFileTreeMovePickerSelectedIndex(0);
+        },
+        [],
+    );
+
     const handleMoveTreeNode = useCallback(
         async (
             draggedPayload: GitTreeDragPayload,
@@ -1555,12 +1601,22 @@ export function App() {
             const nextParentRelativePath = destinationNode.isProjectRoot
                 ? null
                 : destinationNode.path;
-            const draggedEntries = compactGitTreeEntriesByAncestor(
-                normalizeGitTreeDragPayload(draggedPayload).map((entry) => ({
-                    ...entry,
-                    path: entry.relativePath,
-                })),
+            const validation = getProjectEntryMoveValidation(
+                draggedPayload,
+                nextParentRelativePath,
             );
+            if (!validation.canMove) {
+                if (
+                    validation.reason === "directory-self" ||
+                    validation.reason === "directory-descendant"
+                ) {
+                    window.alert(
+                        getFileTreeMoveValidationMessage(validation.reason),
+                    );
+                }
+                return;
+            }
+
             const destinationProjectTreeNode =
                 destinationNode.isProjectRoot || !destinationNode.path
                     ? null
@@ -1572,18 +1628,8 @@ export function App() {
                 Boolean(destinationProjectTreeNode) &&
                 !activeExpandedDirectories.includes(destinationNode.path);
 
-            const movableEntries = draggedEntries.filter(
-                (entry) =>
-                    getProjectEntryParentRelativePath(entry.relativePath) !==
-                    nextParentRelativePath,
-            );
-
-            if (movableEntries.length === 0) {
-                return;
-            }
-
             try {
-                for (const entry of movableEntries) {
+                for (const entry of validation.entries) {
                     const movedEntry = await renameEntry(
                         activeProjectId,
                         entry.relativePath,
@@ -1610,7 +1656,9 @@ export function App() {
                 window.alert(
                     error instanceof Error
                         ? error.message
-                        : "Could not move the selected entry.",
+                        : validation.entries.length > 1
+                          ? "Could not move the selected items."
+                          : "Could not move the selected item.",
                 );
             }
         },
@@ -2027,6 +2075,54 @@ export function App() {
         () => new Map(visibleSidebarNodes.map((node) => [node.path, node])),
         [visibleSidebarNodes],
     );
+    const fileTreeMoveDestinations = useMemo(
+        () =>
+            buildFileTreeMoveDestinations({
+                activeProjectName: activeProject?.name ?? null,
+                entries: fileTreeMovePickerEntries,
+                projectEntryIndex: cachedFileTreeEntryIndex,
+                query: fileTreeMovePickerQuery,
+                treeNodesByParent: activeTreeNodesByParent,
+            }),
+        [
+            activeProject?.name,
+            activeTreeNodesByParent,
+            cachedFileTreeEntryIndex,
+            fileTreeMovePickerEntries,
+            fileTreeMovePickerQuery,
+        ],
+    );
+    const resolvedFileTreeMovePickerSelectedIndex = useMemo(
+        () =>
+            resolveFileTreeMovePickerSelectedIndex(
+                fileTreeMoveDestinations,
+                fileTreeMovePickerSelectedIndex,
+            ),
+        [fileTreeMoveDestinations, fileTreeMovePickerSelectedIndex],
+    );
+
+    const handleFileTreeMoveDestinationSelect = useCallback(
+        (destination: FileTreeMoveDestination) => {
+            if (!fileTreeMovePickerEntries || !destination.canMove) {
+                return;
+            }
+
+            closeFileTreeMovePicker();
+            void handleMoveTreeNode(fileTreeMovePickerEntries, {
+                id: destination.path ?? ROOT_NODE_KEY,
+                isProjectRoot: destination.path === null,
+                kind: "directory",
+                name: destination.name,
+                path: destination.path ?? "",
+                status: null,
+            });
+        },
+        [
+            closeFileTreeMovePicker,
+            fileTreeMovePickerEntries,
+            handleMoveTreeNode,
+        ],
+    );
 
     useEffect(() => {
         return scheduleEffectStateUpdate(() => {
@@ -2274,6 +2370,10 @@ export function App() {
             copyableContextSelection.length > 1
                 ? `Copy ${copyableContextSelection.length} Selected Items`
                 : "Copy";
+        const moveEntryLabel =
+            copyableContextSelection.length > 1
+                ? "Move Selected Items to..."
+                : "Move to...";
         const deleteLabel =
             contextSelection.length > 1
                 ? `Delete ${contextSelection.length} Selected Items`
@@ -2396,6 +2496,13 @@ export function App() {
                     disabled: !activeProjectId,
                 },
                 {
+                    label: moveEntryLabel,
+                    action: () =>
+                        void openFileTreeMovePicker(copyableContextSelection),
+                    disabled:
+                        !activeProjectId || copyableContextSelection.length === 0,
+                },
+                {
                     label: "Reveal in Finder",
                     action: () => void handleRevealTreeEntry(node.path),
                     disabled: !activeProjectId,
@@ -2456,6 +2563,11 @@ export function App() {
                 disabled: !activeProjectId,
             },
             {
+                label: moveEntryLabel,
+                action: () => void openFileTreeMovePicker(copyableContextSelection),
+                disabled: !activeProjectId || copyableContextSelection.length === 0,
+            },
+            {
                 label: "Reveal in Finder",
                 action: () => void handleRevealTreeEntry(node.path),
                 disabled: !activeProjectId,
@@ -2502,6 +2614,7 @@ export function App() {
         handleRevealTreeEntry,
         isFileTreeClipboardCompatible,
         openFileTab,
+        openFileTreeMovePicker,
         refreshProjectTree,
     ]);
 
@@ -3708,8 +3821,440 @@ export function App() {
                 results={quickOpenResults}
                 selectedIndex={quickOpenSelectedIndex}
             />
+
+            <FileTreeMoveDestinationPicker
+                destinations={fileTreeMoveDestinations}
+                entries={fileTreeMovePickerEntries ?? []}
+                onChangeQuery={setFileTreeMovePickerQuery}
+                onClose={closeFileTreeMovePicker}
+                onHoverIndex={setFileTreeMovePickerSelectedIndex}
+                onSelect={handleFileTreeMoveDestinationSelect}
+                open={fileTreeMovePickerEntries !== null}
+                query={fileTreeMovePickerQuery}
+                selectedIndex={resolvedFileTreeMovePickerSelectedIndex}
+            />
         </div>
     );
+}
+
+function FileTreeMoveDestinationPicker({
+    destinations,
+    entries,
+    onChangeQuery,
+    onClose,
+    onHoverIndex,
+    onSelect,
+    open,
+    query,
+    selectedIndex,
+}: {
+    readonly destinations: readonly FileTreeMoveDestination[];
+    readonly entries: readonly GitTreeDragData[];
+    readonly onChangeQuery: (value: string) => void;
+    readonly onClose: () => void;
+    readonly onHoverIndex: (index: number) => void;
+    readonly onSelect: (destination: FileTreeMoveDestination) => void;
+    readonly open: boolean;
+    readonly query: string;
+    readonly selectedIndex: number;
+}) {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const listRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!open) {
+            return;
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            inputRef.current?.focus();
+            inputRef.current?.select();
+        });
+
+        return () => window.cancelAnimationFrame(frameId);
+    }, [open]);
+
+    useEffect(() => {
+        if (!open) {
+            return;
+        }
+
+        const selectedElement = listRef.current?.querySelector<HTMLElement>(
+            "[data-move-destination-selected='true']",
+        );
+        selectedElement?.scrollIntoView({ block: "nearest" });
+    }, [open, selectedIndex]);
+
+    if (!open) {
+        return null;
+    }
+
+    const selectedDestination = destinations[selectedIndex] ?? null;
+    const itemCountLabel =
+        entries.length === 1 ? "1 item" : `${entries.length} items`;
+
+    const handleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+        if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+        }
+
+        if (destinations.length === 0) {
+            return;
+        }
+
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            onHoverIndex(
+                findNextFileTreeMoveDestinationIndex(
+                    destinations,
+                    selectedIndex,
+                    1,
+                ),
+            );
+            return;
+        }
+
+        if (event.key === "ArrowUp") {
+            event.preventDefault();
+            onHoverIndex(
+                findNextFileTreeMoveDestinationIndex(
+                    destinations,
+                    selectedIndex,
+                    -1,
+                ),
+            );
+            return;
+        }
+
+        if (event.key === "Home") {
+            event.preventDefault();
+            onHoverIndex(resolveFileTreeMovePickerSelectedIndex(destinations, 0));
+            return;
+        }
+
+        if (event.key === "End") {
+            event.preventDefault();
+            onHoverIndex(
+                resolveFileTreeMovePickerSelectedIndex(
+                    destinations,
+                    destinations.length - 1,
+                ),
+            );
+            return;
+        }
+
+        if (event.key === "Enter") {
+            event.preventDefault();
+            if (selectedDestination?.canMove) {
+                onSelect(selectedDestination);
+            }
+        }
+    };
+
+    return createPortal(
+        <div
+            className="app-no-drag fixed inset-0 z-10030 flex items-start justify-center px-5 pt-[min(14vh,104px)]"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                    onClose();
+                }
+            }}
+            style={{
+                background:
+                    "color-mix(in srgb, var(--color-bg-primary) 70%, transparent)",
+                backdropFilter: "blur(10px)",
+            }}
+        >
+            <div
+                className="app-no-drag flex w-full max-w-[520px] flex-col overflow-hidden rounded-lg border"
+                style={{
+                    background: "var(--color-bg-elevated)",
+                    borderColor:
+                        "color-mix(in srgb, var(--color-border) 80%, transparent)",
+                    boxShadow:
+                        "0 24px 80px rgba(0, 0, 0, 0.22), 0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent)",
+                }}
+            >
+                <div
+                    className="border-b px-3.5 py-2.5"
+                    style={{
+                        borderColor:
+                            "color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    }}
+                >
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                            <div className="truncate text-[13px] font-medium text-text-primary">
+                                Move to Folder
+                            </div>
+                            <div className="truncate text-[11px] text-text-secondary/75">
+                                {itemCountLabel}
+                            </div>
+                        </div>
+                    </div>
+                    <input
+                        autoCapitalize="off"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        className="w-full rounded-md border bg-bg-primary px-2.5 py-1.75 text-[13px] text-text-primary outline-none placeholder:text-text-secondary/60"
+                        onChange={(event) => onChangeQuery(event.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="Search folders..."
+                        ref={inputRef}
+                        spellCheck={false}
+                        style={{
+                            borderColor:
+                                "color-mix(in srgb, var(--color-border) 60%, transparent)",
+                        }}
+                        type="text"
+                        value={query}
+                    />
+                </div>
+
+                <div
+                    className="shell-scrollbar max-h-[min(48vh,380px)] overflow-y-auto py-1"
+                    ref={listRef}
+                >
+                    {destinations.length > 0 ? (
+                        destinations.map((destination, index) => {
+                            const isSelected = index === selectedIndex;
+
+                            return (
+                                <button
+                                    className={[
+                                        "flex w-full items-center gap-2.5 px-3.5 py-1.5 text-left transition",
+                                        destination.canMove
+                                            ? "text-text-primary"
+                                            : "text-text-secondary/45",
+                                    ].join(" ")}
+                                    data-move-destination-selected={isSelected}
+                                    disabled={!destination.canMove}
+                                    key={destination.path ?? ROOT_NODE_KEY}
+                                    onClick={() => onSelect(destination)}
+                                    onMouseEnter={() => onHoverIndex(index)}
+                                    style={{
+                                        background: isSelected
+                                            ? "color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-primary))"
+                                            : "transparent",
+                                        paddingLeft: 14 + destination.depth * 14,
+                                    }}
+                                    title={
+                                        destination.invalidReason ??
+                                        destination.pathLabel
+                                    }
+                                    type="button"
+                                >
+                                    <FolderTypeIcon
+                                        folderName={destination.name}
+                                        opacity={
+                                            destination.canMove ? 0.9 : 0.45
+                                        }
+                                        open={isSelected}
+                                        size={15}
+                                    />
+                                    <span className="min-w-0 flex-1 truncate text-[13px]">
+                                        {destination.name}
+                                    </span>
+                                    <span className="min-w-0 truncate font-mono text-[11px] text-text-secondary/70">
+                                        {destination.invalidReason ??
+                                            destination.pathLabel}
+                                    </span>
+                                </button>
+                            );
+                        })
+                    ) : (
+                        <div className="px-3.5 py-6 text-center text-[12px] text-text-secondary">
+                            No matching folders
+                        </div>
+                    )}
+                </div>
+
+                <div
+                    className="flex items-center justify-between border-t px-3.5 py-1.5 text-[11px] text-text-secondary/70"
+                    style={{
+                        borderColor:
+                            "color-mix(in srgb, var(--color-border) 50%, transparent)",
+                    }}
+                >
+                    <span>
+                        {selectedDestination?.invalidReason ??
+                            "Select a destination"}
+                    </span>
+                    <span>↑↓ Navigate · Enter Move · Esc Close</span>
+                </div>
+            </div>
+        </div>,
+        document.body,
+    );
+}
+
+function buildFileTreeMoveDestinations({
+    activeProjectName,
+    entries,
+    projectEntryIndex,
+    query,
+    treeNodesByParent,
+}: {
+    readonly activeProjectName: string | null;
+    readonly entries: readonly GitTreeDragData[] | null;
+    readonly projectEntryIndex: readonly ProjectTreeNode[] | null;
+    readonly query: string;
+    readonly treeNodesByParent: Record<string, readonly ProjectTreeNode[]>;
+}): readonly FileTreeMoveDestination[] {
+    if (!entries || !activeProjectName) {
+        return [];
+    }
+
+    const normalizedQuery = query.trim().toLowerCase();
+    const directoryCandidates = collectFileTreeDirectoryCandidates({
+        activeProjectName,
+        projectEntryIndex,
+        treeNodesByParent,
+    });
+
+    return directoryCandidates
+        .filter((destination) => {
+            if (!normalizedQuery) {
+                return true;
+            }
+
+            return `${destination.name} ${destination.pathLabel}`
+                .toLowerCase()
+                .includes(normalizedQuery);
+        })
+        .map((destination) => {
+            const validation = getProjectEntryMoveValidation(
+                entries,
+                destination.path,
+            );
+
+            return {
+                ...destination,
+                canMove: validation.canMove,
+                invalidReason: validation.canMove
+                    ? null
+                    : getFileTreeMoveValidationMessage(validation.reason),
+            };
+        });
+}
+
+function collectFileTreeDirectoryCandidates({
+    activeProjectName,
+    projectEntryIndex,
+    treeNodesByParent,
+}: {
+    readonly activeProjectName: string;
+    readonly projectEntryIndex: readonly ProjectTreeNode[] | null;
+    readonly treeNodesByParent: Record<string, readonly ProjectTreeNode[]>;
+}): readonly Omit<FileTreeMoveDestination, "canMove" | "invalidReason">[] {
+    const seenPaths = new Set<string>();
+    const destinations: Omit<
+        FileTreeMoveDestination,
+        "canMove" | "invalidReason"
+    >[] = [
+        {
+            depth: 0,
+            name: activeProjectName,
+            path: null,
+            pathLabel: "Project root",
+        },
+    ];
+
+    const pushDirectory = (relativePath: string) => {
+        if (!relativePath || seenPaths.has(relativePath)) {
+            return;
+        }
+
+        seenPaths.add(relativePath);
+        const segments = relativePath.split("/").filter(Boolean);
+        destinations.push({
+            depth: segments.length,
+            name: segments.at(-1) ?? relativePath,
+            path: relativePath,
+            pathLabel: relativePath,
+        });
+    };
+
+    if (projectEntryIndex) {
+        projectEntryIndex
+            .filter((entry) => entry.kind === "directory")
+            .map((entry) => entry.relativePath)
+            .sort((left, right) =>
+                left.localeCompare(right, undefined, { sensitivity: "base" }),
+            )
+            .forEach(pushDirectory);
+        return destinations;
+    }
+
+    Object.values(treeNodesByParent)
+        .flat()
+        .filter((entry) => entry.kind === "directory")
+        .map((entry) => entry.relativePath)
+        .sort((left, right) =>
+            left.localeCompare(right, undefined, { sensitivity: "base" }),
+        )
+        .forEach(pushDirectory);
+
+    return destinations;
+}
+
+function getFileTreeMoveValidationMessage(
+    reason: ReturnType<typeof getProjectEntryMoveValidation>["reason"],
+): string {
+    switch (reason) {
+        case "directory-descendant":
+            return "Cannot move a folder into one of its subfolders.";
+        case "directory-self":
+            return "Cannot move a folder into itself.";
+        case "empty":
+            return "No items selected.";
+        case "same-parent":
+            return "Already in this folder.";
+        default:
+            return "Cannot move to this folder.";
+    }
+}
+
+function resolveFileTreeMovePickerSelectedIndex(
+    destinations: readonly FileTreeMoveDestination[],
+    index: number,
+): number {
+    if (destinations.length === 0) {
+        return 0;
+    }
+
+    const clampedIndex = Math.min(Math.max(index, 0), destinations.length - 1);
+    if (destinations[clampedIndex]?.canMove) {
+        return clampedIndex;
+    }
+
+    const firstMovableIndex = destinations.findIndex(
+        (destination) => destination.canMove,
+    );
+    return firstMovableIndex >= 0 ? firstMovableIndex : clampedIndex;
+}
+
+function findNextFileTreeMoveDestinationIndex(
+    destinations: readonly FileTreeMoveDestination[],
+    selectedIndex: number,
+    direction: 1 | -1,
+): number {
+    if (destinations.length === 0) {
+        return 0;
+    }
+
+    for (let offset = 1; offset <= destinations.length; offset += 1) {
+        const nextIndex =
+            (selectedIndex + offset * direction + destinations.length) %
+            destinations.length;
+        if (destinations[nextIndex]?.canMove) {
+            return nextIndex;
+        }
+    }
+
+    return Math.min(Math.max(selectedIndex, 0), destinations.length - 1);
 }
 
 function ProjectSwitcher({
