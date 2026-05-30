@@ -11,16 +11,18 @@ import {
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
 
-import type { GitTreeDragPayload, GitTreeNode } from "./types";
+import type { GitTreeDragData, GitTreeDragPayload, GitTreeNode } from "./types";
 import { canDropProjectEntriesIntoDirectory } from "./tree-dnd";
 import {
     BASE_PADDING,
     ChevronIcon,
     FONT_SIZE,
     FolderIcon,
+    getGitTreeRowStateStyle,
     INDENT_STEP,
     ROW_HEIGHT,
     scalePx,
+    setTreeDragImage,
     TreeIndentGuides,
 } from "./GitTreeView";
 import type { StickyFolder } from "./useStickyFolders";
@@ -44,6 +46,8 @@ function stickyChrome(scrollLeft: number): CSSProperties {
 }
 
 const STICKY_EDGE_SHADOW = "0 2px 6px rgba(0,0,0,0.18)";
+const STICKY_CHROME_BACKGROUND =
+    "color-mix(in srgb, var(--color-bg-primary) 94%, var(--color-bg-elevated) 6%)";
 
 export function StickyFolderOverlay({
     stickyFolders,
@@ -66,7 +70,7 @@ export function StickyFolderOverlay({
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
-    ) => void;
+    ) => GitTreeDragPayload | void;
     readonly onNodeDrop?: (
         dragData: GitTreeDragPayload,
         node: GitTreeNode,
@@ -87,10 +91,11 @@ export function StickyFolderOverlay({
                         top,
                         ...stickyChrome(scrollLeft),
                         zIndex: 20 - depth,
-                        background:
-                            "color-mix(in srgb, var(--color-bg-primary) var(--vibrancy-opacity, 88%), transparent)",
-                        backdropFilter: "blur(10px)",
-                        WebkitBackdropFilter: "blur(10px)",
+                        background: STICKY_CHROME_BACKGROUND,
+                        backdropFilter: "blur(14px) saturate(1.15)",
+                        WebkitBackdropFilter: "blur(14px) saturate(1.15)",
+                        borderBottom:
+                            "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)",
                         pointerEvents: "auto",
                         ...(i === stickyFolders.length - 1 && {
                             boxShadow: STICKY_EDGE_SHADOW,
@@ -134,7 +139,7 @@ function StickyFolderRow({
     readonly onDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
-    ) => void;
+    ) => GitTreeDragPayload | void;
     readonly onDrop?: (dragData: GitTreeDragPayload, node: GitTreeNode) => void;
     readonly selectedPaths?: ReadonlySet<string>;
 }) {
@@ -175,24 +180,23 @@ function StickyFolderRow({
                 width: "100%",
                 boxSizing: "border-box",
                 borderRadius: scalePx(4),
-                ...(isDropTarget && {
-                    backgroundColor:
-                        "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                    boxShadow:
-                        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
+                ...getGitTreeRowStateStyle({
+                    isDropTarget,
+                    isSelected,
                 }),
-                ...(!isDropTarget &&
-                    isSelected && {
-                        backgroundColor:
-                            "color-mix(in srgb, var(--color-accent) 10%, transparent)",
-                        boxShadow:
-                            "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
-                    }),
             }}
             onClick={handleClick}
             onDragStart={(event) => {
                 if (!isDraggable) return;
-                onDragStart?.(node, event.dataTransfer ?? null);
+                const fallbackDragData = {
+                    kind: node.kind,
+                    name: node.name,
+                    relativePath: node.path,
+                } satisfies GitTreeDragData;
+                const dragData =
+                    onDragStart?.(node, event.dataTransfer ?? null) ??
+                    fallbackDragData;
+                setTreeDragImage(event.dataTransfer ?? null, dragData);
             }}
             onDragOver={(event) => {
                 if (!onDrop) return;

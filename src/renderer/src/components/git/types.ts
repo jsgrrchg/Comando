@@ -158,7 +158,7 @@ export interface GitTreeViewProps {
         readonly x: number;
         readonly y: number;
     }) => void;
-    readonly onBackgroundDrop?: (dragData: GitTreeDragData) => void;
+    readonly onBackgroundDrop?: (dragData: GitTreeDragPayload) => void;
     readonly onNodeClick?: (
         node: GitTreeNode,
         event: GitTreeNodeActivationEvent,

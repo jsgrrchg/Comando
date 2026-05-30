@@ -542,6 +542,26 @@ button {
         box-shadow 100ms ease;
 }
 
+.git-tree-root {
+    border-radius: 6px;
+    transition:
+        background-color 120ms ease,
+        box-shadow 120ms ease;
+}
+
+.git-tree-root[data-background-drop-target="true"] {
+    background-color: color-mix(
+        in srgb,
+        var(--color-accent) 8%,
+        transparent
+    );
+    box-shadow:
+        inset 0 0 0 1px
+            color-mix(in srgb, var(--color-accent) 42%, transparent),
+        inset 0 0 0 999px
+            color-mix(in srgb, var(--color-accent) 3%, transparent);
+}
+
 .git-tree-row:hover {
     background-color: var(--color-bg-tertiary);
 }
@@ -551,7 +571,45 @@ button {
 }
 
 .git-tree-row:hover[data-drop-target="true"] {
-    background-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    background-color: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+.git-tree-row[data-context-target="true"] {
+    background-color: color-mix(
+        in srgb,
+        var(--color-bg-tertiary) 76%,
+        var(--color-accent) 8%
+    );
+}
+
+.git-tree-row[data-dragging="true"] {
+    cursor: grabbing;
+}
+
+.git-tree-drag-ghost {
+    position: fixed;
+    top: -9999px;
+    left: -9999px;
+    z-index: 2147483647;
+    max-width: 260px;
+    padding: 5px 8px;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+    border-radius: 6px;
+    background: color-mix(
+        in srgb,
+        var(--color-bg-elevated) 96%,
+        var(--color-accent) 4%
+    );
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.2);
+    color: var(--color-text-primary);
+    font:
+        12px/1.25 var(--font-sans),
+        system-ui,
+        sans-serif;
+    overflow: hidden;
+    pointer-events: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .git-tree-row-actions {

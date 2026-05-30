@@ -3738,6 +3738,35 @@ export function App() {
                                     scrollToActivePathSignal={
                                         fileTreeRevealSignal ?? undefined
                                     }
+                                    onBackgroundContextMenu={({ x, y }) => {
+                                        clearFileTreeSelection();
+                                        setFileTreeContextMenu({
+                                            x,
+                                            y,
+                                            payload: {
+                                                kind: "background",
+                                            },
+                                        });
+                                    }}
+                                    onBackgroundDrop={
+                                        isFilteringFileTree
+                                            ? undefined
+                                            : (dragData) => {
+                                                  const rootNode =
+                                                      sidebarTreeNodes.find(
+                                                          (node) =>
+                                                              node.isProjectRoot,
+                                                      );
+                                                  if (!rootNode) {
+                                                      return;
+                                                  }
+
+                                                  void handleMoveTreeNode(
+                                                      dragData,
+                                                      rootNode,
+                                                  );
+                                              }
+                                    }
                                     onNodeClick={handleFileTreeNodeClick}
                                     onNodeContextMenu={(node, { x, y }) => {
                                         const isNodeSelected =

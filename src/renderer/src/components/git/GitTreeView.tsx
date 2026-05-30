@@ -58,6 +58,31 @@ const ROW_BOX_CONSTRAINED: CSSProperties = {
     boxSizing: "border-box",
 };
 
+export const ROW_DROP_TARGET_STYLE: CSSProperties = {
+    backgroundColor: "color-mix(in srgb, var(--color-accent) 16%, transparent)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 62%, transparent)",
+};
+
+export const ROW_ACTIVE_STYLE: CSSProperties = {
+    backgroundColor: "color-mix(in srgb, var(--color-accent) 22%, transparent)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent)",
+};
+
+export const ROW_SELECTED_STYLE: CSSProperties = {
+    backgroundColor: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
+};
+
+export const ROW_CONTEXT_TARGET_STYLE: CSSProperties = {
+    backgroundColor:
+        "color-mix(in srgb, var(--color-bg-tertiary) 76%, var(--color-accent) 8%)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-text-secondary) 24%, transparent)",
+};
+
 interface FlatGitTreeRow {
     readonly depth: number;
     readonly key: string;
@@ -76,6 +101,62 @@ type KeyboardNavigationKey =
 
 export function scalePx(value: number): string {
     return `calc(${value}px * var(--file-tree-scale, 1))`;
+}
+
+function toGitTreeDragEntries(
+    dragData: GitTreeDragPayload,
+): readonly GitTreeDragData[] {
+    if (isGitTreeDragDataList(dragData)) {
+        return dragData;
+    }
+
+    return [dragData];
+}
+
+function isGitTreeDragDataList(
+    dragData: GitTreeDragPayload,
+): dragData is readonly GitTreeDragData[] {
+    return Array.isArray(dragData);
+}
+
+export function getGitTreeRowStateStyle({
+    isActive = false,
+    isContextTarget = false,
+    isDragging = false,
+    isDropTarget = false,
+    isKeyboardCursor = false,
+    isSelected = false,
+}: {
+    readonly isActive?: boolean;
+    readonly isContextTarget?: boolean;
+    readonly isDragging?: boolean;
+    readonly isDropTarget?: boolean;
+    readonly isKeyboardCursor?: boolean;
+    readonly isSelected?: boolean;
+}): CSSProperties {
+    return {
+        ...(isDropTarget
+            ? ROW_DROP_TARGET_STYLE
+            : isActive
+              ? ROW_ACTIVE_STYLE
+              : isContextTarget
+                ? ROW_CONTEXT_TARGET_STYLE
+                : isSelected
+                  ? ROW_SELECTED_STYLE
+                  : {}),
+        ...(isKeyboardCursor
+            ? {
+                  outline:
+                      "1px solid color-mix(in srgb, var(--color-accent) 58%, transparent)",
+                  outlineOffset: scalePx(-1),
+              }
+            : {}),
+        ...(isDragging
+            ? {
+                  opacity: 0.62,
+              }
+            : {}),
+    };
 }
 
 function isTreeNodeExpanded({
@@ -323,6 +404,8 @@ export function GitTreeView({
     onEditingCancel,
     onEditingDraftNameChange,
     onEditingSubmit,
+    onBackgroundContextMenu,
+    onBackgroundDrop,
     onNodeContextMenu,
     onNodeClick,
     onNodeDrop,
@@ -337,6 +420,11 @@ export function GitTreeView({
 }: GitTreeViewProps) {
     const treeId = useId();
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+    const [isBackgroundDropTarget, setIsBackgroundDropTarget] =
+        useState(false);
+    const [contextTargetPath, setContextTargetPath] = useState<string | null>(
+        null,
+    );
     const [keyboardCursorPath, setKeyboardCursorPath] = useState<string | null>(
         null,
     );
@@ -374,6 +462,9 @@ export function GitTreeView({
     const activeDescendantId = keyboardCursorRow
         ? `${treeId}-row-${keyboardCursorIndex}`
         : undefined;
+    const rootClassName = ["git-tree-root", className]
+        .filter(Boolean)
+        .join(" ");
 
     const refreshVirtualizationTarget = useCallback(() => {
         const container = containerRef.current;
@@ -599,6 +690,26 @@ export function GitTreeView({
         }
     };
 
+    const isTreeRowEvent = (target: EventTarget | null): boolean =>
+        target instanceof HTMLElement &&
+        target.closest(".git-tree-row") !== null;
+
+    const clearDragState = () => {
+        clearHoverExpand();
+        setActiveDragData(null);
+        setDropTargetPath(null);
+        setIsBackgroundDropTarget(false);
+    };
+
+    const getEventDragData = (dataTransfer: DataTransfer | null) =>
+        getTreeDragData(dataTransfer) ?? activeDragData;
+
+    const canDropOnBackground = (
+        dragData: GitTreeDragPayload | null,
+    ): dragData is GitTreeDragPayload =>
+        Boolean(onBackgroundDrop) &&
+        canDropProjectEntriesIntoDirectory(dragData, null);
+
     const scheduleHoverExpand = (
         node: GitTreeNode,
         isExpanded: boolean,
@@ -696,7 +807,74 @@ export function GitTreeView({
     return (
         <div
             aria-activedescendant={activeDescendantId}
-            className={className}
+            className={rootClassName}
+            data-background-drop-target={
+                isBackgroundDropTarget ? "true" : "false"
+            }
+            data-context-target={
+                contextTargetPath === "" ? "background" : undefined
+            }
+            data-dragging={activeDragData ? "true" : "false"}
+            onClick={(event) => {
+                if (isTreeRowEvent(event.target)) {
+                    return;
+                }
+                setContextTargetPath(null);
+            }}
+            onContextMenu={(event) => {
+                if (!onBackgroundContextMenu || isTreeRowEvent(event.target)) {
+                    return;
+                }
+
+                event.preventDefault();
+                setContextTargetPath("");
+                onBackgroundContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                });
+            }}
+            onDragEnd={clearDragState}
+            onDragLeave={(event) => {
+                if (
+                    event.currentTarget.contains(
+                        event.relatedTarget as Node | null,
+                    )
+                ) {
+                    return;
+                }
+
+                setIsBackgroundDropTarget(false);
+            }}
+            onDragOver={(event) => {
+                if (isTreeRowEvent(event.target)) {
+                    return;
+                }
+
+                const dragData = getEventDragData(event.dataTransfer);
+                if (!canDropOnBackground(dragData)) {
+                    setIsBackgroundDropTarget(false);
+                    return;
+                }
+
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropTargetPath(null);
+                setIsBackgroundDropTarget(true);
+            }}
+            onDrop={(event) => {
+                if (isTreeRowEvent(event.target)) {
+                    return;
+                }
+
+                const dragData = getEventDragData(event.dataTransfer);
+                clearDragState();
+                if (!canDropOnBackground(dragData)) {
+                    return;
+                }
+
+                event.preventDefault();
+                onBackgroundDrop?.(dragData);
+            }}
             onKeyDown={handleTreeKeyDown}
             ref={setContainerRef}
             role="tree"
@@ -716,6 +894,7 @@ export function GitTreeView({
                         constrainWidth={constrainWidth}
                         depth={item.depth}
                         dropTargetPath={dropTargetPath}
+                        contextTargetPath={contextTargetPath}
                         activeDragData={activeDragData}
                         editingDraftName={editingDraftName}
                         editingPath={editingPath}
@@ -740,6 +919,7 @@ export function GitTreeView({
                         renderNodeMeta={renderNodeMeta}
                         selectedPaths={selectedPaths}
                         setActiveDragData={setActiveDragData}
+                        setContextTargetPath={setContextTargetPath}
                         clearHoverExpand={clearHoverExpand}
                         setDropTargetPath={setDropTargetPath}
                         showStatusIndicator={showStatusIndicator}
@@ -756,6 +936,7 @@ function GitTreeNodeRow({
     activePath,
     activeDragData,
     constrainWidth = false,
+    contextTargetPath,
     depth,
     dropTargetPath,
     editingDraftName,
@@ -780,6 +961,7 @@ function GitTreeNodeRow({
     renderNodeMeta,
     selectedPaths,
     setActiveDragData,
+    setContextTargetPath,
     clearHoverExpand,
     setDropTargetPath,
     showStatusIndicator,
@@ -788,6 +970,7 @@ function GitTreeNodeRow({
     readonly activePath: string | null;
     readonly activeDragData: GitTreeDragPayload | null;
     readonly constrainWidth?: boolean;
+    readonly contextTargetPath: string | null;
     readonly depth: number;
     readonly dropTargetPath: string | null;
     readonly editingDraftName: string | null;
@@ -831,6 +1014,7 @@ function GitTreeNodeRow({
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
     readonly selectedPaths?: ReadonlySet<string>;
     readonly setActiveDragData: (dragData: GitTreeDragPayload | null) => void;
+    readonly setContextTargetPath: (path: string | null) => void;
     readonly clearHoverExpand: () => void;
     readonly setDropTargetPath: (path: string | null) => void;
     readonly showStatusIndicator: boolean;
@@ -846,12 +1030,14 @@ function GitTreeNodeRow({
     const isEditing = editingPath === node.path;
     const isActive = activePath === node.path;
     const isSelected = selectedPaths?.has(node.path) === true;
+    const isContextTarget = contextTargetPath === node.path;
     const canOpen = !isEditing && Boolean(onNodeClick && node.kind === "file");
     const canToggle = !isEditing && Boolean(isDirectory && onToggleDirectory);
     const isDraggable =
         !isEditing && enableNodeDrag === true && !node.isProjectRoot;
     const dragStartHandler = onNodeDragStart;
     const isDropTarget = dropTargetPath === node.path;
+    const isDragging = containsGitTreeDragPath(activeDragData, node.path);
     const statusTint = node.status ? statusColor(node.status) : null;
     const titleColor = statusTint
         ? statusTint
@@ -864,6 +1050,7 @@ function GitTreeNodeRow({
         isDirectory && stickyFolderPaths?.has(node.path) === true;
 
     const handleRowClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+        setContextTargetPath(null);
         onSetKeyboardCursor(node.path);
 
         const hasSelectionModifier =
@@ -898,7 +1085,9 @@ function GitTreeNodeRow({
         <div
             className="git-tree-row"
             data-active={isActive ? "true" : "false"}
+            data-context-target={isContextTarget ? "true" : "false"}
             data-drop-target={isDropTarget ? "true" : "false"}
+            data-dragging={isDragging ? "true" : "false"}
             data-keyboard-cursor={isKeyboardCursor ? "true" : "false"}
             data-path={node.path}
             data-selected={isSelected ? "true" : "false"}
@@ -960,6 +1149,7 @@ function GitTreeNodeRow({
                     dragStartHandler?.(node, event.dataTransfer ?? null) ??
                     fallbackDragData;
                 setActiveDragData(dragData);
+                setTreeDragImage(event.dataTransfer ?? null, dragData);
             }}
             onDrop={(event) => {
                 const dragData =
@@ -988,6 +1178,7 @@ function GitTreeNodeRow({
                 }
 
                 event.preventDefault();
+                setContextTargetPath(node.path);
                 onNodeContextMenu(node, {
                     x: event.clientX,
                     y: event.clientY,
@@ -1005,36 +1196,15 @@ function GitTreeNodeRow({
                 borderRadius: scalePx(4),
                 cursor: canOpen || canToggle ? "pointer" : "default",
                 color: "var(--color-text-primary)",
-                ...(isActive
-                    ? {
-                          backgroundColor:
-                              "color-mix(in srgb, var(--color-accent) 22%, transparent)",
-                          boxShadow:
-                              "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent)",
-                      }
-                    : isDropTarget
-                      ? {
-                            backgroundColor:
-                                "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                            boxShadow:
-                                "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
-                        }
-                      : isSelected
-                        ? {
-                              backgroundColor:
-                                  "color-mix(in srgb, var(--color-accent) 10%, transparent)",
-                              boxShadow:
-                                  "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
-                          }
-                        : {}),
+                ...getGitTreeRowStateStyle({
+                    isActive,
+                    isContextTarget,
+                    isDragging,
+                    isDropTarget,
+                    isKeyboardCursor,
+                    isSelected,
+                }),
                 ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
-                ...(isKeyboardCursor
-                    ? {
-                          outline:
-                              "1px solid color-mix(in srgb, var(--color-accent) 58%, transparent)",
-                          outlineOffset: scalePx(-1),
-                      }
-                    : {}),
             }}
             onClick={handleRowClick}
             role="treeitem"
@@ -1135,6 +1305,65 @@ function GitTreeNodeRow({
             </div>
         </div>
     );
+}
+
+export function getGitTreeDragLabel(dragData: GitTreeDragPayload): string {
+    const entries = toGitTreeDragEntries(dragData);
+    if (entries.length === 0) {
+        return "Move item";
+    }
+
+    if (entries.length === 1) {
+        const [entry] = entries;
+        return entry?.name ?? "Move item";
+    }
+
+    const fileCount = entries.filter((entry) => entry.kind === "file").length;
+    const folderCount = entries.length - fileCount;
+    const parts = [
+        folderCount > 0
+            ? `${folderCount} ${folderCount === 1 ? "folder" : "folders"}`
+            : null,
+        fileCount > 0
+            ? `${fileCount} ${fileCount === 1 ? "file" : "files"}`
+            : null,
+    ].filter((part): part is string => Boolean(part));
+
+    return parts.join(", ");
+}
+
+function containsGitTreeDragPath(
+    dragData: GitTreeDragPayload | null,
+    path: string,
+): boolean {
+    if (!dragData) {
+        return false;
+    }
+
+    const entries = toGitTreeDragEntries(dragData);
+    return entries.some((entry) => entry.relativePath === path);
+}
+
+export function setTreeDragImage(
+    dataTransfer: DataTransfer | null,
+    dragData: GitTreeDragPayload,
+): void {
+    if (
+        !dataTransfer ||
+        typeof dataTransfer.setDragImage !== "function" ||
+        typeof document === "undefined"
+    ) {
+        return;
+    }
+
+    const dragImage = document.createElement("div");
+    dragImage.className = "git-tree-drag-ghost";
+    dragImage.textContent = getGitTreeDragLabel(dragData);
+    document.body.appendChild(dragImage);
+    dataTransfer.setDragImage(dragImage, 12, 12);
+    globalThis.setTimeout(() => {
+        dragImage.remove();
+    }, 0);
 }
 
 function TreeInlineNameInput({

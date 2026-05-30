@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { GitTreeView } from "./GitTreeView";
+import { getGitTreeDragLabel, GitTreeView } from "./GitTreeView";
 import type { GitTreeNode } from "./types";
 
 function createFileNode(overrides: Partial<GitTreeNode> = {}): GitTreeNode {
@@ -191,5 +191,66 @@ describe("GitTreeView", () => {
         expect(markup).toMatch(
             /data-keyboard-cursor="true"[^>]*data-path="todo\.md"[^>]*data-selected="true"/,
         );
+    });
+
+    it("exposes root drag and context state hooks for background interactions", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                nodes={[createFileNode()]}
+                onBackgroundContextMenu={() => undefined}
+                onBackgroundDrop={() => undefined}
+            />,
+        );
+
+        expect(markup).toContain("git-tree-root");
+        expect(markup).toContain('data-background-drop-target="false"');
+        expect(markup).toContain('data-dragging="false"');
+        expect(markup).toContain('data-context-target="false"');
+    });
+
+    it("keeps row interaction states distinct in markup", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                activePath="notes.md"
+                nodes={[createFileNode()]}
+                selectedPaths={new Set(["notes.md"])}
+            />,
+        );
+
+        expect(markup).toContain('data-active="true"');
+        expect(markup).toContain('data-selected="true"');
+        expect(markup).toContain('data-drop-target="false"');
+        expect(markup).toContain('data-dragging="false"');
+        expect(markup).toContain('data-context-target="false"');
+    });
+
+    it("builds useful drag ghost labels for single and multi-entry drags", () => {
+        expect(
+            getGitTreeDragLabel({
+                kind: "file",
+                name: "notes.md",
+                relativePath: "notes.md",
+            }),
+        ).toBe("notes.md");
+
+        expect(
+            getGitTreeDragLabel([
+                {
+                    kind: "directory",
+                    name: "src",
+                    relativePath: "src",
+                },
+                {
+                    kind: "file",
+                    name: "App.tsx",
+                    relativePath: "src/App.tsx",
+                },
+                {
+                    kind: "file",
+                    name: "README.md",
+                    relativePath: "README.md",
+                },
+            ]),
+        ).toBe("1 folder, 2 files");
     });
 });
