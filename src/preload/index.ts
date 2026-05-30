@@ -35,6 +35,8 @@ import {
     type CloneRepositoryResult,
     type ComandoApi,
     type CodexRuntimeSettingsInput,
+    type CopyProjectEntriesInput,
+    type CopyProjectEntriesResult,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -664,6 +666,11 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveProjectFile, input),
     createProjectEntry: (input: CreateProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.createProjectEntry, input),
+    copyProjectEntries: async (input: CopyProjectEntriesInput) =>
+        assertIpcObject<CopyProjectEntriesResult>(
+            IPC_CHANNELS.copyProjectEntries,
+            await ipcRenderer.invoke(IPC_CHANNELS.copyProjectEntries, input),
+        ),
     renameProjectEntry: (input: RenameProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.renameProjectEntry, input),
     deleteProjectEntry: (input: DeleteProjectEntryInput) =>

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type {
+    CopyProjectEntriesResult,
     ProjectAppDataSummary,
     ProjectEntryKind,
     ProjectEntryMutationResult,
@@ -34,6 +35,12 @@ interface ProjectsState {
         kind: ProjectEntryKind,
         worktreeId?: string | null,
     ) => Promise<ProjectEntryMutationResult>;
+    copyEntries: (
+        projectId: string,
+        sourceRelativePaths: readonly string[],
+        destinationParentRelativePath: string | null,
+        worktreeId?: string | null,
+    ) => Promise<CopyProjectEntriesResult>;
     deleteEntry: (
         projectId: string,
         relativePath: string,
@@ -312,6 +319,45 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                     ? error.message
                     : `Could not create the ${kind}.`;
             set({ error: message });
+            throw error;
+        }
+    },
+
+    copyEntries: async (
+        projectId,
+        sourceRelativePaths,
+        destinationParentRelativePath,
+        worktreeId = null,
+    ) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        try {
+            const result = await getComandoApi().copyProjectEntries({
+                destinationParentRelativePath,
+                projectId,
+                sourceRelativePaths,
+                worktreeId,
+            });
+
+            set((state) => ({
+                error: null,
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [contextKey]: false,
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [contextKey]: {},
+                },
+            }));
+            await get().refreshProjectTree(projectId, worktreeId);
+            return result;
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not paste the selected entries.",
+            });
             throw error;
         }
     },

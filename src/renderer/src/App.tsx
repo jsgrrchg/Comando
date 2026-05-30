@@ -138,6 +138,19 @@ type FileTreeInlineEditorState = {
     readonly path: string;
 };
 
+interface FileTreeClipboardEntry {
+    readonly kind: "directory" | "file";
+    readonly name: string;
+    readonly path: string;
+}
+
+interface FileTreeClipboardState {
+    readonly entries: readonly FileTreeClipboardEntry[];
+    readonly operation: "copy";
+    readonly projectId: string;
+    readonly worktreeId: string | null;
+}
+
 function getProjectSearchDelayMs(query: string): number {
     return query.trim().length <= 1 ? 0 : PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS;
 }
@@ -198,6 +211,7 @@ export function App() {
     );
     const removeProject = useProjectsStore((state) => state.removeProject);
     const createEntry = useProjectsStore((state) => state.createEntry);
+    const copyEntries = useProjectsStore((state) => state.copyEntries);
     const deleteEntry = useProjectsStore((state) => state.deleteEntry);
     const renameEntry = useProjectsStore((state) => state.renameEntry);
     const revealEntry = useProjectsStore((state) => state.revealEntry);
@@ -220,9 +234,6 @@ export function App() {
     void loadingNodeKeys;
     void removeProject;
     void createEntry;
-    void deleteEntry;
-    void renameEntry;
-    void revealEntry;
 
     const workspaceHydrate = useWorkspaceStore((state) => state.hydrate);
     const appendTerminalOutput = useWorkspaceStore(
@@ -329,6 +340,8 @@ export function App() {
     const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
     const [fileTreeInlineEditor, setFileTreeInlineEditor] =
         useState<FileTreeInlineEditorState | null>(null);
+    const [fileTreeClipboard, setFileTreeClipboard] =
+        useState<FileTreeClipboardState | null>(null);
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
@@ -1734,6 +1747,109 @@ export function App() {
         [activeProject],
     );
 
+    const isFileTreeClipboardCompatible = useMemo(
+        () =>
+            Boolean(
+                activeProjectId &&
+                    fileTreeClipboard &&
+                    fileTreeClipboard.operation === "copy" &&
+                    fileTreeClipboard.projectId === activeProjectId &&
+                    normalizeFileTreeClipboardWorktreeId(
+                        fileTreeClipboard.worktreeId,
+                    ) ===
+                        normalizeFileTreeClipboardWorktreeId(
+                            activeWorktreeId,
+                        ) &&
+                    fileTreeClipboard.entries.length > 0,
+            ),
+        [activeProjectId, activeWorktreeId, fileTreeClipboard],
+    );
+
+    const fileTreePasteLabel = useMemo(() => {
+        const count = fileTreeClipboard?.entries.length ?? 0;
+        return count > 1 ? `Paste ${count} Items` : "Paste";
+    }, [fileTreeClipboard]);
+
+    const handleCopyTreeEntries = useCallback(
+        (nodes: readonly GitTreeNode[]) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const entries = compactGitTreeEntriesByAncestor(
+                nodes
+                    .filter((node) => !node.isProjectRoot)
+                    .map((node) => ({
+                        kind: node.kind,
+                        name: node.name,
+                        path: node.path,
+                    })),
+            );
+
+            if (entries.length === 0) {
+                return;
+            }
+
+            setFileTreeClipboard({
+                entries,
+                operation: "copy",
+                projectId: activeProjectId,
+                worktreeId: activeWorktreeId ?? null,
+            });
+        },
+        [activeProjectId, activeWorktreeId],
+    );
+
+    const handlePasteTreeEntries = useCallback(
+        async (destinationParentRelativePath: string | null) => {
+            if (
+                !activeProjectId ||
+                !fileTreeClipboard ||
+                !isFileTreeClipboardCompatible
+            ) {
+                return;
+            }
+
+            try {
+                const result = await copyEntries(
+                    activeProjectId,
+                    fileTreeClipboard.entries.map((entry) => entry.path),
+                    destinationParentRelativePath,
+                    activeWorktreeId,
+                );
+                const firstCopiedEntry = result.entries[0] ?? null;
+
+                if (firstCopiedEntry) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        firstCopiedEntry.relativePath,
+                        activeWorktreeId,
+                    );
+                } else if (destinationParentRelativePath) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        destinationParentRelativePath,
+                        activeWorktreeId,
+                    );
+                }
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not paste the selected entries.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            copyEntries,
+            fileTreeClipboard,
+            isFileTreeClipboardCompatible,
+            revealPathInTree,
+        ],
+    );
+
     const handleAddFilesToChat = useCallback(
         async (
             nodes: readonly GitTreeNode[],
@@ -2093,6 +2209,15 @@ export function App() {
                     action: () => void handleCreateTreeEntry("directory", null),
                     disabled: !activeProjectId,
                 },
+                ...(isFileTreeClipboardCompatible
+                    ? ([
+                          {
+                              label: fileTreePasteLabel,
+                              action: () => void handlePasteTreeEntries(null),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
                 { type: "separator" },
                 {
                     label: "Reveal Project Root",
@@ -2115,6 +2240,9 @@ export function App() {
 
         const node = fileTreeContextMenu.payload.node;
         const contextSelection = getFileTreeContextSelection(node);
+        const copyableContextSelection = contextSelection.filter(
+            (entry) => !entry.isProjectRoot,
+        );
         const contextSelectionFileCount = contextSelection.filter(
             (entry) => entry.kind === "file",
         ).length;
@@ -2142,6 +2270,10 @@ export function App() {
             contextSelection.length > 1
                 ? `Copy ${contextSelection.length} Absolute Paths`
                 : "Copy Absolute Path";
+        const copyEntryLabel =
+            copyableContextSelection.length > 1
+                ? `Copy ${copyableContextSelection.length} Selected Items`
+                : "Copy";
         const deleteLabel =
             contextSelection.length > 1
                 ? `Delete ${contextSelection.length} Selected Items`
@@ -2190,6 +2322,15 @@ export function App() {
                     action: () => void handleCreateTreeEntry("directory", null),
                     disabled: !activeProjectId,
                 },
+                ...(isFileTreeClipboardCompatible
+                    ? ([
+                          {
+                              label: fileTreePasteLabel,
+                              action: () => void handlePasteTreeEntries(null),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
                 { type: "separator" },
                 {
                     label: "Reveal in Finder",
@@ -2260,6 +2401,12 @@ export function App() {
                     disabled: !activeProjectId,
                 },
                 {
+                    label: copyEntryLabel,
+                    action: () => void handleCopyTreeEntries(contextSelection),
+                    disabled:
+                        !activeProjectId || copyableContextSelection.length === 0,
+                },
+                {
                     label: copyRelativePathLabel,
                     action: () =>
                         void handleCopyTreePaths(contextSelection, "relative"),
@@ -2293,6 +2440,15 @@ export function App() {
                     void handleCreateTreeEntry("directory", node.path),
                 disabled: !activeProjectId,
             },
+            ...(isFileTreeClipboardCompatible
+                ? ([
+                      {
+                          label: fileTreePasteLabel,
+                          action: () => void handlePasteTreeEntries(node.path),
+                          disabled: !activeProjectId,
+                      },
+                  ] satisfies ContextMenuEntry[])
+                : ([] satisfies ContextMenuEntry[])),
             { type: "separator" },
             {
                 label: "Rename",
@@ -2303,6 +2459,11 @@ export function App() {
                 label: "Reveal in Finder",
                 action: () => void handleRevealTreeEntry(node.path),
                 disabled: !activeProjectId,
+            },
+            {
+                label: copyEntryLabel,
+                action: () => void handleCopyTreeEntries(contextSelection),
+                disabled: !activeProjectId || copyableContextSelection.length === 0,
             },
             {
                 label: copyRelativePathLabel,
@@ -2328,14 +2489,18 @@ export function App() {
         activeProjectId,
         activeWorktreeId,
         fileTreeContextMenu,
+        fileTreePasteLabel,
         getFileTreeContextSelection,
         handleAddFilesToChat,
         handleCloseFileTreeTabs,
+        handleCopyTreeEntries,
         handleCopyTreePaths,
         handleCreateTreeEntry,
         handleDeleteTreeNodes,
+        handlePasteTreeEntries,
         handleRenameTreeNode,
         handleRevealTreeEntry,
+        isFileTreeClipboardCompatible,
         openFileTab,
         refreshProjectTree,
     ]);
@@ -3917,6 +4082,12 @@ function joinProjectPath(rootPath: string, relativePath: string): string {
     return `${rootPath.replace(/[\\/]+$/, "")}${separator}${relativePath
         .split("/")
         .join(separator)}`;
+}
+
+function normalizeFileTreeClipboardWorktreeId(
+    worktreeId: string | null | undefined,
+): string {
+    return worktreeId ?? "__primary__";
 }
 
 function getComandoApi(): ComandoApi | null {

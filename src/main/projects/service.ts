@@ -1,6 +1,8 @@
 import path from "node:path";
 
 import type {
+    CopyProjectEntriesInput,
+    CopyProjectEntriesResult,
     CreateProjectEntryInput,
     DeleteProjectEntryInput,
     ListProjectEntriesInput,
@@ -365,6 +367,35 @@ export class ProjectService {
                     worktreeId: project.worktreeId,
                 }),
         );
+    }
+
+    async copyProjectEntries(
+        input: CopyProjectEntriesInput,
+    ): Promise<CopyProjectEntriesResult> {
+        await this.#ensureWorkerRegistry();
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+        this.touchProject(input.projectId);
+
+        const entries = await this.#trackFilesystemAccess(
+            resolveProjectPath(
+                project.rootPath,
+                input.destinationParentRelativePath,
+            ),
+            async () =>
+                await this.#worker.copyProjectEntries({
+                    destinationParentRelativePath:
+                        input.destinationParentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    sourceRelativePaths: input.sourceRelativePaths,
+                    worktreeId: project.worktreeId,
+                }),
+        );
+
+        return { entries: [...entries] };
     }
 
     async renameProjectEntry(

@@ -107,6 +107,7 @@ export const IPC_CHANNELS = {
     openProjectFile: "projects:open-file",
     saveProjectFile: "projects:save-file",
     createProjectEntry: "projects:create-entry",
+    copyProjectEntries: "projects:copy-entries",
     renameProjectEntry: "projects:rename-entry",
     deleteProjectEntry: "projects:delete-entry",
     revealProjectEntry: "projects:reveal-entry",
@@ -1717,6 +1718,17 @@ export interface CreateProjectEntryInput {
     readonly worktreeId?: string | null;
 }
 
+export interface CopyProjectEntriesInput {
+    readonly destinationParentRelativePath: string | null;
+    readonly projectId: string;
+    readonly sourceRelativePaths: readonly string[];
+    readonly worktreeId?: string | null;
+}
+
+export interface CopyProjectEntriesResult {
+    readonly entries: readonly ProjectEntryMutationResult[];
+}
+
 export interface RenameProjectEntryInput {
     readonly projectId: string;
     readonly nextName: string;
@@ -2696,6 +2708,9 @@ export interface ComandoApi {
     createProjectEntry: (
         input: CreateProjectEntryInput,
     ) => Promise<ProjectEntryMutationResult>;
+    copyProjectEntries: (
+        input: CopyProjectEntriesInput,
+    ) => Promise<CopyProjectEntriesResult>;
     renameProjectEntry: (
         input: RenameProjectEntryInput,
     ) => Promise<ProjectEntryMutationResult>;

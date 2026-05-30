@@ -9,6 +9,7 @@ import type {
 
 import {
     ProjectRuntime,
+    type ProjectRuntimeCopyEntriesInput,
     type ProjectRuntimeCreateEntryInput,
     type ProjectRuntimeDeleteEntryInput,
     type ProjectRuntimeListEntriesInput,
@@ -64,6 +65,9 @@ export interface ProjectWorkerGateway {
     createProjectEntry(
         input: ProjectRuntimeCreateEntryInput,
     ): Promise<ProjectEntryMutationResult>;
+    copyProjectEntries(
+        input: ProjectRuntimeCopyEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]>;
     renameProjectEntry(
         input: ProjectRuntimeRenameEntryInput,
     ): Promise<ProjectEntryMutationResult>;
@@ -145,6 +149,12 @@ class RemoteProjectWorkerClient implements ProjectWorkerGateway {
         return await this.#rpc.call("projects.createProjectEntry", input);
     }
 
+    async copyProjectEntries(
+        input: ProjectRuntimeCopyEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]> {
+        return await this.#rpc.call("projects.copyProjectEntries", input);
+    }
+
     async renameProjectEntry(
         input: ProjectRuntimeRenameEntryInput,
     ): Promise<ProjectEntryMutationResult> {
@@ -223,6 +233,12 @@ class LocalProjectWorkerClient implements ProjectWorkerGateway {
         input: ProjectRuntimeCreateEntryInput,
     ): Promise<ProjectEntryMutationResult> {
         return await this.#runtime.createProjectEntry(input);
+    }
+
+    async copyProjectEntries(
+        input: ProjectRuntimeCopyEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]> {
+        return await this.#runtime.copyProjectEntries(input);
     }
 
     async renameProjectEntry(
