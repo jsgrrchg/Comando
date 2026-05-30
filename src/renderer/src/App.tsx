@@ -224,6 +224,10 @@ export function App() {
     const createEntry = useProjectsStore((state) => state.createEntry);
     const copyEntries = useProjectsStore((state) => state.copyEntries);
     const deleteEntry = useProjectsStore((state) => state.deleteEntry);
+    const trashEntry = useProjectsStore((state) => state.trashEntry);
+    const openEntryExternally = useProjectsStore(
+        (state) => state.openEntryExternally,
+    );
     const renameEntry = useProjectsStore((state) => state.renameEntry);
     const revealEntry = useProjectsStore((state) => state.revealEntry);
     const setActiveProject = useProjectsStore(
@@ -1743,6 +1747,76 @@ export function App() {
         ],
     );
 
+    const handleTrashTreeNodes = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const trashableNodes = nodes.filter((node) => !node.isProjectRoot);
+            if (trashableNodes.length === 0) {
+                return;
+            }
+
+            const confirmed = window.confirm(
+                trashableNodes.length === 1
+                    ? trashableNodes[0].kind === "directory"
+                        ? `Move folder "${trashableNodes[0].name}" and all its contents to Trash?`
+                        : `Move file "${trashableNodes[0].name}" to Trash?`
+                    : `Move ${trashableNodes.length} selected items to Trash?`,
+            );
+            if (!confirmed) {
+                return;
+            }
+
+            const entriesToTrash =
+                compactGitTreeEntriesForDeletion(trashableNodes);
+            const trashedEntries: {
+                readonly kind: "directory" | "file";
+                readonly relativePath: string;
+            }[] = [];
+
+            try {
+                for (const entry of entriesToTrash) {
+                    await trashEntry(
+                        activeProjectId,
+                        entry.path,
+                        activeWorktreeId,
+                    );
+                    trashedEntries.push({
+                        kind: entry.kind,
+                        relativePath: entry.path,
+                    });
+                }
+
+                await closeTabsForProjectPaths(
+                    activeProjectId,
+                    activeWorktreeId,
+                    trashedEntries,
+                );
+            } catch (error) {
+                if (trashedEntries.length > 0) {
+                    await closeTabsForProjectPaths(
+                        activeProjectId,
+                        activeWorktreeId,
+                        trashedEntries,
+                    );
+                }
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not move the selected entry to Trash.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            closeTabsForProjectPaths,
+            trashEntry,
+        ],
+    );
+
     const handleRevealTreeEntry = useCallback(
         async (relativePath: string | null) => {
             if (!activeProjectId) {
@@ -1815,7 +1889,7 @@ export function App() {
 
     const fileTreePasteLabel = useMemo(() => {
         const count = fileTreeClipboard?.entries.length ?? 0;
-        return count > 1 ? `Paste ${count} Items` : "Paste";
+        return count > 1 ? `Paste ${count} Items Here` : "Paste Here";
     }, [fileTreeClipboard]);
 
     const handleCopyTreeEntries = useCallback(
@@ -1896,6 +1970,84 @@ export function App() {
             isFileTreeClipboardCompatible,
             revealPathInTree,
         ],
+    );
+
+    const handleDuplicateTreeEntries = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const entries = compactGitTreeEntriesByAncestor(
+                nodes
+                    .filter((node) => !node.isProjectRoot)
+                    .map((node) => ({
+                        kind: node.kind,
+                        name: node.name,
+                        path: node.path,
+                    })),
+            );
+            const firstEntry = entries[0] ?? null;
+            if (!firstEntry) {
+                return;
+            }
+
+            const destinationParentRelativePath =
+                firstEntry.path.split("/").slice(0, -1).join("/") || null;
+
+            try {
+                const result = await copyEntries(
+                    activeProjectId,
+                    entries.map((entry) => entry.path),
+                    destinationParentRelativePath,
+                    activeWorktreeId,
+                );
+                const firstDuplicatedEntry = result.entries[0] ?? null;
+
+                if (firstDuplicatedEntry) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        firstDuplicatedEntry.relativePath,
+                        activeWorktreeId,
+                    );
+                }
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not duplicate the selected entry.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            copyEntries,
+            revealPathInTree,
+        ],
+    );
+
+    const handleOpenTreeEntryExternally = useCallback(
+        async (relativePath: string) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            try {
+                await openEntryExternally(
+                    activeProjectId,
+                    relativePath,
+                    activeWorktreeId,
+                );
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not open the selected file externally.",
+                );
+            }
+        },
+        [activeProjectId, activeWorktreeId, openEntryExternally],
     );
 
     const handleAddFilesToChat = useCallback(
@@ -2364,12 +2516,14 @@ export function App() {
                 : "Copy Relative Path";
         const copyAbsolutePathLabel =
             contextSelection.length > 1
-                ? `Copy ${contextSelection.length} Absolute Paths`
-                : "Copy Absolute Path";
+                ? `Copy ${contextSelection.length} Full Paths`
+                : "Copy Full Path";
         const copyEntryLabel =
             copyableContextSelection.length > 1
                 ? `Copy ${copyableContextSelection.length} Selected Items`
                 : "Copy";
+        const canDuplicateContextSelection =
+            copyableContextSelection.length === 1;
         const moveEntryLabel =
             copyableContextSelection.length > 1
                 ? "Move Selected Items to..."
@@ -2377,7 +2531,15 @@ export function App() {
         const deleteLabel =
             contextSelection.length > 1
                 ? `Delete ${contextSelection.length} Selected Items`
-                : "Delete";
+                : node.kind === "directory"
+                  ? "Delete Folder"
+                  : "Delete File";
+        const trashLabel =
+            copyableContextSelection.length > 1
+                ? `Move ${copyableContextSelection.length} Selected Items to Trash`
+                : copyableContextSelection[0]?.kind === "directory"
+                  ? "Move Folder to Trash"
+                  : "Move File to Trash";
         const multiSelectionEntries =
             contextSelection.length > 1
                 ? ([
@@ -2438,7 +2600,7 @@ export function App() {
                     disabled: !activeProjectId,
                 },
                 {
-                    label: "Copy Absolute Path",
+                    label: "Copy Full Path",
                     action: () => void handleCopyTreePaths([node], "absolute"),
                     disabled: !activeProject,
                 },
@@ -2474,6 +2636,16 @@ export function App() {
                 ...(contextSelection.length === 1
                     ? ([
                           {
+                              label: "Open Externally",
+                              action: () =>
+                                  void handleOpenTreeEntryExternally(node.path),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
+                ...(contextSelection.length === 1
+                    ? ([
+                          {
                               label: addToChatLabel,
                               action: () =>
                                   void handleAddFilesToChat(contextSelection),
@@ -2495,6 +2667,18 @@ export function App() {
                     action: () => void handleRenameTreeNode(node),
                     disabled: !activeProjectId,
                 },
+                ...(canDuplicateContextSelection
+                    ? ([
+                          {
+                              label: "Duplicate",
+                              action: () =>
+                                  void handleDuplicateTreeEntries(
+                                      copyableContextSelection,
+                                  ),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
                 {
                     label: moveEntryLabel,
                     action: () =>
@@ -2525,6 +2709,13 @@ export function App() {
                     disabled: !activeProject,
                 },
                 { type: "separator" },
+                {
+                    label: trashLabel,
+                    action: () => void handleTrashTreeNodes(contextSelection),
+                    danger: true,
+                    disabled:
+                        !activeProjectId || copyableContextSelection.length === 0,
+                },
                 {
                     label: deleteLabel,
                     action: () => void handleDeleteTreeNodes(contextSelection),
@@ -2562,6 +2753,18 @@ export function App() {
                 action: () => void handleRenameTreeNode(node),
                 disabled: !activeProjectId,
             },
+            ...(canDuplicateContextSelection
+                ? ([
+                      {
+                          label: "Duplicate",
+                          action: () =>
+                              void handleDuplicateTreeEntries(
+                                  copyableContextSelection,
+                              ),
+                          disabled: !activeProjectId,
+                      },
+                  ] satisfies ContextMenuEntry[])
+                : ([] satisfies ContextMenuEntry[])),
             {
                 label: moveEntryLabel,
                 action: () => void openFileTreeMovePicker(copyableContextSelection),
@@ -2590,6 +2793,12 @@ export function App() {
             },
             { type: "separator" },
             {
+                label: trashLabel,
+                action: () => void handleTrashTreeNodes(contextSelection),
+                danger: true,
+                disabled: !activeProjectId || copyableContextSelection.length === 0,
+            },
+            {
                 label: deleteLabel,
                 action: () => void handleDeleteTreeNodes(contextSelection),
                 danger: true,
@@ -2609,9 +2818,12 @@ export function App() {
         handleCopyTreePaths,
         handleCreateTreeEntry,
         handleDeleteTreeNodes,
+        handleDuplicateTreeEntries,
+        handleOpenTreeEntryExternally,
         handlePasteTreeEntries,
         handleRenameTreeNode,
         handleRevealTreeEntry,
+        handleTrashTreeNodes,
         isFileTreeClipboardCompatible,
         openFileTab,
         openFileTreeMovePicker,

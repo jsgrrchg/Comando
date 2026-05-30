@@ -45,6 +45,7 @@ import {
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
     type OpenProjectWindowInput,
+    type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
     type OpenSettingsWindowInput,
     type AiSessionSnapshot,
@@ -152,6 +153,7 @@ import {
     type SystemTheme,
     type TerminalDataEvent,
     type TerminalExitEvent,
+    type TrashProjectEntryInput,
     type TsconfigResolutionSnapshot,
     type WriteTerminalInput,
     type WorkspaceSnapshot,
@@ -675,6 +677,10 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.renameProjectEntry, input),
     deleteProjectEntry: (input: DeleteProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.deleteProjectEntry, input),
+    trashProjectEntry: (input: TrashProjectEntryInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.trashProjectEntry, input),
+    openProjectEntryExternally: (input: OpenProjectEntryExternallyInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openProjectEntryExternally, input),
     revealProjectEntry: (input: RevealProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.revealProjectEntry, input),
     saveSettingsSnapshot: (snapshot: SettingsSnapshot) =>

@@ -110,6 +110,8 @@ export const IPC_CHANNELS = {
     copyProjectEntries: "projects:copy-entries",
     renameProjectEntry: "projects:rename-entry",
     deleteProjectEntry: "projects:delete-entry",
+    trashProjectEntry: "projects:trash-entry",
+    openProjectEntryExternally: "projects:open-entry-externally",
     revealProjectEntry: "projects:reveal-entry",
     listProjectEntries: "projects:list-entries",
     searchProjectEntries: "projects:search-entries",
@@ -1743,6 +1745,18 @@ export interface DeleteProjectEntryInput {
     readonly worktreeId?: string | null;
 }
 
+export interface TrashProjectEntryInput {
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface OpenProjectEntryExternallyInput {
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly worktreeId?: string | null;
+}
+
 export interface RevealProjectEntryInput {
     readonly projectId: string;
     readonly relativePath: string | null;
@@ -2715,6 +2729,10 @@ export interface ComandoApi {
         input: RenameProjectEntryInput,
     ) => Promise<ProjectEntryMutationResult>;
     deleteProjectEntry: (input: DeleteProjectEntryInput) => Promise<void>;
+    trashProjectEntry: (input: TrashProjectEntryInput) => Promise<void>;
+    openProjectEntryExternally: (
+        input: OpenProjectEntryExternallyInput,
+    ) => Promise<void>;
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
     getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
     saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) => Promise<void>;
