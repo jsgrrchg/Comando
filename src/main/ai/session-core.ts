@@ -180,8 +180,10 @@ function mapSessionModes(
     state: SessionModeState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionMode[] {
-    if (state && state.availableModes.length > 0) {
-        return state.availableModes.map((mode) => ({
+    const availableModes =
+        state && Array.isArray(state.availableModes) ? state.availableModes : [];
+    if (availableModes.length > 0) {
+        return availableModes.map((mode) => ({
             description: mode.description ?? null,
             id: mode.id,
             name: mode.name,
@@ -195,8 +197,12 @@ function mapSessionModels(
     state: SessionModelState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionModel[] {
-    if (state && state.availableModels.length > 0) {
-        return state.availableModels.map((model) => ({
+    const availableModels =
+        state && Array.isArray(state.availableModels)
+            ? state.availableModels
+            : [];
+    if (availableModels.length > 0) {
+        return availableModels.map((model) => ({
             description: model.description ?? null,
             id: model.modelId,
             name: model.name,
@@ -298,8 +304,12 @@ function deriveModeId(
         return modeConfig.value;
     }
 
-    if (state && state.currentModeId.trim()) {
-        return state.currentModeId;
+    const currentModeId =
+        state && typeof state.currentModeId === "string"
+            ? state.currentModeId.trim()
+            : "";
+    if (currentModeId) {
+        return currentModeId;
     }
 
     return fallback;
@@ -312,10 +322,11 @@ function deriveModelId(
 ): string | null {
     if (
         state &&
+        typeof state.currentModelId === "string" &&
         state.currentModelId.trim() &&
         !state.currentModelId.includes("/")
     ) {
-        return state.currentModelId;
+        return state.currentModelId.trim();
     }
 
     const modelConfig = getModelConfigOption(configOptions);

@@ -1851,9 +1851,9 @@ describe("AiWorkerRuntime prepareSession", () => {
         ]);
     });
 
-    it("hides internal tool activity rows from Codex subagent child sessions", async () => {
+    it("renders subagent child tool activity while keeping parent timeline isolated", async () => {
         const { client, emittedEvents, tempDir } =
-            await setupPreparedRuntimeWithClient("Subagent hidden tools parent");
+            await setupPreparedRuntimeWithClient("Subagent visible tools parent");
         const childSnapshot = await registerSubagentSession(
             client,
             emittedEvents,
@@ -1897,6 +1897,19 @@ describe("AiWorkerRuntime prepareSession", () => {
         await client.sessionUpdate({
             sessionId: "runtime-subagent-1",
             update: {
+                kind: "read",
+                rawInput: {
+                    filePath: path.join(tempDir, "src/input.ts"),
+                },
+                sessionUpdate: "tool_call",
+                status: "completed",
+                title: "read_file",
+                toolCallId: "child-read",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-subagent-1",
+            update: {
                 kind: "plan",
                 sessionUpdate: "tool_call",
                 status: "completed",
@@ -1914,17 +1927,26 @@ describe("AiWorkerRuntime prepareSession", () => {
                 ),
             ).toBe(true);
         });
-        expect(
-            hasToolActivityMatching(
-                emittedEvents,
-                childSnapshot.sessionId,
-                (activity) =>
-                    activity.id === "child-exec" ||
-                    activity.id === "child-plan" ||
-                    activity.title === "exec_command" ||
-                    activity.title === "update_plan",
-            ),
-        ).toBe(false);
+        for (const expectedToolId of [
+            "child-exec",
+            "child-read",
+            "child-plan",
+        ]) {
+            expect(
+                hasToolActivityMatching(
+                    emittedEvents,
+                    childSnapshot.sessionId,
+                    (activity) => activity.id === expectedToolId,
+                ),
+            ).toBe(true);
+            expect(
+                hasToolActivityMatching(
+                    emittedEvents,
+                    "session-1",
+                    (activity) => activity.id === expectedToolId,
+                ),
+            ).toBe(false);
+        }
 
         emittedEvents.length = 0;
         await client.sessionUpdate({
@@ -1961,6 +1983,16 @@ describe("AiWorkerRuntime prepareSession", () => {
                 childSnapshot.sessionId,
                 (activity) => activity.id === "child-edit",
             ),
+        ).toBe(true);
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                "session-1",
+                (activity) => activity.id === "child-edit",
+            ),
+        ).toBe(false);
+        expect(
+            hasTrackedFileEvent(emittedEvents, "session-1", "src/subagent-tool.ts"),
         ).toBe(false);
     });
 

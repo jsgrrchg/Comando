@@ -32,12 +32,6 @@ interface ProjectWorkerFatalMessage {
     readonly type: "fatal";
 }
 
-interface ProjectWorkerEventMessage {
-    readonly event: "project.invalidated";
-    readonly payload: ProjectTreeInvalidation;
-    readonly type: "event";
-}
-
 interface SerializedError {
     readonly message: string;
     readonly name: string;
@@ -296,17 +290,63 @@ export async function createProjectWorkerClient(
                 options.onWorkerRestarted?.();
             }
         },
-        onMessage: (message) => {
-            const payload = message as ProjectWorkerEventMessage;
-            options.onProjectTreeInvalidated(payload.payload);
-            return true;
-        },
+        onMessage: (message) =>
+            handleProjectWorkerMessage(
+                message,
+                options.onProjectTreeInvalidated,
+            ),
         timeoutMs: WORKER_TIMEOUTS_MS.projects,
     });
     const rpc = new ProjectRpcClient(supervisor);
 
     await rpc.ready();
     return new RemoteProjectWorkerClient(rpc);
+}
+
+function handleProjectWorkerMessage(
+    message: unknown,
+    onProjectTreeInvalidated: (payload: ProjectTreeInvalidation) => void,
+): boolean {
+    if (!isRecord(message) || message.type !== "event") {
+        return false;
+    }
+
+    if (message.event !== "project.invalidated") {
+        return true;
+    }
+
+    const payload = message.payload;
+    if (!isProjectTreeInvalidation(payload)) {
+        return true;
+    }
+
+    onProjectTreeInvalidated(payload);
+    return true;
+}
+
+function isProjectTreeInvalidation(
+    payload: unknown,
+): payload is ProjectTreeInvalidation {
+    if (!isRecord(payload)) {
+        return false;
+    }
+
+    const { occurredAt, projectId, relativePaths, worktreeId } = payload;
+    return (
+        typeof projectId === "string" &&
+        typeof occurredAt === "string" &&
+        (relativePaths === undefined ||
+            relativePaths === null ||
+            (Array.isArray(relativePaths) &&
+                relativePaths.every((entry) => typeof entry === "string"))) &&
+        (worktreeId === undefined ||
+            worktreeId === null ||
+            typeof worktreeId === "string")
+    );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
 }
 
 function waitForWorkerReady(worker: Worker, port: MessagePort): Promise<void> {
@@ -354,6 +394,10 @@ function waitForWorkerReady(worker: Worker, port: MessagePort): Promise<void> {
         port.start();
     });
 }
+
+export const __testing = {
+    handleProjectWorkerMessage,
+};
 
 function deserializeWorkerError(input: SerializedError): Error {
     const error = new Error(input.message);
