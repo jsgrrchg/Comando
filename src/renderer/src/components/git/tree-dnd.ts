@@ -1,4 +1,14 @@
-import type { GitTreeDragData } from "./types";
+import type { GitTreeDragData, GitTreeDragPayload } from "./types";
+
+export function normalizeGitTreeDragPayload(
+    dragData: GitTreeDragPayload,
+): readonly GitTreeDragData[] {
+    if (Array.isArray(dragData)) {
+        return dragData as readonly GitTreeDragData[];
+    }
+
+    return [dragData as GitTreeDragData];
+}
 
 export function canDropProjectEntryIntoDirectory(
     dragData: GitTreeDragData | null,
@@ -23,6 +33,35 @@ export function canDropProjectEntryIntoDirectory(
     }
 
     return true;
+}
+
+export function canDropProjectEntriesIntoDirectory(
+    dragData: GitTreeDragPayload | null,
+    directoryPath: string | null,
+): dragData is GitTreeDragPayload {
+    if (!dragData) {
+        return false;
+    }
+
+    const entries = normalizeGitTreeDragPayload(dragData);
+    return (
+        entries.length > 0 &&
+        entries.some(
+            (entry) =>
+                getProjectEntryParentRelativePath(entry.relativePath) !==
+                directoryPath,
+        ) &&
+        entries.every((entry) => {
+            if (entry.kind !== "directory") {
+                return true;
+            }
+
+            return (
+                entry.relativePath !== directoryPath &&
+                !(directoryPath ?? "").startsWith(`${entry.relativePath}/`)
+            );
+        })
+    );
 }
 
 export function getProjectEntryParentRelativePath(

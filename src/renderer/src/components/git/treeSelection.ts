@@ -74,3 +74,38 @@ export function resolveGitTreeDragPaths(
     );
     return orderedSelectedPaths.length > 0 ? orderedSelectedPaths : [nodePath];
 }
+
+type GitTreeActionEntry = Pick<GitTreeNode, "kind" | "path">;
+
+function isGitTreeDescendantPath(
+    parentPath: string,
+    candidatePath: string,
+): boolean {
+    return (
+        candidatePath !== parentPath &&
+        candidatePath.startsWith(`${parentPath}/`)
+    );
+}
+
+export function compactGitTreeEntriesByAncestor<
+    Entry extends GitTreeActionEntry,
+>(entries: readonly Entry[]): Entry[] {
+    return entries.filter((entry) => {
+        if (entry.path === "") {
+            return true;
+        }
+
+        return !entries.some(
+            (candidate) =>
+                candidate.kind === "directory" &&
+                candidate.path !== "" &&
+                isGitTreeDescendantPath(candidate.path, entry.path),
+        );
+    });
+}
+
+export function compactGitTreeEntriesForDeletion<
+    Entry extends GitTreeActionEntry,
+>(entries: readonly Entry[]): Entry[] {
+    return compactGitTreeEntriesByAncestor(entries);
+}

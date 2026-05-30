@@ -12,7 +12,9 @@ import {
 } from "react";
 
 import {
+    COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
+    parseComposerProjectEntryListDragData,
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
 
@@ -24,9 +26,10 @@ import {
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { GitActionButton, GitEmptyState } from "./GitUi";
-import { canDropProjectEntryIntoDirectory } from "./tree-dnd";
+import { canDropProjectEntriesIntoDirectory } from "./tree-dnd";
 import type {
     GitTreeDragData,
+    GitTreeDragPayload,
     GitNodeStatus,
     GitTreeNode,
     GitTreeNodeActivationEvent,
@@ -338,7 +341,7 @@ export function GitTreeView({
         null,
     );
     const [activeDragData, setActiveDragData] =
-        useState<GitTreeDragData | null>(null);
+        useState<GitTreeDragPayload | null>(null);
     const hoverExpandPathRef = useRef<string | null>(null);
     const hoverExpandTimeoutRef = useRef<number | null>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -783,7 +786,7 @@ function GitTreeNodeRow({
     stickyFolderPaths,
 }: {
     readonly activePath: string | null;
-    readonly activeDragData: GitTreeDragData | null;
+    readonly activeDragData: GitTreeDragPayload | null;
     readonly constrainWidth?: boolean;
     readonly depth: number;
     readonly dropTargetPath: string | null;
@@ -811,13 +814,13 @@ function GitTreeNodeRow({
         event: GitTreeNodeActivationEvent,
     ) => void;
     readonly onNodeDrop?: (
-        dragData: GitTreeDragData,
+        dragData: GitTreeDragPayload,
         node: GitTreeNode,
     ) => void;
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
-    ) => void;
+    ) => GitTreeDragPayload | void;
     readonly onSetKeyboardCursor: (path: string) => void;
     readonly scheduleHoverExpand: (
         node: GitTreeNode,
@@ -827,7 +830,7 @@ function GitTreeNodeRow({
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
     readonly selectedPaths?: ReadonlySet<string>;
-    readonly setActiveDragData: (dragData: GitTreeDragData | null) => void;
+    readonly setActiveDragData: (dragData: GitTreeDragPayload | null) => void;
     readonly clearHoverExpand: () => void;
     readonly setDropTargetPath: (path: string | null) => void;
     readonly showStatusIndicator: boolean;
@@ -922,11 +925,11 @@ function GitTreeNodeRow({
             }}
             onDragOver={(event) => {
                 const dragData =
-                    activeDragData ?? getTreeDragData(event.dataTransfer);
+                    getTreeDragData(event.dataTransfer) ?? activeDragData;
                 const canAcceptDrop =
                     isDirectory &&
                     Boolean(onNodeDrop) &&
-                    canDropProjectEntryIntoDirectory(
+                    canDropProjectEntriesIntoDirectory(
                         dragData,
                         node.isProjectRoot ? null : node.path,
                     );
@@ -948,16 +951,19 @@ function GitTreeNodeRow({
                     return;
                 }
 
-                setActiveDragData({
+                const fallbackDragData = {
                     kind: node.kind,
                     name: node.name,
                     relativePath: node.path,
-                });
-                dragStartHandler?.(node, event.dataTransfer ?? null);
+                } satisfies GitTreeDragData;
+                const dragData =
+                    dragStartHandler?.(node, event.dataTransfer ?? null) ??
+                    fallbackDragData;
+                setActiveDragData(dragData);
             }}
             onDrop={(event) => {
                 const dragData =
-                    activeDragData ?? getTreeDragData(event.dataTransfer);
+                    getTreeDragData(event.dataTransfer) ?? activeDragData;
                 clearHoverExpand();
                 setActiveDragData(null);
                 setDropTargetPath(null);
@@ -965,7 +971,7 @@ function GitTreeNodeRow({
                 if (
                     !isDirectory ||
                     !onNodeDrop ||
-                    !canDropProjectEntryIntoDirectory(
+                    !canDropProjectEntriesIntoDirectory(
                         dragData,
                         node.isProjectRoot ? null : node.path,
                     )
@@ -1208,9 +1214,20 @@ function TreeInlineNameInput({
 
 function getTreeDragData(
     dataTransfer: DataTransfer | null,
-): GitTreeDragData | null {
+): GitTreeDragPayload | null {
     if (!dataTransfer) {
         return null;
+    }
+
+    const parsedList = parseComposerProjectEntryListDragData(
+        dataTransfer.getData(COMPOSER_PROJECT_ENTRY_LIST_MIME),
+    );
+    if (parsedList) {
+        return parsedList.entries.map((entry) => ({
+            kind: entry.kind,
+            name: entry.name,
+            relativePath: entry.relativePath,
+        }));
     }
 
     const parsed = parseComposerProjectEntryDragData(

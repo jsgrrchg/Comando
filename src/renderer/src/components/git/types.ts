@@ -48,6 +48,10 @@ export interface GitTreeDragData {
     readonly relativePath: string;
 }
 
+export type GitTreeDragPayload =
+    | GitTreeDragData
+    | readonly GitTreeDragData[];
+
 export interface GitTreeNode {
     readonly id: string;
     readonly name: string;
@@ -167,13 +171,13 @@ export interface GitTreeViewProps {
         },
     ) => void;
     readonly onNodeDrop?: (
-        dragData: GitTreeDragData,
+        dragData: GitTreeDragPayload,
         node: GitTreeNode,
     ) => void;
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
-    ) => void;
+    ) => GitTreeDragPayload | void;
     readonly onEditingCancel?: () => void;
     readonly onEditingDraftNameChange?: (value: string) => void;
     readonly onEditingSubmit?: () => void;

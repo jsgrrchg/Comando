@@ -63,11 +63,15 @@ import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
 import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
 import {
+    compactGitTreeEntriesByAncestor,
+    compactGitTreeEntriesForDeletion,
     flattenVisibleGitTreeNodes,
     getProjectEntryParentRelativePath,
     GitTreeView,
+    normalizeGitTreeDragPayload,
     resolveGitTreeDragPaths,
     type GitTreeDragData,
+    type GitTreeDragPayload,
     type GitTreeNode,
     type GitTreeNodeActivationEvent,
 } from "./components/git";
@@ -229,9 +233,6 @@ export function App() {
     );
     const createChatTab = useWorkspaceStore((state) => state.createChatTab);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
-    const closeTabsForProjectPath = useWorkspaceStore(
-        (state) => state.closeTabsForProjectPath,
-    );
     const closeTabsForProjectPaths = useWorkspaceStore(
         (state) => state.closeTabsForProjectPaths,
     );
@@ -1324,7 +1325,6 @@ export function App() {
     }, [quickOpenResults.length]);
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
-    void closeTabsForProjectPath;
     void renameTabsForProjectPath;
     const activeFilePath = useMemo(
         () =>
@@ -1531,7 +1531,10 @@ export function App() {
     );
 
     const handleMoveTreeNode = useCallback(
-        async (draggedEntry: GitTreeDragData, destinationNode: GitTreeNode) => {
+        async (
+            draggedPayload: GitTreeDragPayload,
+            destinationNode: GitTreeNode,
+        ) => {
             if (!activeProjectId) {
                 return;
             }
@@ -1539,8 +1542,11 @@ export function App() {
             const nextParentRelativePath = destinationNode.isProjectRoot
                 ? null
                 : destinationNode.path;
-            const currentParentRelativePath = getProjectEntryParentRelativePath(
-                draggedEntry.relativePath,
+            const draggedEntries = compactGitTreeEntriesByAncestor(
+                normalizeGitTreeDragPayload(draggedPayload).map((entry) => ({
+                    ...entry,
+                    path: entry.relativePath,
+                })),
             );
             const destinationProjectTreeNode =
                 destinationNode.isProjectRoot || !destinationNode.path
@@ -1553,25 +1559,33 @@ export function App() {
                 Boolean(destinationProjectTreeNode) &&
                 !activeExpandedDirectories.includes(destinationNode.path);
 
-            if (currentParentRelativePath === nextParentRelativePath) {
+            const movableEntries = draggedEntries.filter(
+                (entry) =>
+                    getProjectEntryParentRelativePath(entry.relativePath) !==
+                    nextParentRelativePath,
+            );
+
+            if (movableEntries.length === 0) {
                 return;
             }
 
             try {
-                const movedEntry = await renameEntry(
-                    activeProjectId,
-                    draggedEntry.relativePath,
-                    draggedEntry.name,
-                    nextParentRelativePath,
-                    activeWorktreeId,
-                );
-                await renameTabsForProjectPath(
-                    activeProjectId,
-                    activeWorktreeId,
-                    draggedEntry.relativePath,
-                    movedEntry.relativePath,
-                    draggedEntry.kind,
-                );
+                for (const entry of movableEntries) {
+                    const movedEntry = await renameEntry(
+                        activeProjectId,
+                        entry.relativePath,
+                        entry.name,
+                        nextParentRelativePath,
+                        activeWorktreeId,
+                    );
+                    await renameTabsForProjectPath(
+                        activeProjectId,
+                        activeWorktreeId,
+                        entry.relativePath,
+                        movedEntry.relativePath,
+                        entry.kind,
+                    );
+                }
                 if (destinationProjectTreeNode && shouldExpandDestination) {
                     await toggleDirectory(
                         activeProjectId,
@@ -1598,30 +1612,61 @@ export function App() {
         ],
     );
 
-    const handleDeleteTreeNode = useCallback(
-        async (node: GitTreeNode) => {
+    const handleDeleteTreeNodes = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
             if (!activeProjectId) {
                 return;
             }
 
+            const deletableNodes = nodes.filter((node) => !node.isProjectRoot);
+            if (deletableNodes.length === 0) {
+                return;
+            }
+
             const confirmed = window.confirm(
-                node.kind === "directory"
-                    ? `Delete folder "${node.name}" and all its contents?`
-                    : `Delete file "${node.name}"?`,
+                deletableNodes.length === 1
+                    ? deletableNodes[0].kind === "directory"
+                        ? `Delete folder "${deletableNodes[0].name}" and all its contents?`
+                        : `Delete file "${deletableNodes[0].name}"?`
+                    : `Delete ${deletableNodes.length} selected items?`,
             );
             if (!confirmed) {
                 return;
             }
 
+            const entriesToDelete =
+                compactGitTreeEntriesForDeletion(deletableNodes);
+            const deletedEntries: {
+                readonly kind: "directory" | "file";
+                readonly relativePath: string;
+            }[] = [];
+
             try {
-                await deleteEntry(activeProjectId, node.path, activeWorktreeId);
-                await closeTabsForProjectPath(
+                for (const entry of entriesToDelete) {
+                    await deleteEntry(
+                        activeProjectId,
+                        entry.path,
+                        activeWorktreeId,
+                    );
+                    deletedEntries.push({
+                        kind: entry.kind,
+                        relativePath: entry.path,
+                    });
+                }
+
+                await closeTabsForProjectPaths(
                     activeProjectId,
                     activeWorktreeId,
-                    node.path,
-                    node.kind,
+                    deletedEntries,
                 );
             } catch (error) {
+                if (deletedEntries.length > 0) {
+                    await closeTabsForProjectPaths(
+                        activeProjectId,
+                        activeWorktreeId,
+                        deletedEntries,
+                    );
+                }
                 window.alert(
                     error instanceof Error
                         ? error.message
@@ -1632,7 +1677,7 @@ export function App() {
         [
             activeProjectId,
             activeWorktreeId,
-            closeTabsForProjectPath,
+            closeTabsForProjectPaths,
             deleteEntry,
         ],
     );
@@ -1660,14 +1705,21 @@ export function App() {
         [activeProjectId, activeWorktreeId, revealEntry],
     );
 
-    const handleCopyTreePath = useCallback(
-        async (relativePath: string, mode: "absolute" | "relative") => {
-            const text =
-                mode === "absolute"
-                    ? activeProject
-                        ? joinProjectPath(activeProject.rootPath, relativePath)
-                        : null
-                    : relativePath;
+    const handleCopyTreePaths = useCallback(
+        async (
+            nodes: readonly GitTreeNode[],
+            mode: "absolute" | "relative",
+        ) => {
+            const text = nodes
+                .map((node) =>
+                    mode === "absolute"
+                        ? activeProject
+                            ? joinProjectPath(activeProject.rootPath, node.path)
+                            : null
+                        : node.path,
+                )
+                .filter((path): path is string => path !== null)
+                .join("\n");
 
             if (!text) {
                 return;
@@ -1682,9 +1734,17 @@ export function App() {
         [activeProject],
     );
 
-    const handleAddFileToChat = useCallback(
-        async (node: GitTreeNode) => {
-            if (!activeProjectId || node.kind !== "file") {
+    const handleAddFilesToChat = useCallback(
+        async (
+            nodes: readonly GitTreeNode[],
+            options: { readonly forceNewChat?: boolean } = {},
+        ) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const fileNodes = nodes.filter((node) => node.kind === "file");
+            if (fileNodes.length === 0) {
                 return;
             }
 
@@ -1698,19 +1758,21 @@ export function App() {
             );
 
             const attachContext = (sessionId: string) => {
-                addDraftFileContext(sessionId, {
-                    extension: node.path.split(".").pop() ?? null,
-                    id: `file-ctx:${crypto.randomUUID()}`,
-                    languageId: resolveEditorLanguage({
-                        filePath: node.path,
-                    }).id,
-                    name: node.name,
-                    projectId: activeProjectId,
-                    relativePath: node.path,
+                fileNodes.forEach((node) => {
+                    addDraftFileContext(sessionId, {
+                        extension: node.path.split(".").pop() ?? null,
+                        id: `file-ctx:${crypto.randomUUID()}`,
+                        languageId: resolveEditorLanguage({
+                            filePath: node.path,
+                        }).id,
+                        name: node.name,
+                        projectId: activeProjectId,
+                        relativePath: node.path,
+                    });
                 });
             };
 
-            if (existingChatTab?.kind === "chat") {
+            if (!options.forceNewChat && existingChatTab?.kind === "chat") {
                 attachContext(existingChatTab.sessionId);
                 return;
             }
@@ -1932,11 +1994,10 @@ export function App() {
                 kind: entry.kind,
                 name: entry.name,
                 relativePath: entry.path,
-            }));
+            })) satisfies GitTreeDragData[];
 
             dataTransfer.clearData();
-            dataTransfer.effectAllowed =
-                composerEntries.length > 1 ? "copy" : "copyMove";
+            dataTransfer.effectAllowed = "copyMove";
             dataTransfer.setData(
                 COMPOSER_PROJECT_ENTRY_LIST_MIME,
                 serializeComposerProjectEntryListDragData({
@@ -1963,6 +2024,10 @@ export function App() {
                           .map((entry) => entry.relativePath)
                           .join("\n"),
             );
+
+            return composerEntries.length === 1
+                ? composerEntries[0]
+                : composerEntries;
         },
         [
             effectiveFileTreeSelectedPaths,
@@ -2050,9 +2115,58 @@ export function App() {
 
         const node = fileTreeContextMenu.payload.node;
         const contextSelection = getFileTreeContextSelection(node);
+        const contextSelectionFileCount = contextSelection.filter(
+            (entry) => entry.kind === "file",
+        ).length;
+        const addToChatLabel =
+            contextSelectionFileCount === 0
+                ? "Add Files to Chat"
+                : contextSelection.length > 1
+                ? `Add ${contextSelectionFileCount} ${
+                      contextSelectionFileCount === 1 ? "File" : "Files"
+                  } to Chat`
+                : "Add to Chat";
+        const addToNewChatLabel =
+            contextSelectionFileCount === 0
+                ? "Add Files to New Chat"
+                : contextSelection.length > 1
+                ? `Add ${contextSelectionFileCount} ${
+                      contextSelectionFileCount === 1 ? "File" : "Files"
+                  } to New Chat`
+                : "Add to New Chat";
+        const copyRelativePathLabel =
+            contextSelection.length > 1
+                ? `Copy ${contextSelection.length} Relative Paths`
+                : "Copy Relative Path";
+        const copyAbsolutePathLabel =
+            contextSelection.length > 1
+                ? `Copy ${contextSelection.length} Absolute Paths`
+                : "Copy Absolute Path";
+        const deleteLabel =
+            contextSelection.length > 1
+                ? `Delete ${contextSelection.length} Selected Items`
+                : "Delete";
         const multiSelectionEntries =
             contextSelection.length > 1
                 ? ([
+                      {
+                          label: addToChatLabel,
+                          action: () =>
+                              void handleAddFilesToChat(contextSelection),
+                          disabled:
+                              !activeProjectId ||
+                              contextSelectionFileCount === 0,
+                      },
+                      {
+                          label: addToNewChatLabel,
+                          action: () =>
+                              void handleAddFilesToChat(contextSelection, {
+                                  forceNewChat: true,
+                              }),
+                          disabled:
+                              !activeProjectId ||
+                              contextSelectionFileCount === 0,
+                      },
                       {
                           label: `Close ${contextSelection.length} Selected Tabs`,
                           action: () =>
@@ -2084,7 +2198,7 @@ export function App() {
                 },
                 {
                     label: "Copy Absolute Path",
-                    action: () => void handleCopyTreePath("", "absolute"),
+                    action: () => void handleCopyTreePaths([node], "absolute"),
                     disabled: !activeProject,
                 },
                 {
@@ -2116,11 +2230,24 @@ export function App() {
                             : undefined,
                     disabled: !activeProjectId,
                 },
-                {
-                    label: "Add to Chat",
-                    action: () => void handleAddFileToChat(node),
-                    disabled: !activeProjectId,
-                },
+                ...(contextSelection.length === 1
+                    ? ([
+                          {
+                              label: addToChatLabel,
+                              action: () =>
+                                  void handleAddFilesToChat(contextSelection),
+                              disabled: !activeProjectId,
+                          },
+                          {
+                              label: addToNewChatLabel,
+                              action: () =>
+                                  void handleAddFilesToChat(contextSelection, {
+                                      forceNewChat: true,
+                                  }),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
                 { type: "separator" },
                 {
                     label: "Rename",
@@ -2133,20 +2260,20 @@ export function App() {
                     disabled: !activeProjectId,
                 },
                 {
-                    label: "Copy Relative Path",
+                    label: copyRelativePathLabel,
                     action: () =>
-                        void handleCopyTreePath(node.path, "relative"),
+                        void handleCopyTreePaths(contextSelection, "relative"),
                 },
                 {
-                    label: "Copy Absolute Path",
+                    label: copyAbsolutePathLabel,
                     action: () =>
-                        void handleCopyTreePath(node.path, "absolute"),
+                        void handleCopyTreePaths(contextSelection, "absolute"),
                     disabled: !activeProject,
                 },
                 { type: "separator" },
                 {
-                    label: "Delete",
-                    action: () => void handleDeleteTreeNode(node),
+                    label: deleteLabel,
+                    action: () => void handleDeleteTreeNodes(contextSelection),
                     danger: true,
                     disabled: !activeProjectId,
                 },
@@ -2178,18 +2305,20 @@ export function App() {
                 disabled: !activeProjectId,
             },
             {
-                label: "Copy Relative Path",
-                action: () => void handleCopyTreePath(node.path, "relative"),
+                label: copyRelativePathLabel,
+                action: () =>
+                    void handleCopyTreePaths(contextSelection, "relative"),
             },
             {
-                label: "Copy Absolute Path",
-                action: () => void handleCopyTreePath(node.path, "absolute"),
+                label: copyAbsolutePathLabel,
+                action: () =>
+                    void handleCopyTreePaths(contextSelection, "absolute"),
                 disabled: !activeProject,
             },
             { type: "separator" },
             {
-                label: "Delete",
-                action: () => void handleDeleteTreeNode(node),
+                label: deleteLabel,
+                action: () => void handleDeleteTreeNodes(contextSelection),
                 danger: true,
                 disabled: !activeProjectId,
             },
@@ -2200,11 +2329,11 @@ export function App() {
         activeWorktreeId,
         fileTreeContextMenu,
         getFileTreeContextSelection,
-        handleAddFileToChat,
+        handleAddFilesToChat,
         handleCloseFileTreeTabs,
-        handleCopyTreePath,
+        handleCopyTreePaths,
         handleCreateTreeEntry,
-        handleDeleteTreeNode,
+        handleDeleteTreeNodes,
         handleRenameTreeNode,
         handleRevealTreeEntry,
         openFileTab,
