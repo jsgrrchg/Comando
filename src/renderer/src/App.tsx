@@ -69,6 +69,7 @@ import {
     resolveGitTreeDragPaths,
     type GitTreeDragData,
     type GitTreeNode,
+    type GitTreeNodeActivationEvent,
 } from "./components/git";
 import { StickyFolderOverlay } from "./components/git/StickyFolderOverlay";
 import { useStickyFolders } from "./components/git/useStickyFolders";
@@ -1868,7 +1869,7 @@ export function App() {
     }, [visibleSidebarNodePathSet]);
 
     const handleFileTreeNodeClick = useCallback(
-        (node: GitTreeNode, event: ReactMouseEvent<HTMLDivElement>) => {
+        (node: GitTreeNode, event: GitTreeNodeActivationEvent) => {
             const isRangeSelection = event.shiftKey;
             const isToggleSelection = event.metaKey || event.ctrlKey;
 

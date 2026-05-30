@@ -140,4 +140,56 @@ describe("GitTreeView", () => {
         expect(markup).toContain('data-active="true"');
         expect(markup).toContain('data-selected="true"');
     });
+
+    it("renders a focusable tree with an initial keyboard cursor", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView nodes={[createFileNode()]} />,
+        );
+
+        expect(markup).toContain('role="tree"');
+        expect(markup).toContain('tabindex="0"');
+        expect(markup).toContain('aria-activedescendant=');
+        expect(markup).toContain('role="treeitem"');
+        expect(markup).toContain('data-keyboard-cursor="true"');
+    });
+
+    it("initializes the keyboard cursor from the active path when visible", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                activePath="todo.md"
+                nodes={[
+                    createFileNode(),
+                    createFileNode({
+                        id: "file-2",
+                        name: "todo.md",
+                        path: "todo.md",
+                    }),
+                ]}
+            />,
+        );
+
+        expect(markup).toMatch(
+            /data-keyboard-cursor="true"[^>]*data-path="todo\.md"/,
+        );
+    });
+
+    it("initializes the keyboard cursor from selection when no active path is visible", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                nodes={[
+                    createFileNode(),
+                    createFileNode({
+                        id: "file-2",
+                        name: "todo.md",
+                        path: "todo.md",
+                    }),
+                ]}
+                selectedPaths={new Set(["todo.md"])}
+            />,
+        );
+
+        expect(markup).toMatch(
+            /data-keyboard-cursor="true"[^>]*data-path="todo\.md"[^>]*data-selected="true"/,
+        );
+    });
 });

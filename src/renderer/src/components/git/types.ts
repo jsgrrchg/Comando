@@ -1,4 +1,8 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+    KeyboardEvent as ReactKeyboardEvent,
+    MouseEvent as ReactMouseEvent,
+    ReactNode,
+} from "react";
 
 export type GitPanelTabId = "changes" | "diffs";
 
@@ -67,6 +71,10 @@ export interface GitChangeGroup {
     readonly nodes: readonly GitTreeNode[];
     readonly actions?: readonly GitAction[];
 }
+
+export type GitTreeNodeActivationEvent =
+    | ReactMouseEvent<HTMLDivElement>
+    | ReactKeyboardEvent<HTMLDivElement>;
 
 export type GitDiffLineKind = "add" | "context" | "remove";
 
@@ -149,7 +157,7 @@ export interface GitTreeViewProps {
     readonly onBackgroundDrop?: (dragData: GitTreeDragData) => void;
     readonly onNodeClick?: (
         node: GitTreeNode,
-        event: ReactMouseEvent<HTMLDivElement>,
+        event: GitTreeNodeActivationEvent,
     ) => void;
     readonly onNodeContextMenu?: (
         node: GitTreeNode,
@@ -188,7 +196,7 @@ export interface GitChangesViewProps {
     readonly layout?: GitViewLayout;
     readonly onNodeClick?: (
         node: GitTreeNode,
-        event: ReactMouseEvent<HTMLDivElement>,
+        event: GitTreeNodeActivationEvent,
     ) => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly onToggleGroup?: (groupId: GitChangeGroupId) => void;

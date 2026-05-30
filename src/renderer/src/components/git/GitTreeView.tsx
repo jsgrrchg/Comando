@@ -1,10 +1,12 @@
 import {
     useCallback,
     useEffect,
+    useId,
     useMemo,
     useRef,
     useState,
     type CSSProperties,
+    type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
 } from "react";
@@ -27,6 +29,7 @@ import type {
     GitTreeDragData,
     GitNodeStatus,
     GitTreeNode,
+    GitTreeNodeActivationEvent,
     GitTreeViewProps,
     GitViewLayout,
 } from "./types";
@@ -57,6 +60,16 @@ interface FlatGitTreeRow {
     readonly key: string;
     readonly node: GitTreeNode;
 }
+
+type KeyboardNavigationKey =
+    | "ArrowDown"
+    | "ArrowLeft"
+    | "ArrowRight"
+    | "ArrowUp"
+    | "End"
+    | "Enter"
+    | "Home"
+    | " ";
 
 export function scalePx(value: number): string {
     return `calc(${value}px * var(--file-tree-scale, 1))`;
@@ -128,6 +141,134 @@ function flattenGitTreeRows({
     return rows;
 }
 
+function findRowIndexByPath(
+    rows: readonly FlatGitTreeRow[],
+    path: string | null,
+): number {
+    if (!path) {
+        return -1;
+    }
+
+    return rows.findIndex((row) => row.node.path === path);
+}
+
+function findFirstSelectedRowIndex(
+    rows: readonly FlatGitTreeRow[],
+    selectedPaths: ReadonlySet<string> | undefined,
+): number {
+    if (!selectedPaths || selectedPaths.size === 0) {
+        return -1;
+    }
+
+    return rows.findIndex((row) => selectedPaths.has(row.node.path));
+}
+
+function findNearestVisibleAncestorIndex(
+    rows: readonly FlatGitTreeRow[],
+    path: string | null,
+): number {
+    if (!path) {
+        return -1;
+    }
+
+    const parts = path.split("/");
+    for (let length = parts.length - 1; length > 0; length -= 1) {
+        const ancestorPath = parts.slice(0, length).join("/");
+        const index = findRowIndexByPath(rows, ancestorPath);
+        if (index >= 0) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function resolveKeyboardCursorIndex({
+    activePath,
+    cursorPath,
+    rows,
+    selectedPaths,
+}: {
+    readonly activePath: string | null;
+    readonly cursorPath: string | null;
+    readonly rows: readonly FlatGitTreeRow[];
+    readonly selectedPaths: ReadonlySet<string> | undefined;
+}): number {
+    if (rows.length === 0) {
+        return -1;
+    }
+
+    const cursorIndex = findRowIndexByPath(rows, cursorPath);
+    if (cursorIndex >= 0) {
+        return cursorIndex;
+    }
+
+    const ancestorIndex = findNearestVisibleAncestorIndex(rows, cursorPath);
+    if (ancestorIndex >= 0) {
+        return ancestorIndex;
+    }
+
+    const activeIndex = findRowIndexByPath(rows, activePath);
+    if (activeIndex >= 0) {
+        return activeIndex;
+    }
+
+    const selectedIndex = findFirstSelectedRowIndex(rows, selectedPaths);
+    if (selectedIndex >= 0) {
+        return selectedIndex;
+    }
+
+    return 0;
+}
+
+function findParentRowIndex(
+    rows: readonly FlatGitTreeRow[],
+    rowIndex: number,
+): number {
+    const row = rows[rowIndex];
+    if (!row || row.depth === 0) {
+        return -1;
+    }
+
+    for (let index = rowIndex - 1; index >= 0; index -= 1) {
+        if (rows[index]?.depth === row.depth - 1) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function isKeyboardNavigationKey(
+    key: string,
+): key is KeyboardNavigationKey {
+    return (
+        key === "ArrowDown" ||
+        key === "ArrowLeft" ||
+        key === "ArrowRight" ||
+        key === "ArrowUp" ||
+        key === "End" ||
+        key === "Enter" ||
+        key === "Home" ||
+        key === " "
+    );
+}
+
+function isInteractiveTreeEventTarget(
+    event: ReactKeyboardEvent<HTMLDivElement>,
+): boolean {
+    if (event.target === event.currentTarget) {
+        return false;
+    }
+
+    return (
+        event.target instanceof HTMLElement &&
+        event.target.closest(
+            'button,input,select,textarea,[contenteditable="true"],[data-inline-tree-editor="true"]',
+        ) !== null
+    );
+}
+
 function findScrollContainer(node: HTMLElement): HTMLElement | null {
     if (typeof window === "undefined") {
         return null;
@@ -191,7 +332,11 @@ export function GitTreeView({
     showStatusIndicator = true,
     stickyFolderPaths,
 }: GitTreeViewProps) {
+    const treeId = useId();
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+    const [keyboardCursorPath, setKeyboardCursorPath] = useState<string | null>(
+        null,
+    );
     const [activeDragData, setActiveDragData] =
         useState<GitTreeDragData | null>(null);
     const hoverExpandPathRef = useRef<string | null>(null);
@@ -215,6 +360,17 @@ export function GitTreeView({
             }),
         [expandedPathSet, expandedPaths, layout, nodes],
     );
+    const keyboardCursorIndex = resolveKeyboardCursorIndex({
+        activePath,
+        cursorPath: keyboardCursorPath,
+        rows: flatRows,
+        selectedPaths,
+    });
+    const keyboardCursorRow =
+        keyboardCursorIndex >= 0 ? flatRows[keyboardCursorIndex] : null;
+    const activeDescendantId = keyboardCursorRow
+        ? `${treeId}-row-${keyboardCursorIndex}`
+        : undefined;
 
     const refreshVirtualizationTarget = useCallback(() => {
         const container = containerRef.current;
@@ -252,6 +408,184 @@ export function GitTreeView({
             virtualListRef.current = handle;
         },
         [],
+    );
+
+    const scrollKeyboardCursorIntoView = useCallback(
+        (index: number) => {
+            if (index < 0) {
+                return;
+            }
+
+            if (shouldVirtualize) {
+                virtualListRef.current?.scrollToIndex(index, {
+                    align: "center",
+                    offset: treeScrollOffsetRef.current,
+                });
+            }
+
+            if (typeof window === "undefined") {
+                return;
+            }
+
+            window.requestAnimationFrame(() => {
+                const row = document.getElementById(`${treeId}-row-${index}`);
+                row?.scrollIntoView({
+                    block: "nearest",
+                    inline: "nearest",
+                });
+            });
+        },
+        [shouldVirtualize, treeId],
+    );
+
+    const moveKeyboardCursor = useCallback(
+        (index: number) => {
+            const row = flatRows[index];
+            if (!row) {
+                return;
+            }
+
+            setKeyboardCursorPath(row.node.path);
+            scrollKeyboardCursorIntoView(index);
+        },
+        [flatRows, scrollKeyboardCursorIntoView],
+    );
+
+    const activateKeyboardCursor = useCallback(
+        (event: ReactKeyboardEvent<HTMLDivElement>) => {
+            if (!keyboardCursorRow) {
+                return;
+            }
+
+            const { node } = keyboardCursorRow;
+
+            if (node.kind === "file") {
+                onNodeClick?.(node, event);
+                return;
+            }
+
+            if (node.kind === "directory") {
+                onNodeClick?.(node, event);
+                onToggleDirectory?.(node);
+            }
+        },
+        [keyboardCursorRow, onNodeClick, onToggleDirectory],
+    );
+
+    const handleTreeKeyDown = useCallback(
+        (event: ReactKeyboardEvent<HTMLDivElement>) => {
+            if (editingPath || flatRows.length === 0) {
+                return;
+            }
+
+            if (isInteractiveTreeEventTarget(event)) {
+                return;
+            }
+
+            if (!isKeyboardNavigationKey(event.key)) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const currentIndex = keyboardCursorIndex >= 0
+                ? keyboardCursorIndex
+                : 0;
+            const currentRow = flatRows[currentIndex];
+
+            switch (event.key) {
+                case "ArrowDown":
+                    moveKeyboardCursor(
+                        Math.min(currentIndex + 1, flatRows.length - 1),
+                    );
+                    return;
+                case "ArrowUp":
+                    moveKeyboardCursor(Math.max(currentIndex - 1, 0));
+                    return;
+                case "Home":
+                    moveKeyboardCursor(0);
+                    return;
+                case "End":
+                    moveKeyboardCursor(flatRows.length - 1);
+                    return;
+                case "ArrowRight": {
+                    if (
+                        !currentRow ||
+                        layout !== "tree" ||
+                        currentRow.node.kind !== "directory"
+                    ) {
+                        return;
+                    }
+
+                    const isExpanded = isTreeNodeExpanded({
+                        expandedPathSet,
+                        expandedPaths,
+                        layout,
+                        node: currentRow.node,
+                    });
+                    const firstChildIndex =
+                        flatRows[currentIndex + 1]?.depth >
+                        currentRow.depth
+                            ? currentIndex + 1
+                            : -1;
+
+                    if (!isExpanded) {
+                        onToggleDirectory?.(currentRow.node);
+                        return;
+                    }
+
+                    if (firstChildIndex >= 0) {
+                        moveKeyboardCursor(firstChildIndex);
+                    }
+                    return;
+                }
+                case "ArrowLeft": {
+                    if (!currentRow) {
+                        return;
+                    }
+
+                    const isExpanded =
+                        layout === "tree" &&
+                        currentRow.node.kind === "directory" &&
+                        isTreeNodeExpanded({
+                            expandedPathSet,
+                            expandedPaths,
+                            layout,
+                            node: currentRow.node,
+                        });
+
+                    if (isExpanded) {
+                        onToggleDirectory?.(currentRow.node);
+                        return;
+                    }
+
+                    const parentIndex = findParentRowIndex(
+                        flatRows,
+                        currentIndex,
+                    );
+                    if (parentIndex >= 0) {
+                        moveKeyboardCursor(parentIndex);
+                    }
+                    return;
+                }
+                case "Enter":
+                case " ":
+                    activateKeyboardCursor(event);
+                    return;
+            }
+        },
+        [
+            activateKeyboardCursor,
+            editingPath,
+            expandedPathSet,
+            expandedPaths,
+            flatRows,
+            keyboardCursorIndex,
+            layout,
+            moveKeyboardCursor,
+            onToggleDirectory,
+        ],
     );
 
     const clearHoverExpand = () => {
@@ -357,7 +691,14 @@ export function GitTreeView({
     }
 
     return (
-        <div className={className} ref={setContainerRef}>
+        <div
+            aria-activedescendant={activeDescendantId}
+            className={className}
+            onKeyDown={handleTreeKeyDown}
+            ref={setContainerRef}
+            role="tree"
+            tabIndex={0}
+        >
             <MeasuredVirtualList
                 defaultViewportHeight={900}
                 enabled={shouldVirtualize}
@@ -366,7 +707,7 @@ export function GitTreeView({
                 items={flatRows}
                 onReady={handleVirtualListReady}
                 overscan={8}
-                renderItem={({ item }) => (
+                renderItem={({ index, item }) => (
                     <GitTreeNodeRow
                         activePath={activePath}
                         constrainWidth={constrainWidth}
@@ -378,6 +719,8 @@ export function GitTreeView({
                         enableNodeDrag={enableNodeDrag}
                         expandedPathSet={expandedPathSet}
                         expandedPaths={expandedPaths}
+                        id={`${treeId}-row-${index}`}
+                        isKeyboardCursor={index === keyboardCursorIndex}
                         key={item.key}
                         layout={layout}
                         node={item.node}
@@ -388,6 +731,7 @@ export function GitTreeView({
                         onNodeClick={onNodeClick}
                         onNodeDrop={onNodeDrop}
                         onNodeDragStart={onNodeDragStart}
+                        onSetKeyboardCursor={setKeyboardCursorPath}
                         scheduleHoverExpand={scheduleHoverExpand}
                         onToggleDirectory={onToggleDirectory}
                         renderNodeMeta={renderNodeMeta}
@@ -416,6 +760,8 @@ function GitTreeNodeRow({
     enableNodeDrag,
     expandedPathSet,
     expandedPaths,
+    id,
+    isKeyboardCursor,
     layout,
     node,
     onEditingCancel,
@@ -425,6 +771,7 @@ function GitTreeNodeRow({
     onNodeClick,
     onNodeDrop,
     onNodeDragStart,
+    onSetKeyboardCursor,
     scheduleHoverExpand,
     onToggleDirectory,
     renderNodeMeta,
@@ -445,6 +792,8 @@ function GitTreeNodeRow({
     readonly enableNodeDrag: boolean;
     readonly expandedPathSet: ReadonlySet<string> | null;
     readonly expandedPaths: readonly string[] | undefined;
+    readonly id: string;
+    readonly isKeyboardCursor: boolean;
     readonly layout: GitViewLayout;
     readonly node: GitTreeNode;
     readonly onEditingCancel?: () => void;
@@ -459,7 +808,7 @@ function GitTreeNodeRow({
     ) => void;
     readonly onNodeClick?: (
         node: GitTreeNode,
-        event: ReactMouseEvent<HTMLDivElement>,
+        event: GitTreeNodeActivationEvent,
     ) => void;
     readonly onNodeDrop?: (
         dragData: GitTreeDragData,
@@ -469,6 +818,7 @@ function GitTreeNodeRow({
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
     ) => void;
+    readonly onSetKeyboardCursor: (path: string) => void;
     readonly scheduleHoverExpand: (
         node: GitTreeNode,
         isExpanded: boolean,
@@ -511,6 +861,8 @@ function GitTreeNodeRow({
         isDirectory && stickyFolderPaths?.has(node.path) === true;
 
     const handleRowClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+        onSetKeyboardCursor(node.path);
+
         const hasSelectionModifier =
             event.metaKey || event.ctrlKey || event.shiftKey;
 
@@ -544,9 +896,11 @@ function GitTreeNodeRow({
             className="git-tree-row"
             data-active={isActive ? "true" : "false"}
             data-drop-target={isDropTarget ? "true" : "false"}
+            data-keyboard-cursor={isKeyboardCursor ? "true" : "false"}
             data-path={node.path}
             data-selected={isSelected ? "true" : "false"}
             draggable={isDraggable}
+            id={id}
             onDragEnd={() => {
                 clearHoverExpand();
                 setActiveDragData(null);
@@ -668,8 +1022,20 @@ function GitTreeNodeRow({
                           }
                         : {}),
                 ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
+                ...(isKeyboardCursor
+                    ? {
+                          outline:
+                              "1px solid color-mix(in srgb, var(--color-accent) 58%, transparent)",
+                          outlineOffset: scalePx(-1),
+                      }
+                    : {}),
             }}
             onClick={handleRowClick}
+            role="treeitem"
+            aria-expanded={
+                isDirectory && layout === "tree" ? isExpanded : undefined
+            }
+            aria-selected={isSelected || isActive ? true : undefined}
         >
             <TreeIndentGuides depth={depth} />
 
