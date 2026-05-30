@@ -148,6 +148,12 @@ async function dispatchMethod(method: string, params: unknown): Promise<unknown>
             return await projectRuntime.copyProjectEntries(
                 params as Parameters<ProjectRuntime["copyProjectEntries"]>[0],
             );
+        case "projects.copyExternalProjectEntries":
+            return await projectRuntime.copyExternalProjectEntries(
+                params as Parameters<
+                    ProjectRuntime["copyExternalProjectEntries"]
+                >[0],
+            );
         case "projects.renameProjectEntry":
             return await projectRuntime.renameProjectEntry(
                 params as Parameters<ProjectRuntime["renameProjectEntry"]>[0],

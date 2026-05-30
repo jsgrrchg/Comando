@@ -22,6 +22,7 @@ import {
 import { debugBenignError } from "../observability/logging";
 import { shouldIgnoreEntry } from "./ignore";
 import {
+    copyExternalProjectEntries,
     copyProjectEntries,
     createProjectEntry,
     deleteProjectEntry,
@@ -113,6 +114,12 @@ export interface ProjectRuntimeCreateEntryInput extends ProjectRuntimeScopeInput
 export interface ProjectRuntimeCopyEntriesInput extends ProjectRuntimeScopeInput {
     readonly destinationParentRelativePath: string | null;
     readonly sourceRelativePaths: readonly string[];
+}
+
+export interface ProjectRuntimeCopyExternalEntriesInput
+    extends ProjectRuntimeScopeInput {
+    readonly destinationParentRelativePath: string | null;
+    readonly sourcePaths: readonly string[];
 }
 
 export interface ProjectRuntimeRenameEntryInput extends ProjectRuntimeScopeInput {
@@ -257,6 +264,23 @@ export class ProjectRuntime {
             destinationParentRelativePath: input.destinationParentRelativePath,
             rootPath: input.rootPath,
             sourceRelativePaths: input.sourceRelativePaths,
+        });
+
+        this.#handleRootMutation(
+            input,
+            entries.map((entry) => entry.relativePath),
+        );
+        return entries;
+    }
+
+    async copyExternalProjectEntries(
+        input: ProjectRuntimeCopyExternalEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]> {
+        this.#ensureRootContext(input);
+        const entries = await copyExternalProjectEntries({
+            destinationParentRelativePath: input.destinationParentRelativePath,
+            rootPath: input.rootPath,
+            sourcePaths: input.sourcePaths,
         });
 
         this.#handleRootMutation(

@@ -1,6 +1,8 @@
 import path from "node:path";
 
 import type {
+    CopyExternalProjectEntriesInput,
+    CopyExternalProjectEntriesResult,
     CopyProjectEntriesInput,
     CopyProjectEntriesResult,
     CreateProjectEntryInput,
@@ -391,6 +393,35 @@ export class ProjectService {
                     projectId: input.projectId,
                     rootPath: project.rootPath,
                     sourceRelativePaths: input.sourceRelativePaths,
+                    worktreeId: project.worktreeId,
+                }),
+        );
+
+        return { entries: [...entries] };
+    }
+
+    async copyExternalProjectEntries(
+        input: CopyExternalProjectEntriesInput,
+    ): Promise<CopyExternalProjectEntriesResult> {
+        await this.#ensureWorkerRegistry();
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+        this.touchProject(input.projectId);
+
+        const entries = await this.#trackFilesystemAccess(
+            resolveProjectPath(
+                project.rootPath,
+                input.destinationParentRelativePath,
+            ),
+            async () =>
+                await this.#worker.copyExternalProjectEntries({
+                    destinationParentRelativePath:
+                        input.destinationParentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    sourcePaths: input.sourcePaths,
                     worktreeId: project.worktreeId,
                 }),
         );

@@ -223,6 +223,9 @@ export function App() {
     const removeProject = useProjectsStore((state) => state.removeProject);
     const createEntry = useProjectsStore((state) => state.createEntry);
     const copyEntries = useProjectsStore((state) => state.copyEntries);
+    const copyExternalEntries = useProjectsStore(
+        (state) => state.copyExternalEntries,
+    );
     const deleteEntry = useProjectsStore((state) => state.deleteEntry);
     const trashEntry = useProjectsStore((state) => state.trashEntry);
     const openEntryExternally = useProjectsStore(
@@ -3697,6 +3700,24 @@ export function App() {
                                                 destinationNode,
                                             );
                                         }}
+                                        onExternalFilesDrop={(
+                                            sourcePaths,
+                                            destinationNode,
+                                        ) => {
+                                            if (!activeProjectId) {
+                                                return;
+                                            }
+
+                                            void copyExternalEntries(
+                                                activeProjectId,
+                                                sourcePaths,
+                                                destinationNode?.isProjectRoot
+                                                    ? null
+                                                    : (destinationNode?.path ??
+                                                      null),
+                                                activeWorktreeId,
+                                            );
+                                        }}
                                         selectedPaths={selectedFileTreePathSet}
                                     />
                                 ) : null}
@@ -3764,6 +3785,25 @@ export function App() {
                                                   void handleMoveTreeNode(
                                                       dragData,
                                                       rootNode,
+                                                  );
+                                              }
+                                    }
+                                    onExternalFilesDrop={
+                                        isFilteringFileTree
+                                            ? undefined
+                                            : (sourcePaths, destinationNode) => {
+                                                  if (!activeProjectId) {
+                                                      return;
+                                                  }
+
+                                                  void copyExternalEntries(
+                                                      activeProjectId,
+                                                      sourcePaths,
+                                                      destinationNode?.isProjectRoot
+                                                          ? null
+                                                          : (destinationNode?.path ??
+                                                            null),
+                                                      activeWorktreeId,
                                                   );
                                               }
                                     }

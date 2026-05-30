@@ -7,6 +7,8 @@ import {
 import {
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
+    getExternalProjectDropData,
+    hasExternalProjectDropPayload,
     parseComposerProjectEntryListDragData,
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
@@ -57,6 +59,7 @@ export function StickyFolderOverlay({
     onNodeClick,
     onNodeDragStart,
     onNodeDrop,
+    onExternalFilesDrop,
     selectedPaths,
 }: {
     readonly stickyFolders: readonly StickyFolder[];
@@ -74,6 +77,10 @@ export function StickyFolderOverlay({
     readonly onNodeDrop?: (
         dragData: GitTreeDragPayload,
         node: GitTreeNode,
+    ) => void;
+    readonly onExternalFilesDrop?: (
+        sourcePaths: readonly string[],
+        node: GitTreeNode | null,
     ) => void;
     readonly selectedPaths?: ReadonlySet<string>;
 }) {
@@ -110,6 +117,7 @@ export function StickyFolderOverlay({
                         onNodeClick={onNodeClick}
                         onDragStart={onNodeDragStart}
                         onDrop={onNodeDrop}
+                        onExternalFilesDrop={onExternalFilesDrop}
                         selectedPaths={selectedPaths}
                     />
                 </div>
@@ -126,6 +134,7 @@ function StickyFolderRow({
     onNodeClick,
     onDragStart,
     onDrop,
+    onExternalFilesDrop,
     selectedPaths,
 }: {
     readonly node: GitTreeNode;
@@ -141,6 +150,10 @@ function StickyFolderRow({
         dataTransfer: DataTransfer | null,
     ) => GitTreeDragPayload | void;
     readonly onDrop?: (dragData: GitTreeDragPayload, node: GitTreeNode) => void;
+    readonly onExternalFilesDrop?: (
+        sourcePaths: readonly string[],
+        node: GitTreeNode | null,
+    ) => void;
     readonly selectedPaths?: ReadonlySet<string>;
 }) {
     const [isDropTarget, setIsDropTarget] = useState(false);
@@ -199,17 +212,23 @@ function StickyFolderRow({
                 setTreeDragImage(event.dataTransfer ?? null, dragData);
             }}
             onDragOver={(event) => {
-                if (!onDrop) return;
-
                 const dragData = getStickyFolderDragData(event.dataTransfer);
-                const canAccept = canDropProjectEntriesIntoDirectory(
-                    dragData,
-                    node.isProjectRoot ? null : node.path,
-                );
+                const canAcceptInternal =
+                    Boolean(onDrop) &&
+                    canDropProjectEntriesIntoDirectory(
+                        dragData,
+                        node.isProjectRoot ? null : node.path,
+                    );
+                const canAcceptExternal =
+                    Boolean(onExternalFilesDrop) &&
+                    hasExternalProjectDropPayload(event.dataTransfer);
+                const canAccept = canAcceptInternal || canAcceptExternal;
                 if (!canAccept) return;
 
                 event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
+                event.dataTransfer.dropEffect = canAcceptExternal
+                    ? "copy"
+                    : "move";
                 setIsDropTarget(true);
             }}
             onDragLeave={(event) => {
@@ -224,9 +243,19 @@ function StickyFolderRow({
             }}
             onDrop={(event) => {
                 setIsDropTarget(false);
-                if (!onDrop) return;
 
                 const dragData = getStickyFolderDragData(event.dataTransfer);
+                const externalDropData = getExternalProjectDropData(
+                    event.dataTransfer,
+                );
+                if (externalDropData && onExternalFilesDrop) {
+                    event.preventDefault();
+                    onExternalFilesDrop(externalDropData.sourcePaths, node);
+                    return;
+                }
+
+                if (!onDrop) return;
+
                 if (
                     !canDropProjectEntriesIntoDirectory(
                         dragData,

@@ -14,6 +14,8 @@ import {
 import {
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
+    getExternalProjectDropData,
+    hasExternalProjectDropPayload,
     parseComposerProjectEntryListDragData,
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
@@ -406,6 +408,7 @@ export function GitTreeView({
     onEditingSubmit,
     onBackgroundContextMenu,
     onBackgroundDrop,
+    onExternalFilesDrop,
     onNodeContextMenu,
     onNodeClick,
     onNodeDrop,
@@ -710,6 +713,12 @@ export function GitTreeView({
         Boolean(onBackgroundDrop) &&
         canDropProjectEntriesIntoDirectory(dragData, null);
 
+    const canDropExternalFilesOnBackground = (
+        dataTransfer: DataTransfer | null,
+    ): boolean =>
+        Boolean(onExternalFilesDrop) &&
+        hasExternalProjectDropPayload(dataTransfer);
+
     const scheduleHoverExpand = (
         node: GitTreeNode,
         isExpanded: boolean,
@@ -851,13 +860,19 @@ export function GitTreeView({
                 }
 
                 const dragData = getEventDragData(event.dataTransfer);
-                if (!canDropOnBackground(dragData)) {
+                const canDropInternal = canDropOnBackground(dragData);
+                const canDropExternal = canDropExternalFilesOnBackground(
+                    event.dataTransfer,
+                );
+                if (!canDropInternal && !canDropExternal) {
                     setIsBackgroundDropTarget(false);
                     return;
                 }
 
                 event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
+                event.dataTransfer.dropEffect = canDropExternal
+                    ? "copy"
+                    : "move";
                 setDropTargetPath(null);
                 setIsBackgroundDropTarget(true);
             }}
@@ -867,7 +882,16 @@ export function GitTreeView({
                 }
 
                 const dragData = getEventDragData(event.dataTransfer);
+                const externalDropData = getExternalProjectDropData(
+                    event.dataTransfer,
+                );
                 clearDragState();
+                if (externalDropData && onExternalFilesDrop) {
+                    event.preventDefault();
+                    onExternalFilesDrop(externalDropData.sourcePaths, null);
+                    return;
+                }
+
                 if (!canDropOnBackground(dragData)) {
                     return;
                 }
@@ -913,6 +937,7 @@ export function GitTreeView({
                         onNodeClick={onNodeClick}
                         onNodeDrop={onNodeDrop}
                         onNodeDragStart={onNodeDragStart}
+                        onExternalFilesDrop={onExternalFilesDrop}
                         onSetKeyboardCursor={setKeyboardCursorPath}
                         scheduleHoverExpand={scheduleHoverExpand}
                         onToggleDirectory={onToggleDirectory}
@@ -921,6 +946,7 @@ export function GitTreeView({
                         setActiveDragData={setActiveDragData}
                         setContextTargetPath={setContextTargetPath}
                         clearHoverExpand={clearHoverExpand}
+                        setIsBackgroundDropTarget={setIsBackgroundDropTarget}
                         setDropTargetPath={setDropTargetPath}
                         showStatusIndicator={showStatusIndicator}
                         stickyFolderPaths={stickyFolderPaths}
@@ -955,6 +981,7 @@ function GitTreeNodeRow({
     onNodeClick,
     onNodeDrop,
     onNodeDragStart,
+    onExternalFilesDrop,
     onSetKeyboardCursor,
     scheduleHoverExpand,
     onToggleDirectory,
@@ -963,6 +990,7 @@ function GitTreeNodeRow({
     setActiveDragData,
     setContextTargetPath,
     clearHoverExpand,
+    setIsBackgroundDropTarget,
     setDropTargetPath,
     showStatusIndicator,
     stickyFolderPaths,
@@ -1004,6 +1032,10 @@ function GitTreeNodeRow({
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
     ) => GitTreeDragPayload | void;
+    readonly onExternalFilesDrop?: (
+        sourcePaths: readonly string[],
+        node: GitTreeNode | null,
+    ) => void;
     readonly onSetKeyboardCursor: (path: string) => void;
     readonly scheduleHoverExpand: (
         node: GitTreeNode,
@@ -1016,6 +1048,7 @@ function GitTreeNodeRow({
     readonly setActiveDragData: (dragData: GitTreeDragPayload | null) => void;
     readonly setContextTargetPath: (path: string | null) => void;
     readonly clearHoverExpand: () => void;
+    readonly setIsBackgroundDropTarget: (isDropTarget: boolean) => void;
     readonly setDropTargetPath: (path: string | null) => void;
     readonly showStatusIndicator: boolean;
     readonly stickyFolderPaths?: ReadonlySet<string>;
@@ -1097,6 +1130,7 @@ function GitTreeNodeRow({
                 clearHoverExpand();
                 setActiveDragData(null);
                 setDropTargetPath(null);
+                setIsBackgroundDropTarget(false);
             }}
             onDragLeave={(event) => {
                 if (
@@ -1115,22 +1149,31 @@ function GitTreeNodeRow({
             onDragOver={(event) => {
                 const dragData =
                     getTreeDragData(event.dataTransfer) ?? activeDragData;
-                const canAcceptDrop =
+                const canAcceptInternalDrop =
                     isDirectory &&
                     Boolean(onNodeDrop) &&
                     canDropProjectEntriesIntoDirectory(
                         dragData,
                         node.isProjectRoot ? null : node.path,
                     );
+                const canAcceptExternalDrop =
+                    isDirectory &&
+                    Boolean(onExternalFilesDrop) &&
+                    hasExternalProjectDropPayload(event.dataTransfer);
+                const canAcceptDrop =
+                    canAcceptInternalDrop || canAcceptExternalDrop;
 
                 scheduleHoverExpand(node, isExpanded, canAcceptDrop);
 
-                if (!isDirectory || !onNodeDrop || !canAcceptDrop) {
+                if (!isDirectory || !canAcceptDrop) {
                     return;
                 }
 
                 event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
+                event.dataTransfer.dropEffect = canAcceptExternalDrop
+                    ? "copy"
+                    : "move";
+                setIsBackgroundDropTarget(false);
                 if (dropTargetPath !== node.path) {
                     setDropTargetPath(node.path);
                 }
@@ -1154,9 +1197,19 @@ function GitTreeNodeRow({
             onDrop={(event) => {
                 const dragData =
                     getTreeDragData(event.dataTransfer) ?? activeDragData;
+                const externalDropData = getExternalProjectDropData(
+                    event.dataTransfer,
+                );
                 clearHoverExpand();
                 setActiveDragData(null);
                 setDropTargetPath(null);
+                setIsBackgroundDropTarget(false);
+
+                if (isDirectory && externalDropData && onExternalFilesDrop) {
+                    event.preventDefault();
+                    onExternalFilesDrop(externalDropData.sourcePaths, node);
+                    return;
+                }
 
                 if (
                     !isDirectory ||

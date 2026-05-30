@@ -52,6 +52,10 @@ export type ExternalComposerDropItem =
           readonly label: string;
       };
 
+export interface ExternalProjectDropData {
+    readonly sourcePaths: readonly string[];
+}
+
 export type WorkspaceTabComposerDragItem = {
     readonly kind: "file_mention";
     readonly label: string;
@@ -274,6 +278,28 @@ export function getExternalComposerDropItems(
     return items;
 }
 
+export function hasExternalProjectDropPayload(
+    dataTransfer: DataTransfer | null,
+): boolean {
+    if (!dataTransfer) {
+        return false;
+    }
+
+    const types = Array.from(dataTransfer.types ?? []);
+    return types.includes("Files") || dataTransfer.files.length > 0;
+}
+
+export function getExternalProjectDropData(
+    dataTransfer: DataTransfer | null,
+): ExternalProjectDropData | null {
+    if (!dataTransfer || !hasExternalProjectDropPayload(dataTransfer)) {
+        return null;
+    }
+
+    const sourcePaths = collectExternalProjectDropPaths(dataTransfer);
+    return sourcePaths.length > 0 ? { sourcePaths } : null;
+}
+
 export function inferMimeTypeFromPath(filePath: string): string {
     const fileName = getPathBaseName(filePath);
     const dotIndex = fileName.lastIndexOf(".");
@@ -294,6 +320,48 @@ function getDroppedFilePath(file: File | null): string | null {
 
     const trimmed = candidate.trim();
     return trimmed.length > 0 ? trimmed : null;
+}
+
+function collectExternalProjectDropPaths(
+    dataTransfer: DataTransfer,
+): readonly string[] {
+    const sourcePaths: string[] = [];
+    const seenPaths = new Set<string>();
+
+    const pushPath = (filePath: string | null) => {
+        if (!filePath) {
+            return;
+        }
+
+        const normalizedKey = filePath.replaceAll("\\", "/");
+        if (!normalizedKey || seenPaths.has(normalizedKey)) {
+            return;
+        }
+
+        seenPaths.add(normalizedKey);
+        sourcePaths.push(filePath);
+    };
+
+    const dragItems = Array.from(dataTransfer.items);
+    if (dragItems.length > 0) {
+        for (const item of dragItems) {
+            if (item.kind !== "file") {
+                continue;
+            }
+
+            pushPath(getDroppedFilePath(item.getAsFile()));
+        }
+
+        if (sourcePaths.length > 0) {
+            return sourcePaths;
+        }
+    }
+
+    for (const file of Array.from(dataTransfer.files)) {
+        pushPath(getDroppedFilePath(file));
+    }
+
+    return sourcePaths;
 }
 
 function getFileSystemPath(file: File | null): string | null {

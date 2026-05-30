@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     getExternalComposerDropItems,
+    getExternalProjectDropData,
+    hasExternalProjectDropPayload,
     inferMimeTypeFromPath,
     parseComposerProjectEntryListDragData,
     serializeComposerProjectEntryListDragData,
@@ -139,5 +141,50 @@ describe("drag-and-drop", () => {
                 mimeType: "application/pdf",
             },
         ]);
+    });
+
+    it("detects native file payloads before paths are resolved", () => {
+        const dataTransfer = {
+            files: [],
+            types: ["Files"],
+        } as unknown as DataTransfer;
+
+        expect(hasExternalProjectDropPayload(dataTransfer)).toBe(true);
+    });
+
+    it("extracts external project drop paths without duplicates", () => {
+        const specFile = {
+            path: "/tmp/spec.pdf",
+            size: 42,
+            type: "application/pdf",
+        } as unknown as File;
+        const readmeFile = {
+            path: "/tmp/README.md",
+            size: 12,
+            type: "text/markdown",
+        } as unknown as File;
+
+        const dataTransfer = {
+            files: [specFile, readmeFile],
+            items: [
+                {
+                    getAsFile: () => specFile,
+                    kind: "file",
+                },
+                {
+                    getAsFile: () => specFile,
+                    kind: "file",
+                },
+                {
+                    getAsFile: () => readmeFile,
+                    kind: "file",
+                },
+            ],
+            types: ["Files"],
+        } as unknown as DataTransfer;
+
+        expect(getExternalProjectDropData(dataTransfer)).toEqual({
+            sourcePaths: ["/tmp/spec.pdf", "/tmp/README.md"],
+        });
     });
 });

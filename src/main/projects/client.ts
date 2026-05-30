@@ -9,6 +9,7 @@ import type {
 
 import {
     ProjectRuntime,
+    type ProjectRuntimeCopyExternalEntriesInput,
     type ProjectRuntimeCopyEntriesInput,
     type ProjectRuntimeCreateEntryInput,
     type ProjectRuntimeDeleteEntryInput,
@@ -67,6 +68,9 @@ export interface ProjectWorkerGateway {
     ): Promise<ProjectEntryMutationResult>;
     copyProjectEntries(
         input: ProjectRuntimeCopyEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]>;
+    copyExternalProjectEntries(
+        input: ProjectRuntimeCopyExternalEntriesInput,
     ): Promise<readonly ProjectEntryMutationResult[]>;
     renameProjectEntry(
         input: ProjectRuntimeRenameEntryInput,
@@ -155,6 +159,15 @@ class RemoteProjectWorkerClient implements ProjectWorkerGateway {
         return await this.#rpc.call("projects.copyProjectEntries", input);
     }
 
+    async copyExternalProjectEntries(
+        input: ProjectRuntimeCopyExternalEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]> {
+        return await this.#rpc.call(
+            "projects.copyExternalProjectEntries",
+            input,
+        );
+    }
+
     async renameProjectEntry(
         input: ProjectRuntimeRenameEntryInput,
     ): Promise<ProjectEntryMutationResult> {
@@ -239,6 +252,12 @@ class LocalProjectWorkerClient implements ProjectWorkerGateway {
         input: ProjectRuntimeCopyEntriesInput,
     ): Promise<readonly ProjectEntryMutationResult[]> {
         return await this.#runtime.copyProjectEntries(input);
+    }
+
+    async copyExternalProjectEntries(
+        input: ProjectRuntimeCopyExternalEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]> {
+        return await this.#runtime.copyExternalProjectEntries(input);
     }
 
     async renameProjectEntry(

@@ -174,6 +174,10 @@ export interface GitTreeViewProps {
         dragData: GitTreeDragPayload,
         node: GitTreeNode,
     ) => void;
+    readonly onExternalFilesDrop?: (
+        sourcePaths: readonly string[],
+        node: GitTreeNode | null,
+    ) => void;
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,

@@ -27,6 +27,7 @@ import {
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type CodexRuntimeSettingsInput,
+    type CopyExternalProjectEntriesInput,
     type CopyProjectEntriesInput,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
@@ -308,6 +309,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveProjectFile);
     ipcMain.removeHandler(IPC_CHANNELS.createProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.copyProjectEntries);
+    ipcMain.removeHandler(IPC_CHANNELS.copyExternalProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.renameProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.deleteProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.trashProjectEntry);
@@ -1448,6 +1450,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.copyProjectEntries,
         2,
     );
+    const copyExternalProjectEntriesLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.copyExternalProjectEntries,
+        2,
+    );
     const renameProjectEntryLimiter = createIpcInFlightLimiter(
         IPC_CHANNELS.renameProjectEntry,
         4,
@@ -1496,6 +1502,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: CopyProjectEntriesInput) =>
             copyProjectEntriesLimiter(() =>
                 options.projectService.copyProjectEntries(input),
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.copyExternalProjectEntries,
+        (_event, input: CopyExternalProjectEntriesInput) =>
+            copyExternalProjectEntriesLimiter(() =>
+                options.projectService.copyExternalProjectEntries(input),
             ),
     );
     ipcMain.handle(

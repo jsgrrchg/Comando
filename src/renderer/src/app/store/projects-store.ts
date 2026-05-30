@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type {
+    CopyExternalProjectEntriesResult,
     CopyProjectEntriesResult,
     ProjectAppDataSummary,
     ProjectEntryKind,
@@ -41,6 +42,12 @@ interface ProjectsState {
         destinationParentRelativePath: string | null,
         worktreeId?: string | null,
     ) => Promise<CopyProjectEntriesResult>;
+    copyExternalEntries: (
+        projectId: string,
+        sourcePaths: readonly string[],
+        destinationParentRelativePath: string | null,
+        worktreeId?: string | null,
+    ) => Promise<CopyExternalProjectEntriesResult>;
     deleteEntry: (
         projectId: string,
         relativePath: string,
@@ -367,6 +374,45 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                     error instanceof Error
                         ? error.message
                         : "Could not paste the selected entries.",
+            });
+            throw error;
+        }
+    },
+
+    copyExternalEntries: async (
+        projectId,
+        sourcePaths,
+        destinationParentRelativePath,
+        worktreeId = null,
+    ) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        try {
+            const result = await getComandoApi().copyExternalProjectEntries({
+                destinationParentRelativePath,
+                projectId,
+                sourcePaths,
+                worktreeId,
+            });
+
+            set((state) => ({
+                error: null,
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [contextKey]: false,
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [contextKey]: {},
+                },
+            }));
+            await get().refreshProjectTree(projectId, worktreeId);
+            return result;
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not import the dropped entries.",
             });
             throw error;
         }
