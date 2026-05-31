@@ -1861,18 +1861,13 @@ export function App() {
         [activeProjectId, activeWorktreeId, revealEntry],
     );
 
-    const handleCopyTreePaths = useCallback(
-        async (
-            nodes: readonly GitTreeNode[],
-            mode: "absolute" | "relative",
-        ) => {
+    const handleCopyTreeFullPaths = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
             const text = nodes
                 .map((node) =>
-                    mode === "absolute"
-                        ? activeProject
-                            ? joinProjectPath(activeProject.rootPath, node.path)
-                            : null
-                        : node.path,
+                    activeProject
+                        ? joinProjectPath(activeProject.rootPath, node.path)
+                        : null,
                 )
                 .filter((path): path is string => path !== null)
                 .join("\n");
@@ -2592,10 +2587,6 @@ export function App() {
                       contextSelectionFileCount === 1 ? "File" : "Files"
                   } to New Chat`
                 : "Add to New Chat";
-        const copyRelativePathLabel =
-            contextSelection.length > 1
-                ? `Copy ${contextSelection.length} Relative Paths`
-                : "Copy Relative Path";
         const copyAbsolutePathLabel =
             contextSelection.length > 1
                 ? `Copy ${contextSelection.length} Full Paths`
@@ -2683,7 +2674,7 @@ export function App() {
                 },
                 {
                     label: "Copy Full Path",
-                    action: () => void handleCopyTreePaths([node], "absolute"),
+                    action: () => void handleCopyTreeFullPaths([node]),
                     disabled: !activeProject,
                 },
                 {
@@ -2780,14 +2771,9 @@ export function App() {
                         !activeProjectId || copyableContextSelection.length === 0,
                 },
                 {
-                    label: copyRelativePathLabel,
-                    action: () =>
-                        void handleCopyTreePaths(contextSelection, "relative"),
-                },
-                {
                     label: copyAbsolutePathLabel,
                     action: () =>
-                        void handleCopyTreePaths(contextSelection, "absolute"),
+                        void handleCopyTreeFullPaths(contextSelection),
                     disabled: !activeProject,
                 },
                 { type: "separator" },
@@ -2863,14 +2849,9 @@ export function App() {
                 disabled: !activeProjectId || copyableContextSelection.length === 0,
             },
             {
-                label: copyRelativePathLabel,
-                action: () =>
-                    void handleCopyTreePaths(contextSelection, "relative"),
-            },
-            {
                 label: copyAbsolutePathLabel,
                 action: () =>
-                    void handleCopyTreePaths(contextSelection, "absolute"),
+                    void handleCopyTreeFullPaths(contextSelection),
                 disabled: !activeProject,
             },
             { type: "separator" },
@@ -2897,7 +2878,7 @@ export function App() {
         handleAddFilesToChat,
         handleCloseFileTreeTabs,
         handleCopyTreeEntries,
-        handleCopyTreePaths,
+        handleCopyTreeFullPaths,
         handleCreateTreeEntry,
         handleDeleteTreeNodes,
         handleDuplicateTreeEntries,
