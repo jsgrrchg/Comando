@@ -1,6 +1,8 @@
 import { create } from "zustand";
 
 import type {
+    CopyExternalProjectEntriesResult,
+    CopyProjectEntriesResult,
     ProjectAppDataSummary,
     ProjectEntryKind,
     ProjectEntryMutationResult,
@@ -34,7 +36,29 @@ interface ProjectsState {
         kind: ProjectEntryKind,
         worktreeId?: string | null,
     ) => Promise<ProjectEntryMutationResult>;
+    copyEntries: (
+        projectId: string,
+        sourceRelativePaths: readonly string[],
+        destinationParentRelativePath: string | null,
+        worktreeId?: string | null,
+    ) => Promise<CopyProjectEntriesResult>;
+    copyExternalEntries: (
+        projectId: string,
+        sourcePaths: readonly string[],
+        destinationParentRelativePath: string | null,
+        worktreeId?: string | null,
+    ) => Promise<CopyExternalProjectEntriesResult>;
     deleteEntry: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    trashEntry: (
+        projectId: string,
+        relativePath: string,
+        worktreeId?: string | null,
+    ) => Promise<void>;
+    openEntryExternally: (
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
@@ -316,6 +340,84 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         }
     },
 
+    copyEntries: async (
+        projectId,
+        sourceRelativePaths,
+        destinationParentRelativePath,
+        worktreeId = null,
+    ) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        try {
+            const result = await getComandoApi().copyProjectEntries({
+                destinationParentRelativePath,
+                projectId,
+                sourceRelativePaths,
+                worktreeId,
+            });
+
+            set((state) => ({
+                error: null,
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [contextKey]: false,
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [contextKey]: {},
+                },
+            }));
+            await get().refreshProjectTree(projectId, worktreeId);
+            return result;
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not paste the selected entries.",
+            });
+            throw error;
+        }
+    },
+
+    copyExternalEntries: async (
+        projectId,
+        sourcePaths,
+        destinationParentRelativePath,
+        worktreeId = null,
+    ) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        try {
+            const result = await getComandoApi().copyExternalProjectEntries({
+                destinationParentRelativePath,
+                projectId,
+                sourcePaths,
+                worktreeId,
+            });
+
+            set((state) => ({
+                error: null,
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [contextKey]: false,
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [contextKey]: {},
+                },
+            }));
+            await get().refreshProjectTree(projectId, worktreeId);
+            return result;
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not import the dropped entries.",
+            });
+            throw error;
+        }
+    },
+
     deleteEntry: async (projectId, relativePath, worktreeId = null) => {
         const contextKey = getTreeContextKey(projectId, worktreeId);
         try {
@@ -351,6 +453,63 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         ? error.message
                         : "Could not delete the selected entry.",
             });
+            throw error;
+        }
+    },
+
+    trashEntry: async (projectId, relativePath, worktreeId = null) => {
+        const contextKey = getTreeContextKey(projectId, worktreeId);
+        try {
+            await getComandoApi().trashProjectEntry({
+                projectId,
+                relativePath,
+                worktreeId,
+            });
+
+            set((state) => ({
+                error: null,
+                expandedDirectories: {
+                    ...state.expandedDirectories,
+                    [contextKey]: removeMatchingPaths(
+                        state.expandedDirectories[contextKey] ?? [],
+                        relativePath,
+                    ),
+                },
+                fullyLoadedTreeProjects: {
+                    ...state.fullyLoadedTreeProjects,
+                    [contextKey]: false,
+                },
+                treeNodes: {
+                    ...state.treeNodes,
+                    [contextKey]: {},
+                },
+            }));
+            void get().refreshProjectTree(projectId, worktreeId);
+        } catch (error) {
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not move the selected entry to Trash.",
+            });
+            throw error;
+        }
+    },
+
+    openEntryExternally: async (projectId, relativePath, worktreeId = null) => {
+        try {
+            await getComandoApi().openProjectEntryExternally({
+                projectId,
+                relativePath,
+                worktreeId,
+            });
+            set({ error: null });
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Could not open the selected file externally.";
+            set({ error: message });
             throw error;
         }
     },

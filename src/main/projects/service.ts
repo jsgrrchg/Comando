@@ -1,6 +1,10 @@
 import path from "node:path";
 
 import type {
+    CopyExternalProjectEntriesInput,
+    CopyExternalProjectEntriesResult,
+    CopyProjectEntriesInput,
+    CopyProjectEntriesResult,
     CreateProjectEntryInput,
     DeleteProjectEntryInput,
     ListProjectEntriesInput,
@@ -367,6 +371,64 @@ export class ProjectService {
         );
     }
 
+    async copyProjectEntries(
+        input: CopyProjectEntriesInput,
+    ): Promise<CopyProjectEntriesResult> {
+        await this.#ensureWorkerRegistry();
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+        this.touchProject(input.projectId);
+
+        const entries = await this.#trackFilesystemAccess(
+            resolveProjectPath(
+                project.rootPath,
+                input.destinationParentRelativePath,
+            ),
+            async () =>
+                await this.#worker.copyProjectEntries({
+                    destinationParentRelativePath:
+                        input.destinationParentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    sourceRelativePaths: input.sourceRelativePaths,
+                    worktreeId: project.worktreeId,
+                }),
+        );
+
+        return { entries: [...entries] };
+    }
+
+    async copyExternalProjectEntries(
+        input: CopyExternalProjectEntriesInput,
+    ): Promise<CopyExternalProjectEntriesResult> {
+        await this.#ensureWorkerRegistry();
+        const project = this.#resolveProjectScope(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+        this.touchProject(input.projectId);
+
+        const entries = await this.#trackFilesystemAccess(
+            resolveProjectPath(
+                project.rootPath,
+                input.destinationParentRelativePath,
+            ),
+            async () =>
+                await this.#worker.copyExternalProjectEntries({
+                    destinationParentRelativePath:
+                        input.destinationParentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    sourcePaths: input.sourcePaths,
+                    worktreeId: project.worktreeId,
+                }),
+        );
+
+        return { entries: [...entries] };
+    }
+
     async renameProjectEntry(
         input: RenameProjectEntryInput,
     ): Promise<ProjectEntryMutationResult> {
@@ -410,6 +472,22 @@ export class ProjectService {
                 });
             },
         );
+    }
+
+    async recordProjectEntryMutation(
+        projectId: string,
+        relativePath: string,
+        worktreeId: string | null = null,
+    ): Promise<void> {
+        await this.#ensureWorkerRegistry();
+        const project = this.#resolveProjectScope(projectId, worktreeId);
+        this.touchProject(projectId);
+        await this.#worker.recordProjectEntryMutation({
+            projectId,
+            relativePaths: [relativePath],
+            rootPath: project.rootPath,
+            worktreeId: project.worktreeId,
+        });
     }
 
     getProjectRootPath(

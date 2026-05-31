@@ -144,6 +144,16 @@ async function dispatchMethod(method: string, params: unknown): Promise<unknown>
             return await projectRuntime.createProjectEntry(
                 params as Parameters<ProjectRuntime["createProjectEntry"]>[0],
             );
+        case "projects.copyProjectEntries":
+            return await projectRuntime.copyProjectEntries(
+                params as Parameters<ProjectRuntime["copyProjectEntries"]>[0],
+            );
+        case "projects.copyExternalProjectEntries":
+            return await projectRuntime.copyExternalProjectEntries(
+                params as Parameters<
+                    ProjectRuntime["copyExternalProjectEntries"]
+                >[0],
+            );
         case "projects.renameProjectEntry":
             return await projectRuntime.renameProjectEntry(
                 params as Parameters<ProjectRuntime["renameProjectEntry"]>[0],
@@ -151,6 +161,13 @@ async function dispatchMethod(method: string, params: unknown): Promise<unknown>
         case "projects.deleteProjectEntry":
             await projectRuntime.deleteProjectEntry(
                 params as Parameters<ProjectRuntime["deleteProjectEntry"]>[0],
+            );
+            return;
+        case "projects.recordProjectEntryMutation":
+            projectRuntime.recordProjectEntryMutation(
+                params as Parameters<
+                    ProjectRuntime["recordProjectEntryMutation"]
+                >[0],
             );
             return;
         case "projects.searchProjectEntries":

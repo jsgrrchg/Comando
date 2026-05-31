@@ -13,6 +13,7 @@ interface ResolveActiveFileTreePathInput {
 interface ReconcileFileTreeSelectionInput {
     readonly activeFileTreePath: string | null;
     readonly anchorPath: string | null;
+    readonly includeActivePathFallback?: boolean;
     readonly selectedPaths: readonly string[];
 }
 
@@ -50,9 +51,14 @@ export function resolveActiveFileTreePath({
 export function reconcileFileTreeSelection({
     activeFileTreePath,
     anchorPath,
+    includeActivePathFallback = true,
     selectedPaths,
 }: ReconcileFileTreeSelectionInput): FileTreeSelectionState {
-    if (selectedPaths.length > 0 || activeFileTreePath === null) {
+    if (
+        selectedPaths.length > 0 ||
+        activeFileTreePath === null ||
+        !includeActivePathFallback
+    ) {
         return {
             anchorPath,
             selectedPaths,

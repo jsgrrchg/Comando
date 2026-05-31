@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 
 import {
     IPC_CHANNELS,
@@ -26,6 +27,8 @@ import {
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type CodexRuntimeSettingsInput,
+    type CopyExternalProjectEntriesInput,
+    type CopyProjectEntriesInput,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -118,6 +121,7 @@ import {
     type ListAiSessionHistoryInput,
     type ListProjectEntriesInput,
     type ListProjectTreeInput,
+    type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
     type OpenProjectWindowInput,
     type OpenSettingsWindowInput,
@@ -138,6 +142,7 @@ import {
     type SettingsSnapshot,
     type SystemTheme,
     type ThemeMode,
+    type TrashProjectEntryInput,
     type TsconfigResolutionSnapshot,
     type WindowContextSnapshot,
     type WriteTerminalInput,
@@ -303,8 +308,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openProjectFile);
     ipcMain.removeHandler(IPC_CHANNELS.saveProjectFile);
     ipcMain.removeHandler(IPC_CHANNELS.createProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.copyProjectEntries);
+    ipcMain.removeHandler(IPC_CHANNELS.copyExternalProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.renameProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.deleteProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.trashProjectEntry);
+    ipcMain.removeHandler(IPC_CHANNELS.openProjectEntryExternally);
     ipcMain.removeHandler(IPC_CHANNELS.revealProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.listProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
@@ -1437,6 +1446,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.createProjectEntry,
         4,
     );
+    const copyProjectEntriesLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.copyProjectEntries,
+        2,
+    );
+    const copyExternalProjectEntriesLimiter = createIpcInFlightLimiter(
+        IPC_CHANNELS.copyExternalProjectEntries,
+        2,
+    );
     const renameProjectEntryLimiter = createIpcInFlightLimiter(
         IPC_CHANNELS.renameProjectEntry,
         4,
@@ -1481,6 +1498,20 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             ),
     );
     ipcMain.handle(
+        IPC_CHANNELS.copyProjectEntries,
+        (_event, input: CopyProjectEntriesInput) =>
+            copyProjectEntriesLimiter(() =>
+                options.projectService.copyProjectEntries(input),
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.copyExternalProjectEntries,
+        (_event, input: CopyExternalProjectEntriesInput) =>
+            copyExternalProjectEntriesLimiter(() =>
+                options.projectService.copyExternalProjectEntries(input),
+            ),
+    );
+    ipcMain.handle(
         IPC_CHANNELS.renameProjectEntry,
         (_event, input: RenameProjectEntryInput) =>
             renameProjectEntryLimiter(() =>
@@ -1493,6 +1524,41 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             deleteProjectEntryLimiter(() =>
                 options.projectService.deleteProjectEntry(input),
             ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.trashProjectEntry,
+        async (_event, input: TrashProjectEntryInput) => {
+            const absolutePath = options.projectService.resolveProjectEntryPath(
+                input.projectId,
+                input.relativePath,
+                input.worktreeId ?? null,
+            );
+            await shell.trashItem(absolutePath);
+            await options.projectService.recordProjectEntryMutation(
+                input.projectId,
+                input.relativePath,
+                input.worktreeId ?? null,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.openProjectEntryExternally,
+        async (_event, input: OpenProjectEntryExternallyInput) => {
+            const absolutePath = options.projectService.resolveProjectEntryPath(
+                input.projectId,
+                input.relativePath,
+                input.worktreeId ?? null,
+            );
+            const stats = await fs.promises.stat(absolutePath);
+            if (!stats.isFile()) {
+                throw new Error("Only files can be opened externally.");
+            }
+
+            const errorMessage = await shell.openPath(absolutePath);
+            if (errorMessage) {
+                throw new Error(errorMessage);
+            }
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.revealProjectEntry,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { GitTreeNode } from "./types";
 import {
+    compactGitTreeEntriesForDeletion,
     flattenVisibleGitTreeNodes,
     orderGitTreePathsByVisibility,
     resolveGitTreeDragPaths,
@@ -107,5 +108,25 @@ describe("treeSelection", () => {
                 visiblePaths,
             ),
         ).toEqual(["src/lib.ts"]);
+    });
+
+    it("compacts deletion entries when a selected folder already contains selected children", () => {
+        const visibleNodes = flattenVisibleGitTreeNodes(TREE);
+
+        expect(
+            compactGitTreeEntriesForDeletion([
+                visibleNodes[0],
+                visibleNodes[1],
+                visibleNodes[3],
+            ]),
+        ).toEqual([visibleNodes[0], visibleNodes[3]]);
+    });
+
+    it("keeps sibling deletion entries in their input order", () => {
+        const visibleNodes = flattenVisibleGitTreeNodes(TREE);
+
+        expect(
+            compactGitTreeEntriesForDeletion([visibleNodes[1], visibleNodes[2]]),
+        ).toEqual([visibleNodes[1], visibleNodes[2]]);
     });
 });

@@ -1,26 +1,40 @@
 import {
+    useCallback,
     useEffect,
+    useId,
+    useMemo,
     useRef,
     useState,
     type CSSProperties,
+    type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
 } from "react";
 
 import {
+    COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
+    getExternalProjectDropData,
+    hasExternalProjectDropPayload,
+    parseComposerProjectEntryListDragData,
     parseComposerProjectEntryDragData,
 } from "@renderer/app/drag-and-drop";
 
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "@renderer/components/icons/FolderTypeIcon";
+import {
+    MeasuredVirtualList,
+    type MeasuredVirtualListHandle,
+} from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { GitActionButton, GitEmptyState } from "./GitUi";
-import { canDropProjectEntryIntoDirectory } from "./tree-dnd";
+import { canDropProjectEntriesIntoDirectory } from "./tree-dnd";
 import type {
     GitTreeDragData,
+    GitTreeDragPayload,
     GitNodeStatus,
     GitTreeNode,
+    GitTreeNodeActivationEvent,
     GitTreeViewProps,
     GitViewLayout,
 } from "./types";
@@ -46,8 +60,342 @@ const ROW_BOX_CONSTRAINED: CSSProperties = {
     boxSizing: "border-box",
 };
 
+export const ROW_DROP_TARGET_STYLE: CSSProperties = {
+    backgroundColor: "color-mix(in srgb, var(--color-accent) 16%, transparent)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 62%, transparent)",
+};
+
+export const ROW_ACTIVE_STYLE: CSSProperties = {
+    backgroundColor: "color-mix(in srgb, var(--color-accent) 22%, transparent)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent)",
+};
+
+export const ROW_SELECTED_STYLE: CSSProperties = {
+    backgroundColor: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
+};
+
+export const ROW_CONTEXT_TARGET_STYLE: CSSProperties = {
+    backgroundColor:
+        "color-mix(in srgb, var(--color-bg-tertiary) 76%, var(--color-accent) 8%)",
+    boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--color-text-secondary) 24%, transparent)",
+};
+
+interface FlatGitTreeRow {
+    readonly depth: number;
+    readonly key: string;
+    readonly node: GitTreeNode;
+}
+
+type KeyboardNavigationKey =
+    | "ArrowDown"
+    | "ArrowLeft"
+    | "ArrowRight"
+    | "ArrowUp"
+    | "End"
+    | "Enter"
+    | "Home"
+    | " ";
+
 export function scalePx(value: number): string {
     return `calc(${value}px * var(--file-tree-scale, 1))`;
+}
+
+function toGitTreeDragEntries(
+    dragData: GitTreeDragPayload,
+): readonly GitTreeDragData[] {
+    if (isGitTreeDragDataList(dragData)) {
+        return dragData;
+    }
+
+    return [dragData];
+}
+
+function isGitTreeDragDataList(
+    dragData: GitTreeDragPayload,
+): dragData is readonly GitTreeDragData[] {
+    return Array.isArray(dragData);
+}
+
+export function getGitTreeRowStateStyle({
+    isActive = false,
+    isContextTarget = false,
+    isDragging = false,
+    isDropTarget = false,
+    isKeyboardCursor = false,
+    isSelected = false,
+}: {
+    readonly isActive?: boolean;
+    readonly isContextTarget?: boolean;
+    readonly isDragging?: boolean;
+    readonly isDropTarget?: boolean;
+    readonly isKeyboardCursor?: boolean;
+    readonly isSelected?: boolean;
+}): CSSProperties {
+    return {
+        ...(isDropTarget
+            ? ROW_DROP_TARGET_STYLE
+            : isActive
+              ? ROW_ACTIVE_STYLE
+              : isContextTarget
+                ? ROW_CONTEXT_TARGET_STYLE
+                : isSelected
+                  ? ROW_SELECTED_STYLE
+                  : {}),
+        ...(isKeyboardCursor
+            ? {
+                  outline:
+                      "1px solid color-mix(in srgb, var(--color-accent) 58%, transparent)",
+                  outlineOffset: scalePx(-1),
+              }
+            : {}),
+        ...(isDragging
+            ? {
+                  opacity: 0.62,
+              }
+            : {}),
+    };
+}
+
+function isTreeNodeExpanded({
+    expandedPathSet,
+    expandedPaths,
+    layout,
+    node,
+}: {
+    readonly expandedPathSet: ReadonlySet<string> | null;
+    readonly expandedPaths: readonly string[] | undefined;
+    readonly layout: GitViewLayout;
+    readonly node: GitTreeNode;
+}): boolean {
+    if (layout !== "tree" || node.kind !== "directory") {
+        return false;
+    }
+
+    if (node.isProjectRoot) {
+        return Boolean(node.children);
+    }
+
+    return expandedPaths ? expandedPathSet?.has(node.path) === true : true;
+}
+
+function flattenGitTreeRows({
+    expandedPathSet,
+    expandedPaths,
+    layout,
+    nodes,
+}: {
+    readonly expandedPathSet: ReadonlySet<string> | null;
+    readonly expandedPaths: readonly string[] | undefined;
+    readonly layout: GitViewLayout;
+    readonly nodes: readonly GitTreeNode[];
+}): FlatGitTreeRow[] {
+    const rows: FlatGitTreeRow[] = [];
+
+    const appendNode = (node: GitTreeNode, depth: number) => {
+        rows.push({
+            depth,
+            key: `${node.id}:${node.path}`,
+            node,
+        });
+
+        if (
+            !isTreeNodeExpanded({
+                expandedPathSet,
+                expandedPaths,
+                layout,
+                node,
+            }) ||
+            !node.children?.length
+        ) {
+            return;
+        }
+
+        for (const child of node.children) {
+            appendNode(child, depth + 1);
+        }
+    };
+
+    for (const node of nodes) {
+        appendNode(node, 0);
+    }
+
+    return rows;
+}
+
+function findRowIndexByPath(
+    rows: readonly FlatGitTreeRow[],
+    path: string | null,
+): number {
+    if (!path) {
+        return -1;
+    }
+
+    return rows.findIndex((row) => row.node.path === path);
+}
+
+function findFirstSelectedRowIndex(
+    rows: readonly FlatGitTreeRow[],
+    selectedPaths: ReadonlySet<string> | undefined,
+): number {
+    if (!selectedPaths || selectedPaths.size === 0) {
+        return -1;
+    }
+
+    return rows.findIndex((row) => selectedPaths.has(row.node.path));
+}
+
+function findNearestVisibleAncestorIndex(
+    rows: readonly FlatGitTreeRow[],
+    path: string | null,
+): number {
+    if (!path) {
+        return -1;
+    }
+
+    const parts = path.split("/");
+    for (let length = parts.length - 1; length > 0; length -= 1) {
+        const ancestorPath = parts.slice(0, length).join("/");
+        const index = findRowIndexByPath(rows, ancestorPath);
+        if (index >= 0) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function resolveKeyboardCursorIndex({
+    activePath,
+    cursorPath,
+    rows,
+    selectedPaths,
+    suppressKeyboardCursor = false,
+}: {
+    readonly activePath: string | null;
+    readonly cursorPath: string | null;
+    readonly rows: readonly FlatGitTreeRow[];
+    readonly selectedPaths: ReadonlySet<string> | undefined;
+    readonly suppressKeyboardCursor?: boolean;
+}): number {
+    if (suppressKeyboardCursor) {
+        return -1;
+    }
+
+    if (rows.length === 0) {
+        return -1;
+    }
+
+    const cursorIndex = findRowIndexByPath(rows, cursorPath);
+    if (cursorIndex >= 0) {
+        return cursorIndex;
+    }
+
+    const ancestorIndex = findNearestVisibleAncestorIndex(rows, cursorPath);
+    if (ancestorIndex >= 0) {
+        return ancestorIndex;
+    }
+
+    const activeIndex = findRowIndexByPath(rows, activePath);
+    if (activeIndex >= 0) {
+        return activeIndex;
+    }
+
+    const selectedIndex = findFirstSelectedRowIndex(rows, selectedPaths);
+    if (selectedIndex >= 0) {
+        return selectedIndex;
+    }
+
+    return 0;
+}
+
+function findParentRowIndex(
+    rows: readonly FlatGitTreeRow[],
+    rowIndex: number,
+): number {
+    const row = rows[rowIndex];
+    if (!row || row.depth === 0) {
+        return -1;
+    }
+
+    for (let index = rowIndex - 1; index >= 0; index -= 1) {
+        if (rows[index]?.depth === row.depth - 1) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function isKeyboardNavigationKey(
+    key: string,
+): key is KeyboardNavigationKey {
+    return (
+        key === "ArrowDown" ||
+        key === "ArrowLeft" ||
+        key === "ArrowRight" ||
+        key === "ArrowUp" ||
+        key === "End" ||
+        key === "Enter" ||
+        key === "Home" ||
+        key === " "
+    );
+}
+
+function isInteractiveTreeEventTarget(
+    event: ReactKeyboardEvent<HTMLDivElement>,
+): boolean {
+    if (event.target === event.currentTarget) {
+        return false;
+    }
+
+    return (
+        event.target instanceof HTMLElement &&
+        event.target.closest(
+            'button,input,select,textarea,[contenteditable="true"],[data-inline-tree-editor="true"]',
+        ) !== null
+    );
+}
+
+function findScrollContainer(node: HTMLElement): HTMLElement | null {
+    if (typeof window === "undefined") {
+        return null;
+    }
+
+    let current: HTMLElement | null = node;
+
+    while (current) {
+        const { overflowY } = window.getComputedStyle(current);
+
+        if (overflowY === "auto" || overflowY === "scroll") {
+            return current;
+        }
+
+        current = current.parentElement;
+    }
+
+    return document.scrollingElement instanceof HTMLElement
+        ? document.scrollingElement
+        : null;
+}
+
+function getTreeOffsetWithinScrollContainer(
+    treeRoot: HTMLElement,
+    scrollContainer: HTMLElement,
+): number {
+    if (treeRoot === scrollContainer) {
+        return 0;
+    }
+
+    return (
+        treeRoot.getBoundingClientRect().top -
+        scrollContainer.getBoundingClientRect().top +
+        scrollContainer.scrollTop
+    );
 }
 
 export function GitTreeView({
@@ -64,6 +412,9 @@ export function GitTreeView({
     onEditingCancel,
     onEditingDraftNameChange,
     onEditingSubmit,
+    onBackgroundContextMenu,
+    onBackgroundDrop,
+    onExternalFilesDrop,
     onNodeContextMenu,
     onNodeClick,
     onNodeDrop,
@@ -75,13 +426,272 @@ export function GitTreeView({
     selectedPaths,
     showStatusIndicator = true,
     stickyFolderPaths,
+    suppressKeyboardCursor = false,
 }: GitTreeViewProps) {
+    const treeId = useId();
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+    const [isBackgroundDropTarget, setIsBackgroundDropTarget] =
+        useState(false);
+    const [contextTargetPath, setContextTargetPath] = useState<string | null>(
+        null,
+    );
+    const [keyboardCursorPath, setKeyboardCursorPath] = useState<string | null>(
+        null,
+    );
     const [activeDragData, setActiveDragData] =
-        useState<GitTreeDragData | null>(null);
+        useState<GitTreeDragPayload | null>(null);
     const hoverExpandPathRef = useRef<string | null>(null);
     const hoverExpandTimeoutRef = useRef<number | null>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
+    const scrollContainerRef = useRef<HTMLElement | null>(null);
+    const virtualListRef = useRef<MeasuredVirtualListHandle | null>(null);
+    const treeScrollOffsetRef = useRef(0);
+    const [shouldVirtualize, setShouldVirtualize] = useState(false);
+    const expandedPathSet = useMemo(
+        () => (expandedPaths ? new Set(expandedPaths) : null),
+        [expandedPaths],
+    );
+    const flatRows = useMemo(
+        () =>
+            flattenGitTreeRows({
+                expandedPathSet,
+                expandedPaths,
+                layout,
+                nodes,
+            }),
+        [expandedPathSet, expandedPaths, layout, nodes],
+    );
+    const keyboardCursorIndex = resolveKeyboardCursorIndex({
+        activePath,
+        cursorPath: keyboardCursorPath,
+        rows: flatRows,
+        selectedPaths,
+        suppressKeyboardCursor,
+    });
+    const keyboardCursorRow =
+        keyboardCursorIndex >= 0 ? flatRows[keyboardCursorIndex] : null;
+    const activeDescendantId = keyboardCursorRow
+        ? `${treeId}-row-${keyboardCursorIndex}`
+        : undefined;
+    const rootClassName = ["git-tree-root", className]
+        .filter(Boolean)
+        .join(" ");
+
+    const refreshVirtualizationTarget = useCallback(() => {
+        const container = containerRef.current;
+        const scrollContainer = container
+            ? findScrollContainer(container)
+            : null;
+
+        scrollContainerRef.current = scrollContainer;
+
+        if (!container || !scrollContainer) {
+            treeScrollOffsetRef.current = 0;
+            setShouldVirtualize(false);
+            return;
+        }
+
+        const treeOffset = Math.max(
+            0,
+            getTreeOffsetWithinScrollContainer(container, scrollContainer),
+        );
+
+        treeScrollOffsetRef.current = treeOffset;
+        setShouldVirtualize(treeOffset <= ROW_HEIGHT);
+    }, []);
+
+    const setContainerRef = useCallback(
+        (node: HTMLDivElement | null) => {
+            containerRef.current = node;
+            refreshVirtualizationTarget();
+        },
+        [refreshVirtualizationTarget],
+    );
+
+    const handleVirtualListReady = useCallback(
+        (handle: MeasuredVirtualListHandle | null) => {
+            virtualListRef.current = handle;
+        },
+        [],
+    );
+
+    const scrollKeyboardCursorIntoView = useCallback(
+        (index: number) => {
+            if (index < 0) {
+                return;
+            }
+
+            if (shouldVirtualize) {
+                virtualListRef.current?.scrollToIndex(index, {
+                    align: "center",
+                    offset: treeScrollOffsetRef.current,
+                });
+            }
+
+            if (typeof window === "undefined") {
+                return;
+            }
+
+            window.requestAnimationFrame(() => {
+                const row = document.getElementById(`${treeId}-row-${index}`);
+                row?.scrollIntoView({
+                    block: "nearest",
+                    inline: "nearest",
+                });
+            });
+        },
+        [shouldVirtualize, treeId],
+    );
+
+    const moveKeyboardCursor = useCallback(
+        (index: number) => {
+            const row = flatRows[index];
+            if (!row) {
+                return;
+            }
+
+            setKeyboardCursorPath(row.node.path);
+            scrollKeyboardCursorIntoView(index);
+        },
+        [flatRows, scrollKeyboardCursorIntoView],
+    );
+
+    const activateKeyboardCursor = useCallback(
+        (event: ReactKeyboardEvent<HTMLDivElement>) => {
+            if (!keyboardCursorRow) {
+                return;
+            }
+
+            const { node } = keyboardCursorRow;
+
+            if (node.kind === "file") {
+                onNodeClick?.(node, event);
+                return;
+            }
+
+            if (node.kind === "directory") {
+                onNodeClick?.(node, event);
+                onToggleDirectory?.(node);
+            }
+        },
+        [keyboardCursorRow, onNodeClick, onToggleDirectory],
+    );
+
+    const handleTreeKeyDown = useCallback(
+        (event: ReactKeyboardEvent<HTMLDivElement>) => {
+            if (editingPath || flatRows.length === 0) {
+                return;
+            }
+
+            if (isInteractiveTreeEventTarget(event)) {
+                return;
+            }
+
+            if (!isKeyboardNavigationKey(event.key)) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const currentIndex = keyboardCursorIndex >= 0
+                ? keyboardCursorIndex
+                : 0;
+            const currentRow = flatRows[currentIndex];
+
+            switch (event.key) {
+                case "ArrowDown":
+                    moveKeyboardCursor(
+                        Math.min(currentIndex + 1, flatRows.length - 1),
+                    );
+                    return;
+                case "ArrowUp":
+                    moveKeyboardCursor(Math.max(currentIndex - 1, 0));
+                    return;
+                case "Home":
+                    moveKeyboardCursor(0);
+                    return;
+                case "End":
+                    moveKeyboardCursor(flatRows.length - 1);
+                    return;
+                case "ArrowRight": {
+                    if (
+                        !currentRow ||
+                        layout !== "tree" ||
+                        currentRow.node.kind !== "directory"
+                    ) {
+                        return;
+                    }
+
+                    const isExpanded = isTreeNodeExpanded({
+                        expandedPathSet,
+                        expandedPaths,
+                        layout,
+                        node: currentRow.node,
+                    });
+                    const firstChildIndex =
+                        flatRows[currentIndex + 1]?.depth >
+                        currentRow.depth
+                            ? currentIndex + 1
+                            : -1;
+
+                    if (!isExpanded) {
+                        onToggleDirectory?.(currentRow.node);
+                        return;
+                    }
+
+                    if (firstChildIndex >= 0) {
+                        moveKeyboardCursor(firstChildIndex);
+                    }
+                    return;
+                }
+                case "ArrowLeft": {
+                    if (!currentRow) {
+                        return;
+                    }
+
+                    const isExpanded =
+                        layout === "tree" &&
+                        currentRow.node.kind === "directory" &&
+                        isTreeNodeExpanded({
+                            expandedPathSet,
+                            expandedPaths,
+                            layout,
+                            node: currentRow.node,
+                        });
+
+                    if (isExpanded) {
+                        onToggleDirectory?.(currentRow.node);
+                        return;
+                    }
+
+                    const parentIndex = findParentRowIndex(
+                        flatRows,
+                        currentIndex,
+                    );
+                    if (parentIndex >= 0) {
+                        moveKeyboardCursor(parentIndex);
+                    }
+                    return;
+                }
+                case "Enter":
+                case " ":
+                    activateKeyboardCursor(event);
+                    return;
+            }
+        },
+        [
+            activateKeyboardCursor,
+            editingPath,
+            expandedPathSet,
+            expandedPaths,
+            flatRows,
+            keyboardCursorIndex,
+            layout,
+            moveKeyboardCursor,
+            onToggleDirectory,
+        ],
+    );
 
     const clearHoverExpand = () => {
         hoverExpandPathRef.current = null;
@@ -90,6 +700,32 @@ export function GitTreeView({
             hoverExpandTimeoutRef.current = null;
         }
     };
+
+    const isTreeRowEvent = (target: EventTarget | null): boolean =>
+        target instanceof HTMLElement &&
+        target.closest(".git-tree-row") !== null;
+
+    const clearDragState = () => {
+        clearHoverExpand();
+        setActiveDragData(null);
+        setDropTargetPath(null);
+        setIsBackgroundDropTarget(false);
+    };
+
+    const getEventDragData = (dataTransfer: DataTransfer | null) =>
+        getTreeDragData(dataTransfer) ?? activeDragData;
+
+    const canDropOnBackground = (
+        dragData: GitTreeDragPayload | null,
+    ): dragData is GitTreeDragPayload =>
+        Boolean(onBackgroundDrop) &&
+        canDropProjectEntriesIntoDirectory(dragData, null);
+
+    const canDropExternalFilesOnBackground = (
+        dataTransfer: DataTransfer | null,
+    ): boolean =>
+        Boolean(onExternalFilesDrop) &&
+        hasExternalProjectDropPayload(dataTransfer);
 
     const scheduleHoverExpand = (
         node: GitTreeNode,
@@ -131,11 +767,26 @@ export function GitTreeView({
     }, []);
 
     useEffect(() => {
+        refreshVirtualizationTarget();
+    }, [flatRows.length, refreshVirtualizationTarget]);
+
+    useEffect(() => {
         if (scrollToActivePathSignal === undefined || !activePath) {
             return;
         }
 
         const frameId = window.requestAnimationFrame(() => {
+            const activeIndex = flatRows.findIndex(
+                (row) => row.node.path === activePath,
+            );
+
+            if (activeIndex >= 0 && shouldVirtualize) {
+                virtualListRef.current?.scrollToIndex(activeIndex, {
+                    align: "center",
+                    offset: treeScrollOffsetRef.current,
+                });
+            }
+
             const activeRow =
                 containerRef.current?.querySelector<HTMLElement>(
                     '[data-active="true"]',
@@ -150,7 +801,13 @@ export function GitTreeView({
         return () => {
             window.cancelAnimationFrame(frameId);
         };
-    }, [activePath, nodes, onScrollToActivePathConsumed, scrollToActivePathSignal]);
+    }, [
+        activePath,
+        flatRows,
+        onScrollToActivePathConsumed,
+        scrollToActivePathSignal,
+        shouldVirtualize,
+    ]);
 
     if (nodes.length === 0) {
         if (emptyState === null) {
@@ -165,39 +822,146 @@ export function GitTreeView({
     }
 
     return (
-        <div className={className} ref={containerRef}>
-            {nodes.map((node) => (
-                <GitTreeNodeRow
-                    activePath={activePath}
-                    constrainWidth={constrainWidth}
-                    depth={0}
-                    dropTargetPath={dropTargetPath}
-                    activeDragData={activeDragData}
-                    editingDraftName={editingDraftName}
-                    editingPath={editingPath}
-                    enableNodeDrag={enableNodeDrag}
-                    expandedPaths={expandedPaths}
-                    key={node.id}
-                    layout={layout}
-                    node={node}
-                    onEditingCancel={onEditingCancel}
-                    onEditingDraftNameChange={onEditingDraftNameChange}
-                    onEditingSubmit={onEditingSubmit}
-                    onNodeContextMenu={onNodeContextMenu}
-                    onNodeClick={onNodeClick}
-                    onNodeDrop={onNodeDrop}
-                    onNodeDragStart={onNodeDragStart}
-                    scheduleHoverExpand={scheduleHoverExpand}
-                    onToggleDirectory={onToggleDirectory}
-                    renderNodeMeta={renderNodeMeta}
-                    selectedPaths={selectedPaths}
-                    setActiveDragData={setActiveDragData}
-                    clearHoverExpand={clearHoverExpand}
-                    setDropTargetPath={setDropTargetPath}
-                    showStatusIndicator={showStatusIndicator}
-                    stickyFolderPaths={stickyFolderPaths}
-                />
-            ))}
+        <div
+            aria-activedescendant={activeDescendantId}
+            className={rootClassName}
+            data-background-drop-target={
+                isBackgroundDropTarget ? "true" : "false"
+            }
+            data-context-target={
+                contextTargetPath === "" ? "background" : undefined
+            }
+            data-dragging={activeDragData ? "true" : "false"}
+            onClick={(event) => {
+                if (isTreeRowEvent(event.target)) {
+                    return;
+                }
+                setContextTargetPath(null);
+            }}
+            onContextMenu={(event) => {
+                if (!onBackgroundContextMenu || isTreeRowEvent(event.target)) {
+                    return;
+                }
+
+                event.preventDefault();
+                setContextTargetPath("");
+                onBackgroundContextMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                });
+            }}
+            onDragEnd={clearDragState}
+            onDragLeave={(event) => {
+                if (
+                    event.currentTarget.contains(
+                        event.relatedTarget as Node | null,
+                    )
+                ) {
+                    return;
+                }
+
+                setIsBackgroundDropTarget(false);
+            }}
+            onDragOver={(event) => {
+                if (isTreeRowEvent(event.target)) {
+                    return;
+                }
+
+                const dragData = getEventDragData(event.dataTransfer);
+                const canDropInternal = canDropOnBackground(dragData);
+                const canDropExternal = canDropExternalFilesOnBackground(
+                    event.dataTransfer,
+                );
+                if (!canDropInternal && !canDropExternal) {
+                    setIsBackgroundDropTarget(false);
+                    return;
+                }
+
+                event.preventDefault();
+                event.dataTransfer.dropEffect = canDropExternal
+                    ? "copy"
+                    : "move";
+                setDropTargetPath(null);
+                setIsBackgroundDropTarget(true);
+            }}
+            onDrop={(event) => {
+                if (isTreeRowEvent(event.target)) {
+                    return;
+                }
+
+                const dragData = getEventDragData(event.dataTransfer);
+                const externalDropData = getExternalProjectDropData(
+                    event.dataTransfer,
+                );
+                clearDragState();
+                if (externalDropData && onExternalFilesDrop) {
+                    event.preventDefault();
+                    onExternalFilesDrop(externalDropData.sourcePaths, null);
+                    return;
+                }
+
+                if (!canDropOnBackground(dragData)) {
+                    return;
+                }
+
+                event.preventDefault();
+                onBackgroundDrop?.(dragData);
+            }}
+            onKeyDown={handleTreeKeyDown}
+            ref={setContainerRef}
+            role="tree"
+            tabIndex={0}
+        >
+            <MeasuredVirtualList
+                defaultViewportHeight={900}
+                enabled={shouldVirtualize}
+                estimateSize={() => ROW_HEIGHT}
+                getItemKey={(row) => row.key}
+                items={flatRows}
+                onReady={handleVirtualListReady}
+                overscan={8}
+                renderItem={({ index, item }) => (
+                    <GitTreeNodeRow
+                        activePath={activePath}
+                        constrainWidth={constrainWidth}
+                        depth={item.depth}
+                        dropTargetPath={dropTargetPath}
+                        contextTargetPath={contextTargetPath}
+                        activeDragData={activeDragData}
+                        editingDraftName={editingDraftName}
+                        editingPath={editingPath}
+                        enableNodeDrag={enableNodeDrag}
+                        expandedPathSet={expandedPathSet}
+                        expandedPaths={expandedPaths}
+                        id={`${treeId}-row-${index}`}
+                        isKeyboardCursor={index === keyboardCursorIndex}
+                        key={item.key}
+                        layout={layout}
+                        node={item.node}
+                        onEditingCancel={onEditingCancel}
+                        onEditingDraftNameChange={onEditingDraftNameChange}
+                        onEditingSubmit={onEditingSubmit}
+                        onNodeContextMenu={onNodeContextMenu}
+                        onNodeClick={onNodeClick}
+                        onNodeDrop={onNodeDrop}
+                        onNodeDragStart={onNodeDragStart}
+                        onExternalFilesDrop={onExternalFilesDrop}
+                        onSetKeyboardCursor={setKeyboardCursorPath}
+                        scheduleHoverExpand={scheduleHoverExpand}
+                        onToggleDirectory={onToggleDirectory}
+                        renderNodeMeta={renderNodeMeta}
+                        selectedPaths={selectedPaths}
+                        setActiveDragData={setActiveDragData}
+                        setContextTargetPath={setContextTargetPath}
+                        clearHoverExpand={clearHoverExpand}
+                        setIsBackgroundDropTarget={setIsBackgroundDropTarget}
+                        setDropTargetPath={setDropTargetPath}
+                        showStatusIndicator={showStatusIndicator}
+                        stickyFolderPaths={stickyFolderPaths}
+                    />
+                )}
+                scrollContainerRef={scrollContainerRef}
+            />
         </div>
     );
 }
@@ -206,12 +970,16 @@ function GitTreeNodeRow({
     activePath,
     activeDragData,
     constrainWidth = false,
+    contextTargetPath,
     depth,
     dropTargetPath,
     editingDraftName,
     editingPath,
     enableNodeDrag,
+    expandedPathSet,
     expandedPaths,
+    id,
+    isKeyboardCursor,
     layout,
     node,
     onEditingCancel,
@@ -221,25 +989,33 @@ function GitTreeNodeRow({
     onNodeClick,
     onNodeDrop,
     onNodeDragStart,
+    onExternalFilesDrop,
+    onSetKeyboardCursor,
     scheduleHoverExpand,
     onToggleDirectory,
     renderNodeMeta,
     selectedPaths,
     setActiveDragData,
+    setContextTargetPath,
     clearHoverExpand,
+    setIsBackgroundDropTarget,
     setDropTargetPath,
     showStatusIndicator,
     stickyFolderPaths,
 }: {
     readonly activePath: string | null;
-    readonly activeDragData: GitTreeDragData | null;
+    readonly activeDragData: GitTreeDragPayload | null;
     readonly constrainWidth?: boolean;
+    readonly contextTargetPath: string | null;
     readonly depth: number;
     readonly dropTargetPath: string | null;
     readonly editingDraftName: string | null;
     readonly editingPath: string | null;
     readonly enableNodeDrag: boolean;
+    readonly expandedPathSet: ReadonlySet<string> | null;
     readonly expandedPaths: readonly string[] | undefined;
+    readonly id: string;
+    readonly isKeyboardCursor: boolean;
     readonly layout: GitViewLayout;
     readonly node: GitTreeNode;
     readonly onEditingCancel?: () => void;
@@ -254,16 +1030,21 @@ function GitTreeNodeRow({
     ) => void;
     readonly onNodeClick?: (
         node: GitTreeNode,
-        event: ReactMouseEvent<HTMLDivElement>,
+        event: GitTreeNodeActivationEvent,
     ) => void;
     readonly onNodeDrop?: (
-        dragData: GitTreeDragData,
+        dragData: GitTreeDragPayload,
         node: GitTreeNode,
     ) => void;
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
+    ) => GitTreeDragPayload | void;
+    readonly onExternalFilesDrop?: (
+        sourcePaths: readonly string[],
+        node: GitTreeNode | null,
     ) => void;
+    readonly onSetKeyboardCursor: (path: string) => void;
     readonly scheduleHoverExpand: (
         node: GitTreeNode,
         isExpanded: boolean,
@@ -272,30 +1053,32 @@ function GitTreeNodeRow({
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
     readonly selectedPaths?: ReadonlySet<string>;
-    readonly setActiveDragData: (dragData: GitTreeDragData | null) => void;
+    readonly setActiveDragData: (dragData: GitTreeDragPayload | null) => void;
+    readonly setContextTargetPath: (path: string | null) => void;
     readonly clearHoverExpand: () => void;
+    readonly setIsBackgroundDropTarget: (isDropTarget: boolean) => void;
     readonly setDropTargetPath: (path: string | null) => void;
     readonly showStatusIndicator: boolean;
     readonly stickyFolderPaths?: ReadonlySet<string>;
 }) {
     const isDirectory = node.kind === "directory";
-    const isExpanded =
-        layout === "tree" && isDirectory
-            ? node.isProjectRoot
-                ? Boolean(node.children)
-                : expandedPaths
-                  ? expandedPaths.includes(node.path)
-                  : true
-            : false;
+    const isExpanded = isTreeNodeExpanded({
+        expandedPathSet,
+        expandedPaths,
+        layout,
+        node,
+    });
     const isEditing = editingPath === node.path;
     const isActive = activePath === node.path;
     const isSelected = selectedPaths?.has(node.path) === true;
+    const isContextTarget = contextTargetPath === node.path;
     const canOpen = !isEditing && Boolean(onNodeClick && node.kind === "file");
     const canToggle = !isEditing && Boolean(isDirectory && onToggleDirectory);
     const isDraggable =
         !isEditing && enableNodeDrag === true && !node.isProjectRoot;
     const dragStartHandler = onNodeDragStart;
     const isDropTarget = dropTargetPath === node.path;
+    const isDragging = containsGitTreeDragPath(activeDragData, node.path);
     const statusTint = node.status ? statusColor(node.status) : null;
     const titleColor = statusTint
         ? statusTint
@@ -308,6 +1091,9 @@ function GitTreeNodeRow({
         isDirectory && stickyFolderPaths?.has(node.path) === true;
 
     const handleRowClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+        setContextTargetPath(null);
+        onSetKeyboardCursor(node.path);
+
         const hasSelectionModifier =
             event.metaKey || event.ctrlKey || event.shiftKey;
 
@@ -327,287 +1113,318 @@ function GitTreeNodeRow({
         }
     };
 
+    if (isStickyHidden) {
+        return (
+            <div
+                aria-hidden="true"
+                style={{ height: scalePx(ROW_HEIGHT) }}
+            />
+        );
+    }
+
     return (
-        <>
-            {isStickyHidden ? (
-                <div
-                    aria-hidden="true"
-                    style={{ height: scalePx(ROW_HEIGHT) }}
+        <div
+            className="git-tree-row"
+            data-active={isActive ? "true" : "false"}
+            data-context-target={isContextTarget ? "true" : "false"}
+            data-drop-target={isDropTarget ? "true" : "false"}
+            data-dragging={isDragging ? "true" : "false"}
+            data-keyboard-cursor={isKeyboardCursor ? "true" : "false"}
+            data-path={node.path}
+            data-selected={isSelected ? "true" : "false"}
+            draggable={isDraggable}
+            id={id}
+            onDragEnd={() => {
+                clearHoverExpand();
+                setActiveDragData(null);
+                setDropTargetPath(null);
+                setIsBackgroundDropTarget(false);
+            }}
+            onDragLeave={(event) => {
+                if (
+                    event.currentTarget.contains(
+                        event.relatedTarget as Node | null,
+                    )
+                ) {
+                    return;
+                }
+
+                if (dropTargetPath === node.path) {
+                    clearHoverExpand();
+                    setDropTargetPath(null);
+                }
+            }}
+            onDragOver={(event) => {
+                const dragData =
+                    getTreeDragData(event.dataTransfer) ?? activeDragData;
+                const canAcceptInternalDrop =
+                    isDirectory &&
+                    Boolean(onNodeDrop) &&
+                    canDropProjectEntriesIntoDirectory(
+                        dragData,
+                        node.isProjectRoot ? null : node.path,
+                    );
+                const canAcceptExternalDrop =
+                    isDirectory &&
+                    Boolean(onExternalFilesDrop) &&
+                    hasExternalProjectDropPayload(event.dataTransfer);
+                const canAcceptDrop =
+                    canAcceptInternalDrop || canAcceptExternalDrop;
+
+                scheduleHoverExpand(node, isExpanded, canAcceptDrop);
+
+                if (!isDirectory || !canAcceptDrop) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.dataTransfer.dropEffect = canAcceptExternalDrop
+                    ? "copy"
+                    : "move";
+                setIsBackgroundDropTarget(false);
+                if (dropTargetPath !== node.path) {
+                    setDropTargetPath(node.path);
+                }
+            }}
+            onDragStart={(event) => {
+                if (!isDraggable) {
+                    return;
+                }
+
+                const fallbackDragData = {
+                    kind: node.kind,
+                    name: node.name,
+                    relativePath: node.path,
+                } satisfies GitTreeDragData;
+                const dragData =
+                    dragStartHandler?.(node, event.dataTransfer ?? null) ??
+                    fallbackDragData;
+                setActiveDragData(dragData);
+                setTreeDragImage(event.dataTransfer ?? null, dragData);
+            }}
+            onDrop={(event) => {
+                const dragData =
+                    getTreeDragData(event.dataTransfer) ?? activeDragData;
+                const externalDropData = getExternalProjectDropData(
+                    event.dataTransfer,
+                );
+                clearHoverExpand();
+                setActiveDragData(null);
+                setDropTargetPath(null);
+                setIsBackgroundDropTarget(false);
+
+                if (isDirectory && externalDropData && onExternalFilesDrop) {
+                    event.preventDefault();
+                    onExternalFilesDrop(externalDropData.sourcePaths, node);
+                    return;
+                }
+
+                if (
+                    !isDirectory ||
+                    !onNodeDrop ||
+                    !canDropProjectEntriesIntoDirectory(
+                        dragData,
+                        node.isProjectRoot ? null : node.path,
+                    )
+                ) {
+                    return;
+                }
+
+                event.preventDefault();
+                onNodeDrop(dragData, node);
+            }}
+            onContextMenu={(event) => {
+                if (!onNodeContextMenu || isEditing) {
+                    return;
+                }
+
+                event.preventDefault();
+                setContextTargetPath(node.path);
+                onNodeContextMenu(node, {
+                    x: event.clientX,
+                    y: event.clientY,
+                });
+            }}
+            style={{
+                position: "relative",
+                display: "flex",
+                alignItems: "center",
+                gap: scalePx(6),
+                height: scalePx(ROW_HEIGHT),
+                paddingLeft,
+                paddingRight: scalePx(8),
+                fontSize: scalePx(FONT_SIZE),
+                borderRadius: scalePx(4),
+                cursor: canOpen || canToggle ? "pointer" : "default",
+                color: "var(--color-text-primary)",
+                ...getGitTreeRowStateStyle({
+                    isActive,
+                    isContextTarget,
+                    isDragging,
+                    isDropTarget,
+                    isKeyboardCursor,
+                    isSelected,
+                }),
+                ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
+            }}
+            onClick={handleRowClick}
+            role="treeitem"
+            aria-expanded={
+                isDirectory && layout === "tree" ? isExpanded : undefined
+            }
+            aria-selected={isSelected || isActive ? true : undefined}
+        >
+            <TreeIndentGuides depth={depth} />
+
+            {isDirectory && layout === "tree" ? (
+                <ChevronIcon open={isExpanded} />
+            ) : (
+                <span style={{ width: scalePx(ICON_SM), flexShrink: 0 }} />
+            )}
+
+            {isDirectory ? (
+                <FolderIcon folderName={node.name} open={isExpanded} />
+            ) : (
+                <FileTypeIcon
+                    color={statusTint ?? undefined}
+                    fileName={node.name}
+                    scaled
+                    size={ICON_SM}
+                />
+            )}
+
+            {isEditing ? (
+                <TreeInlineNameInput
+                    constrainWidth={constrainWidth}
+                    titleColor={titleColor}
+                    value={editingDraftName ?? node.name}
+                    onCancel={onEditingCancel}
+                    onChange={onEditingDraftNameChange}
+                    onSubmit={onEditingSubmit}
                 />
             ) : (
-                <div
-                    className="git-tree-row"
-                    data-active={isActive ? "true" : "false"}
-                    data-drop-target={isDropTarget ? "true" : "false"}
-                    data-path={node.path}
-                    data-selected={isSelected ? "true" : "false"}
-                    draggable={isDraggable}
-                    onDragEnd={() => {
-                        clearHoverExpand();
-                        setActiveDragData(null);
-                        setDropTargetPath(null);
-                    }}
-                    onDragLeave={(event) => {
-                        if (
-                            event.currentTarget.contains(
-                                event.relatedTarget as Node | null,
-                            )
-                        ) {
-                            return;
-                        }
-
-                        if (dropTargetPath === node.path) {
-                            clearHoverExpand();
-                            setDropTargetPath(null);
-                        }
-                    }}
-                    onDragOver={(event) => {
-                        const dragData =
-                            activeDragData ??
-                            getTreeDragData(event.dataTransfer);
-                        const canAcceptDrop =
-                            isDirectory &&
-                            Boolean(onNodeDrop) &&
-                            canDropProjectEntryIntoDirectory(
-                                dragData,
-                                node.isProjectRoot ? null : node.path,
-                            );
-
-                        scheduleHoverExpand(node, isExpanded, canAcceptDrop);
-
-                        if (!isDirectory || !onNodeDrop || !canAcceptDrop) {
-                            return;
-                        }
-
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                        if (dropTargetPath !== node.path) {
-                            setDropTargetPath(node.path);
-                        }
-                    }}
-                    onDragStart={(event) => {
-                        if (!isDraggable) {
-                            return;
-                        }
-
-                        setActiveDragData({
-                            kind: node.kind,
-                            name: node.name,
-                            relativePath: node.path,
-                        });
-                        dragStartHandler?.(node, event.dataTransfer ?? null);
-                    }}
-                    onDrop={(event) => {
-                        const dragData =
-                            activeDragData ??
-                            getTreeDragData(event.dataTransfer);
-                        clearHoverExpand();
-                        setActiveDragData(null);
-                        setDropTargetPath(null);
-
-                        if (
-                            !isDirectory ||
-                            !onNodeDrop ||
-                            !canDropProjectEntryIntoDirectory(
-                                dragData,
-                                node.isProjectRoot ? null : node.path,
-                            )
-                        ) {
-                            return;
-                        }
-
-                        event.preventDefault();
-                        onNodeDrop(dragData, node);
-                    }}
-                    onContextMenu={(event) => {
-                        if (!onNodeContextMenu || isEditing) {
-                            return;
-                        }
-
-                        event.preventDefault();
-                        onNodeContextMenu(node, {
-                            x: event.clientX,
-                            y: event.clientY,
-                        });
-                    }}
+                <span
                     style={{
-                        position: "relative",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: scalePx(6),
-                        height: scalePx(ROW_HEIGHT),
-                        paddingLeft,
-                        paddingRight: scalePx(8),
-                        fontSize: scalePx(FONT_SIZE),
-                        borderRadius: scalePx(4),
-                        cursor: canOpen || canToggle ? "pointer" : "default",
-                        color: "var(--color-text-primary)",
-                        ...(isActive
-                            ? {
-                                  backgroundColor:
-                                      "color-mix(in srgb, var(--color-accent) 22%, transparent)",
-                                  boxShadow:
-                                      "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent)",
-                              }
-                            : isDropTarget
-                              ? {
-                                    backgroundColor:
-                                        "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                                    boxShadow:
-                                        "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)",
-                                }
-                              : isSelected
-                                ? {
-                                      backgroundColor:
-                                          "color-mix(in srgb, var(--color-accent) 10%, transparent)",
-                                      boxShadow:
-                                          "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
-                                  }
-                              : {}),
-                        ...(constrainWidth ? ROW_BOX_CONSTRAINED : ROW_BOX),
+                        flexShrink: constrainWidth ? 1 : 0,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        minWidth: constrainWidth ? scalePx(40) : 0,
+                        flex: 1,
+                        color: titleColor,
                     }}
-                    onClick={handleRowClick}
                 >
-                    <TreeIndentGuides depth={depth} />
+                    {node.name}
+                </span>
+            )}
 
-                    {isDirectory && layout === "tree" ? (
-                        <ChevronIcon open={isExpanded} />
-                    ) : (
-                        <span
-                            style={{ width: scalePx(ICON_SM), flexShrink: 0 }}
-                        />
-                    )}
+            {!constrainWidth && node.secondaryText ? (
+                <span
+                    style={{
+                        fontSize: scalePx(11),
+                        color: "var(--color-text-secondary)",
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                    }}
+                >
+                    {node.secondaryText}
+                </span>
+            ) : null}
 
-                    {isDirectory ? (
-                        <FolderIcon
-                            folderName={node.name}
-                            open={isExpanded}
-                        />
-                    ) : (
-                        <FileTypeIcon
-                            color={statusTint ?? undefined}
-                            fileName={node.name}
-                            scaled
-                            size={ICON_SM}
-                        />
-                    )}
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: scalePx(4),
+                    flexShrink: 0,
+                    marginLeft: "auto",
+                }}
+            >
+                {renderNodeMeta ? renderNodeMeta(node) : node.meta}
 
-                    {isEditing ? (
-                        <TreeInlineNameInput
-                            constrainWidth={constrainWidth}
-                            titleColor={titleColor}
-                            value={editingDraftName ?? node.name}
-                            onCancel={onEditingCancel}
-                            onChange={onEditingDraftNameChange}
-                            onSubmit={onEditingSubmit}
-                        />
-                    ) : (
-                        <span
-                            style={{
-                                flexShrink: constrainWidth ? 1 : 0,
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                minWidth: constrainWidth ? scalePx(40) : 0,
-                                flex: 1,
-                                color: titleColor,
-                            }}
-                        >
-                            {node.name}
-                        </span>
-                    )}
+                {showStatusIndicator &&
+                !constrainWidth &&
+                node.status &&
+                !isDirectory ? (
+                    <StatusIndicator status={node.status} />
+                ) : null}
 
-                    {!constrainWidth && node.secondaryText ? (
-                        <span
-                            style={{
-                                fontSize: scalePx(11),
-                                color: "var(--color-text-secondary)",
-                                whiteSpace: "nowrap",
-                                flexShrink: 0,
-                            }}
-                        >
-                            {node.secondaryText}
-                        </span>
-                    ) : null}
-
+                {!constrainWidth && node.actions?.length ? (
                     <div
+                        className="git-tree-row-actions"
                         style={{
                             display: "flex",
                             alignItems: "center",
                             gap: scalePx(4),
-                            flexShrink: 0,
-                            marginLeft: "auto",
                         }}
                     >
-                        {renderNodeMeta ? renderNodeMeta(node) : node.meta}
-
-                        {showStatusIndicator &&
-                        !constrainWidth &&
-                        node.status &&
-                        !isDirectory ? (
-                            <StatusIndicator status={node.status} />
-                        ) : null}
-
-                        {!constrainWidth && node.actions?.length ? (
-                            <div
-                                className="git-tree-row-actions"
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: scalePx(4),
-                                }}
-                            >
-                                {node.actions.map((action) => (
-                                    <GitActionButton
-                                        action={action}
-                                        key={action.id}
-                                    />
-                                ))}
-                            </div>
-                        ) : null}
+                        {node.actions.map((action) => (
+                            <GitActionButton action={action} key={action.id} />
+                        ))}
                     </div>
-                </div>
-            )}
-
-            {layout === "tree" &&
-            isDirectory &&
-            isExpanded &&
-            node.children?.length
-                ? node.children.map((child) => (
-                      <GitTreeNodeRow
-                          activePath={activePath}
-                          activeDragData={activeDragData}
-                          constrainWidth={constrainWidth}
-                          depth={depth + 1}
-                          dropTargetPath={dropTargetPath}
-                          editingDraftName={editingDraftName}
-                          editingPath={editingPath}
-                          enableNodeDrag={enableNodeDrag}
-                          expandedPaths={expandedPaths}
-                          key={child.id}
-                          layout={layout}
-                          node={child}
-                          onEditingCancel={onEditingCancel}
-                          onEditingDraftNameChange={onEditingDraftNameChange}
-                          onEditingSubmit={onEditingSubmit}
-                          onNodeContextMenu={onNodeContextMenu}
-                          onNodeClick={onNodeClick}
-                          onNodeDrop={onNodeDrop}
-                          onNodeDragStart={dragStartHandler}
-                          scheduleHoverExpand={scheduleHoverExpand}
-                          onToggleDirectory={onToggleDirectory}
-                          renderNodeMeta={renderNodeMeta}
-                          selectedPaths={selectedPaths}
-                          setActiveDragData={setActiveDragData}
-                          clearHoverExpand={clearHoverExpand}
-                          setDropTargetPath={setDropTargetPath}
-                          showStatusIndicator={showStatusIndicator}
-                          stickyFolderPaths={stickyFolderPaths}
-                      />
-                  ))
-                : null}
-        </>
+                ) : null}
+            </div>
+        </div>
     );
+}
+
+export function getGitTreeDragLabel(dragData: GitTreeDragPayload): string {
+    const entries = toGitTreeDragEntries(dragData);
+    if (entries.length === 0) {
+        return "Move item";
+    }
+
+    if (entries.length === 1) {
+        const [entry] = entries;
+        return entry?.name ?? "Move item";
+    }
+
+    const fileCount = entries.filter((entry) => entry.kind === "file").length;
+    const folderCount = entries.length - fileCount;
+    const parts = [
+        folderCount > 0
+            ? `${folderCount} ${folderCount === 1 ? "folder" : "folders"}`
+            : null,
+        fileCount > 0
+            ? `${fileCount} ${fileCount === 1 ? "file" : "files"}`
+            : null,
+    ].filter((part): part is string => Boolean(part));
+
+    return parts.join(", ");
+}
+
+function containsGitTreeDragPath(
+    dragData: GitTreeDragPayload | null,
+    path: string,
+): boolean {
+    if (!dragData) {
+        return false;
+    }
+
+    const entries = toGitTreeDragEntries(dragData);
+    return entries.some((entry) => entry.relativePath === path);
+}
+
+export function setTreeDragImage(
+    dataTransfer: DataTransfer | null,
+    dragData: GitTreeDragPayload,
+): void {
+    if (
+        !dataTransfer ||
+        typeof dataTransfer.setDragImage !== "function" ||
+        typeof document === "undefined"
+    ) {
+        return;
+    }
+
+    const dragImage = document.createElement("div");
+    dragImage.className = "git-tree-drag-ghost";
+    dragImage.textContent = getGitTreeDragLabel(dragData);
+    document.body.appendChild(dragImage);
+    dataTransfer.setDragImage(dragImage, 12, 12);
+    globalThis.setTimeout(() => {
+        dragImage.remove();
+    }, 0);
 }
 
 function TreeInlineNameInput({
@@ -687,9 +1504,20 @@ function TreeInlineNameInput({
 
 function getTreeDragData(
     dataTransfer: DataTransfer | null,
-): GitTreeDragData | null {
+): GitTreeDragPayload | null {
     if (!dataTransfer) {
         return null;
+    }
+
+    const parsedList = parseComposerProjectEntryListDragData(
+        dataTransfer.getData(COMPOSER_PROJECT_ENTRY_LIST_MIME),
+    );
+    if (parsedList) {
+        return parsedList.entries.map((entry) => ({
+            kind: entry.kind,
+            name: entry.name,
+            relativePath: entry.relativePath,
+        }));
     }
 
     const parsed = parseComposerProjectEntryDragData(

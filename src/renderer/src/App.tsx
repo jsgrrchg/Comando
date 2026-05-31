@@ -9,6 +9,7 @@ import {
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 
 import type {
     ComandoApi,
@@ -31,6 +32,13 @@ import {
     resolveActiveFileTreePath,
     resolveFileTreeNodeClickSelection,
 } from "./app/projects/file-tree-selection";
+import {
+    buildFileTreeMoveDestinations,
+    findNextFileTreeMoveDestinationIndex,
+    getFileTreeMoveValidationMessage,
+    resolveFileTreeMovePickerSelectedIndex,
+    type FileTreeMoveDestination,
+} from "./app/projects/file-tree-move-destinations";
 import {
     searchProjectQuickOpenEntries,
     type ProjectQuickOpenMatch,
@@ -63,15 +71,21 @@ import { useShellStore } from "./app/store/shell-store";
 import { useWorkspaceStore } from "./app/store/workspace-store";
 import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
 import {
+    compactGitTreeEntriesByAncestor,
+    compactGitTreeEntriesForDeletion,
+    compactGitTreeDragEntriesByAncestor,
     flattenVisibleGitTreeNodes,
-    getProjectEntryParentRelativePath,
+    getProjectEntryMoveValidation,
     GitTreeView,
     resolveGitTreeDragPaths,
     type GitTreeDragData,
+    type GitTreeDragPayload,
     type GitTreeNode,
+    type GitTreeNodeActivationEvent,
 } from "./components/git";
 import { StickyFolderOverlay } from "./components/git/StickyFolderOverlay";
 import { useStickyFolders } from "./components/git/useStickyFolders";
+import { FolderTypeIcon } from "./components/icons/FolderTypeIcon";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -133,6 +147,19 @@ type FileTreeInlineEditorState = {
     readonly path: string;
 };
 
+interface FileTreeClipboardEntry {
+    readonly kind: "directory" | "file";
+    readonly name: string;
+    readonly path: string;
+}
+
+interface FileTreeClipboardState {
+    readonly entries: readonly FileTreeClipboardEntry[];
+    readonly operation: "copy";
+    readonly projectId: string;
+    readonly worktreeId: string | null;
+}
+
 function getProjectSearchDelayMs(query: string): number {
     return query.trim().length <= 1 ? 0 : PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS;
 }
@@ -193,7 +220,15 @@ export function App() {
     );
     const removeProject = useProjectsStore((state) => state.removeProject);
     const createEntry = useProjectsStore((state) => state.createEntry);
+    const copyEntries = useProjectsStore((state) => state.copyEntries);
+    const copyExternalEntries = useProjectsStore(
+        (state) => state.copyExternalEntries,
+    );
     const deleteEntry = useProjectsStore((state) => state.deleteEntry);
+    const trashEntry = useProjectsStore((state) => state.trashEntry);
+    const openEntryExternally = useProjectsStore(
+        (state) => state.openEntryExternally,
+    );
     const renameEntry = useProjectsStore((state) => state.renameEntry);
     const revealEntry = useProjectsStore((state) => state.revealEntry);
     const setActiveProject = useProjectsStore(
@@ -215,9 +250,6 @@ export function App() {
     void loadingNodeKeys;
     void removeProject;
     void createEntry;
-    void deleteEntry;
-    void renameEntry;
-    void revealEntry;
 
     const workspaceHydrate = useWorkspaceStore((state) => state.hydrate);
     const appendTerminalOutput = useWorkspaceStore(
@@ -228,9 +260,6 @@ export function App() {
     );
     const createChatTab = useWorkspaceStore((state) => state.createChatTab);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
-    const closeTabsForProjectPath = useWorkspaceStore(
-        (state) => state.closeTabsForProjectPath,
-    );
     const closeTabsForProjectPaths = useWorkspaceStore(
         (state) => state.closeTabsForProjectPaths,
     );
@@ -327,6 +356,14 @@ export function App() {
     const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
     const [fileTreeInlineEditor, setFileTreeInlineEditor] =
         useState<FileTreeInlineEditorState | null>(null);
+    const [fileTreeClipboard, setFileTreeClipboard] =
+        useState<FileTreeClipboardState | null>(null);
+    const [fileTreeMovePickerEntries, setFileTreeMovePickerEntries] = useState<
+        readonly GitTreeDragData[] | null
+    >(null);
+    const [fileTreeMovePickerQuery, setFileTreeMovePickerQuery] = useState("");
+    const [fileTreeMovePickerSelectedIndex, setFileTreeMovePickerSelectedIndex] =
+        useState(0);
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
@@ -339,6 +376,10 @@ export function App() {
     >([]);
     const [fileTreeSelectionAnchorPath, setFileTreeSelectionAnchorPath] =
         useState<string | null>(null);
+    const [
+        isFileTreeSelectionSuppressed,
+        setIsFileTreeSelectionSuppressed,
+    ] = useState(false);
     const [fileTreeRevealSignal, setFileTreeRevealSignal] = useState<
         number | null
     >(null);
@@ -1323,7 +1364,6 @@ export function App() {
     }, [quickOpenResults.length]);
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
-    void closeTabsForProjectPath;
     void renameTabsForProjectPath;
     const activeFilePath = useMemo(
         () =>
@@ -1362,10 +1402,26 @@ export function App() {
         setFileTreeInlineEditor(null);
     }, []);
 
-    const clearFileTreeSelection = useCallback(() => {
-        setFileTreeSelectedPaths([]);
-        setFileTreeSelectionAnchorPath(null);
-    }, []);
+    const clearFileTreeSelection = useCallback(
+        (
+            options: {
+                readonly suppressActivePathFallback?: boolean;
+            } = {},
+        ) => {
+            setIsFileTreeSelectionSuppressed(
+                options.suppressActivePathFallback === true,
+            );
+            setFileTreeSelectedPaths([]);
+            setFileTreeSelectionAnchorPath(null);
+        },
+        [],
+    );
+
+    const focusWorkspaceSurface = useCallback(() => {
+        focusSurface("workspace");
+        clearFileTreeSelection({ suppressActivePathFallback: true });
+        setFileTreeContextMenu(null);
+    }, [clearFileTreeSelection, focusSurface]);
 
     const closeFileTreeContextMenu = useCallback(() => {
         const transientSelectionPath =
@@ -1529,8 +1585,40 @@ export function App() {
         [activeProjectId, beginFileTreeInlineRename],
     );
 
+    const closeFileTreeMovePicker = useCallback(() => {
+        setFileTreeMovePickerEntries(null);
+        setFileTreeMovePickerQuery("");
+        setFileTreeMovePickerSelectedIndex(0);
+    }, []);
+
+    const openFileTreeMovePicker = useCallback(
+        (nodes: readonly GitTreeNode[]) => {
+            const entries = compactGitTreeDragEntriesByAncestor(
+                nodes
+                    .filter((node) => !node.isProjectRoot)
+                    .map((node) => ({
+                        kind: node.kind,
+                        name: node.name,
+                        relativePath: node.path,
+                    })),
+            );
+
+            if (entries.length === 0) {
+                return;
+            }
+
+            setFileTreeMovePickerEntries(entries);
+            setFileTreeMovePickerQuery("");
+            setFileTreeMovePickerSelectedIndex(0);
+        },
+        [],
+    );
+
     const handleMoveTreeNode = useCallback(
-        async (draggedEntry: GitTreeDragData, destinationNode: GitTreeNode) => {
+        async (
+            draggedPayload: GitTreeDragPayload,
+            destinationNode: GitTreeNode,
+        ) => {
             if (!activeProjectId) {
                 return;
             }
@@ -1538,9 +1626,22 @@ export function App() {
             const nextParentRelativePath = destinationNode.isProjectRoot
                 ? null
                 : destinationNode.path;
-            const currentParentRelativePath = getProjectEntryParentRelativePath(
-                draggedEntry.relativePath,
+            const validation = getProjectEntryMoveValidation(
+                draggedPayload,
+                nextParentRelativePath,
             );
+            if (!validation.canMove) {
+                if (
+                    validation.reason === "directory-self" ||
+                    validation.reason === "directory-descendant"
+                ) {
+                    window.alert(
+                        getFileTreeMoveValidationMessage(validation.reason),
+                    );
+                }
+                return;
+            }
+
             const destinationProjectTreeNode =
                 destinationNode.isProjectRoot || !destinationNode.path
                     ? null
@@ -1552,25 +1653,23 @@ export function App() {
                 Boolean(destinationProjectTreeNode) &&
                 !activeExpandedDirectories.includes(destinationNode.path);
 
-            if (currentParentRelativePath === nextParentRelativePath) {
-                return;
-            }
-
             try {
-                const movedEntry = await renameEntry(
-                    activeProjectId,
-                    draggedEntry.relativePath,
-                    draggedEntry.name,
-                    nextParentRelativePath,
-                    activeWorktreeId,
-                );
-                await renameTabsForProjectPath(
-                    activeProjectId,
-                    activeWorktreeId,
-                    draggedEntry.relativePath,
-                    movedEntry.relativePath,
-                    draggedEntry.kind,
-                );
+                for (const entry of validation.entries) {
+                    const movedEntry = await renameEntry(
+                        activeProjectId,
+                        entry.relativePath,
+                        entry.name,
+                        nextParentRelativePath,
+                        activeWorktreeId,
+                    );
+                    await renameTabsForProjectPath(
+                        activeProjectId,
+                        activeWorktreeId,
+                        entry.relativePath,
+                        movedEntry.relativePath,
+                        entry.kind,
+                    );
+                }
                 if (destinationProjectTreeNode && shouldExpandDestination) {
                     await toggleDirectory(
                         activeProjectId,
@@ -1582,7 +1681,9 @@ export function App() {
                 window.alert(
                     error instanceof Error
                         ? error.message
-                        : "Could not move the selected entry.",
+                        : validation.entries.length > 1
+                          ? "Could not move the selected items."
+                          : "Could not move the selected item.",
                 );
             }
         },
@@ -1597,30 +1698,61 @@ export function App() {
         ],
     );
 
-    const handleDeleteTreeNode = useCallback(
-        async (node: GitTreeNode) => {
+    const handleDeleteTreeNodes = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
             if (!activeProjectId) {
                 return;
             }
 
+            const deletableNodes = nodes.filter((node) => !node.isProjectRoot);
+            if (deletableNodes.length === 0) {
+                return;
+            }
+
             const confirmed = window.confirm(
-                node.kind === "directory"
-                    ? `Delete folder "${node.name}" and all its contents?`
-                    : `Delete file "${node.name}"?`,
+                deletableNodes.length === 1
+                    ? deletableNodes[0].kind === "directory"
+                        ? `Delete folder "${deletableNodes[0].name}" and all its contents?`
+                        : `Delete file "${deletableNodes[0].name}"?`
+                    : `Delete ${deletableNodes.length} selected items?`,
             );
             if (!confirmed) {
                 return;
             }
 
+            const entriesToDelete =
+                compactGitTreeEntriesForDeletion(deletableNodes);
+            const deletedEntries: {
+                readonly kind: "directory" | "file";
+                readonly relativePath: string;
+            }[] = [];
+
             try {
-                await deleteEntry(activeProjectId, node.path, activeWorktreeId);
-                await closeTabsForProjectPath(
+                for (const entry of entriesToDelete) {
+                    await deleteEntry(
+                        activeProjectId,
+                        entry.path,
+                        activeWorktreeId,
+                    );
+                    deletedEntries.push({
+                        kind: entry.kind,
+                        relativePath: entry.path,
+                    });
+                }
+
+                await closeTabsForProjectPaths(
                     activeProjectId,
                     activeWorktreeId,
-                    node.path,
-                    node.kind,
+                    deletedEntries,
                 );
             } catch (error) {
+                if (deletedEntries.length > 0) {
+                    await closeTabsForProjectPaths(
+                        activeProjectId,
+                        activeWorktreeId,
+                        deletedEntries,
+                    );
+                }
                 window.alert(
                     error instanceof Error
                         ? error.message
@@ -1631,8 +1763,78 @@ export function App() {
         [
             activeProjectId,
             activeWorktreeId,
-            closeTabsForProjectPath,
+            closeTabsForProjectPaths,
             deleteEntry,
+        ],
+    );
+
+    const handleTrashTreeNodes = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const trashableNodes = nodes.filter((node) => !node.isProjectRoot);
+            if (trashableNodes.length === 0) {
+                return;
+            }
+
+            const confirmed = window.confirm(
+                trashableNodes.length === 1
+                    ? trashableNodes[0].kind === "directory"
+                        ? `Move folder "${trashableNodes[0].name}" and all its contents to Trash?`
+                        : `Move file "${trashableNodes[0].name}" to Trash?`
+                    : `Move ${trashableNodes.length} selected items to Trash?`,
+            );
+            if (!confirmed) {
+                return;
+            }
+
+            const entriesToTrash =
+                compactGitTreeEntriesForDeletion(trashableNodes);
+            const trashedEntries: {
+                readonly kind: "directory" | "file";
+                readonly relativePath: string;
+            }[] = [];
+
+            try {
+                for (const entry of entriesToTrash) {
+                    await trashEntry(
+                        activeProjectId,
+                        entry.path,
+                        activeWorktreeId,
+                    );
+                    trashedEntries.push({
+                        kind: entry.kind,
+                        relativePath: entry.path,
+                    });
+                }
+
+                await closeTabsForProjectPaths(
+                    activeProjectId,
+                    activeWorktreeId,
+                    trashedEntries,
+                );
+            } catch (error) {
+                if (trashedEntries.length > 0) {
+                    await closeTabsForProjectPaths(
+                        activeProjectId,
+                        activeWorktreeId,
+                        trashedEntries,
+                    );
+                }
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not move the selected entry to Trash.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            closeTabsForProjectPaths,
+            trashEntry,
         ],
     );
 
@@ -1659,14 +1861,16 @@ export function App() {
         [activeProjectId, activeWorktreeId, revealEntry],
     );
 
-    const handleCopyTreePath = useCallback(
-        async (relativePath: string, mode: "absolute" | "relative") => {
-            const text =
-                mode === "absolute"
-                    ? activeProject
-                        ? joinProjectPath(activeProject.rootPath, relativePath)
-                        : null
-                    : relativePath;
+    const handleCopyTreeFullPaths = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
+            const text = nodes
+                .map((node) =>
+                    activeProject
+                        ? joinProjectPath(activeProject.rootPath, node.path)
+                        : null,
+                )
+                .filter((path): path is string => path !== null)
+                .join("\n");
 
             if (!text) {
                 return;
@@ -1681,9 +1885,249 @@ export function App() {
         [activeProject],
     );
 
-    const handleAddFileToChat = useCallback(
-        async (node: GitTreeNode) => {
-            if (!activeProjectId || node.kind !== "file") {
+    const isFileTreeClipboardCompatible = useMemo(
+        () =>
+            Boolean(
+                activeProjectId &&
+                    fileTreeClipboard &&
+                    fileTreeClipboard.operation === "copy" &&
+                    fileTreeClipboard.projectId === activeProjectId &&
+                    normalizeFileTreeClipboardWorktreeId(
+                        fileTreeClipboard.worktreeId,
+                    ) ===
+                        normalizeFileTreeClipboardWorktreeId(
+                            activeWorktreeId,
+                        ) &&
+                    fileTreeClipboard.entries.length > 0,
+            ),
+        [activeProjectId, activeWorktreeId, fileTreeClipboard],
+    );
+
+    const fileTreePasteLabel = useMemo(() => {
+        const count = fileTreeClipboard?.entries.length ?? 0;
+        return count > 1 ? `Paste ${count} Items Here` : "Paste Here";
+    }, [fileTreeClipboard]);
+
+    const handleCopyTreeEntries = useCallback(
+        (nodes: readonly GitTreeNode[]) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const entries = compactGitTreeEntriesByAncestor(
+                nodes
+                    .filter((node) => !node.isProjectRoot)
+                    .map((node) => ({
+                        kind: node.kind,
+                        name: node.name,
+                        path: node.path,
+                    })),
+            );
+
+            if (entries.length === 0) {
+                return;
+            }
+
+            setFileTreeClipboard({
+                entries,
+                operation: "copy",
+                projectId: activeProjectId,
+                worktreeId: activeWorktreeId ?? null,
+            });
+        },
+        [activeProjectId, activeWorktreeId],
+    );
+
+    const handlePasteTreeEntries = useCallback(
+        async (destinationParentRelativePath: string | null) => {
+            if (
+                !activeProjectId ||
+                !fileTreeClipboard ||
+                !isFileTreeClipboardCompatible
+            ) {
+                return;
+            }
+
+            try {
+                const result = await copyEntries(
+                    activeProjectId,
+                    fileTreeClipboard.entries.map((entry) => entry.path),
+                    destinationParentRelativePath,
+                    activeWorktreeId,
+                );
+                const firstCopiedEntry = result.entries[0] ?? null;
+
+                if (firstCopiedEntry) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        firstCopiedEntry.relativePath,
+                        activeWorktreeId,
+                    );
+                } else if (destinationParentRelativePath) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        destinationParentRelativePath,
+                        activeWorktreeId,
+                    );
+                }
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not paste the selected entries.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            copyEntries,
+            fileTreeClipboard,
+            isFileTreeClipboardCompatible,
+            revealPathInTree,
+        ],
+    );
+
+    const handleImportExternalTreeEntries = useCallback(
+        async (
+            sourcePaths: readonly string[],
+            destinationNode: GitTreeNode | null,
+        ) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const destinationParentRelativePath = destinationNode?.isProjectRoot
+                ? null
+                : (destinationNode?.path ?? null);
+
+            try {
+                const result = await copyExternalEntries(
+                    activeProjectId,
+                    sourcePaths,
+                    destinationParentRelativePath,
+                    activeWorktreeId,
+                );
+                const firstImportedEntry = result.entries[0] ?? null;
+
+                if (firstImportedEntry) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        firstImportedEntry.relativePath,
+                        activeWorktreeId,
+                    );
+                } else if (destinationParentRelativePath) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        destinationParentRelativePath,
+                        activeWorktreeId,
+                    );
+                }
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not import the dropped entries.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            copyExternalEntries,
+            revealPathInTree,
+        ],
+    );
+
+    const handleDuplicateTreeEntries = useCallback(
+        async (nodes: readonly GitTreeNode[]) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const entries = compactGitTreeEntriesByAncestor(
+                nodes
+                    .filter((node) => !node.isProjectRoot)
+                    .map((node) => ({
+                        kind: node.kind,
+                        name: node.name,
+                        path: node.path,
+                    })),
+            );
+            const firstEntry = entries[0] ?? null;
+            if (!firstEntry) {
+                return;
+            }
+
+            const destinationParentRelativePath =
+                firstEntry.path.split("/").slice(0, -1).join("/") || null;
+
+            try {
+                const result = await copyEntries(
+                    activeProjectId,
+                    entries.map((entry) => entry.path),
+                    destinationParentRelativePath,
+                    activeWorktreeId,
+                );
+                const firstDuplicatedEntry = result.entries[0] ?? null;
+
+                if (firstDuplicatedEntry) {
+                    await revealPathInTree(
+                        activeProjectId,
+                        firstDuplicatedEntry.relativePath,
+                        activeWorktreeId,
+                    );
+                }
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not duplicate the selected entry.",
+                );
+            }
+        },
+        [
+            activeProjectId,
+            activeWorktreeId,
+            copyEntries,
+            revealPathInTree,
+        ],
+    );
+
+    const handleOpenTreeEntryExternally = useCallback(
+        async (relativePath: string) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            try {
+                await openEntryExternally(
+                    activeProjectId,
+                    relativePath,
+                    activeWorktreeId,
+                );
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not open the selected file externally.",
+                );
+            }
+        },
+        [activeProjectId, activeWorktreeId, openEntryExternally],
+    );
+
+    const handleAddFilesToChat = useCallback(
+        async (
+            nodes: readonly GitTreeNode[],
+            options: { readonly forceNewChat?: boolean } = {},
+        ) => {
+            if (!activeProjectId) {
+                return;
+            }
+
+            const fileNodes = nodes.filter((node) => node.kind === "file");
+            if (fileNodes.length === 0) {
                 return;
             }
 
@@ -1697,19 +2141,21 @@ export function App() {
             );
 
             const attachContext = (sessionId: string) => {
-                addDraftFileContext(sessionId, {
-                    extension: node.path.split(".").pop() ?? null,
-                    id: `file-ctx:${crypto.randomUUID()}`,
-                    languageId: resolveEditorLanguage({
-                        filePath: node.path,
-                    }).id,
-                    name: node.name,
-                    projectId: activeProjectId,
-                    relativePath: node.path,
+                fileNodes.forEach((node) => {
+                    addDraftFileContext(sessionId, {
+                        extension: node.path.split(".").pop() ?? null,
+                        id: `file-ctx:${crypto.randomUUID()}`,
+                        languageId: resolveEditorLanguage({
+                            filePath: node.path,
+                        }).id,
+                        name: node.name,
+                        projectId: activeProjectId,
+                        relativePath: node.path,
+                    });
                 });
             };
 
-            if (existingChatTab?.kind === "chat") {
+            if (!options.forceNewChat && existingChatTab?.kind === "chat") {
                 attachContext(existingChatTab.sessionId);
                 return;
             }
@@ -1832,9 +2278,15 @@ export function App() {
             reconcileFileTreeSelection({
                 activeFileTreePath: activeFilePath,
                 anchorPath: fileTreeSelectionAnchorPath,
+                includeActivePathFallback: !isFileTreeSelectionSuppressed,
                 selectedPaths: fileTreeSelectedPaths,
             }),
-        [activeFilePath, fileTreeSelectionAnchorPath, fileTreeSelectedPaths],
+        [
+            activeFilePath,
+            fileTreeSelectionAnchorPath,
+            fileTreeSelectedPaths,
+            isFileTreeSelectionSuppressed,
+        ],
     );
     const effectiveFileTreeSelectedPaths =
         effectiveFileTreeSelection.selectedPaths;
@@ -1847,6 +2299,54 @@ export function App() {
     const visibleSidebarNodesByPath = useMemo(
         () => new Map(visibleSidebarNodes.map((node) => [node.path, node])),
         [visibleSidebarNodes],
+    );
+    const fileTreeMoveDestinations = useMemo(
+        () =>
+            buildFileTreeMoveDestinations({
+                activeProjectName: activeProject?.name ?? null,
+                entries: fileTreeMovePickerEntries,
+                projectEntryIndex: cachedFileTreeEntryIndex,
+                query: fileTreeMovePickerQuery,
+                treeNodesByParent: activeTreeNodesByParent,
+            }),
+        [
+            activeProject?.name,
+            activeTreeNodesByParent,
+            cachedFileTreeEntryIndex,
+            fileTreeMovePickerEntries,
+            fileTreeMovePickerQuery,
+        ],
+    );
+    const resolvedFileTreeMovePickerSelectedIndex = useMemo(
+        () =>
+            resolveFileTreeMovePickerSelectedIndex(
+                fileTreeMoveDestinations,
+                fileTreeMovePickerSelectedIndex,
+            ),
+        [fileTreeMoveDestinations, fileTreeMovePickerSelectedIndex],
+    );
+
+    const handleFileTreeMoveDestinationSelect = useCallback(
+        (destination: FileTreeMoveDestination) => {
+            if (!fileTreeMovePickerEntries || !destination.canMove) {
+                return;
+            }
+
+            closeFileTreeMovePicker();
+            void handleMoveTreeNode(fileTreeMovePickerEntries, {
+                id: destination.path ?? ROOT_NODE_KEY,
+                isProjectRoot: destination.path === null,
+                kind: "directory",
+                name: destination.name,
+                path: destination.path ?? "",
+                status: null,
+            });
+        },
+        [
+            closeFileTreeMovePicker,
+            fileTreeMovePickerEntries,
+            handleMoveTreeNode,
+        ],
     );
 
     useEffect(() => {
@@ -1868,7 +2368,9 @@ export function App() {
     }, [visibleSidebarNodePathSet]);
 
     const handleFileTreeNodeClick = useCallback(
-        (node: GitTreeNode, event: ReactMouseEvent<HTMLDivElement>) => {
+        (node: GitTreeNode, event: GitTreeNodeActivationEvent) => {
+            setIsFileTreeSelectionSuppressed(false);
+
             const isRangeSelection = event.shiftKey;
             const isToggleSelection = event.metaKey || event.ctrlKey;
 
@@ -1912,6 +2414,8 @@ export function App() {
                 return;
             }
 
+            setIsFileTreeSelectionSuppressed(false);
+
             const dragPaths = resolveGitTreeDragPaths(
                 node.path,
                 effectiveFileTreeSelectedPaths,
@@ -1931,11 +2435,10 @@ export function App() {
                 kind: entry.kind,
                 name: entry.name,
                 relativePath: entry.path,
-            }));
+            })) satisfies GitTreeDragData[];
 
             dataTransfer.clearData();
-            dataTransfer.effectAllowed =
-                composerEntries.length > 1 ? "copy" : "copyMove";
+            dataTransfer.effectAllowed = "copyMove";
             dataTransfer.setData(
                 COMPOSER_PROJECT_ENTRY_LIST_MIME,
                 serializeComposerProjectEntryListDragData({
@@ -1962,6 +2465,10 @@ export function App() {
                           .map((entry) => entry.relativePath)
                           .join("\n"),
             );
+
+            return composerEntries.length === 1
+                ? composerEntries[0]
+                : composerEntries;
         },
         [
             effectiveFileTreeSelectedPaths,
@@ -2027,6 +2534,15 @@ export function App() {
                     action: () => void handleCreateTreeEntry("directory", null),
                     disabled: !activeProjectId,
                 },
+                ...(isFileTreeClipboardCompatible
+                    ? ([
+                          {
+                              label: fileTreePasteLabel,
+                              action: () => void handlePasteTreeEntries(null),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
                 { type: "separator" },
                 {
                     label: "Reveal Project Root",
@@ -2049,9 +2565,75 @@ export function App() {
 
         const node = fileTreeContextMenu.payload.node;
         const contextSelection = getFileTreeContextSelection(node);
+        const copyableContextSelection = contextSelection.filter(
+            (entry) => !entry.isProjectRoot,
+        );
+        const contextSelectionFileCount = contextSelection.filter(
+            (entry) => entry.kind === "file",
+        ).length;
+        const addToChatLabel =
+            contextSelectionFileCount === 0
+                ? "Add Files to Chat"
+                : contextSelection.length > 1
+                ? `Add ${contextSelectionFileCount} ${
+                      contextSelectionFileCount === 1 ? "File" : "Files"
+                  } to Chat`
+                : "Add to Chat";
+        const addToNewChatLabel =
+            contextSelectionFileCount === 0
+                ? "Add Files to New Chat"
+                : contextSelection.length > 1
+                ? `Add ${contextSelectionFileCount} ${
+                      contextSelectionFileCount === 1 ? "File" : "Files"
+                  } to New Chat`
+                : "Add to New Chat";
+        const copyAbsolutePathLabel =
+            contextSelection.length > 1
+                ? `Copy ${contextSelection.length} Full Paths`
+                : "Copy Full Path";
+        const copyEntryLabel =
+            copyableContextSelection.length > 1
+                ? `Copy ${copyableContextSelection.length} Selected Items`
+                : "Copy";
+        const canDuplicateContextSelection =
+            copyableContextSelection.length === 1;
+        const moveEntryLabel =
+            copyableContextSelection.length > 1
+                ? "Move Selected Items to..."
+                : "Move to...";
+        const deleteLabel =
+            contextSelection.length > 1
+                ? `Delete ${contextSelection.length} Selected Items`
+                : node.kind === "directory"
+                  ? "Delete Folder"
+                  : "Delete File";
+        const trashLabel =
+            copyableContextSelection.length > 1
+                ? `Move ${copyableContextSelection.length} Selected Items to Trash`
+                : copyableContextSelection[0]?.kind === "directory"
+                  ? "Move Folder to Trash"
+                  : "Move File to Trash";
         const multiSelectionEntries =
             contextSelection.length > 1
                 ? ([
+                      {
+                          label: addToChatLabel,
+                          action: () =>
+                              void handleAddFilesToChat(contextSelection),
+                          disabled:
+                              !activeProjectId ||
+                              contextSelectionFileCount === 0,
+                      },
+                      {
+                          label: addToNewChatLabel,
+                          action: () =>
+                              void handleAddFilesToChat(contextSelection, {
+                                  forceNewChat: true,
+                              }),
+                          disabled:
+                              !activeProjectId ||
+                              contextSelectionFileCount === 0,
+                      },
                       {
                           label: `Close ${contextSelection.length} Selected Tabs`,
                           action: () =>
@@ -2075,6 +2657,15 @@ export function App() {
                     action: () => void handleCreateTreeEntry("directory", null),
                     disabled: !activeProjectId,
                 },
+                ...(isFileTreeClipboardCompatible
+                    ? ([
+                          {
+                              label: fileTreePasteLabel,
+                              action: () => void handlePasteTreeEntries(null),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
                 { type: "separator" },
                 {
                     label: "Reveal in Finder",
@@ -2082,8 +2673,8 @@ export function App() {
                     disabled: !activeProjectId,
                 },
                 {
-                    label: "Copy Absolute Path",
-                    action: () => void handleCopyTreePath("", "absolute"),
+                    label: "Copy Full Path",
+                    action: () => void handleCopyTreeFullPaths([node]),
                     disabled: !activeProject,
                 },
                 {
@@ -2115,16 +2706,58 @@ export function App() {
                             : undefined,
                     disabled: !activeProjectId,
                 },
-                {
-                    label: "Add to Chat",
-                    action: () => void handleAddFileToChat(node),
-                    disabled: !activeProjectId,
-                },
+                ...(contextSelection.length === 1
+                    ? ([
+                          {
+                              label: "Open Externally",
+                              action: () =>
+                                  void handleOpenTreeEntryExternally(node.path),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
+                ...(contextSelection.length === 1
+                    ? ([
+                          {
+                              label: addToChatLabel,
+                              action: () =>
+                                  void handleAddFilesToChat(contextSelection),
+                              disabled: !activeProjectId,
+                          },
+                          {
+                              label: addToNewChatLabel,
+                              action: () =>
+                                  void handleAddFilesToChat(contextSelection, {
+                                      forceNewChat: true,
+                                  }),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
                 { type: "separator" },
                 {
                     label: "Rename",
                     action: () => void handleRenameTreeNode(node),
                     disabled: !activeProjectId,
+                },
+                ...(canDuplicateContextSelection
+                    ? ([
+                          {
+                              label: "Duplicate",
+                              action: () =>
+                                  void handleDuplicateTreeEntries(
+                                      copyableContextSelection,
+                                  ),
+                              disabled: !activeProjectId,
+                          },
+                      ] satisfies ContextMenuEntry[])
+                    : ([] satisfies ContextMenuEntry[])),
+                {
+                    label: moveEntryLabel,
+                    action: () =>
+                        void openFileTreeMovePicker(copyableContextSelection),
+                    disabled:
+                        !activeProjectId || copyableContextSelection.length === 0,
                 },
                 {
                     label: "Reveal in Finder",
@@ -2132,20 +2765,28 @@ export function App() {
                     disabled: !activeProjectId,
                 },
                 {
-                    label: "Copy Relative Path",
-                    action: () =>
-                        void handleCopyTreePath(node.path, "relative"),
+                    label: copyEntryLabel,
+                    action: () => void handleCopyTreeEntries(contextSelection),
+                    disabled:
+                        !activeProjectId || copyableContextSelection.length === 0,
                 },
                 {
-                    label: "Copy Absolute Path",
+                    label: copyAbsolutePathLabel,
                     action: () =>
-                        void handleCopyTreePath(node.path, "absolute"),
+                        void handleCopyTreeFullPaths(contextSelection),
                     disabled: !activeProject,
                 },
                 { type: "separator" },
                 {
-                    label: "Delete",
-                    action: () => void handleDeleteTreeNode(node),
+                    label: trashLabel,
+                    action: () => void handleTrashTreeNodes(contextSelection),
+                    danger: true,
+                    disabled:
+                        !activeProjectId || copyableContextSelection.length === 0,
+                },
+                {
+                    label: deleteLabel,
+                    action: () => void handleDeleteTreeNodes(contextSelection),
                     danger: true,
                     disabled: !activeProjectId,
                 },
@@ -2165,11 +2806,37 @@ export function App() {
                     void handleCreateTreeEntry("directory", node.path),
                 disabled: !activeProjectId,
             },
+            ...(isFileTreeClipboardCompatible
+                ? ([
+                      {
+                          label: fileTreePasteLabel,
+                          action: () => void handlePasteTreeEntries(node.path),
+                          disabled: !activeProjectId,
+                      },
+                  ] satisfies ContextMenuEntry[])
+                : ([] satisfies ContextMenuEntry[])),
             { type: "separator" },
             {
                 label: "Rename",
                 action: () => void handleRenameTreeNode(node),
                 disabled: !activeProjectId,
+            },
+            ...(canDuplicateContextSelection
+                ? ([
+                      {
+                          label: "Duplicate",
+                          action: () =>
+                              void handleDuplicateTreeEntries(
+                                  copyableContextSelection,
+                              ),
+                          disabled: !activeProjectId,
+                      },
+                  ] satisfies ContextMenuEntry[])
+                : ([] satisfies ContextMenuEntry[])),
+            {
+                label: moveEntryLabel,
+                action: () => void openFileTreeMovePicker(copyableContextSelection),
+                disabled: !activeProjectId || copyableContextSelection.length === 0,
             },
             {
                 label: "Reveal in Finder",
@@ -2177,18 +2844,26 @@ export function App() {
                 disabled: !activeProjectId,
             },
             {
-                label: "Copy Relative Path",
-                action: () => void handleCopyTreePath(node.path, "relative"),
+                label: copyEntryLabel,
+                action: () => void handleCopyTreeEntries(contextSelection),
+                disabled: !activeProjectId || copyableContextSelection.length === 0,
             },
             {
-                label: "Copy Absolute Path",
-                action: () => void handleCopyTreePath(node.path, "absolute"),
+                label: copyAbsolutePathLabel,
+                action: () =>
+                    void handleCopyTreeFullPaths(contextSelection),
                 disabled: !activeProject,
             },
             { type: "separator" },
             {
-                label: "Delete",
-                action: () => void handleDeleteTreeNode(node),
+                label: trashLabel,
+                action: () => void handleTrashTreeNodes(contextSelection),
+                danger: true,
+                disabled: !activeProjectId || copyableContextSelection.length === 0,
+            },
+            {
+                label: deleteLabel,
+                action: () => void handleDeleteTreeNodes(contextSelection),
                 danger: true,
                 disabled: !activeProjectId,
             },
@@ -2198,15 +2873,23 @@ export function App() {
         activeProjectId,
         activeWorktreeId,
         fileTreeContextMenu,
+        fileTreePasteLabel,
         getFileTreeContextSelection,
-        handleAddFileToChat,
+        handleAddFilesToChat,
         handleCloseFileTreeTabs,
-        handleCopyTreePath,
+        handleCopyTreeEntries,
+        handleCopyTreeFullPaths,
         handleCreateTreeEntry,
-        handleDeleteTreeNode,
+        handleDeleteTreeNodes,
+        handleDuplicateTreeEntries,
+        handleOpenTreeEntryExternally,
+        handlePasteTreeEntries,
         handleRenameTreeNode,
         handleRevealTreeEntry,
+        handleTrashTreeNodes,
+        isFileTreeClipboardCompatible,
         openFileTab,
+        openFileTreeMovePicker,
         refreshProjectTree,
     ]);
 
@@ -3029,7 +3712,9 @@ export function App() {
                                 return;
                             }
 
-                            clearFileTreeSelection();
+                            clearFileTreeSelection({
+                                suppressActivePathFallback: true,
+                            });
                         }}
                         onScroll={handleFileTreeScroll}
                     >
@@ -3077,6 +3762,15 @@ export function App() {
                                                 destinationNode,
                                             );
                                         }}
+                                        onExternalFilesDrop={(
+                                            sourcePaths,
+                                            destinationNode,
+                                        ) => {
+                                            void handleImportExternalTreeEntries(
+                                                sourcePaths,
+                                                destinationNode,
+                                            );
+                                        }}
                                         selectedPaths={selectedFileTreePathSet}
                                     />
                                 ) : null}
@@ -3115,11 +3809,56 @@ export function App() {
                                     }}
                                     stickyFolderPaths={stickyFolderPaths}
                                     selectedPaths={selectedFileTreePathSet}
+                                    suppressKeyboardCursor={
+                                        isFileTreeSelectionSuppressed
+                                    }
                                     scrollToActivePathSignal={
                                         fileTreeRevealSignal ?? undefined
                                     }
+                                    onBackgroundContextMenu={({ x, y }) => {
+                                        clearFileTreeSelection({
+                                            suppressActivePathFallback: true,
+                                        });
+                                        setFileTreeContextMenu({
+                                            x,
+                                            y,
+                                            payload: {
+                                                kind: "background",
+                                            },
+                                        });
+                                    }}
+                                    onBackgroundDrop={
+                                        isFilteringFileTree
+                                            ? undefined
+                                            : (dragData) => {
+                                                  const rootNode =
+                                                      sidebarTreeNodes.find(
+                                                          (node) =>
+                                                              node.isProjectRoot,
+                                                      );
+                                                  if (!rootNode) {
+                                                      return;
+                                                  }
+
+                                                  void handleMoveTreeNode(
+                                                      dragData,
+                                                      rootNode,
+                                                  );
+                                              }
+                                    }
+                                    onExternalFilesDrop={
+                                        isFilteringFileTree
+                                            ? undefined
+                                            : (sourcePaths, destinationNode) => {
+                                                  void handleImportExternalTreeEntries(
+                                                      sourcePaths,
+                                                      destinationNode,
+                                                  );
+                                              }
+                                    }
                                     onNodeClick={handleFileTreeNodeClick}
                                     onNodeContextMenu={(node, { x, y }) => {
+                                        setIsFileTreeSelectionSuppressed(false);
                                         const isNodeSelected =
                                             selectedFileTreePathSet.has(
                                                 node.path,
@@ -3301,8 +4040,8 @@ export function App() {
                         <main
                             className="surface-focus min-h-0 bg-bg-primary"
                             data-active={activeSurface === "workspace"}
-                            onClick={() => focusSurface("workspace")}
-                            onFocus={() => focusSurface("workspace")}
+                            onFocus={focusWorkspaceSurface}
+                            onPointerDown={focusWorkspaceSurface}
                             tabIndex={0}
                         >
                             <WorkspaceView
@@ -3413,7 +4152,272 @@ export function App() {
                 results={quickOpenResults}
                 selectedIndex={quickOpenSelectedIndex}
             />
+
+            <FileTreeMoveDestinationPicker
+                destinations={fileTreeMoveDestinations}
+                entries={fileTreeMovePickerEntries ?? []}
+                onChangeQuery={setFileTreeMovePickerQuery}
+                onClose={closeFileTreeMovePicker}
+                onHoverIndex={setFileTreeMovePickerSelectedIndex}
+                onSelect={handleFileTreeMoveDestinationSelect}
+                open={fileTreeMovePickerEntries !== null}
+                query={fileTreeMovePickerQuery}
+                selectedIndex={resolvedFileTreeMovePickerSelectedIndex}
+            />
         </div>
+    );
+}
+
+function FileTreeMoveDestinationPicker({
+    destinations,
+    entries,
+    onChangeQuery,
+    onClose,
+    onHoverIndex,
+    onSelect,
+    open,
+    query,
+    selectedIndex,
+}: {
+    readonly destinations: readonly FileTreeMoveDestination[];
+    readonly entries: readonly GitTreeDragData[];
+    readonly onChangeQuery: (value: string) => void;
+    readonly onClose: () => void;
+    readonly onHoverIndex: (index: number) => void;
+    readonly onSelect: (destination: FileTreeMoveDestination) => void;
+    readonly open: boolean;
+    readonly query: string;
+    readonly selectedIndex: number;
+}) {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const listRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!open) {
+            return;
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            inputRef.current?.focus();
+            inputRef.current?.select();
+        });
+
+        return () => window.cancelAnimationFrame(frameId);
+    }, [open]);
+
+    useEffect(() => {
+        if (!open) {
+            return;
+        }
+
+        const selectedElement = listRef.current?.querySelector<HTMLElement>(
+            "[data-move-destination-selected='true']",
+        );
+        selectedElement?.scrollIntoView({ block: "nearest" });
+    }, [open, selectedIndex]);
+
+    if (!open) {
+        return null;
+    }
+
+    const selectedDestination = destinations[selectedIndex] ?? null;
+    const itemCountLabel =
+        entries.length === 1 ? "1 item" : `${entries.length} items`;
+
+    const handleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+        if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+        }
+
+        if (destinations.length === 0) {
+            return;
+        }
+
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            onHoverIndex(
+                findNextFileTreeMoveDestinationIndex(
+                    destinations,
+                    selectedIndex,
+                    1,
+                ),
+            );
+            return;
+        }
+
+        if (event.key === "ArrowUp") {
+            event.preventDefault();
+            onHoverIndex(
+                findNextFileTreeMoveDestinationIndex(
+                    destinations,
+                    selectedIndex,
+                    -1,
+                ),
+            );
+            return;
+        }
+
+        if (event.key === "Home") {
+            event.preventDefault();
+            onHoverIndex(resolveFileTreeMovePickerSelectedIndex(destinations, 0));
+            return;
+        }
+
+        if (event.key === "End") {
+            event.preventDefault();
+            onHoverIndex(
+                resolveFileTreeMovePickerSelectedIndex(
+                    destinations,
+                    destinations.length - 1,
+                ),
+            );
+            return;
+        }
+
+        if (event.key === "Enter") {
+            event.preventDefault();
+            if (selectedDestination?.canMove) {
+                onSelect(selectedDestination);
+            }
+        }
+    };
+
+    return createPortal(
+        <div
+            className="app-no-drag fixed inset-0 z-10030 flex items-start justify-center px-5 pt-[min(14vh,104px)]"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                    onClose();
+                }
+            }}
+            style={{
+                background:
+                    "color-mix(in srgb, var(--color-bg-primary) 70%, transparent)",
+                backdropFilter: "blur(10px)",
+            }}
+        >
+            <div
+                className="app-no-drag flex w-full max-w-[520px] flex-col overflow-hidden rounded-lg border"
+                style={{
+                    background: "var(--color-bg-elevated)",
+                    borderColor:
+                        "color-mix(in srgb, var(--color-border) 80%, transparent)",
+                    boxShadow:
+                        "0 24px 80px rgba(0, 0, 0, 0.22), 0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent)",
+                }}
+            >
+                <div
+                    className="border-b px-3.5 py-2.5"
+                    style={{
+                        borderColor:
+                            "color-mix(in srgb, var(--color-border) 60%, transparent)",
+                    }}
+                >
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                            <div className="truncate text-[13px] font-medium text-text-primary">
+                                Move to Folder
+                            </div>
+                            <div className="truncate text-[11px] text-text-secondary/75">
+                                {itemCountLabel}
+                            </div>
+                        </div>
+                    </div>
+                    <input
+                        autoCapitalize="off"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        className="w-full rounded-md border bg-bg-primary px-2.5 py-1.75 text-[13px] text-text-primary outline-none placeholder:text-text-secondary/60"
+                        onChange={(event) => onChangeQuery(event.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="Search folders..."
+                        ref={inputRef}
+                        spellCheck={false}
+                        style={{
+                            borderColor:
+                                "color-mix(in srgb, var(--color-border) 60%, transparent)",
+                        }}
+                        type="text"
+                        value={query}
+                    />
+                </div>
+
+                <div
+                    className="shell-scrollbar max-h-[min(48vh,380px)] overflow-y-auto py-1"
+                    ref={listRef}
+                >
+                    {destinations.length > 0 ? (
+                        destinations.map((destination, index) => {
+                            const isSelected = index === selectedIndex;
+
+                            return (
+                                <button
+                                    className={[
+                                        "flex w-full items-center gap-2.5 px-3.5 py-1.5 text-left transition",
+                                        destination.canMove
+                                            ? "text-text-primary"
+                                            : "text-text-secondary/45",
+                                    ].join(" ")}
+                                    data-move-destination-selected={isSelected}
+                                    disabled={!destination.canMove}
+                                    key={destination.path ?? ROOT_NODE_KEY}
+                                    onClick={() => onSelect(destination)}
+                                    onMouseEnter={() => onHoverIndex(index)}
+                                    style={{
+                                        background: isSelected
+                                            ? "color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-primary))"
+                                            : "transparent",
+                                        paddingLeft: 14 + destination.depth * 14,
+                                    }}
+                                    title={
+                                        destination.invalidReason ??
+                                        destination.pathLabel
+                                    }
+                                    type="button"
+                                >
+                                    <FolderTypeIcon
+                                        folderName={destination.name}
+                                        opacity={
+                                            destination.canMove ? 0.9 : 0.45
+                                        }
+                                        open={isSelected}
+                                        size={15}
+                                    />
+                                    <span className="min-w-0 flex-1 truncate text-[13px]">
+                                        {destination.name}
+                                    </span>
+                                    <span className="min-w-0 truncate font-mono text-[11px] text-text-secondary/70">
+                                        {destination.invalidReason ??
+                                            destination.pathLabel}
+                                    </span>
+                                </button>
+                            );
+                        })
+                    ) : (
+                        <div className="px-3.5 py-6 text-center text-[12px] text-text-secondary">
+                            No matching folders
+                        </div>
+                    )}
+                </div>
+
+                <div
+                    className="flex items-center justify-between border-t px-3.5 py-1.5 text-[11px] text-text-secondary/70"
+                    style={{
+                        borderColor:
+                            "color-mix(in srgb, var(--color-border) 50%, transparent)",
+                    }}
+                >
+                    <span>
+                        {selectedDestination?.invalidReason ??
+                            "Select a destination"}
+                    </span>
+                    <span>↑↓ Navigate · Enter Move · Esc Close</span>
+                </div>
+            </div>
+        </div>,
+        document.body,
     );
 }
 
@@ -3787,6 +4791,12 @@ function joinProjectPath(rootPath: string, relativePath: string): string {
     return `${rootPath.replace(/[\\/]+$/, "")}${separator}${relativePath
         .split("/")
         .join(separator)}`;
+}
+
+function normalizeFileTreeClipboardWorktreeId(
+    worktreeId: string | null | undefined,
+): string {
+    return worktreeId ?? "__primary__";
 }
 
 function getComandoApi(): ComandoApi | null {

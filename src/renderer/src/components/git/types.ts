@@ -1,4 +1,8 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+    KeyboardEvent as ReactKeyboardEvent,
+    MouseEvent as ReactMouseEvent,
+    ReactNode,
+} from "react";
 
 export type GitPanelTabId = "changes" | "diffs";
 
@@ -44,6 +48,10 @@ export interface GitTreeDragData {
     readonly relativePath: string;
 }
 
+export type GitTreeDragPayload =
+    | GitTreeDragData
+    | readonly GitTreeDragData[];
+
 export interface GitTreeNode {
     readonly id: string;
     readonly name: string;
@@ -67,6 +75,10 @@ export interface GitChangeGroup {
     readonly nodes: readonly GitTreeNode[];
     readonly actions?: readonly GitAction[];
 }
+
+export type GitTreeNodeActivationEvent =
+    | ReactMouseEvent<HTMLDivElement>
+    | ReactKeyboardEvent<HTMLDivElement>;
 
 export type GitDiffLineKind = "add" | "context" | "remove";
 
@@ -146,10 +158,10 @@ export interface GitTreeViewProps {
         readonly x: number;
         readonly y: number;
     }) => void;
-    readonly onBackgroundDrop?: (dragData: GitTreeDragData) => void;
+    readonly onBackgroundDrop?: (dragData: GitTreeDragPayload) => void;
     readonly onNodeClick?: (
         node: GitTreeNode,
-        event: ReactMouseEvent<HTMLDivElement>,
+        event: GitTreeNodeActivationEvent,
     ) => void;
     readonly onNodeContextMenu?: (
         node: GitTreeNode,
@@ -159,13 +171,17 @@ export interface GitTreeViewProps {
         },
     ) => void;
     readonly onNodeDrop?: (
-        dragData: GitTreeDragData,
+        dragData: GitTreeDragPayload,
         node: GitTreeNode,
+    ) => void;
+    readonly onExternalFilesDrop?: (
+        sourcePaths: readonly string[],
+        node: GitTreeNode | null,
     ) => void;
     readonly onNodeDragStart?: (
         node: GitTreeNode,
         dataTransfer: DataTransfer | null,
-    ) => void;
+    ) => GitTreeDragPayload | void;
     readonly onEditingCancel?: () => void;
     readonly onEditingDraftNameChange?: (value: string) => void;
     readonly onEditingSubmit?: () => void;
@@ -175,6 +191,7 @@ export interface GitTreeViewProps {
     readonly scrollToActivePathSignal?: number;
     readonly showStatusIndicator?: boolean;
     readonly stickyFolderPaths?: ReadonlySet<string>;
+    readonly suppressKeyboardCursor?: boolean;
 }
 
 export interface GitChangesViewProps {
@@ -188,7 +205,7 @@ export interface GitChangesViewProps {
     readonly layout?: GitViewLayout;
     readonly onNodeClick?: (
         node: GitTreeNode,
-        event: ReactMouseEvent<HTMLDivElement>,
+        event: GitTreeNodeActivationEvent,
     ) => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly onToggleGroup?: (groupId: GitChangeGroupId) => void;

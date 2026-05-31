@@ -221,6 +221,158 @@ export async function createProjectEntry(options: {
     };
 }
 
+export async function copyProjectEntries(options: {
+    readonly destinationParentRelativePath: string | null;
+    readonly rootPath: string;
+    readonly sourceRelativePaths: readonly string[];
+}): Promise<ProjectEntryMutationResult[]> {
+    const destinationParentRelativePath = normalizeOptionalRelativePath(
+        options.destinationParentRelativePath,
+    );
+    const absoluteDestinationParentPath = resolveProjectPath(
+        options.rootPath,
+        destinationParentRelativePath,
+    );
+    const destinationParentStats = await fs.promises.stat(
+        absoluteDestinationParentPath,
+    );
+
+    if (!destinationParentStats.isDirectory()) {
+        throw new Error("Paste into a folder or the project root.");
+    }
+
+    const sourceEntries = await resolveCopySourceEntries(
+        options.rootPath,
+        options.sourceRelativePaths,
+    );
+    const compactedSourceEntries =
+        compactCopySourceEntriesByAncestor(sourceEntries);
+    const reservedNames = new Set(
+        (
+            await fs.promises.readdir(absoluteDestinationParentPath, {
+                withFileTypes: true,
+            })
+        ).map((entry) => entry.name.toLowerCase()),
+    );
+    const copiedEntries: ProjectEntryMutationResult[] = [];
+
+    for (const sourceEntry of compactedSourceEntries) {
+        if (
+            sourceEntry.kind === "directory" &&
+            destinationParentRelativePath &&
+            (destinationParentRelativePath === sourceEntry.relativePath ||
+                destinationParentRelativePath.startsWith(
+                    `${sourceEntry.relativePath}/`,
+                ))
+        ) {
+            throw new Error("A folder cannot be pasted inside itself.");
+        }
+
+        const destinationName = resolveCopyDestinationName(
+            sourceEntry.name,
+            sourceEntry.kind,
+            reservedNames,
+        );
+        const absoluteDestinationPath = path.join(
+            absoluteDestinationParentPath,
+            destinationName,
+        );
+
+        await fs.promises.cp(sourceEntry.absolutePath, absoluteDestinationPath, {
+            errorOnExist: true,
+            force: false,
+            preserveTimestamps: true,
+            recursive: sourceEntry.kind === "directory",
+        });
+
+        copiedEntries.push({
+            kind: sourceEntry.kind,
+            name: destinationName,
+            parentRelativePath: destinationParentRelativePath,
+            relativePath: normalizeRelativePath(
+                path.relative(options.rootPath, absoluteDestinationPath),
+            ),
+        });
+    }
+
+    return copiedEntries;
+}
+
+export async function copyExternalProjectEntries(options: {
+    readonly destinationParentRelativePath: string | null;
+    readonly rootPath: string;
+    readonly sourcePaths: readonly string[];
+}): Promise<ProjectEntryMutationResult[]> {
+    const destinationParentRelativePath = normalizeOptionalRelativePath(
+        options.destinationParentRelativePath,
+    );
+    const absoluteDestinationParentPath = resolveProjectPath(
+        options.rootPath,
+        destinationParentRelativePath,
+    );
+    const destinationParentStats = await fs.promises.stat(
+        absoluteDestinationParentPath,
+    );
+
+    if (!destinationParentStats.isDirectory()) {
+        throw new Error("Drop files into a folder or the project root.");
+    }
+
+    const sourceEntries = await resolveExternalCopySourceEntries(
+        options.sourcePaths,
+    );
+    const compactedSourceEntries =
+        compactCopySourceEntriesByAbsoluteAncestor(sourceEntries);
+    const reservedNames = new Set(
+        (
+            await fs.promises.readdir(absoluteDestinationParentPath, {
+                withFileTypes: true,
+            })
+        ).map((entry) => entry.name.toLowerCase()),
+    );
+    const copiedEntries: ProjectEntryMutationResult[] = [];
+
+    for (const sourceEntry of compactedSourceEntries) {
+        if (
+            sourceEntry.kind === "directory" &&
+            isSameOrChildPath(
+                absoluteDestinationParentPath,
+                sourceEntry.absolutePath,
+            )
+        ) {
+            throw new Error("A folder cannot be copied inside itself.");
+        }
+
+        const destinationName = resolveCopyDestinationName(
+            sourceEntry.name,
+            sourceEntry.kind,
+            reservedNames,
+        );
+        const absoluteDestinationPath = path.join(
+            absoluteDestinationParentPath,
+            destinationName,
+        );
+
+        await fs.promises.cp(sourceEntry.absolutePath, absoluteDestinationPath, {
+            errorOnExist: true,
+            force: false,
+            preserveTimestamps: true,
+            recursive: sourceEntry.kind === "directory",
+        });
+
+        copiedEntries.push({
+            kind: sourceEntry.kind,
+            name: destinationName,
+            parentRelativePath: destinationParentRelativePath,
+            relativePath: normalizeRelativePath(
+                path.relative(options.rootPath, absoluteDestinationPath),
+            ),
+        });
+    }
+
+    return copiedEntries;
+}
+
 export async function renameProjectEntry(options: {
     readonly nextName: string;
     readonly nextParentRelativePath?: string | null;
@@ -470,6 +622,161 @@ function normalizeOptionalRelativePath(
     }
 
     return normalizeRelativePath(relativePath);
+}
+
+interface CopySourceEntry {
+    readonly absolutePath: string;
+    readonly kind: ProjectEntryKind;
+    readonly name: string;
+    readonly relativePath: string;
+}
+
+async function resolveCopySourceEntries(
+    rootPath: string,
+    relativePaths: readonly string[],
+): Promise<CopySourceEntry[]> {
+    const entries: CopySourceEntry[] = [];
+    const seenRelativePaths = new Set<string>();
+
+    for (const relativePath of relativePaths) {
+        const normalizedRelativePath = normalizeRelativePath(relativePath);
+        if (
+            !normalizedRelativePath ||
+            seenRelativePaths.has(normalizedRelativePath)
+        ) {
+            continue;
+        }
+
+        const absolutePath = resolveProjectPath(
+            rootPath,
+            normalizedRelativePath,
+        );
+        const stats = await fs.promises.stat(absolutePath);
+
+        entries.push({
+            absolutePath,
+            kind: stats.isDirectory() ? "directory" : "file",
+            name: path.basename(absolutePath),
+            relativePath: normalizedRelativePath,
+        });
+        seenRelativePaths.add(normalizedRelativePath);
+    }
+
+    return entries;
+}
+
+async function resolveExternalCopySourceEntries(
+    sourcePaths: readonly string[],
+): Promise<CopySourceEntry[]> {
+    const entries: CopySourceEntry[] = [];
+    const seenPaths = new Set<string>();
+
+    for (const sourcePath of sourcePaths) {
+        const absolutePath = path.resolve(sourcePath);
+        const normalizedKey = normalizeComparableAbsolutePath(absolutePath);
+        if (!normalizedKey || seenPaths.has(normalizedKey)) {
+            continue;
+        }
+
+        const stats = await fs.promises.stat(absolutePath);
+        const name = validateEntryName(path.basename(absolutePath));
+
+        entries.push({
+            absolutePath,
+            kind: stats.isDirectory() ? "directory" : "file",
+            name,
+            relativePath: normalizedKey,
+        });
+        seenPaths.add(normalizedKey);
+    }
+
+    return entries;
+}
+
+function compactCopySourceEntriesByAncestor(
+    entries: readonly CopySourceEntry[],
+): CopySourceEntry[] {
+    return entries.filter(
+        (entry) =>
+            !entries.some(
+                (candidate) =>
+                    candidate.kind === "directory" &&
+                    candidate.relativePath !== entry.relativePath &&
+                    entry.relativePath.startsWith(
+                        `${candidate.relativePath}/`,
+                    ),
+            ),
+    );
+}
+
+function compactCopySourceEntriesByAbsoluteAncestor(
+    entries: readonly CopySourceEntry[],
+): CopySourceEntry[] {
+    return entries.filter(
+        (entry) =>
+            !entries.some(
+                (candidate) =>
+                    candidate.kind === "directory" &&
+                    candidate.absolutePath !== entry.absolutePath &&
+                    isChildPath(entry.absolutePath, candidate.absolutePath),
+            ),
+    );
+}
+
+function isSameOrChildPath(candidatePath: string, parentPath: string): boolean {
+    const candidate = normalizeComparableAbsolutePath(candidatePath);
+    const parent = normalizeComparableAbsolutePath(parentPath);
+    return candidate === parent || isChildPath(candidate, parent);
+}
+
+function isChildPath(candidatePath: string, parentPath: string): boolean {
+    const candidate = normalizeComparableAbsolutePath(candidatePath);
+    const parent = normalizeComparableAbsolutePath(parentPath);
+    return candidate.startsWith(`${parent}/`);
+}
+
+function normalizeComparableAbsolutePath(candidatePath: string): string {
+    const normalizedPath = path.resolve(candidatePath).replaceAll("\\", "/");
+    return process.platform === "win32"
+        ? normalizedPath.toLowerCase()
+        : normalizedPath;
+}
+
+function resolveCopyDestinationName(
+    sourceName: string,
+    kind: ProjectEntryKind,
+    reservedNames: Set<string>,
+): string {
+    const sourceKey = sourceName.toLowerCase();
+    if (!reservedNames.has(sourceKey)) {
+        reservedNames.add(sourceKey);
+        return sourceName;
+    }
+
+    const extension =
+        kind === "file" && path.extname(sourceName) !== sourceName
+            ? path.extname(sourceName)
+            : "";
+    const baseName = extension
+        ? sourceName.slice(0, -extension.length)
+        : sourceName;
+
+    for (
+        let copyIndex = 1;
+        copyIndex < Number.MAX_SAFE_INTEGER;
+        copyIndex += 1
+    ) {
+        const suffix = copyIndex === 1 ? " copy" : ` copy ${copyIndex}`;
+        const candidateName = `${baseName}${suffix}${extension}`;
+        const candidateKey = candidateName.toLowerCase();
+
+        if (!reservedNames.has(candidateKey)) {
+            reservedNames.add(candidateKey);
+            return candidateName;
+        }
+    }
+
+    throw new Error("Could not resolve a unique copy name.");
 }
 
 async function statIfExists(targetPath: string): Promise<fs.Stats | null> {

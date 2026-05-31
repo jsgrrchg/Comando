@@ -35,6 +35,10 @@ import {
     type CloneRepositoryResult,
     type ComandoApi,
     type CodexRuntimeSettingsInput,
+    type CopyExternalProjectEntriesInput,
+    type CopyExternalProjectEntriesResult,
+    type CopyProjectEntriesInput,
+    type CopyProjectEntriesResult,
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
@@ -43,6 +47,7 @@ import {
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
     type OpenProjectWindowInput,
+    type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
     type OpenSettingsWindowInput,
     type AiSessionSnapshot,
@@ -150,6 +155,7 @@ import {
     type SystemTheme,
     type TerminalDataEvent,
     type TerminalExitEvent,
+    type TrashProjectEntryInput,
     type TsconfigResolutionSnapshot,
     type WriteTerminalInput,
     type WorkspaceSnapshot,
@@ -664,10 +670,29 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveProjectFile, input),
     createProjectEntry: (input: CreateProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.createProjectEntry, input),
+    copyProjectEntries: async (input: CopyProjectEntriesInput) =>
+        assertIpcObject<CopyProjectEntriesResult>(
+            IPC_CHANNELS.copyProjectEntries,
+            await ipcRenderer.invoke(IPC_CHANNELS.copyProjectEntries, input),
+        ),
+    copyExternalProjectEntries: async (
+        input: CopyExternalProjectEntriesInput,
+    ) =>
+        assertIpcObject<CopyExternalProjectEntriesResult>(
+            IPC_CHANNELS.copyExternalProjectEntries,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.copyExternalProjectEntries,
+                input,
+            ),
+        ),
     renameProjectEntry: (input: RenameProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.renameProjectEntry, input),
     deleteProjectEntry: (input: DeleteProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.deleteProjectEntry, input),
+    trashProjectEntry: (input: TrashProjectEntryInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.trashProjectEntry, input),
+    openProjectEntryExternally: (input: OpenProjectEntryExternallyInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openProjectEntryExternally, input),
     revealProjectEntry: (input: RevealProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.revealProjectEntry, input),
     saveSettingsSnapshot: (snapshot: SettingsSnapshot) =>

@@ -22,6 +22,8 @@ import {
 import { debugBenignError } from "../observability/logging";
 import { shouldIgnoreEntry } from "./ignore";
 import {
+    copyExternalProjectEntries,
+    copyProjectEntries,
     createProjectEntry,
     deleteProjectEntry,
     listProjectTreeChildren,
@@ -109,6 +111,17 @@ export interface ProjectRuntimeCreateEntryInput extends ProjectRuntimeScopeInput
     readonly parentRelativePath: string | null;
 }
 
+export interface ProjectRuntimeCopyEntriesInput extends ProjectRuntimeScopeInput {
+    readonly destinationParentRelativePath: string | null;
+    readonly sourceRelativePaths: readonly string[];
+}
+
+export interface ProjectRuntimeCopyExternalEntriesInput
+    extends ProjectRuntimeScopeInput {
+    readonly destinationParentRelativePath: string | null;
+    readonly sourcePaths: readonly string[];
+}
+
 export interface ProjectRuntimeRenameEntryInput extends ProjectRuntimeScopeInput {
     readonly nextName: string;
     readonly nextParentRelativePath?: string | null;
@@ -117,6 +130,11 @@ export interface ProjectRuntimeRenameEntryInput extends ProjectRuntimeScopeInput
 
 export interface ProjectRuntimeDeleteEntryInput extends ProjectRuntimeScopeInput {
     readonly relativePath: string;
+}
+
+export interface ProjectRuntimeEntryMutationInput
+    extends ProjectRuntimeScopeInput {
+    readonly relativePaths: readonly string[];
 }
 
 export interface ProjectRuntimeSearchInput extends ProjectRuntimeScopeInput {
@@ -243,6 +261,40 @@ export class ProjectRuntime {
         return entry;
     }
 
+    async copyProjectEntries(
+        input: ProjectRuntimeCopyEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]> {
+        this.#ensureRootContext(input);
+        const entries = await copyProjectEntries({
+            destinationParentRelativePath: input.destinationParentRelativePath,
+            rootPath: input.rootPath,
+            sourceRelativePaths: input.sourceRelativePaths,
+        });
+
+        this.#handleRootMutation(
+            input,
+            entries.map((entry) => entry.relativePath),
+        );
+        return entries;
+    }
+
+    async copyExternalProjectEntries(
+        input: ProjectRuntimeCopyExternalEntriesInput,
+    ): Promise<readonly ProjectEntryMutationResult[]> {
+        this.#ensureRootContext(input);
+        const entries = await copyExternalProjectEntries({
+            destinationParentRelativePath: input.destinationParentRelativePath,
+            rootPath: input.rootPath,
+            sourcePaths: input.sourcePaths,
+        });
+
+        this.#handleRootMutation(
+            input,
+            entries.map((entry) => entry.relativePath),
+        );
+        return entries;
+    }
+
     async renameProjectEntry(
         input: ProjectRuntimeRenameEntryInput,
     ): Promise<ProjectEntryMutationResult> {
@@ -271,6 +323,11 @@ export class ProjectRuntime {
         });
 
         this.#handleRootMutation(input, [input.relativePath]);
+    }
+
+    recordProjectEntryMutation(input: ProjectRuntimeEntryMutationInput): void {
+        this.#ensureRootContext(input);
+        this.#handleRootMutation(input, input.relativePaths);
     }
 
     async searchProjectEntries(

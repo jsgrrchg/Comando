@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+    copyExternalProjectEntries,
+    copyProjectEntries,
     createProjectEntry,
     deleteProjectEntry,
     listProjectTreeChildren,
@@ -232,6 +234,188 @@ describe("project tree helpers", () => {
                 nextParentRelativePath: "src/components",
                 relativePath: "src",
                 rootPath,
+            }),
+        ).rejects.toThrow(/inside itself/i);
+    });
+
+    it("copies a file into a destination folder", async () => {
+        const rootPath = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "src"));
+        fs.mkdirSync(path.join(rootPath, "docs"));
+        fs.writeFileSync(path.join(rootPath, "src/notes.md"), "hello\n");
+
+        const copiedEntries = await copyProjectEntries({
+            destinationParentRelativePath: "docs",
+            rootPath,
+            sourceRelativePaths: ["src/notes.md"],
+        });
+
+        expect(copiedEntries).toEqual([
+            {
+                kind: "file",
+                name: "notes.md",
+                parentRelativePath: "docs",
+                relativePath: "docs/notes.md",
+            },
+        ]);
+        expect(fs.readFileSync(path.join(rootPath, "docs/notes.md"), "utf8")).toBe(
+            "hello\n",
+        );
+    });
+
+    it("copies a folder recursively", async () => {
+        const rootPath = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "src/components"), {
+            recursive: true,
+        });
+        fs.mkdirSync(path.join(rootPath, "backup"));
+        fs.writeFileSync(
+            path.join(rootPath, "src/components/Button.tsx"),
+            "export const Button = () => null;\n",
+        );
+
+        const copiedEntries = await copyProjectEntries({
+            destinationParentRelativePath: "backup",
+            rootPath,
+            sourceRelativePaths: ["src"],
+        });
+
+        expect(copiedEntries[0]).toMatchObject({
+            kind: "directory",
+            name: "src",
+            parentRelativePath: "backup",
+            relativePath: "backup/src",
+        });
+        expect(
+            fs.readFileSync(
+                path.join(rootPath, "backup/src/components/Button.tsx"),
+                "utf8",
+            ),
+        ).toContain("Button");
+    });
+
+    it("resolves duplicate copied names like Finder", async () => {
+        const rootPath = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "docs"));
+        fs.writeFileSync(path.join(rootPath, "notes.md"), "one\n");
+        fs.writeFileSync(path.join(rootPath, "notes copy.md"), "two\n");
+
+        const firstCopy = await copyProjectEntries({
+            destinationParentRelativePath: null,
+            rootPath,
+            sourceRelativePaths: ["notes.md"],
+        });
+        const secondCopy = await copyProjectEntries({
+            destinationParentRelativePath: null,
+            rootPath,
+            sourceRelativePaths: ["docs"],
+        });
+
+        expect(firstCopy[0]?.relativePath).toBe("notes copy 2.md");
+        expect(secondCopy[0]?.relativePath).toBe("docs copy");
+        expect(fs.existsSync(path.join(rootPath, "notes copy 2.md"))).toBe(
+            true,
+        );
+        expect(fs.existsSync(path.join(rootPath, "docs copy"))).toBe(true);
+    });
+
+    it("rejects copying a folder into itself or a descendant", async () => {
+        const rootPath = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "src/components"), {
+            recursive: true,
+        });
+
+        await expect(
+            copyProjectEntries({
+                destinationParentRelativePath: "src",
+                rootPath,
+                sourceRelativePaths: ["src"],
+            }),
+        ).rejects.toThrow(/inside itself/i);
+
+        await expect(
+            copyProjectEntries({
+                destinationParentRelativePath: "src/components",
+                rootPath,
+                sourceRelativePaths: ["src"],
+            }),
+        ).rejects.toThrow(/inside itself/i);
+    });
+
+    it("copies external files and folders into a destination folder", async () => {
+        const rootPath = createProjectFixture();
+        const externalRoot = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "imports"));
+        fs.mkdirSync(path.join(externalRoot, "assets"), { recursive: true });
+        fs.writeFileSync(path.join(externalRoot, "notes.md"), "external\n");
+        fs.writeFileSync(
+            path.join(externalRoot, "assets", "logo.svg"),
+            "<svg />\n",
+        );
+
+        const copiedEntries = await copyExternalProjectEntries({
+            destinationParentRelativePath: "imports",
+            rootPath,
+            sourcePaths: [
+                path.join(externalRoot, "notes.md"),
+                path.join(externalRoot, "assets"),
+            ],
+        });
+
+        expect(copiedEntries).toEqual([
+            {
+                kind: "file",
+                name: "notes.md",
+                parentRelativePath: "imports",
+                relativePath: "imports/notes.md",
+            },
+            {
+                kind: "directory",
+                name: "assets",
+                parentRelativePath: "imports",
+                relativePath: "imports/assets",
+            },
+        ]);
+        expect(
+            fs.readFileSync(path.join(rootPath, "imports", "notes.md"), "utf8"),
+        ).toBe("external\n");
+        expect(
+            fs.readFileSync(
+                path.join(rootPath, "imports", "assets", "logo.svg"),
+                "utf8",
+            ),
+        ).toBe("<svg />\n");
+    });
+
+    it("resolves duplicate names when copying external entries", async () => {
+        const rootPath = createProjectFixture();
+        const externalRoot = createProjectFixture();
+        fs.writeFileSync(path.join(rootPath, "notes.md"), "one\n");
+        fs.writeFileSync(path.join(externalRoot, "notes.md"), "two\n");
+
+        const copiedEntries = await copyExternalProjectEntries({
+            destinationParentRelativePath: null,
+            rootPath,
+            sourcePaths: [path.join(externalRoot, "notes.md")],
+        });
+
+        expect(copiedEntries[0]?.relativePath).toBe("notes copy.md");
+        expect(
+            fs.readFileSync(path.join(rootPath, "notes copy.md"), "utf8"),
+        ).toBe("two\n");
+    });
+
+    it("rejects copying an external folder into itself", async () => {
+        const rootPath = createProjectFixture();
+        fs.mkdirSync(path.join(rootPath, "src", "components"), {
+            recursive: true,
+        });
+
+        await expect(
+            copyExternalProjectEntries({
+                destinationParentRelativePath: "src/components",
+                rootPath,
+                sourcePaths: [path.join(rootPath, "src")],
             }),
         ).rejects.toThrow(/inside itself/i);
     });

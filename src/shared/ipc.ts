@@ -107,8 +107,12 @@ export const IPC_CHANNELS = {
     openProjectFile: "projects:open-file",
     saveProjectFile: "projects:save-file",
     createProjectEntry: "projects:create-entry",
+    copyProjectEntries: "projects:copy-entries",
+    copyExternalProjectEntries: "projects:copy-external-entries",
     renameProjectEntry: "projects:rename-entry",
     deleteProjectEntry: "projects:delete-entry",
+    trashProjectEntry: "projects:trash-entry",
+    openProjectEntryExternally: "projects:open-entry-externally",
     revealProjectEntry: "projects:reveal-entry",
     listProjectEntries: "projects:list-entries",
     searchProjectEntries: "projects:search-entries",
@@ -1717,6 +1721,28 @@ export interface CreateProjectEntryInput {
     readonly worktreeId?: string | null;
 }
 
+export interface CopyProjectEntriesInput {
+    readonly destinationParentRelativePath: string | null;
+    readonly projectId: string;
+    readonly sourceRelativePaths: readonly string[];
+    readonly worktreeId?: string | null;
+}
+
+export interface CopyProjectEntriesResult {
+    readonly entries: readonly ProjectEntryMutationResult[];
+}
+
+export interface CopyExternalProjectEntriesInput {
+    readonly destinationParentRelativePath: string | null;
+    readonly projectId: string;
+    readonly sourcePaths: readonly string[];
+    readonly worktreeId?: string | null;
+}
+
+export interface CopyExternalProjectEntriesResult {
+    readonly entries: readonly ProjectEntryMutationResult[];
+}
+
 export interface RenameProjectEntryInput {
     readonly projectId: string;
     readonly nextName: string;
@@ -1726,6 +1752,18 @@ export interface RenameProjectEntryInput {
 }
 
 export interface DeleteProjectEntryInput {
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface TrashProjectEntryInput {
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface OpenProjectEntryExternallyInput {
     readonly projectId: string;
     readonly relativePath: string;
     readonly worktreeId?: string | null;
@@ -2696,10 +2734,20 @@ export interface ComandoApi {
     createProjectEntry: (
         input: CreateProjectEntryInput,
     ) => Promise<ProjectEntryMutationResult>;
+    copyProjectEntries: (
+        input: CopyProjectEntriesInput,
+    ) => Promise<CopyProjectEntriesResult>;
+    copyExternalProjectEntries: (
+        input: CopyExternalProjectEntriesInput,
+    ) => Promise<CopyExternalProjectEntriesResult>;
     renameProjectEntry: (
         input: RenameProjectEntryInput,
     ) => Promise<ProjectEntryMutationResult>;
     deleteProjectEntry: (input: DeleteProjectEntryInput) => Promise<void>;
+    trashProjectEntry: (input: TrashProjectEntryInput) => Promise<void>;
+    openProjectEntryExternally: (
+        input: OpenProjectEntryExternallyInput,
+    ) => Promise<void>;
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
     getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
     saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) => Promise<void>;
