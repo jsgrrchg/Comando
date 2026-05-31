@@ -53,6 +53,16 @@ import {
     readSessionReviewPreferencesForTab,
     type SessionReviewPreferences,
 } from "@renderer/app/ai/sessionReviewPreferences";
+import {
+    applyAiSessionDomainEventToTranscript,
+    buildAiSessionTranscriptModelFromSnapshot,
+    createEmptyAiSessionTranscriptModel,
+    getSnapshotTranscriptMergeOptions,
+    mergeAiSessionTranscriptSources,
+    shouldPreserveCurrentAiSessionTranscript,
+    writeAiSessionTranscriptToSnapshot,
+    type AiSessionTranscriptModel,
+} from "@renderer/app/ai/transcriptModel";
 import { collectExternalComposerRoots } from "@renderer/components/workspace/chat/composerParts";
 import type {
     RuntimeWorkspaceChatTab,
@@ -71,6 +81,11 @@ interface RegisteredSessionMeta {
 
 interface ResolveIncomingSnapshotOptions {
     readonly changedKeys?: ReadonlySet<keyof AiSessionPatch["changes"]> | null;
+}
+
+interface ResolvedIncomingSessionSnapshot {
+    readonly snapshot: AiSessionSnapshot;
+    readonly transcript: AiSessionTranscriptModel;
 }
 
 interface QueuedPromptEditState {
@@ -104,6 +119,7 @@ interface AiSessionClientState {
     // the queue resumes draining when its turn completes.
     readonly queuePaused: boolean;
     readonly snapshot: AiSessionSnapshot | null;
+    readonly transcript: AiSessionTranscriptModel;
 }
 
 type AiRuntimeCatalog = Pick<
@@ -524,9 +540,13 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const baseSnapshot =
                 session.snapshot ??
                 createSessionSnapshotFromEvent(event, existingCatalog);
-            const nextSnapshot = applySessionDomainEventToSnapshot(
-                baseSnapshot,
+            const nextTranscript = applyAiSessionDomainEventToTranscript(
+                getSessionTranscript(session, baseSnapshot),
                 event,
+            );
+            const nextSnapshot = writeAiSessionTranscriptToSnapshot(
+                applySessionDomainEventToSnapshot(baseSnapshot, event),
+                nextTranscript,
             );
             const nextMeta = session.meta
                 ? session.meta.title === nextSnapshot.title
@@ -548,6 +568,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
+                        transcript: nextTranscript,
                     },
                 },
             };
@@ -618,13 +639,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         orphanBaseSnapshot,
                         update.patch,
                     );
-                    const nextSnapshot = resolveIncomingSessionSnapshot(
+                    const resolved = resolveIncomingSessionSnapshot(
                         incomingSnapshot,
                         session,
                         {
                             changedKeys: patchChangedKeys,
                         },
                     );
+                    const nextSnapshot = resolved.snapshot;
+                    const nextTranscript = resolved.transcript;
                     const nextMeta = createSessionMetaFromSnapshot(nextSnapshot);
                     syncedTitle = nextSnapshot.title;
 
@@ -646,6 +669,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 localError: nextSnapshot.lastError,
                                 meta: nextMeta,
                                 snapshot: nextSnapshot,
+                                transcript: nextTranscript,
                             },
                         },
                     };
@@ -686,13 +710,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 snapshotForPatch,
                 update.patch,
             );
-            const nextSnapshot = resolveIncomingSessionSnapshot(
+            const resolved = resolveIncomingSessionSnapshot(
                 incomingSnapshot,
                 session,
                 {
                     changedKeys: patchChangedKeys,
                 },
             );
+            const nextSnapshot = resolved.snapshot;
+            const nextTranscript = resolved.transcript;
             emitAiRendererDiagnostic("Resolved AI session patch.", {
                 messages: nextSnapshot.messages.length,
                 parentSessionId: nextSnapshot.parentSessionId ?? null,
@@ -733,6 +759,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
+                        transcript: nextTranscript,
                     },
                 },
             };
@@ -771,10 +798,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
                           existingCatalog,
                       )
                     : snapshot;
-            const resolvedSnapshot = resolveIncomingSessionSnapshot(
+            const resolved = resolveIncomingSessionSnapshot(
                 nextSnapshot,
                 session,
             );
+            const resolvedSnapshot = resolved.snapshot;
+            const resolvedTranscript = resolved.transcript;
             emitAiRendererDiagnostic("Resolved AI session snapshot.", {
                 messages: resolvedSnapshot.messages.length,
                 parentSessionId: resolvedSnapshot.parentSessionId ?? null,
@@ -812,6 +841,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: resolvedSnapshot,
+                        transcript: resolvedTranscript,
                     },
                 },
             };
@@ -987,10 +1017,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
                       )
                     : resolvedSnapshot;
                 const currentSession = state.sessions[tab.sessionId];
-                const nextSnapshot = resolveIncomingSessionSnapshot(
+                const resolved = resolveIncomingSessionSnapshot(
                     incomingSnapshot,
                     currentSession,
                 );
+                const nextSnapshot = resolved.snapshot;
+                const nextTranscript = resolved.transcript;
                 emitAiRendererDiagnostic("Hydrated AI session.", {
                     messages: nextSnapshot.messages.length,
                     parentSessionId: nextSnapshot.parentSessionId ?? null,
@@ -1022,6 +1054,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             isHydrating: false,
                             meta: buildSessionMeta(tab),
                             snapshot: nextSnapshot,
+                            transcript: nextTranscript,
                         },
                     },
                 };
@@ -1062,6 +1095,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             tab,
                             state.runtimeCatalogById[tab.runtimeId] ?? null,
                         ),
+                        transcript: createEmptyAiSessionTranscriptModel(),
                     },
                 },
             }));
@@ -1862,7 +1896,17 @@ function createSessionState(
         queue: [],
         queuePaused: false,
         snapshot: null,
+        transcript: createEmptyAiSessionTranscriptModel(),
     };
+}
+
+function getSessionTranscript(
+    session: AiSessionClientState,
+    snapshot: AiSessionSnapshot,
+): AiSessionTranscriptModel {
+    return session.transcript.messageOrder.length > 0
+        ? session.transcript
+        : buildAiSessionTranscriptModelFromSnapshot(snapshot);
 }
 
 function persistSessionReviewPreferencesForSession(
@@ -2405,43 +2449,96 @@ function resolveIncomingSessionSnapshot(
     incomingSnapshot: AiSessionSnapshot,
     currentSession: AiSessionClientState | null | undefined,
     options: ResolveIncomingSnapshotOptions = {},
-): AiSessionSnapshot {
-    const currentSnapshot = currentSession?.snapshot ?? null;
+): ResolvedIncomingSessionSnapshot {
+    const incomingTranscript =
+        buildAiSessionTranscriptModelFromSnapshot(incomingSnapshot);
+    const session = currentSession ?? null;
+    const currentSnapshot = session?.snapshot ?? null;
     if (
+        !session ||
         !currentSnapshot ||
         currentSnapshot.sessionId !== incomingSnapshot.sessionId
     ) {
-        return incomingSnapshot;
+        return {
+            snapshot: writeAiSessionTranscriptToSnapshot(
+                incomingSnapshot,
+                incomingTranscript,
+            ),
+            transcript: incomingTranscript,
+        };
     }
+
+    const currentTranscript = getSessionTranscript(
+        session,
+        currentSnapshot,
+    );
+    const changedKeys = options.changedKeys ?? null;
+    const incomingIsFreshEnough = isIncomingSnapshotFreshEnough(
+        currentSnapshot,
+        incomingSnapshot,
+    );
 
     if (!AI_SESSION_CONSUME_SNAPSHOT_TRANSCRIPT) {
-        return mergeCurrentTranscriptIntoIncoming(
-            currentSnapshot,
-            incomingSnapshot,
-            options.changedKeys ?? null,
-        );
+        return {
+            snapshot: writeAiSessionTranscriptToSnapshot(
+                incomingSnapshot,
+                currentTranscript,
+            ),
+            transcript: currentTranscript,
+        };
     }
 
-    const shouldPreserveCurrent = hasMoreTranscript(
-        currentSnapshot,
-        incomingSnapshot,
+    if (
+        !incomingIsFreshEnough &&
+        session.hydrated &&
+        (currentTranscript.messageOrder.length > 0 ||
+            incomingTranscript.messageOrder.length > 0)
+    ) {
+        return {
+            snapshot: writeAiSessionTranscriptToSnapshot(
+                mergeHydrationMetadataIntoCurrent(currentSnapshot, incomingSnapshot),
+                currentTranscript,
+            ),
+            transcript: currentTranscript,
+        };
+    }
+
+    const shouldPreserveCurrent = shouldPreserveCurrentAiSessionTranscript(
+        currentTranscript,
+        incomingTranscript,
     );
     if (!shouldPreserveCurrent) {
-        return incomingSnapshot;
+        return {
+            snapshot: writeAiSessionTranscriptToSnapshot(
+                incomingSnapshot,
+                incomingTranscript,
+            ),
+            transcript: incomingTranscript,
+        };
     }
 
-    if (isIncomingSnapshotFreshEnough(currentSnapshot, incomingSnapshot)) {
-        return mergeCurrentTranscriptIntoIncoming(
-            currentSnapshot,
-            incomingSnapshot,
-            options.changedKeys ?? null,
+    if (incomingIsFreshEnough) {
+        const nextTranscript = mergeAiSessionTranscriptSources(
+            currentTranscript,
+            incomingTranscript,
+            getSnapshotTranscriptMergeOptions(changedKeys),
         );
+        return {
+            snapshot: writeAiSessionTranscriptToSnapshot(
+                incomingSnapshot,
+                nextTranscript,
+            ),
+            transcript: nextTranscript,
+        };
     }
 
-    return mergeHydrationMetadataIntoCurrent(
-        currentSnapshot,
-        incomingSnapshot,
-    );
+    return {
+        snapshot: writeAiSessionTranscriptToSnapshot(
+            mergeHydrationMetadataIntoCurrent(currentSnapshot, incomingSnapshot),
+            currentTranscript,
+        ),
+        transcript: currentTranscript,
+    };
 }
 
 function mergeHydrationMetadataIntoCurrent(
@@ -2466,23 +2563,6 @@ function mergeHydrationMetadataIntoCurrent(
     };
 }
 
-function mergeCurrentTranscriptIntoIncoming(
-    currentSnapshot: AiSessionSnapshot,
-    incomingSnapshot: AiSessionSnapshot,
-    changedKeys: ReadonlySet<keyof AiSessionPatch["changes"]> | null,
-): AiSessionSnapshot {
-    const shouldPreserveToolActivity =
-        changedKeys !== null && !changedKeys.has("toolActivity");
-
-    return {
-        ...incomingSnapshot,
-        messages: currentSnapshot.messages,
-        toolActivity: shouldPreserveToolActivity
-            ? currentSnapshot.toolActivity
-            : incomingSnapshot.toolActivity,
-    };
-}
-
 function isIncomingSnapshotFreshEnough(
     currentSnapshot: AiSessionSnapshot,
     incomingSnapshot: AiSessionSnapshot,
@@ -2494,58 +2574,6 @@ function isIncomingSnapshotFreshEnough(
     }
 
     return incomingMs >= currentMs;
-}
-
-function hasMoreTranscript(
-    currentSnapshot: Pick<AiSessionSnapshot, "messages">,
-    incomingSnapshot: Pick<AiSessionSnapshot, "messages">,
-): boolean {
-    if (
-        currentSnapshot.messages.length < incomingSnapshot.messages.length ||
-        !hasCompatibleTranscriptPrefix(incomingSnapshot, currentSnapshot)
-    ) {
-        return false;
-    }
-
-    if (currentSnapshot.messages.length > incomingSnapshot.messages.length) {
-        return true;
-    }
-
-    return (
-        getTranscriptWeight(currentSnapshot) >
-        getTranscriptWeight(incomingSnapshot)
-    );
-}
-
-function hasCompatibleTranscriptPrefix(
-    prefixSnapshot: Pick<AiSessionSnapshot, "messages">,
-    candidateSnapshot: Pick<AiSessionSnapshot, "messages">,
-): boolean {
-    return prefixSnapshot.messages.every((message, index) => {
-        const candidate = candidateSnapshot.messages[index];
-        if (!candidate || candidate.kind !== message.kind) {
-            return false;
-        }
-
-        if (message.id && candidate.id && message.id !== candidate.id) {
-            return false;
-        }
-
-        return (
-            candidate.content.startsWith(message.content) &&
-            candidate.attachments.length >= message.attachments.length
-        );
-    });
-}
-
-function getTranscriptWeight(
-    snapshot: Pick<AiSessionSnapshot, "messages">,
-): number {
-    return snapshot.messages.reduce(
-        (total, message) =>
-            total + message.content.length + message.attachments.length,
-        0,
-    );
 }
 
 function applyCatalogPatchToCatalog(

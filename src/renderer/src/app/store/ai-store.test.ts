@@ -305,12 +305,20 @@ describe("ai-store queue", () => {
         const messages =
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages ??
             [];
+        const transcript =
+            useAiStore.getState().sessions[TAB.sessionId]?.transcript;
         expect(messages).toHaveLength(1);
         expect(messages[0]).toEqual(
             expect.objectContaining({
                 content: "Hello",
                 id: "msg-1",
                 status: "completed",
+            }),
+        );
+        expect(transcript?.messageOrder).toEqual(["message:msg-1"]);
+        expect(transcript?.messagesById["message:msg-1"]).toEqual(
+            expect.objectContaining({
+                kind: "message",
             }),
         );
     });
@@ -330,8 +338,10 @@ describe("ai-store queue", () => {
         useAiStore.getState().applySessionEvent(
             createSessionEvent({
                 activity: createToolActivity({
+                    createdAt: "2026-04-14T00:00:05.000Z",
                     status: "completed",
                     summary: "Done",
+                    updatedAt: "2026-04-14T00:00:05.000Z",
                 }),
                 kind: "tool-activity",
             }),
@@ -343,11 +353,44 @@ describe("ai-store queue", () => {
         expect(toolActivity).toHaveLength(1);
         expect(toolActivity[0]).toEqual(
             expect.objectContaining({
+                createdAt: "2026-04-14T00:00:00.000Z",
                 id: "tool-1",
                 status: "completed",
                 summary: "Done",
             }),
         );
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.transcript
+                .messageOrder,
+        ).toEqual(["tool:tool-1"]);
+    });
+
+    it("does not let a stale snapshot revive old tool activity", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "streaming",
+                toolActivity: [],
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                toolActivity: [
+                    createToolActivity({
+                        id: "tool-stale",
+                    }),
+                ],
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.snapshot?.toolActivity).toEqual([]);
+        expect(session?.transcript.messageOrder).toEqual([]);
+        expect(session?.snapshot?.status).toBe("streaming");
     });
 
     it("does not let stale session hydration overwrite a newer snapshot", async () => {
@@ -522,6 +565,11 @@ describe("ai-store queue", () => {
                     },
                 ],
                 status: "streaming",
+                toolActivity: [
+                    createToolActivity({
+                        id: "tool-cleanup",
+                    }),
+                ],
                 trackedFiles: [
                     {
                         hunks: [],
@@ -550,6 +598,7 @@ describe("ai-store queue", () => {
                     messages: [],
                     pendingPermission: null,
                     status: "idle",
+                    toolActivity: [],
                     trackedFiles: [],
                     updatedAt: "2026-04-14T00:00:03.000Z",
                 },
@@ -569,6 +618,7 @@ describe("ai-store queue", () => {
                     }),
                 ],
                 status: "idle",
+                toolActivity: [],
                 trackedFiles: [],
                 updatedAt: "2026-04-14T00:00:03.000Z",
             }),
