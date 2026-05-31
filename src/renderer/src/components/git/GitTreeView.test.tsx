@@ -155,10 +155,15 @@ describe("GitTreeView", () => {
 
     it("can suppress the keyboard cursor while focus is outside the tree", () => {
         const markup = renderToStaticMarkup(
-            <GitTreeView nodes={[createFileNode()]} suppressKeyboardCursor />,
+            <GitTreeView
+                activePath="notes.md"
+                nodes={[createFileNode()]}
+                suppressKeyboardCursor
+            />,
         );
 
         expect(markup).toContain('role="tree"');
+        expect(markup).toContain('data-active="true"');
         expect(markup).not.toContain('aria-activedescendant=');
         expect(markup).not.toContain('data-keyboard-cursor="true"');
     });

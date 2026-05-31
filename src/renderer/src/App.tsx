@@ -3775,11 +3775,7 @@ export function App() {
                                     />
                                 ) : null}
                                 <GitTreeView
-                                    activePath={
-                                        isFileTreeSelectionSuppressed
-                                            ? null
-                                            : activeFilePath
-                                    }
+                                    activePath={activeFilePath}
                                     editingDraftName={
                                         fileTreeInlineEditor?.draftName ?? null
                                     }
