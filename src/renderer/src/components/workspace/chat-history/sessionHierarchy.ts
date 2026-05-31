@@ -30,9 +30,14 @@ export function buildAiSessionHierarchyGroups(
     }
 
     const query = normalizeHierarchyQuery(options.filterQuery);
-    const sessionById = new Map(
-        sessions.map((session) => [session.sessionId, session] as const),
-    );
+    const sessionByRef = new Map<string, AiHistorySessionSummary>();
+    for (const session of sessions) {
+        for (const key of getSessionLookupKeys(session)) {
+            if (!sessionByRef.has(key)) {
+                sessionByRef.set(key, session);
+            }
+        }
+    }
     const indexBySessionId = new Map(
         sessions.map((session, index) => [session.sessionId, index] as const),
     );
@@ -47,14 +52,15 @@ export function buildAiSessionHierarchyGroups(
         const parentSessionId = normalizeParentSessionId(
             session.parentSessionId,
         );
-        if (
-            parentSessionId &&
-            parentSessionId !== session.sessionId &&
-            sessionById.has(parentSessionId)
-        ) {
-            const children = childrenByParentId.get(parentSessionId) ?? [];
+        const parentSession =
+            parentSessionId && !getSessionLookupKeys(session).includes(parentSessionId)
+                ? (sessionByRef.get(parentSessionId) ?? null)
+                : null;
+        if (parentSession) {
+            const children =
+                childrenByParentId.get(parentSession.sessionId) ?? [];
             children.push(session);
-            childrenByParentId.set(parentSessionId, children);
+            childrenByParentId.set(parentSession.sessionId, children);
             continue;
         }
 
@@ -80,7 +86,7 @@ export function buildAiSessionHierarchyGroups(
             depth: 0,
             rows,
             session: rootSession,
-            sessionById,
+            sessionByRef,
         });
 
         if (
@@ -151,7 +157,7 @@ function appendHierarchyRows({
     depth,
     rows,
     session,
-    sessionById,
+    sessionByRef,
 }: {
     readonly appendedSessionIds: Set<string>;
     readonly childrenByParentId: Map<string, AiHistorySessionSummary[]>;
@@ -159,7 +165,7 @@ function appendHierarchyRows({
     readonly depth: number;
     readonly rows: AiSessionHierarchyRow[];
     readonly session: AiHistorySessionSummary;
-    readonly sessionById: Map<string, AiHistorySessionSummary>;
+    readonly sessionByRef: Map<string, AiHistorySessionSummary>;
 }) {
     if (appendedSessionIds.has(session.sessionId)) {
         return;
@@ -169,8 +175,8 @@ function appendHierarchyRows({
 
     const parentSessionId = normalizeParentSessionId(session.parentSessionId);
     const parentSession =
-        parentSessionId && parentSessionId !== session.sessionId
-            ? (sessionById.get(parentSessionId) ?? null)
+        parentSessionId && !getSessionLookupKeys(session).includes(parentSessionId)
+            ? (sessionByRef.get(parentSessionId) ?? null)
             : null;
     const children = childrenByParentId.get(session.sessionId) ?? [];
 
@@ -190,9 +196,16 @@ function appendHierarchyRows({
             depth: depth + 1,
             rows,
             session: child,
-            sessionById,
+            sessionByRef,
         });
     }
+}
+
+function getSessionLookupKeys(session: AiHistorySessionSummary): readonly string[] {
+    return [
+        normalizeParentSessionId(session.sessionId),
+        normalizeParentSessionId(session.runtimeSessionId),
+    ].filter((value): value is string => Boolean(value));
 }
 
 function normalizeHierarchyQuery(value: string | null | undefined): string {

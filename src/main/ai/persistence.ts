@@ -36,6 +36,7 @@ interface PersistedAiSessionRow {
     readonly parent_session_id: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
+    readonly runtime_session_id: string | null;
     readonly status: string;
     readonly title: string;
     readonly transcript_json: string | null;
@@ -51,6 +52,7 @@ interface PersistedAiHistorySessionRow {
     readonly preview: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
+    readonly runtime_session_id: string | null;
     readonly session_id: string;
     readonly title: string;
     readonly updated_at: string;
@@ -62,6 +64,7 @@ interface PersistedAiTranscriptRow {
     readonly parent_session_id: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
+    readonly runtime_session_id: string | null;
     readonly status: string;
     readonly title: string;
     readonly transcript_json: string | null;
@@ -80,6 +83,20 @@ interface PersistedRuntimeCatalogRow {
 
 interface PersistedRuntimePreferencesRow {
     readonly value: string;
+}
+
+interface PersistedSessionRuntimeLinkRow {
+    readonly app_session_id: string;
+    readonly parent_app_session_id: string | null;
+    readonly parent_runtime_session_id: string | null;
+    readonly runtime_session_id: string;
+}
+
+export interface PersistedAiSessionRuntimeMapping {
+    readonly appSessionId: string;
+    readonly parentAppSessionId: string | null;
+    readonly parentRuntimeSessionId: string | null;
+    readonly runtimeSessionId: string;
 }
 
 type PersistedSessionSnapshot = Omit<
@@ -150,6 +167,12 @@ export interface AiPersistenceGateway {
     loadRuntimeSelectionPreferences(
         runtimeId: AiSessionSnapshot["runtimeId"],
     ): PersistedRuntimeSelectionPreferences;
+    listSessionRuntimeMappingsForParent?(
+        parentSessionId: string,
+    ): Awaitable<readonly PersistedAiSessionRuntimeMapping[]>;
+    resolveAppSessionIdByRuntimeSessionId?(
+        runtimeSessionId: string,
+    ): Awaitable<string | null>;
     saveRuntimeSelectionPreferences(
         runtimeId: AiSessionSnapshot["runtimeId"],
         patch: Partial<PersistedRuntimeSelectionPreferences>,
@@ -191,6 +214,7 @@ export class AiPersistence {
                             chat_sessions.parent_session_id,
                             chat_sessions.title,
                             chat_sessions.runtime,
+                            runtime_links.runtime_session_id,
                             chat_sessions.status,
                             chat_sessions.draft,
                             chat_sessions.updated_at,
@@ -198,6 +222,8 @@ export class AiPersistence {
                         FROM chat_sessions
                         LEFT JOIN chat_transcripts
                             ON chat_transcripts.session_id = chat_sessions.id
+                        LEFT JOIN chat_session_runtime_links AS runtime_links
+                            ON runtime_links.app_session_id = chat_sessions.id
                         WHERE chat_sessions.id = ?
                         `,
                     )
@@ -213,6 +239,9 @@ export class AiPersistence {
                         row.parent_session_id,
                     ),
                     runtimeId: normalizeRuntimeId(row.runtime),
+                    runtimeSessionId: normalizeRuntimeSessionId(
+                        row.runtime_session_id,
+                    ),
                     sessionId,
                     status: normalizeSessionStatus(row.status),
                     title: row.title,
@@ -231,6 +260,22 @@ export class AiPersistence {
                     );
                 }
 
+                const rawParentSessionId = normalizeParentSessionId(
+                    typeof raw.parentSessionId === "string"
+                        ? raw.parentSessionId
+                        : null,
+                );
+                const parentSessionId = this.#resolvePersistedParentSessionId({
+                    persistedParentSessionId: row.parent_session_id,
+                    rawParentSessionId,
+                    sessionId,
+                });
+                const runtimeSessionId = normalizeRuntimeSessionId(
+                    row.runtime_session_id ??
+                        (typeof raw.runtimeSessionId === "string"
+                            ? raw.runtimeSessionId
+                            : null),
+                );
                 const snapshot = sanitizeLoadedSessionSnapshot({
                     activeTurnStartedAt:
                         typeof raw.activeTurnStartedAt === "string"
@@ -257,18 +302,13 @@ export class AiPersistence {
                         raw.pendingUserInput,
                     ),
                     plan: normalizePlan(raw.plan),
-                    parentSessionId: normalizeParentSessionId(
-                        row.parent_session_id,
-                    ),
+                    parentSessionId,
                     projectId: row.project_id,
                     runtimeId:
                         typeof raw.runtimeId === "string"
                             ? normalizeRuntimeId(raw.runtimeId)
                             : fallback.runtimeId,
-                    runtimeSessionId:
-                        typeof raw.runtimeSessionId === "string"
-                            ? raw.runtimeSessionId
-                            : null,
+                    runtimeSessionId,
                     sessionId:
                         typeof raw.sessionId === "string"
                             ? raw.sessionId
@@ -297,6 +337,12 @@ export class AiPersistence {
                     raw,
                     sessionId,
                     snapshot,
+                });
+                this.#healPersistedParentLinkIfNeeded({
+                    parentSessionId,
+                    rawParentSessionId,
+                    sessionId,
+                    storedParentSessionId: row.parent_session_id,
                 });
 
                 return mergeRuntimeCatalogIntoSnapshot(
@@ -346,6 +392,7 @@ export class AiPersistence {
                             chat_sessions.parent_session_id,
                             chat_sessions.title,
                             chat_sessions.runtime,
+                            runtime_links.runtime_session_id,
                             chat_sessions.status,
                             chat_sessions.updated_at,
                             chat_transcripts.transcript_json,
@@ -353,6 +400,8 @@ export class AiPersistence {
                         FROM chat_sessions
                         LEFT JOIN chat_transcripts
                             ON chat_transcripts.session_id = chat_sessions.id
+                        LEFT JOIN chat_session_runtime_links AS runtime_links
+                            ON runtime_links.app_session_id = chat_sessions.id
                         WHERE chat_sessions.id = ?
                         LIMIT 1
                         `,
@@ -376,6 +425,23 @@ export class AiPersistence {
                 );
 
                 if (raw) {
+                    const rawParentSessionId = normalizeParentSessionId(
+                        typeof raw.parentSessionId === "string"
+                            ? raw.parentSessionId
+                            : null,
+                    );
+                    const parentSessionId =
+                        this.#resolvePersistedParentSessionId({
+                            persistedParentSessionId: row.parent_session_id,
+                            rawParentSessionId,
+                            sessionId: input.sessionId,
+                        });
+                    const runtimeSessionId = normalizeRuntimeSessionId(
+                        row.runtime_session_id ??
+                            (typeof raw.runtimeSessionId === "string"
+                                ? raw.runtimeSessionId
+                                : null),
+                    );
                     const snapshot = sanitizeLoadedSessionSnapshot({
                         activeTurnStartedAt:
                             typeof raw.activeTurnStartedAt === "string"
@@ -409,18 +475,13 @@ export class AiPersistence {
                             raw.pendingUserInput,
                         ),
                         plan: normalizePlan(raw.plan),
-                        parentSessionId: normalizeParentSessionId(
-                            row.parent_session_id,
-                        ),
+                        parentSessionId,
                         projectId: row.project_id,
                         runtimeId:
                             typeof raw.runtimeId === "string"
                                 ? normalizeRuntimeId(raw.runtimeId)
                                 : normalizeRuntimeId(row.runtime),
-                        runtimeSessionId:
-                            typeof raw.runtimeSessionId === "string"
-                                ? raw.runtimeSessionId
-                                : null,
+                        runtimeSessionId,
                         sessionId:
                             typeof raw.sessionId === "string"
                                 ? raw.sessionId
@@ -449,6 +510,12 @@ export class AiPersistence {
                         raw,
                         sessionId: input.sessionId,
                         snapshot,
+                    });
+                    this.#healPersistedParentLinkIfNeeded({
+                        parentSessionId,
+                        rawParentSessionId,
+                        sessionId: input.sessionId,
+                        storedParentSessionId: row.parent_session_id,
                     });
                 }
 
@@ -609,17 +676,23 @@ export class AiPersistence {
             const parentSessionId = normalizeParentSessionId(
                 snapshot.parentSessionId,
             );
-            const persistedParentSessionId =
+            const runtimeSessionId = normalizeRuntimeSessionId(
+                snapshot.runtimeSessionId,
+            );
+            const isSelfParent =
                 parentSessionId === snapshot.sessionId ||
-                !this.#hasPersistedSession(parentSessionId)
-                    ? null
-                    : parentSessionId;
+                (runtimeSessionId !== null && parentSessionId === runtimeSessionId);
+            const persistedParentSessionId = isSelfParent
+                ? null
+                : this.#resolveAppSessionIdBySessionRef(parentSessionId);
+            const transcriptParentSessionId =
+                persistedParentSessionId ?? (isSelfParent ? null : parentSessionId);
             const snapshotToPersist =
-                (snapshot.parentSessionId ?? null) === persistedParentSessionId
+                (snapshot.parentSessionId ?? null) === transcriptParentSessionId
                     ? snapshot
                     : {
                           ...snapshot,
-                          parentSessionId: persistedParentSessionId,
+                          parentSessionId: transcriptParentSessionId,
                       };
 
             this.#connection
@@ -734,7 +807,67 @@ export class AiPersistence {
                     now,
                     now,
                 );
+
+            this.#upsertRuntimeSessionLink({
+                appSessionId: snapshot.sessionId,
+                now,
+                parentAppSessionId: persistedParentSessionId,
+                parentRuntimeSessionId: this.#resolveParentRuntimeSessionId({
+                    parentAppSessionId: persistedParentSessionId,
+                    parentSessionId,
+                }),
+                runtimeSessionId,
+            });
+            this.#backfillChildParentLinks({
+                appSessionId: snapshot.sessionId,
+                now,
+                runtimeSessionId,
+            });
         });
+    }
+
+    listSessionRuntimeMappingsForParent(
+        parentSessionId: string,
+    ): readonly PersistedAiSessionRuntimeMapping[] {
+        const normalizedParentSessionId =
+            normalizeParentSessionId(parentSessionId);
+        if (!normalizedParentSessionId) {
+            return [];
+        }
+
+        const parentRuntimeSessionId =
+            this.#findRuntimeSessionIdByAppSessionId(normalizedParentSessionId);
+        const rows = this.#connection
+            .prepare<
+                [string, string | null, string | null],
+                PersistedSessionRuntimeLinkRow
+            >(
+                `
+                SELECT
+                    runtime_session_id,
+                    app_session_id,
+                    parent_runtime_session_id,
+                    parent_app_session_id
+                FROM chat_session_runtime_links
+                WHERE parent_app_session_id = ?
+                   OR (
+                        ? IS NOT NULL
+                        AND parent_runtime_session_id = ?
+                   )
+                ORDER BY updated_at ASC
+                `,
+            )
+            .all(
+                normalizedParentSessionId,
+                parentRuntimeSessionId,
+                parentRuntimeSessionId,
+            );
+
+        return rows.map(createRuntimeMapping);
+    }
+
+    resolveAppSessionIdByRuntimeSessionId(runtimeSessionId: string): string | null {
+        return this.#resolveAppSessionIdByRuntimeSessionId(runtimeSessionId);
     }
 
     deleteSession(sessionId: string): void {
@@ -748,6 +881,254 @@ export class AiPersistence {
                 )
                 .run(sessionId);
         });
+    }
+
+    #resolvePersistedParentSessionId(input: {
+        readonly persistedParentSessionId: string | null;
+        readonly rawParentSessionId: string | null;
+        readonly sessionId: string;
+    }): string | null {
+        const storedParentSessionId = normalizeParentSessionId(
+            input.persistedParentSessionId,
+        );
+        if (
+            storedParentSessionId &&
+            storedParentSessionId !== input.sessionId &&
+            this.#hasPersistedSession(storedParentSessionId)
+        ) {
+            return storedParentSessionId;
+        }
+
+        const rawParentSessionId = normalizeParentSessionId(
+            input.rawParentSessionId,
+        );
+        if (!rawParentSessionId || rawParentSessionId === input.sessionId) {
+            return null;
+        }
+
+        return this.#resolveAppSessionIdBySessionRef(rawParentSessionId) ??
+            rawParentSessionId;
+    }
+
+    #healPersistedParentLinkIfNeeded(input: {
+        readonly parentSessionId: string | null;
+        readonly rawParentSessionId: string | null;
+        readonly sessionId: string;
+        readonly storedParentSessionId: string | null;
+    }): void {
+        const parentSessionId = normalizeParentSessionId(input.parentSessionId);
+        if (
+            !parentSessionId ||
+            parentSessionId === input.sessionId ||
+            parentSessionId === normalizeParentSessionId(input.storedParentSessionId) ||
+            !this.#hasPersistedSession(parentSessionId)
+        ) {
+            return;
+        }
+
+        this.#connection
+            .prepare<[string, string], void>(
+                `
+                UPDATE chat_sessions
+                SET parent_session_id = ?
+                WHERE id = ?
+                `,
+            )
+            .run(parentSessionId, input.sessionId);
+    }
+
+    #resolveAppSessionIdBySessionRef(sessionRef: string | null): string | null {
+        const normalizedRef = normalizeParentSessionId(sessionRef);
+        if (!normalizedRef) {
+            return null;
+        }
+
+        if (this.#hasPersistedSession(normalizedRef)) {
+            return normalizedRef;
+        }
+
+        return this.#resolveAppSessionIdByRuntimeSessionId(normalizedRef);
+    }
+
+    #resolveAppSessionIdByRuntimeSessionId(
+        runtimeSessionId: string | null,
+    ): string | null {
+        const normalizedRuntimeSessionId =
+            normalizeRuntimeSessionId(runtimeSessionId);
+        if (!normalizedRuntimeSessionId) {
+            return null;
+        }
+
+        const row = this.#connection
+            .prepare<[string], { readonly app_session_id: string } | undefined>(
+                `
+                SELECT app_session_id
+                FROM chat_session_runtime_links
+                WHERE runtime_session_id = ?
+                LIMIT 1
+                `,
+            )
+            .get(normalizedRuntimeSessionId);
+
+        return row?.app_session_id ?? null;
+    }
+
+    #findRuntimeSessionIdByAppSessionId(appSessionId: string | null): string | null {
+        const normalizedAppSessionId = normalizeParentSessionId(appSessionId);
+        if (!normalizedAppSessionId) {
+            return null;
+        }
+
+        const row = this.#connection
+            .prepare<
+                [string],
+                { readonly runtime_session_id: string } | undefined
+            >(
+                `
+                SELECT runtime_session_id
+                FROM chat_session_runtime_links
+                WHERE app_session_id = ?
+                LIMIT 1
+                `,
+            )
+            .get(normalizedAppSessionId);
+
+        return row?.runtime_session_id ?? null;
+    }
+
+    #resolveParentRuntimeSessionId(input: {
+        readonly parentAppSessionId: string | null;
+        readonly parentSessionId: string | null;
+    }): string | null {
+        const parentRuntimeSessionId = this.#findRuntimeSessionIdByAppSessionId(
+            input.parentAppSessionId,
+        );
+        if (parentRuntimeSessionId) {
+            return parentRuntimeSessionId;
+        }
+
+        const parentSessionId = normalizeParentSessionId(input.parentSessionId);
+        if (!parentSessionId || parentSessionId === input.parentAppSessionId) {
+            return null;
+        }
+
+        return parentSessionId;
+    }
+
+    #upsertRuntimeSessionLink(input: {
+        readonly appSessionId: string;
+        readonly now: string;
+        readonly parentAppSessionId: string | null;
+        readonly parentRuntimeSessionId: string | null;
+        readonly runtimeSessionId: string | null;
+    }): void {
+        if (!input.runtimeSessionId) {
+            return;
+        }
+
+        this.#connection
+            .prepare<[string, string], void>(
+                `
+                DELETE FROM chat_session_runtime_links
+                WHERE app_session_id = ?
+                  AND runtime_session_id <> ?
+                `,
+            )
+            .run(input.appSessionId, input.runtimeSessionId);
+
+        this.#connection
+            .prepare<
+                [string, string, string | null, string | null, string, string],
+                void
+            >(
+                `
+                INSERT INTO chat_session_runtime_links (
+                    runtime_session_id,
+                    app_session_id,
+                    parent_runtime_session_id,
+                    parent_app_session_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(runtime_session_id) DO UPDATE SET
+                    app_session_id = excluded.app_session_id,
+                    parent_runtime_session_id = COALESCE(
+                        excluded.parent_runtime_session_id,
+                        chat_session_runtime_links.parent_runtime_session_id
+                    ),
+                    parent_app_session_id = COALESCE(
+                        excluded.parent_app_session_id,
+                        chat_session_runtime_links.parent_app_session_id
+                    ),
+                    updated_at = excluded.updated_at
+                `,
+            )
+            .run(
+                input.runtimeSessionId,
+                input.appSessionId,
+                input.parentRuntimeSessionId,
+                input.parentAppSessionId,
+                input.now,
+                input.now,
+            );
+    }
+
+    #backfillChildParentLinks(input: {
+        readonly appSessionId: string;
+        readonly now: string;
+        readonly runtimeSessionId: string | null;
+    }): void {
+        const parentRefs = [
+            input.appSessionId,
+            input.runtimeSessionId,
+        ].filter((value): value is string => Boolean(value));
+        if (parentRefs.length === 0) {
+            return;
+        }
+
+        for (const parentRef of parentRefs) {
+            this.#connection
+                .prepare<[string, string, string, string], void>(
+                    `
+                    UPDATE chat_session_runtime_links
+                    SET
+                        parent_app_session_id = ?,
+                        updated_at = ?
+                    WHERE app_session_id <> ?
+                      AND parent_app_session_id IS NULL
+                      AND parent_runtime_session_id = ?
+                    `,
+                )
+                .run(input.appSessionId, input.now, input.appSessionId, parentRef);
+
+            this.#connection
+                .prepare<[string, string, string, string], void>(
+                    `
+                    UPDATE chat_sessions
+                    SET parent_session_id = ?
+                    WHERE id <> ?
+                      AND parent_session_id IS NULL
+                      AND (
+                        EXISTS (
+                          SELECT 1
+                          FROM chat_session_runtime_links
+                          WHERE chat_session_runtime_links.app_session_id = chat_sessions.id
+                            AND chat_session_runtime_links.parent_app_session_id = ?
+                        )
+                        OR EXISTS (
+                          SELECT 1
+                          FROM chat_transcripts
+                          WHERE chat_transcripts.session_id = chat_sessions.id
+                            AND json_valid(chat_transcripts.transcript_json)
+                            AND json_type(chat_transcripts.transcript_json, '$.parentSessionId') = 'text'
+                            AND NULLIF(TRIM(CAST(json_extract(chat_transcripts.transcript_json, '$.parentSessionId') AS TEXT)), '') = ?
+                        )
+                      )
+                    `,
+                )
+                .run(input.appSessionId, input.appSessionId, input.appSessionId, parentRef);
+        }
     }
 
     #hasPersistedSession(sessionId: string | null): boolean {
@@ -2218,6 +2599,15 @@ function normalizeParentSessionId(value: unknown): string | null {
     return parentSessionId.length > 0 ? parentSessionId : null;
 }
 
+function normalizeRuntimeSessionId(value: unknown): string | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const runtimeSessionId = value.trim();
+    return runtimeSessionId.length > 0 ? runtimeSessionId : null;
+}
+
 function normalizeHistoryLimit(value: number | null | undefined): number | null {
     if (value === null) {
         return null;
@@ -2261,22 +2651,61 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
         params,
         sql: `
             SELECT
-                chat_sessions.id AS session_id,
-                chat_sessions.project_id,
-                chat_sessions.worktree_id,
-                chat_sessions.parent_session_id,
-                chat_sessions.title,
-                chat_sessions.runtime,
-                chat_sessions.created_at,
-                chat_sessions.pinned_at,
-                chat_sessions.updated_at,
-                chat_transcripts.message_count,
-                chat_transcripts.preview
-            FROM chat_sessions
-            LEFT JOIN chat_transcripts
-                ON chat_transcripts.session_id = chat_sessions.id
-            WHERE ${whereClauses.join(" AND ")}
-            ORDER BY chat_sessions.updated_at DESC
+                history_rows.session_id,
+                history_rows.project_id,
+                history_rows.worktree_id,
+                COALESCE(
+                    history_rows.parent_session_id,
+                    raw_parent_session.id,
+                    raw_parent_runtime_link.app_session_id,
+                    history_rows.raw_parent_session_id
+                ) AS parent_session_id,
+                history_rows.title,
+                history_rows.runtime,
+                runtime_links.runtime_session_id,
+                history_rows.created_at,
+                history_rows.pinned_at,
+                history_rows.updated_at,
+                history_rows.message_count,
+                history_rows.preview
+            FROM (
+                SELECT
+                    chat_sessions.id AS session_id,
+                    chat_sessions.project_id,
+                    chat_sessions.worktree_id,
+                    chat_sessions.parent_session_id,
+                    NULLIF(TRIM(CAST(
+                        CASE
+                            WHEN json_valid(chat_transcripts.transcript_json) THEN
+                                CASE
+                                    WHEN json_type(chat_transcripts.transcript_json, '$.parentSessionId') = 'text'
+                                        THEN json_extract(chat_transcripts.transcript_json, '$.parentSessionId')
+                                    ELSE NULL
+                                END
+                            ELSE NULL
+                        END AS TEXT
+                    )), '') AS raw_parent_session_id,
+                    chat_sessions.title,
+                    chat_sessions.runtime,
+                    chat_sessions.created_at,
+                    chat_sessions.pinned_at,
+                    chat_sessions.updated_at,
+                    chat_transcripts.message_count,
+                    chat_transcripts.preview
+                FROM chat_sessions
+                LEFT JOIN chat_transcripts
+                    ON chat_transcripts.session_id = chat_sessions.id
+                WHERE ${whereClauses.join(" AND ")}
+            ) AS history_rows
+            LEFT JOIN chat_sessions AS raw_parent_session
+                ON raw_parent_session.id = history_rows.raw_parent_session_id
+               AND raw_parent_session.id <> history_rows.session_id
+            LEFT JOIN chat_session_runtime_links AS raw_parent_runtime_link
+                ON raw_parent_runtime_link.runtime_session_id = history_rows.raw_parent_session_id
+               AND raw_parent_runtime_link.app_session_id <> history_rows.session_id
+            LEFT JOIN chat_session_runtime_links AS runtime_links
+                ON runtime_links.app_session_id = history_rows.session_id
+            ORDER BY history_rows.updated_at DESC
             ${limit === null ? "" : "LIMIT ?"}
         `,
     };
@@ -2364,10 +2793,24 @@ function createHistorySessionSummary(
         preview: deserializePersistedPreview(row.preview),
         projectId: row.project_id,
         runtimeId: normalizeRuntimeId(row.runtime),
+        runtimeSessionId: normalizeRuntimeSessionId(row.runtime_session_id),
         sessionId: row.session_id,
         title: row.title,
         updatedAt: row.updated_at,
         worktreeId: row.worktree_id,
+    };
+}
+
+function createRuntimeMapping(
+    row: PersistedSessionRuntimeLinkRow,
+): PersistedAiSessionRuntimeMapping {
+    return {
+        appSessionId: row.app_session_id,
+        parentAppSessionId: normalizeParentSessionId(row.parent_app_session_id),
+        parentRuntimeSessionId: normalizeRuntimeSessionId(
+            row.parent_runtime_session_id,
+        ),
+        runtimeSessionId: row.runtime_session_id,
     };
 }
 

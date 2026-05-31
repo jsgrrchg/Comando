@@ -402,4 +402,114 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ON chat_sessions(parent_session_id);
     `,
     },
+    {
+        id: "0013-ai-session-runtime-links",
+        sql: `
+      CREATE TABLE IF NOT EXISTS chat_session_runtime_links (
+        runtime_session_id TEXT PRIMARY KEY,
+        app_session_id TEXT NOT NULL UNIQUE REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        parent_runtime_session_id TEXT,
+        parent_app_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      INSERT OR IGNORE INTO chat_session_runtime_links (
+        runtime_session_id,
+        app_session_id,
+        parent_runtime_session_id,
+        parent_app_session_id,
+        created_at,
+        updated_at
+      )
+      SELECT
+        NULLIF(TRIM(CAST(json_extract(chat_transcripts.transcript_json, '$.runtimeSessionId') AS TEXT)), ''),
+        chat_sessions.id,
+        NULL,
+        chat_sessions.parent_session_id,
+        chat_sessions.created_at,
+        chat_sessions.updated_at
+      FROM chat_sessions
+      INNER JOIN chat_transcripts
+        ON chat_transcripts.session_id = chat_sessions.id
+      WHERE json_valid(chat_transcripts.transcript_json)
+        AND json_type(chat_transcripts.transcript_json, '$.runtimeSessionId') = 'text'
+        AND NULLIF(TRIM(CAST(json_extract(chat_transcripts.transcript_json, '$.runtimeSessionId') AS TEXT)), '') IS NOT NULL;
+
+      WITH raw_parent_links AS (
+        SELECT
+          chat_sessions.id AS app_session_id,
+          NULLIF(TRIM(CAST(
+            CASE
+              WHEN json_valid(chat_transcripts.transcript_json) THEN
+                CASE
+                  WHEN json_type(chat_transcripts.transcript_json, '$.parentSessionId') = 'text'
+                    THEN json_extract(chat_transcripts.transcript_json, '$.parentSessionId')
+                  ELSE NULL
+                END
+              ELSE NULL
+            END AS TEXT
+          )), '') AS raw_parent_session_id
+        FROM chat_sessions
+        INNER JOIN chat_transcripts
+          ON chat_transcripts.session_id = chat_sessions.id
+      )
+      UPDATE chat_session_runtime_links
+      SET parent_runtime_session_id = (
+            SELECT raw_parent_links.raw_parent_session_id
+            FROM raw_parent_links
+            WHERE raw_parent_links.app_session_id = chat_session_runtime_links.app_session_id
+              AND raw_parent_links.raw_parent_session_id IS NOT NULL
+              AND raw_parent_links.raw_parent_session_id <> chat_session_runtime_links.parent_app_session_id
+            LIMIT 1
+          )
+      WHERE EXISTS (
+        SELECT 1
+        FROM raw_parent_links
+        WHERE raw_parent_links.app_session_id = chat_session_runtime_links.app_session_id
+          AND raw_parent_links.raw_parent_session_id IS NOT NULL
+          AND raw_parent_links.raw_parent_session_id <> chat_session_runtime_links.parent_app_session_id
+      );
+
+      UPDATE chat_session_runtime_links
+      SET parent_app_session_id = (
+        SELECT parent_link.app_session_id
+        FROM chat_session_runtime_links AS parent_link
+        WHERE parent_link.runtime_session_id = chat_session_runtime_links.parent_runtime_session_id
+          AND parent_link.app_session_id <> chat_session_runtime_links.app_session_id
+        LIMIT 1
+      )
+      WHERE parent_app_session_id IS NULL
+        AND parent_runtime_session_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM chat_session_runtime_links AS parent_link
+          WHERE parent_link.runtime_session_id = chat_session_runtime_links.parent_runtime_session_id
+            AND parent_link.app_session_id <> chat_session_runtime_links.app_session_id
+        );
+
+      UPDATE chat_sessions
+      SET parent_session_id = (
+        SELECT chat_session_runtime_links.parent_app_session_id
+        FROM chat_session_runtime_links
+        WHERE chat_session_runtime_links.app_session_id = chat_sessions.id
+          AND chat_session_runtime_links.parent_app_session_id <> chat_sessions.id
+        LIMIT 1
+      )
+      WHERE parent_session_id IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM chat_session_runtime_links
+          WHERE chat_session_runtime_links.app_session_id = chat_sessions.id
+            AND chat_session_runtime_links.parent_app_session_id IS NOT NULL
+            AND chat_session_runtime_links.parent_app_session_id <> chat_sessions.id
+        );
+
+      CREATE INDEX IF NOT EXISTS idx_chat_session_runtime_links_parent_runtime
+        ON chat_session_runtime_links(parent_runtime_session_id);
+
+      CREATE INDEX IF NOT EXISTS idx_chat_session_runtime_links_parent_app
+        ON chat_session_runtime_links(parent_app_session_id);
+    `,
+    },
 ];

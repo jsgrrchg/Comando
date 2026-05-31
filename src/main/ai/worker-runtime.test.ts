@@ -744,6 +744,71 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("rehydrates persisted subagent app identity from runtime mappings", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            persistedSubagentSessionMappings: [
+                {
+                    appSessionId: "session-child-persisted",
+                    parentAppSessionId: "session-1",
+                    parentRuntimeSessionId: "runtime-session-1",
+                    runtimeSessionId: "runtime-subagent-1",
+                },
+            ],
+            projectRoot: tempDir,
+            title: "Subagent parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        expect(
+            getLatestSnapshot(
+                emittedEvents,
+                (snapshot) =>
+                    snapshot.runtimeSessionId === "runtime-subagent-1",
+            ),
+        ).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-1",
+                runtimeSessionId: "runtime-subagent-1",
+                sessionId: "session-child-persisted",
+                title: "Galileo",
+            }),
+        );
+    });
+
     it("retries buffered subagent creation after the parent runtime session mapping is registered", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),

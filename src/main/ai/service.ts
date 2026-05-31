@@ -1515,6 +1515,10 @@ export class AiService {
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             });
+        const persistedSubagentSessionMappings =
+            (await this.#persistence.listSessionRuntimeMappingsForParent?.(
+                persistedSnapshot.sessionId,
+            )) ?? [];
 
         emitAiMainDiagnostic("Built AI worker launch input.", {
             additionalRoots: additionalRoots.length,
@@ -1525,6 +1529,7 @@ export class AiService {
             runtimeSessionId: persistedSnapshot.runtimeSessionId,
             sessionId: input.sessionId,
             status: persistedSnapshot.status,
+            subagentRuntimeMappings: persistedSubagentSessionMappings.length,
             worktreeId: input.worktreeId ?? null,
         });
 
@@ -1542,6 +1547,7 @@ export class AiService {
             },
             ownerWindowId,
             persistedSnapshot,
+            persistedSubagentSessionMappings,
             projectRoot,
             resolvedRuntime,
         };

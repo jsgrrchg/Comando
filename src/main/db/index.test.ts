@@ -26,9 +26,10 @@ describe("databaseMigrations", () => {
             aiPinnedSessionsMigration,
             aiHistoryPreviewsMigration,
             aiSessionParentMigration,
+            aiSessionRuntimeLinksMigration,
         ] = databaseMigrations;
 
-        expect(databaseMigrations).toHaveLength(12);
+        expect(databaseMigrations).toHaveLength(13);
         expect(foundationMigration?.id).toBe("0001-foundation");
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
@@ -122,6 +123,15 @@ describe("databaseMigrations", () => {
         expect(aiSessionParentMigration?.sql).toContain("parent_session_id");
         expect(aiSessionParentMigration?.sql).toContain(
             "idx_chat_sessions_parent_session_id",
+        );
+        expect(aiSessionRuntimeLinksMigration?.id).toBe(
+            "0013-ai-session-runtime-links",
+        );
+        expect(aiSessionRuntimeLinksMigration?.sql).toContain(
+            "chat_session_runtime_links",
+        );
+        expect(aiSessionRuntimeLinksMigration?.sql).toContain(
+            "idx_chat_session_runtime_links_parent_runtime",
         );
     });
 

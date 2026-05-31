@@ -558,16 +558,126 @@ describe("AiPersistence", () => {
         });
         expect(persistence.loadSessionSnapshot(childSnapshot.sessionId)).toEqual(
             expect.objectContaining({
-                parentSessionId: null,
+                parentSessionId: "session-parent",
             }),
         );
 
         persistence.saveSessionSnapshot(childSnapshot);
         expect(persistence.loadSessionSnapshot(childSnapshot.sessionId)).toEqual(
             expect.objectContaining({
-                parentSessionId: null,
+                parentSessionId: "session-parent",
             }),
         );
+    });
+
+    it("preserves and backfills child parent links when the child is saved first", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const childSnapshot = createSnapshot({
+            messages: [],
+            parentSessionId: "session-parent",
+            runtimeSessionId: "runtime-child",
+            sessionId: "session-child",
+            title: "Galileo",
+            updatedAt: "2026-04-16T12:01:00.000Z",
+        });
+        const parentSnapshot = createSnapshot({
+            messages: ["Parent prompt"],
+            runtimeSessionId: "runtime-parent",
+            sessionId: "session-parent",
+            title: "Parent",
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+
+        persistence.saveSessionSnapshot(childSnapshot);
+
+        expect(
+            connection
+                .prepare<
+                    [string],
+                    { parent_session_id: string | null } | undefined
+                >(
+                    "SELECT parent_session_id FROM chat_sessions WHERE id = ?",
+                )
+                .get("session-child")?.parent_session_id,
+        ).toBeNull();
+        expect(persistence.loadSessionSnapshot("session-child")).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-parent",
+            }),
+        );
+
+        persistence.saveSessionSnapshot(parentSnapshot);
+
+        expect(
+            connection
+                .prepare<
+                    [string],
+                    { parent_session_id: string | null } | undefined
+                >(
+                    "SELECT parent_session_id FROM chat_sessions WHERE id = ?",
+                )
+                .get("session-child")?.parent_session_id,
+        ).toBe("session-parent");
+        expect(persistence.listSessionRuntimeMappingsForParent("session-parent")).toEqual([
+            expect.objectContaining({
+                appSessionId: "session-child",
+                parentAppSessionId: "session-parent",
+                runtimeSessionId: "runtime-child",
+            }),
+        ]);
+    });
+
+    it("resolves raw runtime parent links through persisted runtime mappings", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const childSnapshot = createSnapshot({
+            parentSessionId: "runtime-parent",
+            runtimeSessionId: "runtime-child",
+            sessionId: "session-child",
+            title: "Galileo",
+            updatedAt: "2026-04-16T12:01:00.000Z",
+        });
+        const parentSnapshot = createSnapshot({
+            messages: ["Parent prompt"],
+            runtimeSessionId: "runtime-parent",
+            sessionId: "session-parent",
+            title: "Parent",
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+
+        persistence.saveSessionSnapshot(childSnapshot);
+        persistence.saveSessionSnapshot(parentSnapshot);
+
+        expect(persistence.loadSessionSnapshot("session-child")).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-parent",
+                runtimeSessionId: "runtime-child",
+            }),
+        );
+        const history = persistence.listSessionHistory({
+            limit: 20,
+            projectId: null,
+            worktreeId: null,
+        });
+        expect(history).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    parentSessionId: "session-parent",
+                    runtimeSessionId: "runtime-child",
+                    sessionId: "session-child",
+                }),
+                expect.objectContaining({
+                    parentSessionId: null,
+                    runtimeSessionId: "runtime-parent",
+                    sessionId: "session-parent",
+                }),
+            ]),
+        );
+        expect(history).toHaveLength(2);
+        expect(
+            persistence.resolveAppSessionIdByRuntimeSessionId("runtime-child"),
+        ).toBe("session-child");
     });
 
     it("persists generated image messages and derives a history preview", () => {
@@ -1242,6 +1352,7 @@ function createTranscriptWithMessages(
 function createSnapshot(input: {
     readonly messages?: readonly string[];
     readonly parentSessionId?: string | null;
+    readonly runtimeSessionId?: string | null;
     readonly sessionId: string;
     readonly title: string;
     readonly toolActivity?: AiSessionSnapshot["toolActivity"];
@@ -1269,7 +1380,7 @@ function createSnapshot(input: {
         plan: null,
         projectId: null,
         runtimeId: "codex",
-        runtimeSessionId: null,
+        runtimeSessionId: input.runtimeSessionId ?? null,
         sessionId: input.sessionId,
         status: "idle",
         title: input.title,

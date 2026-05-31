@@ -191,6 +191,29 @@ describe("buildAiSessionHierarchyGroups", () => {
         });
     });
 
+    it("groups children when the parent link references the parent runtime session", () => {
+        const groups = buildAiSessionHierarchyGroups([
+            createSession({
+                runtimeSessionId: "runtime-parent",
+                sessionId: "parent",
+                title: "Parent",
+            }),
+            createSession({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child",
+                sessionId: "child",
+                title: "Galileo",
+            }),
+        ]);
+
+        expect(groups).toHaveLength(1);
+        expect(groups[0]?.rows.map((row) => row.session.sessionId)).toEqual([
+            "parent",
+            "child",
+        ]);
+        expect(groups[0]?.rows[1]?.parentSession?.sessionId).toBe("parent");
+    });
+
     it("filters descendants of collapsed parents without hiding later siblings", () => {
         const groups = buildAiSessionHierarchyGroups([
             createSession({ sessionId: "parent-a", title: "Parent A" }),

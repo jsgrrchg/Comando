@@ -2451,6 +2451,7 @@ export interface AiHistorySessionSummary {
     readonly preview: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly runtimeSessionId?: string | null;
     readonly sessionId: string;
     readonly title: string;
     readonly updatedAt: string;

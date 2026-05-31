@@ -190,6 +190,7 @@ function createHistorySummaryFromSnapshot(
         preview: deriveSessionPreview(snapshot.messages),
         projectId: snapshot.projectId,
         runtimeId: snapshot.runtimeId,
+        runtimeSessionId: snapshot.runtimeSessionId,
         sessionId: snapshot.sessionId,
         title: snapshot.title,
         updatedAt: snapshot.updatedAt,
@@ -224,6 +225,10 @@ function applyPatchToHistorySummary(
                 ? existing.projectId
                 : changes.projectId,
         runtimeId: patch.runtimeId,
+        runtimeSessionId:
+            changes.runtimeSessionId === undefined
+                ? existing.runtimeSessionId ?? null
+                : changes.runtimeSessionId,
         sessionId: existing.sessionId,
         title:
             typeof changes.title === "string" ? changes.title : existing.title,
@@ -288,6 +293,7 @@ function createHistorySummaryFromUnknownPatch(
             nextMessages.length > 0 ? deriveSessionPreview(nextMessages) : null,
         projectId,
         runtimeId: patch.runtimeId,
+        runtimeSessionId: patch.changes.runtimeSessionId ?? null,
         sessionId: patch.sessionId,
         title,
         updatedAt,
@@ -390,8 +396,10 @@ function areHistorySummariesEqual(
         (left.pinnedAt ?? null) === (right.pinnedAt ?? null) &&
         left.preview === right.preview &&
         left.projectId === right.projectId &&
-        left.runtimeId === right.runtimeId &&
-        left.sessionId === right.sessionId &&
+            left.runtimeId === right.runtimeId &&
+            (left.runtimeSessionId ?? null) ===
+                (right.runtimeSessionId ?? null) &&
+            left.sessionId === right.sessionId &&
         left.title === right.title &&
         left.updatedAt === right.updatedAt &&
         (left.worktreeId ?? null) === (right.worktreeId ?? null)

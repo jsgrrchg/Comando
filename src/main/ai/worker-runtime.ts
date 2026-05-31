@@ -242,6 +242,38 @@ function isDirectStreamingSessionUpdate(
     );
 }
 
+function createRuntimeSessionMappingIndex(
+    mappings: readonly {
+        readonly appSessionId: string;
+        readonly runtimeSessionId: string;
+    }[],
+): Map<string, string> {
+    return new Map(
+        mappings
+            .filter(
+                (mapping) =>
+                    mapping.runtimeSessionId.trim().length > 0 &&
+                    mapping.appSessionId.trim().length > 0,
+            )
+            .map((mapping) => [
+                mapping.runtimeSessionId,
+                mapping.appSessionId,
+            ]),
+    );
+}
+
+function createPersistedSubagentMappingIndex<
+    TMapping extends {
+        readonly runtimeSessionId: string;
+    },
+>(mappings: readonly TMapping[]): Map<string, TMapping> {
+    return new Map(
+        mappings
+            .filter((mapping) => mapping.runtimeSessionId.trim().length > 0)
+            .map((mapping) => [mapping.runtimeSessionId, mapping]),
+    );
+}
+
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
 }
@@ -1187,13 +1219,20 @@ export class AiWorkerRuntime {
         const connection = new ClientSideConnection(() => client, stream);
         const persistedSnapshot = launch.persistedSnapshot;
         Object.assign(liveConnection, {
-            appSessionIdByRuntimeSessionId: new Map(),
+            appSessionIdByRuntimeSessionId:
+                createRuntimeSessionMappingIndex(
+                    launch.persistedSubagentSessionMappings ?? [],
+                ),
             child,
             closing: false,
             connection,
             connectionId: randomUUID(),
             ownerWindowId: launch.ownerWindowId,
             pendingSessionUpdatesByRuntimeSessionId: new Map(),
+            persistedSubagentMappingsByRuntimeSessionId:
+                createPersistedSubagentMappingIndex(
+                    launch.persistedSubagentSessionMappings ?? [],
+                ),
             resolvedRuntime: launch.resolvedRuntime,
             runtimeId: launch.input.runtimeId,
             sessionsByAppSessionId: new Map(),
@@ -1589,6 +1628,10 @@ export class AiWorkerRuntime {
         const runtimeChildSessionId =
             readSubagentChildRuntimeSessionId(meta) ?? params.sessionId;
         const runtimeParentSessionId = readSubagentParentRuntimeSessionId(meta);
+        const persistedMapping =
+            liveConnection.persistedSubagentMappingsByRuntimeSessionId.get(
+                runtimeChildSessionId,
+            ) ?? null;
         if (!runtimeParentSessionId) {
             this.#emitLog("warn", "Ignoring subagent session without parent.", {
                 runtimeChildSessionId,
@@ -1601,7 +1644,11 @@ export class AiWorkerRuntime {
         const parentAppSessionId =
             liveConnection.appSessionIdByRuntimeSessionId.get(
                 runtimeParentSessionId,
-            ) ?? null;
+            ) ??
+            (persistedMapping?.parentRuntimeSessionId ===
+                runtimeParentSessionId
+                ? persistedMapping.parentAppSessionId
+                : null);
         const parentSession = parentAppSessionId
             ? liveConnection.sessionsByAppSessionId.get(parentAppSessionId) ??
               null
@@ -1642,12 +1689,13 @@ export class AiWorkerRuntime {
                         runtimeParentSessionId,
                     },
                 );
+                return existingSession;
             }
-            return existingSession;
         }
 
         const now = new Date().toISOString();
-        const appSessionId = randomUUID();
+        const appSessionId =
+            existingAppSessionId ?? persistedMapping?.appSessionId ?? randomUUID();
         const title =
             readMetaString(meta, CODEX_ACP_AGENT_NICKNAME_KEY) ??
             readSessionInfoTitle(params.update) ??
@@ -1717,6 +1765,15 @@ export class AiWorkerRuntime {
 
         this.#sessions.set(appSessionId, subagentSession);
         liveConnection.sessionsByAppSessionId.set(appSessionId, subagentSession);
+        liveConnection.persistedSubagentMappingsByRuntimeSessionId.set(
+            runtimeChildSessionId,
+            {
+                appSessionId,
+                parentAppSessionId,
+                parentRuntimeSessionId: runtimeParentSessionId,
+                runtimeSessionId: runtimeChildSessionId,
+            },
+        );
         this.#registerRuntimeSessionMapping(
             liveConnection,
             appSessionId,
@@ -4351,6 +4408,7 @@ export class AiWorkerRuntime {
         liveConnection.sessionsByAppSessionId.clear();
         liveConnection.appSessionIdByRuntimeSessionId.clear();
         liveConnection.pendingSessionUpdatesByRuntimeSessionId.clear();
+        liveConnection.persistedSubagentMappingsByRuntimeSessionId.clear();
     }
 
     #disposeLiveSession(
@@ -4433,6 +4491,7 @@ export class AiWorkerRuntime {
         liveConnection.sessionsByAppSessionId.clear();
         liveConnection.appSessionIdByRuntimeSessionId.clear();
         liveConnection.pendingSessionUpdatesByRuntimeSessionId.clear();
+        liveConnection.persistedSubagentMappingsByRuntimeSessionId.clear();
         this.#detachChildStreams(liveConnection);
         liveConnection.child.kill();
         liveConnection.child.stdin.destroy();
