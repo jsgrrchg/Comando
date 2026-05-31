@@ -34,7 +34,9 @@ import {
 import { getHistoryPreviewText } from "@renderer/components/workspace/chat-history/historyPreview";
 import {
     buildAiSessionHierarchyGroups,
+    countAiHistorySessionChildren,
     filterAiSessionHierarchyRowsForCollapsedParents,
+    isAiHistorySessionChildOfParent,
     type AiSessionHierarchyGroup,
     type AiSessionHierarchyRow,
 } from "@renderer/components/workspace/chat-history/sessionHierarchy";
@@ -474,9 +476,10 @@ export function SidebarAgentsPanel({
 
     const handleDelete = useCallback(
         async (session: AiHistorySessionSummary) => {
-            const childCount = visibleSessions.filter(
-                (candidate) => candidate.parentSessionId === session.sessionId,
-            ).length;
+            const childCount = countAiHistorySessionChildren(
+                session,
+                visibleSessions,
+            );
             const confirmed = window.confirm(
                 childCount > 0
                     ? `Delete "${session.title}" from threads? ${childCount} child agent${childCount === 1 ? "" : "s"} will stay in history as detached. This cannot be undone.`
@@ -499,7 +502,7 @@ export function SidebarAgentsPanel({
                             candidate.sessionId !== session.sessionId,
                     )
                     .map((candidate) =>
-                        candidate.parentSessionId === session.sessionId
+                        isAiHistorySessionChildOfParent(session, candidate)
                             ? { ...candidate, parentSessionId: null }
                             : candidate,
                     ),

@@ -301,6 +301,66 @@ describe("AiService hybrid persistence", () => {
         expect(prepareSessionCall[0].input.sessionId).toBe("session-1");
     });
 
+    it("preserves a historical child parent link when the child is opened before the parent", async () => {
+        const parentSnapshot = createSnapshot({
+            projectId: "project-1",
+            runtimeSessionId: "runtime-parent",
+            sessionId: "session-1",
+            title: "Parent",
+        });
+        const childSnapshot = createSnapshot({
+            parentSessionId: "session-1",
+            projectId: "project-1",
+            runtimeSessionId: "runtime-child",
+            sessionId: "session-child",
+            title: "Child",
+        });
+        const prepareSession = vi.fn(
+            ({ input }: Parameters<AiWorkerGateway["prepareSession"]>[0]) =>
+                Promise.resolve(
+                    input.sessionId === "session-child"
+                        ? childSnapshot
+                        : parentSnapshot,
+                ),
+        );
+        const service = createService({
+            aiWorker: createMockWorker({ prepareSession }),
+            loadSessionSnapshot: vi.fn((sessionId: string) =>
+                sessionId === "session-child" ? childSnapshot : parentSnapshot,
+            ),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Parent",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        prepareSession.mockClear();
+
+        await service.handleWorkerRestarted();
+
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+        const [prepareSessionCall] = prepareSession.mock.calls as unknown as [
+            [{ input: { sessionId: string } }],
+        ];
+        expect(prepareSessionCall[0].input.sessionId).toBe("session-1");
+    });
+
     it("keeps subagent parent ownership after sending a prompt to the child", async () => {
         const parentSnapshot = createSnapshot({
             projectId: "project-1",

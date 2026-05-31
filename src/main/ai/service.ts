@@ -632,7 +632,12 @@ export class AiService {
             sessionId: input.sessionId,
             status: launch.persistedSnapshot.status,
         });
-        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
+        this.#rememberLiveSessionContext(
+            input,
+            ownerWindowId,
+            launch.additionalRoots,
+            launch.persistedSnapshot.parentSessionId ?? null,
+        );
         try {
             const snapshot = await worker.prepareSession({
                 input,
@@ -695,7 +700,12 @@ export class AiService {
             runtimeSessionId: launch.persistedSnapshot.runtimeSessionId,
             sessionId: input.sessionId,
         });
-        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
+        this.#rememberLiveSessionContext(
+            input,
+            ownerWindowId,
+            launch.additionalRoots,
+            launch.persistedSnapshot.parentSessionId ?? null,
+        );
         try {
             const result = await worker.sendPrompt({
                 input,
@@ -1249,12 +1259,16 @@ export class AiService {
         input: SessionDescriptor,
         ownerWindowId: string,
         additionalRoots: readonly string[],
+        persistedParentSessionId: string | null = null,
     ): void {
         const existingContext = this.#liveSessionContexts.get(input.sessionId);
         const snapshotParentSessionId =
             this.#liveSnapshots.get(input.sessionId)?.parentSessionId ?? null;
         const parentSessionId =
-            existingContext?.parentSessionId ?? snapshotParentSessionId ?? null;
+            existingContext?.parentSessionId ??
+            normalizeSessionRef(persistedParentSessionId) ??
+            snapshotParentSessionId ??
+            null;
         this.#liveSessionContexts.set(input.sessionId, {
             additionalRoots,
             ownerWindowId,
@@ -1280,7 +1294,16 @@ export class AiService {
         this.#liveSnapshots.set(snapshot.sessionId, snapshot);
         const context = this.#liveSessionContexts.get(snapshot.sessionId);
         if (context) {
-            context.ownerWindowId = ownerWindowId;
+            this.#liveSessionContexts.set(snapshot.sessionId, {
+                ...context,
+                ownerWindowId,
+                parentSessionId:
+                    normalizeSessionRef(snapshot.parentSessionId) ??
+                    context.parentSessionId,
+                projectId: snapshot.projectId,
+                runtimeId: snapshot.runtimeId,
+                worktreeId: snapshot.worktreeId ?? null,
+            });
             emitAiMainDiagnostic("Cached live AI session snapshot.", {
                 ownerWindowId,
                 parentSessionId: snapshot.parentSessionId ?? null,
@@ -2252,6 +2275,11 @@ export class AiService {
 }
 
 function normalizeOptionalText(value: string | null): string | null {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSessionRef(value: string | null | undefined): string | null {
     const trimmed = value?.trim() ?? "";
     return trimmed.length > 0 ? trimmed : null;
 }

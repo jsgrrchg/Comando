@@ -59,7 +59,12 @@ import {
     getHistoryRuntimeLabel,
 } from "./chat-history/historyPresentation";
 import { getHistoryPreviewText } from "./chat-history/historyPreview";
-import { buildAiSessionHierarchyGroups } from "./chat-history/sessionHierarchy";
+import {
+    buildAiSessionHierarchyGroups,
+    countAiHistorySessionChildren,
+    findAiHistorySessionParent,
+    isAiHistorySessionChildOfParent,
+} from "./chat-history/sessionHierarchy";
 import { usePersistedWorkspaceScroll } from "./usePersistedWorkspaceScroll";
 
 const HISTORY_PAGE_SIZE = 100;
@@ -736,9 +741,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 
     const handleDelete = useCallback(
         async (session: AiHistorySessionSummary) => {
-            const childCount = sessions.filter(
-                (candidate) => candidate.parentSessionId === session.sessionId,
-            ).length;
+            const childCount = countAiHistorySessionChildren(session, sessions);
             const confirmed = window.confirm(
                 childCount > 0
                     ? `Delete "${session.title}" from chat history? ${childCount} child agent${childCount === 1 ? "" : "s"} will stay in history as detached. This cannot be undone.`
@@ -759,7 +762,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             const remainingSessions = sessions
                 .filter((candidate) => candidate.sessionId !== session.sessionId)
                 .map((candidate) =>
-                    candidate.parentSessionId === session.sessionId
+                    isAiHistorySessionChildOfParent(session, candidate)
                         ? { ...candidate, parentSessionId: null }
                         : candidate,
                 );
@@ -1058,14 +1061,9 @@ export function ChatHistoryTabLayout({
         () => buildAiSessionHierarchyGroups(sessions),
         [sessions],
     );
-    const selectedParentSession =
-        selectedSession?.parentSessionId &&
-        selectedSession.parentSessionId !== selectedSession.sessionId
-            ? (sessions.find(
-                  (session) =>
-                      session.sessionId === selectedSession.parentSessionId,
-              ) ?? null)
-            : null;
+    const selectedParentSession = selectedSession
+        ? findAiHistorySessionParent(selectedSession, sessions)
+        : null;
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-bg-primary">

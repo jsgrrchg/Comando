@@ -108,4 +108,38 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).toContain("Loading...");
         expect(markup).not.toContain("Wrong Worktree Session");
     });
+
+    it("renders cached child agents under a parent referenced by runtime session id", () => {
+        writeSidebarAgentsHistoryCache(
+            "project-1",
+            "worktree-1",
+            [
+                createSummary({
+                    runtimeSessionId: "runtime-parent",
+                    sessionId: "parent-session",
+                    title: "Parent Thread",
+                }),
+                createSummary({
+                    parentSessionId: "runtime-parent",
+                    runtimeSessionId: "runtime-child",
+                    sessionId: "child-session",
+                    title: "Galileo",
+                }),
+            ],
+            100,
+        );
+
+        const markup = renderToStaticMarkup(
+            <SidebarAgentsPanel
+                projectId="project-1"
+                worktreeId="worktree-1"
+            />,
+        );
+
+        expect(markup.indexOf("Parent Thread")).toBeLessThan(
+            markup.indexOf("Galileo"),
+        );
+        expect(markup).toContain('data-subagent="true"');
+        expect(markup).toContain("Agent");
+    });
 });

@@ -18,6 +18,57 @@ export type AiSessionHierarchySiblingComparator = (
     right: AiHistorySessionSummary,
 ) => number;
 
+export function getAiHistorySessionLookupKeys(
+    session: Pick<AiHistorySessionSummary, "runtimeSessionId" | "sessionId">,
+): readonly string[] {
+    return [
+        normalizeSessionRef(session.sessionId),
+        normalizeSessionRef(session.runtimeSessionId),
+    ].filter((value): value is string => Boolean(value));
+}
+
+export function isAiHistorySessionChildOfParent(
+    parent: Pick<AiHistorySessionSummary, "runtimeSessionId" | "sessionId">,
+    candidate: Pick<
+        AiHistorySessionSummary,
+        "parentSessionId" | "runtimeSessionId" | "sessionId"
+    >,
+): boolean {
+    const parentRef = normalizeSessionRef(candidate.parentSessionId);
+    if (!parentRef || getAiHistorySessionLookupKeys(candidate).includes(parentRef)) {
+        return false;
+    }
+
+    return getAiHistorySessionLookupKeys(parent).includes(parentRef);
+}
+
+export function countAiHistorySessionChildren(
+    parent: AiHistorySessionSummary,
+    sessions: readonly AiHistorySessionSummary[],
+): number {
+    return sessions.filter((session) =>
+        isAiHistorySessionChildOfParent(parent, session),
+    ).length;
+}
+
+export function findAiHistorySessionParent(
+    session: AiHistorySessionSummary,
+    sessions: readonly AiHistorySessionSummary[],
+): AiHistorySessionSummary | null {
+    const parentRef = normalizeSessionRef(session.parentSessionId);
+    if (!parentRef || getAiHistorySessionLookupKeys(session).includes(parentRef)) {
+        return null;
+    }
+
+    for (const candidate of sessions) {
+        if (getAiHistorySessionLookupKeys(candidate).includes(parentRef)) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
 export function buildAiSessionHierarchyGroups(
     sessions: readonly AiHistorySessionSummary[],
     options: {
@@ -32,7 +83,7 @@ export function buildAiSessionHierarchyGroups(
     const query = normalizeHierarchyQuery(options.filterQuery);
     const sessionByRef = new Map<string, AiHistorySessionSummary>();
     for (const session of sessions) {
-        for (const key of getSessionLookupKeys(session)) {
+        for (const key of getAiHistorySessionLookupKeys(session)) {
             if (!sessionByRef.has(key)) {
                 sessionByRef.set(key, session);
             }
@@ -49,11 +100,10 @@ export function buildAiSessionHierarchyGroups(
     const roots: AiHistorySessionSummary[] = [];
 
     for (const session of sessions) {
-        const parentSessionId = normalizeParentSessionId(
-            session.parentSessionId,
-        );
+        const parentSessionId = normalizeSessionRef(session.parentSessionId);
         const parentSession =
-            parentSessionId && !getSessionLookupKeys(session).includes(parentSessionId)
+            parentSessionId &&
+            !getAiHistorySessionLookupKeys(session).includes(parentSessionId)
                 ? (sessionByRef.get(parentSessionId) ?? null)
                 : null;
         if (parentSession) {
@@ -173,9 +223,10 @@ function appendHierarchyRows({
 
     appendedSessionIds.add(session.sessionId);
 
-    const parentSessionId = normalizeParentSessionId(session.parentSessionId);
+    const parentSessionId = normalizeSessionRef(session.parentSessionId);
     const parentSession =
-        parentSessionId && !getSessionLookupKeys(session).includes(parentSessionId)
+        parentSessionId &&
+        !getAiHistorySessionLookupKeys(session).includes(parentSessionId)
             ? (sessionByRef.get(parentSessionId) ?? null)
             : null;
     const children = childrenByParentId.get(session.sessionId) ?? [];
@@ -201,13 +252,6 @@ function appendHierarchyRows({
     }
 }
 
-function getSessionLookupKeys(session: AiHistorySessionSummary): readonly string[] {
-    return [
-        normalizeParentSessionId(session.sessionId),
-        normalizeParentSessionId(session.runtimeSessionId),
-    ].filter((value): value is string => Boolean(value));
-}
-
 function normalizeHierarchyQuery(value: string | null | undefined): string {
     return (value ?? "").trim().toLowerCase();
 }
@@ -229,7 +273,7 @@ function createSiblingComparator(
     };
 }
 
-function normalizeParentSessionId(value: string | null | undefined): string | null {
+function normalizeSessionRef(value: string | null | undefined): string | null {
     const trimmed = (value ?? "").trim();
     return trimmed.length > 0 ? trimmed : null;
 }

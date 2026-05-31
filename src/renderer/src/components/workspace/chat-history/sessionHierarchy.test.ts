@@ -4,7 +4,10 @@ import type { AiHistorySessionSummary } from "@shared/ipc";
 
 import {
     buildAiSessionHierarchyGroups,
+    countAiHistorySessionChildren,
+    findAiHistorySessionParent,
     filterAiSessionHierarchyRowsForCollapsedParents,
+    isAiHistorySessionChildOfParent,
 } from "./sessionHierarchy";
 
 function createSession(
@@ -192,18 +195,20 @@ describe("buildAiSessionHierarchyGroups", () => {
     });
 
     it("groups children when the parent link references the parent runtime session", () => {
+        const parent = createSession({
+            runtimeSessionId: "runtime-parent",
+            sessionId: "parent",
+            title: "Parent",
+        });
+        const child = createSession({
+            parentSessionId: "runtime-parent",
+            runtimeSessionId: "runtime-child",
+            sessionId: "child",
+            title: "Galileo",
+        });
         const groups = buildAiSessionHierarchyGroups([
-            createSession({
-                runtimeSessionId: "runtime-parent",
-                sessionId: "parent",
-                title: "Parent",
-            }),
-            createSession({
-                parentSessionId: "runtime-parent",
-                runtimeSessionId: "runtime-child",
-                sessionId: "child",
-                title: "Galileo",
-            }),
+            parent,
+            child,
         ]);
 
         expect(groups).toHaveLength(1);
@@ -212,6 +217,9 @@ describe("buildAiSessionHierarchyGroups", () => {
             "child",
         ]);
         expect(groups[0]?.rows[1]?.parentSession?.sessionId).toBe("parent");
+        expect(isAiHistorySessionChildOfParent(parent, child)).toBe(true);
+        expect(countAiHistorySessionChildren(parent, [parent, child])).toBe(1);
+        expect(findAiHistorySessionParent(child, [parent, child])).toBe(parent);
     });
 
     it("filters descendants of collapsed parents without hiding later siblings", () => {
