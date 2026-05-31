@@ -119,6 +119,7 @@ import {
     mapToolCallUpdate,
     readTextIfExists,
     reconcilePendingTrackedFiles,
+    resolveToolActivityIdForUpdate,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
 
@@ -159,6 +160,11 @@ interface SubagentMirrorTurnState {
     terminalAssistantContent: string | null;
     readonly toolCallId: string;
 }
+
+type ToolSessionNotificationUpdate = Extract<
+    SessionNotification["update"],
+    { readonly sessionUpdate: "tool_call" | "tool_call_update" }
+>;
 
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
@@ -2084,7 +2090,12 @@ export class AiWorkerRuntime {
         );
         const shouldFlushOpenSessionActionImmediately =
             nextSnapshot !== snapshotBeforeOpenSessionAction;
-        this.#handleSubagentLifecycleBreadcrumb(liveSession, params, now);
+        this.#handleSubagentLifecycleBreadcrumb(
+            liveSession,
+            nextSnapshot,
+            params,
+            now,
+        );
         liveSession.snapshot = nextSnapshot;
         if (shouldFlushOpenSessionActionImmediately) {
             this.#flushSnapshotEvent(liveSession);
@@ -2460,6 +2471,11 @@ export class AiWorkerRuntime {
         ) {
             return snapshot;
         }
+        const canonicalUpdate = canonicalizeToolUpdateForSnapshot(
+            snapshot,
+            update,
+            snapshot.updatedAt,
+        );
 
         const meta = getSessionNotificationMeta(params);
         if (
@@ -2492,7 +2508,7 @@ export class AiWorkerRuntime {
 
         const resolvedChildAppSessionId = childAppSessionId;
         const activityIndex = snapshot.toolActivity.findIndex(
-            (activity) => activity.id === update.toolCallId,
+            (activity) => activity.id === canonicalUpdate.toolCallId,
         );
         if (activityIndex === -1) {
             return snapshot;
@@ -2520,16 +2536,22 @@ export class AiWorkerRuntime {
 
     #handleSubagentLifecycleBreadcrumb(
         liveSession: LiveAcpSession,
+        snapshot: AiSessionSnapshot,
         params: SessionNotification,
         updatedAt: string,
     ): void {
-        const update = params.update;
+        const rawUpdate = params.update;
         if (
-            update.sessionUpdate !== "tool_call" &&
-            update.sessionUpdate !== "tool_call_update"
+            rawUpdate.sessionUpdate !== "tool_call" &&
+            rawUpdate.sessionUpdate !== "tool_call_update"
         ) {
             return;
         }
+        const update = canonicalizeToolUpdateForSnapshot(
+            snapshot,
+            rawUpdate,
+            updatedAt,
+        );
 
         const meta = getSessionNotificationMeta(params);
         const subagentEventType = readMetaString(
@@ -4583,6 +4605,28 @@ export class AiWorkerRuntime {
             type: "event",
         });
     }
+}
+
+function canonicalizeToolUpdateForSnapshot(
+    snapshot: Pick<AiSessionSnapshot, "toolActivity">,
+    update: ToolSessionNotificationUpdate,
+    updatedAt: string,
+): ToolSessionNotificationUpdate {
+    if (update.sessionUpdate === "tool_call") {
+        return update;
+    }
+
+    const toolCallId = resolveToolActivityIdForUpdate(
+        snapshot,
+        update,
+        updatedAt,
+        {
+            includeCompletedCandidates: true,
+        },
+    );
+    return toolCallId === update.toolCallId
+        ? update
+        : { ...update, toolCallId };
 }
 
 function getSessionNotificationMeta(

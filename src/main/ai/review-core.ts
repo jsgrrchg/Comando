@@ -50,6 +50,7 @@ import { debugBenignError } from "@main/observability/logging";
 const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
 const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
 const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
+const TOOL_ACTIVITY_WEAK_MATCH_WINDOW_MS = 2 * 60 * 1000;
 
 interface ClaudeStructuredPatchHunk {
     readonly oldStart: number;
@@ -90,9 +91,13 @@ export function mapToolCallUpdate(
         readonly readOpenFileBuffer?: (absolutePath: string) => string | null;
     } = {},
 ): AiSessionSnapshot {
+    const toolCallId =
+        updateKind === "tool_call_update"
+            ? resolveToolActivityIdForUpdate(snapshot, update, updatedAt)
+            : update.toolCallId;
     const existing =
         snapshot.toolActivity.find(
-            (candidate) => candidate.id === update.toolCallId,
+            (candidate) => candidate.id === toolCallId,
         ) ?? null;
     const nextTitle =
         typeof update.title === "string" && update.title.trim().length > 0
@@ -105,7 +110,12 @@ export function mapToolCallUpdate(
 
     const toolKind = update.kind ?? existing?.kind ?? "unknown";
     const content = update.content ?? null;
-    const pendingUserInput = parseUserInputRequest(snapshot, update, updatedAt);
+    const pendingUserInput = parseUserInputRequest(
+        snapshot,
+        update,
+        toolCallId,
+        updatedAt,
+    );
 
     let exitCode: number | null = existing?.exitCode ?? null;
     let terminalOutput: string | null = existing?.terminalOutput ?? null;
@@ -187,7 +197,7 @@ export function mapToolCallUpdate(
               )
             : (existing?.diffs ?? []),
         exitCode,
-        id: update.toolCallId,
+        id: toolCallId,
         kind: toolKind,
         locations: nextLocations ?? existing?.locations ?? [],
         rawInputJson:
@@ -228,7 +238,7 @@ export function mapToolCallUpdate(
               }
               const normalizedPath = normalizeDiffPath(entry.path);
               const processedPaths =
-                  liveSession.processedDiffPaths.get(update.toolCallId);
+                  liveSession.processedDiffPaths.get(toolCallId);
               if (
                   processedPaths?.has(normalizedPath) &&
                   !pathsProcessedInThisUpdate.has(normalizedPath)
@@ -254,7 +264,7 @@ export function mapToolCallUpdate(
                       rawOutput: update.rawOutput,
                       readOpenFileBuffer: options.readOpenFileBuffer,
                       sessionUpdate: updateKind,
-                      toolCallId: update.toolCallId,
+                      toolCallId,
                   },
               );
               const anchoredHunks =
@@ -267,7 +277,7 @@ export function mapToolCallUpdate(
                       processedPaths.add(normalizedPath);
                   } else {
                       liveSession.processedDiffPaths.set(
-                          update.toolCallId,
+                          toolCallId,
                           new Set([normalizedPath]),
                       );
                   }
@@ -278,7 +288,7 @@ export function mapToolCallUpdate(
                       snapshot,
                       resolvedDiff,
                       toolKind,
-                      update.toolCallId,
+                      toolCallId,
                       updatedAt,
                       anchoredHunks,
                       normalizeDiffPath,
@@ -288,7 +298,7 @@ export function mapToolCallUpdate(
         : snapshot.trackedFiles;
 
     if (terminalStatus) {
-        liveSession.processedDiffPaths.delete(update.toolCallId);
+        liveSession.processedDiffPaths.delete(toolCallId);
     }
 
     return {
@@ -299,12 +309,151 @@ export function mapToolCallUpdate(
         status: pendingUserInput ? "waiting_user_input" : snapshot.status,
         toolActivity: [
             ...snapshot.toolActivity.filter(
-                (candidate) => candidate.id !== update.toolCallId,
+                (candidate) =>
+                    candidate.id !== toolCallId &&
+                    candidate.id !== update.toolCallId,
             ),
             nextActivity,
         ],
         trackedFiles: nextTrackedFiles,
     };
+}
+
+export function resolveToolActivityIdForUpdate(
+    snapshot: Pick<AiSessionSnapshot, "toolActivity">,
+    update: Pick<
+        ToolCall | ToolCallUpdate,
+        "_meta" | "kind" | "rawInput" | "status" | "title" | "toolCallId"
+    >,
+    updatedAt: string,
+    options: {
+        readonly includeCompletedCandidates?: boolean;
+    } = {},
+): string {
+    if (
+        snapshot.toolActivity.some(
+            (candidate) => candidate.id === update.toolCallId,
+        )
+    ) {
+        return update.toolCallId;
+    }
+
+    const candidates = snapshot.toolActivity.filter((candidate) =>
+        isCanonicalToolActivityCandidate(candidate, updatedAt, options),
+    );
+    const rawInputJson =
+        update.rawInput === undefined ? null : stringifyJson(update.rawInput);
+    if (rawInputJson) {
+        const strongMatch = getMostRecentToolActivity(
+            candidates.filter(
+                (candidate) =>
+                    candidate.rawInputJson === rawInputJson &&
+                    hasSameToolActionShape(candidate, update),
+            ),
+        );
+        if (strongMatch) {
+            return strongMatch.id;
+        }
+    }
+
+    if (!hasWeakToolActionSignal(update)) {
+        return update.toolCallId;
+    }
+
+    const weakMatches = candidates.filter((candidate) =>
+        hasSameToolActionShape(candidate, update),
+    );
+    return weakMatches.length === 1
+        ? (weakMatches[0]?.id ?? update.toolCallId)
+        : update.toolCallId;
+}
+
+function isCanonicalToolActivityCandidate(
+    activity: AiToolActivity,
+    updatedAt: string,
+    options: {
+        readonly includeCompletedCandidates?: boolean;
+    },
+): boolean {
+    if (activity.status === "in_progress" || activity.status === "pending") {
+        return true;
+    }
+
+    return (
+        options.includeCompletedCandidates === true &&
+        isWithinToolActivityWeakMatchWindow(activity, updatedAt)
+    );
+}
+
+function hasSameToolActionShape(
+    activity: AiToolActivity,
+    update: Pick<ToolCall | ToolCallUpdate, "kind" | "title">,
+): boolean {
+    const updateKind = normalizeToolActionToken(update.kind);
+    const activityKind = normalizeToolActionToken(activity.kind);
+    if (updateKind && activityKind && updateKind !== activityKind) {
+        return false;
+    }
+
+    const updateTitle = normalizeToolActionToken(update.title);
+    const activityTitle = normalizeToolActionToken(activity.title);
+    if (updateTitle && activityTitle && updateTitle !== activityTitle) {
+        return false;
+    }
+
+    return Boolean(updateKind || updateTitle);
+}
+
+function hasWeakToolActionSignal(
+    update: Pick<
+        ToolCall | ToolCallUpdate,
+        "_meta" | "status" | "toolCallId"
+    >,
+): boolean {
+    return (
+        hasTerminalToolPayload(update._meta) ||
+        isSubagentBreadcrumbToolUpdate(update) ||
+        update.status === "completed" ||
+        update.status === "failed"
+    );
+}
+
+function hasTerminalToolPayload(meta: unknown): boolean {
+    if (!isRecord(meta)) {
+        return false;
+    }
+
+    return isRecord(meta.terminal_output) || isRecord(meta.terminal_exit);
+}
+
+function normalizeToolActionToken(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim().replace(/\s+/g, " ").toLowerCase()
+        : null;
+}
+
+function getMostRecentToolActivity(
+    activities: readonly AiToolActivity[],
+): AiToolActivity | null {
+    return [...activities].sort((left, right) =>
+        right.updatedAt.localeCompare(left.updatedAt),
+    )[0] ?? null;
+}
+
+function isWithinToolActivityWeakMatchWindow(
+    activity: AiToolActivity,
+    updatedAt: string,
+): boolean {
+    const activityTime = Date.parse(activity.updatedAt);
+    const updateTime = Date.parse(updatedAt);
+    if (!Number.isFinite(activityTime) || !Number.isFinite(updateTime)) {
+        return false;
+    }
+
+    return (
+        Math.abs(updateTime - activityTime) <=
+        TOOL_ACTIVITY_WEAK_MATCH_WINDOW_MS
+    );
 }
 
 function mergeTerminalOutputBuffer(previousOutput: string, data: string): string {
@@ -672,6 +821,7 @@ function isDiffReversible(
 function parseUserInputRequest(
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
+    toolCallId: string,
     updatedAt: string,
 ): AiUserInputRequest | null {
     if (
@@ -706,7 +856,7 @@ function parseUserInputRequest(
         typeof update.rawInput.request_id === "string" &&
         update.rawInput.request_id.trim().length > 0
             ? update.rawInput.request_id
-            : update.toolCallId;
+            : toolCallId;
     const turnId =
         typeof update.rawInput.turn_id === "string" &&
         update.rawInput.turn_id.trim().length > 0
@@ -724,7 +874,7 @@ function parseUserInputRequest(
             headerTitle ||
             (update.title ?? snapshot.title).trim() ||
             "Input requested",
-        toolCallId: update.toolCallId,
+        toolCallId,
         turnId,
         updatedAt,
     };
