@@ -120,8 +120,6 @@ type PersistedSessionSnapshot = Omit<
 };
 
 const CURRENT_PERSISTED_SESSION_VERSION = 3;
-const READ_SHADOW_TRANSCRIPT_MESSAGES =
-    process.env.COMANDO_AI_READ_SHADOW_TRANSCRIPT === "1";
 const HEAL_TRANSCRIPT_SIZE_THRESHOLD_CHARS = 64_000;
 const MAX_PERSISTED_RAW_INPUT_JSON_CHARS = 8_000;
 const MAX_PERSISTED_RAW_OUTPUT_JSON_CHARS = 16_000;
@@ -283,12 +281,12 @@ export class AiPersistence {
                     string,
                     unknown
                 > | null>(row.review_json, null);
-                const raw = legacyRaw ?? runtimeRaw;
+                const stateRaw = runtimeRaw ?? legacyRaw;
                 const shadowMessages = this.#loadAllTranscriptMessages(
                     sessionId,
                 );
 
-                if (!raw && !shadowMessages) {
+                if (!stateRaw && !shadowMessages) {
                     return mergeRuntimeCatalogIntoSnapshot(
                         fallback,
                         this.loadLatestRuntimeCatalog(fallback.runtimeId),
@@ -296,8 +294,8 @@ export class AiPersistence {
                 }
 
                 const rawParentSessionId = normalizeParentSessionId(
-                    typeof raw?.parentSessionId === "string"
-                        ? raw.parentSessionId
+                    typeof stateRaw?.parentSessionId === "string"
+                        ? stateRaw.parentSessionId
                         : null,
                 );
                 const parentSessionId = this.#resolvePersistedParentSessionId({
@@ -307,70 +305,83 @@ export class AiPersistence {
                 });
                 const runtimeSessionId = normalizeRuntimeSessionId(
                     row.runtime_session_id ??
-                        (typeof raw?.runtimeSessionId === "string"
-                            ? raw.runtimeSessionId
+                        (typeof stateRaw?.runtimeSessionId === "string"
+                            ? stateRaw.runtimeSessionId
                             : null),
                 );
                 const messages =
-                    shadowMessages &&
-                    (READ_SHADOW_TRANSCRIPT_MESSAGES || !legacyRaw)
-                        ? shadowMessages
-                        : normalizeMessages(raw?.messages);
+                    shadowMessages ??
+                    normalizeMessages(legacyRaw?.messages ?? stateRaw?.messages);
                 const snapshot = sanitizeLoadedSessionSnapshot({
                     activeTurnStartedAt:
-                        typeof raw?.activeTurnStartedAt === "string"
-                            ? raw.activeTurnStartedAt
+                        typeof stateRaw?.activeTurnStartedAt === "string"
+                            ? stateRaw.activeTurnStartedAt
                             : null,
                     availableCommands: normalizeAvailableCommands(
-                        raw?.availableCommands,
+                        legacyRaw?.availableCommands ??
+                            stateRaw?.availableCommands,
                     ),
-                    configOptions: normalizeConfigOptions(raw?.configOptions),
+                    configOptions: normalizeConfigOptions(
+                        legacyRaw?.configOptions ?? stateRaw?.configOptions,
+                    ),
                     lastError:
-                        typeof raw?.lastError === "string"
-                            ? raw.lastError
+                        typeof stateRaw?.lastError === "string"
+                            ? stateRaw.lastError
                             : null,
                     messages,
                     modeId:
-                        typeof raw?.modeId === "string" ? raw.modeId : null,
-                    modes: normalizeSessionModes(raw?.modes),
-                    modelId:
-                        typeof raw?.modelId === "string"
-                            ? raw.modelId
+                        typeof stateRaw?.modeId === "string"
+                            ? stateRaw.modeId
                             : null,
-                    models: normalizeSessionModels(raw?.models),
+                    modes: normalizeSessionModes(
+                        legacyRaw?.modes ?? stateRaw?.modes,
+                    ),
+                    modelId:
+                        typeof stateRaw?.modelId === "string"
+                            ? stateRaw.modelId
+                            : null,
+                    models: normalizeSessionModels(
+                        legacyRaw?.models ?? stateRaw?.models,
+                    ),
                     pendingPermission: normalizePermissionRequest(
-                        raw?.pendingPermission,
+                        stateRaw?.pendingPermission,
                     ),
                     pendingUserInput: normalizeUserInputRequest(
-                        raw?.pendingUserInput,
+                        stateRaw?.pendingUserInput,
                     ),
-                    plan: normalizePlan(raw?.plan),
+                    plan: normalizePlan(stateRaw?.plan),
                     parentSessionId,
                     projectId: row.project_id,
                     runtimeId:
-                        typeof raw?.runtimeId === "string"
-                            ? normalizeRuntimeId(raw.runtimeId)
+                        typeof stateRaw?.runtimeId === "string"
+                            ? normalizeRuntimeId(stateRaw.runtimeId)
                             : fallback.runtimeId,
                     runtimeSessionId,
                     sessionId: fallback.sessionId,
-                    status: normalizeSessionStatus(raw?.status ?? row.status),
+                    status: normalizeSessionStatus(
+                        stateRaw?.status ?? row.status,
+                    ),
                     title:
-                        typeof raw?.title === "string"
-                            ? raw.title
+                        typeof stateRaw?.title === "string"
+                            ? stateRaw.title
                             : fallback.title,
-                    tokenUsage: normalizeTokenUsage(raw?.tokenUsage),
-                    toolActivity: normalizeToolActivity(raw?.toolActivity),
+                    tokenUsage: normalizeTokenUsage(stateRaw?.tokenUsage),
+                    toolActivity: normalizeToolActivity(
+                        stateRaw?.toolActivity ?? legacyRaw?.toolActivity,
+                    ),
                     trackedFiles: normalizeTrackedFiles(
-                        reviewRaw?.trackedFiles ?? raw?.trackedFiles,
+                        reviewRaw?.trackedFiles ??
+                            stateRaw?.trackedFiles ??
+                            legacyRaw?.trackedFiles,
                     ),
                     updatedAt:
-                        typeof raw?.updatedAt === "string"
-                            ? raw.updatedAt
+                        typeof stateRaw?.updatedAt === "string"
+                            ? stateRaw.updatedAt
                             : fallback.updatedAt,
                     worktreeId:
-                        typeof raw?.worktreeId === "string" ||
-                        raw?.worktreeId === null
-                            ? raw.worktreeId
+                        typeof stateRaw?.worktreeId === "string" ||
+                        stateRaw?.worktreeId === null
+                            ? stateRaw.worktreeId
                             : fallback.worktreeId,
                 });
 

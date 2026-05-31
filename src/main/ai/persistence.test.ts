@@ -343,6 +343,104 @@ describe("AiPersistence", () => {
         expect(loaded?.title).toBe("Shadow page");
     });
 
+    it("loads snapshot transcript and state from shadow rows before legacy json", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot: AiSessionSnapshot = {
+            ...createSnapshot({
+                messages: ["Fresh shadow message"],
+                sessionId: "session-shadow-primary",
+                title: "Shadow primary",
+                toolActivity: [
+                    createInflatedToolActivity(
+                        "tool-shadow-primary",
+                        "session-shadow-primary",
+                    ),
+                ],
+                updatedAt: "2026-04-16T12:00:00.000Z",
+            }),
+            trackedFiles: [
+                {
+                    hunks: [],
+                    identityKey: "src/fresh.ts",
+                    isText: true,
+                    kind: "update",
+                    newText: "fresh",
+                    oldText: "old",
+                    path: "src/fresh.ts",
+                    previousPath: null,
+                    reviewState: "pending",
+                    reversible: true,
+                    sessionId: "session-shadow-primary",
+                    toolCallId: "tool-shadow-primary",
+                    updatedAt: "2026-04-16T12:00:00.000Z",
+                },
+            ],
+        };
+
+        persistence.saveSessionSnapshot(snapshot);
+
+        const staleLegacySnapshot = {
+            ...loadStoredSnapshot(connection, snapshot.sessionId),
+            messages: [
+                {
+                    attachments: [],
+                    content: "Stale legacy message",
+                    createdAt: "2026-04-16T11:59:00.000Z",
+                    id: "stale-message",
+                    kind: "assistant",
+                    status: "completed",
+                },
+            ],
+            status: "waiting_permission",
+            toolActivity: [
+                {
+                    ...createInflatedToolActivity(
+                        "tool-stale-legacy",
+                        snapshot.sessionId,
+                    ),
+                    summary: "Stale legacy tool",
+                },
+            ],
+            trackedFiles: [
+                {
+                    hunks: [],
+                    identityKey: "src/stale.ts",
+                    isText: true,
+                    kind: "update",
+                    newText: "stale",
+                    oldText: "old",
+                    path: "src/stale.ts",
+                    previousPath: null,
+                    reviewState: "pending",
+                    reversible: true,
+                    sessionId: snapshot.sessionId,
+                    toolCallId: "tool-stale-legacy",
+                    updatedAt: "2026-04-16T11:59:00.000Z",
+                },
+            ],
+            updatedAt: "2026-04-16T11:59:00.000Z",
+        };
+        connection
+            .prepare(
+                `
+                UPDATE chat_transcripts
+                SET transcript_json = ?
+                WHERE session_id = ?
+                `,
+            )
+            .run(JSON.stringify(staleLegacySnapshot), snapshot.sessionId);
+
+        const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
+
+        expect(loaded?.messages.map((message) => message.content)).toEqual([
+            "Fresh shadow message",
+        ]);
+        expect(loaded?.status).toBe("idle");
+        expect(loaded?.toolActivity[0]?.id).toBe("tool-shadow-primary");
+        expect(loaded?.trackedFiles[0]?.path).toBe("src/fresh.ts");
+    });
+
     it("does not revive persisted live state when restoring a session", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);

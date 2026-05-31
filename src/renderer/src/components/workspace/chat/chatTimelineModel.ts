@@ -3,6 +3,11 @@ import type {
     AiImageAttachment,
     AiSessionSnapshot,
 } from "@shared/ipc";
+import {
+    getAiSessionTranscriptMessages,
+    getAiSessionTranscriptToolActivity,
+    type AiSessionTranscriptModel,
+} from "@renderer/app/ai/transcriptModel";
 
 import {
     deriveToolActivityReviewEntries,
@@ -362,4 +367,20 @@ export function reconcileChatTimelineModel(
         orderedRows,
         rowById: nextRowById,
     };
+}
+
+export function reconcileChatTimelineModelFromTranscript(
+    previous: ChatTimelineModel | null,
+    input: {
+        readonly status: AiSessionSnapshot["status"];
+        readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
+        readonly transcript: AiSessionTranscriptModel;
+    },
+): ChatTimelineModel {
+    return reconcileChatTimelineModel(previous, {
+        messages: getAiSessionTranscriptMessages(input.transcript),
+        status: input.status,
+        toolActivity: getAiSessionTranscriptToolActivity(input.transcript),
+        trackedFiles: input.trackedFiles,
+    });
 }

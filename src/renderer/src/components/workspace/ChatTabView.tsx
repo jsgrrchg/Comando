@@ -29,6 +29,12 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 import { useShallow } from "zustand/react/shallow";
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import {
+    createEmptyAiSessionTranscriptModel,
+    getAiSessionTranscriptMessages,
+    getAiSessionTranscriptToolActivity,
+    type AiSessionTranscriptModel,
+} from "@renderer/app/ai/transcriptModel";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
@@ -49,7 +55,7 @@ import { AIChatContextUsageBar } from "./chat/AIChatContextUsageBar";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
-    reconcileChatTimelineModel,
+    reconcileChatTimelineModelFromTranscript,
     type ChatTimelineModel,
     type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
@@ -128,6 +134,7 @@ const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
+const EMPTY_TRANSCRIPT_MODEL = createEmptyAiSessionTranscriptModel();
 const PROJECT_TREE_PRIMARY_CONTEXT = "__primary__";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 
@@ -203,6 +210,7 @@ export const ChatTabView = memo(function ChatTabView({
                 localError: session.localError,
                 queue: session.queue,
                 snapshot: session.snapshot,
+                transcript: session.transcript,
             };
         }),
     );
@@ -377,11 +385,12 @@ export const ChatTabView = memo(function ChatTabView({
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
+    const transcript = sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
     const isStreaming = isChatStreamingStatus(snapshot.status);
     const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
         ? tab.sessionId
         : null;
-    const activeTurnStartedAt = getActiveTurnStartedAt(snapshot);
+    const activeTurnStartedAt = getActiveTurnStartedAt(snapshot, transcript);
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const availableCommands =
         snapshot.availableCommands.length > 0
@@ -699,18 +708,16 @@ export const ChatTabView = memo(function ChatTabView({
             previousTimelineState.sessionId === tab.sessionId
                 ? previousTimelineState.model
                 : null;
-        return reconcileChatTimelineModel(previousTimelineModel, {
-            messages: snapshot.messages,
+        return reconcileChatTimelineModelFromTranscript(previousTimelineModel, {
             status: snapshot.status,
-            toolActivity: snapshot.toolActivity,
             trackedFiles: snapshot.trackedFiles,
+            transcript,
         });
     }, [
-        snapshot.messages,
         snapshot.status,
-        snapshot.toolActivity,
         snapshot.trackedFiles,
         tab.sessionId,
+        transcript,
     ]);
     /* eslint-enable react-hooks/refs */
     // Commit the reconciled timeline to the ref after render so StrictMode's
@@ -3066,7 +3073,10 @@ function createEmptySnapshot(
     };
 }
 
-function getActiveTurnStartedAt(snapshot: AiSessionSnapshot): string | null {
+function getActiveTurnStartedAt(
+    snapshot: AiSessionSnapshot,
+    transcript: AiSessionTranscriptModel,
+): string | null {
     if (!isActiveChatTurnStatus(snapshot.status)) {
         return null;
     }
@@ -3075,7 +3085,12 @@ function getActiveTurnStartedAt(snapshot: AiSessionSnapshot): string | null {
         return snapshot.activeTurnStartedAt;
     }
 
-    const latestTurnActivity = [...snapshot.toolActivity]
+    const transcriptToolActivity = getAiSessionTranscriptToolActivity(transcript);
+    const toolActivity =
+        transcriptToolActivity.length > 0
+            ? transcriptToolActivity
+            : snapshot.toolActivity;
+    const latestTurnActivity = [...toolActivity]
         .reverse()
         .find(
             (activity) =>
@@ -3086,8 +3101,12 @@ function getActiveTurnStartedAt(snapshot: AiSessionSnapshot): string | null {
         return latestTurnActivity.createdAt;
     }
 
+    const transcriptMessages = getAiSessionTranscriptMessages(transcript);
+    const messages =
+        transcriptMessages.length > 0 ? transcriptMessages : snapshot.messages;
+
     return (
-        [...snapshot.messages]
+        [...messages]
             .reverse()
             .find((message) => message.kind === "user")?.createdAt ?? null
     );
