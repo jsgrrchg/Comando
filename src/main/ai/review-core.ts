@@ -122,15 +122,20 @@ export function mapToolCallUpdate(
 
     if (isRecord(update._meta)) {
         if (isRecord(update._meta.terminal_output)) {
-            const data = (update._meta.terminal_output as { data: string })
-                .data;
-            if (typeof data === "string") {
-                const terminalId = (
-                    update._meta.terminal_output as { terminal_id: string }
-                ).terminal_id;
+            const terminalOutputMeta = update._meta.terminal_output as {
+                data?: unknown;
+                mode?: unknown;
+                terminal_id?: unknown;
+            };
+            const data = terminalOutputMeta.data;
+            const terminalId = terminalOutputMeta.terminal_id;
+            if (typeof data === "string" && typeof terminalId === "string") {
+                const mode = normalizeTerminalOutputMode(
+                    terminalOutputMeta.mode,
+                );
                 const prev =
                     liveSession.terminalOutputBuffers.get(terminalId) ?? "";
-                const next = mergeTerminalOutputBuffer(prev, data);
+                const next = mergeTerminalOutputBuffer(prev, data, mode);
                 liveSession.terminalOutputBuffers.set(terminalId, next);
                 terminalOutput = next;
             }
@@ -456,9 +461,21 @@ function isWithinToolActivityWeakMatchWindow(
     );
 }
 
-function mergeTerminalOutputBuffer(previousOutput: string, data: string): string {
+function mergeTerminalOutputBuffer(
+    previousOutput: string,
+    data: string,
+    mode: TerminalOutputMode,
+): string {
     if (data.length === 0) {
         return previousOutput;
+    }
+
+    if (mode === "delta") {
+        return trimTerminalOutputBuffer(`${previousOutput}${data}`);
+    }
+
+    if (mode === "snapshot") {
+        return trimTerminalOutputBuffer(data);
     }
 
     if (previousOutput.length === 0 || data.startsWith(previousOutput)) {
@@ -481,6 +498,16 @@ function mergeTerminalOutputBuffer(previousOutput: string, data: string): string
     return trimTerminalOutputBuffer(
         `${previousOutput}${data.slice(overlapLength)}`,
     );
+}
+
+type TerminalOutputMode = "delta" | "snapshot" | "legacy";
+
+function normalizeTerminalOutputMode(value: unknown): TerminalOutputMode {
+    if (value === "delta" || value === "snapshot") {
+        return value;
+    }
+
+    return "legacy";
 }
 
 function findTerminalOutputOverlapLength(

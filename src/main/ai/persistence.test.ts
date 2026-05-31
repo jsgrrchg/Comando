@@ -226,6 +226,49 @@ describe("AiPersistence", () => {
         );
     });
 
+    it("rolls back snapshot writes when shadow transcript persistence fails", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot = createSnapshot({
+            messages: ["hello before failure"],
+            sessionId: "session-rollback",
+            title: "Rollback session",
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+
+        connection.exec(`
+            CREATE TRIGGER fail_shadow_message_insert
+            BEFORE INSERT ON chat_transcript_messages
+            BEGIN
+                SELECT RAISE(ABORT, 'shadow transcript insert failed');
+            END;
+        `);
+
+        expect(() => persistence.saveSessionSnapshot(snapshot)).toThrow(
+            /shadow transcript insert failed/,
+        );
+
+        for (const tableName of [
+            "chat_sessions",
+            "chat_transcripts",
+            "chat_transcript_messages",
+            "chat_session_runtime_state",
+            "chat_session_review_state",
+        ]) {
+            const row = connection
+                .prepare<[string], { readonly count: number }>(
+                    `
+                    SELECT COUNT(*) AS count
+                    FROM ${tableName}
+                    WHERE ${tableName === "chat_sessions" ? "id" : "session_id"} = ?
+                    `,
+                )
+                .get(snapshot.sessionId);
+
+            expect(row?.count ?? 0).toBe(0);
+        }
+    });
+
     it("writes normalized transcript shadow rows without duplicating message ids", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);

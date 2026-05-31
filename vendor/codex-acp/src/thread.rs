@@ -3073,6 +3073,7 @@ impl PromptState {
                     "terminal_output".to_owned(),
                     serde_json::json!({
                         "terminal_id": call_id,
+                        "mode": "delta",
                         "data": data_str
                     }),
                 )]));
@@ -3219,6 +3220,7 @@ impl PromptState {
                     "terminal_output".to_owned(),
                     serde_json::json!({
                         "terminal_id": call_id,
+                        "mode": "delta",
                         "data": stdin
                     }),
                 )]))

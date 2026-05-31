@@ -1080,6 +1080,65 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         );
     });
 
+    it("appends terminal output deltas even when a later chunk has a matching prefix", () => {
+        const liveSession = makeLiveSession();
+        const started = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                kind: "execute",
+                rawInput: {
+                    command: "printf aabc",
+                },
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:01.000Z",
+        );
+        const afterFirstChunk = __testing.mapToolCallUpdate(
+            liveSession,
+            started,
+            {
+                _meta: {
+                    terminal_output: {
+                        data: "a",
+                        mode: "delta",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:02.000Z",
+        );
+        const afterSecondChunk = __testing.mapToolCallUpdate(
+            liveSession,
+            afterFirstChunk,
+            {
+                _meta: {
+                    terminal_output: {
+                        data: "abc",
+                        mode: "delta",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                status: "completed",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:03.000Z",
+        );
+
+        expect(afterSecondChunk.toolActivity[0]?.terminalOutput).toBe("aabc");
+    });
+
     it("canonicalizes same-action tool updates by raw input", () => {
         const liveSession = makeLiveSession();
         const started = __testing.mapToolCallUpdate(

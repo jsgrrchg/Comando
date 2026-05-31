@@ -739,6 +739,19 @@ export class AiPersistence {
 
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void {
         mainProcessPerformance.measureSync("db.ai.saveSessionSnapshot", () => {
+            const saveSnapshot = this.#connection.transaction(
+                (nextSnapshot: AiSessionSnapshot, nextDraft: string | undefined) => {
+                    this.#saveSessionSnapshotAtomic(nextSnapshot, nextDraft);
+                },
+            );
+            saveSnapshot(snapshot, draft);
+        });
+    }
+
+    #saveSessionSnapshotAtomic(
+        snapshot: AiSessionSnapshot,
+        draft?: string,
+    ): void {
             const now = new Date().toISOString();
             const draftToPersist =
                 draft ?? this.#loadCurrentDraft(snapshot.sessionId);
@@ -897,7 +910,6 @@ export class AiPersistence {
                 now,
                 runtimeSessionId,
             });
-        });
     }
 
     #saveSessionTranscriptMessages(
