@@ -1474,6 +1474,11 @@ export class AiWorkerRuntime {
                     mcpServers: [],
                     sessionId: liveSession.snapshot.runtimeSessionId,
                 });
+                this.#registerRuntimeSessionMapping(
+                    liveSession.runtimeConnection,
+                    liveSession.snapshot.sessionId,
+                    liveSession.snapshot.runtimeSessionId,
+                );
                 return {
                     configOptions: response.configOptions ?? null,
                     models: response.models ?? null,
@@ -1872,6 +1877,15 @@ export class AiWorkerRuntime {
         const now = new Date().toISOString();
         const update = params.update;
         const meta = getSessionNotificationMeta(params);
+        const isRestoredTurnLifecycleUpdate =
+            liveSession.isRestoring &&
+            readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
+                CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE;
+        // Restored turn lifecycle entries are historical replay, not live work.
+        if (isRestoredTurnLifecycleUpdate) {
+            return Promise.resolve();
+        }
+
         if (this.#handleTurnLifecycleUpdate(liveSession, meta, now)) {
             return Promise.resolve();
         }

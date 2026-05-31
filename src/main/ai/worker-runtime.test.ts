@@ -18,6 +18,12 @@ import type {
 import { computeDiffHunks } from "@shared/ai-tracked-file";
 
 import {
+    AI_SESSION_STREAMING_FLUSH_MS,
+    CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+    CODEX_ACP_TURN_EVENT_TYPE_KEY,
+    CODEX_ACP_TURN_ID_KEY,
+    CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+    CODEX_ACP_TURN_STARTED_EVENT_TYPE,
     CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
     type AiWorkerEventMessage,
     type AiWorkerSessionLaunchInput,
@@ -312,6 +318,83 @@ describe("AiWorkerRuntime prepareSession", () => {
                     event.payload.event.kind === "session-info",
             ),
         ).toBe(true);
+    });
+
+    it("does not reactivate a restored subagent from replayed turn lifecycle events", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const baseLaunch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Restored subagent",
+        });
+        const launch: AiWorkerSessionLaunchInput = {
+            ...baseLaunch,
+            input: {
+                ...baseLaunch.input,
+                sessionId: "child-session-1",
+                title: "Restored subagent",
+            },
+            persistedSnapshot: {
+                ...baseLaunch.persistedSnapshot,
+                parentSessionId: "parent-session-1",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: "child-session-1",
+                title: "Restored subagent",
+            },
+        };
+
+        loadSessionMock.mockImplementationOnce(async () => {
+            const client = latestClientFactory?.();
+            const meta = {
+                [CODEX_ACP_STATUS_EVENT_TYPE_KEY]:
+                    CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+                [CODEX_ACP_TURN_EVENT_TYPE_KEY]: CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+                [CODEX_ACP_TURN_ID_KEY]: "historical-turn-1",
+            };
+            await client?.sessionUpdate({
+                _meta: meta,
+                sessionId: "runtime-child-1",
+                update: {
+                    _meta: meta,
+                    sessionUpdate: "session_info_update",
+                },
+            });
+            await new Promise((resolve) => {
+                setTimeout(resolve, AI_SESSION_STREAMING_FLUSH_MS + 20);
+            });
+            return {
+                configOptions: [],
+                modes: [],
+                models: [],
+            };
+        });
+
+        const snapshot = (await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        })) as AiSessionSnapshot;
+
+        expect(snapshot.activeTurnStartedAt ?? null).toBeNull();
+        expect(snapshot.status).toBe("idle");
+        expect(
+            emittedEvents.some((event) => {
+                if (event.event !== "ai.snapshot.updated") {
+                    return false;
+                }
+                const { update } = event.payload;
+                return update.kind === "snapshot"
+                    ? update.snapshot.status === "streaming"
+                    : update.patch.changes.status === "streaming";
+            }),
+        ).toBe(false);
     });
 
     it("replays early session updates after the runtime session mapping is registered", async () => {
