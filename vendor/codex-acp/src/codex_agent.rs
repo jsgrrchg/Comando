@@ -76,6 +76,10 @@ const GPT_5_5_DISPLAY_NAME: &str = "GPT-5.5";
 const GPT_5_5_DESCRIPTION: &str =
     "Frontier model for complex coding, research, and real-world work.";
 
+fn debug_ai_worker_enabled() -> bool {
+    matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
+}
+
 impl CodexAgent {
     /// Create a new `CodexAgent` with the given configuration
     pub async fn new(
@@ -333,6 +337,12 @@ impl CodexAgent {
         session_id: SessionId,
         cx: ConnectionTo<Client>,
     ) -> Result<Arc<Thread>, Error> {
+        if debug_ai_worker_enabled() {
+            info!(
+                session_id = %session_id,
+                "diagnostic: reloading ACP session thread"
+            );
+        }
         self.sessions.lock().unwrap().remove(&session_id);
 
         let cwd = self
@@ -352,6 +362,14 @@ impl CodexAgent {
         .map_err(|e| Error::internal_error().data(e.to_string()))?
         .ok_or_else(|| Error::resource_not_found(None))?;
 
+        if debug_ai_worker_enabled() {
+            info!(
+                rollout_path = %rollout_path.display(),
+                session_id = %session_id,
+                "diagnostic: resolved ACP rollout for session reload"
+            );
+        }
+
         let history = RolloutRecorder::get_rollout_history(&rollout_path)
             .await
             .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -361,6 +379,21 @@ impl CodexAgent {
             InitialHistory::Forked(items) => items.clone(),
             InitialHistory::Cleared | InitialHistory::New => Vec::new(),
         };
+        let history_kind = match &history {
+            InitialHistory::Resumed(_) => "resumed",
+            InitialHistory::Forked(_) => "forked",
+            InitialHistory::Cleared => "cleared",
+            InitialHistory::New => "new",
+        };
+
+        if debug_ai_worker_enabled() {
+            info!(
+                history_kind = history_kind,
+                rollout_items = rollout_items.len(),
+                session_id = %session_id,
+                "diagnostic: replaying ACP rollout history during session reload"
+            );
+        }
 
         let mut config = self.build_session_config(&cwd, Vec::new())?;
 
@@ -390,7 +423,19 @@ impl CodexAgent {
         ));
 
         thread.replay_history(rollout_items).await?;
+        if debug_ai_worker_enabled() {
+            info!(
+                session_id = %session_id,
+                "diagnostic: ACP rollout history replay completed"
+            );
+        }
         drop(thread.load().await?);
+        if debug_ai_worker_enabled() {
+            info!(
+                session_id = %session_id,
+                "diagnostic: ACP session reload load completed"
+            );
+        }
 
         self.session_roots
             .lock()
@@ -1062,6 +1107,13 @@ impl CodexAgent {
         let retry_request = request.clone();
         let session_id = request.session_id.clone();
         let thread = self.get_thread(&session_id)?;
+        if debug_ai_worker_enabled() {
+            info!(
+                prompt_items = retry_request.prompt.len(),
+                session_id = %session_id,
+                "diagnostic: submitting ACP prompt"
+            );
+        }
         let stop_reason = match thread.prompt(request).await {
             Ok(stop_reason) => stop_reason,
             Err(error) => {
@@ -1069,13 +1121,26 @@ impl CodexAgent {
                     "Prompt failed for session {}; reloading the rollout and retrying once",
                     session_id
                 );
-                let reloaded_thread = self.reload_session_thread(session_id, cx).await?;
+                if debug_ai_worker_enabled() {
+                    info!(
+                        error = %error,
+                        session_id = %session_id,
+                        "diagnostic: ACP prompt failed before reload retry"
+                    );
+                }
+                let reloaded_thread = self.reload_session_thread(session_id.clone(), cx).await?;
                 reloaded_thread
                     .prompt(retry_request)
                     .await
                     .map_err(|_| error)?
             }
         };
+        if debug_ai_worker_enabled() {
+            info!(
+                session_id = %session_id,
+                "diagnostic: ACP prompt completed"
+            );
+        }
 
         Ok(PromptResponse::new(stop_reason))
     }

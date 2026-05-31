@@ -182,6 +182,8 @@ const CODEX_ACP_REASONING_EFFORT_SUFFIXES = [
 const MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION = 16;
 const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
 const PRE_EDIT_SNAPSHOT_MAX_BYTES = 5 * 1024 * 1024;
+const AI_DIAGNOSTIC_TEXT_MAX_LENGTH = 500;
+const ACP_TERMINAL_OUTPUT_DIAGNOSTIC_MAX_LENGTH = 10_000;
 
 function setDesiredConfigValue(
     values: Map<string, boolean | string>,
@@ -405,6 +407,14 @@ export class AiWorkerRuntime {
     async #prepareSession(
         params: AiWorkerRpcMethodMap["ai.prepareSession"]["params"],
     ): Promise<AiSessionSnapshot> {
+        this.#emitLog("debug", "Preparing AI runtime session.", {
+            parentSessionId: params.launch.persistedSnapshot.parentSessionId ?? null,
+            runtimeId: params.launch.input.runtimeId,
+            runtimeSessionId: params.launch.persistedSnapshot.runtimeSessionId,
+            sessionId: params.launch.input.sessionId,
+            status: params.launch.persistedSnapshot.status,
+            trackedFiles: params.launch.persistedSnapshot.trackedFiles.length,
+        });
         const liveSession = await this.#ensureRuntimeSession(params.launch);
         return liveSession.snapshot;
     }
@@ -442,6 +452,15 @@ export class AiWorkerRuntime {
         );
         liveSession.preEditSnapshots.clear();
         this.#clearSubagentMirrorTurn(liveSession);
+        this.#emitSessionDiagnostic(
+            "Dispatching prompt to AI runtime.",
+            liveSession,
+            {
+                attachments: params.input.attachments.length,
+                messageId: userMessageId,
+                promptCharacters: displayContent.length,
+            },
+        );
         this.#setPendingUserTextEcho(liveSession, {
             expectedContentBlocks: promptContentBlocks,
             expectedTexts: [promptText, displayContent],
@@ -497,6 +516,10 @@ export class AiWorkerRuntime {
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             this.#clearPendingUserTextEcho(liveSession);
+            this.#emitSessionDiagnostic("Prompt completed.", liveSession, {
+                messageId: userMessageId,
+                stopReason: response.stopReason,
+            });
 
             return {
                 sessionId: params.input.sessionId,
@@ -519,6 +542,10 @@ export class AiWorkerRuntime {
             });
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
+            this.#emitSessionDiagnostic("Prompt failed.", liveSession, {
+                lastError: message,
+                messageId: userMessageId,
+            });
             throw error;
         }
     }
@@ -1034,6 +1061,13 @@ export class AiWorkerRuntime {
             existing.runtimeId === launch.input.runtimeId &&
             sameAdditionalRoots(existing.additionalRoots, launch.additionalRoots)
         ) {
+            this.#emitSessionDiagnostic(
+                "Reusing live AI runtime session.",
+                existing,
+                {
+                    ownerWindowId: launch.ownerWindowId,
+                },
+            );
             existing.ownerWindowId = launch.ownerWindowId;
             existing.runtimeConnection.ownerWindowId = launch.ownerWindowId;
             existing.desiredSelections = launch.desiredSelections;
@@ -1042,6 +1076,13 @@ export class AiWorkerRuntime {
             return existing;
         }
         if (existing) {
+            this.#emitSessionDiagnostic(
+                "Disposing incompatible live AI runtime session before relaunch.",
+                existing,
+                {
+                    nextRuntimeId: launch.input.runtimeId,
+                },
+            );
             this.#disposeLiveSession(launch.input.sessionId, existing, {
                 closeRuntimeSession: false,
                 emitClosedEvent: false,
@@ -1202,6 +1243,10 @@ export class AiWorkerRuntime {
             if (liveConnection.stderrChunks.length > 20) {
                 liveConnection.stderrChunks.shift();
             }
+            this.#emitSessionDiagnostic("AI runtime stderr chunk.", liveSession, {
+                bytes: Buffer.byteLength(text, "utf8"),
+                text: truncateDiagnosticText(text),
+            });
         };
         liveConnection.stderrHandler = stderrHandler;
         child.stderr.on("data", stderrHandler);
@@ -1234,6 +1279,11 @@ export class AiWorkerRuntime {
             launch.input.sessionId,
             liveSession,
         );
+        this.#emitSessionDiagnostic("Starting AI runtime process.", liveSession, {
+            connectionId: liveConnection.connectionId,
+            executable: launch.resolvedRuntime.executable,
+            ownerWindowId: launch.ownerWindowId,
+        });
         this.#queueSnapshotFlush(liveSession);
 
         try {
@@ -1267,6 +1317,9 @@ export class AiWorkerRuntime {
                 launch.input.sessionId,
                 openedSession.runtimeSessionId,
             );
+            this.#emitSessionDiagnostic("Opened AI runtime session.", liveSession, {
+                restored: Boolean(persistedSnapshot.runtimeSessionId),
+            });
             await this.#applyStoredSessionSelections(liveSession);
             liveSession.snapshot = {
                 ...liveSession.snapshot,
@@ -1290,6 +1343,13 @@ export class AiWorkerRuntime {
                 updatedAt: new Date().toISOString(),
             };
             this.#queueSnapshotFlush(liveSession);
+            this.#emitSessionDiagnostic(
+                "AI runtime session startup failed.",
+                liveSession,
+                {
+                    lastError: message,
+                },
+            );
             this.#disposeLiveSession(launch.input.sessionId, liveSession, {
                 emitClosedEvent: false,
             });
@@ -1319,6 +1379,13 @@ export class AiWorkerRuntime {
         if (liveSession.snapshot.runtimeSessionId) {
             try {
                 liveSession.isRestoring = true;
+                this.#emitSessionDiagnostic(
+                    "Loading persisted AI runtime session.",
+                    liveSession,
+                    {
+                        restoreSource: "loadSession",
+                    },
+                );
                 const response = await liveSession.connection.loadSession({
                     additionalDirectories,
                     cwd: liveSession.cwd,
@@ -1332,12 +1399,23 @@ export class AiWorkerRuntime {
                     runtimeSessionId: liveSession.snapshot.runtimeSessionId,
                 };
             } catch (error) {
+                this.#emitSessionDiagnostic(
+                    "Persisted AI runtime session load failed; opening a new session.",
+                    liveSession,
+                    {
+                        lastError:
+                            error instanceof Error ? error.message : String(error),
+                    },
+                );
                 debugBenignError("ai.worker.loadSession.resume", error);
             } finally {
                 liveSession.isRestoring = false;
             }
         }
 
+        this.#emitSessionDiagnostic("Creating new AI runtime session.", liveSession, {
+            restoreSource: "newSession",
+        });
         const response = await liveSession.connection.newSession({
             additionalDirectories,
             cwd: liveSession.cwd,
@@ -1396,12 +1474,29 @@ export class AiWorkerRuntime {
         liveConnection: LiveAcpConnection,
         params: SessionNotification,
     ): Promise<void> {
+        const meta = getSessionNotificationMeta(params);
         const liveSession = this.#resolveLiveSessionForRuntimeSessionId(
             liveConnection,
             params.sessionId,
         );
         if (liveSession) {
-            const meta = getSessionNotificationMeta(params);
+            const terminalOutputDiagnostic = getTerminalOutputDiagnostic(
+                meta,
+                liveSession.terminalOutputBuffers,
+            );
+            this.#emitSessionDiagnostic(
+                "Received AI runtime session update.",
+                liveSession,
+                {
+                    ...buildRuntimeSessionUpdateDiagnosticContext(params, meta),
+                    streamSource: liveSession.isRestoring ? "restore" : "live",
+                    terminalAccumulatedCharacters:
+                        terminalOutputDiagnostic?.nextCharacters ?? null,
+                    terminalDataCharacters:
+                        terminalOutputDiagnostic?.dataCharacters ?? null,
+                    terminalId: terminalOutputDiagnostic?.terminalId ?? null,
+                },
+            );
             if (
                 readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
                 CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
@@ -1435,6 +1530,14 @@ export class AiWorkerRuntime {
             params,
         );
         if (subagentSession) {
+            this.#emitSessionDiagnostic(
+                "Received AI runtime update for newly registered subagent.",
+                subagentSession,
+                {
+                    ...buildRuntimeSessionUpdateDiagnosticContext(params, meta),
+                    streamSource: "live",
+                },
+            );
             const result = this.#handleSessionUpdate(subagentSession, params);
             this.#flushSnapshotEvent(subagentSession);
             return result;
@@ -1442,6 +1545,11 @@ export class AiWorkerRuntime {
 
         // Some fast runtimes can emit session updates before newSession/loadSession
         // unwinds and gives us the runtime session ID to map.
+        this.#emitLog("debug", "Buffering AI runtime update before session mapping.", {
+            ...buildRuntimeSessionUpdateDiagnosticContext(params, meta),
+            runtimeId: liveConnection.runtimeId,
+            runtimeSessionId: params.sessionId,
+        });
         this.#bufferPendingSessionUpdate(liveConnection, params);
         return Promise.resolve();
     }
@@ -1477,6 +1585,7 @@ export class AiWorkerRuntime {
             this.#emitLog("warn", "Ignoring subagent session without parent.", {
                 runtimeChildSessionId,
                 runtimeId: liveConnection.runtimeId,
+                runtimeSessionId: params.sessionId,
             });
             return null;
         }
@@ -1516,6 +1625,14 @@ export class AiWorkerRuntime {
                     parentSession,
                     params,
                     meta,
+                );
+                this.#emitSessionDiagnostic(
+                    "Hydrated existing ACP subagent session metadata.",
+                    existingSession,
+                    {
+                        runtimeChildSessionId,
+                        runtimeParentSessionId,
+                    },
                 );
             }
             return existingSession;
@@ -1600,6 +1717,7 @@ export class AiWorkerRuntime {
         this.#emitLog("debug", "Registered ACP subagent session.", {
             parentSessionId: parentAppSessionId,
             runtimeChildSessionId,
+            runtimeParentSessionId,
             runtimeId: liveConnection.runtimeId,
             sessionId: appSessionId,
         });
@@ -2213,6 +2331,9 @@ export class AiWorkerRuntime {
         turnId: string | null,
         updatedAt: string,
     ): void {
+        this.#emitSessionDiagnostic("AI runtime turn started.", liveSession, {
+            turnId,
+        });
         liveSession.preEditSnapshots.clear();
         liveSession.activeTurnId = turnId;
         liveSession.snapshot = finalizeStreamingMessages({
@@ -2245,6 +2366,9 @@ export class AiWorkerRuntime {
         liveSession.activeTurnId = null;
         this.#clearPendingUserTextEcho(liveSession);
         this.#resolvePendingPermission(liveSession, null);
+        this.#emitSessionDiagnostic("AI runtime turn ended.", liveSession, {
+            turnId,
+        });
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: null,
@@ -3467,14 +3591,22 @@ export class AiWorkerRuntime {
             liveSession.pendingPersistTimer = null;
         }
 
+        const update = buildAiSessionUpdate(
+            liveSession.lastBroadcastSnapshot,
+            liveSession.snapshot,
+        );
+        this.#emitSessionDiagnostic("Flushing AI session snapshot.", liveSession, {
+            changedKeys:
+                update.kind === "patch"
+                    ? Object.keys(update.patch.changes).sort().join(",")
+                    : "snapshot",
+            updateKind: update.kind,
+        });
         this.#emitEvent({
             event: "ai.snapshot.updated",
             payload: {
                 ownerWindowId: liveSession.ownerWindowId,
-                update: buildAiSessionUpdate(
-                    liveSession.lastBroadcastSnapshot,
-                    liveSession.snapshot,
-                ),
+                update,
             },
             type: "event",
         });
@@ -3656,11 +3788,22 @@ export class AiWorkerRuntime {
             return;
         }
 
+        const chunkText =
+            typeof chunk === "string" ? chunk : chunk.toString("utf8");
         const nextOutput = appendTerminalOutput(
             terminal.output,
-            typeof chunk === "string" ? chunk : chunk.toString("utf8"),
+            chunkText,
             terminal.outputByteLimit,
         );
+        this.#emitSessionDiagnostic("ACP client terminal output appended.", liveSession, {
+            terminalAccumulatedBytes: Buffer.byteLength(
+                nextOutput.output,
+                "utf8",
+            ),
+            terminalId,
+            terminalOutputBytes: Buffer.byteLength(chunkText, "utf8"),
+            terminalTruncated: terminal.truncated || nextOutput.truncated,
+        });
         terminal.output = nextOutput.output;
         terminal.truncated = terminal.truncated || nextOutput.truncated;
         this.#upsertTerminalActivity(liveSession, terminalId, {
@@ -4239,6 +4382,29 @@ export class AiWorkerRuntime {
         });
     }
 
+    #emitSessionDiagnostic(
+        message: string,
+        liveSession: LiveAcpSession,
+        context: Record<
+            string,
+            boolean | number | string | null | undefined
+        > = {},
+    ): void {
+        this.#emitLog("debug", message, {
+            activeTurnId: liveSession.activeTurnId,
+            isRestoring: liveSession.isRestoring,
+            messages: liveSession.snapshot.messages.length,
+            parentSessionId: liveSession.snapshot.parentSessionId ?? null,
+            runtimeId: liveSession.runtimeId,
+            runtimeSessionId: liveSession.snapshot.runtimeSessionId,
+            sessionId: liveSession.snapshot.sessionId,
+            status: liveSession.snapshot.status,
+            toolActivity: liveSession.snapshot.toolActivity.length,
+            trackedFiles: liveSession.snapshot.trackedFiles.length,
+            ...context,
+        });
+    }
+
     #emitLog(
         level: "debug" | "error" | "info" | "warn",
         message: string,
@@ -4275,6 +4441,64 @@ function getSessionNotificationMeta(
     return {
         ...notificationMeta,
         ...updateMeta,
+    };
+}
+
+function buildRuntimeSessionUpdateDiagnosticContext(
+    params: SessionNotification,
+    meta: Record<string, unknown>,
+): Record<string, boolean | number | string | null | undefined> {
+    const update = params.update;
+
+    return {
+        messageId:
+            "messageId" in update && typeof update.messageId === "string"
+                ? update.messageId
+                : null,
+        sessionUpdate: update.sessionUpdate,
+        statusEventType: readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY),
+        subagentEventType: readMetaString(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY),
+        toolCallId:
+            "toolCallId" in update && typeof update.toolCallId === "string"
+                ? update.toolCallId
+                : null,
+        turnEventType: readMetaString(meta, CODEX_ACP_TURN_EVENT_TYPE_KEY),
+        turnId: readMetaString(meta, CODEX_ACP_TURN_ID_KEY),
+    };
+}
+
+function getTerminalOutputDiagnostic(
+    meta: Record<string, unknown>,
+    terminalOutputBuffers: Map<string, string>,
+): {
+    readonly dataCharacters: number;
+    readonly nextCharacters: number;
+    readonly terminalId: string;
+} | null {
+    const terminalOutput = meta.terminal_output;
+    if (!isRecordValue(terminalOutput)) {
+        return null;
+    }
+
+    const terminalId =
+        typeof terminalOutput.terminal_id === "string"
+            ? terminalOutput.terminal_id
+            : null;
+    const data =
+        typeof terminalOutput.data === "string" ? terminalOutput.data : null;
+    if (!terminalId || data === null) {
+        return null;
+    }
+
+    const previousCharacters =
+        terminalOutputBuffers.get(terminalId)?.length ?? 0;
+    return {
+        dataCharacters: data.length,
+        nextCharacters: Math.min(
+            previousCharacters + data.length,
+            ACP_TERMINAL_OUTPUT_DIAGNOSTIC_MAX_LENGTH,
+        ),
+        terminalId,
     };
 }
 
@@ -5125,6 +5349,15 @@ function readRecordString(
     return typeof candidate === "string" && candidate.trim().length > 0
         ? candidate.trim()
         : null;
+}
+
+function truncateDiagnosticText(value: string): string {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (normalized.length <= AI_DIAGNOSTIC_TEXT_MAX_LENGTH) {
+        return normalized;
+    }
+
+    return `${normalized.slice(0, AI_DIAGNOSTIC_TEXT_MAX_LENGTH)}...`;
 }
 
 function buildTerminalEnv(

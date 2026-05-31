@@ -144,6 +144,10 @@ const CODEX_READ_ONLY_PROFILE_ID: &str = ":read-only";
 const CODEX_WORKSPACE_PROFILE_ID: &str = ":workspace";
 const CODEX_DANGER_NO_SANDBOX_PROFILE_ID: &str = ":danger-no-sandbox";
 
+fn debug_ai_worker_enabled() -> bool {
+    matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
+}
+
 fn session_mode_id_for_active_profile(profile_id: &str) -> Option<&'static str> {
     match profile_id {
         CODEX_READ_ONLY_PROFILE_ID => Some("read-only"),
@@ -494,6 +498,10 @@ impl Thread {
 
     pub async fn replay_history(&self, history: Vec<RolloutItem>) -> Result<(), Error> {
         let (response_tx, response_rx) = oneshot::channel();
+        let history_items = history.len();
+        if debug_ai_worker_enabled() {
+            info!(history_items, "diagnostic: queueing ACP history replay");
+        }
 
         let message = ThreadMessage::ReplayHistory {
             history,
@@ -3039,8 +3047,24 @@ impl PromptState {
         // Stream output bytes to the display-only terminal via ToolCallUpdate meta.
         if let Some(active_command) = self.active_commands.get_mut(&call_id) {
             let data_str = String::from_utf8_lossy(&chunk).to_string();
+            let supports_terminal_output = client.supports_terminal_output(active_command);
+            let next_output_chars = if supports_terminal_output {
+                active_command.output.len()
+            } else {
+                active_command.output.len() + data_str.len()
+            };
 
-            if client.supports_terminal_output(active_command) {
+            if debug_ai_worker_enabled() {
+                info!(
+                    call_id = %call_id,
+                    chunk_bytes = chunk.len(),
+                    next_output_chars,
+                    supports_terminal_output,
+                    "diagnostic: ACP exec output delta"
+                );
+            }
+
+            if supports_terminal_output {
                 let update = ToolCallUpdate::new(
                     active_command.tool_call_id.clone(),
                     ToolCallUpdateFields::new(),
@@ -3170,7 +3194,23 @@ impl PromptState {
         let stdin = format!("\n{stdin}\n");
         // Stream output bytes to the display-only terminal via ToolCallUpdate meta.
         if let Some(active_command) = self.active_commands.get_mut(&call_id) {
-            let update = if client.supports_terminal_output(active_command) {
+            let supports_terminal_output = client.supports_terminal_output(active_command);
+            let next_output_chars = if supports_terminal_output {
+                active_command.output.len()
+            } else {
+                active_command.output.len() + stdin.len()
+            };
+            if debug_ai_worker_enabled() {
+                info!(
+                    call_id = %call_id,
+                    next_output_chars,
+                    stdin_chars = stdin.len(),
+                    supports_terminal_output,
+                    "diagnostic: ACP terminal interaction"
+                );
+            }
+
+            let update = if supports_terminal_output {
                 ToolCallUpdate::new(
                     active_command.tool_call_id.clone(),
                     ToolCallUpdateFields::new(),
@@ -4670,6 +4710,12 @@ impl<A: Auth> ThreadActor<A> {
     /// - `EventMsg` for user/agent messages and reasoning (like the TUI does)
     /// - `ResponseItem` for tool calls only (not persisted as EventMsg)
     async fn handle_replay_history(&mut self, history: Vec<RolloutItem>) -> Result<(), Error> {
+        if debug_ai_worker_enabled() {
+            info!(
+                history_items = history.len(),
+                "diagnostic: handling ACP replay history"
+            );
+        }
         for item in history {
             match item {
                 RolloutItem::EventMsg(event_msg) => {

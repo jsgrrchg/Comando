@@ -147,6 +147,67 @@ function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
     return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
 }
 
+function emitAiMainDiagnostic(
+    message: string,
+    context: Record<
+        string,
+        boolean | number | string | null | undefined
+    > = {},
+): void {
+    if (
+        process.env.COMANDO_DEBUG_AI_MAIN !== "1" &&
+        process.env.COMANDO_DEBUG_AI_WORKER !== "1"
+    ) {
+        return;
+    }
+
+    console.debug("[ai-main]", message, context);
+}
+
+function describeAiSessionUpdate(
+    update: AiSessionUpdate,
+): Record<string, boolean | number | string | null | undefined> {
+    if (update.kind === "snapshot") {
+        return {
+            changedKeys: "snapshot",
+            parentSessionId: update.snapshot.parentSessionId ?? null,
+            runtimeId: update.snapshot.runtimeId,
+            runtimeSessionId: update.snapshot.runtimeSessionId,
+            sessionId: update.snapshot.sessionId,
+            status: update.snapshot.status,
+            updateKind: "snapshot",
+        };
+    }
+
+    return {
+        changedKeys: Object.keys(update.patch.changes).sort().join(","),
+        parentSessionId: update.patch.changes.parentSessionId ?? null,
+        runtimeId: update.patch.runtimeId,
+        runtimeSessionId: update.patch.changes.runtimeSessionId ?? null,
+        sessionId: update.patch.sessionId,
+        status: update.patch.changes.status ?? null,
+        updateKind: "patch",
+    };
+}
+
+function withAiRuntimeDiagnosticsEnv(
+    runtimeId: AiRuntimeId,
+    env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+    if (
+        runtimeId !== "codex" ||
+        process.env.COMANDO_DEBUG_AI_WORKER !== "1" ||
+        env.RUST_LOG?.trim()
+    ) {
+        return env;
+    }
+
+    return {
+        ...env,
+        RUST_LOG: "codex_acp=debug",
+    };
+}
+
 type LiveSessionContext = {
     readonly additionalRoots: readonly string[];
     ownerWindowId: string;
@@ -205,8 +266,17 @@ export class AiService {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ): void {
+        emitAiMainDiagnostic("Received worker AI session update.", {
+            ownerWindowId,
+            ...describeAiSessionUpdate(update),
+        });
         const snapshot = this.#resolveSnapshotFromWorkerUpdate(update);
         if (!snapshot) {
+            emitAiMainDiagnostic("Ignored worker AI session update.", {
+                ownerWindowId,
+                reason: "missing-live-snapshot",
+                ...describeAiSessionUpdate(update),
+            });
             return;
         }
 
@@ -525,6 +595,14 @@ export class AiService {
             input,
             ownerWindowId,
         );
+        emitAiMainDiagnostic("Preparing AI session.", {
+            ownerWindowId,
+            parentSessionId: launch.persistedSnapshot.parentSessionId ?? null,
+            runtimeId: input.runtimeId,
+            runtimeSessionId: launch.persistedSnapshot.runtimeSessionId,
+            sessionId: input.sessionId,
+            status: launch.persistedSnapshot.status,
+        });
         this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
         try {
             const snapshot = await worker.prepareSession({
@@ -532,6 +610,14 @@ export class AiService {
                 launch,
             });
             this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
+            emitAiMainDiagnostic("Prepared AI session.", {
+                ownerWindowId,
+                parentSessionId: snapshot.parentSessionId ?? null,
+                runtimeId: snapshot.runtimeId,
+                runtimeSessionId: snapshot.runtimeSessionId,
+                sessionId: snapshot.sessionId,
+                status: snapshot.status,
+            });
             return snapshot;
         } catch (error) {
             this.#discardPreparedSessionContextOnFailure(
@@ -539,6 +625,12 @@ export class AiService {
                 ownerWindowId,
                 input.runtimeId,
             );
+            emitAiMainDiagnostic("Failed to prepare AI session.", {
+                lastError: error instanceof Error ? error.message : String(error),
+                ownerWindowId,
+                runtimeId: input.runtimeId,
+                sessionId: input.sessionId,
+            });
             throw error;
         }
     }
@@ -565,11 +657,37 @@ export class AiService {
             input,
             ownerWindowId,
         );
-        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
-        return await worker.sendPrompt({
-            input,
-            launch,
+        emitAiMainDiagnostic("Sending AI prompt.", {
+            attachments: input.attachments.length,
+            ownerWindowId,
+            parentSessionId: launch.persistedSnapshot.parentSessionId ?? null,
+            promptCharacters: input.prompt.length,
+            runtimeId: input.runtimeId,
+            runtimeSessionId: launch.persistedSnapshot.runtimeSessionId,
+            sessionId: input.sessionId,
         });
+        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
+        try {
+            const result = await worker.sendPrompt({
+                input,
+                launch,
+            });
+            emitAiMainDiagnostic("AI prompt finished.", {
+                ownerWindowId,
+                runtimeId: input.runtimeId,
+                sessionId: input.sessionId,
+                stopReason: result.stopReason,
+            });
+            return result;
+        } catch (error) {
+            emitAiMainDiagnostic("AI prompt failed.", {
+                lastError: error instanceof Error ? error.message : String(error),
+                ownerWindowId,
+                runtimeId: input.runtimeId,
+                sessionId: input.sessionId,
+            });
+            throw error;
+        }
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
@@ -1117,6 +1235,13 @@ export class AiService {
             sessionId: input.sessionId,
             worktreeId: input.worktreeId ?? null,
         });
+        emitAiMainDiagnostic("Remembered live AI session context.", {
+            additionalRoots: additionalRoots.length,
+            ownerWindowId,
+            parentSessionId,
+            runtimeId: input.runtimeId,
+            sessionId: input.sessionId,
+        });
     }
 
     #cacheLiveSessionSnapshot(
@@ -1127,6 +1252,14 @@ export class AiService {
         const context = this.#liveSessionContexts.get(snapshot.sessionId);
         if (context) {
             context.ownerWindowId = ownerWindowId;
+            emitAiMainDiagnostic("Cached live AI session snapshot.", {
+                ownerWindowId,
+                parentSessionId: snapshot.parentSessionId ?? null,
+                runtimeId: snapshot.runtimeId,
+                runtimeSessionId: snapshot.runtimeSessionId,
+                sessionId: snapshot.sessionId,
+                status: snapshot.status,
+            });
             return;
         }
 
@@ -1135,6 +1268,16 @@ export class AiService {
             ? this.#liveSessionContexts.get(parentSessionId)
             : null;
         if (!parentContext) {
+            emitAiMainDiagnostic(
+                "Cached child AI snapshot without live parent context.",
+                {
+                    ownerWindowId,
+                    parentSessionId,
+                    runtimeId: snapshot.runtimeId,
+                    runtimeSessionId: snapshot.runtimeSessionId,
+                    sessionId: snapshot.sessionId,
+                },
+            );
             return;
         }
 
@@ -1146,6 +1289,13 @@ export class AiService {
             runtimeId: snapshot.runtimeId,
             sessionId: snapshot.sessionId,
             worktreeId: snapshot.worktreeId ?? null,
+        });
+        emitAiMainDiagnostic("Hydrated child AI live session context.", {
+            ownerWindowId,
+            parentSessionId,
+            runtimeId: snapshot.runtimeId,
+            runtimeSessionId: snapshot.runtimeSessionId,
+            sessionId: snapshot.sessionId,
         });
     }
 
@@ -1202,6 +1352,10 @@ export class AiService {
 
         const previousSnapshot = this.#liveSnapshots.get(update.patch.sessionId);
         if (!previousSnapshot) {
+            emitAiMainDiagnostic(
+                "Cannot resolve AI session patch without previous live snapshot.",
+                describeAiSessionUpdate(update),
+            );
             return null;
         }
 
@@ -1251,6 +1405,18 @@ export class AiService {
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             });
+
+        emitAiMainDiagnostic("Built AI worker launch input.", {
+            additionalRoots: additionalRoots.length,
+            hasPersistedRuntimeSession: Boolean(persistedSnapshot.runtimeSessionId),
+            parentSessionId: persistedSnapshot.parentSessionId ?? null,
+            projectId: input.projectId,
+            runtimeId: input.runtimeId,
+            runtimeSessionId: persistedSnapshot.runtimeSessionId,
+            sessionId: input.sessionId,
+            status: persistedSnapshot.status,
+            worktreeId: input.worktreeId ?? null,
+        });
 
         return {
             additionalRoots,
@@ -1785,7 +1951,10 @@ export class AiService {
         return {
             args: resolved.args,
             command: resolved.command,
-            env: applyCodexAuthEnv(process.env, settings, secrets),
+            env: withAiRuntimeDiagnosticsEnv(
+                "codex",
+                applyCodexAuthEnv(process.env, settings, secrets),
+            ),
             executable: resolved.executable,
             status: getCodexRuntimeStatus(settings, secrets),
         };

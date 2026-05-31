@@ -118,6 +118,60 @@ const EMPTY_RUNTIME_CATALOG: AiRuntimeCatalog = {
     models: [],
 };
 
+function emitAiRendererDiagnostic(
+    message: string,
+    context: Record<
+        string,
+        boolean | number | string | null | undefined
+    > = {},
+): void {
+    const localStorage =
+        typeof window === "undefined" ? null : (window.localStorage ?? null);
+    if (
+        !import.meta.env.DEV ||
+        !localStorage ||
+        localStorage.getItem("comando.debug.ai") !== "1"
+    ) {
+        return;
+    }
+
+    console.debug("[ai-renderer]", message, context);
+}
+
+function describeAiSessionUpdate(
+    update: AiSessionUpdate,
+): Record<string, boolean | number | string | null | undefined> {
+    if (update.kind === "snapshot") {
+        return {
+            changedKeys: "snapshot",
+            parentSessionId: update.snapshot.parentSessionId ?? null,
+            runtimeId: update.snapshot.runtimeId,
+            runtimeSessionId: update.snapshot.runtimeSessionId,
+            sessionId: update.snapshot.sessionId,
+            status: update.snapshot.status,
+            updateKind: "snapshot",
+        };
+    }
+
+    return {
+        changedKeys: Object.keys(update.patch.changes).sort().join(","),
+        parentSessionId: update.patch.changes.parentSessionId ?? null,
+        runtimeId: update.patch.runtimeId,
+        runtimeSessionId: update.patch.changes.runtimeSessionId ?? null,
+        sessionId: update.patch.sessionId,
+        status: update.patch.changes.status ?? null,
+        updateKind: "patch",
+    };
+}
+
+function readTabParentSessionId(tab: RuntimeAiSessionTab): string | null {
+    if (!("parentSessionId" in tab)) {
+        return null;
+    }
+
+    return typeof tab.parentSessionId === "string" ? tab.parentSessionId : null;
+}
+
 type CodexAuthMethodId = "chatgpt" | "codex-api-key" | "openai-api-key";
 
 interface CodexRuntimeSettingsInput {
@@ -444,6 +498,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionUpdate: (update) => {
+        emitAiRendererDiagnostic("Applying AI session update.", {
+            ...describeAiSessionUpdate(update),
+        });
         if (update.kind === "snapshot") {
             get().applySessionSnapshot(update.snapshot);
             return;
@@ -483,9 +540,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     : null;
 
                 if (!nextCatalog || !hasRuntimeCatalog(nextCatalog)) {
+                    emitAiRendererDiagnostic(
+                        "Ignored AI session patch without base snapshot.",
+                        {
+                            ...describeAiSessionUpdate(update),
+                        },
+                    );
                     return state;
                 }
 
+                emitAiRendererDiagnostic(
+                    "Stored AI runtime catalog from orphan patch.",
+                    {
+                        ...describeAiSessionUpdate(update),
+                    },
+                );
                 return {
                     runtimeCatalogById: {
                         ...state.runtimeCatalogById,
@@ -511,6 +580,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 incomingSnapshot,
                 session,
             );
+            emitAiRendererDiagnostic("Resolved AI session patch.", {
+                messages: nextSnapshot.messages.length,
+                parentSessionId: nextSnapshot.parentSessionId ?? null,
+                runtimeId: nextSnapshot.runtimeId,
+                runtimeSessionId: nextSnapshot.runtimeSessionId,
+                sessionId: nextSnapshot.sessionId,
+                status: nextSnapshot.status,
+                toolActivity: nextSnapshot.toolActivity.length,
+                trackedFiles: nextSnapshot.trackedFiles.length,
+            });
             const nextCatalog = hasCatalogChanges(update.patch.changes)
                 ? extractRuntimeCatalog(nextSnapshot)
                 : null;
@@ -556,6 +635,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionSnapshot: (snapshot) => {
+        emitAiRendererDiagnostic("Applying AI session snapshot.", {
+            messages: snapshot.messages.length,
+            parentSessionId: snapshot.parentSessionId ?? null,
+            runtimeId: snapshot.runtimeId,
+            runtimeSessionId: snapshot.runtimeSessionId,
+            sessionId: snapshot.sessionId,
+            status: snapshot.status,
+            toolActivity: snapshot.toolActivity.length,
+            trackedFiles: snapshot.trackedFiles.length,
+        });
         let syncedTitle: string | null = null;
         set((state) => {
             const session =
@@ -573,6 +662,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 nextSnapshot,
                 session,
             );
+            emitAiRendererDiagnostic("Resolved AI session snapshot.", {
+                messages: resolvedSnapshot.messages.length,
+                parentSessionId: resolvedSnapshot.parentSessionId ?? null,
+                runtimeId: resolvedSnapshot.runtimeId,
+                runtimeSessionId: resolvedSnapshot.runtimeSessionId,
+                sessionId: resolvedSnapshot.sessionId,
+                status: resolvedSnapshot.status,
+                toolActivity: resolvedSnapshot.toolActivity.length,
+                trackedFiles: resolvedSnapshot.trackedFiles.length,
+            });
             const nextMeta = session.meta
                 ? session.meta.title === resolvedSnapshot.title
                     ? session.meta
@@ -643,6 +742,13 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     ensureSession: async (tab, options) => {
+        emitAiRendererDiagnostic("Ensuring AI session hydration.", {
+            force: Boolean(options?.force),
+            kind: tab.kind,
+            parentSessionId: readTabParentSessionId(tab),
+            runtimeId: tab.runtimeId,
+            sessionId: tab.sessionId,
+        });
         get().registerSessionTab(tab);
         const currentSession = get().sessions[tab.sessionId];
 
@@ -650,6 +756,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
             !options?.force &&
             (currentSession?.hydrated || currentSession?.isHydrating)
         ) {
+            emitAiRendererDiagnostic("Skipped AI session hydration.", {
+                hydrated: Boolean(currentSession?.hydrated),
+                isHydrating: Boolean(currentSession?.isHydrating),
+                runtimeId: tab.runtimeId,
+                sessionId: tab.sessionId,
+            });
             return;
         }
 
@@ -766,6 +878,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     incomingSnapshot,
                     currentSession,
                 );
+                emitAiRendererDiagnostic("Hydrated AI session.", {
+                    messages: nextSnapshot.messages.length,
+                    parentSessionId: nextSnapshot.parentSessionId ?? null,
+                    runtimeId: nextSnapshot.runtimeId,
+                    runtimeSessionId: nextSnapshot.runtimeSessionId,
+                    sessionId: nextSnapshot.sessionId,
+                    status: nextSnapshot.status,
+                    toolActivity: nextSnapshot.toolActivity.length,
+                    trackedFiles: nextSnapshot.trackedFiles.length,
+                });
 
                 return {
                     runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
@@ -792,6 +914,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 };
             });
         } catch (error) {
+            emitAiRendererDiagnostic("AI session hydration failed.", {
+                lastError: error instanceof Error ? error.message : String(error),
+                runtimeId: tab.runtimeId,
+                sessionId: tab.sessionId,
+            });
             set((state) => ({
                 runtimeCatalogById: {
                     ...state.runtimeCatalogById,
@@ -881,6 +1008,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     registerSessionTab: (tab) => {
         const persistedPreferences = readSessionReviewPreferencesForTab(tab);
+        emitAiRendererDiagnostic("Registering AI session tab.", {
+            kind: tab.kind,
+            parentSessionId: readTabParentSessionId(tab),
+            runtimeId: tab.runtimeId,
+            sessionId: tab.sessionId,
+        });
 
         set((state) => ({
             sessions: {

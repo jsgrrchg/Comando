@@ -151,6 +151,18 @@ if (!hasSingleInstanceLock) {
             });
             try {
                 aiWorkerClient = await createAiWorkerClient({
+                    onLog:
+                        process.env.COMANDO_DEBUG_AI_WORKER === "1"
+                            ? (payload) => {
+                                  const log =
+                                      payload.level === "error"
+                                          ? console.error
+                                          : payload.level === "warn"
+                                            ? console.warn
+                                            : console.debug;
+                                  log("[ai-worker]", payload.message, payload.context ?? {});
+                              }
+                            : undefined,
                     onRuntimeStatus: (status) => {
                         aiService?.handleWorkerRuntimeStatus(status);
                     },
