@@ -1540,7 +1540,7 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
-    it("keeps a terminal subagent breadcrumb response that arrives before turn complete", async () => {
+    it("keeps child assistant output owned by the child stream when parent response arrives first", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent terminal before complete");
         const childSnapshot = await registerSubagentSession(
@@ -1603,19 +1603,9 @@ describe("AiWorkerRuntime prepareSession", () => {
             },
         });
 
-        await vi.waitFor(() => {
-            expect(
-                getLatestPatchMessages(
-                    emittedEvents,
-                    childSnapshot.sessionId,
-                )?.filter(
-                    (message) =>
-                        message.kind === "assistant" &&
-                        message.content ===
-                            "terminal response before lifecycle end",
-                ),
-            ).toHaveLength(1);
-        });
+        expect(
+            getLatestPatchMessages(emittedEvents, childSnapshot.sessionId),
+        ).toBeNull();
         for (const text of ["terminal response ", "before lifecycle end"]) {
             await client.sessionUpdate({
                 sessionId: "runtime-subagent-1",
@@ -1975,10 +1965,6 @@ describe("AiWorkerRuntime prepareSession", () => {
             expect.objectContaining({
                 content: "Add a final hola line to ACTORES/Gabriel Boric.md",
                 kind: "user",
-            }),
-            expect.objectContaining({
-                content: "ACTORES/Gabriel Boric.md",
-                kind: "assistant",
             }),
         ]);
     });
@@ -3043,15 +3029,15 @@ describe("AiWorkerRuntime prepareSession", () => {
             ).toBe(true);
         });
         expect(
-            getLatestPatchMessages(emittedEvents, childSnapshot!.sessionId),
-        ).toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({
-                    content: "reopened and reported",
-                    kind: "assistant",
-                }),
-            ]),
-        );
+            getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot!.sessionId,
+            )?.some(
+                (message) =>
+                    message.kind === "assistant" &&
+                    message.content === "reopened and reported",
+            ),
+        ).toBe(false);
     });
 
     it("does not mark subagents idle for running interaction or resume breadcrumbs", async () => {
@@ -3264,10 +3250,6 @@ describe("AiWorkerRuntime prepareSession", () => {
                 content: "Report back without closing.",
                 kind: "user",
             }),
-            expect.objectContaining({
-                content: "report complete",
-                kind: "assistant",
-            }),
         ]);
     });
 
@@ -3435,14 +3417,13 @@ describe("AiWorkerRuntime prepareSession", () => {
                 (changes) => changes.status === "idle",
             ),
         ).toBe(false);
-        expect(getLatestPatchMessages(emittedEvents, firstChild.sessionId)).toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({
-                    content: "first report complete",
-                    kind: "assistant",
-                }),
-            ]),
-        );
+        expect(
+            getLatestPatchMessages(emittedEvents, firstChild.sessionId)?.some(
+                (message) =>
+                    message.kind === "assistant" &&
+                    message.content === "first report complete",
+            ),
+        ).toBe(false);
     });
 
     it("keeps subagent diffs isolated from parent tracked files", async () => {

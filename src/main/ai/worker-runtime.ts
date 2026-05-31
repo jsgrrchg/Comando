@@ -155,9 +155,6 @@ interface SuppressedInternalUserInputEcho {
 }
 
 interface SubagentMirrorTurnState {
-    assistantOutputSeen: boolean;
-    suppressedAssistantEchoText: string;
-    terminalAssistantContent: string | null;
     readonly toolCallId: string;
 }
 
@@ -1933,15 +1930,6 @@ export class AiWorkerRuntime {
                 break;
             }
             case "agent_message_chunk":
-                if (
-                    this.#shouldSuppressMirroredSubagentAssistantEcho(
-                        liveSession,
-                        update.content,
-                    )
-                ) {
-                    break;
-                }
-                this.#markSubagentAssistantOutputSeen(liveSession);
                 nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
                     "assistant",
@@ -2283,72 +2271,12 @@ export class AiWorkerRuntime {
         toolCallId: string,
     ): void {
         this.#subagentMirrorTurns.set(liveSession.snapshot.sessionId, {
-            assistantOutputSeen: false,
-            suppressedAssistantEchoText: "",
-            terminalAssistantContent: null,
             toolCallId,
         });
     }
 
     #clearSubagentMirrorTurn(liveSession: LiveAcpSession): void {
         this.#subagentMirrorTurns.delete(liveSession.snapshot.sessionId);
-    }
-
-    #markSubagentAssistantOutputSeen(liveSession: LiveAcpSession): void {
-        if (!isSubagentLiveSession(liveSession)) {
-            return;
-        }
-
-        const state = this.#subagentMirrorTurns.get(
-            liveSession.snapshot.sessionId,
-        );
-        if (state) {
-            state.assistantOutputSeen = true;
-        }
-    }
-
-    #rememberMirroredSubagentTerminalResponse(
-        liveSession: LiveAcpSession,
-        response: string,
-    ): void {
-        const state = this.#subagentMirrorTurns.get(
-            liveSession.snapshot.sessionId,
-        );
-        if (state) {
-            state.assistantOutputSeen = true;
-            state.terminalAssistantContent = response;
-            state.suppressedAssistantEchoText = "";
-        }
-    }
-
-    #shouldSuppressMirroredSubagentAssistantEcho(
-        liveSession: LiveAcpSession,
-        content: ContentBlock,
-    ): boolean {
-        if (!isSubagentLiveSession(liveSession) || content.type !== "text") {
-            return false;
-        }
-
-        const state = this.#subagentMirrorTurns.get(
-            liveSession.snapshot.sessionId,
-        );
-        const terminalContent = state?.terminalAssistantContent;
-        if (!state || !terminalContent) {
-            return false;
-        }
-
-        const nextEchoText = `${state.suppressedAssistantEchoText}${content.text}`;
-        const normalizedEchoText = normalizeEchoText(nextEchoText);
-        const normalizedTerminalContent = normalizeEchoText(terminalContent);
-        if (
-            normalizedEchoText.length === 0 ||
-            normalizedTerminalContent.startsWith(normalizedEchoText)
-        ) {
-            state.suppressedAssistantEchoText = nextEchoText;
-            return true;
-        }
-
-        return false;
     }
 
     #getSubagentMirrorTurn(
@@ -2613,16 +2541,6 @@ export class AiWorkerRuntime {
                 isTerminalSubagentBreadcrumb(meta, update)
             ) {
                 this.#mirrorSubagentTurnEnd(childSession, update, updatedAt);
-            } else if (
-                childSession.activeTurnId &&
-                mirrorTurn?.toolCallId === update.toolCallId &&
-                isTerminalSubagentBreadcrumb(meta, update)
-            ) {
-                this.#mirrorSubagentTerminalResponse(
-                    childSession,
-                    update,
-                    updatedAt,
-                );
             }
         }
     }
@@ -2696,9 +2614,7 @@ export class AiWorkerRuntime {
             return;
         }
 
-        const response = readSubagentTurnResponse(update);
-        const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
-        let nextSnapshot = finalizeStreamingMessages({
+        const nextSnapshot = finalizeStreamingMessages({
             ...childSession.snapshot,
             activeTurnStartedAt: null,
             pendingPermission: null,
@@ -2707,53 +2623,10 @@ export class AiWorkerRuntime {
             updatedAt,
         });
 
-        if (response && !mirrorTurn?.assistantOutputSeen) {
-            nextSnapshot = appendMirroredSubagentMessage(
-                nextSnapshot,
-                "assistant",
-                response,
-                `subagent:${update.toolCallId}:assistant`,
-                updatedAt,
-            );
-        }
-
         childSession.activeTurnId = null;
         this.#clearPendingUserTextEcho(childSession);
         this.#clearSubagentMirrorTurn(childSession);
         childSession.snapshot = nextSnapshot;
-        this.#queueSnapshotFlush(childSession);
-        this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
-    }
-
-    #mirrorSubagentTerminalResponse(
-        childSession: LiveAcpSession,
-        update: SessionNotification["update"],
-        updatedAt: string,
-    ): void {
-        if (
-            update.sessionUpdate !== "tool_call" &&
-            update.sessionUpdate !== "tool_call_update"
-        ) {
-            return;
-        }
-
-        const response = readSubagentTurnResponse(update);
-        const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
-        if (!response || mirrorTurn?.assistantOutputSeen) {
-            return;
-        }
-
-        childSession.snapshot = appendMirroredSubagentMessage(
-            {
-                ...childSession.snapshot,
-                updatedAt,
-            },
-            "assistant",
-            response,
-            `subagent:${update.toolCallId}:assistant`,
-            updatedAt,
-        );
-        this.#rememberMirroredSubagentTerminalResponse(childSession, response);
         this.#queueSnapshotFlush(childSession);
         this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
     }
@@ -2777,18 +2650,11 @@ export class AiWorkerRuntime {
             meta,
         );
         for (const childSession of childSessions) {
-            const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
             if (childSession.activeTurnId) {
                 continue;
             }
 
-            const response = readSubagentWaitingEndResponse(
-                update,
-                meta,
-                childSession.snapshot.runtimeSessionId,
-                childSession.snapshot.title,
-            );
-            let nextSnapshot = finalizeStreamingMessages({
+            const nextSnapshot = finalizeStreamingMessages({
                 ...childSession.snapshot,
                 activeTurnStartedAt: null,
                 pendingPermission: null,
@@ -2796,16 +2662,6 @@ export class AiWorkerRuntime {
                 status: "idle",
                 updatedAt,
             });
-
-            if (response && !mirrorTurn?.assistantOutputSeen) {
-                nextSnapshot = appendMirroredSubagentMessage(
-                    nextSnapshot,
-                    "assistant",
-                    response,
-                    `subagent:${update.toolCallId}:${childSession.snapshot.runtimeSessionId ?? childSession.snapshot.sessionId}:waiting-end`,
-                    updatedAt,
-                );
-            }
 
             childSession.activeTurnId = null;
             this.#clearPendingUserTextEcho(childSession);
@@ -5155,29 +5011,6 @@ function isSubagentPromptDetailMetadataLine(line: string): boolean {
     return /^\s*(?:Model|Reasoning effort):\s*/i.test(line);
 }
 
-function readSubagentTurnResponse(
-    update: SessionNotification["update"],
-): string | null {
-    if (
-        update.sessionUpdate !== "tool_call" &&
-        update.sessionUpdate !== "tool_call_update"
-    ) {
-        return null;
-    }
-
-    const rawOutput = isRecordValue(update.rawOutput) ? update.rawOutput : null;
-    const statusMessage = rawOutput
-        ? readCompletedAgentStatusMessage(rawOutput.status) ??
-          readCompletedAgentStatusMessage(rawOutput.agent_status) ??
-          readCompletedAgentStatusMessage(rawOutput.agentStatus)
-        : null;
-    if (statusMessage) {
-        return statusMessage;
-    }
-
-    return readCompletedStatusFromToolContent(update.content);
-}
-
 function resolveChildSessionsForWaitingEnd(
     parentSession: LiveAcpSession,
     update: SessionNotification["update"],
@@ -5270,32 +5103,6 @@ function readSubagentStatusRecords(
     return records;
 }
 
-function readSubagentWaitingEndResponse(
-    update: SessionNotification["update"],
-    meta: Record<string, unknown>,
-    runtimeSessionId: string | null,
-    title: string,
-): string | null {
-    const matchingStatus = readSubagentStatusRecords(update, meta).find((status) => {
-        const statusRuntimeSessionId = readSubagentStatusRuntimeSessionId(status);
-        if (runtimeSessionId && statusRuntimeSessionId === runtimeSessionId) {
-            return true;
-        }
-        const nickname = readSubagentStatusNickname(status);
-        return Boolean(nickname && nickname === title);
-    });
-
-    if (matchingStatus) {
-        return (
-            readCompletedAgentStatusMessage(
-                readSubagentStatusValue(matchingStatus),
-            ) ?? null
-        );
-    }
-
-    return null;
-}
-
 function readSubagentStatusRuntimeSessionId(
     status: Record<string, unknown>,
 ): string | null {
@@ -5306,14 +5113,6 @@ function readSubagentStatusRuntimeSessionId(
         readRecordString(status, "threadId") ??
         readRecordString(status, "session_id") ??
         readRecordString(status, "sessionId")
-    );
-}
-
-function readSubagentStatusNickname(status: Record<string, unknown>): string | null {
-    return (
-        readRecordString(status, CODEX_ACP_AGENT_NICKNAME_KEY) ??
-        readRecordString(status, "agent_nickname") ??
-        readRecordString(status, "agentNickname")
     );
 }
 
@@ -5447,53 +5246,6 @@ function isSubagentLiveSession(liveSession: LiveAcpSession): boolean {
         parentSessionId.length > 0 &&
         parentSessionId !== liveSession.snapshot.sessionId
     );
-}
-
-function readCompletedAgentStatusMessage(value: unknown): string | null {
-    if (typeof value === "string") {
-        return parseCompletedStatusText(value);
-    }
-
-    if (Array.isArray(value)) {
-        for (const item of value) {
-            const message = readCompletedAgentStatusMessage(item);
-            if (message) {
-                return message;
-            }
-        }
-        return null;
-    }
-
-    if (!isRecordValue(value)) {
-        return null;
-    }
-
-    for (const key of ["completed", "Completed"]) {
-        const completed = value[key];
-        if (typeof completed === "string") {
-            return completed.trim() || null;
-        }
-        if (isRecordValue(completed)) {
-            const message =
-                readRecordString(completed, "message") ??
-                readRecordString(completed, "content") ??
-                readRecordString(completed, "text");
-            if (message) {
-                return message;
-            }
-        }
-    }
-
-    const type = readRecordString(value, "type") ?? readRecordString(value, "kind");
-    if (type?.toLowerCase() === "completed") {
-        return (
-            readRecordString(value, "message") ??
-            readRecordString(value, "content") ??
-            readRecordString(value, "text")
-        );
-    }
-
-    return null;
 }
 
 function readCompletedStatusFromToolContent(content: unknown): string | null {
