@@ -2343,6 +2343,7 @@ export interface AiTokenUsage {
 export interface AiSessionSnapshot {
     readonly activeTurnStartedAt?: string | null;
     readonly availableCommands: readonly AiAvailableCommand[];
+    readonly closedAt?: string | null;
     readonly configOptions: readonly AiSessionConfigOption[];
     readonly lastError: string | null;
     readonly messages: readonly AiMessage[];

@@ -461,6 +461,14 @@ export class AiWorkerRuntime {
     ): Promise<AiPromptResult> {
         const liveSession = await this.#ensureRuntimeSession(params.launch);
         if (
+            liveSession.snapshot.parentSessionId &&
+            liveSession.snapshot.closedAt
+        ) {
+            throw new Error(
+                "This subagent was closed by its parent thread and can’t receive new messages.",
+            );
+        }
+        if (
             liveSession.snapshot.status === "starting" ||
             liveSession.snapshot.status === "streaming" ||
             liveSession.snapshot.status === "waiting_permission" ||
@@ -506,6 +514,7 @@ export class AiWorkerRuntime {
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: now,
+            closedAt: null,
             lastError: null,
             messages: [
                 ...liveSession.snapshot.messages,
@@ -640,6 +649,28 @@ export class AiWorkerRuntime {
             pendingUserInput: null,
             status: "idle",
             updatedAt: new Date().toISOString(),
+        });
+        this.#queueTrackedFileReconciliation(liveSession);
+        this.#queueSnapshotFlush(liveSession);
+        this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
+    }
+
+    #markSubagentClosedByParent(
+        liveSession: LiveAcpSession,
+        closedAt: string,
+    ): void {
+        liveSession.activeTurnId = null;
+        this.#clearPendingUserTextEcho(liveSession);
+        this.#clearSubagentMirrorTurn(liveSession);
+        this.#resolvePendingPermission(liveSession, null);
+        liveSession.snapshot = finalizeStreamingMessages({
+            ...liveSession.snapshot,
+            activeTurnStartedAt: null,
+            closedAt,
+            pendingPermission: null,
+            pendingUserInput: null,
+            status: "idle",
+            updatedAt: closedAt,
         });
         this.#queueTrackedFileReconciliation(liveSession);
         this.#queueSnapshotFlush(liveSession);
@@ -2345,6 +2376,7 @@ export class AiWorkerRuntime {
             ...liveSession.snapshot,
             activeTurnStartedAt:
                 liveSession.snapshot.activeTurnStartedAt ?? updatedAt,
+            closedAt: null,
             lastError: null,
             pendingPermission: null,
             pendingUserInput: null,
@@ -2517,7 +2549,7 @@ export class AiWorkerRuntime {
         }
 
         if (subagentEventType === CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE) {
-            this.#markLiveSessionIdle(childSession);
+            this.#markSubagentClosedByParent(childSession, updatedAt);
             return;
         }
 
@@ -2573,6 +2605,7 @@ export class AiWorkerRuntime {
             ...childSession.snapshot,
             activeTurnStartedAt:
                 childSession.snapshot.activeTurnStartedAt ?? updatedAt,
+            closedAt: null,
             lastError: null,
             pendingPermission: null,
             pendingUserInput: null,

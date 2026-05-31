@@ -2953,7 +2953,9 @@ describe("AiWorkerRuntime prepareSession", () => {
                 hasPatchChangesMatching(
                     emittedEvents,
                     childSnapshot!.sessionId,
-                    (changes) => changes.status === "idle",
+                    (changes) =>
+                        changes.closedAt !== undefined &&
+                        changes.status === "idle",
                 ),
             ).toBe(true);
         });
@@ -2983,7 +2985,9 @@ describe("AiWorkerRuntime prepareSession", () => {
                 hasPatchChangesMatching(
                     emittedEvents,
                     childSnapshot!.sessionId,
-                    (changes) => changes.status === "streaming",
+                    (changes) =>
+                        changes.closedAt === null &&
+                        changes.status === "streaming",
                 ),
             ).toBe(true);
         });
@@ -3586,7 +3590,7 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
-    it("marks a subagent idle when the parent receives a close breadcrumb", async () => {
+    it("marks a subagent closed when the parent receives a close breadcrumb", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
         );
@@ -3667,14 +3671,12 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
 
         await vi.waitFor(() => {
-            expect(
-                getLatestPatchChanges(
-                    emittedEvents,
-                    childSnapshot!.sessionId,
-                ),
-            ).toMatchObject({
-                status: "idle",
-            });
+            const changes = getLatestPatchChanges(
+                emittedEvents,
+                childSnapshot!.sessionId,
+            );
+            expect(typeof changes?.closedAt).toBe("string");
+            expect(changes?.status).toBe("idle");
         });
     });
 

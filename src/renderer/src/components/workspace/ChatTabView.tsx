@@ -135,6 +135,8 @@ const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
 const EMPTY_TRANSCRIPT_MODEL = createEmptyAiSessionTranscriptModel();
+const CLOSED_SUBAGENT_MESSAGE =
+    "This subagent was closed by its parent thread and can’t receive new messages.";
 const PROJECT_TREE_PRIMARY_CONTEXT = "__primary__";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 
@@ -391,6 +393,10 @@ export const ChatTabView = memo(function ChatTabView({
         ? tab.sessionId
         : null;
     const activeTurnStartedAt = getActiveTurnStartedAt(snapshot, transcript);
+    const closedSubagentMessage =
+        snapshot.parentSessionId && snapshot.closedAt
+            ? CLOSED_SUBAGENT_MESSAGE
+            : null;
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const availableCommands =
         snapshot.availableCommands.length > 0
@@ -1030,6 +1036,10 @@ export const ChatTabView = memo(function ChatTabView({
     );
 
     const handleSubmit = async () => {
+        if (closedSubagentMessage) {
+            return;
+        }
+
         const plainText = serializeComposerPartsForPrompt(composerParts);
         const prompt = serializePromptWithContexts(
             plainText,
@@ -1623,6 +1633,8 @@ export const ChatTabView = memo(function ChatTabView({
                             ) : undefined
                         }
                         availableCommands={availableCommands}
+                        disabled={closedSubagentMessage !== null}
+                        disabledReason={closedSubagentMessage}
                         draftAttachments={draftAttachments}
                         draftFileContexts={draftFileContexts}
                         fileInputRef={fileInputRef}
@@ -3049,6 +3061,7 @@ function createEmptySnapshot(
     return {
         activeTurnStartedAt: null,
         availableCommands: catalog?.availableCommands ?? [],
+        closedAt: null,
         configOptions: catalog?.configOptions ?? [],
         lastError: null,
         messages: [],

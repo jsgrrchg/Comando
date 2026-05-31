@@ -691,6 +691,14 @@ export class AiService {
             input,
             ownerWindowId,
         );
+        if (
+            launch.persistedSnapshot.parentSessionId &&
+            launch.persistedSnapshot.closedAt
+        ) {
+            throw new Error(
+                "This subagent was closed by its parent thread and can’t receive new messages.",
+            );
+        }
         emitAiMainDiagnostic("Sending AI prompt.", {
             attachments: input.attachments.length,
             ownerWindowId,

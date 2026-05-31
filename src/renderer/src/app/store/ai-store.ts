@@ -1999,6 +1999,7 @@ function createEmptySessionSnapshot(
     return {
         activeTurnStartedAt: null,
         availableCommands: catalog?.availableCommands ?? [],
+        closedAt: null,
         configOptions: catalog?.configOptions ?? [],
         lastError: null,
         messages: [],
@@ -2035,6 +2036,7 @@ function createSessionSnapshotFromPatch(
     return {
         activeTurnStartedAt: null,
         availableCommands: catalog?.availableCommands ?? [],
+        closedAt: patch.changes.closedAt ?? null,
         configOptions: catalog?.configOptions ?? [],
         lastError: null,
         messages: [],
@@ -2077,6 +2079,7 @@ function createSessionSnapshotFromEvent(
         activeTurnStartedAt:
             event.kind === "status" ? event.activeTurnStartedAt : null,
         availableCommands: catalog?.availableCommands ?? [],
+        closedAt: null,
         configOptions: catalog?.configOptions ?? [],
         lastError: event.kind === "status" ? event.lastError : null,
         messages: [],
@@ -2746,7 +2749,8 @@ async function drainQueueIfNeeded(
         !session.snapshot ||
         session.queue.length === 0 ||
         session.queuePaused ||
-        isBusySession(session.snapshot)
+        isBusySession(session.snapshot) ||
+        isClosedSubagentSession(session.snapshot)
     ) {
         return;
     }
@@ -3340,6 +3344,10 @@ function isBusySession(snapshot: AiSessionSnapshot): boolean {
         snapshot.status === "waiting_permission" ||
         snapshot.status === "waiting_user_input"
     );
+}
+
+function isClosedSubagentSession(snapshot: AiSessionSnapshot): boolean {
+    return Boolean(snapshot.parentSessionId && snapshot.closedAt);
 }
 
 function isSessionBusyError(error: unknown): boolean {

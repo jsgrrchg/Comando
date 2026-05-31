@@ -654,6 +654,7 @@ interface AIChatComposerProps {
     readonly status: AiSessionSnapshot["status"];
     readonly runtimeName: string;
     readonly disabled?: boolean;
+    readonly disabledReason?: string | null;
     readonly requireCmdEnterToSend?: boolean;
     readonly composerFontFamily?: string;
     readonly composerFontSize?: number;
@@ -738,6 +739,7 @@ export function AIChatComposer({
     status,
     runtimeName,
     disabled = false,
+    disabledReason = null,
     requireCmdEnterToSend = false,
     composerFontFamily,
     composerFontSize = 14,
@@ -798,6 +800,10 @@ export function AIChatComposer({
         draftFileContexts.length > 0;
     const canSubmit = !disabled && hasDraft;
     const submitLabel = isSessionBusy ? "Queue" : "Send";
+    const shouldShowDisabledReason =
+        disabled &&
+        typeof disabledReason === "string" &&
+        disabledReason.length > 0;
 
     useRenderProbe("AIChatComposer", {
         attachments: draftAttachments.length,
@@ -1193,6 +1199,9 @@ export function AIChatComposer({
     const handlePaste = useCallback(
         (e: React.ClipboardEvent<HTMLDivElement>) => {
             e.preventDefault();
+            if (disabled) {
+                return;
+            }
 
             for (const item of e.clipboardData.items) {
                 if (item.kind === "file" && item.type.startsWith("image/")) {
@@ -1213,11 +1222,15 @@ export function AIChatComposer({
                 }
             }
         },
-        [onPasteImage, syncFromDom],
+        [disabled, onPasteImage, syncFromDom],
     );
 
     const handleContextMenuPaste = useCallback(
         (text: string) => {
+            if (disabled) {
+                return;
+            }
+
             const root = composerRef.current;
             if (!root) {
                 return;
@@ -1227,7 +1240,7 @@ export function AIChatComposer({
             syncFromDom();
             void updatePickers();
         },
-        [syncFromDom, updatePickers],
+        [disabled, syncFromDom, updatePickers],
     );
 
     const { contextMenu, handleContextMenu } =
@@ -1480,7 +1493,7 @@ export function AIChatComposer({
                     }))
                 }
                 onSelect={handleMentionSelect}
-                open={mentionState.open}
+                open={!disabled && mentionState.open}
                 selectedIndex={mentionState.selectedIndex}
                 x={0}
                 y={8}
@@ -1496,7 +1509,7 @@ export function AIChatComposer({
                     }))
                 }
                 onSelect={handleCommandSelect}
-                open={slashState.open}
+                open={!disabled && slashState.open}
                 selectedIndex={slashState.selectedIndex}
                 x={0}
                 y={8}
@@ -1546,6 +1559,24 @@ export function AIChatComposer({
                         commands
                     </div>
                 ) : null}
+                {shouldShowDisabledReason ? (
+                    <div
+                        className="pointer-events-none absolute left-3.5 top-3 select-none"
+                        style={{
+                            color: "var(--color-text-secondary)",
+                            fontFamily: composerFontFamily,
+                            fontSize: composerFontSize,
+                            lineHeight: 1.5,
+                            opacity: 0.75,
+                            overflow: "hidden",
+                            right: 14,
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        {disabledReason}
+                    </div>
+                ) : null}
                 <div
                     autoCapitalize="off"
                     autoCorrect="off"
@@ -1559,7 +1590,9 @@ export function AIChatComposer({
                     role="textbox"
                     spellCheck={false}
                     style={{
-                        color: "var(--color-text-primary)",
+                        color: shouldShowDisabledReason
+                            ? "transparent"
+                            : "var(--color-text-primary)",
                         fontFamily: composerFontFamily,
                         fontSize: composerFontSize,
                         lineHeight: 1.5,

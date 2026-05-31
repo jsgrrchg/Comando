@@ -1765,6 +1765,7 @@ export function createEmptyAiSessionSnapshot(options: {
     return {
         activeTurnStartedAt: null,
         availableCommands: [],
+        closedAt: null,
         configOptions: [],
         lastError: null,
         messages: [],
@@ -1797,6 +1798,7 @@ function createPersistedSessionSnapshot(
 
     return {
         activeTurnStartedAt: sanitizedSnapshot.activeTurnStartedAt ?? null,
+        closedAt: sanitizedSnapshot.closedAt ?? null,
         lastError: sanitizedSnapshot.lastError,
         messages: sanitizedSnapshot.messages,
         modeId: sanitizedSnapshot.modeId,
