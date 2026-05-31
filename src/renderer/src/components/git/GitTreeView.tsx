@@ -274,12 +274,18 @@ function resolveKeyboardCursorIndex({
     cursorPath,
     rows,
     selectedPaths,
+    suppressKeyboardCursor = false,
 }: {
     readonly activePath: string | null;
     readonly cursorPath: string | null;
     readonly rows: readonly FlatGitTreeRow[];
     readonly selectedPaths: ReadonlySet<string> | undefined;
+    readonly suppressKeyboardCursor?: boolean;
 }): number {
+    if (suppressKeyboardCursor) {
+        return -1;
+    }
+
     if (rows.length === 0) {
         return -1;
     }
@@ -420,6 +426,7 @@ export function GitTreeView({
     selectedPaths,
     showStatusIndicator = true,
     stickyFolderPaths,
+    suppressKeyboardCursor = false,
 }: GitTreeViewProps) {
     const treeId = useId();
     const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
@@ -459,6 +466,7 @@ export function GitTreeView({
         cursorPath: keyboardCursorPath,
         rows: flatRows,
         selectedPaths,
+        suppressKeyboardCursor,
     });
     const keyboardCursorRow =
         keyboardCursorIndex >= 0 ? flatRows[keyboardCursorIndex] : null;

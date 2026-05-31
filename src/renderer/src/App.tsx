@@ -376,6 +376,10 @@ export function App() {
     >([]);
     const [fileTreeSelectionAnchorPath, setFileTreeSelectionAnchorPath] =
         useState<string | null>(null);
+    const [
+        isFileTreeSelectionSuppressed,
+        setIsFileTreeSelectionSuppressed,
+    ] = useState(false);
     const [fileTreeRevealSignal, setFileTreeRevealSignal] = useState<
         number | null
     >(null);
@@ -1398,10 +1402,26 @@ export function App() {
         setFileTreeInlineEditor(null);
     }, []);
 
-    const clearFileTreeSelection = useCallback(() => {
-        setFileTreeSelectedPaths([]);
-        setFileTreeSelectionAnchorPath(null);
-    }, []);
+    const clearFileTreeSelection = useCallback(
+        (
+            options: {
+                readonly suppressActivePathFallback?: boolean;
+            } = {},
+        ) => {
+            setIsFileTreeSelectionSuppressed(
+                options.suppressActivePathFallback === true,
+            );
+            setFileTreeSelectedPaths([]);
+            setFileTreeSelectionAnchorPath(null);
+        },
+        [],
+    );
+
+    const focusWorkspaceSurface = useCallback(() => {
+        focusSurface("workspace");
+        clearFileTreeSelection({ suppressActivePathFallback: true });
+        setFileTreeContextMenu(null);
+    }, [clearFileTreeSelection, focusSurface]);
 
     const closeFileTreeContextMenu = useCallback(() => {
         const transientSelectionPath =
@@ -2263,9 +2283,15 @@ export function App() {
             reconcileFileTreeSelection({
                 activeFileTreePath: activeFilePath,
                 anchorPath: fileTreeSelectionAnchorPath,
+                includeActivePathFallback: !isFileTreeSelectionSuppressed,
                 selectedPaths: fileTreeSelectedPaths,
             }),
-        [activeFilePath, fileTreeSelectionAnchorPath, fileTreeSelectedPaths],
+        [
+            activeFilePath,
+            fileTreeSelectionAnchorPath,
+            fileTreeSelectedPaths,
+            isFileTreeSelectionSuppressed,
+        ],
     );
     const effectiveFileTreeSelectedPaths =
         effectiveFileTreeSelection.selectedPaths;
@@ -2348,6 +2374,8 @@ export function App() {
 
     const handleFileTreeNodeClick = useCallback(
         (node: GitTreeNode, event: GitTreeNodeActivationEvent) => {
+            setIsFileTreeSelectionSuppressed(false);
+
             const isRangeSelection = event.shiftKey;
             const isToggleSelection = event.metaKey || event.ctrlKey;
 
@@ -2390,6 +2418,8 @@ export function App() {
             if (!dataTransfer) {
                 return;
             }
+
+            setIsFileTreeSelectionSuppressed(false);
 
             const dragPaths = resolveGitTreeDragPaths(
                 node.path,
@@ -3701,7 +3731,9 @@ export function App() {
                                 return;
                             }
 
-                            clearFileTreeSelection();
+                            clearFileTreeSelection({
+                                suppressActivePathFallback: true,
+                            });
                         }}
                         onScroll={handleFileTreeScroll}
                     >
@@ -3762,7 +3794,11 @@ export function App() {
                                     />
                                 ) : null}
                                 <GitTreeView
-                                    activePath={activeFilePath}
+                                    activePath={
+                                        isFileTreeSelectionSuppressed
+                                            ? null
+                                            : activeFilePath
+                                    }
                                     editingDraftName={
                                         fileTreeInlineEditor?.draftName ?? null
                                     }
@@ -3796,11 +3832,16 @@ export function App() {
                                     }}
                                     stickyFolderPaths={stickyFolderPaths}
                                     selectedPaths={selectedFileTreePathSet}
+                                    suppressKeyboardCursor={
+                                        isFileTreeSelectionSuppressed
+                                    }
                                     scrollToActivePathSignal={
                                         fileTreeRevealSignal ?? undefined
                                     }
                                     onBackgroundContextMenu={({ x, y }) => {
-                                        clearFileTreeSelection();
+                                        clearFileTreeSelection({
+                                            suppressActivePathFallback: true,
+                                        });
                                         setFileTreeContextMenu({
                                             x,
                                             y,
@@ -3840,6 +3881,7 @@ export function App() {
                                     }
                                     onNodeClick={handleFileTreeNodeClick}
                                     onNodeContextMenu={(node, { x, y }) => {
+                                        setIsFileTreeSelectionSuppressed(false);
                                         const isNodeSelected =
                                             selectedFileTreePathSet.has(
                                                 node.path,
@@ -4021,8 +4063,8 @@ export function App() {
                         <main
                             className="surface-focus min-h-0 bg-bg-primary"
                             data-active={activeSurface === "workspace"}
-                            onClick={() => focusSurface("workspace")}
-                            onFocus={() => focusSurface("workspace")}
+                            onFocus={focusWorkspaceSurface}
+                            onPointerDown={focusWorkspaceSurface}
                             tabIndex={0}
                         >
                             <WorkspaceView

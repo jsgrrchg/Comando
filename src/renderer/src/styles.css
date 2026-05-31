@@ -549,6 +549,11 @@ button {
         box-shadow 120ms ease;
 }
 
+.app-sidebar:focus,
+.git-tree-root:focus {
+    outline: none;
+}
+
 .git-tree-root[data-background-drop-target="true"] {
     background-color: color-mix(
         in srgb,

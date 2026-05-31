@@ -191,6 +191,7 @@ export interface GitTreeViewProps {
     readonly scrollToActivePathSignal?: number;
     readonly showStatusIndicator?: boolean;
     readonly stickyFolderPaths?: ReadonlySet<string>;
+    readonly suppressKeyboardCursor?: boolean;
 }
 
 export interface GitChangesViewProps {

@@ -78,6 +78,20 @@ describe("file tree selection", () => {
         });
     });
 
+    it("can suppress the active file fallback after focus leaves the tree", () => {
+        expect(
+            reconcileFileTreeSelection({
+                activeFileTreePath: "docs/todo.md",
+                anchorPath: null,
+                includeActivePathFallback: false,
+                selectedPaths: [],
+            }),
+        ).toEqual({
+            anchorPath: null,
+            selectedPaths: [],
+        });
+    });
+
     it("preserves manual selection while an active file exists", () => {
         const selection = ["docs/guide.md", "docs/todo.md"];
 
