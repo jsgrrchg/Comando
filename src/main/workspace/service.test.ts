@@ -163,6 +163,41 @@ describe("WorkspaceService", () => {
         expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
     });
 
+    it("migrates legacy terminal tabs to a stable terminal id", () => {
+        const connection = createTestConnection();
+        const service = new WorkspaceService(connection);
+        const workspaceId = "workspace-terminal";
+
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "terminal-tab-1",
+                id: "pane-root",
+                tabIds: ["terminal-tab-1"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-05-31T00:00:00.000Z",
+                    id: "terminal-tab-1",
+                    kind: "terminal",
+                    projectId: "project-1",
+                    sessionId: "legacy-terminal-session",
+                    title: "Terminal 1",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        service.saveSnapshot(workspaceId, snapshot);
+
+        expect(service.loadSnapshot(workspaceId).tabs[0]).toMatchObject({
+            kind: "terminal",
+            sessionId: "legacy-terminal-session",
+            terminalId: "legacy-terminal-session",
+        });
+    });
+
     it("normalizes legacy project diff tab titles on reload", () => {
         const connection = createTestConnection();
         const service = new WorkspaceService(connection);

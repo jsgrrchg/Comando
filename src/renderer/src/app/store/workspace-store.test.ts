@@ -2573,6 +2573,7 @@ describe("workspace runtime focus helpers", () => {
                     },
                     sessionId: "terminal-session-1",
                     signalCode: null,
+                    terminalId: "terminal-session-1",
                     title: "Terminal 1",
                     worktreeId: null,
                 },

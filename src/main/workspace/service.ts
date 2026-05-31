@@ -689,6 +689,32 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
         };
     }
 
+    if (row.kind === "terminal") {
+        const terminalPayload = payload as Partial<WorkspaceTerminalPayload>;
+        const sessionId =
+            typeof terminalPayload.sessionId === "string"
+                ? terminalPayload.sessionId
+                : row.id;
+        const terminalId =
+            typeof terminalPayload.terminalId === "string"
+                ? terminalPayload.terminalId
+                : sessionId;
+
+        return {
+            createdAt: row.created_at,
+            id: row.id,
+            kind: "terminal",
+            projectId: parseNullableString(terminalPayload.projectId),
+            sessionId,
+            terminalId,
+            title: row.title,
+            worktreeId: parseNullableString(
+                terminalPayload.worktreeId,
+                row.worktree_id,
+            ),
+        };
+    }
+
     return {
         ...payload,
         createdAt: row.created_at,
@@ -822,6 +848,7 @@ function serializeTab(
         kind: tab.kind,
         projectId: tab.projectId,
         sessionId: tab.sessionId,
+        terminalId: tab.terminalId,
         worktreeId: tab.worktreeId ?? null,
     };
 }

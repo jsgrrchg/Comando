@@ -6,8 +6,6 @@ import type {
     AiRuntimeId,
     GitHubRepositoryRef,
     ProjectFileDocument,
-    TerminalDataEvent,
-    TerminalExitEvent,
     WorkspaceChatHistoryTab,
     WorkspaceChatTab,
     WorkspaceGitCommitTab,
@@ -23,7 +21,6 @@ import type {
 
 import {
     activatePane,
-    appendTerminalOutput,
     attachTabToPaneAtIndex,
     attachTabToPane,
     collectPaneNodes,
@@ -32,7 +29,6 @@ import {
     completeFileSave,
     createDefaultWorkspaceState,
     findPaneById,
-    markTerminalExited,
     moveActiveTabBetweenPanes,
     moveTabToPaneAtIndex,
     moveTabToSplit,
@@ -50,8 +46,6 @@ import {
     setFileTabLoading,
     setFileTabLoadError,
     setFileTabSaving,
-    setTerminalLaunchError,
-    setTerminalSessionReady,
     splitPaneInDirection,
     unpinTabInPane,
     updateChatDraft,
@@ -80,6 +74,7 @@ import {
     resolveFileTabReviewContext,
 } from "../workspace/pending-review";
 import { areGitWorktreeIdsEquivalent } from "../git/context-key";
+import { useTerminalRuntimeStore } from "@renderer/features/terminal/terminalRuntimeStore";
 import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
 
@@ -117,7 +112,6 @@ interface WorkspaceStore extends WorkspaceTreeState {
     readonly recentActiveTabIds: readonly string[];
     readonly recentClosedTabs: readonly ClosedWorkspaceTabEntry[];
     readonly recentFocusedChatTabIds: readonly string[];
-    appendTerminalOutput: (event: TerminalDataEvent) => void;
     closePane: (paneId: string) => Promise<void>;
     closeTab: (tabId: string) => Promise<void>;
     closeTabsToRight: (tabId: string) => Promise<void>;
@@ -214,7 +208,6 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly target: WorkspaceOpenTarget;
         readonly worktreeId?: string | null;
     }) => Promise<string | null>;
-    handleTerminalExit: (event: TerminalExitEvent) => void;
     hydrate: () => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
     moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
@@ -308,7 +301,6 @@ interface WorkspaceStore extends WorkspaceTreeState {
         direction: MoveDirection,
     ) => Promise<void>;
     selectTab: (paneId: string, tabId: string) => Promise<void>;
-    sendTerminalInput: (sessionId: string, data: string) => Promise<void>;
     setLastFocusedRuntimeId: (runtimeId: AiRuntimeId) => void;
     setLastQuickCreateAction: (action: WorkspaceQuickCreateAction) => void;
     setActivePane: (paneId: string) => Promise<void>;
@@ -321,11 +313,6 @@ interface WorkspaceStore extends WorkspaceTreeState {
         tabId: string,
         viewState: MonacoEditor.ICodeEditorViewState | null,
     ) => void;
-    updateTerminalSize: (
-        sessionId: string,
-        cols: number,
-        rows: number,
-    ) => Promise<void>;
     updateSessionTabTitles: (
         sessionId: string,
         title: string,
@@ -350,12 +337,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     recentActiveTabIds: [],
     recentClosedTabs: [],
     recentFocusedChatTabIds: [],
-
-    appendTerminalOutput: (event) => {
-        set((state) => ({
-            ...appendTerminalOutput(state, event.sessionId, event.data),
-        }));
-    },
 
     closeOtherTabs: async (tabId) => {
         const paneId = findPaneIdByTabId(get(), tabId);
@@ -518,7 +499,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     createTerminalTab: async (projectId, worktreeId = null) => {
-        const sessionId = crypto.randomUUID();
+        const terminalId = crypto.randomUUID();
         const tab: RuntimeWorkspaceTerminalTab = {
             createdAt: new Date().toISOString(),
             exitCode: null,
@@ -529,8 +510,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             output: "",
             projectId,
             session: null,
-            sessionId,
+            sessionId: terminalId,
             signalCode: null,
+            terminalId,
             title: `Terminal ${countTabs(get, "terminal") + 1}`,
             worktreeId,
         };
@@ -545,7 +527,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ),
         }));
         await persistWorkspaceState(get);
-        await bootTerminalSession(get, set, tab.id);
     },
 
     openChatSessionTab: async (input) => {
@@ -971,17 +952,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             },
             input.target,
         ),
-
-    handleTerminalExit: (event) => {
-        set((state) => ({
-            ...markTerminalExited(
-                state,
-                event.sessionId,
-                event.exitCode,
-                event.signalCode,
-            ),
-        }));
-    },
 
     hydrate: async () => {
         try {
@@ -1590,9 +1560,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             return;
         }
 
-        await safeCloseTerminal(tab.sessionId);
         set((state) => ({
-            ...setTerminalLaunchError(state, tabId, ""),
             tabsById: {
                 ...state.tabsById,
                 [tabId]: {
@@ -1606,7 +1574,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 },
             },
         }));
-        await bootTerminalSession(get, set, tabId);
+        await useTerminalRuntimeStore.getState().restart(tab.terminalId);
     },
 
     saveFileTab: async (tabId, options) => {
@@ -1730,22 +1698,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             })(),
         }));
         await persistWorkspaceState(get);
-    },
-
-    sendTerminalInput: async (sessionId, data) => {
-        try {
-            await getComandoApi().writeTerminalInput({
-                data,
-                sessionId,
-            });
-        } catch (error) {
-            set({
-                error:
-                    error instanceof Error
-                        ? error.message
-                        : "Could not send input to the terminal.",
-            });
-        }
     },
 
     setLastFocusedRuntimeId: (runtimeId) => {
@@ -1875,23 +1827,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         set((state) => ({
             ...setFileTabViewState(state, tabId, viewState),
         }));
-    },
-
-    updateTerminalSize: async (sessionId, cols, rows) => {
-        try {
-            await getComandoApi().resizeTerminalSession({
-                cols,
-                rows,
-                sessionId,
-            });
-        } catch (error) {
-            set({
-                error:
-                    error instanceof Error
-                        ? error.message
-                        : "Could not resize the terminal session.",
-            });
-        }
     },
 
     updateSessionTabTitles: async (sessionId, title) => {
@@ -2631,6 +2566,7 @@ function createHydratedRuntimeTabs(
             }
 
             if (tab.kind === "terminal") {
+                const terminalId = tab.terminalId ?? tab.sessionId;
                 return [
                     tab.id,
                     {
@@ -2641,6 +2577,7 @@ function createHydratedRuntimeTabs(
                         output: "",
                         session: null,
                         signalCode: null,
+                        terminalId,
                     },
                 ] as const;
             }
@@ -2731,7 +2668,6 @@ async function hydrateRuntimeTabs(
             }
 
             if (tab.kind === "terminal") {
-                await bootTerminalSession(get, set, tab.id);
                 return;
             }
 
@@ -2905,55 +2841,17 @@ async function loadFileTabDocument(
     }
 }
 
-async function bootTerminalSession(
-    get: GetWorkspaceState,
-    set: WorkspaceSetState,
-    tabId: string,
-): Promise<void> {
-    const tab = get().tabsById[tabId];
-    if (!tab || tab.kind !== "terminal") {
-        return;
-    }
-
-    try {
-        const session = await getComandoApi().createTerminalSession({
-            preferredSessionId: tab.sessionId,
-            projectId: tab.projectId,
-            worktreeId: tab.worktreeId ?? null,
-        });
-
-        set((state) => ({
-            ...setTerminalSessionReady(state, tabId, session),
-            error: null,
-        }));
-    } catch (error) {
-        set((state) => ({
-            ...setTerminalLaunchError(
-                state,
-                tabId,
-                error instanceof Error
-                    ? error.message
-                    : "Could not create the terminal session.",
-            ),
-            error:
-                error instanceof Error
-                    ? error.message
-                    : "Could not create the terminal session.",
-        }));
-    }
-}
-
-async function safeCloseTerminal(sessionId: string): Promise<void> {
-    try {
-        await getComandoApi().closeTerminalSession(sessionId);
-    } catch {
-        return;
-    }
-}
-
 async function closeTabSideEffects(tab: RuntimeWorkspaceTab): Promise<void> {
     if (tab.kind === "terminal") {
-        await safeCloseTerminal(tab.sessionId);
+        const runtime =
+            useTerminalRuntimeStore.getState().runtimesById[tab.terminalId] ??
+            null;
+        await useTerminalRuntimeStore.getState().closeTerminal(tab.terminalId);
+        if (!runtime && tab.sessionId) {
+            await getComandoApi()
+                .closeTerminalSession(tab.sessionId)
+                .catch(() => undefined);
+        }
         return;
     }
 
@@ -2971,7 +2869,6 @@ async function restoreTabSideEffects(
     set: WorkspaceSetState,
 ): Promise<void> {
     if (tab.kind === "terminal") {
-        await bootTerminalSession(get, set, tab.id);
         return;
     }
 

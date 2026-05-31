@@ -1,7 +1,5 @@
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import type { editor as MonacoEditor } from "monaco-editor";
-import type { FitAddon } from "@xterm/addon-fit";
-import type { Terminal } from "@xterm/xterm";
 import {
     useCallback,
     useEffect,
@@ -89,7 +87,6 @@ import {
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
-    type RuntimeWorkspaceTerminalTab,
 } from "@renderer/app/workspace/tree";
 import {
     collectPendingTrackedFilesFromSessions,
@@ -122,13 +119,7 @@ import { createDiffFromTrackedFile } from "@renderer/components/workspace/review
 import { closeWorkspaceTabsWithConfirmation } from "@renderer/components/workspace/workspaceCloseGuard";
 import { resolveWorkspaceChatTabActivityIndicator } from "@renderer/components/workspace/workspaceTabActivity";
 import { useActiveWorkspaceTabStripReveal } from "@renderer/components/workspace/workspaceTabStrip";
-import {
-    applyTerminalSurfaceTheme,
-    createTerminalSurfaceOptions,
-    refreshTerminalViewport,
-    syncTerminalViewport,
-    type TerminalSurfaceTheme,
-} from "@renderer/components/workspace/terminalSurface";
+import { WorkspaceTerminalView } from "@renderer/features/terminal/WorkspaceTerminalView";
 import {
     getReviewHunkVisualEndLine,
     getSelectedReviewLine,
@@ -229,11 +220,6 @@ type MonacoSurfaceRuntime = {
     readonly applyProjectTypeScriptConfigForPath: typeof import("@renderer/app/editor/monaco").applyProjectTypeScriptConfigForPath;
     readonly ensureMonacoTextMateForLanguage: typeof import("@renderer/app/editor/monaco").ensureMonacoTextMateForLanguage;
     readonly installMonacoTokenDebugAction: typeof import("@renderer/app/editor/monaco").installMonacoTokenDebugAction;
-};
-
-type XtermSurfaceRuntime = {
-    readonly FitAddon: typeof import("@xterm/addon-fit").FitAddon;
-    readonly Terminal: typeof import("@xterm/xterm").Terminal;
 };
 
 type ComandoMonacoTheme = "comando-dark" | "comando-light";
@@ -1475,12 +1461,6 @@ function WorkspacePaneView({
     const selectAdjacentTab = useWorkspaceStore(
         (state) => state.selectAdjacentTab,
     );
-    const sendTerminalInput = useWorkspaceStore(
-        (state) => state.sendTerminalInput,
-    );
-    const updateTerminalSize = useWorkspaceStore(
-        (state) => state.updateTerminalSize,
-    );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
     const [tabContextMenu, setTabContextMenu] =
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
@@ -2319,29 +2299,16 @@ function WorkspacePaneView({
                     </div>
                 </div>
 
-                <div className="min-h-0 flex-1 bg-editor">
+                <div className="relative min-h-0 flex-1 overflow-hidden bg-editor">
                     {paneTabs
-                        .filter(
-                            (tab): tab is RuntimeWorkspaceTerminalTab =>
-                                tab.kind === "terminal",
-                        )
+                        .filter((tab) => tab.kind === "terminal")
                         .map((tab) => (
-                            <div
+                            <WorkspaceTerminalView
                                 key={tab.id}
-                                className={
-                                    tab.id === paneActiveTabId
-                                        ? "h-full"
-                                        : "hidden"
-                                }
-                            >
-                                <TerminalTabView
-                                    isActive={tab.id === paneActiveTabId}
-                                    isActivePane={isActivePane}
-                                    onResize={updateTerminalSize}
-                                    onSendInput={sendTerminalInput}
-                                    tab={tab}
-                                />
-                            </div>
+                                active={tab.id === paneActiveTabId}
+                                activePane={isActivePane}
+                                tab={tab}
+                            />
                         ))}
                     {activeTab ? (
                         activeTab.kind === "file" ? (
@@ -5215,73 +5182,6 @@ function useMonacoSurfaceRuntime(enabled: boolean): {
     };
 }
 
-function useXtermSurfaceRuntime(): {
-    readonly loadError: string | null;
-    readonly retryLoad: () => void;
-    readonly runtime: XtermSurfaceRuntime | null;
-} {
-    const [runtime, setRuntime] = useState<XtermSurfaceRuntime | null>(null);
-    const [loadError, setLoadError] = useState<string | null>(null);
-    const [loadVersion, setLoadVersion] = useState(0);
-
-    useEffect(() => {
-        if (runtime) {
-            return;
-        }
-
-        let cancelled = false;
-        queueMicrotask(() => {
-            if (!cancelled) {
-                setLoadError(null);
-            }
-        });
-
-        void Promise.all([
-            import("@xterm/xterm/css/xterm.css"),
-            import("@xterm/xterm"),
-            import("@xterm/addon-fit"),
-        ])
-            .then(([, xtermModule, fitAddonModule]) => {
-                if (cancelled) {
-                    return;
-                }
-
-                setRuntime({
-                    FitAddon: fitAddonModule.FitAddon,
-                    Terminal: xtermModule.Terminal,
-                });
-            })
-            .catch((error) => {
-                console.error(error);
-                if (cancelled) {
-                    return;
-                }
-
-                setLoadError(
-                    error instanceof Error
-                        ? error.message
-                        : "The terminal bundle could not be loaded.",
-                );
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [loadVersion, runtime]);
-
-    const retryLoad = useCallback(() => {
-        setRuntime(null);
-        setLoadError(null);
-        setLoadVersion((current) => current + 1);
-    }, []);
-
-    return {
-        loadError,
-        retryLoad,
-        runtime,
-    };
-}
-
 function DeferredSurfaceState({
     actionLabel,
     children,
@@ -5646,302 +5546,6 @@ function InlineReviewHunkZone({
                     ✓ keep
                 </button>
             </div>
-        </div>
-    );
-}
-
-function TerminalTabView({
-    isActive,
-    isActivePane,
-    onResize,
-    onSendInput,
-    tab,
-}: {
-    readonly isActive: boolean;
-    readonly isActivePane: boolean;
-    readonly onResize: (
-        sessionId: string,
-        cols: number,
-        rows: number,
-    ) => Promise<void>;
-    readonly onSendInput: (sessionId: string, data: string) => Promise<void>;
-    readonly tab: RuntimeWorkspaceTerminalTab;
-}) {
-    const { loadError, retryLoad, runtime } = useXtermSurfaceRuntime();
-    const terminalTheme = useTerminalTheme();
-    const containerRef = useRef<HTMLDivElement | null>(null);
-    const terminalRef = useRef<Terminal | null>(null);
-    const fitAddonRef = useRef<FitAddon | null>(null);
-    const writtenLengthRef = useRef(0);
-    const queuedLengthRef = useRef(0);
-    const lastViewportSizeRef = useRef<{ cols: number; rows: number } | null>(
-        null,
-    );
-    const pendingViewportSyncFrameRef = useRef<number | null>(null);
-    const pendingTerminalRepaintFrameRef = useRef<number | null>(null);
-    const writeChainRef = useRef<Promise<void>>(Promise.resolve());
-    const focusFrameRef = useRef<number | null>(null);
-
-    const cancelScheduledFocus = useEffectEvent(() => {
-        if (focusFrameRef.current === null) {
-            return;
-        }
-
-        globalThis.cancelAnimationFrame(focusFrameRef.current);
-        focusFrameRef.current = null;
-    });
-
-    const scheduleTerminalFocus = useEffectEvent(() => {
-        cancelScheduledFocus();
-        focusFrameRef.current = globalThis.requestAnimationFrame(() => {
-            focusFrameRef.current = null;
-            terminalRef.current?.focus();
-        });
-    });
-
-    const createCurrentTerminalSurfaceOptions = useEffectEvent(() =>
-        createTerminalSurfaceOptions(terminalTheme),
-    );
-
-    const cancelScheduledViewportSync = useEffectEvent(() => {
-        if (pendingViewportSyncFrameRef.current === null) {
-            return;
-        }
-
-        globalThis.cancelAnimationFrame(pendingViewportSyncFrameRef.current);
-        pendingViewportSyncFrameRef.current = null;
-    });
-
-    const cancelScheduledTerminalRepaint = useEffectEvent(() => {
-        if (pendingTerminalRepaintFrameRef.current === null) {
-            return;
-        }
-
-        globalThis.cancelAnimationFrame(pendingTerminalRepaintFrameRef.current);
-        pendingTerminalRepaintFrameRef.current = null;
-    });
-
-    const scheduleTerminalRepaint = useEffectEvent((deferFrames = 0) => {
-        cancelScheduledTerminalRepaint();
-
-        const runAfterFrames = (remainingFrames: number) => {
-            pendingTerminalRepaintFrameRef.current =
-                globalThis.requestAnimationFrame(() => {
-                    if (remainingFrames > 0) {
-                        runAfterFrames(remainingFrames - 1);
-                        return;
-                    }
-
-                    pendingTerminalRepaintFrameRef.current = null;
-                    refreshTerminalViewport(terminalRef.current, {
-                        clearTextureAtlas: true,
-                    });
-                });
-        };
-
-        runAfterFrames(deferFrames);
-    });
-
-    const syncViewport = useEffectEvent(() => {
-        const fitAddon = fitAddonRef.current;
-        const result = syncTerminalViewport({
-            container: containerRef.current,
-            fit: fitAddon ? () => fitAddon.fit() : null,
-            previousSize: lastViewportSizeRef.current,
-            terminal: terminalRef.current,
-        });
-
-        if (!result.didSync || !result.nextSize) {
-            return;
-        }
-
-        lastViewportSizeRef.current = result.nextSize;
-        if (result.sizeChanged) {
-            scheduleTerminalRepaint(1);
-            void onResize(tab.sessionId, result.nextSize.cols, result.nextSize.rows);
-        }
-    });
-
-    const scheduleViewportSync = useEffectEvent((deferFrames = 0) => {
-        cancelScheduledViewportSync();
-
-        const runAfterFrames = (remainingFrames: number) => {
-            pendingViewportSyncFrameRef.current =
-                globalThis.requestAnimationFrame(() => {
-                    if (remainingFrames > 0) {
-                        runAfterFrames(remainingFrames - 1);
-                        return;
-                    }
-
-                    pendingViewportSyncFrameRef.current = null;
-                    syncViewport();
-                });
-        };
-
-        runAfterFrames(deferFrames);
-    });
-
-    useEffect(() => {
-        if (!runtime || !containerRef.current) {
-            return;
-        }
-
-        const terminal = new runtime.Terminal(
-            createCurrentTerminalSurfaceOptions(),
-        );
-        const fitAddon = new runtime.FitAddon();
-        terminal.loadAddon(fitAddon);
-        const container = containerRef.current;
-        terminal.open(container);
-
-        terminal.onData((data) => {
-            void onSendInput(tab.sessionId, data);
-        });
-
-        terminalRef.current = terminal;
-        fitAddonRef.current = fitAddon;
-        scheduleViewportSync(1);
-
-        const handleViewportChange = () => {
-            scheduleViewportSync();
-        };
-        const handleVisibilityChange = () => {
-            if (document.visibilityState !== "visible") {
-                return;
-            }
-
-            scheduleViewportSync(1);
-        };
-        const resizeObserver =
-            typeof ResizeObserver === "undefined"
-                ? null
-                : new ResizeObserver(handleViewportChange);
-        resizeObserver?.observe(container);
-        globalThis.addEventListener("focus", handleViewportChange);
-        globalThis.addEventListener("resize", handleViewportChange);
-        document.addEventListener("visibilitychange", handleVisibilityChange);
-
-        return () => {
-            document.removeEventListener(
-                "visibilitychange",
-                handleVisibilityChange,
-            );
-            globalThis.removeEventListener("resize", handleViewportChange);
-            globalThis.removeEventListener("focus", handleViewportChange);
-            resizeObserver?.disconnect();
-            cancelScheduledFocus();
-            cancelScheduledTerminalRepaint();
-            cancelScheduledViewportSync();
-            terminal.dispose();
-            terminalRef.current = null;
-            fitAddonRef.current = null;
-            lastViewportSizeRef.current = null;
-            queuedLengthRef.current = 0;
-            writtenLengthRef.current = 0;
-            writeChainRef.current = Promise.resolve();
-        };
-    }, [onResize, onSendInput, runtime, tab.sessionId]);
-
-    useEffect(() => {
-        if (!isActivePane || !isActive || !terminalRef.current) {
-            return;
-        }
-
-        scheduleTerminalFocus();
-        scheduleViewportSync(1);
-        scheduleTerminalRepaint(2);
-        return () => {
-            cancelScheduledFocus();
-        };
-    }, [isActive, isActivePane, runtime, tab.sessionId]);
-
-    useEffect(() => {
-        const didApplyTheme = applyTerminalSurfaceTheme({
-            terminal: terminalRef.current,
-            theme: terminalTheme,
-        });
-
-        if (didApplyTheme) {
-            scheduleViewportSync();
-        }
-    }, [terminalTheme]);
-
-    useEffect(() => {
-        const terminal = terminalRef.current;
-        if (!terminal) {
-            return;
-        }
-
-        if (tab.output.length < queuedLengthRef.current) {
-            terminal.reset();
-            queuedLengthRef.current = 0;
-            writtenLengthRef.current = 0;
-            writeChainRef.current = Promise.resolve();
-            scheduleViewportSync(1);
-        }
-
-        const nextChunk = tab.output.slice(queuedLengthRef.current);
-        if (!nextChunk) {
-            return;
-        }
-
-        const targetLength = tab.output.length;
-        queuedLengthRef.current = targetLength;
-
-        let cancelled = false;
-        writeChainRef.current = writeChainRef.current
-            .catch(() => undefined)
-            .then(
-                () =>
-                    new Promise<void>((resolve) => {
-                        const activeTerminal = terminalRef.current;
-                        if (!activeTerminal || cancelled) {
-                            resolve();
-                            return;
-                        }
-
-                        activeTerminal.write(nextChunk, () => {
-                            if (!cancelled) {
-                                writtenLengthRef.current = Math.max(
-                                    writtenLengthRef.current,
-                                    targetLength,
-                                );
-                                scheduleViewportSync();
-                            }
-                            resolve();
-                        });
-                    }),
-            );
-
-        return () => {
-            cancelled = true;
-        };
-    }, [tab.output]);
-
-    if (!runtime) {
-        return (
-            <DeferredSurfaceState
-                actionLabel={loadError ? "Retry terminal load" : undefined}
-                onAction={loadError ? retryLoad : undefined}
-                statusLabel={
-                    loadError ? "Terminal unavailable" : "Loading terminal..."
-                }
-                title={
-                    loadError
-                        ? "Could not load the terminal"
-                        : "Preparing terminal..."
-                }
-            >
-                {loadError
-                    ? loadError
-                    : "xterm is loading on demand for this tab."}
-            </DeferredSurfaceState>
-        );
-    }
-
-    return (
-        <div className="terminal-surface h-full min-h-0">
-            <div className="h-full w-full px-3 py-2" ref={containerRef} />
         </div>
     );
 }
@@ -6383,55 +5987,6 @@ function useMonacoTheme(
     return theme;
 }
 
-function useTerminalTheme(): TerminalSurfaceTheme {
-    const [theme, setTheme] = useState<TerminalSurfaceTheme>(() =>
-        getTerminalTheme(),
-    );
-
-    useEffect(() => {
-        let frameHandle = 0;
-
-        const updateTheme = () => {
-            frameHandle = 0;
-            const nextTheme = getTerminalTheme();
-            setTheme((currentTheme) =>
-                currentTheme.background === nextTheme.background &&
-                currentTheme.cursor === nextTheme.cursor &&
-                currentTheme.foreground === nextTheme.foreground &&
-                currentTheme.selectionBackground ===
-                    nextTheme.selectionBackground
-                    ? currentTheme
-                    : nextTheme,
-            );
-        };
-
-        const scheduleThemeUpdate = () => {
-            if (frameHandle !== 0) {
-                return;
-            }
-
-            frameHandle = window.requestAnimationFrame(updateTheme);
-        };
-
-        scheduleThemeUpdate();
-
-        const observer = new MutationObserver(scheduleThemeUpdate);
-        observer.observe(document.documentElement, {
-            attributeFilter: ["class", "style"],
-            attributes: true,
-        });
-
-        return () => {
-            observer.disconnect();
-            if (frameHandle !== 0) {
-                window.cancelAnimationFrame(frameHandle);
-            }
-        };
-    }, []);
-
-    return theme;
-}
-
 function shouldEnableDocumentWrapping(document: {
     readonly languageId: string;
 }): boolean {
@@ -6448,16 +6003,4 @@ function buildImageDataUrl(document: ProjectFileDocument): string | null {
     }
 
     return `data:${document.mimeType};base64,${document.imageDataBase64}`;
-}
-
-function getTerminalTheme() {
-    const style = getComputedStyle(document.documentElement);
-    const v = (name: string) => style.getPropertyValue(name).trim();
-
-    return {
-        background: v("--color-editor") || v("--color-bg-primary"),
-        cursor: v("--color-accent"),
-        foreground: v("--color-editor-text") || v("--color-text-primary"),
-        selectionBackground: v("--color-selection"),
-    };
 }
