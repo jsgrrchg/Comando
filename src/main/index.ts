@@ -9,6 +9,7 @@ import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
 import {
     IPC_EVENTS,
     type AiRuntimeStatus,
+    type AiSessionDomainEvent,
     type AiSessionUpdate,
     type AppBootstrapSnapshot,
     type GitRepositoryInvalidation,
@@ -143,6 +144,7 @@ if (!hasSingleInstanceLock) {
             });
             aiService = new AiService({
                 onRuntimeStatus: broadcastAiRuntimeStatus,
+                onSessionEvent: broadcastAiSessionEvent,
                 onSessionSnapshot: broadcastAiSessionSnapshot,
                 persistence: dbWorkerClient.aiPersistence,
                 projectService,
@@ -168,6 +170,12 @@ if (!hasSingleInstanceLock) {
                     },
                     onSessionClosed: (payload) => {
                         aiService?.handleWorkerSessionClosed(payload);
+                    },
+                    onSessionEvent: (ownerWindowId, event) => {
+                        aiService?.handleWorkerSessionEvent(
+                            ownerWindowId,
+                            event,
+                        );
                     },
                     onSessionSnapshot: (ownerWindowId, update) => {
                         aiService?.handleWorkerSessionSnapshot(
@@ -763,6 +771,23 @@ function broadcastAiSessionSnapshot(
     }
 }
 
+function broadcastAiSessionEvent(
+    ownerWindowId: string,
+    payload: AiSessionDomainEvent,
+): void {
+    if (!ownerWindowId) {
+        forEachLiveWindow((window) => {
+            dispatchAiSessionEvent(window, payload);
+        });
+        return;
+    }
+
+    const targetWindow = windowRegistry.getWindowByStableId(ownerWindowId);
+    if (targetWindow) {
+        dispatchAiSessionEvent(targetWindow, payload, ownerWindowId);
+    }
+}
+
 function attachAiSessionStream(window: BrowserWindow, windowId: string): void {
     if (window.isDestroyed()) {
         detachAiSessionStream(windowId);
@@ -830,6 +855,35 @@ function dispatchAiSessionSnapshot(
     }
 
     window.webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
+}
+
+function dispatchAiSessionEvent(
+    window: BrowserWindow,
+    payload: AiSessionDomainEvent,
+    windowId?: string,
+): void {
+    const stableWindowId =
+        windowId ??
+        windowRegistry.getContextByBrowserWindow(window)?.windowId ??
+        null;
+
+    if (stableWindowId) {
+        const port = aiSessionStreamPorts.get(stableWindowId);
+        if (port) {
+            try {
+                port.postMessage(payload);
+                return;
+            } catch (error) {
+                debugBenignError(
+                    "aiSessionStreamPort.postMessage",
+                    error,
+                );
+                detachAiSessionStream(stableWindowId);
+            }
+        }
+    }
+
+    window.webContents.send(IPC_EVENTS.aiSessionEvent, payload);
 }
 
 function broadcastTerminalData(

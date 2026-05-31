@@ -18,6 +18,7 @@ import type {
     AiRuntimeAuthLogoutInput,
     AiRuntimeId,
     AiRuntimeStatus,
+    AiSessionDomainEvent,
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
@@ -226,6 +227,10 @@ export class AiService {
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
+    readonly #onSessionEvent: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ) => void;
     readonly #onSessionSnapshot: (
         ownerWindowId: string,
         update: AiSessionUpdate,
@@ -238,6 +243,7 @@ export class AiService {
     constructor(options: AiServiceOptions) {
         this.#aiWorker = options.aiWorker ?? null;
         this.#onRuntimeStatus = options.onRuntimeStatus;
+        this.#onSessionEvent = options.onSessionEvent ?? (() => undefined);
         this.#onSessionSnapshot = options.onSessionSnapshot;
         this.#persistence = options.persistence;
         this.#projectService = options.projectService;
@@ -289,6 +295,22 @@ export class AiService {
             this.#invalidateRuntimeAuthIfNeeded(snapshot.runtimeId, snapshot.lastError);
         }
         this.#onSessionSnapshot(ownerWindowId, update);
+    }
+
+    handleWorkerSessionEvent(
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ): void {
+        emitAiMainDiagnostic("Received worker AI session event.", {
+            eventKind: event.kind,
+            origin: event.origin,
+            ownerWindowId,
+            parentSessionId: event.parentSessionId,
+            runtimeId: event.runtimeId,
+            runtimeSessionId: event.runtimeSessionId,
+            sessionId: event.sessionId,
+        });
+        this.#onSessionEvent(ownerWindowId, event);
     }
 
     async handleWorkerRestarted(): Promise<void> {

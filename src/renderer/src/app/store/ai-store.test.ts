@@ -4,8 +4,10 @@ import type {
     AiFileContextAttachment,
     AiImageAttachment,
     AiRuntimeStatus,
+    AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
+    AiToolActivity,
     WorkspaceChatTab,
 } from "@shared/ipc";
 
@@ -65,6 +67,27 @@ function createSnapshot(
     };
 }
 
+function createSessionEvent(
+    overrides: Partial<AiSessionDomainEvent> & {
+        readonly kind: AiSessionDomainEvent["kind"];
+    },
+): AiSessionDomainEvent {
+    const { kind, ...rest } = overrides;
+    return {
+        origin: "live",
+        parentSessionId: null,
+        runtimeId: TAB.runtimeId,
+        runtimeSessionId: "runtime-session-1",
+        sessionId: TAB.sessionId,
+        updatedAt: "2026-04-14T00:00:00.000Z",
+        activeTurnStartedAt: null,
+        lastError: null,
+        status: "idle",
+        ...rest,
+        kind,
+    } as AiSessionDomainEvent;
+}
+
 function createRuntimeStatus(
     overrides: Partial<AiRuntimeStatus> = {},
 ): AiRuntimeStatus {
@@ -109,6 +132,28 @@ function createFileContext(
         name: "app.ts",
         projectId: TAB.projectId ?? "project-1",
         relativePath: "src/app.ts",
+        ...overrides,
+    };
+}
+
+function createToolActivity(
+    overrides: Partial<AiToolActivity> = {},
+): AiToolActivity {
+    return {
+        createdAt: "2026-04-14T00:00:00.000Z",
+        diffs: [],
+        exitCode: null,
+        id: "tool-1",
+        kind: "shell",
+        locations: [],
+        rawInputJson: null,
+        rawOutputJson: null,
+        sessionId: TAB.sessionId,
+        status: "in_progress",
+        summary: null,
+        terminalOutput: null,
+        title: "Run command",
+        updatedAt: "2026-04-14T00:00:00.000Z",
         ...overrides,
     };
 }
@@ -207,8 +252,102 @@ describe("ai-store queue", () => {
 
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot
-                ?.availableCommands,
+            ?.availableCommands,
         ).toEqual(availableCommands);
+    });
+
+    it("applies typed message events without duplicating the following snapshot", () => {
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-started",
+                message: {
+                    attachments: [],
+                    content: "",
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "msg-1",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "Hello",
+                delta: "Hello",
+                kind: "message-delta",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-completed",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [
+                    {
+                        attachments: [],
+                        content: "Hello",
+                        createdAt: "2026-04-14T00:00:00.000Z",
+                        id: "msg-1",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+            }),
+        );
+
+        const messages =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages ??
+            [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual(
+            expect.objectContaining({
+                content: "Hello",
+                id: "msg-1",
+                status: "completed",
+            }),
+        );
+    });
+
+    it("upserts typed tool activity events by tool id", () => {
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                activity: createToolActivity({
+                    status: "in_progress",
+                    summary: "Running",
+                }),
+                kind: "tool-activity",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                activity: createToolActivity({
+                    status: "completed",
+                    summary: "Done",
+                }),
+                kind: "tool-activity",
+            }),
+        );
+
+        const toolActivity =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.toolActivity ?? [];
+        expect(toolActivity).toHaveLength(1);
+        expect(toolActivity[0]).toEqual(
+            expect.objectContaining({
+                id: "tool-1",
+                status: "completed",
+                summary: "Done",
+            }),
+        );
     });
 
     it("does not let stale session hydration overwrite a newer snapshot", async () => {

@@ -48,6 +48,7 @@ import {
 } from "@shared/ai-tracked-file";
 import { SessionBusyError } from "@shared/ai-errors";
 import { isDefaultChatTitle } from "@shared/chatTitle";
+import { buildAiSessionDomainEvents } from "@shared/ai-session-events";
 
 import { debugBenignError } from "@main/observability/logging";
 
@@ -3725,17 +3726,35 @@ export class AiWorkerRuntime {
             liveSession.pendingPersistTimer = null;
         }
 
+        const domainEvents = buildAiSessionDomainEvents(
+            liveSession.lastBroadcastSnapshot,
+            liveSession.snapshot,
+            {
+                origin: liveSession.isRestoring ? "restore" : "live",
+            },
+        );
         const update = buildAiSessionUpdate(
             liveSession.lastBroadcastSnapshot,
             liveSession.snapshot,
         );
         this.#emitSessionDiagnostic("Flushing AI session snapshot.", liveSession, {
+            domainEvents: domainEvents.length,
             changedKeys:
                 update.kind === "patch"
                     ? Object.keys(update.patch.changes).sort().join(",")
                     : "snapshot",
             updateKind: update.kind,
         });
+        for (const event of domainEvents) {
+            this.#emitEvent({
+                event: "ai.session.event",
+                payload: {
+                    event,
+                    ownerWindowId: liveSession.ownerWindowId,
+                },
+                type: "event",
+            });
+        }
         this.#emitEvent({
             event: "ai.snapshot.updated",
             payload: {

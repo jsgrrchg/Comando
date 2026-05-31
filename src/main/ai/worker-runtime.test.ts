@@ -305,6 +305,13 @@ describe("AiWorkerRuntime prepareSession", () => {
         expect(emittedEvents.some((event) => event.event === "ai.snapshot.updated")).toBe(
             true,
         );
+        expect(
+            emittedEvents.some(
+                (event) =>
+                    event.event === "ai.session.event" &&
+                    event.payload.event.kind === "session-info",
+            ),
+        ).toBe(true);
     });
 
     it("replays early session updates after the runtime session mapping is registered", async () => {

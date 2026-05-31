@@ -25,6 +25,7 @@ import type {
     AiTrackedFileMutationInput,
     AiRuntimeId,
     AiRuntimeStatus,
+    AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
     AiUserInputResponseInput,
@@ -90,6 +91,10 @@ export interface AiServiceOptions {
     readonly settingsService: SettingsGateway;
     readonly secretStore: SecretStoreGateway;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
+    readonly onSessionEvent?: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ) => void;
     readonly onSessionSnapshot: (
         ownerWindowId: string,
         update: AiSessionUpdate,
@@ -295,6 +300,11 @@ export interface AiWorkerSnapshotUpdatedEventPayload {
     readonly update: AiSessionUpdate;
 }
 
+export interface AiWorkerSessionEventPayload {
+    readonly event: AiSessionDomainEvent;
+    readonly ownerWindowId: string;
+}
+
 export interface AiWorkerRuntimeStatusEventPayload {
     readonly status: AiRuntimeStatus;
 }
@@ -302,6 +312,7 @@ export interface AiWorkerRuntimeStatusEventPayload {
 export type AiWorkerEventPayloadByName = {
     "ai.log": AiWorkerLogEventPayload;
     "ai.runtime.status": AiWorkerRuntimeStatusEventPayload;
+    "ai.session.event": AiWorkerSessionEventPayload;
     "ai.session.closed": AiWorkerSessionClosedEventPayload;
     "ai.snapshot.updated": AiWorkerSnapshotUpdatedEventPayload;
 };
