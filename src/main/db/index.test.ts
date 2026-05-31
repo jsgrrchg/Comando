@@ -27,9 +27,10 @@ describe("databaseMigrations", () => {
             aiHistoryPreviewsMigration,
             aiSessionParentMigration,
             aiSessionRuntimeLinksMigration,
+            aiTranscriptShadowStateMigration,
         ] = databaseMigrations;
 
-        expect(databaseMigrations).toHaveLength(13);
+        expect(databaseMigrations).toHaveLength(14);
         expect(foundationMigration?.id).toBe("0001-foundation");
         expect(foundationMigration?.sql).toContain(
             "CREATE TABLE IF NOT EXISTS app_settings",
@@ -132,6 +133,18 @@ describe("databaseMigrations", () => {
         );
         expect(aiSessionRuntimeLinksMigration?.sql).toContain(
             "idx_chat_session_runtime_links_parent_runtime",
+        );
+        expect(aiTranscriptShadowStateMigration?.id).toBe(
+            "0014-ai-transcript-shadow-state",
+        );
+        expect(aiTranscriptShadowStateMigration?.sql).toContain(
+            "chat_transcript_messages",
+        );
+        expect(aiTranscriptShadowStateMigration?.sql).toContain(
+            "chat_session_runtime_state",
+        );
+        expect(aiTranscriptShadowStateMigration?.sql).toContain(
+            "chat_session_review_state",
         );
     });
 
@@ -336,6 +349,202 @@ describe("databaseMigrations", () => {
                     id: "child-session",
                     parent_session_id: null,
                 });
+            } finally {
+                migratedDb.close();
+            }
+        } finally {
+            fs.rmSync(dataDir, { recursive: true, force: true });
+        }
+    });
+
+    it("backfills normalized AI transcript shadow tables from legacy transcript json", () => {
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-db-"));
+        const databaseFile = path.join(dataDir, "comando.sqlite3");
+
+        try {
+            const legacyDb = createSqliteCompatConnection(databaseFile);
+            legacyDb.pragma("foreign_keys = ON");
+            applyMigrations(legacyDb, databaseMigrations.slice(0, 13));
+
+            const transcriptJson = JSON.stringify({
+                messages: [
+                    {
+                        attachments: [],
+                        content: "Legacy user request",
+                        createdAt: "2026-04-16T12:00:00.000Z",
+                        id: "message-1",
+                        kind: "user",
+                        status: "completed",
+                    },
+                    {
+                        attachments: [],
+                        content: "Legacy assistant response",
+                        createdAt: "2026-04-16T12:00:01.000Z",
+                        id: "message-2",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+                parentSessionId: null,
+                runtimeId: "codex",
+                sessionId: "legacy-shadow-session",
+                status: "idle",
+                title: "Legacy shadow",
+                trackedFiles: [
+                    {
+                        currentText: "new",
+                        diffBase: "old",
+                        hunks: [],
+                        identityKey: "file:/tmp/example.ts",
+                        isText: true,
+                        kind: "update",
+                        newText: "new",
+                        oldText: "old",
+                        path: "/tmp/example.ts",
+                        previousPath: null,
+                        reversible: true,
+                        reviewState: "pending",
+                        sessionId: "legacy-shadow-session",
+                        toolCallId: null,
+                        updatedAt: "2026-04-16T12:00:02.000Z",
+                    },
+                ],
+                updatedAt: "2026-04-16T12:00:03.000Z",
+            });
+
+            legacyDb
+                .prepare(
+                    `
+                    INSERT INTO chat_sessions (
+                        id,
+                        project_id,
+                        worktree_id,
+                        parent_session_id,
+                        pinned_at,
+                        title,
+                        runtime,
+                        status,
+                        draft,
+                        created_at,
+                        updated_at,
+                        last_opened_at
+                    )
+                    VALUES (?, NULL, NULL, NULL, NULL, ?, 'codex', 'idle', '', ?, ?, ?)
+                    `,
+                )
+                .run(
+                    "legacy-shadow-session",
+                    "Legacy shadow",
+                    "2026-04-16T12:00:00.000Z",
+                    "2026-04-16T12:00:03.000Z",
+                    "2026-04-16T12:00:03.000Z",
+                );
+            legacyDb
+                .prepare(
+                    `
+                    INSERT INTO chat_transcripts (
+                        id,
+                        session_id,
+                        transcript_json,
+                        message_count,
+                        preview,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, 2, NULL, ?, ?)
+                    `,
+                )
+                .run(
+                    "transcript:legacy-shadow-session",
+                    "legacy-shadow-session",
+                    transcriptJson,
+                    "2026-04-16T12:00:00.000Z",
+                    "2026-04-16T12:00:03.000Z",
+                );
+            legacyDb.close();
+
+            const migratedDb = createSqliteCompatConnection(databaseFile);
+            migratedDb.pragma("foreign_keys = ON");
+
+            try {
+                applyMigrations(migratedDb, databaseMigrations.slice(13));
+
+                const rows = migratedDb
+                    .prepare<
+                        [],
+                        {
+                            content: string;
+                            content_hash: string;
+                            created_at: string;
+                            message_id: string;
+                            message_index: number;
+                            role: string;
+                        }
+                    >(
+                        `
+                        SELECT
+                            message_id,
+                            message_index,
+                            role,
+                            content_hash,
+                            created_at,
+                            json_extract(payload_json, '$.content') AS content
+                        FROM chat_transcript_messages
+                        WHERE session_id = 'legacy-shadow-session'
+                        ORDER BY message_index ASC
+                        `,
+                    )
+                    .all();
+                expect(rows).toEqual([
+                    expect.objectContaining({
+                        content: "Legacy user request",
+                        created_at: "2026-04-16T12:00:00.000Z",
+                        message_id: "message-1",
+                        message_index: 0,
+                        role: "user",
+                    }),
+                    expect.objectContaining({
+                        content: "Legacy assistant response",
+                        created_at: "2026-04-16T12:00:01.000Z",
+                        message_id: "message-2",
+                        message_index: 1,
+                        role: "assistant",
+                    }),
+                ]);
+                expect(rows[0]?.content_hash).toMatch(/^legacy:/);
+
+                const runtimeRow = migratedDb
+                    .prepare<
+                        [],
+                        {
+                            messages_type: string | null;
+                            title: string | null;
+                        }
+                    >(
+                        `
+                        SELECT
+                            json_type(state_json, '$.messages') AS messages_type,
+                            json_extract(state_json, '$.title') AS title
+                        FROM chat_session_runtime_state
+                        WHERE session_id = 'legacy-shadow-session'
+                        `,
+                    )
+                    .get();
+                expect(runtimeRow).toEqual({
+                    messages_type: null,
+                    title: "Legacy shadow",
+                });
+
+                const reviewRow = migratedDb
+                    .prepare<[], { tracked_count: number | null }>(
+                        `
+                        SELECT json_array_length(review_json, '$.trackedFiles') AS tracked_count
+                        FROM chat_session_review_state
+                        WHERE session_id = 'legacy-shadow-session'
+                        `,
+                    )
+                    .get();
+                expect(reviewRow?.tracked_count).toBe(1);
             } finally {
                 migratedDb.close();
             }

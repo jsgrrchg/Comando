@@ -512,4 +512,146 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
         ON chat_session_runtime_links(parent_app_session_id);
     `,
     },
+    {
+        id: "0014-ai-transcript-shadow-state",
+        sql: `
+      CREATE TABLE IF NOT EXISTS chat_transcript_messages (
+        session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        message_index INTEGER NOT NULL,
+        message_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        role TEXT,
+        payload_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, message_id),
+        UNIQUE(session_id, message_index)
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_session_runtime_state (
+        session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        state_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_session_review_state (
+        session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        review_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      INSERT OR IGNORE INTO chat_transcript_messages (
+        session_id,
+        message_index,
+        message_id,
+        kind,
+        role,
+        payload_json,
+        content_hash,
+        created_at,
+        updated_at
+      )
+      SELECT
+        chat_transcripts.session_id,
+        CAST(message.key AS INTEGER),
+        COALESCE(
+          NULLIF(TRIM(CAST(
+            CASE
+              WHEN message.type = 'object'
+               AND json_type(message.value, '$.id') = 'text'
+                THEN json_extract(message.value, '$.id')
+              ELSE NULL
+            END AS TEXT
+          )), ''),
+          chat_transcripts.session_id || ':legacy-message:' || CAST(message.key AS TEXT)
+        ),
+        'message',
+        NULLIF(TRIM(CAST(
+          CASE
+            WHEN message.type = 'object'
+             AND json_type(message.value, '$.kind') = 'text'
+              THEN json_extract(message.value, '$.kind')
+            ELSE NULL
+          END AS TEXT
+        )), ''),
+        message.value,
+        'legacy:' || length(message.value) || ':' || COALESCE(
+          NULLIF(TRIM(CAST(
+            CASE
+              WHEN message.type = 'object'
+               AND json_type(message.value, '$.id') = 'text'
+                THEN json_extract(message.value, '$.id')
+              ELSE NULL
+            END AS TEXT
+          )), ''),
+          CAST(message.key AS TEXT)
+        ),
+        COALESCE(
+          NULLIF(TRIM(CAST(
+            CASE
+              WHEN message.type = 'object'
+               AND json_type(message.value, '$.createdAt') = 'text'
+                THEN json_extract(message.value, '$.createdAt')
+              ELSE NULL
+            END AS TEXT
+          )), ''),
+          chat_transcripts.created_at
+        ),
+        chat_transcripts.updated_at
+      FROM chat_transcripts,
+        json_each(
+          CASE
+            WHEN json_valid(chat_transcripts.transcript_json) THEN
+              CASE
+                WHEN json_type(chat_transcripts.transcript_json, '$.messages') = 'array'
+                  THEN chat_transcripts.transcript_json
+                ELSE '{"messages":[]}'
+              END
+            ELSE '{"messages":[]}'
+          END,
+          '$.messages'
+        ) AS message
+      WHERE message.type = 'object'
+        AND json_type(message.value, '$.content') = 'text';
+
+      INSERT OR IGNORE INTO chat_session_runtime_state (
+        session_id,
+        state_json,
+        created_at,
+        updated_at
+      )
+      SELECT
+        session_id,
+        json_remove(transcript_json, '$.messages', '$.trackedFiles'),
+        created_at,
+        updated_at
+      FROM chat_transcripts
+      WHERE json_valid(transcript_json);
+
+      INSERT OR IGNORE INTO chat_session_review_state (
+        session_id,
+        review_json,
+        created_at,
+        updated_at
+      )
+      SELECT
+        session_id,
+        json_object(
+          'trackedFiles',
+          COALESCE(json_extract(transcript_json, '$.trackedFiles'), json('[]')),
+          'updatedAt',
+          updated_at
+        ),
+        created_at,
+        updated_at
+      FROM chat_transcripts
+      WHERE json_valid(transcript_json);
+
+      CREATE INDEX IF NOT EXISTS idx_chat_transcript_messages_session_index
+        ON chat_transcript_messages(session_id, message_index);
+    `,
+    },
 ];

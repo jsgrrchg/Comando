@@ -226,6 +226,193 @@ describe("AiPersistence", () => {
         );
     });
 
+    it("writes normalized transcript shadow rows without duplicating message ids", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot = createSnapshot({
+            messages: ["First", "Second"],
+            sessionId: "session-shadow-upsert",
+            title: "Shadow rows",
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+
+        persistence.saveSessionSnapshot(snapshot);
+        persistence.saveSessionSnapshot({
+            ...snapshot,
+            messages: [
+                snapshot.messages[0],
+                {
+                    ...snapshot.messages[1],
+                    content: "Second updated",
+                },
+            ],
+            updatedAt: "2026-04-16T12:01:00.000Z",
+        });
+
+        const rows = connection
+            .prepare<
+                [string],
+                {
+                    content: string;
+                    content_hash: string;
+                    message_id: string;
+                    message_index: number;
+                    role: string;
+                }
+            >(
+                `
+                SELECT
+                    message_id,
+                    message_index,
+                    role,
+                    content_hash,
+                    json_extract(payload_json, '$.content') AS content
+                FROM chat_transcript_messages
+                WHERE session_id = ?
+                ORDER BY message_index ASC
+                `,
+            )
+            .all(snapshot.sessionId);
+
+        expect(rows).toEqual([
+            expect.objectContaining({
+                content: "First",
+                message_id: "session-shadow-upsert:message-1",
+                message_index: 0,
+                role: "assistant",
+            }),
+            expect.objectContaining({
+                content: "Second updated",
+                message_id: "session-shadow-upsert:message-2",
+                message_index: 1,
+                role: "assistant",
+            }),
+        ]);
+        expect(rows.map((row) => row.content_hash)).toEqual([
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+        ]);
+        expect(loadStoredMessageCount(connection, snapshot.sessionId)).toBe(2);
+    });
+
+    it("loads transcript pages from shadow rows when legacy transcript json is unavailable", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const snapshot = createSnapshot({
+            messages: ["Message 1", "Message 2", "Message 3"],
+            sessionId: "session-shadow-page",
+            title: "Shadow page",
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+
+        persistence.saveSessionSnapshot(snapshot);
+        connection
+            .prepare(
+                `
+                UPDATE chat_transcripts
+                SET transcript_json = 'not json',
+                    message_count = 999
+                WHERE session_id = ?
+                `,
+            )
+            .run(snapshot.sessionId);
+
+        const page = persistence.loadSessionTranscriptPage({
+            limit: 1,
+            offset: 1,
+            sessionId: snapshot.sessionId,
+        });
+        const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
+
+        expect(page).toEqual({
+            messages: [
+                expect.objectContaining({
+                    content: "Message 2",
+                    id: "session-shadow-page:message-2",
+                }),
+            ],
+            offset: 1,
+            sessionId: snapshot.sessionId,
+            totalMessages: 3,
+        });
+        expect(loaded?.messages.map((message) => message.content)).toEqual([
+            "Message 1",
+            "Message 2",
+            "Message 3",
+        ]);
+        expect(loaded?.title).toBe("Shadow page");
+    });
+
+    it("does not revive persisted live state when restoring a session", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const baseSnapshot = createSnapshot({
+            messages: ["Partial assistant response"],
+            sessionId: "session-live-state",
+            title: "Live state",
+            updatedAt: "2026-04-16T12:00:00.000Z",
+        });
+        const snapshot: AiSessionSnapshot = {
+            ...baseSnapshot,
+            activeTurnStartedAt: "2026-04-16T12:00:00.000Z",
+            messages: [
+                {
+                    ...baseSnapshot.messages[0],
+                    status: "streaming",
+                },
+            ],
+            pendingPermission: {
+                description: null,
+                options: [],
+                requestId: "permission-1",
+                sessionId: baseSnapshot.sessionId,
+                title: "Approve command",
+                toolCallId: "tool-1",
+                updatedAt: "2026-04-16T12:00:01.000Z",
+            },
+            pendingUserInput: {
+                questions: [],
+                requestId: "input-1",
+                sessionId: baseSnapshot.sessionId,
+                title: "Need input",
+                toolCallId: "tool-1",
+                turnId: null,
+                updatedAt: "2026-04-16T12:00:02.000Z",
+            },
+            status: "streaming",
+        };
+
+        persistence.saveSessionSnapshot(snapshot);
+
+        const storedSnapshot = JSON.parse(
+            loadStoredTranscriptJson(connection, snapshot.sessionId),
+        ) as Record<string, unknown> & {
+            readonly messages?: readonly { readonly status?: string }[];
+        };
+        const storedSessionStatus = connection
+            .prepare<[string], { status: string } | undefined>(
+                "SELECT status FROM chat_sessions WHERE id = ?",
+            )
+            .get(snapshot.sessionId)?.status;
+        const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
+
+        expect(storedSessionStatus).toBe("idle");
+        expect(storedSnapshot.status).toBe("idle");
+        expect(storedSnapshot.activeTurnStartedAt).toBeNull();
+        expect(storedSnapshot.pendingPermission).toBeNull();
+        expect(storedSnapshot.pendingUserInput).toBeNull();
+        expect(storedSnapshot.messages?.[0]?.status).toBe("completed");
+        expect(loaded).toEqual(
+            expect.objectContaining({
+                activeTurnStartedAt: null,
+                pendingPermission: null,
+                pendingUserInput: null,
+                status: "idle",
+            }),
+        );
+        expect(loaded?.messages[0]?.status).toBe("completed");
+    });
+
     it("stores a healed compact tool activity when raw output and diffs contain huge strings", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
@@ -251,7 +438,7 @@ describe("AiPersistence", () => {
         const toolActivity = storedSnapshot.toolActivity?.[0];
         const diff = toolActivity?.diffs?.[0];
 
-        expect(storedSnapshot.persistenceVersion).toBe(2);
+        expect(storedSnapshot.persistenceVersion).toBe(3);
         expect(toolActivity).toEqual(
             expect.objectContaining({
                 id: "tool-save-healed",
@@ -342,7 +529,7 @@ describe("AiPersistence", () => {
         >;
 
         expect(healedJson.length).toBeLessThan(originalJson.length);
-        expect(healedSnapshot.persistenceVersion).toBe(2);
+        expect(healedSnapshot.persistenceVersion).toBe(3);
         expect(loadStoredMessageCount(connection, "session-load-heal")).toBe(2);
         expect(loadStoredPreview(connection, "session-load-heal")).toBe(
             "Assistant response",
@@ -396,7 +583,7 @@ describe("AiPersistence", () => {
         };
 
         expect(healedJson.length).toBeLessThan(originalJson.length);
-        expect(healedSnapshot.persistenceVersion).toBe(2);
+        expect(healedSnapshot.persistenceVersion).toBe(3);
         expect(healedSnapshot.toolActivity?.[0]?.rawOutputJson).toBeNull();
         expect(loadStoredMessageCount(connection, "session-page-heal")).toBe(4);
     });
