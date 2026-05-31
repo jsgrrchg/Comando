@@ -59,7 +59,7 @@ import {
     type AiPersistenceGateway,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
-import { listOpenFileBuffers } from "./openFileBuffers";
+import { listOpenFileBuffers, readOpenFileBuffer } from "./openFileBuffers";
 import {
     type AiWorkerGateway,
     type AiWorkerRefreshProjectScopesRpcInput,
@@ -76,6 +76,7 @@ import {
     getModelConfigOption,
     getRecentStderrText,
     getRuntimeDisplayName,
+    isPathInsideRoot,
     normalizeAdditionalRoots,
     setConfigOptionOnSnapshot,
     setModeOnSnapshot,
@@ -87,6 +88,8 @@ import {
     mapToolCallUpdate,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
+    readTextIfExists,
+    reconcilePendingTrackedFiles,
     resolveDiffToFullTexts,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
@@ -557,7 +560,11 @@ export class AiService {
             return liveSnapshot;
         }
 
-        return await this.#persistence.loadSessionSnapshot(sessionId);
+        const persistedSnapshot =
+            await this.#persistence.loadSessionSnapshot(sessionId);
+        return persistedSnapshot
+            ? await this.#reconcilePersistedTrackedFiles(persistedSnapshot)
+            : null;
     }
 
     async listSessionHistory(
@@ -1332,6 +1339,109 @@ export class AiService {
     ): void {
         this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
         this.#persistence.saveSessionSnapshot(snapshot);
+    }
+
+    async #reconcilePersistedTrackedFiles(
+        snapshot: AiSessionSnapshot,
+    ): Promise<AiSessionSnapshot> {
+        if (snapshot.trackedFiles.length === 0) {
+            return snapshot;
+        }
+
+        const scope = this.#resolvePersistedSnapshotReviewScope(snapshot);
+        if (!scope) {
+            return snapshot;
+        }
+
+        const result = await reconcilePendingTrackedFiles({
+            onError: (error) => {
+                debugBenignError("ai.service.reconcileTrackedFile", error);
+            },
+            readTrackedFileText: async (trackedPath) =>
+                await this.#readPersistedTrackedFileText(scope, trackedPath),
+            trackedFiles: snapshot.trackedFiles,
+        });
+        if (!result.changed) {
+            return snapshot;
+        }
+
+        const nextSnapshot = {
+            ...snapshot,
+            trackedFiles: result.trackedFiles,
+            updatedAt: new Date().toISOString(),
+        };
+        this.#persistence.saveSessionSnapshot(nextSnapshot);
+        return nextSnapshot;
+    }
+
+    #resolvePersistedSnapshotReviewScope(
+        snapshot: Pick<AiSessionSnapshot, "projectId" | "worktreeId">,
+    ): {
+        readonly additionalRoots: readonly string[];
+        readonly scopeRoot: string;
+    } | null {
+        try {
+            const projectRoot = snapshot.projectId
+                ? this.#projectService.getProjectRootPath(
+                      snapshot.projectId,
+                      snapshot.worktreeId ?? null,
+                  )
+                : null;
+            const scopeRoot = path.resolve(projectRoot ?? process.cwd());
+            return {
+                additionalRoots: this.#resolveEffectiveAdditionalRoots(
+                    {
+                        additionalRoots: [],
+                        projectId: snapshot.projectId,
+                        worktreeId: snapshot.worktreeId ?? null,
+                    },
+                    projectRoot,
+                ),
+                scopeRoot,
+            };
+        } catch (error) {
+            debugBenignError("ai.service.resolveReviewScope", error);
+            return null;
+        }
+    }
+
+    async #readPersistedTrackedFileText(
+        scope: {
+            readonly additionalRoots: readonly string[];
+            readonly scopeRoot: string;
+        },
+        trackedPath: string,
+    ): Promise<string | null> {
+        const absolutePath = this.#resolvePersistedTrackedFileAbsolutePath(
+            scope,
+            trackedPath,
+        );
+        const bufferText = readOpenFileBuffer(absolutePath);
+        return bufferText ?? (await readTextIfExists(absolutePath));
+    }
+
+    #resolvePersistedTrackedFileAbsolutePath(
+        scope: {
+            readonly additionalRoots: readonly string[];
+            readonly scopeRoot: string;
+        },
+        candidatePath: string,
+    ): string {
+        const absolutePath = path.isAbsolute(candidatePath)
+            ? path.resolve(candidatePath)
+            : path.resolve(scope.scopeRoot, candidatePath);
+        const insidePrimaryScope =
+            absolutePath === scope.scopeRoot ||
+            absolutePath.startsWith(`${scope.scopeRoot}${path.sep}`);
+        const insideAdditionalRoot = scope.additionalRoots.some((rootPath) =>
+            isPathInsideRoot(absolutePath, rootPath),
+        );
+
+        if (!insidePrimaryScope && !insideAdditionalRoot) {
+            throw new Error("Tracked file path is outside the session scope.");
+        }
+
+        return absolutePath;
     }
 
     #getLiveSessionRuntimeId(sessionId: string): AiRuntimeId {

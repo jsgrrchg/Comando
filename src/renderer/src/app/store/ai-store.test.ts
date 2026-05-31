@@ -368,6 +368,100 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("applies explicit cleanup fields while preserving a newer transcript", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [
+                    {
+                        attachments: [],
+                        content: "newer patch message",
+                        createdAt: "2026-04-14T00:00:02.000Z",
+                        id: "msg-newer-patch",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+                status: "streaming",
+                trackedFiles: [
+                    {
+                        hunks: [],
+                        identityKey: "src/app.ts",
+                        isText: true,
+                        kind: "update",
+                        newText: "changed",
+                        oldText: "old",
+                        path: "src/app.ts",
+                        previousPath: null,
+                        reviewState: "pending",
+                        reversible: true,
+                        sessionId: TAB.sessionId,
+                        toolCallId: "tool-1",
+                        updatedAt: "2026-04-14T00:00:02.000Z",
+                    },
+                ],
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        useAiStore.getState().applySessionUpdate({
+            kind: "patch",
+            patch: {
+                changes: {
+                    messages: [],
+                    pendingPermission: null,
+                    status: "idle",
+                    trackedFiles: [],
+                    updatedAt: "2026-04-14T00:00:03.000Z",
+                },
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+            },
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot,
+        ).toEqual(
+            expect.objectContaining({
+                messages: [
+                    expect.objectContaining({
+                        content: "newer patch message",
+                        id: "msg-newer-patch",
+                    }),
+                ],
+                status: "idle",
+                trackedFiles: [],
+                updatedAt: "2026-04-14T00:00:03.000Z",
+            }),
+        );
+    });
+
+    it("creates a minimal session for orphan patches with runtime metadata", () => {
+        useAiStore.getState().applySessionUpdate({
+            kind: "patch",
+            patch: {
+                changes: {
+                    parentSessionId: "session-parent",
+                    runtimeSessionId: "runtime-child",
+                    title: "Child Agent",
+                    updatedAt: "2026-04-14T00:00:03.000Z",
+                },
+                runtimeId: TAB.runtimeId,
+                sessionId: "session-child",
+            },
+        });
+
+        expect(useAiStore.getState().sessions["session-child"]?.snapshot).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-parent",
+                runtimeId: TAB.runtimeId,
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-child",
+                title: "Child Agent",
+            }),
+        );
+    });
+
     it("keeps commands from an early catalog patch even before the session is registered", () => {
         const availableCommands = [
             {

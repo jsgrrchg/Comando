@@ -117,6 +117,7 @@ import {
     mapImageGenerationToolUpdate,
     mapToolCallUpdate,
     readTextIfExists,
+    reconcilePendingTrackedFiles,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
 
@@ -513,6 +514,7 @@ export class AiWorkerRuntime {
                 status: "idle",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             this.#clearPendingUserTextEcho(liveSession);
@@ -540,6 +542,7 @@ export class AiWorkerRuntime {
                 status: "error",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             this.#emitSessionDiagnostic("Prompt failed.", liveSession, {
@@ -602,6 +605,7 @@ export class AiWorkerRuntime {
             status: "idle",
             updatedAt: new Date().toISOString(),
         });
+        this.#queueTrackedFileReconciliation(liveSession);
         this.#queueSnapshotFlush(liveSession);
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
     }
@@ -915,6 +919,7 @@ export class AiWorkerRuntime {
                 status: "idle",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             this.#clearPendingUserTextEcho(liveSession);
@@ -932,6 +937,7 @@ export class AiWorkerRuntime {
                 status: "error",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             throw error;
@@ -1235,6 +1241,8 @@ export class AiWorkerRuntime {
             stderrChunks: [],
             stderrHandler: null,
         } satisfies LiveAcpSession);
+
+        await this.#reconcileTrackedFiles(liveSession);
 
         const stderrHandler = (chunk: Buffer | string) => {
             const text =
@@ -2377,6 +2385,7 @@ export class AiWorkerRuntime {
             status: "idle",
             updatedAt,
         });
+        this.#queueTrackedFileReconciliation(liveSession);
         this.#queueSnapshotFlush(liveSession);
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
     }
@@ -3098,6 +3107,74 @@ export class AiWorkerRuntime {
             terminals: new Map(),
             terminalOutputBuffers: new Map(),
         };
+    }
+
+    #queueTrackedFileReconciliation(liveSession: LiveAcpSession): void {
+        const sessionId = liveSession.snapshot.sessionId;
+        void this.#reconcileTrackedFiles(liveSession)
+            .then((changed) => {
+                if (
+                    changed &&
+                    this.#sessions.get(sessionId) === liveSession &&
+                    !liveSession.closing
+                ) {
+                    this.#queueSnapshotFlush(liveSession);
+                }
+            })
+            .catch((error: unknown) => {
+                debugBenignError("ai.worker.reconcileTrackedFiles", error);
+            });
+    }
+
+    async #reconcileTrackedFiles(
+        liveSession: LiveAcpSession,
+    ): Promise<boolean> {
+        const trackedFiles = liveSession.snapshot.trackedFiles;
+        const result = await reconcilePendingTrackedFiles({
+            onError: (error) => {
+                debugBenignError("ai.worker.reconcileTrackedFile", error);
+            },
+            readTrackedFileText: async (trackedPath) =>
+                await this.#readTrackedFileText(liveSession, trackedPath),
+            trackedFiles,
+        });
+        if (!result.changed) {
+            return false;
+        }
+
+        this.#emitSessionDiagnostic("Reconciled AI tracked files.", liveSession, {
+            nextTrackedFiles: result.trackedFiles.length,
+            previousTrackedFiles: trackedFiles.length,
+        });
+        liveSession.snapshot = {
+            ...liveSession.snapshot,
+            trackedFiles: result.trackedFiles,
+            updatedAt: new Date().toISOString(),
+        };
+        return true;
+    }
+
+    async #readTrackedFileText(
+        liveSession: LiveAcpSession,
+        trackedPath: string,
+    ): Promise<string | null> {
+        const resolvedPath = this.#resolveWritableSessionPathInfo(
+            liveSession,
+            trackedPath,
+        );
+        if (this.#fileBuffers.has(resolvedPath.absolutePath)) {
+            return this.#fileBuffers.get(resolvedPath.absolutePath) ?? "";
+        }
+
+        try {
+            return await fs.promises.readFile(resolvedPath.absolutePath, "utf8");
+        } catch (error) {
+            if (isNodeError(error) && error.code === "ENOENT") {
+                return null;
+            }
+
+            throw error;
+        }
     }
 
     async #assertTrackedFileCanBeReverted(

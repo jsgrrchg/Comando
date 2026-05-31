@@ -66,6 +66,10 @@ interface RegisteredSessionMeta {
     readonly worktreeId: string | null;
 }
 
+interface ResolveIncomingSnapshotOptions {
+    readonly changedKeys?: ReadonlySet<keyof AiSessionPatch["changes"]> | null;
+}
+
 interface QueuedPromptEditState {
     readonly nextPromptId: string | null;
     readonly previousComposerParts: readonly AiComposerDraftPart[];
@@ -508,6 +512,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
         let syncedTitle: string | null = null;
         set((state) => {
+            const patchChangedKeys = new Set(
+                Object.keys(update.patch.changes) as Array<
+                    keyof AiSessionPatch["changes"]
+                >,
+            );
             const session =
                 state.sessions[update.patch.sessionId] ?? createSessionState();
             const baseSnapshot =
@@ -529,15 +538,57 @@ export const useAiStore = create<AiStore>((set, get) => ({
                               null,
                       )
                     : null);
+            const existingCatalog =
+                state.runtimeCatalogById[update.patch.runtimeId] ?? null;
+            const nextCatalog = hasCatalogChanges(update.patch.changes)
+                ? applyCatalogPatchToCatalog(
+                      existingCatalog ?? EMPTY_RUNTIME_CATALOG,
+                      update.patch.changes,
+                  )
+                : null;
 
             if (!baseSnapshot) {
-                const nextCatalog = hasCatalogChanges(update.patch.changes)
-                    ? applyCatalogPatchToCatalog(
-                          state.runtimeCatalogById[update.patch.runtimeId] ??
-                              EMPTY_RUNTIME_CATALOG,
-                          update.patch.changes,
-                      )
-                    : null;
+                const orphanBaseSnapshot = createSessionSnapshotFromPatch(
+                    update.patch,
+                    nextCatalog ?? existingCatalog,
+                );
+                if (orphanBaseSnapshot) {
+                    const incomingSnapshot = applySessionPatch(
+                        orphanBaseSnapshot,
+                        update.patch,
+                    );
+                    const nextSnapshot = resolveIncomingSessionSnapshot(
+                        incomingSnapshot,
+                        session,
+                        {
+                            changedKeys: patchChangedKeys,
+                        },
+                    );
+                    const nextMeta = createSessionMetaFromSnapshot(nextSnapshot);
+                    syncedTitle = nextSnapshot.title;
+
+                    return {
+                        runtimeCatalogById:
+                            nextCatalog && hasRuntimeCatalog(nextCatalog)
+                                ? {
+                                      ...state.runtimeCatalogById,
+                                      [update.patch.runtimeId]: nextCatalog,
+                                  }
+                                : state.runtimeCatalogById,
+                        sessions: {
+                            ...state.sessions,
+                            [update.patch.sessionId]: {
+                                ...session,
+                                hydrated: true,
+                                isDispatching: false,
+                                isHydrating: false,
+                                localError: nextSnapshot.lastError,
+                                meta: nextMeta,
+                                snapshot: nextSnapshot,
+                            },
+                        },
+                    };
+                }
 
                 if (!nextCatalog || !hasRuntimeCatalog(nextCatalog)) {
                     emitAiRendererDiagnostic(
@@ -563,8 +614,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 };
             }
 
-            const existingCatalog =
-                state.runtimeCatalogById[update.patch.runtimeId] ?? null;
             const snapshotForPatch =
                 existingCatalog && hasRuntimeCatalog(existingCatalog)
                     ? mergeRuntimeCatalogIntoSnapshot(
@@ -579,6 +628,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const nextSnapshot = resolveIncomingSessionSnapshot(
                 incomingSnapshot,
                 session,
+                {
+                    changedKeys: patchChangedKeys,
+                },
             );
             emitAiRendererDiagnostic("Resolved AI session patch.", {
                 messages: nextSnapshot.messages.length,
@@ -590,7 +642,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 toolActivity: nextSnapshot.toolActivity.length,
                 trackedFiles: nextSnapshot.trackedFiles.length,
             });
-            const nextCatalog = hasCatalogChanges(update.patch.changes)
+            const resolvedCatalog = hasCatalogChanges(update.patch.changes)
                 ? extractRuntimeCatalog(nextSnapshot)
                 : null;
             const nextMeta = session.meta
@@ -604,10 +656,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
             return {
                 runtimeCatalogById:
-                    nextCatalog && hasRuntimeCatalog(nextCatalog)
+                    resolvedCatalog && hasRuntimeCatalog(resolvedCatalog)
                         ? {
                               ...state.runtimeCatalogById,
-                              [update.patch.runtimeId]: nextCatalog,
+                              [update.patch.runtimeId]: resolvedCatalog,
                           }
                         : state.runtimeCatalogById,
                 sessions: {
@@ -1866,6 +1918,68 @@ function createEmptySessionSnapshot(
     };
 }
 
+function createSessionSnapshotFromPatch(
+    patch: AiSessionPatch,
+    catalog: AiRuntimeCatalog | null = null,
+): AiSessionSnapshot | null {
+    if (!hasSessionIdentityPatch(patch.changes)) {
+        return null;
+    }
+
+    const now = new Date().toISOString();
+    return {
+        activeTurnStartedAt: null,
+        availableCommands: catalog?.availableCommands ?? [],
+        configOptions: catalog?.configOptions ?? [],
+        lastError: null,
+        messages: [],
+        modeId: catalog?.modeId ?? null,
+        modes: catalog?.modes ?? [],
+        modelId: catalog?.modelId ?? null,
+        models: catalog?.models ?? [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        parentSessionId: patch.changes.parentSessionId ?? null,
+        projectId: patch.changes.projectId ?? null,
+        runtimeId: patch.runtimeId,
+        runtimeSessionId: patch.changes.runtimeSessionId ?? null,
+        sessionId: patch.sessionId,
+        status: "idle",
+        title:
+            typeof patch.changes.title === "string" &&
+            patch.changes.title.trim().length > 0
+                ? patch.changes.title.trim()
+                : "AI Session",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: patch.changes.updatedAt ?? now,
+        worktreeId: patch.changes.worktreeId ?? null,
+    };
+}
+
+function hasSessionIdentityPatch(
+    changes: AiSessionPatch["changes"],
+): boolean {
+    return (
+        changes.parentSessionId !== undefined ||
+        changes.runtimeSessionId !== undefined ||
+        changes.messages !== undefined
+    );
+}
+
+function createSessionMetaFromSnapshot(
+    snapshot: AiSessionSnapshot,
+): RegisteredSessionMeta {
+    return {
+        projectId: snapshot.projectId,
+        runtimeId: snapshot.runtimeId,
+        title: snapshot.title,
+        worktreeId: snapshot.worktreeId ?? null,
+    };
+}
+
 function extractRuntimeCatalog(snapshot: AiSessionSnapshot): AiRuntimeCatalog {
     return {
         availableCommands: snapshot.availableCommands,
@@ -1933,6 +2047,7 @@ function mergeRuntimeCatalogIntoSnapshot(
 function resolveIncomingSessionSnapshot(
     incomingSnapshot: AiSessionSnapshot,
     currentSession: AiSessionClientState | null | undefined,
+    options: ResolveIncomingSnapshotOptions = {},
 ): AiSessionSnapshot {
     const currentSnapshot = currentSession?.snapshot ?? null;
     if (
@@ -1948,6 +2063,14 @@ function resolveIncomingSessionSnapshot(
     );
     if (!shouldPreserveCurrent) {
         return incomingSnapshot;
+    }
+
+    if (isIncomingSnapshotFreshEnough(currentSnapshot, incomingSnapshot)) {
+        return mergeCurrentTranscriptIntoIncoming(
+            currentSnapshot,
+            incomingSnapshot,
+            options.changedKeys ?? null,
+        );
     }
 
     return mergeHydrationMetadataIntoCurrent(
@@ -1976,6 +2099,36 @@ function mergeHydrationMetadataIntoCurrent(
         ...snapshotWithCatalog,
         runtimeSessionId: incomingSnapshot.runtimeSessionId,
     };
+}
+
+function mergeCurrentTranscriptIntoIncoming(
+    currentSnapshot: AiSessionSnapshot,
+    incomingSnapshot: AiSessionSnapshot,
+    changedKeys: ReadonlySet<keyof AiSessionPatch["changes"]> | null,
+): AiSessionSnapshot {
+    const shouldPreserveToolActivity =
+        changedKeys !== null && !changedKeys.has("toolActivity");
+
+    return {
+        ...incomingSnapshot,
+        messages: currentSnapshot.messages,
+        toolActivity: shouldPreserveToolActivity
+            ? currentSnapshot.toolActivity
+            : incomingSnapshot.toolActivity,
+    };
+}
+
+function isIncomingSnapshotFreshEnough(
+    currentSnapshot: AiSessionSnapshot,
+    incomingSnapshot: AiSessionSnapshot,
+): boolean {
+    const currentMs = Date.parse(currentSnapshot.updatedAt);
+    const incomingMs = Date.parse(incomingSnapshot.updatedAt);
+    if (!Number.isFinite(currentMs) || !Number.isFinite(incomingMs)) {
+        return incomingSnapshot.updatedAt >= currentSnapshot.updatedAt;
+    }
+
+    return incomingMs >= currentMs;
 }
 
 function hasMoreTranscript(

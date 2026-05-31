@@ -120,10 +120,7 @@ export function mapToolCallUpdate(
                 ).terminal_id;
                 const prev =
                     liveSession.terminalOutputBuffers.get(terminalId) ?? "";
-                let next = prev + data;
-                if (next.length > TERMINAL_OUTPUT_MAX_LENGTH) {
-                    next = next.slice(-TERMINAL_OUTPUT_MAX_LENGTH);
-                }
+                const next = mergeTerminalOutputBuffer(prev, data);
                 liveSession.terminalOutputBuffers.set(terminalId, next);
                 terminalOutput = next;
             }
@@ -308,6 +305,53 @@ export function mapToolCallUpdate(
         ],
         trackedFiles: nextTrackedFiles,
     };
+}
+
+function mergeTerminalOutputBuffer(previousOutput: string, data: string): string {
+    if (data.length === 0) {
+        return previousOutput;
+    }
+
+    if (previousOutput.length === 0 || data.startsWith(previousOutput)) {
+        return trimTerminalOutputBuffer(data);
+    }
+
+    const previousInDataIndex = data.lastIndexOf(previousOutput);
+    if (previousInDataIndex !== -1) {
+        return trimTerminalOutputBuffer(
+            `${previousOutput}${data.slice(
+                previousInDataIndex + previousOutput.length,
+            )}`,
+        );
+    }
+
+    const overlapLength = findTerminalOutputOverlapLength(
+        previousOutput,
+        data,
+    );
+    return trimTerminalOutputBuffer(
+        `${previousOutput}${data.slice(overlapLength)}`,
+    );
+}
+
+function findTerminalOutputOverlapLength(
+    previousOutput: string,
+    data: string,
+): number {
+    const maxLength = Math.min(previousOutput.length, data.length);
+    for (let length = maxLength; length > 0; length -= 1) {
+        if (previousOutput.endsWith(data.slice(0, length))) {
+            return length;
+        }
+    }
+
+    return 0;
+}
+
+function trimTerminalOutputBuffer(output: string): string {
+    return output.length > TERMINAL_OUTPUT_MAX_LENGTH
+        ? output.slice(-TERMINAL_OUTPUT_MAX_LENGTH)
+        : output;
 }
 
 export function isImageGenerationToolUpdate(
@@ -1375,6 +1419,108 @@ export async function readTextIfExists(
 
         throw error;
     }
+}
+
+export interface ReconcilePendingTrackedFilesInput {
+    readonly onError?: (error: unknown, trackedFile: AiTrackedFile) => void;
+    readonly readTrackedFileText: (trackedPath: string) => Promise<string | null>;
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
+export interface ReconcilePendingTrackedFilesResult {
+    readonly changed: boolean;
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
+export async function reconcilePendingTrackedFiles(
+    input: ReconcilePendingTrackedFilesInput,
+): Promise<ReconcilePendingTrackedFilesResult> {
+    if (input.trackedFiles.length === 0) {
+        return {
+            changed: false,
+            trackedFiles: input.trackedFiles,
+        };
+    }
+
+    const nextTrackedFiles: AiTrackedFile[] = [];
+    let changed = false;
+
+    for (const trackedFile of input.trackedFiles) {
+        const reconciledTrackedFile = await reconcilePendingTrackedFile(
+            trackedFile,
+            input.readTrackedFileText,
+            input.onError,
+        );
+        if (!reconciledTrackedFile) {
+            changed = true;
+            continue;
+        }
+
+        if (reconciledTrackedFile !== trackedFile) {
+            changed = true;
+        }
+        nextTrackedFiles.push(reconciledTrackedFile);
+    }
+
+    return {
+        changed,
+        trackedFiles: changed ? nextTrackedFiles : input.trackedFiles,
+    };
+}
+
+async function reconcilePendingTrackedFile(
+    trackedFile: AiTrackedFile,
+    readTrackedFileText: (trackedPath: string) => Promise<string | null>,
+    onError: ((error: unknown, trackedFile: AiTrackedFile) => void) | undefined,
+): Promise<AiTrackedFile | null> {
+    const syncedTrackedFile = syncTrackedFile(trackedFile);
+    if (
+        syncedTrackedFile.reviewState !== "pending" ||
+        !syncedTrackedFile.isText
+    ) {
+        return syncedTrackedFile;
+    }
+
+    if (syncedTrackedFile.hunks.length === 0) {
+        return null;
+    }
+
+    try {
+        return (await isTrackedFileNetClean(
+            syncedTrackedFile,
+            readTrackedFileText,
+        ))
+            ? null
+            : syncedTrackedFile;
+    } catch (error) {
+        onError?.(error, syncedTrackedFile);
+        return syncedTrackedFile;
+    }
+}
+
+async function isTrackedFileNetClean(
+    trackedFile: AiTrackedFile,
+    readTrackedFileText: (trackedPath: string) => Promise<string | null>,
+): Promise<boolean> {
+    const diffBase = getTrackedFileDiffBase(trackedFile);
+    if (trackedFile.previousPath) {
+        const [currentText, previousText] = await Promise.all([
+            readTrackedFileText(trackedFile.path),
+            readTrackedFileText(trackedFile.previousPath),
+        ]);
+
+        return (
+            (currentText === null || currentText === diffBase) &&
+            previousText === diffBase
+        );
+    }
+
+    const currentText = await readTrackedFileText(trackedFile.path);
+    if (trackedFile.kind === "create") {
+        return currentText === null || currentText === diffBase;
+    }
+
+    return currentText === diffBase;
 }
 
 function resolveTrackedDiffAbsolutePath(

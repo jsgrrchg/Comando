@@ -1,3 +1,7 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -6,6 +10,7 @@ import type {
     AiTrackedFile,
     AiSessionUpdate,
 } from "@shared/ipc";
+import { computeDiffHunks } from "@shared/ai-tracked-file";
 import { forgetOpenFileBuffer, recordOpenFileBuffer } from "./openFileBuffers";
 import type { AiWorkerGateway } from "./contracts";
 
@@ -79,6 +84,56 @@ describe("AiService hybrid persistence", () => {
             liveSnapshot,
         );
         expect(loadSessionSnapshot).not.toHaveBeenCalled();
+    });
+
+    it("drops net-clean tracked files from persisted snapshots", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-service-"),
+        );
+        try {
+            await fs.writeFile(path.join(tempDir, "notes.md"), "before\n", "utf8");
+            const trackedFile: AiTrackedFile = {
+                hunks: computeDiffHunks("before\n", "after\n", "notes.md"),
+                identityKey: "notes.md",
+                isText: true,
+                kind: "update",
+                newText: "after\n",
+                oldText: "before\n",
+                path: "notes.md",
+                previousPath: null,
+                reviewState: "pending",
+                reversible: true,
+                sessionId: "session-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-04-16T00:00:00.000Z",
+                version: 1,
+            };
+            const persistedSnapshot = createSnapshot({
+                projectId: "project-1",
+                sessionId: "session-1",
+                trackedFiles: [trackedFile],
+            });
+            const saveSessionSnapshot = vi.fn();
+            const service = createService({
+                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                projectRoot: tempDir,
+                saveSessionSnapshot,
+            });
+
+            await expect(service.getSessionSnapshot("session-1")).resolves.toEqual(
+                expect.objectContaining({
+                    trackedFiles: [],
+                }),
+            );
+            expect(saveSessionSnapshot).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    sessionId: "session-1",
+                    trackedFiles: [],
+                }),
+            );
+        } finally {
+            await fs.rm(tempDir, { force: true, recursive: true });
+        }
     });
 
     it("persists and broadcasts patch updates while keeping the merged live cache", async () => {
@@ -490,6 +545,7 @@ function createService(overrides: {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ) => void;
+    readonly projectRoot?: string;
     readonly saveSessionSnapshot?: ReturnType<typeof vi.fn>;
 } = {}) {
     return new AiService({
@@ -511,7 +567,9 @@ function createService(overrides: {
             saveSessionSnapshot: overrides.saveSessionSnapshot ?? vi.fn(),
         } as never,
         projectService: {
-            getProjectRootPath: vi.fn(() => process.cwd()),
+            getProjectRootPath: vi.fn(
+                () => overrides.projectRoot ?? process.cwd(),
+            ),
             listProjectWorktrees: vi.fn(() => []),
         } as never,
         secretStore: {

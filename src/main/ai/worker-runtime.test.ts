@@ -1408,6 +1408,66 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(false);
     });
 
+    it("normalizes accumulated terminal output updates", async () => {
+        const { client, emittedEvents } =
+            await setupPreparedRuntimeWithClient("Terminal output normalization");
+
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                kind: "execute",
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: {
+                    terminal_output: {
+                        data: "A\n",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                sessionUpdate: "tool_call_update",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: {
+                    terminal_output: {
+                        data: "A\nB\n",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasToolActivityMatching(
+                    emittedEvents,
+                    "session-1",
+                    (activity) =>
+                        activity.id === "exec-1" &&
+                        activity.terminalOutput === "A\nB\n",
+                ),
+            ).toBe(true);
+        });
+    });
+
     it("keeps a terminal subagent breadcrumb response that arrives before turn complete", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent terminal before complete");
@@ -4634,6 +4694,55 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).rejects.toThrowError(
             "Codex attempted to access a path outside the project.",
         );
+    });
+
+    it("drops net-clean tracked files when preparing a persisted session", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        try {
+            const filePath = path.join(tempDir, "notes.md");
+            await fs.writeFile(filePath, "before\n", "utf8");
+            const runtime = createRuntime();
+            const trackedFile: AiTrackedFile = {
+                hunks: computeDiffHunks("before\n", "after\n", "notes.md"),
+                identityKey: "notes.md",
+                isText: true,
+                kind: "update",
+                newText: "after\n",
+                oldText: "before\n",
+                path: "notes.md",
+                previousPath: null,
+                reviewState: "pending",
+                reversible: true,
+                sessionId: "session-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-04-15T22:23:13.719838Z",
+                version: 1,
+            };
+            const launch = createLaunch({
+                cwd: tempDir,
+                persistedSnapshot: {
+                    ...createLaunch({
+                        cwd: tempDir,
+                        projectRoot: tempDir,
+                        title: "Tracked file reconciliation baseline",
+                    }).persistedSnapshot,
+                    trackedFiles: [trackedFile],
+                },
+                projectRoot: tempDir,
+                title: "Tracked file reconciliation",
+            });
+
+            const snapshot = (await runtime.dispatchMethod("ai.prepareSession", {
+                input: launch.input,
+                launch,
+            })) as AiSessionSnapshot;
+
+            expect(snapshot.trackedFiles).toEqual([]);
+        } finally {
+            await fs.rm(tempDir, { force: true, recursive: true });
+        }
     });
 
     it("rejects a tracked file for a non-live session and reverts it on disk", async () => {
