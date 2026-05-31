@@ -15,7 +15,7 @@ import type { ProjectService } from "@main/projects/service";
 interface ManagedTerminalSession {
     readonly ownerWindowId: string;
     readonly ptyProcess: pty.IPty;
-    readonly session: TerminalSession;
+    session: TerminalSession;
     readonly terminalId: string | null;
 }
 
@@ -147,10 +147,21 @@ export class TerminalService {
             return;
         }
 
-        session.ptyProcess.resize(
-            normalizeTerminalCols(cols),
-            normalizeTerminalRows(rows),
-        );
+        const nextCols = normalizeTerminalCols(cols);
+        const nextRows = normalizeTerminalRows(rows);
+        if (
+            session.session.cols === nextCols &&
+            session.session.rows === nextRows
+        ) {
+            return;
+        }
+
+        session.ptyProcess.resize(nextCols, nextRows);
+        session.session = {
+            ...session.session,
+            cols: nextCols,
+            rows: nextRows,
+        };
     }
 
     closeSession(sessionId: string): void {
