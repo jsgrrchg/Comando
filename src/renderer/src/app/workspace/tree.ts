@@ -63,6 +63,7 @@ export interface RuntimeWorkspaceTerminalTab extends WorkspaceTerminalTab {
     readonly output: string;
     readonly session: TerminalSession | null;
     readonly signalCode: number | null;
+    readonly terminalId: string;
 }
 
 export type RuntimeWorkspaceGitTab = WorkspaceGitTab;
@@ -1091,103 +1092,6 @@ export function setFileTabLoading(
     }));
 }
 
-export function setTerminalSessionReady(
-    state: WorkspaceTreeState,
-    tabId: string,
-    session: TerminalSession,
-): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "terminal") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                isReady: true,
-                launchError: null,
-                session,
-            },
-        },
-    };
-}
-
-export function setTerminalLaunchError(
-    state: WorkspaceTreeState,
-    tabId: string,
-    launchError: string,
-): WorkspaceTreeState {
-    const tab = state.tabsById[tabId];
-    if (!tab || tab.kind !== "terminal") {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tabId]: {
-                ...tab,
-                isReady: false,
-                launchError,
-            },
-        },
-    };
-}
-
-export function appendTerminalOutput(
-    state: WorkspaceTreeState,
-    sessionId: string,
-    chunk: string,
-): WorkspaceTreeState {
-    const tab = findTerminalTabBySessionId(state, sessionId);
-    if (!tab) {
-        return state;
-    }
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tab.id]: {
-                ...tab,
-                output: `${tab.output}${chunk}`,
-            },
-        },
-    };
-}
-
-export function markTerminalExited(
-    state: WorkspaceTreeState,
-    sessionId: string,
-    exitCode: number | null,
-    signalCode: number | null,
-): WorkspaceTreeState {
-    const tab = findTerminalTabBySessionId(state, sessionId);
-    if (!tab) {
-        return state;
-    }
-
-    const exitLine = `\r\n[process exited${formatExitDetails(exitCode, signalCode)}]\r\n`;
-
-    return {
-        ...state,
-        tabsById: {
-            ...state.tabsById,
-            [tab.id]: {
-                ...tab,
-                exitCode,
-                isReady: false,
-                output: `${tab.output}${exitLine}`,
-                signalCode,
-            },
-        },
-    };
-}
-
 export function collectPaneNodes(node: WorkspaceNode): WorkspacePaneNode[] {
     if (node.type === "pane") {
         return [node];
@@ -1237,18 +1141,6 @@ export function findPaneIdForTab(
     }
 
     return null;
-}
-
-export function findTerminalTabBySessionId(
-    state: WorkspaceTreeState,
-    sessionId: string,
-): RuntimeWorkspaceTerminalTab | null {
-    return (
-        Object.values(state.tabsById).find(
-            (tab): tab is RuntimeWorkspaceTerminalTab =>
-                tab.kind === "terminal" && tab.sessionId === sessionId,
-        ) ?? null
-    );
 }
 
 function moveTabBetweenPanes(
@@ -1433,6 +1325,7 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
             kind: tab.kind,
             projectId: tab.projectId,
             sessionId: tab.sessionId,
+            terminalId: tab.terminalId,
             title: tab.title,
             worktreeId: tab.worktreeId ?? null,
         };
@@ -1549,21 +1442,6 @@ function omitTabFromMap(
             ([currentTabId]) => currentTabId !== tabId,
         ),
     );
-}
-
-function formatExitDetails(
-    exitCode: number | null,
-    signalCode: number | null,
-): string {
-    if (signalCode !== null) {
-        return `, signal ${signalCode}`;
-    }
-
-    if (exitCode !== null) {
-        return `, code ${exitCode}`;
-    }
-
-    return "";
 }
 
 function matchesProjectPath(

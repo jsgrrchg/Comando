@@ -1647,8 +1647,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.closeTerminalSession,
-        (_event, sessionId: string) => {
-            options.terminalService.closeSession(sessionId);
+        (event, sessionId: string) => {
+            const context = requireWindowContext(event.sender, "main");
+            options.terminalService.closeSessionOrOwnedTerminal(
+                context.windowId,
+                sessionId,
+            );
         },
     );
     ipcMain.handle(

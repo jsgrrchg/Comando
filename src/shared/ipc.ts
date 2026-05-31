@@ -1796,7 +1796,11 @@ export interface OpenProjectFileInput {
 
 export interface CreateTerminalSessionInput {
     readonly projectId: string | null;
+    readonly cols?: number;
+    readonly extraEnv?: Record<string, string>;
     readonly preferredSessionId?: string;
+    readonly rows?: number;
+    readonly terminalId?: string;
     readonly worktreeId?: string | null;
 }
 
@@ -1815,6 +1819,11 @@ export interface TerminalSession {
     readonly sessionId: string;
     readonly projectId: string | null;
     readonly cwd: string;
+    readonly cols?: number;
+    readonly exitCode?: number | null;
+    readonly errorMessage?: string | null;
+    readonly rows?: number;
+    readonly status?: "running" | "exited" | "error";
     readonly worktreeId?: string | null;
 }
 
@@ -1967,6 +1976,7 @@ export interface WorkspaceTerminalTab {
     readonly title: string;
     readonly projectId: string | null;
     readonly sessionId: string;
+    readonly terminalId?: string;
     readonly createdAt: string;
     readonly worktreeId?: string | null;
 }

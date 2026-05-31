@@ -118,6 +118,7 @@ import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalett
 import { closeWorkspaceTabsWithConfirmation } from "./components/workspace/workspaceCloseGuard";
 import { DesktopTopBar } from "./components/DesktopTopBar";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
+import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
 type DragState = {
     readonly side: "left";
@@ -252,12 +253,6 @@ export function App() {
     void createEntry;
 
     const workspaceHydrate = useWorkspaceStore((state) => state.hydrate);
-    const appendTerminalOutput = useWorkspaceStore(
-        (state) => state.appendTerminalOutput,
-    );
-    const handleTerminalExit = useWorkspaceStore(
-        (state) => state.handleTerminalExit,
-    );
     const createChatTab = useWorkspaceStore((state) => state.createChatTab);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
     const closeTabsForProjectPaths = useWorkspaceStore(
@@ -678,25 +673,6 @@ export function App() {
             unsubscribeSession();
         };
     }, [applyAiRuntimeStatus, applyAiSessionUpdate]);
-
-    useEffect(() => {
-        const comandoApi = getComandoApi();
-        if (!comandoApi) {
-            return;
-        }
-
-        const unsubscribeData = comandoApi.onTerminalData((event) => {
-            appendTerminalOutput(event);
-        });
-        const unsubscribeExit = comandoApi.onTerminalExit((event) => {
-            handleTerminalExit(event);
-        });
-
-        return () => {
-            unsubscribeData();
-            unsubscribeExit();
-        };
-    }, [appendTerminalOutput, handleTerminalExit]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -4044,6 +4020,7 @@ export function App() {
                             onPointerDown={focusWorkspaceSurface}
                             tabIndex={0}
                         >
+                            <WorkspaceTerminalHost />
                             <WorkspaceView
                                 defaultProjectId={activeProjectId}
                                 defaultWorktreeId={activeWorktreeId}

@@ -15,7 +15,8 @@ import type { ProjectService } from "@main/projects/service";
 interface ManagedTerminalSession {
     readonly ownerWindowId: string;
     readonly ptyProcess: pty.IPty;
-    readonly session: TerminalSession;
+    session: TerminalSession;
+    readonly terminalId: string | null;
 }
 
 interface TerminalServiceOptions {
@@ -29,6 +30,7 @@ export class TerminalService {
     readonly #onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly #projectService: ProjectService;
     readonly #sessions = new Map<string, ManagedTerminalSession>();
+    readonly #sessionIdsByOwnerTerminalId = new Map<string, string>();
 
     constructor(options: TerminalServiceOptions) {
         this.#onData = options.onData;
@@ -40,10 +42,29 @@ export class TerminalService {
         input: CreateTerminalSessionInput,
         ownerWindowId: string,
     ): TerminalSession {
-        const sessionId = input.preferredSessionId ?? randomUUID();
-        const existingSession = this.#sessions.get(sessionId);
+        const terminalOwnerKey = input.terminalId
+            ? createTerminalOwnerKey(ownerWindowId, input.terminalId)
+            : null;
+        const existingSessionId = terminalOwnerKey
+            ? this.#sessionIdsByOwnerTerminalId.get(terminalOwnerKey)
+            : null;
+        const existingSession = existingSessionId
+            ? this.#sessions.get(existingSessionId)
+            : null;
         if (existingSession) {
             return existingSession.session;
+        }
+        if (terminalOwnerKey && existingSessionId) {
+            this.#sessionIdsByOwnerTerminalId.delete(terminalOwnerKey);
+        }
+
+        let sessionId = input.preferredSessionId ?? randomUUID();
+        const preferredSession = this.#sessions.get(sessionId);
+        if (preferredSession?.ownerWindowId === ownerWindowId) {
+            return preferredSession.session;
+        }
+        while (this.#sessions.has(sessionId)) {
+            sessionId = randomUUID();
         }
 
         const cwd = input.projectId
@@ -54,21 +75,29 @@ export class TerminalService {
             : process.cwd();
         const shell = getDefaultShell();
         const shellArgs = getDefaultShellArgs(shell);
+        const cols = normalizeTerminalCols(input.cols);
+        const rows = normalizeTerminalRows(input.rows);
         const ptyProcess = pty.spawn(shell, shellArgs, {
-            cols: 120,
+            cols,
             cwd,
             env: {
                 ...process.env,
+                COLUMNS: String(cols),
                 COLORTERM: "truecolor",
-                TERM: process.env.TERM ?? "xterm-256color",
+                LINES: String(rows),
+                TERM: "xterm-256color",
+                ...input.extraEnv,
             },
             name: "xterm-color",
-            rows: 34,
+            rows,
         });
         const session: TerminalSession = {
+            cols,
             cwd,
             projectId: input.projectId,
+            rows,
             sessionId,
+            status: "running",
             worktreeId: input.worktreeId ?? null,
         };
 
@@ -76,6 +105,7 @@ export class TerminalService {
             ownerWindowId,
             ptyProcess,
             session,
+            terminalId: input.terminalId ?? null,
         };
 
         ptyProcess.onData((data) => {
@@ -86,6 +116,13 @@ export class TerminalService {
         });
         ptyProcess.onExit((event) => {
             this.#sessions.delete(sessionId);
+            if (terminalOwnerKey) {
+                const trackedSessionId =
+                    this.#sessionIdsByOwnerTerminalId.get(terminalOwnerKey);
+                if (trackedSessionId === sessionId) {
+                    this.#sessionIdsByOwnerTerminalId.delete(terminalOwnerKey);
+                }
+            }
             this.#onExit(ownerWindowId, {
                 exitCode: event.exitCode,
                 sessionId,
@@ -94,6 +131,9 @@ export class TerminalService {
         });
 
         this.#sessions.set(sessionId, managedSession);
+        if (terminalOwnerKey) {
+            this.#sessionIdsByOwnerTerminalId.set(terminalOwnerKey, sessionId);
+        }
         return session;
     }
 
@@ -107,7 +147,21 @@ export class TerminalService {
             return;
         }
 
-        session.ptyProcess.resize(Math.max(10, cols), Math.max(4, rows));
+        const nextCols = normalizeTerminalCols(cols);
+        const nextRows = normalizeTerminalRows(rows);
+        if (
+            session.session.cols === nextCols &&
+            session.session.rows === nextRows
+        ) {
+            return;
+        }
+
+        session.ptyProcess.resize(nextCols, nextRows);
+        session.session = {
+            ...session.session,
+            cols: nextCols,
+            rows: nextRows,
+        };
     }
 
     closeSession(sessionId: string): void {
@@ -118,6 +172,31 @@ export class TerminalService {
 
         session.ptyProcess.kill();
         this.#sessions.delete(sessionId);
+        if (session.terminalId) {
+            const terminalOwnerKey = createTerminalOwnerKey(
+                session.ownerWindowId,
+                session.terminalId,
+            );
+            const trackedSessionId =
+                this.#sessionIdsByOwnerTerminalId.get(terminalOwnerKey);
+            if (trackedSessionId === sessionId) {
+                this.#sessionIdsByOwnerTerminalId.delete(terminalOwnerKey);
+            }
+        }
+    }
+
+    closeSessionOrOwnedTerminal(ownerWindowId: string, id: string): void {
+        if (this.#sessions.has(id)) {
+            this.closeSession(id);
+            return;
+        }
+
+        const terminalOwnerKey = createTerminalOwnerKey(ownerWindowId, id);
+        const sessionId =
+            this.#sessionIdsByOwnerTerminalId.get(terminalOwnerKey);
+        if (sessionId) {
+            this.closeSession(sessionId);
+        }
     }
 
     close(): void {
@@ -135,6 +214,20 @@ export class TerminalService {
             this.closeSession(sessionId);
         }
     }
+}
+
+function createTerminalOwnerKey(ownerWindowId: string, terminalId: string) {
+    return `${ownerWindowId}:${terminalId}`;
+}
+
+function normalizeTerminalCols(cols: number | null | undefined): number {
+    const normalized = Math.floor(cols ?? 120);
+    return Number.isFinite(normalized) ? Math.max(10, normalized) : 120;
+}
+
+function normalizeTerminalRows(rows: number | null | undefined): number {
+    const normalized = Math.floor(rows ?? 34);
+    return Number.isFinite(normalized) ? Math.max(4, normalized) : 34;
 }
 
 function getDefaultShell(): string {

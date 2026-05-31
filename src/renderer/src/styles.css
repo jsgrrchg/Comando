@@ -1761,8 +1761,20 @@ body.resizing-composer {
     user-select: none;
 }
 
+.terminal-surface {
+    box-sizing: border-box;
+    height: 100%;
+    min-height: 0;
+    padding: 8px 12px;
+}
+
 .terminal-surface .xterm {
     height: 100%;
+}
+
+.terminal-surface .xterm-viewport {
+    overflow-y: auto !important;
+    scrollbar-width: thin;
 }
 
 /* ── Settings range slider ── */
