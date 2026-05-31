@@ -1216,7 +1216,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     const pendingTrackedFiles = trackedFiles.filter(
         (trackedFile) => trackedFile.reviewState === "pending",
     );
-    const hasInlineReview = trackedFiles.length > 0;
+    const hasInlineReview = trackedFiles.length > 0 || activity.diffs.length > 0;
 
     useRenderProbe("ToolActivityItem", {
         activityId: activity.id,
