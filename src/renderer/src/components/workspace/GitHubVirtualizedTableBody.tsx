@@ -10,7 +10,10 @@ import {
     type RefObject,
 } from "react";
 
-import { MeasuredVirtualList } from "../virtual/MeasuredVirtualList";
+import {
+    MeasuredVirtualList,
+    type MeasuredVirtualRange,
+} from "../virtual/MeasuredVirtualList";
 
 const DEFAULT_TABLE_ROW_OVERSCAN = 6;
 const DEFAULT_TABLE_VIEWPORT_HEIGHT = 720;
@@ -27,6 +30,7 @@ export interface GitHubVirtualizedTableBodyProps<T> {
     readonly gridTemplateColumns: string;
     readonly items: readonly T[];
     readonly minWidth: number;
+    readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly overscan?: number;
     readonly renderRow: (item: T, index: number) => ReactNode;
     readonly scrollContainerRef: RefObject<HTMLElement | null>;
@@ -40,6 +44,7 @@ export function GitHubVirtualizedTableBody<T>({
     gridTemplateColumns,
     items,
     minWidth,
+    onRangeChange,
     overscan = DEFAULT_TABLE_ROW_OVERSCAN,
     renderRow,
     scrollContainerRef,
@@ -127,6 +132,7 @@ export function GitHubVirtualizedTableBody<T>({
                 estimateSize={estimateRowHeight}
                 getItemKey={getRowKey}
                 items={items}
+                onRangeChange={onRangeChange}
                 overscan={overscan}
                 renderItem={({ index, item }) => renderLaidOutRow(item, index)}
                 scrollContainerRef={scrollContainerRef}
