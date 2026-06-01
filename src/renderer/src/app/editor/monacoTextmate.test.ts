@@ -195,7 +195,7 @@ describe("monacoTextmate", () => {
         expect(getTextMateScopeName("unknown-language")).toBeNull();
     });
 
-    it("installs the Rust TextMate provider and refreshes Rust models", async () => {
+    it("installs the Rust TextMate provider and reinstalls it after a cache hit", async () => {
         const rustModel = {
             getLanguageId: vi.fn(() => "rust"),
         };
@@ -203,10 +203,11 @@ describe("monacoTextmate", () => {
             getLanguageId: vi.fn(() => "typescript"),
         };
         const installedProviders: TestEncodedTokensProvider[] = [];
+        const firstProviderDispose = vi.fn();
         const setTokensProvider = vi.fn(
             (_languageId: string, provider: TestEncodedTokensProvider) => {
                 installedProviders.push(provider);
-                return { dispose: vi.fn() };
+                return { dispose: firstProviderDispose };
             },
         );
         const setModelLanguage = vi.fn();
@@ -268,9 +269,13 @@ describe("monacoTextmate", () => {
         const laterRustModel = {
             getLanguageId: vi.fn(() => "rust"),
         };
-        const setTokensProviderAfterCacheHit = vi.fn(() => ({
-            dispose: vi.fn(),
-        }));
+        const secondProviderDispose = vi.fn();
+        const setTokensProviderAfterCacheHit = vi.fn(
+            (_languageId: string, provider: TestEncodedTokensProvider) => {
+                installedProviders.push(provider);
+                return { dispose: secondProviderDispose };
+            },
+        );
         const setModelLanguageAfterCacheHit = vi.fn();
         const laterMonacoApi = {
             editor: {
@@ -287,7 +292,16 @@ describe("monacoTextmate", () => {
             ensureMonacoTextMateProvider(laterMonacoApi, "rust"),
         ).resolves.toBe(true);
 
-        expect(setTokensProviderAfterCacheHit).not.toHaveBeenCalled();
+        expect(loadGrammarWithConfigurationMock).toHaveBeenCalledTimes(1);
+        expect(firstProviderDispose).toHaveBeenCalledTimes(1);
+        expect(setTokensProviderAfterCacheHit).toHaveBeenCalledTimes(1);
+        expect(setTokensProviderAfterCacheHit).toHaveBeenCalledWith(
+            "rust",
+            expect.objectContaining({
+                getInitialState: expect.any(Function),
+                tokenizeEncoded: expect.any(Function),
+            }),
+        );
         expect(setModelLanguageAfterCacheHit).toHaveBeenCalledTimes(1);
         expect(setModelLanguageAfterCacheHit).toHaveBeenCalledWith(
             laterRustModel,
