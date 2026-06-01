@@ -1,11 +1,18 @@
 import {
     memo,
     useCallback,
+    useEffect,
     useMemo,
+    useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
+    type RefObject,
 } from "react";
 
+import {
+    MeasuredVirtualList,
+    type MeasuredVirtualListHandle,
+} from "@renderer/components/virtual/MeasuredVirtualList";
 import { DiffLineView } from "@renderer/components/workspace/review/DiffLineView";
 
 import { GitBadge, GitEmptyState } from "./GitUi";
@@ -16,9 +23,59 @@ import type {
     GitDiffsViewProps,
 } from "./types";
 
-// Baseline thresholds for the upcoming diff virtualization pass.
-export const GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD = 60;
+export const GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD = 25;
 export const GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD = 2_000;
+
+const DIFF_FILE_STACK_OVERSCAN = 4;
+const DIFF_FILE_STACK_GAP_PX = 12;
+const DIFF_FILE_HEADER_HEIGHT_PX = 52;
+const DIFF_FILE_EMPTY_STATE_HEIGHT_PX = 76;
+const DIFF_HUNK_HEADER_HEIGHT_PX = 26;
+const DIFF_HUNK_VERTICAL_PADDING_PX = 24;
+const DIFF_HUNK_GAP_PX = 12;
+const DEFAULT_DIFF_LINE_HEIGHT_PX = 20;
+const MAX_ESTIMATED_DIFF_FILE_HEIGHT_PX = 1_600;
+
+function resolveDiffLineHeightPx(codeLineHeight: number | null): number {
+    if (typeof codeLineHeight !== "number" || !Number.isFinite(codeLineHeight)) {
+        return DEFAULT_DIFF_LINE_HEIGHT_PX;
+    }
+
+    return codeLineHeight > 4
+        ? Math.max(1, codeLineHeight)
+        : Math.max(1, Math.round(DEFAULT_DIFF_LINE_HEIGHT_PX * codeLineHeight));
+}
+
+export function estimateDiffFileSurfaceHeight(
+    file: GitDiffFile,
+    collapsed: boolean,
+    codeLineHeight: number | null,
+): number {
+    if (collapsed) {
+        return DIFF_FILE_HEADER_HEIGHT_PX;
+    }
+
+    if (!file.isText || file.hunks.length === 0) {
+        return DIFF_FILE_HEADER_HEIGHT_PX + DIFF_FILE_EMPTY_STATE_HEIGHT_PX;
+    }
+
+    const lineHeight = resolveDiffLineHeightPx(codeLineHeight);
+    const hunksHeight = file.hunks.reduce((total, hunk, index) => {
+        const gap = index === 0 ? 0 : DIFF_HUNK_GAP_PX;
+        return (
+            total +
+            gap +
+            DIFF_HUNK_HEADER_HEIGHT_PX +
+            hunk.lines.length * lineHeight
+        );
+    }, 0);
+    const estimatedHeight =
+        DIFF_FILE_HEADER_HEIGHT_PX +
+        DIFF_HUNK_VERTICAL_PADDING_PX +
+        hunksHeight;
+
+    return Math.min(estimatedHeight, MAX_ESTIMATED_DIFF_FILE_HEIGHT_PX);
+}
 
 export function GitDiffsView({
     activeFileId = null,
@@ -39,6 +96,12 @@ export function GitDiffsView({
     surfaceVariant = "panel",
 }: GitDiffsViewProps) {
     const ownsScrollContainer = scrollContainerRef === undefined;
+    const ownScrollContainerRef = useRef<HTMLElement | null>(null);
+    const setOwnScrollContainer = useCallback((node: HTMLDivElement | null) => {
+        ownScrollContainerRef.current = node;
+    }, []);
+    const resolvedScrollContainerRef =
+        scrollContainerRef ?? ownScrollContainerRef;
     const isControlled = controlledCollapsedFileIds !== undefined;
     const [localCollapsedFileIds, setLocalCollapsedFileIds] = useState<
         readonly string[]
@@ -101,6 +164,7 @@ export function GitDiffsView({
                 .filter(Boolean)
                 .join(" ")}
             onScroll={ownsScrollContainer ? onScroll : undefined}
+            ref={ownsScrollContainer ? setOwnScrollContainer : undefined}
         >
             {showFileSelector ? (
                 <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -116,22 +180,18 @@ export function GitDiffsView({
             ) : null}
 
             {displayMode === "stack" ? (
-                <div className="space-y-3">
-                    {files.map((file) => (
-                        <DiffFileSurface
-                            codeFontFamily={codeFontFamily}
-                            codeFontSize={codeFontSize}
-                            codeLineHeight={codeLineHeight}
-                            collapsed={collapsedFileIdSet.has(file.id)}
-                            file={file}
-                            fileId={file.id}
-                            key={file.id}
-                            lineWrapping={lineWrapping}
-                            onToggleCollapse={toggleFileCollapse}
-                            surfaceVariant={surfaceVariant}
-                        />
-                    ))}
-                </div>
+                <VirtualizedGitDiffStack
+                    activeFileId={activeFileId}
+                    codeFontFamily={codeFontFamily}
+                    codeFontSize={codeFontSize}
+                    codeLineHeight={codeLineHeight}
+                    collapsedFileIdSet={collapsedFileIdSet}
+                    files={files}
+                    lineWrapping={lineWrapping}
+                    onToggleFileCollapse={toggleFileCollapse}
+                    scrollContainerRef={resolvedScrollContainerRef}
+                    surfaceVariant={surfaceVariant}
+                />
             ) : (
                 <DiffFileSurface
                     codeFontFamily={codeFontFamily}
@@ -180,6 +240,182 @@ const FileSelectorButton = memo(function FileSelectorButton({
         </button>
     );
 });
+
+function calculateScrollMarginTop(
+    element: HTMLElement | null,
+    scrollContainer: HTMLElement | null,
+): number {
+    if (!element || !scrollContainer || element === scrollContainer) {
+        return 0;
+    }
+
+    const elementRect = element.getBoundingClientRect();
+    const containerRect = scrollContainer.getBoundingClientRect();
+    return Math.max(
+        0,
+        elementRect.top - containerRect.top + scrollContainer.scrollTop,
+    );
+}
+
+function VirtualizedGitDiffStack({
+    activeFileId,
+    codeFontFamily,
+    codeFontSize,
+    codeLineHeight,
+    collapsedFileIdSet,
+    files,
+    lineWrapping,
+    onToggleFileCollapse,
+    scrollContainerRef,
+    surfaceVariant,
+}: {
+    readonly activeFileId: string | null | undefined;
+    readonly codeFontFamily: string | null;
+    readonly codeFontSize: number | null;
+    readonly codeLineHeight: number | null;
+    readonly collapsedFileIdSet: ReadonlySet<string>;
+    readonly files: readonly GitDiffFile[];
+    readonly lineWrapping: boolean;
+    readonly onToggleFileCollapse: (fileId: string) => void;
+    readonly scrollContainerRef: RefObject<HTMLElement | null>;
+    readonly surfaceVariant: "flat" | "panel";
+}) {
+    const stackRef = useRef<HTMLDivElement | null>(null);
+    const virtualListHandleRef = useRef<MeasuredVirtualListHandle | null>(null);
+    const [scrollMarginTop, setScrollMarginTop] = useState(0);
+    const shouldVirtualize = files.length >= GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD;
+    const activeFileIndex = useMemo(
+        () =>
+            activeFileId
+                ? files.findIndex((file) => file.id === activeFileId)
+                : -1,
+        [activeFileId, files],
+    );
+
+    useEffect(() => {
+        if (!shouldVirtualize || typeof window === "undefined") {
+            return;
+        }
+
+        const syncScrollMarginTop = () => {
+            setScrollMarginTop(
+                calculateScrollMarginTop(
+                    stackRef.current,
+                    scrollContainerRef.current,
+                ),
+            );
+        };
+
+        syncScrollMarginTop();
+
+        const scrollContainer = scrollContainerRef.current;
+        let observer: ResizeObserver | null = null;
+
+        if (typeof ResizeObserver !== "undefined") {
+            observer = new ResizeObserver(syncScrollMarginTop);
+            if (stackRef.current) {
+                observer.observe(stackRef.current);
+            }
+            if (scrollContainer) {
+                observer.observe(scrollContainer);
+            }
+        }
+
+        window.addEventListener("resize", syncScrollMarginTop);
+
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener("resize", syncScrollMarginTop);
+        };
+    }, [scrollContainerRef, shouldVirtualize]);
+
+    useEffect(() => {
+        if (!shouldVirtualize || activeFileIndex < 0) {
+            return;
+        }
+
+        virtualListHandleRef.current?.scrollToIndex(activeFileIndex, {
+            align: "start",
+            offset: -8,
+        });
+    }, [activeFileIndex, shouldVirtualize]);
+
+    const renderDiffFile = useCallback(
+        (file: GitDiffFile) => (
+            <DiffFileSurface
+                codeFontFamily={codeFontFamily}
+                codeFontSize={codeFontSize}
+                codeLineHeight={codeLineHeight}
+                collapsed={collapsedFileIdSet.has(file.id)}
+                file={file}
+                fileId={file.id}
+                lineWrapping={lineWrapping}
+                onToggleCollapse={onToggleFileCollapse}
+                surfaceVariant={surfaceVariant}
+            />
+        ),
+        [
+            codeFontFamily,
+            codeFontSize,
+            codeLineHeight,
+            collapsedFileIdSet,
+            lineWrapping,
+            onToggleFileCollapse,
+            surfaceVariant,
+        ],
+    );
+
+    const estimateFileSize = useCallback(
+        (file: GitDiffFile, index: number) =>
+            estimateDiffFileSurfaceHeight(
+                file,
+                collapsedFileIdSet.has(file.id),
+                codeLineHeight,
+            ) + (index === files.length - 1 ? 0 : DIFF_FILE_STACK_GAP_PX),
+        [codeLineHeight, collapsedFileIdSet, files.length],
+    );
+
+    const handleVirtualListReady = useCallback(
+        (handle: MeasuredVirtualListHandle | null) => {
+            virtualListHandleRef.current = handle;
+        },
+        [],
+    );
+
+    if (!shouldVirtualize) {
+        return (
+            <div className="space-y-3" ref={stackRef}>
+                {files.map((file) => (
+                    <div key={file.id}>{renderDiffFile(file)}</div>
+                ))}
+            </div>
+        );
+    }
+
+    return (
+        <div ref={stackRef}>
+            <MeasuredVirtualList
+                enabled
+                estimateSize={estimateFileSize}
+                getItemKey={(file) => file.id}
+                items={files}
+                onReady={handleVirtualListReady}
+                overscan={DIFF_FILE_STACK_OVERSCAN}
+                renderItem={({ index, item }) => (
+                    <div
+                        className={
+                            index === files.length - 1 ? undefined : "pb-3"
+                        }
+                    >
+                        {renderDiffFile(item)}
+                    </div>
+                )}
+                scrollContainerRef={scrollContainerRef}
+                scrollMarginTop={scrollMarginTop}
+            />
+        </div>
+    );
+}
 
 const DiffFileSurface = memo(function DiffFileSurface({
     codeFontFamily = null,

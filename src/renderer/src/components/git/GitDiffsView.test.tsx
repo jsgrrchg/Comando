@@ -1,11 +1,63 @@
-import { createRef } from "react";
+import { createRef, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const mockScrollToIndex = vi.hoisted(() => vi.fn());
+
+vi.mock("@renderer/components/virtual/MeasuredVirtualList", () => ({
+    MeasuredVirtualList: <T,>({
+        enabled = true,
+        estimateSize,
+        getItemKey,
+        items,
+        onReady,
+        renderItem,
+        scrollMarginTop = 0,
+    }: {
+        readonly enabled?: boolean;
+        readonly estimateSize: (item: T, index: number) => number;
+        readonly getItemKey: (item: T, index: number) => string;
+        readonly items: readonly T[];
+        readonly onReady?: (
+            handle: { readonly scrollToIndex: typeof mockScrollToIndex } | null,
+        ) => void;
+        readonly renderItem: (params: {
+            readonly index: number;
+            readonly isVisible: boolean;
+            readonly item: T;
+        }) => ReactNode;
+        readonly scrollMarginTop?: number;
+    }) => {
+        onReady?.({ scrollToIndex: mockScrollToIndex });
+        const renderedItems = enabled ? items.slice(0, 6) : items;
+
+        return (
+            <div
+                data-measured-virtual-list="true"
+                data-scroll-margin-top={scrollMarginTop}
+            >
+                {renderedItems.map((item, index) => (
+                    <div
+                        data-estimated-size={estimateSize(item, index)}
+                        key={getItemKey(item, index)}
+                    >
+                        {renderItem({
+                            index,
+                            isVisible: true,
+                            item,
+                        })}
+                    </div>
+                ))}
+            </div>
+        );
+    },
+}));
 
 import {
     GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD,
     GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
     GitDiffsView,
+    estimateDiffFileSurfaceHeight,
 } from "./GitDiffsView";
 import type { GitDiffFile } from "./types";
 
@@ -241,10 +293,31 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("This file is binary");
     });
 
-    it("renders the large stacked diff baseline without dropping files or lines", () => {
+    it("renders every stacked diff file below the virtualization threshold", () => {
+        const files = Array.from(
+            { length: GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD - 1 },
+            (_, index) => createLargeDiffFile(index + 1),
+        );
+
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                displayMode="stack"
+                files={files}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).not.toContain('data-measured-virtual-list="true"');
+        expect(markup).toContain("large-file-1.ts");
+        expect(markup).toContain(
+            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD - 1}.ts`,
+        );
+    });
+
+    it("virtualizes large stacked diffs by mounting a measured subset", () => {
         const files = [
             ...Array.from(
-                { length: GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD },
+                { length: GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD + 1 },
                 (_, index) => createLargeDiffFile(index + 1),
             ),
             createLargeLineDiffFile(),
@@ -258,14 +331,12 @@ describe("GitDiffsView", () => {
             />,
         );
 
+        expect(markup).toContain('data-measured-virtual-list="true"');
         expect(markup).toContain("large-file-1.ts");
-        expect(markup).toContain(
-            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD}.ts`,
+        expect(markup).not.toContain(
+            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD + 1}.ts`,
         );
-        expect(markup).toContain("giant-diff-line-1");
-        expect(markup).toContain(
-            `giant-diff-line-${GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD}`,
-        );
+        expect(markup).not.toContain("giant-diff-line-1");
     });
 
     it("keeps collapse state authoritative in the large stacked diff baseline", () => {
@@ -284,5 +355,19 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("giant-diff.ts");
         expect(markup).not.toContain("giant-diff-line-1");
         expect(markup).toContain("large-file-1-line");
+    });
+
+    it("estimates collapsed diff files smaller than expanded text files", () => {
+        const file = createLargeLineDiffFile();
+
+        expect(estimateDiffFileSurfaceHeight(file, true, 20)).toBeLessThan(
+            estimateDiffFileSurfaceHeight(file, false, 20),
+        );
+    });
+
+    it("caps extremely large initial diff file estimates", () => {
+        expect(
+            estimateDiffFileSurfaceHeight(createLargeLineDiffFile(), false, 20),
+        ).toBe(1600);
     });
 });
