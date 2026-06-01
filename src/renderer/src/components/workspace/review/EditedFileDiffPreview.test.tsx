@@ -1,9 +1,57 @@
+import { createRef, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AiFileDiff, AiTrackedFile } from "@shared/ipc";
 
-import { EditedFileDiffPreview } from "./EditedFileDiffPreview";
+vi.mock("@renderer/components/virtual/MeasuredVirtualList", () => ({
+    MeasuredVirtualList: <T,>({
+        enabled = true,
+        estimateSize,
+        getItemKey,
+        items,
+        renderItem,
+        scrollMarginTop = 0,
+    }: {
+        readonly enabled?: boolean;
+        readonly estimateSize: (item: T, index: number) => number;
+        readonly getItemKey: (item: T, index: number) => string;
+        readonly items: readonly T[];
+        readonly renderItem: (params: {
+            readonly index: number;
+            readonly isVisible: boolean;
+            readonly item: T;
+        }) => ReactNode;
+        readonly scrollMarginTop?: number;
+    }) => {
+        const renderedItems = enabled ? items.slice(0, 8) : items;
+
+        return (
+            <div
+                data-measured-virtual-list="true"
+                data-scroll-margin-top={scrollMarginTop}
+            >
+                {renderedItems.map((item, index) => (
+                    <div
+                        data-estimated-size={estimateSize(item, index)}
+                        key={getItemKey(item, index)}
+                    >
+                        {renderItem({
+                            index,
+                            isVisible: true,
+                            item,
+                        })}
+                    </div>
+                ))}
+            </div>
+        );
+    },
+}));
+
+import {
+    EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD,
+    EditedFileDiffPreview,
+} from "./EditedFileDiffPreview";
 
 function createDiff(): AiFileDiff {
     return {
@@ -95,6 +143,60 @@ function createTrackedFile(): AiTrackedFile {
     };
 }
 
+function createLargeExactDiff(): AiFileDiff {
+    return {
+        ...createDiff(),
+        hunks: [
+            {
+                id: "large-hunk",
+                lines: Array.from(
+                    {
+                        length: EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD,
+                    },
+                    (_, index) => ({
+                        id: `large-line-${index + 1}`,
+                        text: `large-preview-line-${index + 1}`,
+                        type: "add" as const,
+                    }),
+                ),
+                newCount: EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD,
+                newStart: 1,
+                oldCount: 0,
+                oldStart: 1,
+            },
+        ],
+        newText: null,
+        oldText: null,
+        path: "src/large-preview.ts",
+    };
+}
+
+function createLargeTrackedFile(): AiTrackedFile {
+    return {
+        ...createTrackedFile(),
+        hunks: [
+            {
+                id: "large-hunk",
+                lines: Array.from(
+                    {
+                        length: EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD,
+                    },
+                    (_, index) => ({
+                        id: `large-line-${index + 1}`,
+                        text: `large-preview-line-${index + 1}`,
+                        type: "add" as const,
+                    }),
+                ),
+                newCount: EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD,
+                newStart: 1,
+                oldCount: 0,
+                oldStart: 1,
+            },
+        ],
+        path: "src/large-preview.ts",
+    };
+}
+
 describe("EditedFileDiffPreview", () => {
     it("keeps hunk actions bound to the tracked hunk id after partial resolution", () => {
         const markup = renderToStaticMarkup(
@@ -172,5 +274,41 @@ describe("EditedFileDiffPreview", () => {
 
         expect(markup).toContain('data-line-wrapping="true"');
         expect(markup).toContain("overflow-x:hidden");
+    });
+
+    it("virtualizes giant review previews against the shared scroll container", () => {
+        const markup = renderToStaticMarkup(
+            <EditedFileDiffPreview
+                diff={createLargeExactDiff()}
+                diffZoom={0.72}
+                expanded
+                scrollContainerRef={createRef<HTMLElement>()}
+            />,
+        );
+
+        expect(markup).toContain('data-virtualized-edited-diff="true"');
+        expect(markup).toContain('data-measured-virtual-list="true"');
+        expect(markup).toContain("large-preview-line-1");
+        expect(markup).not.toContain(
+            `large-preview-line-${EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD}`,
+        );
+    });
+
+    it("keeps hunk actions available in virtualized review previews", () => {
+        const markup = renderToStaticMarkup(
+            <EditedFileDiffPreview
+                diff={createLargeExactDiff()}
+                diffZoom={0.72}
+                expanded
+                file={createLargeTrackedFile()}
+                onKeepHunk={() => {}}
+                onRejectHunk={() => {}}
+                scrollContainerRef={createRef<HTMLElement>()}
+            />,
+        );
+
+        expect(markup).toContain('data-review-hunk-key="large-hunk"');
+        expect(markup).toContain("Accept hunk 1");
+        expect(markup).toContain("Reject hunk 1");
     });
 });

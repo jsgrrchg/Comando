@@ -1254,6 +1254,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                         onRejectHunk={(hunkId) =>
                                             handleRejectHunk(item, hunkId)
                                         }
+                                        scrollContainerRef={scrollContainerRef}
                                         onToggle={() =>
                                             expansion.toggleFile(
                                                 item.file.identityKey,
@@ -1288,6 +1289,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                     onRejectHunk={(hunkId) =>
                                         handleRejectHunk(item, hunkId)
                                     }
+                                    scrollContainerRef={scrollContainerRef}
                                     onToggle={() =>
                                         expansion.toggleFile(
                                             item.file.identityKey,

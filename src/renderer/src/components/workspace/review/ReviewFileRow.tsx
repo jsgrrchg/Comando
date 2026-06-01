@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type RefObject } from "react";
 
 import type { ReviewFileItem } from "./editedFilesPresentationModel";
 import { EditedFileDiffPreview } from "./EditedFileDiffPreview";
@@ -150,6 +150,7 @@ export interface ReviewFileRowProps {
     readonly onOpen?: () => void;
     readonly onReject: () => void;
     readonly onRejectHunk?: (hunkId: string) => void;
+    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly onToggle: () => void;
     readonly variant: "compact" | "full";
 }
@@ -164,6 +165,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
     onOpen,
     onReject,
     onRejectHunk,
+    scrollContainerRef,
     onToggle,
     variant,
 }: ReviewFileRowProps) {
@@ -512,6 +514,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                 lineWrapping={resolvedLineWrapping}
                 onKeepHunk={item.canResolveHunks ? onKeepHunk : undefined}
                 onRejectHunk={item.canResolveHunks ? onRejectHunk : undefined}
+                scrollContainerRef={scrollContainerRef}
                 testId={`review-file-diff:${item.file.identityKey}`}
             />
         </div>
