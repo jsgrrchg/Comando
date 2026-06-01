@@ -4,6 +4,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type CSSProperties,
     type DragEvent as ReactDragEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -93,6 +94,7 @@ const PR_TABLE_COLUMN_MIN_WIDTHS: PullRequestColumnWidths = {
     number: 44,
 };
 const PR_TABLE_COLUMN_MAX_WIDTH = 900;
+const PR_TABLE_ROW_HEIGHT = 58;
 const PR_TABLE_COLUMN_LABELS: Record<PullRequestColumnId, string> = {
     action: "Action",
     branch: "Branch",
@@ -831,15 +833,19 @@ export function GitHubPullRequestsTabView({
 
 function PullRequestTableRow({
     checksState,
+    className,
     isCurrentBranchPullRequest,
     onOpenPullRequest,
     pullRequest,
+    style,
     tableLayout,
 }: {
     readonly checksState: GitHubPullRequestChecksState | "loading";
+    readonly className?: string;
     readonly isCurrentBranchPullRequest: boolean;
     readonly onOpenPullRequest: (pullRequestNumber: number) => void;
     readonly pullRequest: GitHubPullRequestSummary;
+    readonly style?: CSSProperties;
     readonly tableLayout: PullRequestTableLayout;
 }) {
     const handleOpenPullRequest = () => {
@@ -849,13 +855,15 @@ function PullRequestTableRow({
     return (
         <div
             className={[
-                "group/row items-stretch border-b border-l-[3px] border-b-border-subtle pl-2.5 pr-3 text-left text-[11px] transition-[color,background-color,border-color] duration-120",
+                "group/row w-full items-stretch overflow-hidden border-l-[3px] pl-2.5 pr-3 text-left text-[11px] transition-[color,background-color,border-color] duration-120",
                 isCurrentBranchPullRequest
                     ? "border-l-[color-mix(in_srgb,var(--color-accent)_70%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
                     : "border-l-transparent text-text-secondary hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary",
+                className,
             ].join(" ")}
             style={{
-                minHeight: estimatePullRequestTableRowHeight(pullRequest),
+                ...style,
+                height: PR_TABLE_ROW_HEIGHT,
             }}
         >
             {tableLayout.order.map((columnId) => (
@@ -940,7 +948,7 @@ function PullRequestTableCell({
 }) {
     if (columnId === "action") {
         return (
-            <div className="flex h-full min-w-0 items-start justify-end py-2.5">
+            <div className="flex min-w-0 items-center justify-end border-b border-border-subtle py-1.5">
                 <IdeActionButton
                     onClick={() => openGitHubWebUrl(pullRequest.url)}
                 >
@@ -952,7 +960,7 @@ function PullRequestTableCell({
 
     return (
         <button
-            className="block h-full min-w-0 overflow-hidden py-2.5 pr-3 text-left"
+            className="min-w-0 overflow-hidden border-b border-border-subtle py-1.5 pr-3 text-left"
             onClick={onOpen}
             type="button"
         >
@@ -988,7 +996,7 @@ function renderPullRequestColumnContent({
     if (columnId === "branch") {
         return (
             <div
-                className="min-w-0 overflow-hidden text-[11px] text-text-secondary"
+                className="min-w-0 overflow-hidden text-[11px] leading-4 text-text-secondary"
                 style={{
                     fontFamily: "var(--font-mono)",
                 }}
@@ -1001,7 +1009,7 @@ function renderPullRequestColumnContent({
 
     if (columnId === "date") {
         return (
-            <div className="min-w-0 text-[11px] text-text-secondary">
+            <div className="min-w-0 text-[11px] leading-4 text-text-secondary">
                 <div>{pullRequest.commentCount} comments</div>
                 <div className="mt-0.5">
                     {formatGitHubRelativeTime(pullRequest.updatedAt)}
@@ -1039,7 +1047,7 @@ function renderPullRequestColumnContent({
                 ) : null}
             </div>
             {pullRequest.labels.length > 0 ? (
-                <div className="mt-1 flex flex-wrap gap-1">
+                <div className="mt-0.5 flex min-w-0 gap-1 overflow-hidden">
                     {pullRequest.labels.slice(0, 4).map((label) => (
                         <GitHubLabelPill key={label.id} label={label} />
                     ))}
@@ -1114,10 +1122,8 @@ function areMeasuredVirtualRangesEqual(
     );
 }
 
-function estimatePullRequestTableRowHeight(
-    pullRequest: GitHubPullRequestSummary,
-): number {
-    return pullRequest.labels.length > 0 ? 72 : 58;
+function estimatePullRequestTableRowHeight(): number {
+    return PR_TABLE_ROW_HEIGHT;
 }
 
 function clampWidth(value: number, min: number, max: number): number {

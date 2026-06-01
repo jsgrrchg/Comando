@@ -4,6 +4,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type CSSProperties,
     type DragEvent as ReactDragEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -77,6 +78,7 @@ const ISSUE_TABLE_COLUMN_MIN_WIDTHS: IssueColumnWidths = {
     number: 44,
 };
 const ISSUE_TABLE_COLUMN_MAX_WIDTH = 900;
+const ISSUE_TABLE_ROW_HEIGHT = 58;
 const ISSUE_TABLE_COLUMN_LABELS: Record<IssueColumnId, string> = {
     action: "Action",
     assignees: "Assignees",
@@ -607,12 +609,16 @@ export function GitHubIssuesTabView({
 }
 
 function IssueTableRow({
+    className,
     issue,
     onOpenIssue,
+    style,
     tableLayout,
 }: {
+    readonly className?: string;
     readonly issue: GitHubIssueSummary;
     readonly onOpenIssue: (issueNumber: number) => void;
+    readonly style?: CSSProperties;
     readonly tableLayout: IssueTableLayout;
 }) {
     const handleOpenIssue = () => {
@@ -621,8 +627,16 @@ function IssueTableRow({
 
     return (
         <div
-            className="group/row items-stretch border-b border-l-[3px] border-b-border-subtle border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary"
-            style={{ minHeight: estimateIssueTableRowHeight(issue) }}
+            className={[
+                "group/row w-full items-stretch overflow-hidden border-l-[3px] border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary",
+                className,
+            ]
+                .filter(Boolean)
+                .join(" ")}
+            style={{
+                ...style,
+                height: ISSUE_TABLE_ROW_HEIGHT,
+            }}
         >
             {tableLayout.order.map((columnId) => (
                 <IssueTableCell
@@ -700,7 +714,7 @@ function IssueTableCell({
 }) {
     if (columnId === "action") {
         return (
-            <div className="flex h-full min-w-0 items-start justify-end py-2.5">
+            <div className="flex min-w-0 items-center justify-end border-b border-border-subtle py-1.5">
                 <IdeActionButton onClick={() => openGitHubWebUrl(issue.url)}>
                     Open in GitHub
                 </IdeActionButton>
@@ -710,7 +724,7 @@ function IssueTableCell({
 
     return (
         <button
-            className="block h-full min-w-0 overflow-hidden py-2.5 pr-3 text-left"
+            className="min-w-0 overflow-hidden border-b border-border-subtle py-1.5 pr-3 text-left"
             onClick={onOpen}
             type="button"
         >
@@ -744,7 +758,7 @@ function renderIssueColumnContent({
 
     if (columnId === "date") {
         return (
-            <div className="min-w-0 text-[11px] text-text-secondary">
+            <div className="min-w-0 text-[11px] leading-4 text-text-secondary">
                 <div>{issue.commentCount} comments</div>
                 <div className="mt-0.5">
                     {formatGitHubRelativeTime(issue.updatedAt)}
@@ -764,7 +778,7 @@ function renderIssueColumnContent({
                 </span>
             </div>
             {issue.labels.length > 0 ? (
-                <div className="mt-1 flex flex-wrap gap-1">
+                <div className="mt-0.5 flex min-w-0 gap-1 overflow-hidden">
                     {issue.labels.slice(0, 4).map((label) => (
                         <GitHubLabelPill key={label.id} label={label} />
                     ))}
@@ -899,8 +913,8 @@ function moveIssueColumn(
     return nextOrder;
 }
 
-function estimateIssueTableRowHeight(issue: GitHubIssueSummary): number {
-    return issue.labels.length > 0 ? 68 : 56;
+function estimateIssueTableRowHeight(): number {
+    return ISSUE_TABLE_ROW_HEIGHT;
 }
 
 function getStorage(): Storage | null {
