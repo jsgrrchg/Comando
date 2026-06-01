@@ -650,15 +650,20 @@ function ensureTextMateProvider(
         normalizedLanguageId,
     );
     if (cachedInstallation) {
-        return cachedInstallation.then((installed) => {
-            if (installed) {
-                refreshTextMateModelsForLanguage(
-                    monacoNsps,
-                    normalizedLanguageId,
-                );
+        return cachedInstallation.then(async (installed) => {
+            if (!installed) {
+                return false;
             }
 
-            return installed;
+            const reinstalled = await installTextMateProvider(
+                monacoNsps,
+                normalizedLanguageId,
+            );
+            if (!reinstalled) {
+                textMateProviderInstallCache.delete(normalizedLanguageId);
+            }
+
+            return reinstalled;
         });
     }
 
