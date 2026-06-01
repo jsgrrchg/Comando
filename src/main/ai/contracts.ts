@@ -25,6 +25,7 @@ import type {
     AiTrackedFileMutationInput,
     AiRuntimeId,
     AiRuntimeStatus,
+    AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
     AiUserInputResponseInput,
@@ -90,6 +91,10 @@ export interface AiServiceOptions {
     readonly settingsService: SettingsGateway;
     readonly secretStore: SecretStoreGateway;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
+    readonly onSessionEvent?: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ) => void;
     readonly onSessionSnapshot: (
         ownerWindowId: string,
         update: AiSessionUpdate,
@@ -137,6 +142,13 @@ export interface AiWorkerDesiredSelections {
     readonly preferredConfigOptions: Record<string, boolean | string>;
 }
 
+export interface AiWorkerRuntimeSessionMapping {
+    readonly appSessionId: string;
+    readonly parentAppSessionId: string | null;
+    readonly parentRuntimeSessionId: string | null;
+    readonly runtimeSessionId: string;
+}
+
 export interface AiWorkerSessionLaunchInput {
     readonly additionalRoots: readonly string[];
     readonly cwd: string;
@@ -144,6 +156,7 @@ export interface AiWorkerSessionLaunchInput {
     readonly input: SessionDescriptor;
     readonly ownerWindowId: string;
     readonly persistedSnapshot: AiSessionSnapshot;
+    readonly persistedSubagentSessionMappings?: readonly AiWorkerRuntimeSessionMapping[];
     readonly projectRoot: string | null;
     readonly resolvedRuntime: ResolvedAcpRuntime;
 }
@@ -174,6 +187,10 @@ export interface LiveAcpConnection {
     connectionId: string;
     ownerWindowId: string;
     pendingSessionUpdatesByRuntimeSessionId: Map<string, SessionNotification[]>;
+    persistedSubagentMappingsByRuntimeSessionId: Map<
+        string,
+        AiWorkerRuntimeSessionMapping
+    >;
     resolvedRuntime: ResolvedAcpRuntime;
     runtimeId: AiRuntimeId;
     sessionsByAppSessionId: Map<string, LiveAcpSession>;
@@ -283,6 +300,11 @@ export interface AiWorkerSnapshotUpdatedEventPayload {
     readonly update: AiSessionUpdate;
 }
 
+export interface AiWorkerSessionEventPayload {
+    readonly event: AiSessionDomainEvent;
+    readonly ownerWindowId: string;
+}
+
 export interface AiWorkerRuntimeStatusEventPayload {
     readonly status: AiRuntimeStatus;
 }
@@ -290,6 +312,7 @@ export interface AiWorkerRuntimeStatusEventPayload {
 export type AiWorkerEventPayloadByName = {
     "ai.log": AiWorkerLogEventPayload;
     "ai.runtime.status": AiWorkerRuntimeStatusEventPayload;
+    "ai.session.event": AiWorkerSessionEventPayload;
     "ai.session.closed": AiWorkerSessionClosedEventPayload;
     "ai.snapshot.updated": AiWorkerSnapshotUpdatedEventPayload;
 };

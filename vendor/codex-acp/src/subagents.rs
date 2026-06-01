@@ -13,6 +13,7 @@ use codex_protocol::{
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
+use tracing::info;
 
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY: &str = "codexAcpSubagentEventType";
@@ -30,6 +31,10 @@ const CODEX_ACP_CWD_KEY: &str = "codexAcpCwd";
 const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT: &str = "subagent_session_created";
 const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT: &str = "subagent_breadcrumb";
 const CODEX_ACP_SUBAGENT_TOOL_CALL_ID_PREFIX: &str = "codex-acp:subagent:";
+
+fn debug_ai_worker_enabled() -> bool {
+    matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubagentThreadRegistration {
@@ -74,6 +79,15 @@ pub(crate) fn session_created_notification(
     registration: &SubagentThreadRegistration,
     snapshot: &ThreadConfigSnapshot,
 ) -> SessionNotification {
+    if debug_ai_worker_enabled() {
+        info!(
+            child_session_id = %registration.child_session_id,
+            child_thread_id = %registration.child_thread_id,
+            parent_session_id = %registration.parent_session_id,
+            parent_thread_id = %registration.parent_thread_id,
+            "diagnostic: creating ACP subagent session notification"
+        );
+    }
     let meta = session_created_meta(registration, snapshot);
     let mut update = SessionInfoUpdate::new().meta(meta.clone());
     if let Some(title) = subagent_display_name(registration.nickname.as_deref(), None) {

@@ -79,6 +79,7 @@ function createAiSessionPatchChanges(
     const patchableKeys = [
         "activeTurnStartedAt",
         "availableCommands",
+        "closedAt",
         "configOptions",
         "lastError",
         "messages",

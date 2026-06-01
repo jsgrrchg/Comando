@@ -173,6 +173,7 @@ export const IPC_EVENTS = {
     terminalExit: "terminals:exit",
     aiRuntimeStatus: "ai:runtime-status",
     aiSessionSnapshot: "ai:session-snapshot",
+    aiSessionEvent: "ai:session-event",
     aiSessionStreamPort: "ai:session-stream-port",
 } as const;
 
@@ -2009,7 +2010,6 @@ export interface PersistedChatSessionState {
     readonly reviewArtifacts: readonly ReviewArtifact[];
     readonly sessionId: string;
     readonly title: string;
-    readonly transcriptJson: string;
     readonly updatedAt: string;
     readonly worktreeId?: string | null;
 }
@@ -2342,6 +2342,7 @@ export interface AiTokenUsage {
 export interface AiSessionSnapshot {
     readonly activeTurnStartedAt?: string | null;
     readonly availableCommands: readonly AiAvailableCommand[];
+    readonly closedAt?: string | null;
     readonly configOptions: readonly AiSessionConfigOption[];
     readonly lastError: string | null;
     readonly messages: readonly AiMessage[];
@@ -2385,6 +2386,163 @@ export type AiSessionUpdate =
           readonly kind: "snapshot";
           readonly snapshot: AiSessionSnapshot;
       };
+
+export type AiSessionEventOrigin = "live" | "replay" | "restore";
+
+export type AiSessionMessageEventKind = Exclude<
+    AiMessageKind,
+    "image" | "thinking" | "user_input_request"
+>;
+
+export interface AiSessionDomainEventBase {
+    readonly kind:
+        | "image-generation"
+        | "message-completed"
+        | "message-delta"
+        | "message-started"
+        | "permission-request"
+        | "plan"
+        | "session-info"
+        | "status"
+        | "subagent-breadcrumb"
+        | "subagent-created"
+        | "thinking-completed"
+        | "thinking-delta"
+        | "thinking-started"
+        | "token-usage"
+        | "tool-activity"
+        | "user-input-request";
+    readonly origin: AiSessionEventOrigin;
+    readonly parentSessionId: string | null;
+    readonly runtimeId: AiRuntimeId;
+    readonly runtimeSessionId: string | null;
+    readonly sessionId: string;
+    readonly updatedAt: string;
+}
+
+export interface AiSessionMessageStartedEvent
+    extends AiSessionDomainEventBase {
+    readonly kind: "message-started";
+    readonly message: AiMessage;
+    readonly messageKind: AiSessionMessageEventKind;
+}
+
+export interface AiSessionMessageDeltaEvent extends AiSessionDomainEventBase {
+    readonly content: string;
+    readonly delta: string;
+    readonly kind: "message-delta";
+    readonly messageId: string;
+    readonly messageKind: AiSessionMessageEventKind;
+}
+
+export interface AiSessionMessageCompletedEvent
+    extends AiSessionDomainEventBase {
+    readonly kind: "message-completed";
+    readonly messageId: string;
+    readonly messageKind: AiSessionMessageEventKind;
+}
+
+export interface AiSessionThinkingStartedEvent
+    extends AiSessionDomainEventBase {
+    readonly kind: "thinking-started";
+    readonly message: AiMessage;
+}
+
+export interface AiSessionThinkingDeltaEvent extends AiSessionDomainEventBase {
+    readonly content: string;
+    readonly delta: string;
+    readonly kind: "thinking-delta";
+    readonly messageId: string;
+}
+
+export interface AiSessionThinkingCompletedEvent
+    extends AiSessionDomainEventBase {
+    readonly kind: "thinking-completed";
+    readonly messageId: string;
+}
+
+export interface AiSessionToolActivityEvent
+    extends AiSessionDomainEventBase {
+    readonly activity: AiToolActivity;
+    readonly kind: "tool-activity";
+}
+
+export interface AiSessionStatusEvent extends AiSessionDomainEventBase {
+    readonly activeTurnStartedAt: string | null;
+    readonly kind: "status";
+    readonly lastError: string | null;
+    readonly status: AiSessionStatus;
+}
+
+export interface AiSessionPlanEvent extends AiSessionDomainEventBase {
+    readonly kind: "plan";
+    readonly plan: AiPlan | null;
+}
+
+export interface AiSessionImageGenerationEvent
+    extends AiSessionDomainEventBase {
+    readonly kind: "image-generation";
+    readonly message: AiMessage;
+}
+
+export interface AiSessionPermissionRequestEvent
+    extends AiSessionDomainEventBase {
+    readonly kind: "permission-request";
+    readonly request: AiPermissionRequest | null;
+}
+
+export interface AiSessionUserInputRequestEvent
+    extends AiSessionDomainEventBase {
+    readonly kind: "user-input-request";
+    readonly request: AiUserInputRequest | null;
+}
+
+export interface AiSessionTokenUsageEvent extends AiSessionDomainEventBase {
+    readonly kind: "token-usage";
+    readonly tokenUsage: AiTokenUsage | null;
+}
+
+export interface AiSessionInfoEvent extends AiSessionDomainEventBase {
+    readonly kind: "session-info";
+    readonly projectId: string | null;
+    readonly title: string;
+    readonly worktreeId: string | null;
+}
+
+export interface AiSessionSubagentCreatedEvent
+    extends AiSessionDomainEventBase {
+    readonly childSessionId: string;
+    readonly kind: "subagent-created";
+    readonly parentSessionId: string;
+    readonly title: string;
+}
+
+export interface AiSessionSubagentBreadcrumbEvent
+    extends AiSessionDomainEventBase {
+    readonly childSessionId: string;
+    readonly kind: "subagent-breadcrumb";
+    readonly toolCallId: string;
+}
+
+export type AiSessionDomainEvent =
+    | AiSessionImageGenerationEvent
+    | AiSessionInfoEvent
+    | AiSessionMessageCompletedEvent
+    | AiSessionMessageDeltaEvent
+    | AiSessionMessageStartedEvent
+    | AiSessionPermissionRequestEvent
+    | AiSessionPlanEvent
+    | AiSessionStatusEvent
+    | AiSessionSubagentBreadcrumbEvent
+    | AiSessionSubagentCreatedEvent
+    | AiSessionThinkingCompletedEvent
+    | AiSessionThinkingDeltaEvent
+    | AiSessionThinkingStartedEvent
+    | AiSessionTokenUsageEvent
+    | AiSessionToolActivityEvent
+    | AiSessionUserInputRequestEvent;
+
+export type AiSessionStreamMessage = AiSessionDomainEvent | AiSessionUpdate;
 
 export interface SendAiPromptInput {
     readonly additionalRoots?: readonly string[];
@@ -2451,6 +2609,7 @@ export interface AiHistorySessionSummary {
     readonly preview: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly runtimeSessionId?: string | null;
     readonly sessionId: string;
     readonly title: string;
     readonly updatedAt: string;
@@ -2873,5 +3032,8 @@ export interface ComandoApi {
     ) => () => void;
     onAiSessionSnapshot: (
         listener: (update: AiSessionUpdate) => void,
+    ) => () => void;
+    onAiSessionEvent?: (
+        listener: (event: AiSessionDomainEvent) => void,
     ) => () => void;
 }

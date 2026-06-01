@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
     AiHistorySessionSummary,
+    AiSessionSnapshot,
     AiSessionTranscriptPage,
+    AiSessionUpdate,
 } from "@shared/ipc";
 
 import { AiService } from "./service";
@@ -90,6 +92,30 @@ describe("AiService history", () => {
         expect(deleteSession).toHaveBeenCalledWith("session-1");
     });
 
+    it("ignores late worker snapshots after deleting a session", async () => {
+        const deleteSession = vi.fn();
+        const onSessionSnapshot = vi.fn();
+        const saveSessionSnapshot = vi.fn();
+        const service = createService({
+            deleteSession,
+            onSessionSnapshot,
+            saveSessionSnapshot,
+        });
+
+        await service.deleteSession("session-1");
+
+        service.handleWorkerSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                sessionId: "session-1",
+                title: "Late snapshot",
+            }),
+        });
+
+        expect(saveSessionSnapshot).not.toHaveBeenCalled();
+        expect(onSessionSnapshot).not.toHaveBeenCalled();
+    });
+
     it("delegates pinning mutations to persistence", async () => {
         const setSessionPinned = vi.fn();
         const service = createService({
@@ -105,15 +131,53 @@ describe("AiService history", () => {
     });
 });
 
+function createSnapshot(
+    overrides: Partial<AiSessionSnapshot> = {},
+): AiSessionSnapshot {
+    return {
+        availableCommands: [],
+        configOptions: [],
+        lastError: null,
+        messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: "project-1",
+        runtimeId: "codex",
+        runtimeSessionId: "runtime-session-1",
+        sessionId: "session-1",
+        status: "idle",
+        title: "Session 1",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: "2026-04-16T12:00:00.000Z",
+        worktreeId: "worktree-a",
+        ...overrides,
+    };
+}
+
 function createService(overrides: {
     readonly deleteSession?: ReturnType<typeof vi.fn>;
     readonly listSessionHistory?: ReturnType<typeof vi.fn>;
     readonly loadSessionTranscriptPage?: ReturnType<typeof vi.fn>;
+    readonly onSessionSnapshot?: (
+        ownerWindowId: string,
+        update: AiSessionUpdate,
+    ) => void;
+    readonly saveSessionSnapshot?: (
+        snapshot: AiSessionSnapshot,
+        draft?: string,
+    ) => void;
     readonly setSessionPinned?: ReturnType<typeof vi.fn>;
 }) {
     return new AiService({
         onRuntimeStatus: vi.fn(),
-        onSessionSnapshot: vi.fn(),
+        onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
         persistence: {
             deleteSession: overrides.deleteSession ?? vi.fn(),
             listSessionHistory: overrides.listSessionHistory ?? vi.fn(() => []),
@@ -129,7 +193,7 @@ function createService(overrides: {
             saveRuntimeSelectionPreferenceOption: vi.fn(),
             saveRuntimeModePreference: vi.fn(),
             saveRuntimeModelPreference: vi.fn(),
-            saveSessionSnapshot: vi.fn(),
+            saveSessionSnapshot: overrides.saveSessionSnapshot ?? vi.fn(),
             setSessionPinned: overrides.setSessionPinned ?? vi.fn(),
         } as never,
         projectService: {

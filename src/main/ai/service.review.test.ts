@@ -1031,6 +1031,162 @@ describe("mapToolCallUpdate dedup by toolCallId", () => {
         };
     }
 
+    it("canonicalizes terminal tool updates that complete under a new id", () => {
+        const liveSession = makeLiveSession();
+        const started = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                kind: "execute",
+                rawInput: {
+                    command: "pnpm test",
+                },
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-start",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:01.000Z",
+        );
+
+        const completed = __testing.mapToolCallUpdate(
+            liveSession,
+            started,
+            {
+                _meta: {
+                    terminal_output: {
+                        data: "A\nB\n",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                status: "completed",
+                title: "exec_command",
+                toolCallId: "exec-complete",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:02.000Z",
+        );
+
+        expect(completed.toolActivity).toHaveLength(1);
+        expect(completed.toolActivity[0]).toEqual(
+            expect.objectContaining({
+                createdAt: "2026-04-20T12:00:01.000Z",
+                id: "exec-start",
+                status: "completed",
+                terminalOutput: "A\nB\n",
+                updatedAt: "2026-04-20T12:00:02.000Z",
+            }),
+        );
+    });
+
+    it("appends terminal output deltas even when a later chunk has a matching prefix", () => {
+        const liveSession = makeLiveSession();
+        const started = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                kind: "execute",
+                rawInput: {
+                    command: "printf aabc",
+                },
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:01.000Z",
+        );
+        const afterFirstChunk = __testing.mapToolCallUpdate(
+            liveSession,
+            started,
+            {
+                _meta: {
+                    terminal_output: {
+                        data: "a",
+                        mode: "delta",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:02.000Z",
+        );
+        const afterSecondChunk = __testing.mapToolCallUpdate(
+            liveSession,
+            afterFirstChunk,
+            {
+                _meta: {
+                    terminal_output: {
+                        data: "abc",
+                        mode: "delta",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                status: "completed",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:03.000Z",
+        );
+
+        expect(afterSecondChunk.toolActivity[0]?.terminalOutput).toBe("aabc");
+    });
+
+    it("canonicalizes same-action tool updates by raw input", () => {
+        const liveSession = makeLiveSession();
+        const started = __testing.mapToolCallUpdate(
+            liveSession,
+            makeSnapshot(),
+            {
+                kind: "read",
+                rawInput: {
+                    file_path: "src/App.tsx",
+                    limit: 20,
+                },
+                status: "in_progress",
+                title: "Read App.tsx",
+                toolCallId: "read-start",
+            } as never,
+            "tool_call",
+            "2026-04-20T12:00:01.000Z",
+        );
+
+        const completed = __testing.mapToolCallUpdate(
+            liveSession,
+            started,
+            {
+                kind: "read",
+                rawInput: {
+                    file_path: "src/App.tsx",
+                    limit: 20,
+                },
+                rawOutput: "file contents",
+                status: "completed",
+                title: "Read App.tsx",
+                toolCallId: "read-complete",
+            } as never,
+            "tool_call_update",
+            "2026-04-20T12:00:45.000Z",
+        );
+
+        expect(completed.toolActivity).toHaveLength(1);
+        expect(completed.toolActivity[0]).toEqual(
+            expect.objectContaining({
+                createdAt: "2026-04-20T12:00:01.000Z",
+                id: "read-start",
+                rawOutputJson: '"file contents"',
+                status: "completed",
+            }),
+        );
+    });
+
     it("ignores a PostToolUseHook re-emission for a path already processed under the same toolCallId", () => {
         const absolutePath = path.join(tempDir, "foo.ts");
         const originalFile = "alpha\nbeta\ngamma\ndelta\n";

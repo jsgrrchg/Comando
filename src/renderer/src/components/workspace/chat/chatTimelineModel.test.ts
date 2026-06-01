@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { AiSessionSnapshot, AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import { buildAiSessionTranscriptModel } from "@renderer/app/ai/transcriptModel";
 
-import { reconcileChatTimelineModel } from "./chatTimelineModel";
+import {
+    reconcileChatTimelineModel,
+    reconcileChatTimelineModelFromTranscript,
+} from "./chatTimelineModel";
 
 function createMessage(
     overrides: Partial<AiSessionSnapshot["messages"][number]> = {},
@@ -276,5 +280,51 @@ describe("chatTimelineModel", () => {
 
         expect(oldRow.reviewEntry.trackedFiles).toHaveLength(0);
         expect(currentRow.reviewEntry.trackedFiles).toHaveLength(1);
+    });
+
+    it("builds live timeline rows from the normalized transcript", () => {
+        const transcript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    content: "hello from transcript",
+                    id: "message-transcript",
+                    kind: "user",
+                }),
+            ],
+            toolActivity: [
+                createActivity({
+                    id: "tool-transcript",
+                    summary: "Tool from transcript",
+                }),
+            ],
+        });
+
+        const model = reconcileChatTimelineModelFromTranscript(null, {
+            status: "idle",
+            trackedFiles: [
+                createTrackedFile({
+                    identityKey: "tracked-transcript",
+                    toolCallId: "tool-transcript",
+                }),
+            ],
+            transcript,
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "message:message-transcript",
+            "tool:tool-transcript",
+        ]);
+        const messageRow = model.rowById.get("message:message-transcript");
+        expect(messageRow?.kind).toBe("message");
+        if (messageRow?.kind !== "message") {
+            throw new Error("Expected transcript message row.");
+        }
+        expect(messageRow.message.content).toBe("hello from transcript");
+        const toolRow = model.rowById.get("tool:tool-transcript");
+        expect(toolRow?.kind).toBe("tool");
+        if (toolRow?.kind !== "tool") {
+            throw new Error("Expected transcript tool row.");
+        }
+        expect(toolRow.reviewEntry.pendingTrackedFiles).toHaveLength(1);
     });
 });

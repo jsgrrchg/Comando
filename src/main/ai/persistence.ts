@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type Database from "better-sqlite3";
 
 import type {
@@ -36,9 +38,11 @@ interface PersistedAiSessionRow {
     readonly parent_session_id: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
+    readonly runtime_session_id: string | null;
     readonly status: string;
     readonly title: string;
-    readonly transcript_json: string | null;
+    readonly review_json: string | null;
+    readonly state_json: string | null;
     readonly updated_at: string;
     readonly worktree_id: string | null;
 }
@@ -51,6 +55,7 @@ interface PersistedAiHistorySessionRow {
     readonly preview: string | null;
     readonly project_id: string | null;
     readonly runtime: string;
+    readonly runtime_session_id: string | null;
     readonly session_id: string;
     readonly title: string;
     readonly updated_at: string;
@@ -58,15 +63,16 @@ interface PersistedAiHistorySessionRow {
 }
 
 interface PersistedAiTranscriptRow {
-    readonly message_count: number | null;
-    readonly parent_session_id: string | null;
-    readonly project_id: string | null;
-    readonly runtime: string;
-    readonly status: string;
-    readonly title: string;
-    readonly transcript_json: string | null;
-    readonly updated_at: string;
-    readonly worktree_id: string | null;
+    readonly session_id: string;
+}
+
+interface PersistedTranscriptMessageRow {
+    readonly message_id: string;
+    readonly payload_json: string;
+}
+
+interface PersistedTranscriptMessageOrderRow {
+    readonly message_id: string;
 }
 
 interface ExistingDraftRow {
@@ -75,11 +81,24 @@ interface ExistingDraftRow {
 
 interface PersistedRuntimeCatalogRow {
     readonly value: string | null;
-    readonly transcript_json: string | null;
 }
 
 interface PersistedRuntimePreferencesRow {
     readonly value: string;
+}
+
+interface PersistedSessionRuntimeLinkRow {
+    readonly app_session_id: string;
+    readonly parent_app_session_id: string | null;
+    readonly parent_runtime_session_id: string | null;
+    readonly runtime_session_id: string;
+}
+
+export interface PersistedAiSessionRuntimeMapping {
+    readonly appSessionId: string;
+    readonly parentAppSessionId: string | null;
+    readonly parentRuntimeSessionId: string | null;
+    readonly runtimeSessionId: string;
 }
 
 type PersistedSessionSnapshot = Omit<
@@ -89,8 +108,7 @@ type PersistedSessionSnapshot = Omit<
     readonly persistenceVersion: number;
 };
 
-const CURRENT_PERSISTED_SESSION_VERSION = 2;
-const HEAL_TRANSCRIPT_SIZE_THRESHOLD_CHARS = 64_000;
+const CURRENT_PERSISTED_SESSION_VERSION = 3;
 const MAX_PERSISTED_RAW_INPUT_JSON_CHARS = 8_000;
 const MAX_PERSISTED_RAW_OUTPUT_JSON_CHARS = 16_000;
 const MAX_PERSISTED_TERMINAL_OUTPUT_CHARS = 24_000;
@@ -100,23 +118,12 @@ const MAX_PERSISTED_DIFF_HUNKS_JSON_CHARS = 24_000;
 const MAX_PERSISTED_DIFF_HUNK_LINES = 500;
 const MAX_PERSISTED_DIFFS_PER_ACTIVITY = 100;
 
-const LATEST_RUNTIME_CATALOG_TRANSCRIPT_QUERY = `
+const LATEST_RUNTIME_CATALOG_QUERY = `
     SELECT
-        (
-            SELECT value
-            FROM app_settings
-            WHERE key = ?
-            LIMIT 1
-        ) AS value,
-        (
-            SELECT chat_transcripts.transcript_json
-            FROM chat_sessions
-            LEFT JOIN chat_transcripts
-                ON chat_transcripts.session_id = chat_sessions.id
-            WHERE chat_sessions.runtime = ?
-            ORDER BY chat_sessions.updated_at DESC
-            LIMIT 1
-        ) AS transcript_json
+        value
+    FROM app_settings
+    WHERE key = ?
+    LIMIT 1
 `;
 
 export interface PersistedRuntimeSelectionPreferences {
@@ -150,6 +157,12 @@ export interface AiPersistenceGateway {
     loadRuntimeSelectionPreferences(
         runtimeId: AiSessionSnapshot["runtimeId"],
     ): PersistedRuntimeSelectionPreferences;
+    listSessionRuntimeMappingsForParent?(
+        parentSessionId: string,
+    ): Awaitable<readonly PersistedAiSessionRuntimeMapping[]>;
+    resolveAppSessionIdByRuntimeSessionId?(
+        runtimeSessionId: string,
+    ): Awaitable<string | null>;
     saveRuntimeSelectionPreferences(
         runtimeId: AiSessionSnapshot["runtimeId"],
         patch: Partial<PersistedRuntimeSelectionPreferences>,
@@ -191,13 +204,19 @@ export class AiPersistence {
                             chat_sessions.parent_session_id,
                             chat_sessions.title,
                             chat_sessions.runtime,
+                            runtime_links.runtime_session_id,
                             chat_sessions.status,
                             chat_sessions.draft,
                             chat_sessions.updated_at,
-                            chat_transcripts.transcript_json
+                            runtime_state.state_json,
+                            review_state.review_json
                         FROM chat_sessions
-                        LEFT JOIN chat_transcripts
-                            ON chat_transcripts.session_id = chat_sessions.id
+                        LEFT JOIN chat_session_runtime_links AS runtime_links
+                            ON runtime_links.app_session_id = chat_sessions.id
+                        LEFT JOIN chat_session_runtime_state AS runtime_state
+                            ON runtime_state.session_id = chat_sessions.id
+                        LEFT JOIN chat_session_review_state AS review_state
+                            ON review_state.session_id = chat_sessions.id
                         WHERE chat_sessions.id = ?
                         `,
                     )
@@ -213,90 +232,128 @@ export class AiPersistence {
                         row.parent_session_id,
                     ),
                     runtimeId: normalizeRuntimeId(row.runtime),
+                    runtimeSessionId: normalizeRuntimeSessionId(
+                        row.runtime_session_id,
+                    ),
                     sessionId,
-                    status: normalizeSessionStatus(row.status),
+                    status: sanitizePersistedSessionStatus(
+                        normalizeSessionStatus(row.status),
+                    ),
                     title: row.title,
                     updatedAt: row.updated_at,
                     worktreeId: row.worktree_id,
                 });
-                const raw = parseJsonWithFallback<Record<
+                const runtimeRaw = parseJsonWithFallback<Record<
                     string,
                     unknown
-                > | null>(row.transcript_json, null);
+                > | null>(row.state_json, null);
+                const reviewRaw = parseJsonWithFallback<Record<
+                    string,
+                    unknown
+                > | null>(row.review_json, null);
+                const stateRaw = runtimeRaw;
+                const shadowMessages = this.#loadAllTranscriptMessages(
+                    sessionId,
+                );
 
-                if (!raw) {
+                if (!stateRaw && !shadowMessages) {
                     return mergeRuntimeCatalogIntoSnapshot(
                         fallback,
                         this.loadLatestRuntimeCatalog(fallback.runtimeId),
                     );
                 }
 
+                const rawParentSessionId = normalizeParentSessionId(
+                    typeof stateRaw?.parentSessionId === "string"
+                        ? stateRaw.parentSessionId
+                        : null,
+                );
+                const parentSessionId = this.#resolvePersistedParentSessionId({
+                    persistedParentSessionId: row.parent_session_id,
+                    rawParentSessionId,
+                    sessionId,
+                });
+                const runtimeSessionId = normalizeRuntimeSessionId(
+                    row.runtime_session_id ??
+                        (typeof stateRaw?.runtimeSessionId === "string"
+                            ? stateRaw.runtimeSessionId
+                            : null),
+                );
+                const messages =
+                    shadowMessages ?? normalizeMessages(stateRaw?.messages);
                 const snapshot = sanitizeLoadedSessionSnapshot({
                     activeTurnStartedAt:
-                        typeof raw.activeTurnStartedAt === "string"
-                            ? raw.activeTurnStartedAt
+                        typeof stateRaw?.activeTurnStartedAt === "string"
+                            ? stateRaw.activeTurnStartedAt
                             : null,
                     availableCommands: normalizeAvailableCommands(
-                        raw.availableCommands,
+                        stateRaw?.availableCommands,
                     ),
-                    configOptions: normalizeConfigOptions(raw.configOptions),
-                    lastError:
-                        typeof raw.lastError === "string"
-                            ? raw.lastError
+                    closedAt:
+                        typeof stateRaw?.closedAt === "string"
+                            ? stateRaw.closedAt
                             : null,
-                    messages: normalizeMessages(raw.messages),
-                    modeId: typeof raw.modeId === "string" ? raw.modeId : null,
-                    modes: normalizeSessionModes(raw.modes),
+                    configOptions: normalizeConfigOptions(
+                        stateRaw?.configOptions,
+                    ),
+                    lastError:
+                        typeof stateRaw?.lastError === "string"
+                            ? stateRaw.lastError
+                            : null,
+                    messages,
+                    modeId:
+                        typeof stateRaw?.modeId === "string"
+                            ? stateRaw.modeId
+                            : null,
+                    modes: normalizeSessionModes(stateRaw?.modes),
                     modelId:
-                        typeof raw.modelId === "string" ? raw.modelId : null,
-                    models: normalizeSessionModels(raw.models),
+                        typeof stateRaw?.modelId === "string"
+                            ? stateRaw.modelId
+                            : null,
+                    models: normalizeSessionModels(stateRaw?.models),
                     pendingPermission: normalizePermissionRequest(
-                        raw.pendingPermission,
+                        stateRaw?.pendingPermission,
                     ),
                     pendingUserInput: normalizeUserInputRequest(
-                        raw.pendingUserInput,
+                        stateRaw?.pendingUserInput,
                     ),
-                    plan: normalizePlan(raw.plan),
-                    parentSessionId: normalizeParentSessionId(
-                        row.parent_session_id,
-                    ),
+                    plan: normalizePlan(stateRaw?.plan),
+                    parentSessionId,
                     projectId: row.project_id,
                     runtimeId:
-                        typeof raw.runtimeId === "string"
-                            ? normalizeRuntimeId(raw.runtimeId)
+                        typeof stateRaw?.runtimeId === "string"
+                            ? normalizeRuntimeId(stateRaw.runtimeId)
                             : fallback.runtimeId,
-                    runtimeSessionId:
-                        typeof raw.runtimeSessionId === "string"
-                            ? raw.runtimeSessionId
-                            : null,
-                    sessionId:
-                        typeof raw.sessionId === "string"
-                            ? raw.sessionId
-                            : fallback.sessionId,
-                    status: normalizeSessionStatus(raw.status),
+                    runtimeSessionId,
+                    sessionId: fallback.sessionId,
+                    status: normalizeSessionStatus(
+                        stateRaw?.status ?? row.status,
+                    ),
                     title:
-                        typeof raw.title === "string"
-                            ? raw.title
+                        typeof stateRaw?.title === "string"
+                            ? stateRaw.title
                             : fallback.title,
-                    tokenUsage: normalizeTokenUsage(raw.tokenUsage),
-                    toolActivity: normalizeToolActivity(raw.toolActivity),
-                    trackedFiles: normalizeTrackedFiles(raw.trackedFiles),
+                    tokenUsage: normalizeTokenUsage(stateRaw?.tokenUsage),
+                    toolActivity: normalizeToolActivity(stateRaw?.toolActivity),
+                    trackedFiles: normalizeTrackedFiles(
+                        reviewRaw?.trackedFiles,
+                    ),
                     updatedAt:
-                        typeof raw.updatedAt === "string"
-                            ? raw.updatedAt
+                        typeof stateRaw?.updatedAt === "string"
+                            ? stateRaw.updatedAt
                             : fallback.updatedAt,
                     worktreeId:
-                        typeof raw.worktreeId === "string" ||
-                        raw.worktreeId === null
-                            ? raw.worktreeId
+                        typeof stateRaw?.worktreeId === "string" ||
+                        stateRaw?.worktreeId === null
+                            ? stateRaw.worktreeId
                             : fallback.worktreeId,
                 });
 
-                this.#healPersistedSessionTranscriptIfNeeded({
-                    originalJson: row.transcript_json,
-                    raw,
+                this.#syncPersistedParentLinkIfNeeded({
+                    parentSessionId,
+                    rawParentSessionId,
                     sessionId,
-                    snapshot,
+                    storedParentSessionId: row.parent_session_id,
                 });
 
                 return mergeRuntimeCatalogIntoSnapshot(
@@ -341,18 +398,8 @@ export class AiPersistence {
                     .prepare<[string], PersistedAiTranscriptRow | undefined>(
                         `
                         SELECT
-                            chat_sessions.project_id,
-                            chat_sessions.worktree_id,
-                            chat_sessions.parent_session_id,
-                            chat_sessions.title,
-                            chat_sessions.runtime,
-                            chat_sessions.status,
-                            chat_sessions.updated_at,
-                            chat_transcripts.transcript_json,
-                            chat_transcripts.message_count
+                            chat_sessions.id AS session_id
                         FROM chat_sessions
-                        LEFT JOIN chat_transcripts
-                            ON chat_transcripts.session_id = chat_sessions.id
                         WHERE chat_sessions.id = ?
                         LIMIT 1
                         `,
@@ -365,98 +412,19 @@ export class AiPersistence {
 
                 const offset = normalizeHistoryOffset(input.offset);
                 const limit = normalizeTranscriptPageLimit(input.limit);
-                const raw = parseJsonWithFallback<Record<
-                    string,
-                    unknown
-                > | null>(row.transcript_json, null);
-                const messages = normalizeMessages(raw?.messages);
-                const totalMessages = Math.max(
-                    messages.length,
-                    row.message_count ?? 0,
+                const shadowMessageCount = this.#countTranscriptMessages(
+                    input.sessionId,
                 );
 
-                if (raw) {
-                    const snapshot = sanitizeLoadedSessionSnapshot({
-                        activeTurnStartedAt:
-                            typeof raw.activeTurnStartedAt === "string"
-                                ? raw.activeTurnStartedAt
-                                : null,
-                        availableCommands: normalizeAvailableCommands(
-                            raw.availableCommands,
-                        ),
-                        configOptions: normalizeConfigOptions(
-                            raw.configOptions,
-                        ),
-                        lastError:
-                            typeof raw.lastError === "string"
-                                ? raw.lastError
-                                : null,
-                        messages,
-                        modeId:
-                            typeof raw.modeId === "string"
-                                ? raw.modeId
-                                : null,
-                        modes: normalizeSessionModes(raw.modes),
-                        modelId:
-                            typeof raw.modelId === "string"
-                                ? raw.modelId
-                                : null,
-                        models: normalizeSessionModels(raw.models),
-                        pendingPermission: normalizePermissionRequest(
-                            raw.pendingPermission,
-                        ),
-                        pendingUserInput: normalizeUserInputRequest(
-                            raw.pendingUserInput,
-                        ),
-                        plan: normalizePlan(raw.plan),
-                        parentSessionId: normalizeParentSessionId(
-                            row.parent_session_id,
-                        ),
-                        projectId: row.project_id,
-                        runtimeId:
-                            typeof raw.runtimeId === "string"
-                                ? normalizeRuntimeId(raw.runtimeId)
-                                : normalizeRuntimeId(row.runtime),
-                        runtimeSessionId:
-                            typeof raw.runtimeSessionId === "string"
-                                ? raw.runtimeSessionId
-                                : null,
-                        sessionId:
-                            typeof raw.sessionId === "string"
-                                ? raw.sessionId
-                                : input.sessionId,
-                        status: normalizeSessionStatus(raw.status),
-                        title:
-                            typeof raw.title === "string"
-                                ? raw.title
-                                : row.title,
-                        tokenUsage: normalizeTokenUsage(raw.tokenUsage),
-                        toolActivity: normalizeToolActivity(raw.toolActivity),
-                        trackedFiles: normalizeTrackedFiles(raw.trackedFiles),
-                        updatedAt:
-                            typeof raw.updatedAt === "string"
-                                ? raw.updatedAt
-                                : row.updated_at,
-                        worktreeId:
-                            typeof raw.worktreeId === "string" ||
-                            raw.worktreeId === null
-                                ? raw.worktreeId
-                                : row.worktree_id,
-                    });
-
-                    this.#healPersistedSessionTranscriptIfNeeded({
-                        originalJson: row.transcript_json,
-                        raw,
-                        sessionId: input.sessionId,
-                        snapshot,
-                    });
-                }
-
                 return {
-                    messages: messages.slice(offset, offset + limit),
+                    messages: this.#loadTranscriptMessagePage({
+                        limit,
+                        offset,
+                        sessionId: input.sessionId,
+                    }),
                     offset,
                     sessionId: input.sessionId,
-                    totalMessages,
+                    totalMessages: shadowMessageCount,
                 };
             },
         );
@@ -475,12 +443,12 @@ export class AiPersistence {
     > | null {
         const row = this.#connection
             .prepare<
-                [string, AiSessionSnapshot["runtimeId"]],
+                [string],
                 PersistedRuntimeCatalogRow | undefined
-            >(LATEST_RUNTIME_CATALOG_TRANSCRIPT_QUERY)
-            .get(getRuntimeCatalogKey(runtimeId), runtimeId);
+            >(LATEST_RUNTIME_CATALOG_QUERY)
+            .get(getRuntimeCatalogKey(runtimeId));
 
-        const rawJson = row?.value ?? row?.transcript_json ?? null;
+        const rawJson = row?.value ?? null;
         if (!rawJson) {
             return null;
         }
@@ -602,139 +570,468 @@ export class AiPersistence {
 
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void {
         mainProcessPerformance.measureSync("db.ai.saveSessionSnapshot", () => {
-            const now = new Date().toISOString();
-            const draftToPersist =
-                draft ?? this.#loadCurrentDraft(snapshot.sessionId);
-            const runtimeCatalog = extractRuntimeCatalog(snapshot);
-            const parentSessionId = normalizeParentSessionId(
-                snapshot.parentSessionId,
+            const saveSnapshot = this.#connection.transaction(
+                (nextSnapshot: AiSessionSnapshot, nextDraft: string | undefined) => {
+                    this.#saveSessionSnapshotAtomic(nextSnapshot, nextDraft);
+                },
             );
-            const persistedParentSessionId =
-                parentSessionId === snapshot.sessionId ||
-                !this.#hasPersistedSession(parentSessionId)
-                    ? null
-                    : parentSessionId;
-            const snapshotToPersist =
-                (snapshot.parentSessionId ?? null) === persistedParentSessionId
-                    ? snapshot
-                    : {
-                          ...snapshot,
-                          parentSessionId: persistedParentSessionId,
-                      };
+            saveSnapshot(snapshot, draft);
+        });
+    }
 
-            this.#connection
-                .prepare<
-                    [
-                        string,
-                        string | null,
-                        string | null,
-                        string | null,
-                        string,
-                        string,
-                        string,
-                        string,
-                        string,
-                        string,
-                        string,
-                    ],
-                    void
-                >(
-                    `
-                    INSERT INTO chat_sessions (
-                        id,
-                        project_id,
-                        worktree_id,
-                        parent_session_id,
-                        title,
-                        runtime,
-                        status,
-                        draft,
-                        created_at,
-                        updated_at,
-                        last_opened_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        project_id = excluded.project_id,
-                        worktree_id = excluded.worktree_id,
-                        parent_session_id = excluded.parent_session_id,
-                        title = excluded.title,
-                        runtime = excluded.runtime,
-                        status = excluded.status,
-                        draft = excluded.draft,
-                        updated_at = excluded.updated_at,
-                        last_opened_at = excluded.last_opened_at
-                    `,
+    #saveSessionSnapshotAtomic(
+        snapshot: AiSessionSnapshot,
+        draft?: string,
+    ): void {
+        const now = new Date().toISOString();
+        const draftToPersist =
+            draft ?? this.#loadCurrentDraft(snapshot.sessionId);
+        const runtimeCatalog = extractRuntimeCatalog(snapshot);
+        const parentSessionId = normalizeParentSessionId(
+            snapshot.parentSessionId,
+        );
+        const runtimeSessionId = normalizeRuntimeSessionId(
+            snapshot.runtimeSessionId,
+        );
+        const isSelfParent =
+            parentSessionId === snapshot.sessionId ||
+            (runtimeSessionId !== null && parentSessionId === runtimeSessionId);
+        const persistedParentSessionId = isSelfParent
+            ? null
+            : this.#resolveAppSessionIdBySessionRef(parentSessionId);
+        const transcriptParentSessionId =
+            persistedParentSessionId ?? (isSelfParent ? null : parentSessionId);
+        const snapshotToPersist =
+            (snapshot.parentSessionId ?? null) === transcriptParentSessionId
+                ? snapshot
+                : {
+                      ...snapshot,
+                      parentSessionId: transcriptParentSessionId,
+                  };
+        const persistedSnapshot =
+            createPersistedSessionSnapshot(snapshotToPersist);
+
+        this.#connection
+            .prepare<
+                [
+                    string,
+                    string | null,
+                    string | null,
+                    string | null,
+                    string,
+                    string,
+                    string,
+                    string,
+                    string,
+                    string,
+                    string,
+                ],
+                void
+            >(
+                `
+                INSERT INTO chat_sessions (
+                    id,
+                    project_id,
+                    worktree_id,
+                    parent_session_id,
+                    title,
+                    runtime,
+                    status,
+                    draft,
+                    created_at,
+                    updated_at,
+                    last_opened_at
                 )
-                .run(
-                    snapshot.sessionId,
-                    snapshot.projectId,
-                    snapshot.worktreeId ?? null,
-                    persistedParentSessionId,
-                    snapshot.title,
-                    snapshot.runtimeId,
-                    snapshot.status,
-                    draftToPersist,
-                    now,
-                    now,
-                    now,
-                );
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    worktree_id = excluded.worktree_id,
+                    parent_session_id = excluded.parent_session_id,
+                    title = excluded.title,
+                    runtime = excluded.runtime,
+                    status = excluded.status,
+                    draft = excluded.draft,
+                    updated_at = excluded.updated_at,
+                    last_opened_at = excluded.last_opened_at
+                `,
+            )
+            .run(
+                snapshot.sessionId,
+                snapshot.projectId,
+                snapshot.worktreeId ?? null,
+                persistedParentSessionId,
+                snapshot.title,
+                snapshot.runtimeId,
+                persistedSnapshot.status,
+                draftToPersist,
+                now,
+                now,
+                now,
+            );
 
-            if (hasRuntimeCatalog(runtimeCatalog)) {
-                this.#connection
-                    .prepare<[string, string, string], void>(
-                        `
-                        INSERT INTO app_settings (key, value, updated_at)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(key) DO UPDATE SET
-                            value = excluded.value,
-                            updated_at = excluded.updated_at
-                        `,
-                    )
-                    .run(
-                        getRuntimeCatalogKey(snapshot.runtimeId),
-                        JSON.stringify(runtimeCatalog),
-                        now,
-                    );
-            }
-
+        if (hasRuntimeCatalog(runtimeCatalog)) {
             this.#connection
-                .prepare<
-                    [string, string, string, number, string, string, string],
-                    void
-                >(
+                .prepare<[string, string, string], void>(
                     `
-                    INSERT INTO chat_transcripts (
-                        id,
-                        session_id,
-                        transcript_json,
-                        message_count,
-                        preview,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id) DO UPDATE SET
-                        transcript_json = excluded.transcript_json,
-                        message_count = excluded.message_count,
-                        preview = excluded.preview,
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
                         updated_at = excluded.updated_at
                     `,
                 )
                 .run(
-                    `transcript:${snapshot.sessionId}`,
-                    snapshot.sessionId,
-                    JSON.stringify(
-                        createPersistedSessionSnapshot(snapshotToPersist),
-                    ),
-                    snapshotToPersist.messages.length,
-                    serializePersistedPreview(
-                        deriveSessionPreview(snapshotToPersist.messages),
-                    ),
-                    now,
+                    getRuntimeCatalogKey(snapshot.runtimeId),
+                    JSON.stringify(runtimeCatalog),
                     now,
                 );
+        }
+
+        this.#connection
+            .prepare<
+                [string, string, string, number, string, string, string],
+                void
+            >(
+                `
+                INSERT INTO chat_transcripts (
+                    id,
+                    session_id,
+                    transcript_json,
+                    message_count,
+                    preview,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    transcript_json = excluded.transcript_json,
+                    message_count = excluded.message_count,
+                    preview = excluded.preview,
+                    updated_at = excluded.updated_at
+                `,
+            )
+            .run(
+                `transcript:${snapshot.sessionId}`,
+                snapshot.sessionId,
+                "{}",
+                persistedSnapshot.messages.length,
+                serializePersistedPreview(
+                    deriveSessionPreview(persistedSnapshot.messages),
+                ),
+                now,
+                now,
+            );
+
+        this.#saveSessionTranscriptMessages(persistedSnapshot, now);
+        this.#saveSessionRuntimeState(persistedSnapshot, now);
+        this.#saveSessionReviewState(persistedSnapshot, now);
+
+        this.#upsertRuntimeSessionLink({
+            appSessionId: snapshot.sessionId,
+            now,
+            parentAppSessionId: persistedParentSessionId,
+            parentRuntimeSessionId: this.#resolveParentRuntimeSessionId({
+                parentAppSessionId: persistedParentSessionId,
+                parentSessionId,
+            }),
+            runtimeSessionId,
         });
+        this.#backfillChildParentLinks({
+            appSessionId: snapshot.sessionId,
+            now,
+            runtimeSessionId,
+        });
+    }
+
+    #saveSessionTranscriptMessages(
+        snapshot: PersistedSessionSnapshot,
+        now: string,
+    ): void {
+        const messageIds = snapshot.messages.map((message) => message.id);
+        const existingMessageIds = this.#loadPersistedTranscriptMessageIds(
+            snapshot.sessionId,
+        );
+
+        if (
+            existingMessageIds.length > 0 &&
+            !areStringArraysEqual(existingMessageIds, messageIds)
+        ) {
+            this.#connection
+                .prepare<[string], void>(
+                    `
+                    UPDATE chat_transcript_messages
+                    SET message_index = -message_index - 1
+                    WHERE session_id = ?
+                    `,
+                )
+                .run(snapshot.sessionId);
+        }
+
+        if (messageIds.length === 0) {
+            this.#connection
+                .prepare<[string], void>(
+                    `
+                    DELETE FROM chat_transcript_messages
+                    WHERE session_id = ?
+                    `,
+                )
+                .run(snapshot.sessionId);
+            return;
+        }
+
+        const placeholders = messageIds.map(() => "?").join(", ");
+        this.#connection
+            .prepare(
+                `
+                DELETE FROM chat_transcript_messages
+                WHERE session_id = ?
+                  AND message_id NOT IN (${placeholders})
+                `,
+            )
+            .run(snapshot.sessionId, ...messageIds);
+
+        const upsertMessage = this.#connection.prepare<
+            [
+                string,
+                number,
+                string,
+                string,
+                string,
+                string,
+                string,
+                string,
+                string,
+            ],
+            void
+        >(
+            `
+            INSERT INTO chat_transcript_messages (
+                session_id,
+                message_index,
+                message_id,
+                kind,
+                role,
+                payload_json,
+                content_hash,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, message_id) DO UPDATE SET
+                message_index = excluded.message_index,
+                kind = excluded.kind,
+                role = excluded.role,
+                payload_json = excluded.payload_json,
+                content_hash = excluded.content_hash,
+                updated_at = excluded.updated_at
+            WHERE chat_transcript_messages.message_index <> excluded.message_index
+               OR chat_transcript_messages.kind <> excluded.kind
+               OR chat_transcript_messages.role <> excluded.role
+               OR chat_transcript_messages.content_hash <> excluded.content_hash
+            `,
+        );
+
+        snapshot.messages.forEach((message, index) => {
+            const payloadJson = JSON.stringify(message);
+            upsertMessage.run(
+                snapshot.sessionId,
+                index,
+                message.id,
+                "message",
+                message.kind,
+                payloadJson,
+                createContentHash(payloadJson),
+                message.createdAt,
+                now,
+            );
+        });
+    }
+
+    #loadPersistedTranscriptMessageIds(
+        sessionId: string,
+    ): readonly string[] {
+        return this.#connection
+            .prepare<[string], PersistedTranscriptMessageOrderRow>(
+                `
+                SELECT message_id
+                FROM chat_transcript_messages
+                WHERE session_id = ?
+                ORDER BY message_index ASC
+                `,
+            )
+            .all(sessionId)
+            .map((row) => row.message_id);
+    }
+
+    #countTranscriptMessages(sessionId: string): number {
+        const row = this.#connection
+            .prepare<[string], { readonly count: number }>(
+                `
+                SELECT COUNT(*) AS count
+                FROM chat_transcript_messages
+                WHERE session_id = ?
+                `,
+            )
+            .get(sessionId);
+
+        return row?.count ?? 0;
+    }
+
+    #loadAllTranscriptMessages(sessionId: string): readonly AiMessage[] | null {
+        const count = this.#countTranscriptMessages(sessionId);
+        if (count === 0) {
+            return null;
+        }
+
+        return this.#loadTranscriptMessagePage({
+            limit: count,
+            offset: 0,
+            sessionId,
+        });
+    }
+
+    #loadTranscriptMessagePage(input: {
+        readonly limit: number;
+        readonly offset: number;
+        readonly sessionId: string;
+    }): readonly AiMessage[] {
+        const rows = this.#connection
+            .prepare<[string, number, number], PersistedTranscriptMessageRow>(
+                `
+                SELECT message_id, payload_json
+                FROM chat_transcript_messages
+                WHERE session_id = ?
+                ORDER BY message_index ASC
+                LIMIT ?
+                OFFSET ?
+                `,
+            )
+            .all(input.sessionId, input.limit, input.offset);
+
+        const messages = rows.flatMap((row) => {
+            const raw = parseJsonWithFallback<Record<string, unknown> | null>(
+                row.payload_json,
+                null,
+            );
+            return normalizeMessages(raw ? [raw] : []);
+        });
+        return sanitizePersistedMessages(messages);
+    }
+
+    #saveSessionRuntimeState(
+        snapshot: PersistedSessionSnapshot,
+        now: string,
+    ): void {
+        const state = {
+            activeTurnStartedAt: snapshot.activeTurnStartedAt,
+            closedAt: snapshot.closedAt ?? null,
+            lastError: snapshot.lastError,
+            modeId: snapshot.modeId,
+            modelId: snapshot.modelId,
+            parentSessionId: snapshot.parentSessionId,
+            pendingPermission: snapshot.pendingPermission,
+            pendingUserInput: snapshot.pendingUserInput,
+            persistenceVersion: snapshot.persistenceVersion,
+            plan: snapshot.plan,
+            projectId: snapshot.projectId,
+            runtimeId: snapshot.runtimeId,
+            runtimeSessionId: snapshot.runtimeSessionId,
+            sessionId: snapshot.sessionId,
+            status: snapshot.status,
+            title: snapshot.title,
+            tokenUsage: snapshot.tokenUsage,
+            toolActivity: snapshot.toolActivity,
+            updatedAt: snapshot.updatedAt,
+            worktreeId: snapshot.worktreeId,
+        };
+
+        this.#connection
+            .prepare<[string, string, string, string], void>(
+                `
+                INSERT INTO chat_session_runtime_state (
+                    session_id,
+                    state_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                `,
+            )
+            .run(snapshot.sessionId, JSON.stringify(state), now, now);
+    }
+
+    #saveSessionReviewState(
+        snapshot: PersistedSessionSnapshot,
+        now: string,
+    ): void {
+        const reviewState = {
+            trackedFiles: snapshot.trackedFiles,
+            updatedAt: snapshot.updatedAt,
+        };
+
+        this.#connection
+            .prepare<[string, string, string, string], void>(
+                `
+                INSERT INTO chat_session_review_state (
+                    session_id,
+                    review_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    review_json = excluded.review_json,
+                    updated_at = excluded.updated_at
+                `,
+            )
+            .run(snapshot.sessionId, JSON.stringify(reviewState), now, now);
+    }
+
+    listSessionRuntimeMappingsForParent(
+        parentSessionId: string,
+    ): readonly PersistedAiSessionRuntimeMapping[] {
+        const normalizedParentSessionId =
+            normalizeParentSessionId(parentSessionId);
+        if (!normalizedParentSessionId) {
+            return [];
+        }
+
+        const parentRuntimeSessionId =
+            this.#findRuntimeSessionIdByAppSessionId(normalizedParentSessionId);
+        const rows = this.#connection
+            .prepare<
+                [string, string | null, string | null],
+                PersistedSessionRuntimeLinkRow
+            >(
+                `
+                SELECT
+                    runtime_session_id,
+                    app_session_id,
+                    parent_runtime_session_id,
+                    parent_app_session_id
+                FROM chat_session_runtime_links
+                WHERE parent_app_session_id = ?
+                   OR (
+                        ? IS NOT NULL
+                        AND parent_runtime_session_id = ?
+                   )
+                ORDER BY updated_at ASC
+                `,
+            )
+            .all(
+                normalizedParentSessionId,
+                parentRuntimeSessionId,
+                parentRuntimeSessionId,
+            );
+
+        return rows.map(createRuntimeMapping);
+    }
+
+    resolveAppSessionIdByRuntimeSessionId(runtimeSessionId: string): string | null {
+        return this.#resolveAppSessionIdByRuntimeSessionId(runtimeSessionId);
     }
 
     deleteSession(sessionId: string): void {
@@ -748,6 +1045,244 @@ export class AiPersistence {
                 )
                 .run(sessionId);
         });
+    }
+
+    #resolvePersistedParentSessionId(input: {
+        readonly persistedParentSessionId: string | null;
+        readonly rawParentSessionId: string | null;
+        readonly sessionId: string;
+    }): string | null {
+        const storedParentSessionId = normalizeParentSessionId(
+            input.persistedParentSessionId,
+        );
+        if (
+            storedParentSessionId &&
+            storedParentSessionId !== input.sessionId &&
+            this.#hasPersistedSession(storedParentSessionId)
+        ) {
+            return storedParentSessionId;
+        }
+
+        const rawParentSessionId = normalizeParentSessionId(
+            input.rawParentSessionId,
+        );
+        if (!rawParentSessionId || rawParentSessionId === input.sessionId) {
+            return null;
+        }
+
+        return this.#resolveAppSessionIdBySessionRef(rawParentSessionId) ??
+            rawParentSessionId;
+    }
+
+    #syncPersistedParentLinkIfNeeded(input: {
+        readonly parentSessionId: string | null;
+        readonly rawParentSessionId: string | null;
+        readonly sessionId: string;
+        readonly storedParentSessionId: string | null;
+    }): void {
+        const parentSessionId = normalizeParentSessionId(input.parentSessionId);
+        if (
+            !parentSessionId ||
+            parentSessionId === input.sessionId ||
+            parentSessionId === normalizeParentSessionId(input.storedParentSessionId) ||
+            !this.#hasPersistedSession(parentSessionId)
+        ) {
+            return;
+        }
+
+        this.#connection
+            .prepare<[string, string], void>(
+                `
+                UPDATE chat_sessions
+                SET parent_session_id = ?
+                WHERE id = ?
+                `,
+            )
+            .run(parentSessionId, input.sessionId);
+    }
+
+    #resolveAppSessionIdBySessionRef(sessionRef: string | null): string | null {
+        const normalizedRef = normalizeParentSessionId(sessionRef);
+        if (!normalizedRef) {
+            return null;
+        }
+
+        if (this.#hasPersistedSession(normalizedRef)) {
+            return normalizedRef;
+        }
+
+        return this.#resolveAppSessionIdByRuntimeSessionId(normalizedRef);
+    }
+
+    #resolveAppSessionIdByRuntimeSessionId(
+        runtimeSessionId: string | null,
+    ): string | null {
+        const normalizedRuntimeSessionId =
+            normalizeRuntimeSessionId(runtimeSessionId);
+        if (!normalizedRuntimeSessionId) {
+            return null;
+        }
+
+        const row = this.#connection
+            .prepare<[string], { readonly app_session_id: string } | undefined>(
+                `
+                SELECT app_session_id
+                FROM chat_session_runtime_links
+                WHERE runtime_session_id = ?
+                LIMIT 1
+                `,
+            )
+            .get(normalizedRuntimeSessionId);
+
+        return row?.app_session_id ?? null;
+    }
+
+    #findRuntimeSessionIdByAppSessionId(appSessionId: string | null): string | null {
+        const normalizedAppSessionId = normalizeParentSessionId(appSessionId);
+        if (!normalizedAppSessionId) {
+            return null;
+        }
+
+        const row = this.#connection
+            .prepare<
+                [string],
+                { readonly runtime_session_id: string } | undefined
+            >(
+                `
+                SELECT runtime_session_id
+                FROM chat_session_runtime_links
+                WHERE app_session_id = ?
+                LIMIT 1
+                `,
+            )
+            .get(normalizedAppSessionId);
+
+        return row?.runtime_session_id ?? null;
+    }
+
+    #resolveParentRuntimeSessionId(input: {
+        readonly parentAppSessionId: string | null;
+        readonly parentSessionId: string | null;
+    }): string | null {
+        const parentRuntimeSessionId = this.#findRuntimeSessionIdByAppSessionId(
+            input.parentAppSessionId,
+        );
+        if (parentRuntimeSessionId) {
+            return parentRuntimeSessionId;
+        }
+
+        const parentSessionId = normalizeParentSessionId(input.parentSessionId);
+        if (!parentSessionId || parentSessionId === input.parentAppSessionId) {
+            return null;
+        }
+
+        return parentSessionId;
+    }
+
+    #upsertRuntimeSessionLink(input: {
+        readonly appSessionId: string;
+        readonly now: string;
+        readonly parentAppSessionId: string | null;
+        readonly parentRuntimeSessionId: string | null;
+        readonly runtimeSessionId: string | null;
+    }): void {
+        if (!input.runtimeSessionId) {
+            return;
+        }
+
+        this.#connection
+            .prepare<[string, string], void>(
+                `
+                DELETE FROM chat_session_runtime_links
+                WHERE app_session_id = ?
+                  AND runtime_session_id <> ?
+                `,
+            )
+            .run(input.appSessionId, input.runtimeSessionId);
+
+        this.#connection
+            .prepare<
+                [string, string, string | null, string | null, string, string],
+                void
+            >(
+                `
+                INSERT INTO chat_session_runtime_links (
+                    runtime_session_id,
+                    app_session_id,
+                    parent_runtime_session_id,
+                    parent_app_session_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(runtime_session_id) DO UPDATE SET
+                    app_session_id = excluded.app_session_id,
+                    parent_runtime_session_id = COALESCE(
+                        excluded.parent_runtime_session_id,
+                        chat_session_runtime_links.parent_runtime_session_id
+                    ),
+                    parent_app_session_id = COALESCE(
+                        excluded.parent_app_session_id,
+                        chat_session_runtime_links.parent_app_session_id
+                    ),
+                    updated_at = excluded.updated_at
+                `,
+            )
+            .run(
+                input.runtimeSessionId,
+                input.appSessionId,
+                input.parentRuntimeSessionId,
+                input.parentAppSessionId,
+                input.now,
+                input.now,
+            );
+    }
+
+    #backfillChildParentLinks(input: {
+        readonly appSessionId: string;
+        readonly now: string;
+        readonly runtimeSessionId: string | null;
+    }): void {
+        const parentRefs = [
+            input.appSessionId,
+            input.runtimeSessionId,
+        ].filter((value): value is string => Boolean(value));
+        if (parentRefs.length === 0) {
+            return;
+        }
+
+        for (const parentRef of parentRefs) {
+            this.#connection
+                .prepare<[string, string, string, string], void>(
+                    `
+                    UPDATE chat_session_runtime_links
+                    SET
+                        parent_app_session_id = ?,
+                        updated_at = ?
+                    WHERE app_session_id <> ?
+                      AND parent_app_session_id IS NULL
+                      AND parent_runtime_session_id = ?
+                    `,
+                )
+                .run(input.appSessionId, input.now, input.appSessionId, parentRef);
+
+            this.#connection
+                .prepare<[string, string, string], void>(
+                    `
+                    UPDATE chat_sessions
+                    SET parent_session_id = ?
+                    WHERE id <> ?
+                      AND parent_session_id IS NULL
+                      AND EXISTS (
+                        SELECT 1
+                        FROM chat_session_runtime_links
+                        WHERE chat_session_runtime_links.app_session_id = chat_sessions.id
+                          AND chat_session_runtime_links.parent_app_session_id = ?
+                      )
+                    `,
+                )
+                .run(input.appSessionId, input.appSessionId, input.appSessionId);
+        }
     }
 
     #hasPersistedSession(sessionId: string | null): boolean {
@@ -795,74 +1330,6 @@ export class AiPersistence {
             .get(sessionId);
 
         return row?.draft ?? "";
-    }
-
-    #healPersistedSessionTranscriptIfNeeded(input: {
-        readonly originalJson: string | null;
-        readonly raw: Record<string, unknown>;
-        readonly sessionId: string;
-        readonly snapshot: AiSessionSnapshot;
-    }): void {
-        if (!input.originalJson) {
-            return;
-        }
-
-        const healedJson = JSON.stringify(
-            createPersistedSessionSnapshot(input.snapshot),
-        );
-        if (
-            !shouldHealPersistedSessionTranscript(
-                input.raw,
-                input.originalJson,
-                healedJson,
-            )
-        ) {
-            return;
-        }
-
-        const now = new Date().toISOString();
-        const runtimeCatalog = extractRuntimeCatalog(input.snapshot);
-        if (hasRuntimeCatalog(runtimeCatalog)) {
-            this.#connection
-                .prepare<[string, string, string], void>(
-                    `
-                    INSERT INTO app_settings (key, value, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(key) DO UPDATE SET
-                        value = excluded.value,
-                        updated_at = excluded.updated_at
-                    `,
-                )
-                .run(
-                    getRuntimeCatalogKey(input.snapshot.runtimeId),
-                    JSON.stringify(runtimeCatalog),
-                    now,
-                );
-        }
-
-        this.#connection
-            .prepare<[string, number, string, string, string], void>(
-                `
-                UPDATE chat_transcripts
-                SET
-                    transcript_json = ?,
-                    message_count = ?,
-                    preview = ?,
-                    updated_at = ?
-                WHERE session_id = ?
-                `,
-            )
-            .run(
-                healedJson,
-                input.snapshot.messages.length,
-                serializePersistedPreview(
-                    deriveSessionPreview(input.snapshot.messages),
-                ),
-                // This only marks the transcript rewrite; chat_sessions.updated_at
-                // remains unchanged so history ordering does not move.
-                now,
-                input.sessionId,
-            );
     }
 
 }
@@ -913,21 +1380,21 @@ function getPreferredConfigOptionValue(
         return preferences.configOptions[optionId];
     }
 
-    const legacyIds =
+    const aliasIds =
         optionId === "effort"
             ? ["effort_level"]
             : optionId === "effort_level"
               ? ["effort"]
               : [];
 
-    for (const legacyId of legacyIds) {
+    for (const aliasId of aliasIds) {
         if (
             Object.prototype.hasOwnProperty.call(
                 preferences.configOptions,
-                legacyId,
+                aliasId,
             )
         ) {
-            return preferences.configOptions[legacyId];
+            return preferences.configOptions[aliasId];
         }
     }
 
@@ -1050,6 +1517,7 @@ export function createEmptyAiSessionSnapshot(options: {
     return {
         activeTurnStartedAt: null,
         availableCommands: [],
+        closedAt: null,
         configOptions: [],
         lastError: null,
         messages: [],
@@ -1082,6 +1550,7 @@ function createPersistedSessionSnapshot(
 
     return {
         activeTurnStartedAt: sanitizedSnapshot.activeTurnStartedAt ?? null,
+        closedAt: sanitizedSnapshot.closedAt ?? null,
         lastError: sanitizedSnapshot.lastError,
         messages: sanitizedSnapshot.messages,
         modeId: sanitizedSnapshot.modeId,
@@ -1110,8 +1579,32 @@ function sanitizeLoadedSessionSnapshot(
 ): AiSessionSnapshot {
     return {
         ...snapshot,
+        activeTurnStartedAt: null,
+        messages: sanitizePersistedMessages(snapshot.messages),
+        pendingPermission: null,
+        pendingUserInput: null,
+        status: sanitizePersistedSessionStatus(snapshot.status),
         toolActivity: sanitizePersistedToolActivity(snapshot.toolActivity),
     };
+}
+
+function sanitizePersistedSessionStatus(
+    status: AiSessionSnapshot["status"],
+): AiSessionSnapshot["status"] {
+    return status === "error" ? "error" : "idle";
+}
+
+function sanitizePersistedMessages(
+    messages: readonly AiMessage[],
+): readonly AiMessage[] {
+    return messages.map((message) =>
+        message.status === "streaming"
+            ? {
+                  ...message,
+                  status: "completed",
+              }
+            : message,
+    );
 }
 
 function sanitizePersistedToolActivity(
@@ -1219,109 +1712,20 @@ function countDiffHunkLines(hunks: readonly AiDiffHunk[]): number {
     return hunks.reduce((count, hunk) => count + hunk.lines.length, 0);
 }
 
-function shouldHealPersistedSessionTranscript(
-    raw: Record<string, unknown>,
-    originalJson: string,
-    healedJson: string,
-): boolean {
-    if (healedJson === originalJson) {
-        return false;
-    }
-
-    return (
-        raw.persistenceVersion !== CURRENT_PERSISTED_SESSION_VERSION ||
-        originalJson.length > HEAL_TRANSCRIPT_SIZE_THRESHOLD_CHARS ||
-        hasInflatedPersistedToolActivity(raw.toolActivity) ||
-        healedJson.length < originalJson.length
-    );
-}
-
-function hasInflatedPersistedToolActivity(value: unknown): boolean {
-    if (!Array.isArray(value)) {
-        return false;
-    }
-
-    return value.some((entry) => {
-        if (!isRecord(entry)) {
-            return false;
-        }
-
-        return (
-            isStringLongerThan(
-                entry.rawInputJson,
-                MAX_PERSISTED_RAW_INPUT_JSON_CHARS,
-            ) ||
-            isStringLongerThan(
-                entry.rawOutputJson,
-                MAX_PERSISTED_RAW_OUTPUT_JSON_CHARS,
-            ) ||
-            isStringLongerThan(
-                entry.terminalOutput,
-                MAX_PERSISTED_TERMINAL_OUTPUT_CHARS,
-            ) ||
-            hasInflatedPersistedFileDiffs(entry.diffs)
-        );
-    });
-}
-
-function hasInflatedPersistedFileDiffs(value: unknown): boolean {
-    if (!Array.isArray(value)) {
-        return false;
-    }
-
-    if (value.length > MAX_PERSISTED_DIFFS_PER_ACTIVITY) {
-        return true;
-    }
-
-    let totalTextChars = 0;
-    for (const entry of value) {
-        if (!isRecord(entry)) {
-            continue;
-        }
-
-        for (const text of [entry.oldText, entry.newText]) {
-            if (typeof text !== "string") {
-                continue;
-            }
-
-            totalTextChars += text.length;
-            if (
-                text.length > MAX_PERSISTED_DIFF_TEXT_CHARS ||
-                totalTextChars > MAX_PERSISTED_DIFF_TEXT_TOTAL_CHARS
-            ) {
-                return true;
-            }
-        }
-
-        if (
-            Array.isArray(entry.hunks) &&
-            (getUnknownDiffHunkLineCount(entry.hunks) >
-                MAX_PERSISTED_DIFF_HUNK_LINES ||
-                getJsonLength(entry.hunks) > MAX_PERSISTED_DIFF_HUNKS_JSON_CHARS)
-        ) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function isStringLongerThan(value: unknown, maxChars: number): boolean {
-    return typeof value === "string" && value.length > maxChars;
-}
-
-function getUnknownDiffHunkLineCount(value: readonly unknown[]): number {
-    return value.reduce<number>((count, entry) => {
-        if (!isRecord(entry) || !Array.isArray(entry.lines)) {
-            return count;
-        }
-
-        return count + entry.lines.length;
-    }, 0);
-}
-
 function getJsonLength(value: unknown): number {
     return JSON.stringify(value).length;
+}
+
+function createContentHash(payloadJson: string): string {
+    return createHash("sha256").update(payloadJson).digest("hex");
+}
+
+function areStringArraysEqual(
+    left: readonly string[],
+    right: readonly string[],
+): boolean {
+    return left.length === right.length &&
+        left.every((value, index) => value === right[index]);
 }
 
 function extractRuntimeCatalog(
@@ -2218,6 +2622,15 @@ function normalizeParentSessionId(value: unknown): string | null {
     return parentSessionId.length > 0 ? parentSessionId : null;
 }
 
+function normalizeRuntimeSessionId(value: unknown): string | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const runtimeSessionId = value.trim();
+    return runtimeSessionId.length > 0 ? runtimeSessionId : null;
+}
+
 function normalizeHistoryLimit(value: number | null | undefined): number | null {
     if (value === null) {
         return null;
@@ -2261,22 +2674,42 @@ function buildScopedSessionHistoryQuery(input: ListAiSessionHistoryInput): {
         params,
         sql: `
             SELECT
-                chat_sessions.id AS session_id,
-                chat_sessions.project_id,
-                chat_sessions.worktree_id,
-                chat_sessions.parent_session_id,
-                chat_sessions.title,
-                chat_sessions.runtime,
-                chat_sessions.created_at,
-                chat_sessions.pinned_at,
-                chat_sessions.updated_at,
-                chat_transcripts.message_count,
-                chat_transcripts.preview
-            FROM chat_sessions
-            LEFT JOIN chat_transcripts
-                ON chat_transcripts.session_id = chat_sessions.id
-            WHERE ${whereClauses.join(" AND ")}
-            ORDER BY chat_sessions.updated_at DESC
+                history_rows.session_id,
+                history_rows.project_id,
+                history_rows.worktree_id,
+                COALESCE(
+                    history_rows.parent_session_id,
+                    runtime_links.parent_app_session_id
+                ) AS parent_session_id,
+                history_rows.title,
+                history_rows.runtime,
+                runtime_links.runtime_session_id,
+                history_rows.created_at,
+                history_rows.pinned_at,
+                history_rows.updated_at,
+                history_rows.message_count,
+                history_rows.preview
+            FROM (
+                SELECT
+                    chat_sessions.id AS session_id,
+                    chat_sessions.project_id,
+                    chat_sessions.worktree_id,
+                    chat_sessions.parent_session_id,
+                    chat_sessions.title,
+                    chat_sessions.runtime,
+                    chat_sessions.created_at,
+                    chat_sessions.pinned_at,
+                    chat_sessions.updated_at,
+                    chat_transcripts.message_count,
+                    chat_transcripts.preview
+                FROM chat_sessions
+                LEFT JOIN chat_transcripts
+                    ON chat_transcripts.session_id = chat_sessions.id
+                WHERE ${whereClauses.join(" AND ")}
+            ) AS history_rows
+            LEFT JOIN chat_session_runtime_links AS runtime_links
+                ON runtime_links.app_session_id = history_rows.session_id
+            ORDER BY history_rows.updated_at DESC
             ${limit === null ? "" : "LIMIT ?"}
         `,
     };
@@ -2364,10 +2797,24 @@ function createHistorySessionSummary(
         preview: deserializePersistedPreview(row.preview),
         projectId: row.project_id,
         runtimeId: normalizeRuntimeId(row.runtime),
+        runtimeSessionId: normalizeRuntimeSessionId(row.runtime_session_id),
         sessionId: row.session_id,
         title: row.title,
         updatedAt: row.updated_at,
         worktreeId: row.worktree_id,
+    };
+}
+
+function createRuntimeMapping(
+    row: PersistedSessionRuntimeLinkRow,
+): PersistedAiSessionRuntimeMapping {
+    return {
+        appSessionId: row.app_session_id,
+        parentAppSessionId: normalizeParentSessionId(row.parent_app_session_id),
+        parentRuntimeSessionId: normalizeRuntimeSessionId(
+            row.parent_runtime_session_id,
+        ),
+        runtimeSessionId: row.runtime_session_id,
     };
 }
 

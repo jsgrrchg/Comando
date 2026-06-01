@@ -18,6 +18,12 @@ import type {
 import { computeDiffHunks } from "@shared/ai-tracked-file";
 
 import {
+    AI_SESSION_STREAMING_FLUSH_MS,
+    CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+    CODEX_ACP_TURN_EVENT_TYPE_KEY,
+    CODEX_ACP_TURN_ID_KEY,
+    CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+    CODEX_ACP_TURN_STARTED_EVENT_TYPE,
     CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
     type AiWorkerEventMessage,
     type AiWorkerSessionLaunchInput,
@@ -305,6 +311,90 @@ describe("AiWorkerRuntime prepareSession", () => {
         expect(emittedEvents.some((event) => event.event === "ai.snapshot.updated")).toBe(
             true,
         );
+        expect(
+            emittedEvents.some(
+                (event) =>
+                    event.event === "ai.session.event" &&
+                    event.payload.event.kind === "session-info",
+            ),
+        ).toBe(true);
+    });
+
+    it("does not reactivate a restored subagent from replayed turn lifecycle events", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const baseLaunch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Restored subagent",
+        });
+        const launch: AiWorkerSessionLaunchInput = {
+            ...baseLaunch,
+            input: {
+                ...baseLaunch.input,
+                sessionId: "child-session-1",
+                title: "Restored subagent",
+            },
+            persistedSnapshot: {
+                ...baseLaunch.persistedSnapshot,
+                parentSessionId: "parent-session-1",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: "child-session-1",
+                title: "Restored subagent",
+            },
+        };
+
+        loadSessionMock.mockImplementationOnce(async () => {
+            const client = latestClientFactory?.();
+            const meta = {
+                [CODEX_ACP_STATUS_EVENT_TYPE_KEY]:
+                    CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+                [CODEX_ACP_TURN_EVENT_TYPE_KEY]: CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+                [CODEX_ACP_TURN_ID_KEY]: "historical-turn-1",
+            };
+            await client?.sessionUpdate({
+                _meta: meta,
+                sessionId: "runtime-child-1",
+                update: {
+                    _meta: meta,
+                    sessionUpdate: "session_info_update",
+                },
+            });
+            await new Promise((resolve) => {
+                setTimeout(resolve, AI_SESSION_STREAMING_FLUSH_MS + 20);
+            });
+            return {
+                configOptions: [],
+                modes: [],
+                models: [],
+            };
+        });
+
+        const snapshot = (await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        })) as AiSessionSnapshot;
+
+        expect(snapshot.activeTurnStartedAt ?? null).toBeNull();
+        expect(snapshot.status).toBe("idle");
+        expect(
+            emittedEvents.some((event) => {
+                if (event.event !== "ai.snapshot.updated") {
+                    return false;
+                }
+                const { update } = event.payload;
+                return update.kind === "snapshot"
+                    ? update.snapshot.status === "streaming"
+                    : update.patch.changes.status === "streaming";
+            }),
+        ).toBe(false);
     });
 
     it("replays early session updates after the runtime session mapping is registered", async () => {
@@ -533,6 +623,85 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(true);
     });
 
+    it("keeps ACP thought and assistant chunks with the same runtime message id distinct", async () => {
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: process.cwd(),
+            projectRoot: process.cwd(),
+            title: "ACP message id collision",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await client!.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: "internal notes",
+                    type: "text",
+                },
+                messageId: "runtime-message-1",
+                sessionUpdate: "agent_thought_chunk",
+            },
+        });
+        await client!.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: "final answer",
+                    type: "text",
+                },
+                messageId: "runtime-message-1",
+                sessionUpdate: "agent_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(emittedEvents, "session-1");
+            expect(messages).toEqual([
+                expect.objectContaining({
+                    content: "internal notes",
+                    id: "thinking:runtime-message-1",
+                    kind: "thinking",
+                }),
+                expect.objectContaining({
+                    content: "final answer",
+                    id: "runtime-message-1",
+                    kind: "assistant",
+                }),
+            ]);
+        });
+        expect(
+            emittedEvents.some(
+                (event) =>
+                    event.event === "ai.session.event" &&
+                    event.payload.event.kind === "message-started" &&
+                    event.payload.event.message.id === "runtime-message-1" &&
+                    event.payload.event.messageKind === "assistant",
+            ),
+        ).toBe(true);
+        expect(
+            emittedEvents.some(
+                (event) =>
+                    event.event === "ai.session.event" &&
+                    event.payload.event.kind === "message-delta" &&
+                    event.payload.event.messageId === "runtime-message-1" &&
+                    event.payload.event.delta === "final answer",
+            ),
+        ).toBe(true);
+    });
+
     it("does not mark the session streaming for suppressed Codex status updates", async () => {
         const emittedEvents: AiWorkerEventMessage[] = [];
         const runtime = new AiWorkerRuntime({
@@ -742,6 +911,71 @@ describe("AiWorkerRuntime prepareSession", () => {
             sessionId: "session-1",
             stopReason: "completed",
         });
+    });
+
+    it("rehydrates persisted subagent app identity from runtime mappings", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            persistedSubagentSessionMappings: [
+                {
+                    appSessionId: "session-child-persisted",
+                    parentAppSessionId: "session-1",
+                    parentRuntimeSessionId: "runtime-session-1",
+                    runtimeSessionId: "runtime-subagent-1",
+                },
+            ],
+            projectRoot: tempDir,
+            title: "Subagent parent",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        const subagentMeta = {
+            codexAcpAgentNickname: "Galileo",
+            codexAcpChildSessionId: "runtime-subagent-1",
+            codexAcpCwd: tempDir,
+            codexAcpEventType: "subagent_session_created",
+            codexAcpParentSessionId: "runtime-session-1",
+        };
+        await client!.sessionUpdate({
+            _meta: subagentMeta,
+            sessionId: "runtime-subagent-1",
+            update: {
+                _meta: subagentMeta,
+                sessionUpdate: "session_info_update",
+                title: "Galileo",
+            },
+        });
+
+        expect(
+            getLatestSnapshot(
+                emittedEvents,
+                (snapshot) =>
+                    snapshot.runtimeSessionId === "runtime-subagent-1",
+            ),
+        ).toEqual(
+            expect.objectContaining({
+                parentSessionId: "session-1",
+                runtimeSessionId: "runtime-subagent-1",
+                sessionId: "session-child-persisted",
+                title: "Galileo",
+            }),
+        );
     });
 
     it("retries buffered subagent creation after the parent runtime session mapping is registered", async () => {
@@ -1408,7 +1642,67 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(false);
     });
 
-    it("keeps a terminal subagent breadcrumb response that arrives before turn complete", async () => {
+    it("normalizes accumulated terminal output updates", async () => {
+        const { client, emittedEvents } =
+            await setupPreparedRuntimeWithClient("Terminal output normalization");
+
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                kind: "execute",
+                sessionUpdate: "tool_call",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: {
+                    terminal_output: {
+                        data: "A\n",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                sessionUpdate: "tool_call_update",
+                status: "in_progress",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            },
+        });
+        await client.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: {
+                    terminal_output: {
+                        data: "A\nB\n",
+                        terminal_id: "term-1",
+                    },
+                },
+                kind: "execute",
+                sessionUpdate: "tool_call_update",
+                status: "completed",
+                title: "exec_command",
+                toolCallId: "exec-1",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasToolActivityMatching(
+                    emittedEvents,
+                    "session-1",
+                    (activity) =>
+                        activity.id === "exec-1" &&
+                        activity.terminalOutput === "A\nB\n",
+                ),
+            ).toBe(true);
+        });
+    });
+
+    it("keeps child assistant output owned by the child stream when parent response arrives first", async () => {
         const { client, emittedEvents, tempDir } =
             await setupPreparedRuntimeWithClient("Subagent terminal before complete");
         const childSnapshot = await registerSubagentSession(
@@ -1471,19 +1765,9 @@ describe("AiWorkerRuntime prepareSession", () => {
             },
         });
 
-        await vi.waitFor(() => {
-            expect(
-                getLatestPatchMessages(
-                    emittedEvents,
-                    childSnapshot.sessionId,
-                )?.filter(
-                    (message) =>
-                        message.kind === "assistant" &&
-                        message.content ===
-                            "terminal response before lifecycle end",
-                ),
-            ).toHaveLength(1);
-        });
+        expect(
+            getLatestPatchMessages(emittedEvents, childSnapshot.sessionId),
+        ).toBeNull();
         for (const text of ["terminal response ", "before lifecycle end"]) {
             await client.sessionUpdate({
                 sessionId: "runtime-subagent-1",
@@ -1843,10 +2127,6 @@ describe("AiWorkerRuntime prepareSession", () => {
             expect.objectContaining({
                 content: "Add a final hola line to ACTORES/Gabriel Boric.md",
                 kind: "user",
-            }),
-            expect.objectContaining({
-                content: "ACTORES/Gabriel Boric.md",
-                kind: "assistant",
             }),
         ]);
     });
@@ -2835,7 +3115,9 @@ describe("AiWorkerRuntime prepareSession", () => {
                 hasPatchChangesMatching(
                     emittedEvents,
                     childSnapshot!.sessionId,
-                    (changes) => changes.status === "idle",
+                    (changes) =>
+                        changes.closedAt !== undefined &&
+                        changes.status === "idle",
                 ),
             ).toBe(true);
         });
@@ -2865,7 +3147,9 @@ describe("AiWorkerRuntime prepareSession", () => {
                 hasPatchChangesMatching(
                     emittedEvents,
                     childSnapshot!.sessionId,
-                    (changes) => changes.status === "streaming",
+                    (changes) =>
+                        changes.closedAt === null &&
+                        changes.status === "streaming",
                 ),
             ).toBe(true);
         });
@@ -2911,15 +3195,15 @@ describe("AiWorkerRuntime prepareSession", () => {
             ).toBe(true);
         });
         expect(
-            getLatestPatchMessages(emittedEvents, childSnapshot!.sessionId),
-        ).toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({
-                    content: "reopened and reported",
-                    kind: "assistant",
-                }),
-            ]),
-        );
+            getLatestPatchMessages(
+                emittedEvents,
+                childSnapshot!.sessionId,
+            )?.some(
+                (message) =>
+                    message.kind === "assistant" &&
+                    message.content === "reopened and reported",
+            ),
+        ).toBe(false);
     });
 
     it("does not mark subagents idle for running interaction or resume breadcrumbs", async () => {
@@ -3132,10 +3416,6 @@ describe("AiWorkerRuntime prepareSession", () => {
                 content: "Report back without closing.",
                 kind: "user",
             }),
-            expect.objectContaining({
-                content: "report complete",
-                kind: "assistant",
-            }),
         ]);
     });
 
@@ -3303,14 +3583,13 @@ describe("AiWorkerRuntime prepareSession", () => {
                 (changes) => changes.status === "idle",
             ),
         ).toBe(false);
-        expect(getLatestPatchMessages(emittedEvents, firstChild.sessionId)).toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({
-                    content: "first report complete",
-                    kind: "assistant",
-                }),
-            ]),
-        );
+        expect(
+            getLatestPatchMessages(emittedEvents, firstChild.sessionId)?.some(
+                (message) =>
+                    message.kind === "assistant" &&
+                    message.content === "first report complete",
+            ),
+        ).toBe(false);
     });
 
     it("keeps subagent diffs isolated from parent tracked files", async () => {
@@ -3473,7 +3752,7 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
-    it("marks a subagent idle when the parent receives a close breadcrumb", async () => {
+    it("marks a subagent closed when the parent receives a close breadcrumb", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
         );
@@ -3554,14 +3833,12 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
 
         await vi.waitFor(() => {
-            expect(
-                getLatestPatchChanges(
-                    emittedEvents,
-                    childSnapshot!.sessionId,
-                ),
-            ).toMatchObject({
-                status: "idle",
-            });
+            const changes = getLatestPatchChanges(
+                emittedEvents,
+                childSnapshot!.sessionId,
+            );
+            expect(typeof changes?.closedAt).toBe("string");
+            expect(changes?.status).toBe("idle");
         });
     });
 
@@ -4634,6 +4911,55 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).rejects.toThrowError(
             "Codex attempted to access a path outside the project.",
         );
+    });
+
+    it("drops net-clean tracked files when preparing a persisted session", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        try {
+            const filePath = path.join(tempDir, "notes.md");
+            await fs.writeFile(filePath, "before\n", "utf8");
+            const runtime = createRuntime();
+            const trackedFile: AiTrackedFile = {
+                hunks: computeDiffHunks("before\n", "after\n", "notes.md"),
+                identityKey: "notes.md",
+                isText: true,
+                kind: "update",
+                newText: "after\n",
+                oldText: "before\n",
+                path: "notes.md",
+                previousPath: null,
+                reviewState: "pending",
+                reversible: true,
+                sessionId: "session-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-04-15T22:23:13.719838Z",
+                version: 1,
+            };
+            const launch = createLaunch({
+                cwd: tempDir,
+                persistedSnapshot: {
+                    ...createLaunch({
+                        cwd: tempDir,
+                        projectRoot: tempDir,
+                        title: "Tracked file reconciliation baseline",
+                    }).persistedSnapshot,
+                    trackedFiles: [trackedFile],
+                },
+                projectRoot: tempDir,
+                title: "Tracked file reconciliation",
+            });
+
+            const snapshot = (await runtime.dispatchMethod("ai.prepareSession", {
+                input: launch.input,
+                launch,
+            })) as AiSessionSnapshot;
+
+            expect(snapshot.trackedFiles).toEqual([]);
+        } finally {
+            await fs.rm(tempDir, { force: true, recursive: true });
+        }
     });
 
     it("rejects a tracked file for a non-live session and reverts it on disk", async () => {

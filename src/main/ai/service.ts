@@ -18,6 +18,7 @@ import type {
     AiRuntimeAuthLogoutInput,
     AiRuntimeId,
     AiRuntimeStatus,
+    AiSessionDomainEvent,
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
@@ -59,7 +60,7 @@ import {
     type AiPersistenceGateway,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
-import { listOpenFileBuffers } from "./openFileBuffers";
+import { listOpenFileBuffers, readOpenFileBuffer } from "./openFileBuffers";
 import {
     type AiWorkerGateway,
     type AiWorkerRefreshProjectScopesRpcInput,
@@ -76,6 +77,7 @@ import {
     getModelConfigOption,
     getRecentStderrText,
     getRuntimeDisplayName,
+    isPathInsideRoot,
     normalizeAdditionalRoots,
     setConfigOptionOnSnapshot,
     setModeOnSnapshot,
@@ -87,6 +89,8 @@ import {
     mapToolCallUpdate,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
+    readTextIfExists,
+    reconcilePendingTrackedFiles,
     resolveDiffToFullTexts,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
@@ -159,9 +163,14 @@ type LiveSessionContext = {
 
 export class AiService {
     #aiWorker: AiWorkerGateway | null;
+    readonly #deletedSessionIds = new Set<string>();
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
+    readonly #onSessionEvent: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ) => void;
     readonly #onSessionSnapshot: (
         ownerWindowId: string,
         update: AiSessionUpdate,
@@ -174,6 +183,7 @@ export class AiService {
     constructor(options: AiServiceOptions) {
         this.#aiWorker = options.aiWorker ?? null;
         this.#onRuntimeStatus = options.onRuntimeStatus;
+        this.#onSessionEvent = options.onSessionEvent ?? (() => undefined);
         this.#onSessionSnapshot = options.onSessionSnapshot;
         this.#persistence = options.persistence;
         this.#projectService = options.projectService;
@@ -205,6 +215,14 @@ export class AiService {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ): void {
+        const sessionId =
+            update.kind === "snapshot"
+                ? update.snapshot.sessionId
+                : update.patch.sessionId;
+        if (this.#deletedSessionIds.has(sessionId)) {
+            return;
+        }
+
         const snapshot = this.#resolveSnapshotFromWorkerUpdate(update);
         if (!snapshot) {
             return;
@@ -216,6 +234,13 @@ export class AiService {
             this.#invalidateRuntimeAuthIfNeeded(snapshot.runtimeId, snapshot.lastError);
         }
         this.#onSessionSnapshot(ownerWindowId, update);
+    }
+
+    handleWorkerSessionEvent(
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ): void {
+        this.#onSessionEvent(ownerWindowId, event);
     }
 
     async handleWorkerRestarted(): Promise<void> {
@@ -487,7 +512,11 @@ export class AiService {
             return liveSnapshot;
         }
 
-        return await this.#persistence.loadSessionSnapshot(sessionId);
+        const persistedSnapshot =
+            await this.#persistence.loadSessionSnapshot(sessionId);
+        return persistedSnapshot
+            ? await this.#reconcilePersistedTrackedFiles(persistedSnapshot)
+            : null;
     }
 
     async listSessionHistory(
@@ -525,7 +554,12 @@ export class AiService {
             input,
             ownerWindowId,
         );
-        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
+        this.#rememberLiveSessionContext(
+            input,
+            ownerWindowId,
+            launch.additionalRoots,
+            launch.persistedSnapshot.parentSessionId ?? null,
+        );
         try {
             const snapshot = await worker.prepareSession({
                 input,
@@ -565,8 +599,21 @@ export class AiService {
             input,
             ownerWindowId,
         );
-        this.#rememberLiveSessionContext(input, ownerWindowId, launch.additionalRoots);
-        return await worker.sendPrompt({
+        if (
+            launch.persistedSnapshot.parentSessionId &&
+            launch.persistedSnapshot.closedAt
+        ) {
+            throw new Error(
+                "This subagent was closed by its parent thread and can’t receive new messages.",
+            );
+        }
+        this.#rememberLiveSessionContext(
+            input,
+            ownerWindowId,
+            launch.additionalRoots,
+            launch.persistedSnapshot.parentSessionId ?? null,
+        );
+        return worker.sendPrompt({
             input,
             launch,
         });
@@ -676,19 +723,25 @@ export class AiService {
     }
 
     async deleteSession(sessionId: string): Promise<void> {
-        if (this.#liveSessionContexts.has(sessionId)) {
-            try {
-                await this.cancelSession(sessionId);
-            } catch (error) {
-                // Closing and deleting the local session state is still safe.
-                debugBenignError("ai.service.deleteSession.cancel", error);
+        this.#deletedSessionIds.add(sessionId);
+        try {
+            if (this.#liveSessionContexts.has(sessionId)) {
+                try {
+                    await this.cancelSession(sessionId);
+                } catch (error) {
+                    // Closing and deleting the local session state is still safe.
+                    debugBenignError("ai.service.deleteSession.cancel", error);
+                }
+
+                await this.closeSession(sessionId);
             }
 
-            await this.closeSession(sessionId);
+            this.#clearLiveSession(sessionId);
+            await this.#persistence.deleteSession(sessionId);
+        } catch (error) {
+            this.#deletedSessionIds.delete(sessionId);
+            throw error;
         }
-
-        this.#clearLiveSession(sessionId);
-        await this.#persistence.deleteSession(sessionId);
     }
 
     closeOwnedByWindow(ownerWindowId: string): void {
@@ -1102,12 +1155,16 @@ export class AiService {
         input: SessionDescriptor,
         ownerWindowId: string,
         additionalRoots: readonly string[],
+        persistedParentSessionId: string | null = null,
     ): void {
         const existingContext = this.#liveSessionContexts.get(input.sessionId);
         const snapshotParentSessionId =
             this.#liveSnapshots.get(input.sessionId)?.parentSessionId ?? null;
         const parentSessionId =
-            existingContext?.parentSessionId ?? snapshotParentSessionId ?? null;
+            existingContext?.parentSessionId ??
+            normalizeSessionRef(persistedParentSessionId) ??
+            snapshotParentSessionId ??
+            null;
         this.#liveSessionContexts.set(input.sessionId, {
             additionalRoots,
             ownerWindowId,
@@ -1126,7 +1183,16 @@ export class AiService {
         this.#liveSnapshots.set(snapshot.sessionId, snapshot);
         const context = this.#liveSessionContexts.get(snapshot.sessionId);
         if (context) {
-            context.ownerWindowId = ownerWindowId;
+            this.#liveSessionContexts.set(snapshot.sessionId, {
+                ...context,
+                ownerWindowId,
+                parentSessionId:
+                    normalizeSessionRef(snapshot.parentSessionId) ??
+                    context.parentSessionId,
+                projectId: snapshot.projectId,
+                runtimeId: snapshot.runtimeId,
+                worktreeId: snapshot.worktreeId ?? null,
+            });
             return;
         }
 
@@ -1182,6 +1248,109 @@ export class AiService {
     ): void {
         this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
         this.#persistence.saveSessionSnapshot(snapshot);
+    }
+
+    async #reconcilePersistedTrackedFiles(
+        snapshot: AiSessionSnapshot,
+    ): Promise<AiSessionSnapshot> {
+        if (snapshot.trackedFiles.length === 0) {
+            return snapshot;
+        }
+
+        const scope = this.#resolvePersistedSnapshotReviewScope(snapshot);
+        if (!scope) {
+            return snapshot;
+        }
+
+        const result = await reconcilePendingTrackedFiles({
+            onError: (error) => {
+                debugBenignError("ai.service.reconcileTrackedFile", error);
+            },
+            readTrackedFileText: async (trackedPath) =>
+                await this.#readPersistedTrackedFileText(scope, trackedPath),
+            trackedFiles: snapshot.trackedFiles,
+        });
+        if (!result.changed) {
+            return snapshot;
+        }
+
+        const nextSnapshot = {
+            ...snapshot,
+            trackedFiles: result.trackedFiles,
+            updatedAt: new Date().toISOString(),
+        };
+        this.#persistence.saveSessionSnapshot(nextSnapshot);
+        return nextSnapshot;
+    }
+
+    #resolvePersistedSnapshotReviewScope(
+        snapshot: Pick<AiSessionSnapshot, "projectId" | "worktreeId">,
+    ): {
+        readonly additionalRoots: readonly string[];
+        readonly scopeRoot: string;
+    } | null {
+        try {
+            const projectRoot = snapshot.projectId
+                ? this.#projectService.getProjectRootPath(
+                      snapshot.projectId,
+                      snapshot.worktreeId ?? null,
+                  )
+                : null;
+            const scopeRoot = path.resolve(projectRoot ?? process.cwd());
+            return {
+                additionalRoots: this.#resolveEffectiveAdditionalRoots(
+                    {
+                        additionalRoots: [],
+                        projectId: snapshot.projectId,
+                        worktreeId: snapshot.worktreeId ?? null,
+                    },
+                    projectRoot,
+                ),
+                scopeRoot,
+            };
+        } catch (error) {
+            debugBenignError("ai.service.resolveReviewScope", error);
+            return null;
+        }
+    }
+
+    async #readPersistedTrackedFileText(
+        scope: {
+            readonly additionalRoots: readonly string[];
+            readonly scopeRoot: string;
+        },
+        trackedPath: string,
+    ): Promise<string | null> {
+        const absolutePath = this.#resolvePersistedTrackedFileAbsolutePath(
+            scope,
+            trackedPath,
+        );
+        const bufferText = readOpenFileBuffer(absolutePath);
+        return bufferText ?? (await readTextIfExists(absolutePath));
+    }
+
+    #resolvePersistedTrackedFileAbsolutePath(
+        scope: {
+            readonly additionalRoots: readonly string[];
+            readonly scopeRoot: string;
+        },
+        candidatePath: string,
+    ): string {
+        const absolutePath = path.isAbsolute(candidatePath)
+            ? path.resolve(candidatePath)
+            : path.resolve(scope.scopeRoot, candidatePath);
+        const insidePrimaryScope =
+            absolutePath === scope.scopeRoot ||
+            absolutePath.startsWith(`${scope.scopeRoot}${path.sep}`);
+        const insideAdditionalRoot = scope.additionalRoots.some((rootPath) =>
+            isPathInsideRoot(absolutePath, rootPath),
+        );
+
+        if (!insidePrimaryScope && !insideAdditionalRoot) {
+            throw new Error("Tracked file path is outside the session scope.");
+        }
+
+        return absolutePath;
     }
 
     #getLiveSessionRuntimeId(sessionId: string): AiRuntimeId {
@@ -1251,6 +1420,10 @@ export class AiService {
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             });
+        const persistedSubagentSessionMappings =
+            (await this.#persistence.listSessionRuntimeMappingsForParent?.(
+                persistedSnapshot.sessionId,
+            )) ?? [];
 
         return {
             additionalRoots,
@@ -1266,6 +1439,7 @@ export class AiService {
             },
             ownerWindowId,
             persistedSnapshot,
+            persistedSubagentSessionMappings,
             projectRoot,
             resolvedRuntime,
         };
@@ -1945,6 +2119,11 @@ export class AiService {
 }
 
 function normalizeOptionalText(value: string | null): string | null {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSessionRef(value: string | null | undefined): string | null {
     const trimmed = value?.trim() ?? "";
     return trimmed.length > 0 ? trimmed : null;
 }

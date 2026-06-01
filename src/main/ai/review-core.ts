@@ -50,6 +50,7 @@ import { debugBenignError } from "@main/observability/logging";
 const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
 const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
 const TRACKED_DIFF_MAX_READ_BYTES = 5 * 1024 * 1024;
+const TOOL_ACTIVITY_WEAK_MATCH_WINDOW_MS = 2 * 60 * 1000;
 
 interface ClaudeStructuredPatchHunk {
     readonly oldStart: number;
@@ -90,9 +91,13 @@ export function mapToolCallUpdate(
         readonly readOpenFileBuffer?: (absolutePath: string) => string | null;
     } = {},
 ): AiSessionSnapshot {
+    const toolCallId =
+        updateKind === "tool_call_update"
+            ? resolveToolActivityIdForUpdate(snapshot, update, updatedAt)
+            : update.toolCallId;
     const existing =
         snapshot.toolActivity.find(
-            (candidate) => candidate.id === update.toolCallId,
+            (candidate) => candidate.id === toolCallId,
         ) ?? null;
     const nextTitle =
         typeof update.title === "string" && update.title.trim().length > 0
@@ -105,25 +110,32 @@ export function mapToolCallUpdate(
 
     const toolKind = update.kind ?? existing?.kind ?? "unknown";
     const content = update.content ?? null;
-    const pendingUserInput = parseUserInputRequest(snapshot, update, updatedAt);
+    const pendingUserInput = parseUserInputRequest(
+        snapshot,
+        update,
+        toolCallId,
+        updatedAt,
+    );
 
     let exitCode: number | null = existing?.exitCode ?? null;
     let terminalOutput: string | null = existing?.terminalOutput ?? null;
 
     if (isRecord(update._meta)) {
         if (isRecord(update._meta.terminal_output)) {
-            const data = (update._meta.terminal_output as { data: string })
-                .data;
-            if (typeof data === "string") {
-                const terminalId = (
-                    update._meta.terminal_output as { terminal_id: string }
-                ).terminal_id;
+            const terminalOutputMeta = update._meta.terminal_output as {
+                data?: unknown;
+                mode?: unknown;
+                terminal_id?: unknown;
+            };
+            const data = terminalOutputMeta.data;
+            const terminalId = terminalOutputMeta.terminal_id;
+            if (typeof data === "string" && typeof terminalId === "string") {
+                const mode = normalizeTerminalOutputMode(
+                    terminalOutputMeta.mode,
+                );
                 const prev =
                     liveSession.terminalOutputBuffers.get(terminalId) ?? "";
-                let next = prev + data;
-                if (next.length > TERMINAL_OUTPUT_MAX_LENGTH) {
-                    next = next.slice(-TERMINAL_OUTPUT_MAX_LENGTH);
-                }
+                const next = mergeTerminalOutputBuffer(prev, data, mode);
                 liveSession.terminalOutputBuffers.set(terminalId, next);
                 terminalOutput = next;
             }
@@ -190,7 +202,7 @@ export function mapToolCallUpdate(
               )
             : (existing?.diffs ?? []),
         exitCode,
-        id: update.toolCallId,
+        id: toolCallId,
         kind: toolKind,
         locations: nextLocations ?? existing?.locations ?? [],
         rawInputJson:
@@ -231,7 +243,7 @@ export function mapToolCallUpdate(
               }
               const normalizedPath = normalizeDiffPath(entry.path);
               const processedPaths =
-                  liveSession.processedDiffPaths.get(update.toolCallId);
+                  liveSession.processedDiffPaths.get(toolCallId);
               if (
                   processedPaths?.has(normalizedPath) &&
                   !pathsProcessedInThisUpdate.has(normalizedPath)
@@ -257,7 +269,7 @@ export function mapToolCallUpdate(
                       rawOutput: update.rawOutput,
                       readOpenFileBuffer: options.readOpenFileBuffer,
                       sessionUpdate: updateKind,
-                      toolCallId: update.toolCallId,
+                      toolCallId,
                   },
               );
               const anchoredHunks =
@@ -270,7 +282,7 @@ export function mapToolCallUpdate(
                       processedPaths.add(normalizedPath);
                   } else {
                       liveSession.processedDiffPaths.set(
-                          update.toolCallId,
+                          toolCallId,
                           new Set([normalizedPath]),
                       );
                   }
@@ -281,7 +293,7 @@ export function mapToolCallUpdate(
                       snapshot,
                       resolvedDiff,
                       toolKind,
-                      update.toolCallId,
+                      toolCallId,
                       updatedAt,
                       anchoredHunks,
                       normalizeDiffPath,
@@ -291,7 +303,7 @@ export function mapToolCallUpdate(
         : snapshot.trackedFiles;
 
     if (terminalStatus) {
-        liveSession.processedDiffPaths.delete(update.toolCallId);
+        liveSession.processedDiffPaths.delete(toolCallId);
     }
 
     return {
@@ -302,12 +314,220 @@ export function mapToolCallUpdate(
         status: pendingUserInput ? "waiting_user_input" : snapshot.status,
         toolActivity: [
             ...snapshot.toolActivity.filter(
-                (candidate) => candidate.id !== update.toolCallId,
+                (candidate) =>
+                    candidate.id !== toolCallId &&
+                    candidate.id !== update.toolCallId,
             ),
             nextActivity,
         ],
         trackedFiles: nextTrackedFiles,
     };
+}
+
+export function resolveToolActivityIdForUpdate(
+    snapshot: Pick<AiSessionSnapshot, "toolActivity">,
+    update: Pick<
+        ToolCall | ToolCallUpdate,
+        "_meta" | "kind" | "rawInput" | "status" | "title" | "toolCallId"
+    >,
+    updatedAt: string,
+    options: {
+        readonly includeCompletedCandidates?: boolean;
+    } = {},
+): string {
+    if (
+        snapshot.toolActivity.some(
+            (candidate) => candidate.id === update.toolCallId,
+        )
+    ) {
+        return update.toolCallId;
+    }
+
+    const candidates = snapshot.toolActivity.filter((candidate) =>
+        isCanonicalToolActivityCandidate(candidate, updatedAt, options),
+    );
+    const rawInputJson =
+        update.rawInput === undefined ? null : stringifyJson(update.rawInput);
+    if (rawInputJson) {
+        const strongMatch = getMostRecentToolActivity(
+            candidates.filter(
+                (candidate) =>
+                    candidate.rawInputJson === rawInputJson &&
+                    hasSameToolActionShape(candidate, update),
+            ),
+        );
+        if (strongMatch) {
+            return strongMatch.id;
+        }
+    }
+
+    if (!hasWeakToolActionSignal(update)) {
+        return update.toolCallId;
+    }
+
+    const weakMatches = candidates.filter((candidate) =>
+        hasSameToolActionShape(candidate, update),
+    );
+    return weakMatches.length === 1
+        ? (weakMatches[0]?.id ?? update.toolCallId)
+        : update.toolCallId;
+}
+
+function isCanonicalToolActivityCandidate(
+    activity: AiToolActivity,
+    updatedAt: string,
+    options: {
+        readonly includeCompletedCandidates?: boolean;
+    },
+): boolean {
+    if (activity.status === "in_progress" || activity.status === "pending") {
+        return true;
+    }
+
+    return (
+        options.includeCompletedCandidates === true &&
+        isWithinToolActivityWeakMatchWindow(activity, updatedAt)
+    );
+}
+
+function hasSameToolActionShape(
+    activity: AiToolActivity,
+    update: Pick<ToolCall | ToolCallUpdate, "kind" | "title">,
+): boolean {
+    const updateKind = normalizeToolActionToken(update.kind);
+    const activityKind = normalizeToolActionToken(activity.kind);
+    if (updateKind && activityKind && updateKind !== activityKind) {
+        return false;
+    }
+
+    const updateTitle = normalizeToolActionToken(update.title);
+    const activityTitle = normalizeToolActionToken(activity.title);
+    if (updateTitle && activityTitle && updateTitle !== activityTitle) {
+        return false;
+    }
+
+    return Boolean(updateKind || updateTitle);
+}
+
+function hasWeakToolActionSignal(
+    update: Pick<
+        ToolCall | ToolCallUpdate,
+        "_meta" | "status" | "toolCallId"
+    >,
+): boolean {
+    return (
+        hasTerminalToolPayload(update._meta) ||
+        isSubagentBreadcrumbToolUpdate(update) ||
+        update.status === "completed" ||
+        update.status === "failed"
+    );
+}
+
+function hasTerminalToolPayload(meta: unknown): boolean {
+    if (!isRecord(meta)) {
+        return false;
+    }
+
+    return isRecord(meta.terminal_output) || isRecord(meta.terminal_exit);
+}
+
+function normalizeToolActionToken(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim().replace(/\s+/g, " ").toLowerCase()
+        : null;
+}
+
+function getMostRecentToolActivity(
+    activities: readonly AiToolActivity[],
+): AiToolActivity | null {
+    return [...activities].sort((left, right) =>
+        right.updatedAt.localeCompare(left.updatedAt),
+    )[0] ?? null;
+}
+
+function isWithinToolActivityWeakMatchWindow(
+    activity: AiToolActivity,
+    updatedAt: string,
+): boolean {
+    const activityTime = Date.parse(activity.updatedAt);
+    const updateTime = Date.parse(updatedAt);
+    if (!Number.isFinite(activityTime) || !Number.isFinite(updateTime)) {
+        return false;
+    }
+
+    return (
+        Math.abs(updateTime - activityTime) <=
+        TOOL_ACTIVITY_WEAK_MATCH_WINDOW_MS
+    );
+}
+
+function mergeTerminalOutputBuffer(
+    previousOutput: string,
+    data: string,
+    mode: TerminalOutputMode,
+): string {
+    if (data.length === 0) {
+        return previousOutput;
+    }
+
+    if (mode === "delta") {
+        return trimTerminalOutputBuffer(`${previousOutput}${data}`);
+    }
+
+    if (mode === "snapshot") {
+        return trimTerminalOutputBuffer(data);
+    }
+
+    if (previousOutput.length === 0 || data.startsWith(previousOutput)) {
+        return trimTerminalOutputBuffer(data);
+    }
+
+    const previousInDataIndex = data.lastIndexOf(previousOutput);
+    if (previousInDataIndex !== -1) {
+        return trimTerminalOutputBuffer(
+            `${previousOutput}${data.slice(
+                previousInDataIndex + previousOutput.length,
+            )}`,
+        );
+    }
+
+    const overlapLength = findTerminalOutputOverlapLength(
+        previousOutput,
+        data,
+    );
+    return trimTerminalOutputBuffer(
+        `${previousOutput}${data.slice(overlapLength)}`,
+    );
+}
+
+type TerminalOutputMode = "delta" | "snapshot" | "legacy";
+
+function normalizeTerminalOutputMode(value: unknown): TerminalOutputMode {
+    if (value === "delta" || value === "snapshot") {
+        return value;
+    }
+
+    return "legacy";
+}
+
+function findTerminalOutputOverlapLength(
+    previousOutput: string,
+    data: string,
+): number {
+    const maxLength = Math.min(previousOutput.length, data.length);
+    for (let length = maxLength; length > 0; length -= 1) {
+        if (previousOutput.endsWith(data.slice(0, length))) {
+            return length;
+        }
+    }
+
+    return 0;
+}
+
+function trimTerminalOutputBuffer(output: string): string {
+    return output.length > TERMINAL_OUTPUT_MAX_LENGTH
+        ? output.slice(-TERMINAL_OUTPUT_MAX_LENGTH)
+        : output;
 }
 
 export function isImageGenerationToolUpdate(
@@ -628,6 +848,7 @@ function isDiffReversible(
 function parseUserInputRequest(
     snapshot: AiSessionSnapshot,
     update: ToolCall | ToolCallUpdate,
+    toolCallId: string,
     updatedAt: string,
 ): AiUserInputRequest | null {
     if (
@@ -662,7 +883,7 @@ function parseUserInputRequest(
         typeof update.rawInput.request_id === "string" &&
         update.rawInput.request_id.trim().length > 0
             ? update.rawInput.request_id
-            : update.toolCallId;
+            : toolCallId;
     const turnId =
         typeof update.rawInput.turn_id === "string" &&
         update.rawInput.turn_id.trim().length > 0
@@ -680,7 +901,7 @@ function parseUserInputRequest(
             headerTitle ||
             (update.title ?? snapshot.title).trim() ||
             "Input requested",
-        toolCallId: update.toolCallId,
+        toolCallId,
         turnId,
         updatedAt,
     };
@@ -1375,6 +1596,108 @@ export async function readTextIfExists(
 
         throw error;
     }
+}
+
+export interface ReconcilePendingTrackedFilesInput {
+    readonly onError?: (error: unknown, trackedFile: AiTrackedFile) => void;
+    readonly readTrackedFileText: (trackedPath: string) => Promise<string | null>;
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
+export interface ReconcilePendingTrackedFilesResult {
+    readonly changed: boolean;
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
+export async function reconcilePendingTrackedFiles(
+    input: ReconcilePendingTrackedFilesInput,
+): Promise<ReconcilePendingTrackedFilesResult> {
+    if (input.trackedFiles.length === 0) {
+        return {
+            changed: false,
+            trackedFiles: input.trackedFiles,
+        };
+    }
+
+    const nextTrackedFiles: AiTrackedFile[] = [];
+    let changed = false;
+
+    for (const trackedFile of input.trackedFiles) {
+        const reconciledTrackedFile = await reconcilePendingTrackedFile(
+            trackedFile,
+            input.readTrackedFileText,
+            input.onError,
+        );
+        if (!reconciledTrackedFile) {
+            changed = true;
+            continue;
+        }
+
+        if (reconciledTrackedFile !== trackedFile) {
+            changed = true;
+        }
+        nextTrackedFiles.push(reconciledTrackedFile);
+    }
+
+    return {
+        changed,
+        trackedFiles: changed ? nextTrackedFiles : input.trackedFiles,
+    };
+}
+
+async function reconcilePendingTrackedFile(
+    trackedFile: AiTrackedFile,
+    readTrackedFileText: (trackedPath: string) => Promise<string | null>,
+    onError: ((error: unknown, trackedFile: AiTrackedFile) => void) | undefined,
+): Promise<AiTrackedFile | null> {
+    const syncedTrackedFile = syncTrackedFile(trackedFile);
+    if (
+        syncedTrackedFile.reviewState !== "pending" ||
+        !syncedTrackedFile.isText
+    ) {
+        return syncedTrackedFile;
+    }
+
+    if (syncedTrackedFile.hunks.length === 0) {
+        return null;
+    }
+
+    try {
+        return (await isTrackedFileNetClean(
+            syncedTrackedFile,
+            readTrackedFileText,
+        ))
+            ? null
+            : syncedTrackedFile;
+    } catch (error) {
+        onError?.(error, syncedTrackedFile);
+        return syncedTrackedFile;
+    }
+}
+
+async function isTrackedFileNetClean(
+    trackedFile: AiTrackedFile,
+    readTrackedFileText: (trackedPath: string) => Promise<string | null>,
+): Promise<boolean> {
+    const diffBase = getTrackedFileDiffBase(trackedFile);
+    if (trackedFile.previousPath) {
+        const [currentText, previousText] = await Promise.all([
+            readTrackedFileText(trackedFile.path),
+            readTrackedFileText(trackedFile.previousPath),
+        ]);
+
+        return (
+            (currentText === null || currentText === diffBase) &&
+            previousText === diffBase
+        );
+    }
+
+    const currentText = await readTrackedFileText(trackedFile.path);
+    if (trackedFile.kind === "create") {
+        return currentText === null || currentText === diffBase;
+    }
+
+    return currentText === diffBase;
 }
 
 function resolveTrackedDiffAbsolutePath(

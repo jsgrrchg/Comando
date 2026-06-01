@@ -34,7 +34,9 @@ import {
 import { getHistoryPreviewText } from "@renderer/components/workspace/chat-history/historyPreview";
 import {
     buildAiSessionHierarchyGroups,
+    countAiHistorySessionChildren,
     filterAiSessionHierarchyRowsForCollapsedParents,
+    isAiHistorySessionChildOfParent,
     type AiSessionHierarchyGroup,
     type AiSessionHierarchyRow,
 } from "@renderer/components/workspace/chat-history/sessionHierarchy";
@@ -155,6 +157,7 @@ export function SidebarAgentsPanel({
     );
     const requestIdRef = useRef(0);
     const refreshTimerRef = useRef<number | null>(null);
+    const deletedSessionIdsRef = useRef<Set<string>>(new Set());
     const normalizedFilter = (filter ?? "").trim().toLowerCase();
     const hasQuery = normalizedFilter.length > 0;
     const pendingHistoryCache =
@@ -301,6 +304,7 @@ export function SidebarAgentsPanel({
                         : readSidebarAgentsHistoryCache(projectId, worktreeId)
                               ?.sessions ?? EMPTY_AGENTS_SESSIONS;
                 const result = applySessionUpdateToSidebarHistory({
+                    deletedSessionIds: deletedSessionIdsRef.current,
                     limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
                     scope: {
                         projectId,
@@ -474,9 +478,10 @@ export function SidebarAgentsPanel({
 
     const handleDelete = useCallback(
         async (session: AiHistorySessionSummary) => {
-            const childCount = visibleSessions.filter(
-                (candidate) => candidate.parentSessionId === session.sessionId,
-            ).length;
+            const childCount = countAiHistorySessionChildren(
+                session,
+                visibleSessions,
+            );
             const confirmed = window.confirm(
                 childCount > 0
                     ? `Delete "${session.title}" from threads? ${childCount} child agent${childCount === 1 ? "" : "s"} will stay in history as detached. This cannot be undone.`
@@ -492,6 +497,7 @@ export function SidebarAgentsPanel({
             }
 
             const previousSessions = visibleSessions;
+            deletedSessionIdsRef.current.add(session.sessionId);
             setSessionsAndCache((current) =>
                 current
                     .filter(
@@ -499,7 +505,7 @@ export function SidebarAgentsPanel({
                             candidate.sessionId !== session.sessionId,
                     )
                     .map((candidate) =>
-                        candidate.parentSessionId === session.sessionId
+                        isAiHistorySessionChildOfParent(session, candidate)
                             ? { ...candidate, parentSessionId: null }
                             : candidate,
                     ),
@@ -522,6 +528,7 @@ export function SidebarAgentsPanel({
                     await closeTab(tabId);
                 }
             } catch (err) {
+                deletedSessionIdsRef.current.delete(session.sessionId);
                 setSessionsAndCache(() => previousSessions);
                 setError(
                     err instanceof Error

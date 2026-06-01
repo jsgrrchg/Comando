@@ -285,4 +285,27 @@ describe("ChatHistoryTabLayout", () => {
         expect(markup).toContain('data-subagent="true"');
         expect(markup).toContain("ml-3");
     });
+
+    it("resolves selected child context through the parent runtime session id", () => {
+        const parent = createSession({
+            runtimeSessionId: "runtime-parent",
+            sessionId: "parent-session",
+            title: "Parent thread",
+        });
+        const child = createSession({
+            parentSessionId: "runtime-parent",
+            runtimeSessionId: "runtime-child",
+            sessionId: "child-session",
+            title: "Galileo",
+        });
+
+        const markup = renderLayout({
+            selectedSession: child,
+            sessions: [parent, child],
+        });
+
+        expect(markup).toContain("Subagent of");
+        expect(markup).toContain("Parent thread");
+        expect(markup).not.toContain("Detached agent");
+    });
 });

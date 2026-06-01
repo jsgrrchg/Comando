@@ -320,6 +320,7 @@ export function App() {
     const applyAiRuntimeStatus = useAiStore(
         (state) => state.applyRuntimeStatus,
     );
+    const applyAiSessionEvent = useAiStore((state) => state.applySessionEvent);
     const applyAiSessionUpdate = useAiStore(
         (state) => state.applySessionUpdate,
     );
@@ -664,15 +665,20 @@ export function App() {
         const unsubscribeRuntime = comandoApi.onAiRuntimeStatus((status) => {
             applyAiRuntimeStatus(status);
         });
+        const unsubscribeSessionEvent =
+            comandoApi.onAiSessionEvent?.((event) => {
+                applyAiSessionEvent(event);
+            }) ?? (() => undefined);
         const unsubscribeSession = comandoApi.onAiSessionSnapshot((update) => {
             applyAiSessionUpdate(update);
         });
 
         return () => {
             unsubscribeRuntime();
+            unsubscribeSessionEvent();
             unsubscribeSession();
         };
-    }, [applyAiRuntimeStatus, applyAiSessionUpdate]);
+    }, [applyAiRuntimeStatus, applyAiSessionEvent, applyAiSessionUpdate]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();

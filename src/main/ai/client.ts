@@ -4,6 +4,7 @@ import type {
     AiPermissionResponseInput,
     AiPromptResult,
     AiRuntimeStatus,
+    AiSessionDomainEvent,
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
@@ -49,6 +50,10 @@ export interface AiWorkerClientOptions {
     readonly onSessionSnapshot?: (
         ownerWindowId: string,
         update: AiSessionUpdate,
+    ) => void;
+    readonly onSessionEvent?: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
     ) => void;
     readonly onWorkerRestarted?: (
         bootstrap: AiWorkerBootstrapState,
@@ -224,6 +229,12 @@ export async function createAiWorkerClient(
                     return true;
                 case "ai.runtime.status":
                     options.onRuntimeStatus?.(payload.payload.status);
+                    return true;
+                case "ai.session.event":
+                    options.onSessionEvent?.(
+                        payload.payload.ownerWindowId,
+                        payload.payload.event,
+                    );
                     return true;
                 case "ai.session.closed":
                     options.onSessionClosed?.(payload.payload);

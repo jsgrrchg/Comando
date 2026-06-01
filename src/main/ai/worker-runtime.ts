@@ -48,6 +48,7 @@ import {
 } from "@shared/ai-tracked-file";
 import { SessionBusyError } from "@shared/ai-errors";
 import { isDefaultChatTitle } from "@shared/chatTitle";
+import { buildAiSessionDomainEvents } from "@shared/ai-session-events";
 
 import { debugBenignError } from "@main/observability/logging";
 
@@ -117,6 +118,8 @@ import {
     mapImageGenerationToolUpdate,
     mapToolCallUpdate,
     readTextIfExists,
+    reconcilePendingTrackedFiles,
+    resolveToolActivityIdForUpdate,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
 
@@ -152,11 +155,13 @@ interface SuppressedInternalUserInputEcho {
 }
 
 interface SubagentMirrorTurnState {
-    assistantOutputSeen: boolean;
-    suppressedAssistantEchoText: string;
-    terminalAssistantContent: string | null;
     readonly toolCallId: string;
 }
+
+type ToolSessionNotificationUpdate = Extract<
+    SessionNotification["update"],
+    { readonly sessionUpdate: "tool_call" | "tool_call_update" }
+>;
 
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
@@ -182,6 +187,8 @@ const CODEX_ACP_REASONING_EFFORT_SUFFIXES = [
 const MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION = 16;
 const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
 const PRE_EDIT_SNAPSHOT_MAX_BYTES = 5 * 1024 * 1024;
+const AI_DIAGNOSTIC_TEXT_MAX_LENGTH = 500;
+const ACP_TERMINAL_OUTPUT_DIAGNOSTIC_MAX_LENGTH = 10_000;
 
 function setDesiredConfigValue(
     values: Map<string, boolean | string>,
@@ -236,6 +243,42 @@ function isDirectStreamingSessionUpdate(
         update.sessionUpdate === "agent_message_chunk" ||
         update.sessionUpdate === "agent_thought_chunk" ||
         update.sessionUpdate === "plan"
+    );
+}
+
+function toInternalThinkingMessageId(messageId: string | null): string | null {
+    return messageId ? `thinking:${messageId}` : null;
+}
+
+function createRuntimeSessionMappingIndex(
+    mappings: readonly {
+        readonly appSessionId: string;
+        readonly runtimeSessionId: string;
+    }[],
+): Map<string, string> {
+    return new Map(
+        mappings
+            .filter(
+                (mapping) =>
+                    mapping.runtimeSessionId.trim().length > 0 &&
+                    mapping.appSessionId.trim().length > 0,
+            )
+            .map((mapping) => [
+                mapping.runtimeSessionId,
+                mapping.appSessionId,
+            ]),
+    );
+}
+
+function createPersistedSubagentMappingIndex<
+    TMapping extends {
+        readonly runtimeSessionId: string;
+    },
+>(mappings: readonly TMapping[]): Map<string, TMapping> {
+    return new Map(
+        mappings
+            .filter((mapping) => mapping.runtimeSessionId.trim().length > 0)
+            .map((mapping) => [mapping.runtimeSessionId, mapping]),
     );
 }
 
@@ -405,6 +448,14 @@ export class AiWorkerRuntime {
     async #prepareSession(
         params: AiWorkerRpcMethodMap["ai.prepareSession"]["params"],
     ): Promise<AiSessionSnapshot> {
+        this.#emitLog("debug", "Preparing AI runtime session.", {
+            parentSessionId: params.launch.persistedSnapshot.parentSessionId ?? null,
+            runtimeId: params.launch.input.runtimeId,
+            runtimeSessionId: params.launch.persistedSnapshot.runtimeSessionId,
+            sessionId: params.launch.input.sessionId,
+            status: params.launch.persistedSnapshot.status,
+            trackedFiles: params.launch.persistedSnapshot.trackedFiles.length,
+        });
         const liveSession = await this.#ensureRuntimeSession(params.launch);
         return liveSession.snapshot;
     }
@@ -413,6 +464,14 @@ export class AiWorkerRuntime {
         params: AiWorkerRpcMethodMap["ai.sendPrompt"]["params"],
     ): Promise<AiPromptResult> {
         const liveSession = await this.#ensureRuntimeSession(params.launch);
+        if (
+            liveSession.snapshot.parentSessionId &&
+            liveSession.snapshot.closedAt
+        ) {
+            throw new Error(
+                "This subagent was closed by its parent thread and can’t receive new messages.",
+            );
+        }
         if (
             liveSession.snapshot.status === "starting" ||
             liveSession.snapshot.status === "streaming" ||
@@ -442,6 +501,15 @@ export class AiWorkerRuntime {
         );
         liveSession.preEditSnapshots.clear();
         this.#clearSubagentMirrorTurn(liveSession);
+        this.#emitSessionDiagnostic(
+            "Dispatching prompt to AI runtime.",
+            liveSession,
+            {
+                attachments: params.input.attachments.length,
+                messageId: userMessageId,
+                promptCharacters: displayContent.length,
+            },
+        );
         this.#setPendingUserTextEcho(liveSession, {
             expectedContentBlocks: promptContentBlocks,
             expectedTexts: [promptText, displayContent],
@@ -450,6 +518,7 @@ export class AiWorkerRuntime {
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: now,
+            closedAt: null,
             lastError: null,
             messages: [
                 ...liveSession.snapshot.messages,
@@ -494,9 +563,14 @@ export class AiWorkerRuntime {
                 status: "idle",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             this.#clearPendingUserTextEcho(liveSession);
+            this.#emitSessionDiagnostic("Prompt completed.", liveSession, {
+                messageId: userMessageId,
+                stopReason: response.stopReason,
+            });
 
             return {
                 sessionId: params.input.sessionId,
@@ -517,8 +591,13 @@ export class AiWorkerRuntime {
                 status: "error",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
+            this.#emitSessionDiagnostic("Prompt failed.", liveSession, {
+                lastError: message,
+                messageId: userMessageId,
+            });
             throw error;
         }
     }
@@ -575,6 +654,29 @@ export class AiWorkerRuntime {
             status: "idle",
             updatedAt: new Date().toISOString(),
         });
+        this.#queueTrackedFileReconciliation(liveSession);
+        this.#queueSnapshotFlush(liveSession);
+        this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
+    }
+
+    #markSubagentClosedByParent(
+        liveSession: LiveAcpSession,
+        closedAt: string,
+    ): void {
+        liveSession.activeTurnId = null;
+        this.#clearPendingUserTextEcho(liveSession);
+        this.#clearSubagentMirrorTurn(liveSession);
+        this.#resolvePendingPermission(liveSession, null);
+        liveSession.snapshot = finalizeStreamingMessages({
+            ...liveSession.snapshot,
+            activeTurnStartedAt: null,
+            closedAt,
+            pendingPermission: null,
+            pendingUserInput: null,
+            status: "idle",
+            updatedAt: closedAt,
+        });
+        this.#queueTrackedFileReconciliation(liveSession);
         this.#queueSnapshotFlush(liveSession);
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
     }
@@ -888,6 +990,7 @@ export class AiWorkerRuntime {
                 status: "idle",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             this.#clearPendingUserTextEcho(liveSession);
@@ -905,6 +1008,7 @@ export class AiWorkerRuntime {
                 status: "error",
                 updatedAt: new Date().toISOString(),
             });
+            await this.#reconcileTrackedFiles(liveSession);
             this.#queueSnapshotFlush(liveSession);
             this.#schedulePendingScopeRefresh(params.input.sessionId);
             throw error;
@@ -1034,6 +1138,13 @@ export class AiWorkerRuntime {
             existing.runtimeId === launch.input.runtimeId &&
             sameAdditionalRoots(existing.additionalRoots, launch.additionalRoots)
         ) {
+            this.#emitSessionDiagnostic(
+                "Reusing live AI runtime session.",
+                existing,
+                {
+                    ownerWindowId: launch.ownerWindowId,
+                },
+            );
             existing.ownerWindowId = launch.ownerWindowId;
             existing.runtimeConnection.ownerWindowId = launch.ownerWindowId;
             existing.desiredSelections = launch.desiredSelections;
@@ -1042,6 +1153,13 @@ export class AiWorkerRuntime {
             return existing;
         }
         if (existing) {
+            this.#emitSessionDiagnostic(
+                "Disposing incompatible live AI runtime session before relaunch.",
+                existing,
+                {
+                    nextRuntimeId: launch.input.runtimeId,
+                },
+            );
             this.#disposeLiveSession(launch.input.sessionId, existing, {
                 closeRuntimeSession: false,
                 emitClosedEvent: false,
@@ -1140,13 +1258,20 @@ export class AiWorkerRuntime {
         const connection = new ClientSideConnection(() => client, stream);
         const persistedSnapshot = launch.persistedSnapshot;
         Object.assign(liveConnection, {
-            appSessionIdByRuntimeSessionId: new Map(),
+            appSessionIdByRuntimeSessionId:
+                createRuntimeSessionMappingIndex(
+                    launch.persistedSubagentSessionMappings ?? [],
+                ),
             child,
             closing: false,
             connection,
             connectionId: randomUUID(),
             ownerWindowId: launch.ownerWindowId,
             pendingSessionUpdatesByRuntimeSessionId: new Map(),
+            persistedSubagentMappingsByRuntimeSessionId:
+                createPersistedSubagentMappingIndex(
+                    launch.persistedSubagentSessionMappings ?? [],
+                ),
             resolvedRuntime: launch.resolvedRuntime,
             runtimeId: launch.input.runtimeId,
             sessionsByAppSessionId: new Map(),
@@ -1195,6 +1320,8 @@ export class AiWorkerRuntime {
             stderrHandler: null,
         } satisfies LiveAcpSession);
 
+        await this.#reconcileTrackedFiles(liveSession);
+
         const stderrHandler = (chunk: Buffer | string) => {
             const text =
                 typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -1202,6 +1329,10 @@ export class AiWorkerRuntime {
             if (liveConnection.stderrChunks.length > 20) {
                 liveConnection.stderrChunks.shift();
             }
+            this.#emitSessionDiagnostic("AI runtime stderr chunk.", liveSession, {
+                bytes: Buffer.byteLength(text, "utf8"),
+                text: truncateDiagnosticText(text),
+            });
         };
         liveConnection.stderrHandler = stderrHandler;
         child.stderr.on("data", stderrHandler);
@@ -1234,6 +1365,11 @@ export class AiWorkerRuntime {
             launch.input.sessionId,
             liveSession,
         );
+        this.#emitSessionDiagnostic("Starting AI runtime process.", liveSession, {
+            connectionId: liveConnection.connectionId,
+            executable: launch.resolvedRuntime.executable,
+            ownerWindowId: launch.ownerWindowId,
+        });
         this.#queueSnapshotFlush(liveSession);
 
         try {
@@ -1267,6 +1403,9 @@ export class AiWorkerRuntime {
                 launch.input.sessionId,
                 openedSession.runtimeSessionId,
             );
+            this.#emitSessionDiagnostic("Opened AI runtime session.", liveSession, {
+                restored: Boolean(persistedSnapshot.runtimeSessionId),
+            });
             await this.#applyStoredSessionSelections(liveSession);
             liveSession.snapshot = {
                 ...liveSession.snapshot,
@@ -1290,6 +1429,13 @@ export class AiWorkerRuntime {
                 updatedAt: new Date().toISOString(),
             };
             this.#queueSnapshotFlush(liveSession);
+            this.#emitSessionDiagnostic(
+                "AI runtime session startup failed.",
+                liveSession,
+                {
+                    lastError: message,
+                },
+            );
             this.#disposeLiveSession(launch.input.sessionId, liveSession, {
                 emitClosedEvent: false,
             });
@@ -1319,12 +1465,24 @@ export class AiWorkerRuntime {
         if (liveSession.snapshot.runtimeSessionId) {
             try {
                 liveSession.isRestoring = true;
+                this.#emitSessionDiagnostic(
+                    "Loading persisted AI runtime session.",
+                    liveSession,
+                    {
+                        restoreSource: "loadSession",
+                    },
+                );
                 const response = await liveSession.connection.loadSession({
                     additionalDirectories,
                     cwd: liveSession.cwd,
                     mcpServers: [],
                     sessionId: liveSession.snapshot.runtimeSessionId,
                 });
+                this.#registerRuntimeSessionMapping(
+                    liveSession.runtimeConnection,
+                    liveSession.snapshot.sessionId,
+                    liveSession.snapshot.runtimeSessionId,
+                );
                 return {
                     configOptions: response.configOptions ?? null,
                     models: response.models ?? null,
@@ -1332,12 +1490,23 @@ export class AiWorkerRuntime {
                     runtimeSessionId: liveSession.snapshot.runtimeSessionId,
                 };
             } catch (error) {
+                this.#emitSessionDiagnostic(
+                    "Persisted AI runtime session load failed; opening a new session.",
+                    liveSession,
+                    {
+                        lastError:
+                            error instanceof Error ? error.message : String(error),
+                    },
+                );
                 debugBenignError("ai.worker.loadSession.resume", error);
             } finally {
                 liveSession.isRestoring = false;
             }
         }
 
+        this.#emitSessionDiagnostic("Creating new AI runtime session.", liveSession, {
+            restoreSource: "newSession",
+        });
         const response = await liveSession.connection.newSession({
             additionalDirectories,
             cwd: liveSession.cwd,
@@ -1396,12 +1565,29 @@ export class AiWorkerRuntime {
         liveConnection: LiveAcpConnection,
         params: SessionNotification,
     ): Promise<void> {
+        const meta = getSessionNotificationMeta(params);
         const liveSession = this.#resolveLiveSessionForRuntimeSessionId(
             liveConnection,
             params.sessionId,
         );
         if (liveSession) {
-            const meta = getSessionNotificationMeta(params);
+            const terminalOutputDiagnostic = getTerminalOutputDiagnostic(
+                meta,
+                liveSession.terminalOutputBuffers,
+            );
+            this.#emitSessionDiagnostic(
+                "Received AI runtime session update.",
+                liveSession,
+                {
+                    ...buildRuntimeSessionUpdateDiagnosticContext(params, meta),
+                    streamSource: liveSession.isRestoring ? "restore" : "live",
+                    terminalAccumulatedCharacters:
+                        terminalOutputDiagnostic?.nextCharacters ?? null,
+                    terminalDataCharacters:
+                        terminalOutputDiagnostic?.dataCharacters ?? null,
+                    terminalId: terminalOutputDiagnostic?.terminalId ?? null,
+                },
+            );
             if (
                 readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
                 CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
@@ -1435,6 +1621,14 @@ export class AiWorkerRuntime {
             params,
         );
         if (subagentSession) {
+            this.#emitSessionDiagnostic(
+                "Received AI runtime update for newly registered subagent.",
+                subagentSession,
+                {
+                    ...buildRuntimeSessionUpdateDiagnosticContext(params, meta),
+                    streamSource: "live",
+                },
+            );
             const result = this.#handleSessionUpdate(subagentSession, params);
             this.#flushSnapshotEvent(subagentSession);
             return result;
@@ -1442,6 +1636,11 @@ export class AiWorkerRuntime {
 
         // Some fast runtimes can emit session updates before newSession/loadSession
         // unwinds and gives us the runtime session ID to map.
+        this.#emitLog("debug", "Buffering AI runtime update before session mapping.", {
+            ...buildRuntimeSessionUpdateDiagnosticContext(params, meta),
+            runtimeId: liveConnection.runtimeId,
+            runtimeSessionId: params.sessionId,
+        });
         this.#bufferPendingSessionUpdate(liveConnection, params);
         return Promise.resolve();
     }
@@ -1473,10 +1672,15 @@ export class AiWorkerRuntime {
         const runtimeChildSessionId =
             readSubagentChildRuntimeSessionId(meta) ?? params.sessionId;
         const runtimeParentSessionId = readSubagentParentRuntimeSessionId(meta);
+        const persistedMapping =
+            liveConnection.persistedSubagentMappingsByRuntimeSessionId.get(
+                runtimeChildSessionId,
+            ) ?? null;
         if (!runtimeParentSessionId) {
             this.#emitLog("warn", "Ignoring subagent session without parent.", {
                 runtimeChildSessionId,
                 runtimeId: liveConnection.runtimeId,
+                runtimeSessionId: params.sessionId,
             });
             return null;
         }
@@ -1484,7 +1688,11 @@ export class AiWorkerRuntime {
         const parentAppSessionId =
             liveConnection.appSessionIdByRuntimeSessionId.get(
                 runtimeParentSessionId,
-            ) ?? null;
+            ) ??
+            (persistedMapping?.parentRuntimeSessionId ===
+                runtimeParentSessionId
+                ? persistedMapping.parentAppSessionId
+                : null);
         const parentSession = parentAppSessionId
             ? liveConnection.sessionsByAppSessionId.get(parentAppSessionId) ??
               null
@@ -1517,12 +1725,21 @@ export class AiWorkerRuntime {
                     params,
                     meta,
                 );
+                this.#emitSessionDiagnostic(
+                    "Hydrated existing ACP subagent session metadata.",
+                    existingSession,
+                    {
+                        runtimeChildSessionId,
+                        runtimeParentSessionId,
+                    },
+                );
+                return existingSession;
             }
-            return existingSession;
         }
 
         const now = new Date().toISOString();
-        const appSessionId = randomUUID();
+        const appSessionId =
+            existingAppSessionId ?? persistedMapping?.appSessionId ?? randomUUID();
         const title =
             readMetaString(meta, CODEX_ACP_AGENT_NICKNAME_KEY) ??
             readSessionInfoTitle(params.update) ??
@@ -1592,6 +1809,15 @@ export class AiWorkerRuntime {
 
         this.#sessions.set(appSessionId, subagentSession);
         liveConnection.sessionsByAppSessionId.set(appSessionId, subagentSession);
+        liveConnection.persistedSubagentMappingsByRuntimeSessionId.set(
+            runtimeChildSessionId,
+            {
+                appSessionId,
+                parentAppSessionId,
+                parentRuntimeSessionId: runtimeParentSessionId,
+                runtimeSessionId: runtimeChildSessionId,
+            },
+        );
         this.#registerRuntimeSessionMapping(
             liveConnection,
             appSessionId,
@@ -1600,6 +1826,7 @@ export class AiWorkerRuntime {
         this.#emitLog("debug", "Registered ACP subagent session.", {
             parentSessionId: parentAppSessionId,
             runtimeChildSessionId,
+            runtimeParentSessionId,
             runtimeId: liveConnection.runtimeId,
             sessionId: appSessionId,
         });
@@ -1654,6 +1881,15 @@ export class AiWorkerRuntime {
         const now = new Date().toISOString();
         const update = params.update;
         const meta = getSessionNotificationMeta(params);
+        const isRestoredTurnLifecycleUpdate =
+            liveSession.isRestoring &&
+            readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY) ===
+                CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE;
+        // Restored turn lifecycle entries are historical replay, not live work.
+        if (isRestoredTurnLifecycleUpdate) {
+            return Promise.resolve();
+        }
+
         if (this.#handleTurnLifecycleUpdate(liveSession, meta, now)) {
             return Promise.resolve();
         }
@@ -1743,15 +1979,6 @@ export class AiWorkerRuntime {
                 break;
             }
             case "agent_message_chunk":
-                if (
-                    this.#shouldSuppressMirroredSubagentAssistantEcho(
-                        liveSession,
-                        update.content,
-                    )
-                ) {
-                    break;
-                }
-                this.#markSubagentAssistantOutputSeen(liveSession);
                 nextSnapshot = appendContentBlockToSnapshot(
                     nextSnapshot,
                     "assistant",
@@ -1764,7 +1991,7 @@ export class AiWorkerRuntime {
                     nextSnapshot,
                     "thinking",
                     update.content,
-                    update.messageId ?? null,
+                    toInternalThinkingMessageId(update.messageId ?? null),
                 );
                 break;
             case "tool_call":
@@ -1900,7 +2127,12 @@ export class AiWorkerRuntime {
         );
         const shouldFlushOpenSessionActionImmediately =
             nextSnapshot !== snapshotBeforeOpenSessionAction;
-        this.#handleSubagentLifecycleBreadcrumb(liveSession, params, now);
+        this.#handleSubagentLifecycleBreadcrumb(
+            liveSession,
+            nextSnapshot,
+            params,
+            now,
+        );
         liveSession.snapshot = nextSnapshot;
         if (shouldFlushOpenSessionActionImmediately) {
             this.#flushSnapshotEvent(liveSession);
@@ -2088,72 +2320,12 @@ export class AiWorkerRuntime {
         toolCallId: string,
     ): void {
         this.#subagentMirrorTurns.set(liveSession.snapshot.sessionId, {
-            assistantOutputSeen: false,
-            suppressedAssistantEchoText: "",
-            terminalAssistantContent: null,
             toolCallId,
         });
     }
 
     #clearSubagentMirrorTurn(liveSession: LiveAcpSession): void {
         this.#subagentMirrorTurns.delete(liveSession.snapshot.sessionId);
-    }
-
-    #markSubagentAssistantOutputSeen(liveSession: LiveAcpSession): void {
-        if (!isSubagentLiveSession(liveSession)) {
-            return;
-        }
-
-        const state = this.#subagentMirrorTurns.get(
-            liveSession.snapshot.sessionId,
-        );
-        if (state) {
-            state.assistantOutputSeen = true;
-        }
-    }
-
-    #rememberMirroredSubagentTerminalResponse(
-        liveSession: LiveAcpSession,
-        response: string,
-    ): void {
-        const state = this.#subagentMirrorTurns.get(
-            liveSession.snapshot.sessionId,
-        );
-        if (state) {
-            state.assistantOutputSeen = true;
-            state.terminalAssistantContent = response;
-            state.suppressedAssistantEchoText = "";
-        }
-    }
-
-    #shouldSuppressMirroredSubagentAssistantEcho(
-        liveSession: LiveAcpSession,
-        content: ContentBlock,
-    ): boolean {
-        if (!isSubagentLiveSession(liveSession) || content.type !== "text") {
-            return false;
-        }
-
-        const state = this.#subagentMirrorTurns.get(
-            liveSession.snapshot.sessionId,
-        );
-        const terminalContent = state?.terminalAssistantContent;
-        if (!state || !terminalContent) {
-            return false;
-        }
-
-        const nextEchoText = `${state.suppressedAssistantEchoText}${content.text}`;
-        const normalizedEchoText = normalizeEchoText(nextEchoText);
-        const normalizedTerminalContent = normalizeEchoText(terminalContent);
-        if (
-            normalizedEchoText.length === 0 ||
-            normalizedTerminalContent.startsWith(normalizedEchoText)
-        ) {
-            state.suppressedAssistantEchoText = nextEchoText;
-            return true;
-        }
-
-        return false;
     }
 
     #getSubagentMirrorTurn(
@@ -2213,12 +2385,16 @@ export class AiWorkerRuntime {
         turnId: string | null,
         updatedAt: string,
     ): void {
+        this.#emitSessionDiagnostic("AI runtime turn started.", liveSession, {
+            turnId,
+        });
         liveSession.preEditSnapshots.clear();
         liveSession.activeTurnId = turnId;
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt:
                 liveSession.snapshot.activeTurnStartedAt ?? updatedAt,
+            closedAt: null,
             lastError: null,
             pendingPermission: null,
             pendingUserInput: null,
@@ -2245,6 +2421,9 @@ export class AiWorkerRuntime {
         liveSession.activeTurnId = null;
         this.#clearPendingUserTextEcho(liveSession);
         this.#resolvePendingPermission(liveSession, null);
+        this.#emitSessionDiagnostic("AI runtime turn ended.", liveSession, {
+            turnId,
+        });
         liveSession.snapshot = finalizeStreamingMessages({
             ...liveSession.snapshot,
             activeTurnStartedAt: null,
@@ -2253,6 +2432,7 @@ export class AiWorkerRuntime {
             status: "idle",
             updatedAt,
         });
+        this.#queueTrackedFileReconciliation(liveSession);
         this.#queueSnapshotFlush(liveSession);
         this.#schedulePendingScopeRefresh(liveSession.snapshot.sessionId);
     }
@@ -2269,6 +2449,11 @@ export class AiWorkerRuntime {
         ) {
             return snapshot;
         }
+        const canonicalUpdate = canonicalizeToolUpdateForSnapshot(
+            snapshot,
+            update,
+            snapshot.updatedAt,
+        );
 
         const meta = getSessionNotificationMeta(params);
         if (
@@ -2301,7 +2486,7 @@ export class AiWorkerRuntime {
 
         const resolvedChildAppSessionId = childAppSessionId;
         const activityIndex = snapshot.toolActivity.findIndex(
-            (activity) => activity.id === update.toolCallId,
+            (activity) => activity.id === canonicalUpdate.toolCallId,
         );
         if (activityIndex === -1) {
             return snapshot;
@@ -2329,16 +2514,22 @@ export class AiWorkerRuntime {
 
     #handleSubagentLifecycleBreadcrumb(
         liveSession: LiveAcpSession,
+        snapshot: AiSessionSnapshot,
         params: SessionNotification,
         updatedAt: string,
     ): void {
-        const update = params.update;
+        const rawUpdate = params.update;
         if (
-            update.sessionUpdate !== "tool_call" &&
-            update.sessionUpdate !== "tool_call_update"
+            rawUpdate.sessionUpdate !== "tool_call" &&
+            rawUpdate.sessionUpdate !== "tool_call_update"
         ) {
             return;
         }
+        const update = canonicalizeToolUpdateForSnapshot(
+            snapshot,
+            rawUpdate,
+            updatedAt,
+        );
 
         const meta = getSessionNotificationMeta(params);
         const subagentEventType = readMetaString(
@@ -2376,7 +2567,7 @@ export class AiWorkerRuntime {
         }
 
         if (subagentEventType === CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE) {
-            this.#markLiveSessionIdle(childSession);
+            this.#markSubagentClosedByParent(childSession, updatedAt);
             return;
         }
 
@@ -2400,16 +2591,6 @@ export class AiWorkerRuntime {
                 isTerminalSubagentBreadcrumb(meta, update)
             ) {
                 this.#mirrorSubagentTurnEnd(childSession, update, updatedAt);
-            } else if (
-                childSession.activeTurnId &&
-                mirrorTurn?.toolCallId === update.toolCallId &&
-                isTerminalSubagentBreadcrumb(meta, update)
-            ) {
-                this.#mirrorSubagentTerminalResponse(
-                    childSession,
-                    update,
-                    updatedAt,
-                );
             }
         }
     }
@@ -2442,6 +2623,7 @@ export class AiWorkerRuntime {
             ...childSession.snapshot,
             activeTurnStartedAt:
                 childSession.snapshot.activeTurnStartedAt ?? updatedAt,
+            closedAt: null,
             lastError: null,
             pendingPermission: null,
             pendingUserInput: null,
@@ -2483,9 +2665,7 @@ export class AiWorkerRuntime {
             return;
         }
 
-        const response = readSubagentTurnResponse(update);
-        const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
-        let nextSnapshot = finalizeStreamingMessages({
+        const nextSnapshot = finalizeStreamingMessages({
             ...childSession.snapshot,
             activeTurnStartedAt: null,
             pendingPermission: null,
@@ -2494,53 +2674,10 @@ export class AiWorkerRuntime {
             updatedAt,
         });
 
-        if (response && !mirrorTurn?.assistantOutputSeen) {
-            nextSnapshot = appendMirroredSubagentMessage(
-                nextSnapshot,
-                "assistant",
-                response,
-                `subagent:${update.toolCallId}:assistant`,
-                updatedAt,
-            );
-        }
-
         childSession.activeTurnId = null;
         this.#clearPendingUserTextEcho(childSession);
         this.#clearSubagentMirrorTurn(childSession);
         childSession.snapshot = nextSnapshot;
-        this.#queueSnapshotFlush(childSession);
-        this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
-    }
-
-    #mirrorSubagentTerminalResponse(
-        childSession: LiveAcpSession,
-        update: SessionNotification["update"],
-        updatedAt: string,
-    ): void {
-        if (
-            update.sessionUpdate !== "tool_call" &&
-            update.sessionUpdate !== "tool_call_update"
-        ) {
-            return;
-        }
-
-        const response = readSubagentTurnResponse(update);
-        const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
-        if (!response || mirrorTurn?.assistantOutputSeen) {
-            return;
-        }
-
-        childSession.snapshot = appendMirroredSubagentMessage(
-            {
-                ...childSession.snapshot,
-                updatedAt,
-            },
-            "assistant",
-            response,
-            `subagent:${update.toolCallId}:assistant`,
-            updatedAt,
-        );
-        this.#rememberMirroredSubagentTerminalResponse(childSession, response);
         this.#queueSnapshotFlush(childSession);
         this.#schedulePendingScopeRefresh(childSession.snapshot.sessionId);
     }
@@ -2564,18 +2701,11 @@ export class AiWorkerRuntime {
             meta,
         );
         for (const childSession of childSessions) {
-            const mirrorTurn = this.#getSubagentMirrorTurn(childSession);
             if (childSession.activeTurnId) {
                 continue;
             }
 
-            const response = readSubagentWaitingEndResponse(
-                update,
-                meta,
-                childSession.snapshot.runtimeSessionId,
-                childSession.snapshot.title,
-            );
-            let nextSnapshot = finalizeStreamingMessages({
+            const nextSnapshot = finalizeStreamingMessages({
                 ...childSession.snapshot,
                 activeTurnStartedAt: null,
                 pendingPermission: null,
@@ -2583,16 +2713,6 @@ export class AiWorkerRuntime {
                 status: "idle",
                 updatedAt,
             });
-
-            if (response && !mirrorTurn?.assistantOutputSeen) {
-                nextSnapshot = appendMirroredSubagentMessage(
-                    nextSnapshot,
-                    "assistant",
-                    response,
-                    `subagent:${update.toolCallId}:${childSession.snapshot.runtimeSessionId ?? childSession.snapshot.sessionId}:waiting-end`,
-                    updatedAt,
-                );
-            }
 
             childSession.activeTurnId = null;
             this.#clearPendingUserTextEcho(childSession);
@@ -2974,6 +3094,74 @@ export class AiWorkerRuntime {
             terminals: new Map(),
             terminalOutputBuffers: new Map(),
         };
+    }
+
+    #queueTrackedFileReconciliation(liveSession: LiveAcpSession): void {
+        const sessionId = liveSession.snapshot.sessionId;
+        void this.#reconcileTrackedFiles(liveSession)
+            .then((changed) => {
+                if (
+                    changed &&
+                    this.#sessions.get(sessionId) === liveSession &&
+                    !liveSession.closing
+                ) {
+                    this.#queueSnapshotFlush(liveSession);
+                }
+            })
+            .catch((error: unknown) => {
+                debugBenignError("ai.worker.reconcileTrackedFiles", error);
+            });
+    }
+
+    async #reconcileTrackedFiles(
+        liveSession: LiveAcpSession,
+    ): Promise<boolean> {
+        const trackedFiles = liveSession.snapshot.trackedFiles;
+        const result = await reconcilePendingTrackedFiles({
+            onError: (error) => {
+                debugBenignError("ai.worker.reconcileTrackedFile", error);
+            },
+            readTrackedFileText: async (trackedPath) =>
+                await this.#readTrackedFileText(liveSession, trackedPath),
+            trackedFiles,
+        });
+        if (!result.changed) {
+            return false;
+        }
+
+        this.#emitSessionDiagnostic("Reconciled AI tracked files.", liveSession, {
+            nextTrackedFiles: result.trackedFiles.length,
+            previousTrackedFiles: trackedFiles.length,
+        });
+        liveSession.snapshot = {
+            ...liveSession.snapshot,
+            trackedFiles: result.trackedFiles,
+            updatedAt: new Date().toISOString(),
+        };
+        return true;
+    }
+
+    async #readTrackedFileText(
+        liveSession: LiveAcpSession,
+        trackedPath: string,
+    ): Promise<string | null> {
+        const resolvedPath = this.#resolveWritableSessionPathInfo(
+            liveSession,
+            trackedPath,
+        );
+        if (this.#fileBuffers.has(resolvedPath.absolutePath)) {
+            return this.#fileBuffers.get(resolvedPath.absolutePath) ?? "";
+        }
+
+        try {
+            return await fs.promises.readFile(resolvedPath.absolutePath, "utf8");
+        } catch (error) {
+            if (isNodeError(error) && error.code === "ENOENT") {
+                return null;
+            }
+
+            throw error;
+        }
     }
 
     async #assertTrackedFileCanBeReverted(
@@ -3467,14 +3655,40 @@ export class AiWorkerRuntime {
             liveSession.pendingPersistTimer = null;
         }
 
+        const domainEvents = buildAiSessionDomainEvents(
+            liveSession.lastBroadcastSnapshot,
+            liveSession.snapshot,
+            {
+                origin: liveSession.isRestoring ? "restore" : "live",
+            },
+        );
+        const update = buildAiSessionUpdate(
+            liveSession.lastBroadcastSnapshot,
+            liveSession.snapshot,
+        );
+        this.#emitSessionDiagnostic("Flushing AI session snapshot.", liveSession, {
+            domainEvents: domainEvents.length,
+            changedKeys:
+                update.kind === "patch"
+                    ? Object.keys(update.patch.changes).sort().join(",")
+                    : "snapshot",
+            updateKind: update.kind,
+        });
+        for (const event of domainEvents) {
+            this.#emitEvent({
+                event: "ai.session.event",
+                payload: {
+                    event,
+                    ownerWindowId: liveSession.ownerWindowId,
+                },
+                type: "event",
+            });
+        }
         this.#emitEvent({
             event: "ai.snapshot.updated",
             payload: {
                 ownerWindowId: liveSession.ownerWindowId,
-                update: buildAiSessionUpdate(
-                    liveSession.lastBroadcastSnapshot,
-                    liveSession.snapshot,
-                ),
+                update,
             },
             type: "event",
         });
@@ -3656,11 +3870,22 @@ export class AiWorkerRuntime {
             return;
         }
 
+        const chunkText =
+            typeof chunk === "string" ? chunk : chunk.toString("utf8");
         const nextOutput = appendTerminalOutput(
             terminal.output,
-            typeof chunk === "string" ? chunk : chunk.toString("utf8"),
+            chunkText,
             terminal.outputByteLimit,
         );
+        this.#emitSessionDiagnostic("ACP client terminal output appended.", liveSession, {
+            terminalAccumulatedBytes: Buffer.byteLength(
+                nextOutput.output,
+                "utf8",
+            ),
+            terminalId,
+            terminalOutputBytes: Buffer.byteLength(chunkText, "utf8"),
+            terminalTruncated: terminal.truncated || nextOutput.truncated,
+        });
         terminal.output = nextOutput.output;
         terminal.truncated = terminal.truncated || nextOutput.truncated;
         this.#upsertTerminalActivity(liveSession, terminalId, {
@@ -4131,6 +4356,7 @@ export class AiWorkerRuntime {
         liveConnection.sessionsByAppSessionId.clear();
         liveConnection.appSessionIdByRuntimeSessionId.clear();
         liveConnection.pendingSessionUpdatesByRuntimeSessionId.clear();
+        liveConnection.persistedSubagentMappingsByRuntimeSessionId.clear();
     }
 
     #disposeLiveSession(
@@ -4213,6 +4439,7 @@ export class AiWorkerRuntime {
         liveConnection.sessionsByAppSessionId.clear();
         liveConnection.appSessionIdByRuntimeSessionId.clear();
         liveConnection.pendingSessionUpdatesByRuntimeSessionId.clear();
+        liveConnection.persistedSubagentMappingsByRuntimeSessionId.clear();
         this.#detachChildStreams(liveConnection);
         liveConnection.child.kill();
         liveConnection.child.stdin.destroy();
@@ -4236,6 +4463,29 @@ export class AiWorkerRuntime {
                 sessionId: liveSession.snapshot.sessionId,
             },
             type: "event",
+        });
+    }
+
+    #emitSessionDiagnostic(
+        message: string,
+        liveSession: LiveAcpSession,
+        context: Record<
+            string,
+            boolean | number | string | null | undefined
+        > = {},
+    ): void {
+        this.#emitLog("debug", message, {
+            activeTurnId: liveSession.activeTurnId,
+            isRestoring: liveSession.isRestoring,
+            messages: liveSession.snapshot.messages.length,
+            parentSessionId: liveSession.snapshot.parentSessionId ?? null,
+            runtimeId: liveSession.runtimeId,
+            runtimeSessionId: liveSession.snapshot.runtimeSessionId,
+            sessionId: liveSession.snapshot.sessionId,
+            status: liveSession.snapshot.status,
+            toolActivity: liveSession.snapshot.toolActivity.length,
+            trackedFiles: liveSession.snapshot.trackedFiles.length,
+            ...context,
         });
     }
 
@@ -4264,6 +4514,28 @@ export class AiWorkerRuntime {
     }
 }
 
+function canonicalizeToolUpdateForSnapshot(
+    snapshot: Pick<AiSessionSnapshot, "toolActivity">,
+    update: ToolSessionNotificationUpdate,
+    updatedAt: string,
+): ToolSessionNotificationUpdate {
+    if (update.sessionUpdate === "tool_call") {
+        return update;
+    }
+
+    const toolCallId = resolveToolActivityIdForUpdate(
+        snapshot,
+        update,
+        updatedAt,
+        {
+            includeCompletedCandidates: true,
+        },
+    );
+    return toolCallId === update.toolCallId
+        ? update
+        : { ...update, toolCallId };
+}
+
 function getSessionNotificationMeta(
     params: SessionNotification,
 ): Record<string, unknown> {
@@ -4275,6 +4547,64 @@ function getSessionNotificationMeta(
     return {
         ...notificationMeta,
         ...updateMeta,
+    };
+}
+
+function buildRuntimeSessionUpdateDiagnosticContext(
+    params: SessionNotification,
+    meta: Record<string, unknown>,
+): Record<string, boolean | number | string | null | undefined> {
+    const update = params.update;
+
+    return {
+        messageId:
+            "messageId" in update && typeof update.messageId === "string"
+                ? update.messageId
+                : null,
+        sessionUpdate: update.sessionUpdate,
+        statusEventType: readMetaString(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY),
+        subagentEventType: readMetaString(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY),
+        toolCallId:
+            "toolCallId" in update && typeof update.toolCallId === "string"
+                ? update.toolCallId
+                : null,
+        turnEventType: readMetaString(meta, CODEX_ACP_TURN_EVENT_TYPE_KEY),
+        turnId: readMetaString(meta, CODEX_ACP_TURN_ID_KEY),
+    };
+}
+
+function getTerminalOutputDiagnostic(
+    meta: Record<string, unknown>,
+    terminalOutputBuffers: Map<string, string>,
+): {
+    readonly dataCharacters: number;
+    readonly nextCharacters: number;
+    readonly terminalId: string;
+} | null {
+    const terminalOutput = meta.terminal_output;
+    if (!isRecordValue(terminalOutput)) {
+        return null;
+    }
+
+    const terminalId =
+        typeof terminalOutput.terminal_id === "string"
+            ? terminalOutput.terminal_id
+            : null;
+    const data =
+        typeof terminalOutput.data === "string" ? terminalOutput.data : null;
+    if (!terminalId || data === null) {
+        return null;
+    }
+
+    const previousCharacters =
+        terminalOutputBuffers.get(terminalId)?.length ?? 0;
+    return {
+        dataCharacters: data.length,
+        nextCharacters: Math.min(
+            previousCharacters + data.length,
+            ACP_TERMINAL_OUTPUT_DIAGNOSTIC_MAX_LENGTH,
+        ),
+        terminalId,
     };
 }
 
@@ -4732,29 +5062,6 @@ function isSubagentPromptDetailMetadataLine(line: string): boolean {
     return /^\s*(?:Model|Reasoning effort):\s*/i.test(line);
 }
 
-function readSubagentTurnResponse(
-    update: SessionNotification["update"],
-): string | null {
-    if (
-        update.sessionUpdate !== "tool_call" &&
-        update.sessionUpdate !== "tool_call_update"
-    ) {
-        return null;
-    }
-
-    const rawOutput = isRecordValue(update.rawOutput) ? update.rawOutput : null;
-    const statusMessage = rawOutput
-        ? readCompletedAgentStatusMessage(rawOutput.status) ??
-          readCompletedAgentStatusMessage(rawOutput.agent_status) ??
-          readCompletedAgentStatusMessage(rawOutput.agentStatus)
-        : null;
-    if (statusMessage) {
-        return statusMessage;
-    }
-
-    return readCompletedStatusFromToolContent(update.content);
-}
-
 function resolveChildSessionsForWaitingEnd(
     parentSession: LiveAcpSession,
     update: SessionNotification["update"],
@@ -4847,32 +5154,6 @@ function readSubagentStatusRecords(
     return records;
 }
 
-function readSubagentWaitingEndResponse(
-    update: SessionNotification["update"],
-    meta: Record<string, unknown>,
-    runtimeSessionId: string | null,
-    title: string,
-): string | null {
-    const matchingStatus = readSubagentStatusRecords(update, meta).find((status) => {
-        const statusRuntimeSessionId = readSubagentStatusRuntimeSessionId(status);
-        if (runtimeSessionId && statusRuntimeSessionId === runtimeSessionId) {
-            return true;
-        }
-        const nickname = readSubagentStatusNickname(status);
-        return Boolean(nickname && nickname === title);
-    });
-
-    if (matchingStatus) {
-        return (
-            readCompletedAgentStatusMessage(
-                readSubagentStatusValue(matchingStatus),
-            ) ?? null
-        );
-    }
-
-    return null;
-}
-
 function readSubagentStatusRuntimeSessionId(
     status: Record<string, unknown>,
 ): string | null {
@@ -4883,14 +5164,6 @@ function readSubagentStatusRuntimeSessionId(
         readRecordString(status, "threadId") ??
         readRecordString(status, "session_id") ??
         readRecordString(status, "sessionId")
-    );
-}
-
-function readSubagentStatusNickname(status: Record<string, unknown>): string | null {
-    return (
-        readRecordString(status, CODEX_ACP_AGENT_NICKNAME_KEY) ??
-        readRecordString(status, "agent_nickname") ??
-        readRecordString(status, "agentNickname")
     );
 }
 
@@ -5026,53 +5299,6 @@ function isSubagentLiveSession(liveSession: LiveAcpSession): boolean {
     );
 }
 
-function readCompletedAgentStatusMessage(value: unknown): string | null {
-    if (typeof value === "string") {
-        return parseCompletedStatusText(value);
-    }
-
-    if (Array.isArray(value)) {
-        for (const item of value) {
-            const message = readCompletedAgentStatusMessage(item);
-            if (message) {
-                return message;
-            }
-        }
-        return null;
-    }
-
-    if (!isRecordValue(value)) {
-        return null;
-    }
-
-    for (const key of ["completed", "Completed"]) {
-        const completed = value[key];
-        if (typeof completed === "string") {
-            return completed.trim() || null;
-        }
-        if (isRecordValue(completed)) {
-            const message =
-                readRecordString(completed, "message") ??
-                readRecordString(completed, "content") ??
-                readRecordString(completed, "text");
-            if (message) {
-                return message;
-            }
-        }
-    }
-
-    const type = readRecordString(value, "type") ?? readRecordString(value, "kind");
-    if (type?.toLowerCase() === "completed") {
-        return (
-            readRecordString(value, "message") ??
-            readRecordString(value, "content") ??
-            readRecordString(value, "text")
-        );
-    }
-
-    return null;
-}
-
 function readCompletedStatusFromToolContent(content: unknown): string | null {
     const text = readToolContentText(content);
     if (!text) {
@@ -5125,6 +5351,15 @@ function readRecordString(
     return typeof candidate === "string" && candidate.trim().length > 0
         ? candidate.trim()
         : null;
+}
+
+function truncateDiagnosticText(value: string): string {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (normalized.length <= AI_DIAGNOSTIC_TEXT_MAX_LENGTH) {
+        return normalized;
+    }
+
+    return `${normalized.slice(0, AI_DIAGNOSTIC_TEXT_MAX_LENGTH)}...`;
 }
 
 function buildTerminalEnv(

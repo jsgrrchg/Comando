@@ -152,6 +152,60 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
+    it("renders activity-only diffs with the rich preview instead of a summary card", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    diffs: [
+                        {
+                            hunks: [
+                                {
+                                    id: "hunk-1",
+                                    lines: [
+                                        {
+                                            id: "line-1",
+                                            text: "const before = true;",
+                                            type: "remove",
+                                        },
+                                        {
+                                            id: "line-2",
+                                            text: "const after = true;",
+                                            type: "add",
+                                        },
+                                    ],
+                                    newCount: 1,
+                                    newStart: 8,
+                                    oldCount: 1,
+                                    oldStart: 8,
+                                },
+                            ],
+                            isText: true,
+                            kind: "update",
+                            newText: "const after = true;\n",
+                            oldText: "const before = true;\n",
+                            path: "src/app.ts",
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                }),
+                expansionMode: "expanded",
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Edited app.ts");
+        expect(markup).toContain("change-review-panel:");
+        expect(markup).toContain("const before = true;");
+        expect(markup).toContain("const after = true;");
+        expect(markup).not.toContain("Updates 1 line(s).");
+        expect(markup).not.toContain("Accept");
+        expect(markup).not.toContain("Reject");
+    });
+
     it("falls back to file tool card when no reviewable preview exists", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
@@ -169,7 +223,7 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
-    it("does not revive historical diffs as inline review after tracked files are cleared", () => {
+    it("shows historical diffs after tracked files are cleared without review actions", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -209,9 +263,8 @@ describe("ToolActivityItem", () => {
             }),
         );
 
-        expect(markup).toContain("Edit file");
-        expect(markup).not.toContain("Edited app.ts");
-        expect(markup).not.toContain("change-review-panel:");
+        expect(markup).toContain("Edited app.ts");
+        expect(markup).toContain("change-review-panel:");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
     });

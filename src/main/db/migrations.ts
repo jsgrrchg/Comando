@@ -363,43 +363,62 @@ export const databaseMigrations: readonly DatabaseMigration[] = [
       ALTER TABLE chat_sessions
         ADD COLUMN parent_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL;
 
-      WITH parent_links AS (
-        SELECT
-          session_id,
-          NULLIF(TRIM(CAST(
-            CASE
-              WHEN json_valid(transcript_json) THEN
-                CASE
-                  WHEN json_type(transcript_json, '$.parentSessionId') = 'text'
-                    THEN json_extract(transcript_json, '$.parentSessionId')
-                  ELSE NULL
-                END
-              ELSE NULL
-            END AS TEXT
-          )), '') AS parent_session_id
-        FROM chat_transcripts
-      )
-      UPDATE chat_sessions
-      SET parent_session_id = (
-        SELECT parent_links.parent_session_id
-        FROM parent_links
-        INNER JOIN chat_sessions AS parent
-          ON parent.id = parent_links.parent_session_id
-        WHERE parent_links.session_id = chat_sessions.id
-          AND parent.id <> chat_sessions.id
-        LIMIT 1
-      )
-      WHERE EXISTS (
-        SELECT 1
-        FROM parent_links
-        INNER JOIN chat_sessions AS parent
-          ON parent.id = parent_links.parent_session_id
-        WHERE parent_links.session_id = chat_sessions.id
-          AND parent.id <> chat_sessions.id
-      );
-
       CREATE INDEX IF NOT EXISTS idx_chat_sessions_parent_session_id
         ON chat_sessions(parent_session_id);
+    `,
+    },
+    {
+        id: "0013-ai-session-runtime-links",
+        sql: `
+      CREATE TABLE IF NOT EXISTS chat_session_runtime_links (
+        runtime_session_id TEXT PRIMARY KEY,
+        app_session_id TEXT NOT NULL UNIQUE REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        parent_runtime_session_id TEXT,
+        parent_app_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chat_session_runtime_links_parent_runtime
+        ON chat_session_runtime_links(parent_runtime_session_id);
+
+      CREATE INDEX IF NOT EXISTS idx_chat_session_runtime_links_parent_app
+        ON chat_session_runtime_links(parent_app_session_id);
+    `,
+    },
+    {
+        id: "0014-ai-transcript-shadow-state",
+        sql: `
+      CREATE TABLE IF NOT EXISTS chat_transcript_messages (
+        session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        message_index INTEGER NOT NULL,
+        message_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        role TEXT,
+        payload_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, message_id),
+        UNIQUE(session_id, message_index)
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_session_runtime_state (
+        session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        state_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_session_review_state (
+        session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        review_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chat_transcript_messages_session_index
+        ON chat_transcript_messages(session_id, message_index);
     `,
     },
 ];

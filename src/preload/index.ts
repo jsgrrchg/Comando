@@ -11,6 +11,8 @@ import {
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
+    type AiSessionDomainEvent,
+    type AiSessionStreamMessage,
     type AiSessionUpdate,
     type AiPermissionResponseInput,
     type AiRuntimeAuthDisconnectInput,
@@ -204,6 +206,7 @@ function assertIpcArray<T>(channel: string, value: unknown): T[] {
 }
 
 const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
+const aiSessionEventListeners = new Set<(event: AiSessionDomainEvent) => void>();
 let aiSessionSnapshotPort: MessagePort | null = null;
 
 // Narrow runtime guard for the IPC envelope. Does not validate the full
@@ -234,6 +237,25 @@ function isAiSessionUpdate(value: unknown): value is AiSessionUpdate {
     return false;
 }
 
+function isAiSessionDomainEvent(value: unknown): value is AiSessionDomainEvent {
+    if (typeof value !== "object" || value === null) {
+        return false;
+    }
+    const candidate = value as {
+        readonly kind?: unknown;
+        readonly runtimeId?: unknown;
+        readonly sessionId?: unknown;
+    };
+
+    return (
+        typeof candidate.kind === "string" &&
+        candidate.kind !== "patch" &&
+        candidate.kind !== "snapshot" &&
+        typeof candidate.runtimeId === "string" &&
+        typeof candidate.sessionId === "string"
+    );
+}
+
 function notifyAiSessionSnapshotListeners(update: unknown): void {
     if (!isAiSessionUpdate(update)) {
         console.warn(
@@ -246,11 +268,38 @@ function notifyAiSessionSnapshotListeners(update: unknown): void {
     }
 }
 
+function notifyAiSessionEventListeners(event: unknown): void {
+    if (!isAiSessionDomainEvent(event)) {
+        console.warn(
+            "[comando] Dropped AiSessionDomainEvent with unexpected shape.",
+        );
+        return;
+    }
+    for (const listener of aiSessionEventListeners) {
+        listener(event);
+    }
+}
+
+function notifyAiSessionStreamListeners(message: unknown): void {
+    const payload = message as AiSessionStreamMessage;
+    if (isAiSessionUpdate(payload)) {
+        notifyAiSessionSnapshotListeners(payload);
+        return;
+    }
+
+    if (isAiSessionDomainEvent(payload)) {
+        notifyAiSessionEventListeners(payload);
+        return;
+    }
+
+    console.warn("[comando] Dropped AI session stream payload.");
+}
+
 function bindAiSessionSnapshotPort(port: MessagePort): void {
     aiSessionSnapshotPort?.close();
     aiSessionSnapshotPort = port;
     aiSessionSnapshotPort.onmessage = (event) => {
-        notifyAiSessionSnapshotListeners(event.data);
+        notifyAiSessionStreamListeners(event.data);
     };
     aiSessionSnapshotPort.start();
 }
@@ -260,6 +309,13 @@ function handleAiSessionSnapshotFallback(
     update: unknown,
 ): void {
     notifyAiSessionSnapshotListeners(update);
+}
+
+function handleAiSessionEventFallback(
+    _event: Electron.IpcRendererEvent,
+    event: unknown,
+): void {
+    notifyAiSessionEventListeners(event);
 }
 
 ipcRenderer.on(IPC_EVENTS.aiSessionStreamPort, (event) => {
@@ -1187,6 +1243,27 @@ const comandoApi: ComandoApi = {
                 ipcRenderer.removeListener(
                     IPC_EVENTS.aiSessionSnapshot,
                     handleAiSessionSnapshotFallback,
+                );
+            }
+        };
+    },
+    onAiSessionEvent: (listener) => {
+        if (aiSessionEventListeners.size === 0) {
+            ipcRenderer.on(
+                IPC_EVENTS.aiSessionEvent,
+                handleAiSessionEventFallback,
+            );
+        }
+
+        aiSessionEventListeners.add(listener);
+
+        return () => {
+            aiSessionEventListeners.delete(listener);
+
+            if (aiSessionEventListeners.size === 0) {
+                ipcRenderer.removeListener(
+                    IPC_EVENTS.aiSessionEvent,
+                    handleAiSessionEventFallback,
                 );
             }
         };
