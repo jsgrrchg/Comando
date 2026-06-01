@@ -288,6 +288,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         useState<MeasuredVirtualRange | null>(null);
     const historyVirtualListHandleRef =
         useRef<MeasuredVirtualListHandle | null>(null);
+    const revealedActiveCommitShaRef = useRef<string | null>(null);
     const effectiveHistoryVirtualRange = useMemo(
         () =>
             shouldVirtualizeHistory
@@ -573,6 +574,11 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
     );
 
     useEffect(() => {
+        if (!activeCommitSha) {
+            revealedActiveCommitShaRef.current = null;
+            return;
+        }
+
         if (
             activeCommitVirtualIndex < 0 ||
             !shouldVirtualizeHistory ||
@@ -580,6 +586,12 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         ) {
             return;
         }
+
+        if (revealedActiveCommitShaRef.current === activeCommitSha) {
+            return;
+        }
+
+        revealedActiveCommitShaRef.current = activeCommitSha;
 
         if (
             activeCommitVirtualIndex >=
@@ -596,6 +608,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             },
         );
     }, [
+        activeCommitSha,
         activeCommitVirtualIndex,
         effectiveHistoryVirtualRange,
         shouldVirtualizeHistory,
