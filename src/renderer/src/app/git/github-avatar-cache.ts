@@ -38,8 +38,8 @@ export function resolveGitHubAvatars(
 ): void {
     void remotes;
 
-    // Renderer-side unauthenticated GitHub API requests produce noisy 404s for
-    // private repos. We intentionally rely on deterministic local fallbacks
-    // (`users.noreply.github.com`, Gravatar, initials) until avatar enrichment
-    // can be moved behind an authenticated/background integration.
+    // Renderer-side unauthenticated avatar probes produce noisy 404s for private
+    // repos and unknown emails. We intentionally rely on deterministic local
+    // fallbacks until avatar enrichment can move behind an authenticated
+    // background integration.
 }

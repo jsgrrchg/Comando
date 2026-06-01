@@ -79,8 +79,9 @@ const MIN_GIT_HISTORY_PANE_WIDTH = 420;
 
 export const GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD = 250;
 const GIT_HISTORY_GRAPH_RANGE_OVERSCAN_COMMITS = 20;
-const GIT_HISTORY_COMMIT_ROW_HEIGHT = 58;
-const GIT_HISTORY_SEPARATOR_ROW_HEIGHT = 28;
+const GIT_HISTORY_COMMIT_ROW_HEIGHT = 42;
+const GIT_HISTORY_COMMIT_ROW_WITH_REFS_HEIGHT = 58;
+const GIT_HISTORY_SEPARATOR_ROW_HEIGHT = 24;
 
 type GitHistoryColumnKey =
     | "author"
@@ -1149,7 +1150,7 @@ function GitHistoryCommitRow({
                     "--row-branch-color":
                         GRAPH_COLORS[row.colorId % GRAPH_COLORS.length],
                     gridTemplateColumns,
-                    height: GIT_HISTORY_COMMIT_ROW_HEIGHT,
+                    height: getGitHistoryCommitRowHeight(row),
                     minWidth,
                 } as CSSProperties
             }
@@ -1531,8 +1532,16 @@ function getGitHistoryVirtualItemKey(item: GitHistoryVirtualItem): string {
 }
 
 function estimateGitHistoryVirtualItemSize(item: GitHistoryVirtualItem): number {
-    return item.kind === "separator"
-        ? GIT_HISTORY_SEPARATOR_ROW_HEIGHT
+    if (item.kind === "separator") {
+        return GIT_HISTORY_SEPARATOR_ROW_HEIGHT;
+    }
+
+    return getGitHistoryCommitRowHeight(item.row);
+}
+
+function getGitHistoryCommitRowHeight(row: GitHistoryGraphRow): number {
+    return row.commit.refs.length > 0
+        ? GIT_HISTORY_COMMIT_ROW_WITH_REFS_HEIGHT
         : GIT_HISTORY_COMMIT_ROW_HEIGHT;
 }
 
@@ -1825,6 +1834,7 @@ function GitHistoryGraphSVG({
                 pointerEvents: "none",
                 position: "absolute",
                 top: rangeTop,
+                zIndex: 1,
             }}
             width={graphWidth}
         >
