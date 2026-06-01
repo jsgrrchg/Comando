@@ -3,6 +3,7 @@ import {
     isValidElement,
     useCallback,
     useEffect,
+    useLayoutEffect,
     useRef,
     useState,
     type CSSProperties,
@@ -17,6 +18,8 @@ import {
 
 const DEFAULT_TABLE_ROW_OVERSCAN = 6;
 const DEFAULT_TABLE_VIEWPORT_HEIGHT = 720;
+const useBrowserLayoutEffect =
+    typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 interface TableRowLayoutProps {
     readonly className?: string;
@@ -54,6 +57,22 @@ export function GitHubVirtualizedTableBody<T>({
     const [scrollMarginTop, setScrollMarginTop] = useState(0);
     const shouldVirtualize = items.length >= threshold;
 
+    const syncScrollMarginTop = useCallback(() => {
+        if (!shouldVirtualize) {
+            return;
+        }
+
+        const nextScrollMarginTop =
+            calculateGitHubVirtualizedTableScrollMarginTop({
+                bodyElement: bodyRef.current,
+                scrollContainer: scrollContainerRef.current,
+            });
+
+        setScrollMarginTop((current) =>
+            current === nextScrollMarginTop ? current : nextScrollMarginTop,
+        );
+    }, [scrollContainerRef, shouldVirtualize]);
+
     const renderLaidOutRow = useCallback(
         (item: T, index: number) =>
             applyGitHubVirtualizedTableRowLayout({
@@ -63,6 +82,10 @@ export function GitHubVirtualizedTableBody<T>({
             }),
         [gridTemplateColumns, minWidth, renderRow],
     );
+
+    useBrowserLayoutEffect(() => {
+        syncScrollMarginTop();
+    });
 
     useEffect(() => {
         if (!shouldVirtualize) {
@@ -74,23 +97,6 @@ export function GitHubVirtualizedTableBody<T>({
         if (!bodyElement || !scrollContainer) {
             return;
         }
-
-        const syncScrollMarginTop = () => {
-            const bodyRect = bodyElement.getBoundingClientRect();
-            const containerRect = scrollContainer.getBoundingClientRect();
-            const nextScrollMarginTop = Math.max(
-                0,
-                Math.round(
-                    bodyRect.top - containerRect.top + scrollContainer.scrollTop,
-                ),
-            );
-
-            setScrollMarginTop((current) =>
-                current === nextScrollMarginTop
-                    ? current
-                    : nextScrollMarginTop,
-            );
-        };
 
         syncScrollMarginTop();
         window.addEventListener("resize", syncScrollMarginTop);
@@ -106,7 +112,7 @@ export function GitHubVirtualizedTableBody<T>({
             window.removeEventListener("resize", syncScrollMarginTop);
             resizeObserver?.disconnect();
         };
-    }, [scrollContainerRef, shouldVirtualize]);
+    }, [scrollContainerRef, shouldVirtualize, syncScrollMarginTop]);
 
     if (items.length === 0) {
         return null;
@@ -139,6 +145,26 @@ export function GitHubVirtualizedTableBody<T>({
                 scrollMarginTop={scrollMarginTop}
             />
         </div>
+    );
+}
+
+export function calculateGitHubVirtualizedTableScrollMarginTop({
+    bodyElement,
+    scrollContainer,
+}: {
+    readonly bodyElement: HTMLElement | null;
+    readonly scrollContainer: HTMLElement | null;
+}): number {
+    if (!bodyElement || !scrollContainer) {
+        return 0;
+    }
+
+    const bodyRect = bodyElement.getBoundingClientRect();
+    const containerRect = scrollContainer.getBoundingClientRect();
+
+    return Math.max(
+        0,
+        Math.round(bodyRect.top - containerRect.top + scrollContainer.scrollTop),
     );
 }
 

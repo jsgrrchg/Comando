@@ -34,11 +34,25 @@ vi.mock("../virtual/MeasuredVirtualList", () => ({
 
 import {
     applyGitHubVirtualizedTableRowLayout,
+    calculateGitHubVirtualizedTableScrollMarginTop,
     GitHubVirtualizedTableBody,
 } from "./GitHubVirtualizedTableBody";
 
 function createItems(count: number): string[] {
     return Array.from({ length: count }, (_, index) => `row-${index}`);
+}
+
+function createMeasuredElement({
+    scrollTop = 0,
+    top,
+}: {
+    readonly scrollTop?: number;
+    readonly top: number;
+}): HTMLElement {
+    return {
+        getBoundingClientRect: () => ({ top }) as DOMRect,
+        scrollTop,
+    } as HTMLElement;
 }
 
 function renderBody({
@@ -155,5 +169,29 @@ describe("GitHubVirtualizedTableBody", () => {
 
         row.props.onClick();
         expect(handleClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("calculates the scroll margin from the current table position", () => {
+        expect(
+            calculateGitHubVirtualizedTableScrollMarginTop({
+                bodyElement: createMeasuredElement({ top: 220 }),
+                scrollContainer: createMeasuredElement({
+                    scrollTop: 360,
+                    top: 80,
+                }),
+            }),
+        ).toBe(500);
+    });
+
+    it("clamps negative scroll margins to zero", () => {
+        expect(
+            calculateGitHubVirtualizedTableScrollMarginTop({
+                bodyElement: createMeasuredElement({ top: 40 }),
+                scrollContainer: createMeasuredElement({
+                    scrollTop: 0,
+                    top: 80,
+                }),
+            }),
+        ).toBe(0);
     });
 });
