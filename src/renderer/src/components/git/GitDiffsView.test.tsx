@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { GitDiffsView } from "./GitDiffsView";
+import {
+    GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD,
+    GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+    GitDiffsView,
+} from "./GitDiffsView";
 import type { GitDiffFile } from "./types";
 
 function createDiffFile(overrides: Partial<GitDiffFile> = {}): GitDiffFile {
@@ -51,6 +55,61 @@ function createDiffFile(overrides: Partial<GitDiffFile> = {}): GitDiffFile {
         summary: "+1 -1",
         ...overrides,
     };
+}
+
+function createLargeDiffFile(index: number): GitDiffFile {
+    return createDiffFile({
+        hunks: [
+            {
+                header: "@@ -1,1 +1,1 @@",
+                id: `hunk-${index}`,
+                lines: [
+                    {
+                        id: `line-${index}`,
+                        kind: "add",
+                        newLineNumber: 1,
+                        oldLineNumber: null,
+                        text: `large-file-${index}-line`,
+                    },
+                ],
+                newCount: 1,
+                newStart: 1,
+                oldCount: 0,
+                oldStart: 1,
+            },
+        ],
+        id: `src/large-file-${index}.ts`,
+        path: `src/large-file-${index}.ts`,
+        summary: "+1 -0",
+    });
+}
+
+function createLargeLineDiffFile(): GitDiffFile {
+    return createDiffFile({
+        hunks: [
+            {
+                header: `@@ -1,0 +1,${GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD} @@`,
+                id: "large-line-hunk",
+                lines: Array.from(
+                    { length: GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD },
+                    (_, index) => ({
+                        id: `large-line-${index + 1}`,
+                        kind: "add",
+                        newLineNumber: index + 1,
+                        oldLineNumber: null,
+                        text: `giant-diff-line-${index + 1}`,
+                    }),
+                ),
+                newCount: GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+                newStart: 1,
+                oldCount: 0,
+                oldStart: 1,
+            },
+        ],
+        id: "src/giant-diff.ts",
+        path: "src/giant-diff.ts",
+        summary: `+${GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD} -0`,
+    });
 }
 
 describe("GitDiffsView", () => {
@@ -151,5 +210,50 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).toContain("This file is binary");
+    });
+
+    it("renders the large stacked diff baseline without dropping files or lines", () => {
+        const files = [
+            ...Array.from(
+                { length: GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD },
+                (_, index) => createLargeDiffFile(index + 1),
+            ),
+            createLargeLineDiffFile(),
+        ];
+
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                displayMode="stack"
+                files={files}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain("large-file-1.ts");
+        expect(markup).toContain(
+            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD}.ts`,
+        );
+        expect(markup).toContain("giant-diff-line-1");
+        expect(markup).toContain(
+            `giant-diff-line-${GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD}`,
+        );
+    });
+
+    it("keeps collapse state authoritative in the large stacked diff baseline", () => {
+        const collapsedFile = createLargeLineDiffFile();
+        const files = [createLargeDiffFile(1), collapsedFile];
+
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                collapsedFileIds={[collapsedFile.id]}
+                displayMode="stack"
+                files={files}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain("giant-diff.ts");
+        expect(markup).not.toContain("giant-diff-line-1");
+        expect(markup).toContain("large-file-1-line");
     });
 });

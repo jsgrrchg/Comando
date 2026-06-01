@@ -45,7 +45,10 @@ vi.mock("@renderer/app/store/workspace-store", () => ({
     ) => selector(mockWorkspaceStoreState.current),
 }));
 
-import { GitTabView } from "./GitTabView";
+import {
+    GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD,
+    GitTabView,
+} from "./GitTabView";
 
 const TAB: RuntimeWorkspaceGitTab = {
     createdAt: "2026-04-15T00:00:00.000Z",
@@ -250,5 +253,55 @@ describe("GitTabView", () => {
         expect(markup).not.toContain(
             'aria-label="Open file src/renderer/src/components/git/RemovedFile.tsx"',
         );
+    });
+
+    it("renders the large commit history baseline and preserves active selection", () => {
+        resetStoreState();
+        const commits = Array.from(
+            { length: GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD },
+            (_, index) =>
+                createCommit({
+                    authoredAt: `2026-04-${String(1 + (index % 28)).padStart(2, "0")}T12:00:00.000Z`,
+                    sha: `commit-${String(index + 1).padStart(4, "0")}`,
+                    shortSha: `c${String(index + 1).padStart(6, "0")}`,
+                    subject: `Baseline commit ${index + 1}`,
+                }),
+        );
+        const selectedCommit = commits[299];
+        mockGitStoreState.current.historyByContext = {
+            [CONTEXT_KEY]: commits,
+        };
+        mockGitStoreState.current.historyMatchedCountsByContext = {
+            [CONTEXT_KEY]: commits.length,
+        };
+        mockGitStoreState.current.historyTotalsByContext = {
+            [CONTEXT_KEY]: commits.length,
+        };
+        mockGitStoreState.current.selectedCommitShas = {
+            [CONTEXT_KEY]: selectedCommit.sha,
+        };
+        mockGitStoreState.current.commitDetailsByContext = {
+            [CONTEXT_KEY]: {
+                [selectedCommit.sha]: createCommitDetail({
+                    ...selectedCommit,
+                    changedFileCount: 1,
+                    files: [],
+                }),
+            },
+        };
+
+        const markup = renderToStaticMarkup(
+            createElement(GitTabView, { tab: TAB }),
+        );
+
+        expect(markup).toContain(
+            `${GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD} commits`,
+        );
+        expect(markup).toContain("Baseline commit 1");
+        expect(markup).toContain(
+            `Baseline commit ${GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD}`,
+        );
+        expect(markup).toContain("Baseline commit 300");
+        expect(markup).toContain("Resize commit details sidebar");
     });
 });

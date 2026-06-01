@@ -6,6 +6,11 @@ import type { GitCommitDetail } from "@shared/ipc";
 import type { RuntimeWorkspaceGitCommitTab } from "@renderer/app/workspace/tree";
 
 import {
+    GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD,
+    GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+} from "@renderer/components/git/GitDiffsView";
+
+import {
     getGitCommitDiffCollapseStorageKey,
     persistGitCommitDiffCollapseState,
 } from "./gitCommitDiffCollapsePersistence";
@@ -92,7 +97,9 @@ const TAB: RuntimeWorkspaceGitCommitTab = {
 
 const CONTEXT_KEY = `${TAB.projectId}::primary`;
 
-function createCommitDetail(): GitCommitDetail {
+function createCommitDetail(
+    overrides: Partial<GitCommitDetail> = {},
+): GitCommitDetail {
     return {
         authorEmail: "jose@example.com",
         authorName: "Jose",
@@ -167,6 +174,72 @@ function createCommitDetail(): GitCommitDetail {
         sha: TAB.commitSha,
         shortSha: "d094662",
         subject: "Open Claude Code from agents sidebar",
+        ...overrides,
+    };
+}
+
+function createCommitDiffFile(
+    index: number,
+): GitCommitDetail["files"][number] {
+    return {
+        additions: 1,
+        deletions: 0,
+        hunks: [
+            {
+                id: `large-hunk-${index}`,
+                lines: [
+                    {
+                        id: `large-line-${index}`,
+                        text: `large-commit-file-${index}-line`,
+                        type: "add",
+                    },
+                ],
+                newCount: 1,
+                newStart: 1,
+                oldCount: 0,
+                oldStart: 1,
+            },
+        ],
+        isText: true,
+        kind: "update",
+        newText: null,
+        oldText: null,
+        path: `src/commit-file-${index}.ts`,
+        previousPath: null,
+        reversible: true,
+        statusLabel: "modified",
+    };
+}
+
+function createLargeCommitDiffFile(): GitCommitDetail["files"][number] {
+    return {
+        additions: GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+        deletions: 0,
+        hunks: [
+            {
+                id: "giant-commit-hunk",
+                lines: Array.from(
+                    { length: GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD },
+                    (_, index) => ({
+                        id: `giant-commit-line-${index + 1}`,
+                        text: `giant-commit-diff-line-${index + 1}`,
+                        type: "add",
+                    }),
+                ),
+                newCount: GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+                newStart: 1,
+                oldCount: 0,
+                oldStart: 1,
+            },
+        ],
+        isText: true,
+        kind: "update",
+        newText: null,
+        oldText: null,
+        path: "src/giant-commit-diff.ts",
+        previousPath: null,
+        reversible: true,
+        statusLabel: "modified",
     };
 }
 
@@ -243,5 +316,47 @@ describe("GitCommitTabView", () => {
         expect(markup).not.toContain("expanded-line-a");
         expect(markup).not.toContain("expanded-line-b");
         expect(markup).toContain("expand all");
+    });
+
+    it("renders the large commit diff baseline and preserves collapse state", () => {
+        const collapsedFile = createLargeCommitDiffFile();
+        mockGitStoreState.current.commitDetailsByContext = {
+            [CONTEXT_KEY]: {
+                [TAB.commitSha]: createCommitDetail({
+                    changedFileCount:
+                        GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD + 1,
+                    files: [
+                        ...Array.from(
+                            {
+                                length: GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD,
+                            },
+                            (_, index) => createCommitDiffFile(index + 1),
+                        ),
+                        collapsedFile,
+                    ],
+                    insertions:
+                        GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD +
+                        GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+                }),
+            },
+        };
+
+        const storageKey = getGitCommitDiffCollapseStorageKey({
+            commitSha: TAB.commitSha,
+            projectId: TAB.projectId,
+            surface: TAB.kind,
+            worktreeId: TAB.worktreeId,
+        });
+        persistGitCommitDiffCollapseState(storageKey, [collapsedFile.path]);
+
+        const markup = renderCommitMarkup();
+
+        expect(markup).toContain("commit-file-1.ts");
+        expect(markup).toContain(
+            `commit-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD}.ts`,
+        );
+        expect(markup).toContain("giant-commit-diff.ts");
+        expect(markup).not.toContain("giant-commit-diff-line-1");
+        expect(markup).toContain("collapse all");
     });
 });

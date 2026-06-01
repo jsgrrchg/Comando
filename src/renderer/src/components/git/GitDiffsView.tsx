@@ -16,6 +16,10 @@ import type {
     GitDiffsViewProps,
 } from "./types";
 
+// Baseline thresholds for the upcoming diff virtualization pass.
+export const GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD = 60;
+export const GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD = 2_000;
+
 export function GitDiffsView({
     activeFileId = null,
     className,

@@ -55,6 +55,8 @@ const ISSUE_TABLE_COLUMN_IDS = [
 ] as const;
 const ISSUE_TABLE_LAYOUT_STORAGE_KEY = "comando.github.issues.table.layout";
 const ISSUE_TABLE_LAYOUT_VERSION = 1;
+// Baseline threshold for enabling GitHub issues table virtualization.
+export const GITHUB_ISSUES_ROW_VIRTUALIZATION_THRESHOLD = 150;
 const DEFAULT_ISSUE_TABLE_COLUMN_ORDER: readonly IssueColumnId[] =
     ISSUE_TABLE_COLUMN_IDS;
 const DEFAULT_ISSUE_TABLE_COLUMN_WIDTHS: IssueColumnWidths = {

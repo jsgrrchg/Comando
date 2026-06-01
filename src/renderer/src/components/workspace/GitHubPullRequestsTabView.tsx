@@ -68,6 +68,8 @@ const PR_TABLE_COLUMN_IDS = [
 ] as const;
 const PR_TABLE_LAYOUT_STORAGE_KEY = "comando.github.pull-requests.table.layout";
 const PR_TABLE_LAYOUT_VERSION = 1;
+// Baseline threshold for enabling GitHub pull requests table virtualization.
+export const GITHUB_PULL_REQUESTS_ROW_VIRTUALIZATION_THRESHOLD = 150;
 const DEFAULT_PR_TABLE_COLUMN_ORDER: readonly PullRequestColumnId[] =
     PR_TABLE_COLUMN_IDS;
 const DEFAULT_PR_TABLE_COLUMN_WIDTHS: PullRequestColumnWidths = {

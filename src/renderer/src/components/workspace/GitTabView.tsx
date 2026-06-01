@@ -71,6 +71,9 @@ const DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH = 280;
 const MIN_GIT_DETAIL_SIDEBAR_WIDTH = 280;
 const MIN_GIT_HISTORY_PANE_WIDTH = 420;
 
+// Baseline threshold for enabling commit history row virtualization.
+export const GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD = 600;
+
 type GitHistoryColumnKey =
     | "author"
     | "commit"
