@@ -137,7 +137,9 @@ function createLargeDiffFile(index: number): GitDiffFile {
     });
 }
 
-function createLargeLineDiffFile(): GitDiffFile {
+function createLargeLineDiffFile(
+    overrides: Partial<GitDiffFile> = {},
+): GitDiffFile {
     return createDiffFile({
         hunks: [
             {
@@ -162,6 +164,7 @@ function createLargeLineDiffFile(): GitDiffFile {
         id: "src/giant-diff.ts",
         path: "src/giant-diff.ts",
         summary: `+${GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD} -0`,
+        ...overrides,
     });
 }
 
@@ -174,6 +177,7 @@ describe("GitDiffsView", () => {
             />,
         );
 
+        expect(markup).not.toContain('data-virtualized-diff-lines="true"');
         expect(markup).toContain('data-diff-line="true"');
         expect(markup).toContain('data-line-exact="true"');
         expect(markup).toContain('data-line-type="context"');
@@ -233,6 +237,66 @@ describe("GitDiffsView", () => {
 
         expect(markup).toContain('class="min-w-full w-max"');
         expect(markup).toContain("grid-template-columns:44px max-content");
+    });
+
+    it("virtualizes giant non-wrapping diff files by mounting visual blocks", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[createLargeLineDiffFile()]}
+                lineWrapping={false}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain('data-virtualized-diff-lines="true"');
+        expect(markup).toContain('data-diff-hunk-header="true"');
+        expect(markup).toContain('data-measured-virtual-list="true"');
+        expect(markup).toContain("1–0 → 1–1000");
+        expect(markup).toContain("giant-diff-line-1");
+        expect(markup).not.toContain("giant-diff-line-1000");
+    });
+
+    it("keeps horizontal sizing for virtualized non-wrapping diff lines", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[
+                    createLargeLineDiffFile({
+                        hunks: [
+                            {
+                                header: `@@ -1,0 +1,${GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD} @@`,
+                                id: "wide-line-hunk",
+                                lines: Array.from(
+                                    {
+                                        length: GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+                                    },
+                                    (_, index) => ({
+                                        id: `wide-line-${index + 1}`,
+                                        kind: "add",
+                                        newLineNumber: index + 1,
+                                        oldLineNumber: null,
+                                        text:
+                                            index ===
+                                            GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD -
+                                                1
+                                                ? "x".repeat(220)
+                                                : `short-line-${index + 1}`,
+                                    }),
+                                ),
+                                newCount: GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
+                                newStart: 1,
+                                oldCount: 0,
+                                oldStart: 1,
+                            },
+                        ],
+                    }),
+                ]}
+                lineWrapping={false}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain("min-width:max(100%, 238ch)");
+        expect(markup).not.toContain("x".repeat(220));
     });
 
     it("keeps diff code selectable inside non-selectable commit UI", () => {
@@ -354,6 +418,7 @@ describe("GitDiffsView", () => {
 
         expect(markup).toContain("giant-diff.ts");
         expect(markup).not.toContain("giant-diff-line-1");
+        expect(markup).not.toContain('data-virtualized-diff-lines="true"');
         expect(markup).toContain("large-file-1-line");
     });
 

@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -32,6 +32,7 @@ const mockWorkspaceStoreState = vi.hoisted(() => ({
         openGitCommitTab: vi.fn(async () => {}),
     },
 }));
+const mockScrollToIndex = vi.hoisted(() => vi.fn());
 
 vi.mock("@renderer/app/store/git-store", () => ({
     useGitStore: (
@@ -43,6 +44,50 @@ vi.mock("@renderer/app/store/workspace-store", () => ({
     useWorkspaceStore: (
         selector: (state: typeof mockWorkspaceStoreState.current) => unknown,
     ) => selector(mockWorkspaceStoreState.current),
+}));
+
+vi.mock("@renderer/components/virtual/MeasuredVirtualList", () => ({
+    MeasuredVirtualList: <T,>({
+        enabled = true,
+        estimateSize,
+        getItemKey,
+        items,
+        onReady,
+        renderItem,
+    }: {
+        readonly enabled?: boolean;
+        readonly estimateSize: (item: T, index: number) => number;
+        readonly getItemKey: (item: T, index: number) => string;
+        readonly items: readonly T[];
+        readonly onReady?: (
+            handle: { readonly scrollToIndex: typeof mockScrollToIndex } | null,
+        ) => void;
+        readonly renderItem: (params: {
+            readonly index: number;
+            readonly isVisible: boolean;
+            readonly item: T;
+        }) => ReactNode;
+    }) => {
+        onReady?.({ scrollToIndex: mockScrollToIndex });
+        const renderedItems = enabled ? items.slice(0, 8) : items;
+
+        return (
+            <div data-measured-virtual-list={enabled ? "true" : "false"}>
+                {renderedItems.map((item, index) => (
+                    <div
+                        data-estimated-size={estimateSize(item, index)}
+                        key={getItemKey(item, index)}
+                    >
+                        {renderItem({
+                            index,
+                            isVisible: true,
+                            item,
+                        })}
+                    </div>
+                ))}
+            </div>
+        );
+    },
 }));
 
 import {
@@ -95,6 +140,7 @@ function resetStoreState() {
     mockGitStoreState.current.refreshHistory.mockClear();
     mockGitStoreState.current.refreshProject.mockClear();
     mockGitStoreState.current.selectCommit.mockClear();
+    mockScrollToIndex.mockClear();
     mockGitStoreState.current.selectedCommitShas = {};
     mockGitStoreState.current.snapshots = {
         [CONTEXT_KEY]: null,
@@ -255,10 +301,11 @@ describe("GitTabView", () => {
         );
     });
 
-    it("renders the large commit history baseline and preserves active selection", () => {
+    it("virtualizes large commit history rows and preserves active selection", () => {
         resetStoreState();
+        const commitCount = GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD + 120;
         const commits = Array.from(
-            { length: GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD },
+            { length: commitCount },
             (_, index) =>
                 createCommit({
                     authoredAt: `2026-04-${String(1 + (index % 28)).padStart(2, "0")}T12:00:00.000Z`,
@@ -294,14 +341,17 @@ describe("GitTabView", () => {
             createElement(GitTabView, { tab: TAB }),
         );
 
-        expect(markup).toContain(
-            `${GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD} commits`,
-        );
+        expect(markup).toContain(`${commitCount} commits`);
+        expect(markup).toContain('data-measured-virtual-list="true"');
         expect(markup).toContain("Baseline commit 1");
         expect(markup).toContain(
-            `Baseline commit ${GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD}`,
+            "Baseline commit 300",
         );
-        expect(markup).toContain("Baseline commit 300");
+        expect(markup).not.toContain(`Baseline commit ${commitCount}`);
         expect(markup).toContain("Resize commit details sidebar");
+
+        const circleCount = markup.match(/<circle/g)?.length ?? 0;
+        expect(circleCount).toBeGreaterThan(0);
+        expect(circleCount).toBeLessThan(commitCount);
     });
 });

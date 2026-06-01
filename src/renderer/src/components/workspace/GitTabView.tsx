@@ -1,14 +1,14 @@
 import {
-    Fragment,
     useCallback,
     useEffect,
-    useLayoutEffect,
     useMemo,
     useRef,
     useState,
+    type CSSProperties,
     type KeyboardEvent as ReactKeyboardEvent,
     type PointerEvent as ReactPointerEvent,
     type ReactNode,
+    type UIEvent,
 } from "react";
 
 import type { GitCommitDetail, GitHistoryCommitSummary } from "@shared/ipc";
@@ -33,12 +33,18 @@ import {
     formatGitHistoryDate,
     getRefPillStyle,
     getTemporalGroupLabel,
+    type GitHistoryGraphRow,
 } from "@renderer/app/git/history-presentation";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitTab } from "@renderer/app/workspace/tree";
 import { GitAuthorAvatar, GitEmptyState } from "@renderer/components/git";
+import {
+    MeasuredVirtualList,
+    type MeasuredVirtualListHandle,
+    type MeasuredVirtualRange,
+} from "@renderer/components/virtual/MeasuredVirtualList";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 
 import {
@@ -71,8 +77,10 @@ const DEFAULT_GIT_DETAIL_SIDEBAR_WIDTH = 280;
 const MIN_GIT_DETAIL_SIDEBAR_WIDTH = 280;
 const MIN_GIT_HISTORY_PANE_WIDTH = 420;
 
-// Baseline threshold for enabling commit history row virtualization.
-export const GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD = 600;
+export const GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD = 250;
+const GIT_HISTORY_GRAPH_RANGE_OVERSCAN_COMMITS = 20;
+const GIT_HISTORY_COMMIT_ROW_HEIGHT = 58;
+const GIT_HISTORY_SEPARATOR_ROW_HEIGHT = 28;
 
 type GitHistoryColumnKey =
     | "author"
@@ -82,6 +90,31 @@ type GitHistoryColumnKey =
     | "graph";
 
 type GitHistoryColumnWidths = Record<GitHistoryColumnKey, number>;
+
+type GitHistoryVirtualItem =
+    | {
+          readonly key: string;
+          readonly kind: "separator";
+          readonly label: string;
+      }
+    | {
+          readonly key: string;
+          readonly kind: "commit";
+          readonly row: GitHistoryGraphRow;
+          readonly rowIndex: number;
+      };
+
+interface GitHistoryVirtualLayout {
+    readonly rowPositions: Map<string, { top: number; height: number }>;
+    readonly totalHeight: number;
+}
+
+interface GitHistoryVisibleGraphRange {
+    readonly endIndex: number;
+    readonly height: number;
+    readonly startIndex: number;
+    readonly top: number;
+}
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
     return getGitContextKey(projectId, worktreeId);
@@ -106,6 +139,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             surface: tab.kind,
             worktreeId,
         });
+    const gitScrollContainerRef = useRef<HTMLDivElement | null>(null);
 
     const snapshot = useGitStore((state) =>
         contextKey ? (state.snapshots[contextKey] ?? null) : null,
@@ -239,6 +273,43 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         () => getGitHistoryTableMinWidth(effectiveColumnWidths),
         [effectiveColumnWidths],
     );
+    const historyVirtualItems = useMemo(
+        () => buildGitHistoryVirtualItems(graphRows),
+        [graphRows],
+    );
+    const historyVirtualLayout = useMemo(
+        () => buildGitHistoryVirtualLayout(historyVirtualItems),
+        [historyVirtualItems],
+    );
+    const shouldVirtualizeHistory =
+        graphRows.length >= GIT_HISTORY_ROW_VIRTUALIZATION_THRESHOLD;
+    const [historyVirtualRange, setHistoryVirtualRange] =
+        useState<MeasuredVirtualRange | null>(null);
+    const historyVirtualListHandleRef =
+        useRef<MeasuredVirtualListHandle | null>(null);
+    const effectiveHistoryVirtualRange = useMemo(
+        () =>
+            shouldVirtualizeHistory
+                ? (historyVirtualRange ??
+                  createInitialGitHistoryVirtualRange(historyVirtualItems))
+                : null,
+        [historyVirtualItems, historyVirtualRange, shouldVirtualizeHistory],
+    );
+    const visibleGraphRange = useMemo(
+        () =>
+            deriveVisibleGitHistoryGraphRange({
+                graphRows,
+                range: effectiveHistoryVirtualRange,
+                rowPositions: historyVirtualLayout.rowPositions,
+                virtualItems: historyVirtualItems,
+            }),
+        [
+            effectiveHistoryVirtualRange,
+            graphRows,
+            historyVirtualItems,
+            historyVirtualLayout.rowPositions,
+        ],
+    );
 
     const matchedCommitShas = useMemo(
         () => findHistoryMatches(history, searchQuery, isCaseSensitive),
@@ -252,40 +323,24 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         typeof rawSelectedCommitSha === "string"
             ? matchedCommitShas.findIndex((sha) => sha === rawSelectedCommitSha)
             : -1;
+    const activeCommit =
+        typeof rawSelectedCommitSha === "string"
+            ? (history.find((commit) => commit.sha === rawSelectedCommitSha) ??
+              null)
+            : null;
+    const activeCommitSha = activeCommit?.sha ?? null;
 
-    const graphWrapperRef = useRef<HTMLDivElement>(null);
-    const rowRefsMap = useRef<Map<string, HTMLButtonElement>>(new Map());
-    const [rowPositions, setRowPositions] = useState<
-        Map<string, { top: number; height: number }>
-    >(new Map());
-
-    useLayoutEffect(() => {
-        if (!graphWrapperRef.current || graphRows.length === 0) return;
-        const next = new Map<string, { top: number; height: number }>();
-        for (const [sha, el] of rowRefsMap.current) {
-            next.set(sha, { top: el.offsetTop, height: el.offsetHeight });
-        }
-        // DOM measurement: positions feed the SVG graph lines. Bail out when
-        // unchanged so this doesn't cause cascading renders.
-        setRowPositions((prev) => {
-            if (prev.size === next.size) {
-                let same = true;
-                for (const [sha, pos] of next) {
-                    const existing = prev.get(sha);
-                    if (
-                        !existing ||
-                        existing.top !== pos.top ||
-                        existing.height !== pos.height
-                    ) {
-                        same = false;
-                        break;
-                    }
-                }
-                if (same) return prev;
-            }
-            return next;
-        });
-    }, [graphRows]);
+    const activeCommitVirtualIndex = useMemo(
+        () =>
+            activeCommitSha
+                ? historyVirtualItems.findIndex(
+                      (item) =>
+                          item.kind === "commit" &&
+                          item.row.commit.sha === activeCommitSha,
+                  )
+                : -1,
+        [activeCommitSha, historyVirtualItems],
+    );
 
     useEffect(() => {
         return () => {
@@ -381,12 +436,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         worktreeId,
     ]);
 
-    const activeCommit =
-        typeof rawSelectedCommitSha === "string"
-            ? (history.find((commit) => commit.sha === rawSelectedCommitSha) ??
-              null)
-            : null;
-    const activeCommitSha = activeCommit?.sha ?? null;
     const activeCommitDetail = useGitStore((state) =>
         contextKey && activeCommitSha
             ? (state.commitDetailsByContext[contextKey]?.[activeCommitSha] ??
@@ -466,6 +515,35 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         void loadMoreHistory(projectId, worktreeId);
     }, [loadMoreHistory, projectId, worktreeId]);
 
+    const setGitScrollContainer = useCallback(
+        (node: HTMLDivElement | null) => {
+            gitScrollContainerRef.current = node;
+            gitScrollRef(node);
+        },
+        [gitScrollRef],
+    );
+
+    const handleGitHistoryScroll = useCallback(
+        (event: UIEvent<HTMLDivElement>) => {
+            handleGitScroll(event);
+        },
+        [handleGitScroll],
+    );
+
+    const handleHistoryVirtualListReady = useCallback(
+        (handle: MeasuredVirtualListHandle | null) => {
+            historyVirtualListHandleRef.current = handle;
+        },
+        [],
+    );
+
+    const handleHistoryVirtualRangeChange = useCallback(
+        (range: MeasuredVirtualRange) => {
+            setHistoryVirtualRange(range);
+        },
+        [],
+    );
+
     const selectRelativeCommit = useCallback(
         (direction: "next" | "previous") => {
             if (history.length === 0) {
@@ -492,6 +570,35 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         },
         [history, rawSelectedCommitSha, selectCommitSha],
     );
+
+    useEffect(() => {
+        if (
+            activeCommitVirtualIndex < 0 ||
+            !shouldVirtualizeHistory ||
+            !effectiveHistoryVirtualRange
+        ) {
+            return;
+        }
+
+        if (
+            activeCommitVirtualIndex >=
+                effectiveHistoryVirtualRange.visibleStartIndex &&
+            activeCommitVirtualIndex <= effectiveHistoryVirtualRange.visibleEndIndex
+        ) {
+            return;
+        }
+
+        historyVirtualListHandleRef.current?.scrollToIndex(
+            activeCommitVirtualIndex,
+            {
+                align: "center",
+            },
+        );
+    }, [
+        activeCommitVirtualIndex,
+        effectiveHistoryVirtualRange,
+        shouldVirtualizeHistory,
+    ]);
 
     const selectSearchMatch = useCallback(
         (direction: "next" | "previous") => {
@@ -789,8 +896,8 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                 <section className="min-h-0 min-w-0 flex-1 overflow-hidden">
                     <div
                         className="shell-scrollbar h-full overflow-auto"
-                        onScroll={handleGitScroll}
-                        ref={gitScrollRef}
+                        onScroll={handleGitHistoryScroll}
+                        ref={setGitScrollContainer}
                     >
                         <div
                             className="sticky top-0 z-10 grid px-3 py-1.5"
@@ -856,151 +963,68 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                             </div>
                         ) : (
                             <div
-                                ref={graphWrapperRef}
                                 style={{ position: "relative" }}
                             >
                                 <GitHistoryGraphSVG
                                     graphRows={graphRows}
                                     graphWidth={graphColumnWidth}
-                                    rowPositions={rowPositions}
+                                    rowPositions={
+                                        historyVirtualLayout.rowPositions
+                                    }
+                                    totalHeight={
+                                        historyVirtualLayout.totalHeight
+                                    }
+                                    visibleGraphRange={visibleGraphRange}
                                 />
-                                {graphRows.map((row, rowIndex) => {
-                                    const groupLabel = getTemporalGroupLabel(
-                                        row.commit.authoredAt,
-                                    );
-                                    const prevLabel =
-                                        rowIndex > 0
-                                            ? getTemporalGroupLabel(
-                                                  graphRows[rowIndex - 1].commit
-                                                      .authoredAt,
-                                              )
-                                            : null;
-                                    const showSeparator =
-                                        groupLabel !== prevLabel;
-
-                                    return (
-                                        <Fragment key={row.commit.sha}>
-                                            {showSeparator && (
-                                                <div className="flex items-center justify-center py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-tertiary">
-                                                    <div className="h-px flex-1 bg-border-subtle" />
-                                                    <span className="shrink-0 px-3">
-                                                        {groupLabel}
-                                                    </span>
-                                                    <div className="h-px flex-1 bg-border-subtle" />
-                                                </div>
-                                            )}
-                                            <button
-                                                ref={(el) => {
-                                                    if (el)
-                                                        rowRefsMap.current.set(
-                                                            row.commit.sha,
-                                                            el,
-                                                        );
-                                                    else
-                                                        rowRefsMap.current.delete(
-                                                            row.commit.sha,
-                                                        );
-                                                }}
-                                                className={[
-                                                    "group/row grid w-full items-stretch border-l-[3px] border-l-transparent pl-2.25 pr-3 text-left text-[12px] transition-[color,background-color,border-color] duration-120",
-                                                    activeCommit?.sha ===
-                                                    row.commit.sha
-                                                        ? "border-l-[--row-branch-color]! bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
-                                                        : "text-text-secondary hover:border-l-[--row-branch-color] hover:bg-bg-secondary hover:text-text-primary",
-                                                ].join(" ")}
-                                                onClick={() => {
-                                                    selectCommitSha(
-                                                        row.commit.sha,
-                                                    );
-                                                }}
-                                                style={
-                                                    {
-                                                        gridTemplateColumns:
-                                                            gitHistoryGridTemplate,
-                                                        minWidth:
-                                                            gitHistoryTableMinWidth,
-                                                        "--row-branch-color":
-                                                            GRAPH_COLORS[
-                                                                row.colorId %
-                                                                    GRAPH_COLORS.length
-                                                            ],
-                                                    } as React.CSSProperties
+                                <MeasuredVirtualList
+                                    enabled={shouldVirtualizeHistory}
+                                    estimateSize={
+                                        estimateGitHistoryVirtualItemSize
+                                    }
+                                    getItemKey={getGitHistoryVirtualItemKey}
+                                    items={historyVirtualItems}
+                                    onRangeChange={
+                                        handleHistoryVirtualRangeChange
+                                    }
+                                    onReady={handleHistoryVirtualListReady}
+                                    overscan={6}
+                                    scrollContainerRef={gitScrollContainerRef}
+                                    renderItem={({ item }) =>
+                                        item.kind === "separator" ? (
+                                            <GitHistorySeparatorRow
+                                                label={item.label}
+                                                minWidth={
+                                                    gitHistoryTableMinWidth
                                                 }
-                                                type="button"
-                                            >
-                                                <div
-                                                    className="border-b border-border-subtle"
-                                                    style={{
-                                                        width: graphColumnWidth,
-                                                    }}
-                                                />
-
-                                                <div className="min-w-0 border-b border-border-subtle py-2.5 pr-4">
-                                                    <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                                                        {row.commit.refs.map(
-                                                            (reference) => (
-                                                                <GitReferencePill
-                                                                    key={`${row.commit.sha}:${reference.label}`}
-                                                                    kind={
-                                                                        reference.kind
-                                                                    }
-                                                                    label={
-                                                                        reference.label
-                                                                    }
-                                                                />
-                                                            ),
-                                                        )}
-                                                    </div>
-                                                    <div className="truncate text-[12px] text-text-primary">
-                                                        {renderHighlightedText(
-                                                            row.commit.subject,
-                                                            searchQuery,
-                                                            isCaseSensitive,
-                                                            matchedCommitSet.has(
-                                                                row.commit.sha,
-                                                            ),
-                                                        )}
-                                                    </div>
-                                                </div>
-
-                                                <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
-                                                    {formatGitHistoryDate(
-                                                        row.commit.authoredAt,
-                                                    )}
-                                                </div>
-
-                                                <div className="flex min-w-0 items-center gap-1.5 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
-                                                    <GitAuthorAvatar
-                                                        email={
-                                                            row.commit
-                                                                .authorEmail
-                                                        }
-                                                        name={
-                                                            row.commit
-                                                                .authorName
-                                                        }
-                                                        size={20}
-                                                    />
-                                                    <span className="truncate">
-                                                        {row.commit.authorName}
-                                                    </span>
-                                                </div>
-
-                                                <div className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-[11px]">
-                                                    <CopyableHash
-                                                        as="span"
-                                                        className="cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-bg-secondary hover:text-text-primary"
-                                                        display={
-                                                            row.commit.shortSha
-                                                        }
-                                                        sha={row.commit.sha}
-                                                        stopPropagation
-                                                    />
-                                                </div>
-                                            </button>
-                                        </Fragment>
-                                    );
-                                })}
+                                            />
+                                        ) : (
+                                            <GitHistoryCommitRow
+                                                graphColumnWidth={
+                                                    graphColumnWidth
+                                                }
+                                                gridTemplateColumns={
+                                                    gitHistoryGridTemplate
+                                                }
+                                                isActive={
+                                                    activeCommit?.sha ===
+                                                    item.row.commit.sha
+                                                }
+                                                isCaseSensitive={
+                                                    isCaseSensitive
+                                                }
+                                                isMatched={matchedCommitSet.has(
+                                                    item.row.commit.sha,
+                                                )}
+                                                minWidth={
+                                                    gitHistoryTableMinWidth
+                                                }
+                                                onSelect={selectCommitSha}
+                                                row={item.row}
+                                                searchQuery={searchQuery}
+                                            />
+                                        )
+                                    }
+                                />
                                 {canLoadMoreHistory ? (
                                     <div
                                         className="flex items-center justify-center border-b border-border-subtle px-3 py-3"
@@ -1063,6 +1087,122 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                 ) : null}
             </div>
         </div>
+    );
+}
+
+function GitHistorySeparatorRow({
+    label,
+    minWidth,
+}: {
+    readonly label: string;
+    readonly minWidth: number;
+}) {
+    return (
+        <div
+            className="flex items-center justify-center text-[10px] font-medium uppercase tracking-wider text-text-tertiary"
+            style={{
+                height: GIT_HISTORY_SEPARATOR_ROW_HEIGHT,
+                minWidth,
+            }}
+        >
+            <div className="h-px flex-1 bg-border-subtle" />
+            <span className="shrink-0 px-3">{label}</span>
+            <div className="h-px flex-1 bg-border-subtle" />
+        </div>
+    );
+}
+
+function GitHistoryCommitRow({
+    graphColumnWidth,
+    gridTemplateColumns,
+    isActive,
+    isCaseSensitive,
+    isMatched,
+    minWidth,
+    onSelect,
+    row,
+    searchQuery,
+}: {
+    readonly graphColumnWidth: number;
+    readonly gridTemplateColumns: string;
+    readonly isActive: boolean;
+    readonly isCaseSensitive: boolean;
+    readonly isMatched: boolean;
+    readonly minWidth: number;
+    readonly onSelect: (sha: string) => void;
+    readonly row: GitHistoryGraphRow;
+    readonly searchQuery: string;
+}) {
+    return (
+        <button
+            className={[
+                "group/row grid w-full items-stretch border-l-[3px] border-l-transparent pl-2.25 pr-3 text-left text-[12px] transition-[color,background-color,border-color] duration-120",
+                isActive
+                    ? "border-l-[--row-branch-color]! bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
+                    : "text-text-secondary hover:border-l-[--row-branch-color] hover:bg-bg-secondary hover:text-text-primary",
+            ].join(" ")}
+            onClick={() => {
+                onSelect(row.commit.sha);
+            }}
+            style={
+                {
+                    "--row-branch-color":
+                        GRAPH_COLORS[row.colorId % GRAPH_COLORS.length],
+                    gridTemplateColumns,
+                    height: GIT_HISTORY_COMMIT_ROW_HEIGHT,
+                    minWidth,
+                } as CSSProperties
+            }
+            type="button"
+        >
+            <div
+                className="border-b border-border-subtle"
+                style={{ width: graphColumnWidth }}
+            />
+
+            <div className="min-w-0 overflow-hidden border-b border-border-subtle py-2.5 pr-4">
+                <div className="mb-1 flex min-w-0 items-center gap-1.5 overflow-hidden">
+                    {row.commit.refs.map((reference) => (
+                        <GitReferencePill
+                            key={`${row.commit.sha}:${reference.label}`}
+                            kind={reference.kind}
+                            label={reference.label}
+                        />
+                    ))}
+                </div>
+                <div className="truncate text-[12px] text-text-primary">
+                    {renderHighlightedText(
+                        row.commit.subject,
+                        searchQuery,
+                        isCaseSensitive,
+                        isMatched,
+                    )}
+                </div>
+            </div>
+
+            <div className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
+                {formatGitHistoryDate(row.commit.authoredAt)}
+            </div>
+
+            <div className="flex min-w-0 items-center gap-1.5 border-b border-border-subtle py-2.5 pr-3 text-[11px]">
+                <GitAuthorAvatar
+                    email={row.commit.authorEmail}
+                    name={row.commit.authorName}
+                    size={20}
+                />
+                <span className="truncate">{row.commit.authorName}</span>
+            </div>
+
+            <div className="min-w-0 truncate border-b border-border-subtle py-2.5 font-mono text-[11px]">
+                <CopyableHash
+                    as="span"
+                    className="cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-bg-secondary hover:text-text-primary"
+                    display={row.commit.shortSha}
+                    sha={row.commit.sha}
+                    stopPropagation
+                />
+            </div>
+        </button>
     );
 }
 
@@ -1355,6 +1495,151 @@ function GitCommitDetailSidebar({
     );
 }
 
+function buildGitHistoryVirtualItems(
+    graphRows: readonly GitHistoryGraphRow[],
+): readonly GitHistoryVirtualItem[] {
+    const items: GitHistoryVirtualItem[] = [];
+
+    graphRows.forEach((row, rowIndex) => {
+        const groupLabel = getTemporalGroupLabel(row.commit.authoredAt);
+        const prevLabel =
+            rowIndex > 0
+                ? getTemporalGroupLabel(graphRows[rowIndex - 1].commit.authoredAt)
+                : null;
+
+        if (groupLabel !== prevLabel) {
+            items.push({
+                key: `separator:${groupLabel}:${row.commit.sha}`,
+                kind: "separator",
+                label: groupLabel,
+            });
+        }
+
+        items.push({
+            key: `commit:${row.commit.sha}`,
+            kind: "commit",
+            row,
+            rowIndex,
+        });
+    });
+
+    return items;
+}
+
+function getGitHistoryVirtualItemKey(item: GitHistoryVirtualItem): string {
+    return item.key;
+}
+
+function estimateGitHistoryVirtualItemSize(item: GitHistoryVirtualItem): number {
+    return item.kind === "separator"
+        ? GIT_HISTORY_SEPARATOR_ROW_HEIGHT
+        : GIT_HISTORY_COMMIT_ROW_HEIGHT;
+}
+
+function buildGitHistoryVirtualLayout(
+    items: readonly GitHistoryVirtualItem[],
+): GitHistoryVirtualLayout {
+    const rowPositions = new Map<string, { top: number; height: number }>();
+    let totalHeight = 0;
+
+    for (const item of items) {
+        const height = estimateGitHistoryVirtualItemSize(item);
+
+        if (item.kind === "commit") {
+            rowPositions.set(item.row.commit.sha, {
+                height,
+                top: totalHeight,
+            });
+        }
+
+        totalHeight += height;
+    }
+
+    return {
+        rowPositions,
+        totalHeight,
+    };
+}
+
+function createInitialGitHistoryVirtualRange(
+    items: readonly GitHistoryVirtualItem[],
+): MeasuredVirtualRange | null {
+    if (items.length === 0) {
+        return null;
+    }
+
+    const endIndex = Math.min(items.length - 1, 28);
+
+    return {
+        endIndex,
+        startIndex: 0,
+        visibleEndIndex: endIndex,
+        visibleStartIndex: 0,
+    };
+}
+
+function deriveVisibleGitHistoryGraphRange({
+    graphRows,
+    range,
+    rowPositions,
+    virtualItems,
+}: {
+    readonly graphRows: readonly GitHistoryGraphRow[];
+    readonly range: MeasuredVirtualRange | null;
+    readonly rowPositions: Map<string, { top: number; height: number }>;
+    readonly virtualItems: readonly GitHistoryVirtualItem[];
+}): GitHistoryVisibleGraphRange | null {
+    if (!range || graphRows.length === 0) {
+        return null;
+    }
+
+    let firstRowIndex = Number.POSITIVE_INFINITY;
+    let lastRowIndex = -1;
+
+    for (
+        let itemIndex = Math.max(0, range.startIndex);
+        itemIndex <= Math.min(virtualItems.length - 1, range.endIndex);
+        itemIndex += 1
+    ) {
+        const item = virtualItems[itemIndex];
+        if (item.kind !== "commit") {
+            continue;
+        }
+
+        firstRowIndex = Math.min(firstRowIndex, item.rowIndex);
+        lastRowIndex = Math.max(lastRowIndex, item.rowIndex);
+    }
+
+    if (!Number.isFinite(firstRowIndex) || lastRowIndex < 0) {
+        return null;
+    }
+
+    const startIndex = Math.max(
+        0,
+        firstRowIndex - GIT_HISTORY_GRAPH_RANGE_OVERSCAN_COMMITS,
+    );
+    const endIndex = Math.min(
+        graphRows.length - 1,
+        lastRowIndex + GIT_HISTORY_GRAPH_RANGE_OVERSCAN_COMMITS,
+    );
+    const startPos = rowPositions.get(graphRows[startIndex]?.commit.sha ?? "");
+    const endPos = rowPositions.get(graphRows[endIndex]?.commit.sha ?? "");
+
+    if (!startPos || !endPos) {
+        return null;
+    }
+
+    const top = startPos.top;
+    const bottom = endPos.top + endPos.height;
+
+    return {
+        endIndex,
+        height: Math.max(1, bottom - top),
+        startIndex,
+        top,
+    };
+}
+
 function GitHistoryHeaderCell({
     label,
     onResizePointerDown,
@@ -1396,23 +1681,39 @@ function GitHistoryGraphSVG({
     graphRows,
     graphWidth,
     rowPositions,
+    totalHeight,
+    visibleGraphRange,
 }: {
-    readonly graphRows: readonly import("@renderer/app/git/history-presentation").GitHistoryGraphRow[];
+    readonly graphRows: readonly GitHistoryGraphRow[];
     readonly graphWidth: number;
     readonly rowPositions: Map<string, { top: number; height: number }>;
+    readonly totalHeight: number;
+    readonly visibleGraphRange: GitHistoryVisibleGraphRange | null;
 }) {
     if (rowPositions.size === 0) return null;
+
+    const rangeTop = visibleGraphRange?.top ?? 0;
+    const rangeBottom = visibleGraphRange
+        ? visibleGraphRange.top + visibleGraphRange.height
+        : totalHeight;
+    const svgHeight = visibleGraphRange
+        ? visibleGraphRange.height
+        : totalHeight;
+    const circleStartIndex = visibleGraphRange?.startIndex ?? 0;
+    const circleEndIndex = visibleGraphRange?.endIndex ?? graphRows.length - 1;
+    const pathStartIndex = Math.max(0, circleStartIndex - 1);
+    const pathEndIndex = circleEndIndex;
+    const toSvgY = (y: number): number => y - rangeTop;
+    const clampToSvgRange = (y: number): number =>
+        Math.min(Math.max(y, rangeTop), rangeBottom) - rangeTop;
+    const doesSegmentIntersectRange = (fromY: number, toY: number): boolean =>
+        Math.max(fromY, toY) >= rangeTop && Math.min(fromY, toY) <= rangeBottom;
 
     const getYCenter = (sha: string): number | null => {
         const pos = rowPositions.get(sha);
         if (!pos) return null;
-        return pos.top + pos.height / 2;
+        return toSvgY(pos.top + pos.height / 2);
     };
-
-    let totalHeight = 0;
-    for (const pos of rowPositions.values()) {
-        totalHeight = Math.max(totalHeight, pos.top + pos.height);
-    }
 
     const colorPaths = new Map<number, string[]>();
     const addPath = (colorId: number, d: string) => {
@@ -1424,7 +1725,7 @@ function GitHistoryGraphSVG({
         paths.push(d);
     };
 
-    for (let i = 0; i < graphRows.length; i++) {
+    for (let i = pathStartIndex; i <= pathEndIndex; i++) {
         const row = graphRows[i];
         const pos = rowPositions.get(row.commit.sha);
         if (!pos) continue;
@@ -1435,7 +1736,10 @@ function GitHistoryGraphSVG({
         const nextPos = nextRow ? rowPositions.get(nextRow.commit.sha) : null;
         const nextYCenter = nextPos ? nextPos.top + nextPos.height / 2 : null;
 
-        if (nextYCenter !== null) {
+        if (
+            nextYCenter !== null &&
+            doesSegmentIntersectRange(yCenter, nextYCenter)
+        ) {
             const maxLanes = Math.max(
                 row.bottomLanes.length,
                 nextRow.topLanes.length,
@@ -1447,20 +1751,30 @@ function GitHistoryGraphSVG({
                     const x = laneX(lane);
                     addPath(
                         bottomColorId,
-                        `M ${x} ${yCenter} L ${x} ${nextYCenter}`,
+                        `M ${x} ${clampToSvgRange(yCenter)} L ${x} ${clampToSvgRange(nextYCenter)}`,
                     );
                 }
             }
         }
 
-        if (i === graphRows.length - 1) {
+        if (
+            i === graphRows.length - 1 &&
+            doesSegmentIntersectRange(yCenter, yBottom)
+        ) {
             for (let lane = 0; lane < row.bottomLanes.length; lane++) {
                 const laneColorId = row.bottomLanes[lane];
                 if (laneColorId !== undefined) {
                     const x = laneX(lane);
-                    addPath(laneColorId, `M ${x} ${yCenter} L ${x} ${yBottom}`);
+                    addPath(
+                        laneColorId,
+                        `M ${x} ${clampToSvgRange(yCenter)} L ${x} ${clampToSvgRange(yBottom)}`,
+                    );
                 }
             }
+        }
+
+        if (i < circleStartIndex || i > circleEndIndex) {
+            continue;
         }
 
         const { parentColumns, laneIndex, colorId } = row;
@@ -1477,12 +1791,22 @@ function GitHistoryGraphSVG({
             if (p === 0) {
                 addPath(
                     edgeColorId,
-                    buildCheckoutPath(fromX, yCenter, toX, curveTargetY),
+                    buildCheckoutPath(
+                        fromX,
+                        toSvgY(yCenter),
+                        toX,
+                        toSvgY(curveTargetY),
+                    ),
                 );
             } else {
                 addPath(
                     edgeColorId,
-                    buildMergePath(fromX, yCenter, toX, curveTargetY),
+                    buildMergePath(
+                        fromX,
+                        toSvgY(yCenter),
+                        toX,
+                        toSvgY(curveTargetY),
+                    ),
                 );
             }
         }
@@ -1495,12 +1819,12 @@ function GitHistoryGraphSVG({
     return (
         <svg
             aria-hidden="true"
-            height={totalHeight}
+            height={svgHeight}
             style={{
                 left: 12,
                 pointerEvents: "none",
                 position: "absolute",
-                top: 0,
+                top: rangeTop,
             }}
             width={graphWidth}
         >
@@ -1518,21 +1842,23 @@ function GitHistoryGraphSVG({
                 </g>
             ))}
             <g>
-                {graphRows.map((row) => {
-                    const yCenter = getYCenter(row.commit.sha);
-                    if (yCenter === null) return null;
-                    return (
-                        <circle
-                            cx={laneX(row.laneIndex)}
-                            cy={yCenter}
-                            fill={getGraphColor(row.colorId)}
-                            key={row.commit.sha}
-                            r={COMMIT_RADIUS}
-                            stroke="var(--color-bg-primary)"
-                            strokeWidth={COMMIT_STROKE}
-                        />
-                    );
-                })}
+                {graphRows
+                    .slice(circleStartIndex, circleEndIndex + 1)
+                    .map((row) => {
+                        const yCenter = getYCenter(row.commit.sha);
+                        if (yCenter === null) return null;
+                        return (
+                            <circle
+                                cx={laneX(row.laneIndex)}
+                                cy={yCenter}
+                                fill={getGraphColor(row.colorId)}
+                                key={row.commit.sha}
+                                r={COMMIT_RADIUS}
+                                stroke="var(--color-bg-primary)"
+                                strokeWidth={COMMIT_STROKE}
+                            />
+                        );
+                    })}
             </g>
         </svg>
     );
@@ -1550,12 +1876,13 @@ function GitReferencePill({
     return (
         <span
             className={[
-                "inline-flex items-center rounded-md border px-1.5 py-0.5 font-mono text-[10px]",
+                "inline-flex max-w-[180px] shrink items-center rounded-md border px-1.5 py-0.5 font-mono text-[10px]",
                 tone.className,
             ].join(" ")}
             style={tone.style}
+            title={label}
         >
-            {label}
+            <span className="truncate">{label}</span>
         </span>
     );
 }
