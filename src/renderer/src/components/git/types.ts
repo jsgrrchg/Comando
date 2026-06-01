@@ -1,6 +1,8 @@
 import type {
     KeyboardEvent as ReactKeyboardEvent,
     MouseEvent as ReactMouseEvent,
+    RefObject,
+    UIEventHandler,
     ReactNode,
 } from "react";
 
@@ -223,9 +225,10 @@ export interface GitDiffsViewProps {
     readonly emptyState?: ReactNode;
     readonly files: readonly GitDiffFile[];
     readonly lineWrapping?: boolean;
-    readonly onScroll?: (event: React.UIEvent<HTMLDivElement>) => void;
+    readonly onScroll?: UIEventHandler<HTMLDivElement>;
     readonly onSelectFile?: (file: GitDiffFile) => void;
     readonly onToggleFileCollapse?: (fileId: string) => void;
+    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly showFileSelector?: boolean;
     readonly surfaceVariant?: "flat" | "panel";
 }

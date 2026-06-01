@@ -281,6 +281,16 @@ describe("GitCommitTabView", () => {
         expect(markup).toContain("collapse all");
     });
 
+    it("keeps the persisted commit scroll container as the diff scroll owner", () => {
+        const markup = renderCommitMarkup();
+
+        expect(markup).toContain(
+            'class="shell-scrollbar flex min-h-0 flex-1 overflow-y-auto px-3 py-3"',
+        );
+        expect(markup).toContain('class="min-h-0 flex-1 px-2 py-2"');
+        expect(markup).not.toContain("!overflow-visible");
+    });
+
     it("restores persisted collapsed files when the commit tab remounts", () => {
         const storageKey = getGitCommitDiffCollapseStorageKey({
             commitSha: TAB.commitSha,

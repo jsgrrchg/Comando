@@ -34,9 +34,11 @@ export function GitDiffsView({
     onScroll,
     onSelectFile,
     onToggleFileCollapse,
+    scrollContainerRef,
     showFileSelector = true,
     surfaceVariant = "panel",
 }: GitDiffsViewProps) {
+    const ownsScrollContainer = scrollContainerRef === undefined;
     const isControlled = controlledCollapsedFileIds !== undefined;
     const [localCollapsedFileIds, setLocalCollapsedFileIds] = useState<
         readonly string[]
@@ -91,12 +93,14 @@ export function GitDiffsView({
     return (
         <div
             className={[
-                "shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2",
+                ownsScrollContainer
+                    ? "shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2"
+                    : "min-h-0 flex-1 px-2 py-2",
                 className,
             ]
                 .filter(Boolean)
                 .join(" ")}
-            onScroll={onScroll}
+            onScroll={ownsScrollContainer ? onScroll : undefined}
         >
             {showFileSelector ? (
                 <div className="mb-3 flex flex-wrap items-center gap-2">

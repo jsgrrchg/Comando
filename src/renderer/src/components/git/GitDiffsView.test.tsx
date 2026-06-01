@@ -1,3 +1,4 @@
+import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
@@ -192,6 +193,34 @@ describe("GitDiffsView", () => {
 
         expect(markup).toContain("select-text");
         expect(markup).toContain("user-select:text");
+    });
+
+    it("owns vertical scroll when no external scroll container is provided", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[createDiffFile()]}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain(
+            'class="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2"',
+        );
+    });
+
+    it("uses the parent scroll container when an external ref is provided", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[createDiffFile()]}
+                scrollContainerRef={createRef<HTMLElement>()}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain('class="min-h-0 flex-1 px-2 py-2"');
+        expect(markup).not.toContain(
+            'class="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2"',
+        );
     });
 
     it("keeps the message for binary files", () => {
