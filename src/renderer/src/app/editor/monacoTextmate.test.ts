@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+    ensureMonacoTextMateProvider,
     getTextMateLanguageIds,
     getTextMateScopeName,
     isTextMateLanguageSupported,
@@ -11,6 +12,32 @@ import {
     TEXT_MATE_LANGUAGE_DEFINITIONS,
     type TextMateGrammarDefinition,
 } from "./monacoTextmateLanguages";
+
+const loadGrammarWithConfigurationMock = vi.hoisted(() =>
+    vi.fn(async () => ({
+        tokenizeLine2: vi.fn(() => ({
+            ruleStack: { depth: 1 },
+            tokens: new Uint32Array([0, 123]),
+        })),
+    })),
+);
+const registrySetThemeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("vscode-textmate", () => ({
+    INITIAL: { depth: 0 },
+    Registry: vi.fn().mockImplementation(function MockRegistry() {
+        return {
+            loadGrammarWithConfiguration: loadGrammarWithConfigurationMock,
+            setTheme: registrySetThemeMock,
+        };
+    }),
+}));
+
+vi.mock("vscode-oniguruma", () => ({
+    OnigScanner: vi.fn(),
+    OnigString: vi.fn(),
+    loadWASM: vi.fn(async () => {}),
+}));
 
 const textMateDefinitionsByLanguageId = new Map<
     string,
@@ -34,6 +61,20 @@ function getRawGrammarScopeName(grammar: unknown): string | null {
 
     return null;
 }
+
+interface TestEncodedTokensProvider {
+    getInitialState(): unknown;
+    tokenizeEncoded(
+        line: string,
+        state: unknown,
+    ): { readonly tokens: Uint32Array };
+}
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+    loadGrammarWithConfigurationMock.mockClear();
+    registrySetThemeMock.mockClear();
+});
 
 describe("monacoTextmate", () => {
     it("exposes the primary TextMate language set", () => {
@@ -152,6 +193,106 @@ describe("monacoTextmate", () => {
         expect(isTextMateLanguageSupported("typescript")).toBe(true);
         expect(isTextMateLanguageSupported("unknown-language")).toBe(false);
         expect(getTextMateScopeName("unknown-language")).toBeNull();
+    });
+
+    it("installs the Rust TextMate provider and refreshes Rust models", async () => {
+        const rustModel = {
+            getLanguageId: vi.fn(() => "rust"),
+        };
+        const typeScriptModel = {
+            getLanguageId: vi.fn(() => "typescript"),
+        };
+        const installedProviders: TestEncodedTokensProvider[] = [];
+        const setTokensProvider = vi.fn(
+            (_languageId: string, provider: TestEncodedTokensProvider) => {
+                installedProviders.push(provider);
+                return { dispose: vi.fn() };
+            },
+        );
+        const setModelLanguage = vi.fn();
+        const monacoApi = {
+            editor: {
+                getModels: vi.fn(() => [rustModel, typeScriptModel]),
+                setModelLanguage,
+            },
+            languages: {
+                getEncodedLanguageId: vi.fn((languageId: string) =>
+                    languageId === "rust" ? 42 : 0,
+                ),
+                setTokensProvider,
+            },
+        } as unknown as Parameters<typeof ensureMonacoTextMateProvider>[0];
+
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => ({
+                arrayBuffer: async () => new ArrayBuffer(8),
+                ok: true,
+                status: 200,
+                statusText: "OK",
+            })),
+        );
+
+        await expect(
+            ensureMonacoTextMateProvider(monacoApi, "rust"),
+        ).resolves.toBe(true);
+
+        expect(loadGrammarWithConfigurationMock).toHaveBeenCalledWith(
+            "source.rust",
+            42,
+            expect.objectContaining({}),
+        );
+        expect(setTokensProvider).toHaveBeenCalledTimes(1);
+        expect(setTokensProvider).toHaveBeenCalledWith(
+            "rust",
+            expect.objectContaining({
+                getInitialState: expect.any(Function),
+                tokenizeEncoded: expect.any(Function),
+            }),
+        );
+        expect(setModelLanguage).toHaveBeenCalledTimes(1);
+        expect(setModelLanguage).toHaveBeenCalledWith(rustModel, "rust");
+
+        const provider = installedProviders[0];
+        if (!provider) {
+            throw new Error("Rust TextMate provider was not installed.");
+        }
+
+        const tokens = provider.tokenizeEncoded(
+            "pub fn main() {}",
+            provider.getInitialState(),
+        ).tokens;
+
+        expect(Array.from(tokens)).toEqual([0, 123]);
+
+        const laterRustModel = {
+            getLanguageId: vi.fn(() => "rust"),
+        };
+        const setTokensProviderAfterCacheHit = vi.fn(() => ({
+            dispose: vi.fn(),
+        }));
+        const setModelLanguageAfterCacheHit = vi.fn();
+        const laterMonacoApi = {
+            editor: {
+                getModels: vi.fn(() => [laterRustModel]),
+                setModelLanguage: setModelLanguageAfterCacheHit,
+            },
+            languages: {
+                getEncodedLanguageId: vi.fn(() => 42),
+                setTokensProvider: setTokensProviderAfterCacheHit,
+            },
+        } as unknown as Parameters<typeof ensureMonacoTextMateProvider>[0];
+
+        await expect(
+            ensureMonacoTextMateProvider(laterMonacoApi, "rust"),
+        ).resolves.toBe(true);
+
+        expect(setTokensProviderAfterCacheHit).not.toHaveBeenCalled();
+        expect(setModelLanguageAfterCacheHit).toHaveBeenCalledTimes(1);
+        expect(setModelLanguageAfterCacheHit).toHaveBeenCalledWith(
+            laterRustModel,
+            "rust",
+        );
     });
 
     it("keeps rich grammar metadata for embedded languages and token types", () => {

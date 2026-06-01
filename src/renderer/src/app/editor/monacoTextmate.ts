@@ -345,14 +345,19 @@ function createTextMateEncodedTokensProvider(
 function refreshTextMateModelsForLanguage(
     monacoNsps: MonacoNamespace,
     languageId: string,
-) {
+): number {
+    let refreshedModelCount = 0;
+
     for (const model of monacoNsps.editor.getModels()) {
         if (normalizeLanguageId(model.getLanguageId()) !== languageId) {
             continue;
         }
 
         monacoNsps.editor.setModelLanguage(model, languageId);
+        refreshedModelCount += 1;
     }
+
+    return refreshedModelCount;
 }
 
 function getRawGrammarScopeName(grammar: unknown): string | null {
@@ -645,7 +650,16 @@ function ensureTextMateProvider(
         normalizedLanguageId,
     );
     if (cachedInstallation) {
-        return cachedInstallation;
+        return cachedInstallation.then((installed) => {
+            if (installed) {
+                refreshTextMateModelsForLanguage(
+                    monacoNsps,
+                    normalizedLanguageId,
+                );
+            }
+
+            return installed;
+        });
     }
 
     const installPromise = installTextMateProvider(
