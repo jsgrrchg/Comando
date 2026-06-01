@@ -1,7 +1,9 @@
 import {
     useEffect,
+    useMemo,
     useRef,
     useState,
+    type RefCallback,
     type KeyboardEvent,
     type ReactNode,
 } from "react";
@@ -33,17 +35,35 @@ export type GitHubAuthCapability = "issues" | "pull_requests";
 
 export type GitHubMergeableState = "computing" | "conflicts" | "mergeable";
 
+export interface GitHubTabShellRenderContext {
+    readonly scrollRef: RefCallback<HTMLDivElement>;
+}
+
+type GitHubTabShellChildren =
+    | ReactNode
+    | ((context: GitHubTabShellRenderContext) => ReactNode);
+
 export function GitHubTabShell({
     children,
     header,
     scrollScope,
 }: {
-    readonly children: ReactNode;
+    readonly children: GitHubTabShellChildren;
     readonly header: ReactNode;
     readonly scrollScope: WorkspaceScrollScope;
 }) {
-    const { handleScroll, scrollRef } =
+    const { handleScroll, scrollRef: setScrollContainerElement } =
         usePersistedWorkspaceScroll<HTMLDivElement>(scrollScope);
+    const renderContext = useMemo<GitHubTabShellRenderContext>(
+        () => ({ scrollRef: setScrollContainerElement }),
+        [setScrollContainerElement],
+    );
+    const content =
+        typeof children === "function"
+            ? // Render prop consumers need the shell scroll target for row virtualization.
+              // eslint-disable-next-line react-hooks/refs
+              children(renderContext)
+            : children;
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-editor text-text-primary">
@@ -51,9 +71,9 @@ export function GitHubTabShell({
             <div
                 className="shell-scrollbar min-h-0 flex-1 overflow-y-auto"
                 onScroll={handleScroll}
-                ref={scrollRef}
+                ref={setScrollContainerElement}
             >
-                {children}
+                {content}
             </div>
         </div>
     );
