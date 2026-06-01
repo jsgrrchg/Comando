@@ -709,7 +709,7 @@ export class AiPersistence {
             .run(
                 `transcript:${snapshot.sessionId}`,
                 snapshot.sessionId,
-                JSON.stringify(persistedSnapshot),
+                "{}",
                 persistedSnapshot.messages.length,
                 serializePersistedPreview(
                     deriveSessionPreview(persistedSnapshot.messages),

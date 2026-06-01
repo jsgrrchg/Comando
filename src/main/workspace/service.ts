@@ -318,7 +318,6 @@ export class WorkspaceService {
                       draft: string;
                       message_count: number;
                       project_id: string | null;
-                      transcript_json: string;
                       title: string;
                       updated_at: string;
                       worktree_id: string | null;
@@ -332,7 +331,6 @@ export class WorkspaceService {
                     chat_sessions.title,
                     chat_sessions.draft,
                     chat_sessions.updated_at,
-                    chat_transcripts.transcript_json,
                     chat_transcripts.message_count
                 FROM chat_sessions
                 LEFT JOIN chat_transcripts
@@ -405,10 +403,6 @@ export class WorkspaceService {
             })),
             sessionId,
             title: row.title,
-            transcriptJson: normalizeTranscriptJson(
-                row.transcript_json,
-                sessionId,
-            ),
             updatedAt: row.updated_at,
             worktreeId: row.worktree_id ?? null,
         };
@@ -1041,14 +1035,10 @@ function syncChatPersistence(
         );
 
         if (!wasPersisted) {
-            const transcriptSkeleton = createEmptyTranscriptSkeleton(
-                tab.sessionId,
-            );
-
             upsertTranscript.run(
                 `transcript:${tab.sessionId}`,
                 tab.sessionId,
-                transcriptSkeleton,
+                "{}",
                 0,
                 tab.createdAt,
                 now,
@@ -1091,22 +1081,6 @@ function syncChatPersistence(
     }
 }
 
-function normalizeTranscriptJson(
-    transcriptJson: string | null | undefined,
-    sessionId: string,
-): string {
-    return JSON.stringify(
-        parseJsonWithFallback(
-            transcriptJson,
-            JSON.parse(createEmptyTranscriptSkeleton(sessionId)) as {
-                readonly messages: readonly unknown[];
-                readonly sessionId: string | null;
-                readonly version: number;
-            },
-        ),
-    );
-}
-
 function parseJsonWithFallback<T>(
     value: string | null | undefined,
     fallback: T,
@@ -1121,12 +1095,4 @@ function parseJsonWithFallback<T>(
         debugBenignError("workspace.parseJson", error);
         return fallback;
     }
-}
-
-function createEmptyTranscriptSkeleton(sessionId: string | null): string {
-    return JSON.stringify({
-        messages: [],
-        sessionId,
-        version: 1,
-    });
 }

@@ -11,7 +11,7 @@ import {
 import { WorkspaceService } from "./service";
 
 describe("WorkspaceService", () => {
-    it("persists and reloads transcript, events, and minimal artifacts for a chat session", () => {
+    it("persists and reloads events and minimal artifacts for a chat session", () => {
         const connection = createTestConnection();
         const service = new WorkspaceService(connection);
         const workspaceId = "workspace-a";
@@ -63,11 +63,6 @@ describe("WorkspaceService", () => {
             ],
             sessionId: "chat-session-1",
             title: "Session 1",
-            transcriptJson: JSON.stringify({
-                messages: [],
-                sessionId: "chat-session-1",
-                version: 1,
-            }),
         });
         expect(chatSessionState?.updatedAt).toEqual(expect.any(String));
     });

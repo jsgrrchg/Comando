@@ -139,7 +139,7 @@ describe("AiPersistence", () => {
         ).toBe(true);
     });
 
-    it("persists a compact transcript snapshot and restores the runtime catalog separately", () => {
+    it("stores transcript metadata without duplicating the full snapshot blob", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot: AiSessionSnapshot = {
@@ -208,13 +208,7 @@ describe("AiPersistence", () => {
 
         expect(storedTranscript).toBeDefined();
         expect(storedTranscript?.preview).toBe("hello");
-        expect(storedTranscript?.transcript_json).toBeTruthy();
-        expect(
-            JSON.parse(storedTranscript?.transcript_json ?? "{}"),
-        ).not.toHaveProperty("configOptions");
-        expect(
-            JSON.parse(storedTranscript?.transcript_json ?? "{}"),
-        ).not.toHaveProperty("availableCommands");
+        expect(storedTranscript?.transcript_json).toBe("{}");
 
         const catalog = persistence.loadLatestRuntimeCatalog("codex");
 
@@ -349,7 +343,7 @@ describe("AiPersistence", () => {
         expect(loadStoredMessageCount(connection, snapshot.sessionId)).toBe(2);
     });
 
-    it("loads transcript pages from shadow rows when compact transcript json is unavailable", () => {
+    it("loads transcript pages from message rows when transcript_json is unavailable", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
@@ -434,8 +428,8 @@ describe("AiPersistence", () => {
 
         persistence.saveSessionSnapshot(snapshot);
 
-        const staleCompactSnapshot = {
-            ...loadStoredSnapshot(connection, snapshot.sessionId),
+        const staleTranscriptPayload = {
+            ...loadStoredRuntimeState(connection, snapshot.sessionId),
             messages: [
                 {
                     attachments: [],
@@ -483,7 +477,7 @@ describe("AiPersistence", () => {
                 WHERE session_id = ?
                 `,
             )
-            .run(JSON.stringify(staleCompactSnapshot), snapshot.sessionId);
+            .run(JSON.stringify(staleTranscriptPayload), snapshot.sessionId);
 
         const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
 
@@ -536,11 +530,10 @@ describe("AiPersistence", () => {
 
         persistence.saveSessionSnapshot(snapshot);
 
-        const storedSnapshot = JSON.parse(
-            loadStoredTranscriptJson(connection, snapshot.sessionId),
-        ) as Record<string, unknown> & {
-            readonly messages?: readonly { readonly status?: string }[];
-        };
+        const storedRuntimeState = loadStoredRuntimeState(
+            connection,
+            snapshot.sessionId,
+        );
         const storedSessionStatus = connection
             .prepare<[string], { status: string } | undefined>(
                 "SELECT status FROM chat_sessions WHERE id = ?",
@@ -549,11 +542,10 @@ describe("AiPersistence", () => {
         const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
 
         expect(storedSessionStatus).toBe("idle");
-        expect(storedSnapshot.status).toBe("idle");
-        expect(storedSnapshot.activeTurnStartedAt).toBeNull();
-        expect(storedSnapshot.pendingPermission).toBeNull();
-        expect(storedSnapshot.pendingUserInput).toBeNull();
-        expect(storedSnapshot.messages?.[0]?.status).toBe("completed");
+        expect(storedRuntimeState.status).toBe("idle");
+        expect(storedRuntimeState.activeTurnStartedAt).toBeNull();
+        expect(storedRuntimeState.pendingPermission).toBeNull();
+        expect(storedRuntimeState.pendingUserInput).toBeNull();
         expect(loaded).toEqual(
             expect.objectContaining({
                 activeTurnStartedAt: null,
@@ -565,7 +557,7 @@ describe("AiPersistence", () => {
         expect(loaded?.messages[0]?.status).toBe("completed");
     });
 
-    it("stores sanitized compact tool activity when raw output and diffs contain huge strings", () => {
+    it("stores sanitized runtime tool activity when raw output and diffs contain huge strings", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
@@ -583,14 +575,13 @@ describe("AiPersistence", () => {
 
         persistence.saveSessionSnapshot(snapshot);
 
-        const storedSnapshot = loadStoredSnapshot(
+        const storedRuntimeState = loadStoredRuntimeState(
             connection,
             snapshot.sessionId,
         );
-        const toolActivity = storedSnapshot.toolActivity?.[0];
+        const toolActivity = storedRuntimeState.toolActivity?.[0];
         const diff = toolActivity?.diffs?.[0];
 
-        expect(storedSnapshot.persistenceVersion).toBe(3);
         expect(toolActivity).toEqual(
             expect.objectContaining({
                 id: "tool-save-sanitized",
@@ -616,10 +607,10 @@ describe("AiPersistence", () => {
                 reversible: true,
             }),
         );
-        expect(storedSnapshot.messages).toHaveLength(1);
+        expect(loadStoredMessageCount(connection, snapshot.sessionId)).toBe(1);
     });
 
-    it("keeps compact transcripts idempotent when loading snapshots and pages", () => {
+    it("keeps transcript metadata idempotent when loading snapshots and pages", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
@@ -720,32 +711,6 @@ describe("AiPersistence", () => {
             )
             .get(childSnapshot.sessionId);
         expect(childRow?.parent_session_id).toBe("session-parent");
-
-        const storedTranscript = connection
-            .prepare<
-                [string],
-                { transcript_json: string } | undefined
-            >(
-                `
-                SELECT transcript_json
-                FROM chat_transcripts
-                WHERE session_id = ?
-                `,
-            )
-            .get(childSnapshot.sessionId);
-        const storedSnapshot = JSON.parse(
-            storedTranscript?.transcript_json ?? "{}",
-        ) as {
-            readonly parentSessionId?: unknown;
-            readonly toolActivity?: readonly {
-                readonly action?: unknown;
-            }[];
-        };
-        expect(storedSnapshot.parentSessionId).toBe("session-parent");
-        expect(storedSnapshot.toolActivity?.[0]?.action).toEqual({
-            kind: "open_session",
-            sessionId: "session-child",
-        });
 
         const loadedChildSnapshot = persistence.loadSessionSnapshot(
             childSnapshot.sessionId,
@@ -1756,12 +1721,15 @@ function createInflatedToolActivity(
     };
 }
 
-function loadStoredSnapshot(
+function loadStoredRuntimeState(
     connection: ReturnType<typeof createSqliteCompatConnection>,
     sessionId: string,
 ): {
+    readonly activeTurnStartedAt?: string | null;
     readonly messages?: unknown[];
-    readonly persistenceVersion?: number;
+    readonly pendingPermission?: unknown;
+    readonly pendingUserInput?: unknown;
+    readonly status?: string;
     readonly toolActivity?: readonly {
         readonly diffs?: readonly {
             readonly hunks?: unknown[];
@@ -1782,9 +1750,23 @@ function loadStoredSnapshot(
         readonly title?: string;
     }[];
 } {
-    return JSON.parse(loadStoredTranscriptJson(connection, sessionId)) as {
+    const row = connection
+        .prepare<[string], { state_json: string } | undefined>(
+            `
+            SELECT state_json
+            FROM chat_session_runtime_state
+            WHERE session_id = ?
+            `,
+        )
+        .get(sessionId);
+
+    expect(row).toBeDefined();
+    return JSON.parse(row?.state_json ?? "{}") as {
+        readonly activeTurnStartedAt?: string | null;
         readonly messages?: unknown[];
-        readonly persistenceVersion?: number;
+        readonly pendingPermission?: unknown;
+        readonly pendingUserInput?: unknown;
+        readonly status?: string;
         readonly toolActivity?: readonly {
             readonly diffs?: readonly {
                 readonly hunks?: unknown[];

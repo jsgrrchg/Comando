@@ -2010,7 +2010,6 @@ export interface PersistedChatSessionState {
     readonly reviewArtifacts: readonly ReviewArtifact[];
     readonly sessionId: string;
     readonly title: string;
-    readonly transcriptJson: string;
     readonly updatedAt: string;
     readonly worktreeId?: string | null;
 }
