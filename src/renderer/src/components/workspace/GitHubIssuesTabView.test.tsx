@@ -1,4 +1,5 @@
 import { createElement } from "react";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,6 +38,8 @@ const mockWorkspaceStoreState = vi.hoisted(() => ({
     },
 }));
 
+const measuredVirtualListMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@renderer/app/store/github-store", () => ({
     EMPTY_GITHUB_LIST: Object.freeze([]),
     getGitHubRepoKey: (ref: GitHubRepositoryRef) =>
@@ -52,8 +55,48 @@ vi.mock("@renderer/app/store/workspace-store", () => ({
     ) => selector(mockWorkspaceStoreState.current),
 }));
 
+vi.mock("../virtual/MeasuredVirtualList", async () => {
+    const { createElement } =
+        await vi.importActual<typeof import("react")>("react");
+
+    return {
+        MeasuredVirtualList: <T,>({
+            getItemKey,
+            items,
+            renderItem,
+        }: {
+            readonly getItemKey: (item: T, index: number) => string;
+            readonly items: readonly T[];
+            readonly renderItem: (params: {
+                readonly index: number;
+                readonly isVisible: boolean;
+                readonly item: T;
+            }) => ReactNode;
+        }) => {
+            measuredVirtualListMock({ itemCount: items.length });
+
+            return createElement(
+                "div",
+                { "data-testid": "mock-measured-virtual-list" },
+                items.slice(0, 5).map((item, index) =>
+                    createElement(
+                        "div",
+                        { key: getItemKey(item, index) },
+                        renderItem({
+                            index,
+                            isVisible: true,
+                            item,
+                        }),
+                    ),
+                ),
+            );
+        },
+    };
+});
+
 import {
     GITHUB_ISSUES_ROW_VIRTUALIZATION_THRESHOLD,
+    GITHUB_ISSUES_VIRTUALIZATION_THRESHOLD,
     GitHubIssuesTabView,
 } from "./GitHubIssuesTabView";
 
@@ -180,6 +223,7 @@ function resetStoreState() {
     mockGitHubStoreState.current.refreshAuthStatus.mockClear();
     mockGitHubStoreState.current.refreshIssues.mockClear();
     mockWorkspaceStoreState.current.openGitHubIssueTab.mockClear();
+    measuredVirtualListMock.mockClear();
 }
 
 describe("GitHubIssuesTabView", () => {
@@ -192,7 +236,7 @@ describe("GitHubIssuesTabView", () => {
         resetStoreState();
     });
 
-    it("renders the large issues table baseline with table affordances intact", () => {
+    it("virtualizes the large issues table with table affordances intact", () => {
         const markup = renderToStaticMarkup(
             createElement(GitHubIssuesTabView, { tab: TAB }),
         );
@@ -201,12 +245,39 @@ describe("GitHubIssuesTabView", () => {
             `${GITHUB_ISSUES_ROW_VIRTUALIZATION_THRESHOLD} items`,
         );
         expect(markup).toContain("Baseline issue 1");
-        expect(markup).toContain(
+        expect(markup).not.toContain(
             `Baseline issue ${GITHUB_ISSUES_ROW_VIRTUALIZATION_THRESHOLD}`,
         );
+        expect(measuredVirtualListMock).toHaveBeenCalledWith({
+            itemCount: GITHUB_ISSUES_ROW_VIRTUALIZATION_THRESHOLD,
+        });
         expect(markup).toContain('aria-label="Resize # column"');
         expect(markup).toContain('aria-label="Resize Description column"');
         expect(markup).toContain("Drag to reorder. Drag the edge to resize.");
         expect(markup).toContain("Open in GitHub");
+    });
+
+    it("renders every issue below the virtualization threshold", () => {
+        mockGitHubStoreState.current.issuesByRepoAndState = {
+            [REPO_KEY]: {
+                open: Array.from(
+                    { length: GITHUB_ISSUES_VIRTUALIZATION_THRESHOLD - 1 },
+                    (_, index) => createIssueSummary(index + 1),
+                ),
+            },
+        };
+
+        const markup = renderToStaticMarkup(
+            createElement(GitHubIssuesTabView, { tab: TAB }),
+        );
+
+        expect(markup).toContain(
+            `${GITHUB_ISSUES_VIRTUALIZATION_THRESHOLD - 1} items`,
+        );
+        expect(markup).toContain("Baseline issue 1");
+        expect(markup).toContain(
+            `Baseline issue ${GITHUB_ISSUES_VIRTUALIZATION_THRESHOLD - 1}`,
+        );
+        expect(measuredVirtualListMock).not.toHaveBeenCalled();
     });
 });

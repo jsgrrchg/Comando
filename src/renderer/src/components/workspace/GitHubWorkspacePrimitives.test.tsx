@@ -61,19 +61,22 @@ describe("GitHubTabShell", () => {
         expect(markup).toContain("Normal child content");
     });
 
-    it("passes the shared scroll ref to render prop children", () => {
+    it("passes the shared scroll container ref to render prop children", () => {
         const renderChild = vi.fn(
-            ({ scrollRef }: GitHubTabShellRenderContext) =>
-                createElement(
-                    "div",
-                    {
-                        "data-scroll-ref":
-                            scrollRef === mockPersistedScroll.scrollRef
-                                ? "shared"
-                                : "changed",
-                    },
-                    "Render prop content",
-                ),
+            (context: GitHubTabShellRenderContext) => {
+                return (
+                    createElement(
+                        "div",
+                        {
+                            "data-scroll-ref":
+                                context.scrollContainerRef.current === null
+                                    ? "shared"
+                                    : "changed",
+                        },
+                        "Render prop content",
+                    )
+                );
+            },
         );
         const markup = renderToStaticMarkup(
             <GitHubTabShell
@@ -85,9 +88,11 @@ describe("GitHubTabShell", () => {
         );
 
         expect(renderChild).toHaveBeenCalledTimes(1);
-        expect(renderChild.mock.calls[0]?.[0].scrollRef).toBe(
-            mockPersistedScroll.scrollRef,
-        );
+        const receivedContext = renderChild.mock.calls[0]?.[0];
+        expect(receivedContext).toBeDefined();
+        expect(receivedContext?.scrollContainerRef.current).toBeNull();
+        receivedContext?.scrollRef(null);
+        expect(mockPersistedScroll.scrollRef).toHaveBeenCalledTimes(1);
         expect(markup).toContain('data-scroll-ref="shared"');
         expect(markup).toContain("Render prop content");
     });

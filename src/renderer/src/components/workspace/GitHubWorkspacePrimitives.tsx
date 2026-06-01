@@ -1,11 +1,13 @@
 import {
+    useCallback,
     useEffect,
     useMemo,
     useRef,
     useState,
-    type RefCallback,
     type KeyboardEvent,
     type ReactNode,
+    type RefCallback,
+    type RefObject,
 } from "react";
 
 import type {
@@ -36,6 +38,7 @@ export type GitHubAuthCapability = "issues" | "pull_requests";
 export type GitHubMergeableState = "computing" | "conflicts" | "mergeable";
 
 export interface GitHubTabShellRenderContext {
+    readonly scrollContainerRef: RefObject<HTMLDivElement | null>;
     readonly scrollRef: RefCallback<HTMLDivElement>;
 }
 
@@ -54,9 +57,20 @@ export function GitHubTabShell({
 }) {
     const { handleScroll, scrollRef: setScrollContainerElement } =
         usePersistedWorkspaceScroll<HTMLDivElement>(scrollScope);
-    const renderContext = useMemo<GitHubTabShellRenderContext>(
-        () => ({ scrollRef: setScrollContainerElement }),
+    const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+    const setSharedScrollContainerElement = useCallback(
+        (node: HTMLDivElement | null) => {
+            scrollContainerRef.current = node;
+            setScrollContainerElement(node);
+        },
         [setScrollContainerElement],
+    );
+    const renderContext = useMemo<GitHubTabShellRenderContext>(
+        () => ({
+            scrollContainerRef,
+            scrollRef: setSharedScrollContainerElement,
+        }),
+        [setSharedScrollContainerElement],
     );
     const content =
         typeof children === "function"
@@ -71,7 +85,7 @@ export function GitHubTabShell({
             <div
                 className="shell-scrollbar min-h-0 flex-1 overflow-y-auto"
                 onScroll={handleScroll}
-                ref={setScrollContainerElement}
+                ref={setSharedScrollContainerElement}
             >
                 {content}
             </div>
