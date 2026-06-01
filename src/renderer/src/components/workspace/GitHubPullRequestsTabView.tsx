@@ -849,11 +849,14 @@ function PullRequestTableRow({
     return (
         <div
             className={[
-                "group/row items-stretch border-l-[3px] pl-2.5 pr-3 text-left text-[11px] transition-[color,background-color,border-color] duration-120",
+                "group/row items-stretch border-b border-l-[3px] border-b-border-subtle pl-2.5 pr-3 text-left text-[11px] transition-[color,background-color,border-color] duration-120",
                 isCurrentBranchPullRequest
                     ? "border-l-[color-mix(in_srgb,var(--color-accent)_70%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-bg-primary))] text-text-primary"
                     : "border-l-transparent text-text-secondary hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary",
             ].join(" ")}
+            style={{
+                minHeight: estimatePullRequestTableRowHeight(pullRequest),
+            }}
         >
             {tableLayout.order.map((columnId) => (
                 <PullRequestTableCell
@@ -937,7 +940,7 @@ function PullRequestTableCell({
 }) {
     if (columnId === "action") {
         return (
-            <div className="flex min-w-0 items-center justify-end border-b border-border-subtle py-2.5">
+            <div className="flex h-full min-w-0 items-start justify-end py-2.5">
                 <IdeActionButton
                     onClick={() => openGitHubWebUrl(pullRequest.url)}
                 >
@@ -949,7 +952,7 @@ function PullRequestTableCell({
 
     return (
         <button
-            className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-left"
+            className="block h-full min-w-0 overflow-hidden py-2.5 pr-3 text-left"
             onClick={onOpen}
             type="button"
         >

@@ -620,7 +620,10 @@ function IssueTableRow({
     };
 
     return (
-        <div className="group/row items-stretch border-l-[3px] border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary">
+        <div
+            className="group/row items-stretch border-b border-l-[3px] border-b-border-subtle border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary"
+            style={{ minHeight: estimateIssueTableRowHeight(issue) }}
+        >
             {tableLayout.order.map((columnId) => (
                 <IssueTableCell
                     columnId={columnId}
@@ -697,7 +700,7 @@ function IssueTableCell({
 }) {
     if (columnId === "action") {
         return (
-            <div className="flex min-w-0 items-center justify-end border-b border-border-subtle py-2.5">
+            <div className="flex h-full min-w-0 items-start justify-end py-2.5">
                 <IdeActionButton onClick={() => openGitHubWebUrl(issue.url)}>
                     Open in GitHub
                 </IdeActionButton>
@@ -707,7 +710,7 @@ function IssueTableCell({
 
     return (
         <button
-            className="min-w-0 border-b border-border-subtle py-2.5 pr-3 text-left"
+            className="block h-full min-w-0 overflow-hidden py-2.5 pr-3 text-left"
             onClick={onOpen}
             type="button"
         >

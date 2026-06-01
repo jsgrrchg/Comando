@@ -255,6 +255,9 @@ describe("GitHubIssuesTabView", () => {
         expect(markup).toContain('aria-label="Resize Description column"');
         expect(markup).toContain("Drag to reorder. Drag the edge to resize.");
         expect(markup).toContain("Open in GitHub");
+        expect(markup).toContain("min-height:56px");
+        expect(markup).toContain("block h-full min-w-0 overflow-hidden");
+        expect(markup).toContain("flex h-full min-w-0 items-start");
     });
 
     it("renders every issue below the virtualization threshold", () => {

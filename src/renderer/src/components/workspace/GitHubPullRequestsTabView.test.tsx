@@ -303,6 +303,9 @@ describe("GitHubPullRequestsTabView", () => {
         expect(markup).toContain('aria-label="Resize Branch column"');
         expect(markup).toContain("Drag to reorder. Drag the edge to resize.");
         expect(markup).toContain("Open");
+        expect(markup).toContain("min-height:58px");
+        expect(markup).toContain("block h-full min-w-0 overflow-hidden");
+        expect(markup).toContain("flex h-full min-w-0 items-start");
     });
 
     it("renders every pull request below the virtualization threshold", () => {
