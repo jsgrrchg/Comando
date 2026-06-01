@@ -50,6 +50,7 @@ export function GitCommitTabView({
             surface: tab.kind,
             worktreeId,
         });
+    const commitScrollContainerRef = useRef<HTMLDivElement | null>(null);
 
     const detail = useGitStore((state) =>
         contextKey && projectId
@@ -198,6 +199,13 @@ export function GitCommitTabView({
             }
         },
         [detail?.body, handleDiffScroll, persistCommitScroll],
+    );
+    const setCommitScrollContainer = useCallback(
+        (node: HTMLDivElement | null) => {
+            commitScrollContainerRef.current = node;
+            commitScrollRef(node);
+        },
+        [commitScrollRef],
     );
 
     useEffect(() => {
@@ -406,10 +414,9 @@ export function GitCommitTabView({
             <section
                 className="shell-scrollbar flex min-h-0 flex-1 overflow-y-auto px-3 py-3"
                 onScroll={handleCommitScroll}
-                ref={commitScrollRef}
+                ref={setCommitScrollContainer}
             >
                 <GitDiffsView
-                    className="!overflow-visible"
                     codeFontFamily={codeFontFamily}
                     codeFontSize={codeFontSize}
                     codeLineHeight={codeLineHeight}
@@ -418,6 +425,7 @@ export function GitCommitTabView({
                     files={diffFiles}
                     lineWrapping={false}
                     onToggleFileCollapse={handleToggleFileCollapse}
+                    scrollContainerRef={commitScrollContainerRef}
                     showFileSelector={false}
                     surfaceVariant="flat"
                 />

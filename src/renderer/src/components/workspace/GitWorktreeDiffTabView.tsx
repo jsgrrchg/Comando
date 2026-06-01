@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import {
@@ -37,6 +37,7 @@ export function GitWorktreeDiffTabView({
             surface: tab.kind,
             worktreeId,
         });
+    const diffScrollContainerRef = useRef<HTMLDivElement | null>(null);
     const editorSettings = useResolvedEditorSettings();
     const project = useProjectsStore((state) =>
         state.projects.find((candidate) => candidate.id === projectId),
@@ -229,6 +230,13 @@ export function GitWorktreeDiffTabView({
             selectWorktreeDiffFile(projectId, file.id, worktreeId),
         [projectId, selectWorktreeDiffFile, worktreeId],
     );
+    const setDiffScrollContainer = useCallback(
+        (node: HTMLDivElement | null) => {
+            diffScrollContainerRef.current = node;
+            diffScrollRef(node);
+        },
+        [diffScrollRef],
+    );
 
     useEffect(() => {
         if (!snapshot) {
@@ -336,7 +344,7 @@ export function GitWorktreeDiffTabView({
             <main
                 className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3"
                 onScroll={handleDiffScroll}
-                ref={diffScrollRef}
+                ref={setDiffScrollContainer}
             >
                 {isLoading && !result ? (
                     <GitEmptyState>Loading project diff...</GitEmptyState>
@@ -393,6 +401,9 @@ export function GitWorktreeDiffTabView({
                                         onSelectFile={handleSelectFile}
                                         onToggleFileCollapse={
                                             handleToggleFileCollapse
+                                        }
+                                        scrollContainerRef={
+                                            diffScrollContainerRef
                                         }
                                         showFileSelector={false}
                                         surfaceVariant="flat"

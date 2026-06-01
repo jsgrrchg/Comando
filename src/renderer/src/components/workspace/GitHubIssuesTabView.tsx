@@ -35,6 +35,7 @@ import {
     hasGitHubWritePermission,
     openGitHubWebUrl,
 } from "./GitHubWorkspacePrimitives";
+import { GitHubVirtualizedTableBody } from "./GitHubVirtualizedTableBody";
 import { IdeActionButton } from "./ide-bar";
 
 type IssueFilter = GitHubIssueState | "all" | "assigned";
@@ -55,6 +56,10 @@ const ISSUE_TABLE_COLUMN_IDS = [
 ] as const;
 const ISSUE_TABLE_LAYOUT_STORAGE_KEY = "comando.github.issues.table.layout";
 const ISSUE_TABLE_LAYOUT_VERSION = 1;
+// Baseline threshold for enabling GitHub issues table virtualization.
+export const GITHUB_ISSUES_VIRTUALIZATION_THRESHOLD = 100;
+export const GITHUB_ISSUES_ROW_VIRTUALIZATION_THRESHOLD =
+    GITHUB_ISSUES_VIRTUALIZATION_THRESHOLD;
 const DEFAULT_ISSUE_TABLE_COLUMN_ORDER: readonly IssueColumnId[] =
     ISSUE_TABLE_COLUMN_IDS;
 const DEFAULT_ISSUE_TABLE_COLUMN_WIDTHS: IssueColumnWidths = {
@@ -356,6 +361,26 @@ export function GitHubIssuesTabView({
             worktreeId: tab.worktreeId ?? null,
         });
     };
+    const handleOpenIssue = useCallback(
+        (issueNumber: number) =>
+            void openGitHubIssueTab({
+                issueNumber,
+                projectId: tab.projectId,
+                ref: tab.ref,
+                worktreeId: tab.worktreeId ?? null,
+            }),
+        [openGitHubIssueTab, tab.projectId, tab.ref, tab.worktreeId],
+    );
+    const renderIssueRow = useCallback(
+        (issue: GitHubIssueSummary) => (
+            <IssueTableRow
+                issue={issue}
+                onOpenIssue={handleOpenIssue}
+                tableLayout={tableLayout}
+            />
+        ),
+        [handleOpenIssue, tableLayout],
+    );
 
     return (
         <GitHubTabShell
@@ -394,182 +419,217 @@ export function GitHubIssuesTabView({
                 worktreeId: tab.worktreeId ?? null,
             }}
         >
-            <div className="space-y-3 p-4">
-                <GitHubAuthNotice authStatus={authStatus} />
-                {error ? <GitHubErrorState>{error}</GitHubErrorState> : null}
-                <div className="flex flex-wrap items-center gap-2">
-                    <GitHubSearchBox
-                        onChange={setQuery}
-                        placeholder="Search issues..."
-                        value={query}
-                    />
-                    <GitHubFilterButton
-                        active={filter === "open"}
-                        onClick={() => setFilter("open")}
-                    >
-                        Open
-                    </GitHubFilterButton>
-                    <GitHubFilterButton
-                        active={filter === "closed"}
-                        onClick={() => setFilter("closed")}
-                    >
-                        Closed
-                    </GitHubFilterButton>
-                    <GitHubFilterButton
-                        active={filter === "assigned"}
-                        onClick={() => setFilter("assigned")}
-                    >
-                        Assigned to me
-                    </GitHubFilterButton>
-                    <GitHubFilterButton
-                        active={filter === "all"}
-                        onClick={() => setFilter("all")}
-                    >
-                        All
-                    </GitHubFilterButton>
-                </div>
-                {isCreating ? (
-                    <div className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-3">
-                        <input
-                            className="h-[22px] w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-2 font-mono text-[12px] text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
-                            onChange={(event) =>
-                                setNewTitle(event.currentTarget.value)
-                            }
-                            placeholder="Issue title"
-                            value={newTitle}
-                        />
-                        <textarea
-                            className="mt-2 min-h-28 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
-                            onChange={(event) =>
-                                setNewBody(event.currentTarget.value)
-                            }
-                            placeholder="Describe the issue..."
-                            value={newBody}
-                        />
-                        <input
-                            className="mt-2 h-[22px] w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-2 font-mono text-[12px] text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
-                            onChange={(event) =>
-                                setNewLabels(event.currentTarget.value)
-                            }
-                            placeholder="Labels, comma separated"
-                            value={newLabels}
-                        />
-                        <div className="mt-3">
-                            <GitHubDraftPreview
-                                body={newBody}
-                                collapsible
-                                defaultExpanded={false}
-                                meta={
-                                    parseCsv(newLabels)?.length
-                                        ? `Labels: ${parseCsv(newLabels)?.join(", ")}`
-                                        : "No labels"
-                                }
-                                title={newTitle}
+            {({ scrollContainerRef }) => (
+                <>
+                    <div className="space-y-3 p-4">
+                        <GitHubAuthNotice authStatus={authStatus} />
+                        {error ? (
+                            <GitHubErrorState>{error}</GitHubErrorState>
+                        ) : null}
+                        <div className="flex flex-wrap items-center gap-2">
+                            <GitHubSearchBox
+                                onChange={setQuery}
+                                placeholder="Search issues..."
+                                value={query}
                             />
-                        </div>
-                        <div className="mt-3 flex justify-end gap-2">
-                            <IdeActionButton
-                                disabled={isCreatingIssue}
-                                onClick={() => setIsCreating(false)}
+                            <GitHubFilterButton
+                                active={filter === "open"}
+                                onClick={() => setFilter("open")}
                             >
-                                Cancel
-                            </IdeActionButton>
-                            <IdeActionButton
-                                disabled={
-                                    isCreatingIssue ||
-                                    !canWriteIssues ||
-                                    newTitle.trim().length === 0
-                                }
-                                onClick={() => void handleCreateIssue()}
+                                Open
+                            </GitHubFilterButton>
+                            <GitHubFilterButton
+                                active={filter === "closed"}
+                                onClick={() => setFilter("closed")}
                             >
-                                {isCreatingIssue
-                                    ? "Creating..."
-                                    : "Create Issue"}
-                            </IdeActionButton>
+                                Closed
+                            </GitHubFilterButton>
+                            <GitHubFilterButton
+                                active={filter === "assigned"}
+                                onClick={() => setFilter("assigned")}
+                            >
+                                Assigned to me
+                            </GitHubFilterButton>
+                            <GitHubFilterButton
+                                active={filter === "all"}
+                                onClick={() => setFilter("all")}
+                            >
+                                All
+                            </GitHubFilterButton>
                         </div>
+                        {isCreating ? (
+                            <div className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-3">
+                                <input
+                                    className="h-[22px] w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-2 font-mono text-[12px] text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
+                                    onChange={(event) =>
+                                        setNewTitle(
+                                            event.currentTarget.value,
+                                        )
+                                    }
+                                    placeholder="Issue title"
+                                    value={newTitle}
+                                />
+                                <textarea
+                                    className="mt-2 min-h-28 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
+                                    onChange={(event) =>
+                                        setNewBody(event.currentTarget.value)
+                                    }
+                                    placeholder="Describe the issue..."
+                                    value={newBody}
+                                />
+                                <input
+                                    className="mt-2 h-[22px] w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-2 font-mono text-[12px] text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))]"
+                                    onChange={(event) =>
+                                        setNewLabels(
+                                            event.currentTarget.value,
+                                        )
+                                    }
+                                    placeholder="Labels, comma separated"
+                                    value={newLabels}
+                                />
+                                <div className="mt-3">
+                                    <GitHubDraftPreview
+                                        body={newBody}
+                                        collapsible
+                                        defaultExpanded={false}
+                                        meta={
+                                            parseCsv(newLabels)?.length
+                                                ? `Labels: ${parseCsv(newLabels)?.join(", ")}`
+                                                : "No labels"
+                                        }
+                                        title={newTitle}
+                                    />
+                                </div>
+                                <div className="mt-3 flex justify-end gap-2">
+                                    <IdeActionButton
+                                        disabled={isCreatingIssue}
+                                        onClick={() => setIsCreating(false)}
+                                    >
+                                        Cancel
+                                    </IdeActionButton>
+                                    <IdeActionButton
+                                        disabled={
+                                            isCreatingIssue ||
+                                            !canWriteIssues ||
+                                            newTitle.trim().length === 0
+                                        }
+                                        onClick={() => void handleCreateIssue()}
+                                    >
+                                        {isCreatingIssue
+                                            ? "Creating..."
+                                            : "Create Issue"}
+                                    </IdeActionButton>
+                                </div>
+                            </div>
+                        ) : null}
+                        {isLoading || isCheckingAuth ? (
+                            <div className="text-[12px] text-text-secondary">
+                                Loading issues...
+                            </div>
+                        ) : null}
+                        {!isLoading && visibleIssues.length === 0 ? (
+                            <GitHubEmptyState>
+                                No issues match this view.
+                            </GitHubEmptyState>
+                        ) : null}
                     </div>
-                ) : null}
-                {isLoading || isCheckingAuth ? (
-                    <div className="text-[12px] text-text-secondary">
-                        Loading issues...
-                    </div>
-                ) : null}
-                {!isLoading && visibleIssues.length === 0 ? (
-                    <GitHubEmptyState>No issues match this view.</GitHubEmptyState>
-                ) : null}
-            </div>
-            {!isLoading && visibleIssues.length > 0 ? (
-                <div className="shell-scrollbar overflow-x-auto">
-                    <div
-                        className="sticky top-0 z-10 grid items-center px-3 py-1.5 text-[10px] font-semibold uppercase text-text-secondary"
-                        style={{
-                            backgroundColor: "var(--color-bg-secondary)",
-                            borderBottom:
-                                "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                            fontFamily: "var(--font-mono)",
-                            gridTemplateColumns: tableGridTemplate,
-                            letterSpacing: "0.06em",
-                            minWidth: tableMinWidth,
-                        }}
-                    >
-                        {tableLayout.order.map((columnId) => (
-                            <IssueHeaderCell
-                                columnId={columnId}
-                                dragged={draggedColumnId === columnId}
-                                key={columnId}
-                                label={ISSUE_TABLE_COLUMN_LABELS[columnId]}
-                                onDragEnd={() => setDraggedColumnId(null)}
-                                onDragOver={(event) => {
-                                    event.preventDefault();
-                                    event.dataTransfer.dropEffect = "move";
-                                }}
-                                onDragStart={(event) =>
-                                    handleColumnDragStart(columnId, event)
-                                }
-                                onDrop={(event) =>
-                                    handleColumnDrop(columnId, event)
-                                }
-                                onResizePointerDown={(event) =>
-                                    handleColumnResizePointerDown(
-                                        columnId,
-                                        event,
-                                    )
-                                }
-                            />
-                        ))}
-                    </div>
-                    {visibleIssues.map((issue) => {
-                        const handleOpenIssue = () =>
-                            void openGitHubIssueTab({
-                                issueNumber: issue.number,
-                                projectId: tab.projectId,
-                                ref: tab.ref,
-                                worktreeId: tab.worktreeId ?? null,
-                            });
-
-                        return (
+                    {!isLoading && visibleIssues.length > 0 ? (
+                        <div className="shell-scrollbar overflow-x-auto">
                             <div
-                                className="group/row grid items-stretch border-l-[3px] border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary"
-                                key={issue.id}
+                                className="sticky top-0 z-10 grid items-center px-3 py-1.5 text-[10px] font-semibold uppercase text-text-secondary"
                                 style={{
+                                    backgroundColor:
+                                        "var(--color-bg-secondary)",
+                                    borderBottom:
+                                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+                                    fontFamily: "var(--font-mono)",
                                     gridTemplateColumns: tableGridTemplate,
+                                    letterSpacing: "0.06em",
                                     minWidth: tableMinWidth,
                                 }}
                             >
                                 {tableLayout.order.map((columnId) => (
-                                    <IssueTableCell
+                                    <IssueHeaderCell
                                         columnId={columnId}
-                                        issue={issue}
+                                        dragged={
+                                            draggedColumnId === columnId
+                                        }
                                         key={columnId}
-                                        onOpen={handleOpenIssue}
+                                        label={
+                                            ISSUE_TABLE_COLUMN_LABELS[columnId]
+                                        }
+                                        onDragEnd={() =>
+                                            setDraggedColumnId(null)
+                                        }
+                                        onDragOver={(event) => {
+                                            event.preventDefault();
+                                            event.dataTransfer.dropEffect =
+                                                "move";
+                                        }}
+                                        onDragStart={(event) =>
+                                            handleColumnDragStart(
+                                                columnId,
+                                                event,
+                                            )
+                                        }
+                                        onDrop={(event) =>
+                                            handleColumnDrop(columnId, event)
+                                        }
+                                        onResizePointerDown={(event) =>
+                                            handleColumnResizePointerDown(
+                                                columnId,
+                                                event,
+                                            )
+                                        }
                                     />
                                 ))}
                             </div>
-                        );
-                    })}
-                </div>
-            ) : null}
+                            <GitHubVirtualizedTableBody
+                                estimateRowHeight={
+                                    estimateIssueTableRowHeight
+                                }
+                                getRowKey={(issue) => String(issue.id)}
+                                gridTemplateColumns={tableGridTemplate}
+                                items={visibleIssues}
+                                minWidth={tableMinWidth}
+                                renderRow={renderIssueRow}
+                                scrollContainerRef={scrollContainerRef}
+                                threshold={
+                                    GITHUB_ISSUES_VIRTUALIZATION_THRESHOLD
+                                }
+                            />
+                        </div>
+                    ) : null}
+                </>
+            )}
         </GitHubTabShell>
+    );
+}
+
+function IssueTableRow({
+    issue,
+    onOpenIssue,
+    tableLayout,
+}: {
+    readonly issue: GitHubIssueSummary;
+    readonly onOpenIssue: (issueNumber: number) => void;
+    readonly tableLayout: IssueTableLayout;
+}) {
+    const handleOpenIssue = () => {
+        onOpenIssue(issue.number);
+    };
+
+    return (
+        <div className="group/row items-stretch border-l-[3px] border-l-transparent pl-2.5 pr-3 text-left text-[11px] text-text-secondary transition-[color,background-color,border-color] duration-120 hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-secondary hover:text-text-primary">
+            {tableLayout.order.map((columnId) => (
+                <IssueTableCell
+                    columnId={columnId}
+                    issue={issue}
+                    key={columnId}
+                    onOpen={handleOpenIssue}
+                />
+            ))}
+        </div>
     );
 }
 
@@ -834,6 +894,10 @@ function moveIssueColumn(
 
     nextOrder.splice(targetIndex, 0, sourceColumnId);
     return nextOrder;
+}
+
+function estimateIssueTableRowHeight(issue: GitHubIssueSummary): number {
+    return issue.labels.length > 0 ? 68 : 56;
 }
 
 function getStorage(): Storage | null {

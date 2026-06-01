@@ -11,6 +11,13 @@ import {
 const DEFAULT_OVERSCAN = 4;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
 
+export interface MeasuredVirtualRange {
+    readonly startIndex: number;
+    readonly endIndex: number;
+    readonly visibleStartIndex: number;
+    readonly visibleEndIndex: number;
+}
+
 export interface MeasuredVirtualListHandle {
     readonly scrollToIndex: (
         index: number,
@@ -26,9 +33,11 @@ export interface MeasuredVirtualListProps<T> {
     readonly enabled?: boolean;
     readonly overscan?: number;
     readonly defaultViewportHeight?: number;
+    readonly scrollMarginTop?: number;
     readonly scrollContainerRef: RefObject<HTMLElement | null>;
     readonly estimateSize: (item: T, index: number) => number;
     readonly getItemKey: (item: T, index: number) => string;
+    readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
     readonly renderItem: (params: {
         readonly index: number;
@@ -47,12 +56,47 @@ interface MeasuredVirtualItem<T> {
 }
 
 interface LayoutSnapshot<T> {
+    readonly range: MeasuredVirtualRange;
     readonly totalSize: number;
     readonly virtualItems: readonly MeasuredVirtualItem<T>[];
 }
 
+interface CalculateMeasuredVirtualRangeOptions {
+    readonly itemCount: number;
+    readonly offsets: readonly number[];
+    readonly overscan: number;
+    readonly scrollMarginTop: number;
+    readonly scrollTop: number;
+    readonly sizes: readonly number[];
+    readonly viewportHeight: number;
+    readonly virtualizationEnabled: boolean;
+}
+
+interface CalculateMeasuredVirtualScrollTopOptions {
+    readonly align: "center" | "end" | "start";
+    readonly itemSize: number;
+    readonly itemStart: number;
+    readonly offset: number;
+    readonly scrollMarginTop: number;
+    readonly totalSize: number;
+    readonly viewportHeight: number;
+}
+
 function clamp(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);
+}
+
+function areRangesEqual(
+    left: MeasuredVirtualRange | null,
+    right: MeasuredVirtualRange,
+): boolean {
+    return (
+        left !== null &&
+        left.startIndex === right.startIndex &&
+        left.endIndex === right.endIndex &&
+        left.visibleStartIndex === right.visibleStartIndex &&
+        left.visibleEndIndex === right.visibleEndIndex
+    );
 }
 
 function findFirstVisibleIndex(
@@ -100,18 +144,113 @@ function findLastVisibleIndex(
     return result;
 }
 
+export function calculateMeasuredVirtualRange({
+    itemCount,
+    offsets,
+    overscan,
+    scrollMarginTop,
+    scrollTop,
+    sizes,
+    viewportHeight,
+    virtualizationEnabled,
+}: CalculateMeasuredVirtualRangeOptions): MeasuredVirtualRange {
+    if (itemCount === 0) {
+        return {
+            endIndex: -1,
+            startIndex: 0,
+            visibleEndIndex: -1,
+            visibleStartIndex: 0,
+        };
+    }
+
+    if (!virtualizationEnabled) {
+        const endIndex = itemCount - 1;
+
+        return {
+            endIndex,
+            startIndex: 0,
+            visibleEndIndex: endIndex,
+            visibleStartIndex: 0,
+        };
+    }
+
+    const effectiveScrollTop = Math.max(0, scrollTop - scrollMarginTop);
+    const scrollBottom = effectiveScrollTop + Math.max(1, viewportHeight);
+    const firstVisibleIndex = findFirstVisibleIndex(
+        offsets,
+        sizes,
+        effectiveScrollTop,
+    );
+    const lastVisibleIndex = findLastVisibleIndex(offsets, scrollBottom);
+    const visibleStartIndex =
+        firstVisibleIndex >= itemCount ? itemCount - 1 : firstVisibleIndex;
+    const visibleEndIndex = clamp(
+        lastVisibleIndex,
+        visibleStartIndex,
+        itemCount - 1,
+    );
+    const startIndex = Math.max(0, visibleStartIndex - overscan);
+    const endIndex = Math.min(itemCount - 1, visibleEndIndex + overscan);
+
+    return {
+        endIndex,
+        startIndex,
+        visibleEndIndex,
+        visibleStartIndex,
+    };
+}
+
+export function calculateMeasuredVirtualScrollTop({
+    align,
+    itemSize,
+    itemStart,
+    offset,
+    scrollMarginTop,
+    totalSize,
+    viewportHeight,
+}: CalculateMeasuredVirtualScrollTopOptions): number {
+    const normalizedViewportHeight = Math.max(1, viewportHeight);
+    const maxScrollTop = Math.max(
+        0,
+        totalSize + scrollMarginTop - normalizedViewportHeight,
+    );
+
+    let nextScrollTop = itemStart + scrollMarginTop + offset;
+
+    if (align === "center") {
+        nextScrollTop =
+            itemStart -
+            normalizedViewportHeight / 2 +
+            itemSize / 2 +
+            scrollMarginTop +
+            offset;
+    } else if (align === "end") {
+        nextScrollTop =
+            itemStart -
+            normalizedViewportHeight +
+            itemSize +
+            scrollMarginTop +
+            offset;
+    }
+
+    return clamp(nextScrollTop, 0, maxScrollTop);
+}
+
 export function MeasuredVirtualList<T>({
     items,
     enabled = true,
     overscan = DEFAULT_OVERSCAN,
     defaultViewportHeight = DEFAULT_VIEWPORT_HEIGHT,
+    scrollMarginTop = 0,
     scrollContainerRef,
     estimateSize,
     getItemKey,
+    onRangeChange,
     onReady,
     renderItem,
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
+    const normalizedScrollMarginTop = Math.max(0, scrollMarginTop);
     const [measuredSizes, setMeasuredSizes] = useState<Map<string, number>>(
         () => new Map(),
     );
@@ -124,6 +263,7 @@ export function MeasuredVirtualList<T>({
     const elementByKeyRef = useRef(new Map<string, HTMLDivElement>());
     const keyByElementRef = useRef(new WeakMap<Element, string>());
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
+    const previousRangeRef = useRef<MeasuredVirtualRange | null>(null);
     const itemKeys = useMemo(
         () => items.map((item, index) => getItemKey(item, index)),
         [getItemKey, items],
@@ -249,8 +389,28 @@ export function MeasuredVirtualList<T>({
             totalSize += sizes[index];
         }
 
-        if (!virtualizationEnabled || items.length === 0) {
+        const range = calculateMeasuredVirtualRange({
+            itemCount: items.length,
+            offsets,
+            overscan,
+            scrollMarginTop: normalizedScrollMarginTop,
+            scrollTop: scrollState.scrollTop,
+            sizes,
+            viewportHeight: scrollState.viewportHeight,
+            virtualizationEnabled,
+        });
+
+        if (items.length === 0) {
             return {
+                range,
+                totalSize,
+                virtualItems: [],
+            };
+        }
+
+        if (!virtualizationEnabled) {
+            return {
+                range,
                 totalSize,
                 virtualItems: items.map((item, index) => ({
                     index,
@@ -263,32 +423,18 @@ export function MeasuredVirtualList<T>({
             };
         }
 
-        const scrollBottom =
-            scrollState.scrollTop + Math.max(1, scrollState.viewportHeight);
-        const firstVisibleIndex = findFirstVisibleIndex(
-            offsets,
-            sizes,
-            scrollState.scrollTop,
-        );
-        const lastVisibleIndex = findLastVisibleIndex(offsets, scrollBottom);
-        const visibleStartIndex =
-            firstVisibleIndex >= items.length
-                ? items.length - 1
-                : firstVisibleIndex;
-        const visibleEndIndex = clamp(
-            lastVisibleIndex,
-            visibleStartIndex,
-            items.length - 1,
-        );
-        const startIndex = Math.max(0, visibleStartIndex - overscan);
-        const endIndex = Math.min(items.length - 1, visibleEndIndex + overscan);
         const virtualItems: MeasuredVirtualItem<T>[] = [];
 
-        for (let index = startIndex; index <= endIndex; index += 1) {
+        for (
+            let index = range.startIndex;
+            index <= range.endIndex;
+            index += 1
+        ) {
             virtualItems.push({
                 index,
                 isVisible:
-                    index >= visibleStartIndex && index <= visibleEndIndex,
+                    index >= range.visibleStartIndex &&
+                    index <= range.visibleEndIndex,
                 item: items[index],
                 key: itemKeys[index],
                 size: sizes[index],
@@ -297,6 +443,7 @@ export function MeasuredVirtualList<T>({
         }
 
         return {
+            range,
             totalSize,
             virtualItems,
         };
@@ -305,11 +452,24 @@ export function MeasuredVirtualList<T>({
         itemKeys,
         items,
         measuredSizes,
+        normalizedScrollMarginTop,
         overscan,
         scrollState.scrollTop,
         scrollState.viewportHeight,
         virtualizationEnabled,
     ]);
+
+    useEffect(() => {
+        if (
+            !onRangeChange ||
+            areRangesEqual(previousRangeRef.current, layout.range)
+        ) {
+            return;
+        }
+
+        previousRangeRef.current = layout.range;
+        onRangeChange(layout.range);
+    }, [layout.range, onRangeChange]);
 
     const setMeasuredElement = useCallback(
         (key: string, node: HTMLDivElement | null) => {
@@ -370,25 +530,15 @@ export function MeasuredVirtualList<T>({
                 targetItem?.size ??
                 measuredSizes.get(itemKeys[index]) ??
                 estimateSize(items[index], index);
-            const maxScrollTop = Math.max(
-                0,
-                layout.totalSize - container.clientHeight,
-            );
-
-            let nextScrollTop = itemStart + offset;
-
-            if (align === "center") {
-                nextScrollTop =
-                    itemStart -
-                    container.clientHeight / 2 +
-                    itemSize / 2 +
-                    offset;
-            } else if (align === "end") {
-                nextScrollTop =
-                    itemStart - container.clientHeight + itemSize + offset;
-            }
-
-            container.scrollTop = clamp(nextScrollTop, 0, maxScrollTop);
+            container.scrollTop = calculateMeasuredVirtualScrollTop({
+                align,
+                itemSize,
+                itemStart,
+                offset,
+                scrollMarginTop: normalizedScrollMarginTop,
+                totalSize: layout.totalSize,
+                viewportHeight: container.clientHeight,
+            });
         },
         [
             estimateSize,
@@ -396,6 +546,7 @@ export function MeasuredVirtualList<T>({
             items,
             layout,
             measuredSizes,
+            normalizedScrollMarginTop,
             scrollContainerRef,
         ],
     );

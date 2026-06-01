@@ -1,6 +1,15 @@
-import { useMemo } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type CSSProperties,
+    type RefObject,
+} from "react";
 
 import type { AiFileDiff, AiTrackedFile } from "@shared/ipc";
+import { MeasuredVirtualList } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { DiffLineView } from "./DiffLineView";
 import { HunkActionBar } from "./HunkActionBar";
@@ -11,6 +20,10 @@ import {
     shouldWrapDiffPreview,
     type DiffLine,
 } from "./reviewDiff";
+
+export const EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD = 1_000;
+
+const VIRTUAL_DIFF_LINE_OVERSCAN = 32;
 
 type RenderBlock =
     | {
@@ -43,6 +56,52 @@ type VisualSegment =
           readonly kind: "decision";
           readonly lines: readonly DiffLine[];
       };
+
+type VirtualPreviewItem =
+    | {
+          readonly key: string;
+          readonly kind: "line";
+          readonly line: DiffLine;
+      }
+    | {
+          readonly key: string;
+          readonly kind: "separator";
+          readonly line: DiffLine;
+      }
+    | {
+          readonly key: string;
+          readonly kind: "visualLabel";
+      }
+    | {
+          readonly dataReviewFileKey?: string;
+          readonly dataReviewFileUpdatedAt?: string;
+          readonly dataReviewHunkKey?: string;
+          readonly decisionHunkIndex?: number;
+          readonly isFirstInDecision: boolean;
+          readonly isFirstInVisualBlock: boolean;
+          readonly isLastInVisualBlock: boolean;
+          readonly key: string;
+          readonly kind: "visualLine";
+          readonly line: DiffLine;
+      };
+
+interface RenderPreviewContext {
+    readonly compactLineNumbers: boolean;
+    readonly decisionHunks: readonly {
+        readonly lines: readonly DiffLine[];
+        readonly newEnd: number;
+        readonly newStart: number;
+        readonly oldEnd: number;
+        readonly oldStart: number;
+    }[];
+    readonly diff: AiFileDiff;
+    readonly file: AiTrackedFile | null;
+    readonly interactiveHunksEnabled: boolean;
+    readonly lineWrapping: boolean;
+    readonly onKeepHunk?: (hunkId: string) => void;
+    readonly onRejectHunk?: (hunkId: string) => void;
+    readonly visualBlockSet: ReadonlySet<number>;
+}
 
 function getDecisionHunkFingerprint(hunk: {
     readonly lines: readonly DiffLine[];
@@ -277,6 +336,322 @@ function renderDiffLines(
     ));
 }
 
+function countPreviewLines(lines: readonly DiffLine[]): number {
+    return lines.filter((line) => line.type !== "separator").length;
+}
+
+function shouldVirtualizePreviewLines({
+    hasScrollContainer,
+    lineWrapping,
+    lines,
+}: {
+    readonly hasScrollContainer: boolean;
+    readonly lineWrapping: boolean;
+    readonly lines: readonly DiffLine[];
+}): boolean {
+    return (
+        hasScrollContainer &&
+        !lineWrapping &&
+        countPreviewLines(lines) >=
+            EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD
+    );
+}
+
+function calculateScrollMarginTop(
+    element: HTMLElement | null,
+    scrollContainer: HTMLElement | null,
+): number {
+    if (!element || !scrollContainer || element === scrollContainer) {
+        return 0;
+    }
+
+    const elementRect = element.getBoundingClientRect();
+    const containerRect = scrollContainer.getBoundingClientRect();
+    return Math.max(
+        0,
+        elementRect.top - containerRect.top + scrollContainer.scrollTop,
+    );
+}
+
+function getDiffLineKey(line: DiffLine, index: number): string {
+    return `${line.type}:${line.oldLineNumber ?? "n"}:${line.newLineNumber ?? "n"}:${index}`;
+}
+
+function getPreviewMaxLineWidthCh(lines: readonly DiffLine[]): number {
+    const maxTextLength = lines.reduce(
+        (maxLength, line) => Math.max(maxLength, line.text.length),
+        0,
+    );
+    return Math.max(80, maxTextLength + 18);
+}
+
+function estimateVirtualPreviewItemHeight(
+    item: VirtualPreviewItem,
+    diffZoom: number,
+): number {
+    const lineHeight = Math.max(16, Math.ceil(18 * diffZoom));
+
+    if (item.kind === "visualLabel") {
+        return 22;
+    }
+
+    if (item.kind === "visualLine") {
+        return (
+            lineHeight +
+            (item.isFirstInVisualBlock ? 8 : 0) +
+            (item.isFirstInDecision ? 12 : 0) +
+            (item.isLastInVisualBlock ? 8 : 0)
+        );
+    }
+
+    return lineHeight;
+}
+
+function getVirtualPreviewItemKey(item: VirtualPreviewItem): string {
+    return item.key;
+}
+
+function createVirtualLineItem(
+    line: DiffLine,
+    keyPrefix: string,
+    index: number,
+): VirtualPreviewItem {
+    return {
+        key: `${keyPrefix}:line:${getDiffLineKey(line, index)}`,
+        kind: "line",
+        line,
+    };
+}
+
+function buildVirtualPreviewItems(
+    renderBlocks: readonly RenderBlock[],
+    context: RenderPreviewContext,
+): readonly VirtualPreviewItem[] {
+    const items: VirtualPreviewItem[] = [];
+
+    renderBlocks.forEach((block) => {
+        if (block.kind === "separator") {
+            items.push({
+                key: block.key,
+                kind: "separator",
+                line: block.line,
+            });
+            return;
+        }
+
+        if (
+            block.kind !== "visual" ||
+            !context.visualBlockSet.has(block.visualBlockIndex)
+        ) {
+            block.lines.forEach((line, index) => {
+                items.push(createVirtualLineItem(line, block.key, index));
+            });
+            return;
+        }
+
+        if (block.decisionHunkIndexes.length > 1) {
+            items.push({
+                key: `${block.key}:label`,
+                kind: "visualLabel",
+            });
+        }
+
+        const segments = buildVisualSegments(block.lines);
+        const visualItems: Array<
+            Extract<VirtualPreviewItem, { readonly kind: "visualLine" }>
+        > = [];
+
+        segments.forEach((segment) => {
+            const hunkId =
+                segment.kind === "decision" &&
+                context.interactiveHunksEnabled &&
+                context.file
+                    ? resolveTrackedHunkId(
+                          context.file,
+                          context.diff,
+                          context.decisionHunks,
+                          segment.decisionHunkIndex,
+                      )
+                    : null;
+
+            segment.lines.forEach((line, lineIndex) => {
+                visualItems.push({
+                    dataReviewFileKey:
+                        segment.kind === "decision" && context.file
+                            ? context.file.identityKey
+                            : undefined,
+                    dataReviewFileUpdatedAt:
+                        segment.kind === "decision" && context.file
+                            ? context.file.updatedAt
+                            : undefined,
+                    dataReviewHunkKey: hunkId ?? undefined,
+                    decisionHunkIndex:
+                        segment.kind === "decision"
+                            ? segment.decisionHunkIndex
+                            : undefined,
+                    isFirstInDecision:
+                        segment.kind === "decision" && lineIndex === 0,
+                    isFirstInVisualBlock: false,
+                    isLastInVisualBlock: false,
+                    key: `${block.key}:${segment.key}:line:${getDiffLineKey(line, lineIndex)}`,
+                    kind: "visualLine",
+                    line,
+                });
+            });
+        });
+
+        visualItems.forEach((item, index) => {
+            items.push({
+                ...item,
+                isFirstInVisualBlock: index === 0,
+                isLastInVisualBlock: index === visualItems.length - 1,
+            });
+        });
+    });
+
+    return items;
+}
+
+function renderVisualBlock(
+    block: Extract<RenderBlock, { readonly kind: "visual" }>,
+    context: RenderPreviewContext,
+) {
+    const segments = buildVisualSegments(block.lines);
+
+    return (
+        <div
+            key={block.key}
+            style={{
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-bg-primary) 40%, var(--color-bg-elevated))",
+                border: "1px solid color-mix(in srgb, var(--color-border) 40%, transparent)",
+                borderRadius: 8,
+                margin: "4px 6px",
+            }}
+        >
+            {block.decisionHunkIndexes.length > 1 ? (
+                <div
+                    style={{
+                        color: "var(--color-text-secondary)",
+                        fontSize: "0.68em",
+                        fontWeight: 500,
+                        letterSpacing: "0.02em",
+                        opacity: 0.55,
+                        padding: "5px 10px 0",
+                    }}
+                >
+                    Linked changes
+                </div>
+            ) : null}
+            <div style={{ padding: 4 }}>
+                {segments.map((segment) => {
+                    if (
+                        segment.kind === "plain" ||
+                        !context.interactiveHunksEnabled ||
+                        !context.file
+                    ) {
+                        return (
+                            <div key={segment.key}>
+                                {renderDiffLines(segment.lines, {
+                                    compactLineNumbers:
+                                        context.compactLineNumbers,
+                                    filePath:
+                                        context.file?.path ?? context.diff.path,
+                                    lineWrapping: context.lineWrapping,
+                                })}
+                            </div>
+                        );
+                    }
+
+                    const hunkId = resolveTrackedHunkId(
+                        context.file,
+                        context.diff,
+                        context.decisionHunks,
+                        segment.decisionHunkIndex,
+                    );
+
+                    return (
+                        <div
+                            className="group"
+                            data-review-file-key={context.file.identityKey}
+                            data-review-file-updated-at={
+                                context.file.updatedAt
+                            }
+                            data-review-hunk-key={hunkId ?? undefined}
+                            key={segment.key}
+                            style={{
+                                margin: "16px 0 4px",
+                                position: "relative",
+                            }}
+                        >
+                            {hunkId ? (
+                                <HunkActionBar
+                                    hunkIndex={segment.decisionHunkIndex}
+                                    onAccept={() =>
+                                        context.onKeepHunk?.(hunkId)
+                                    }
+                                    onReject={() =>
+                                        context.onRejectHunk?.(hunkId)
+                                    }
+                                />
+                            ) : null}
+                            <div
+                                style={{
+                                    backgroundColor:
+                                        "color-mix(in srgb, var(--color-bg-elevated) 72%, transparent)",
+                                    border: "1px solid color-mix(in srgb, var(--color-border) 32%, transparent)",
+                                    borderRadius: 4,
+                                    overflow: "hidden",
+                                    paddingRight: 4,
+                                    paddingTop: 4,
+                                }}
+                            >
+                                {renderDiffLines(segment.lines, {
+                                    compactLineNumbers:
+                                        context.compactLineNumbers,
+                                    filePath: context.file.path,
+                                    lineWrapping: context.lineWrapping,
+                                })}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
+function renderPreviewBlock(block: RenderBlock, context: RenderPreviewContext) {
+    if (block.kind === "separator") {
+        return (
+            <DiffLineView
+                compactLineNumbers={context.compactLineNumbers}
+                filePath={context.file?.path ?? context.diff.path}
+                key={block.key}
+                line={block.line}
+                lineWrapping={context.lineWrapping}
+            />
+        );
+    }
+
+    if (
+        block.kind !== "visual" ||
+        !context.visualBlockSet.has(block.visualBlockIndex)
+    ) {
+        return (
+            <div key={block.key}>
+                {renderDiffLines(block.lines, {
+                    compactLineNumbers: context.compactLineNumbers,
+                    filePath: context.file?.path ?? context.diff.path,
+                    lineWrapping: context.lineWrapping,
+                })}
+            </div>
+        );
+    }
+
+    return renderVisualBlock(block, context);
+}
+
 export interface EditedFileDiffPreviewProps {
     readonly compactLineNumbers?: boolean;
     readonly diff: AiFileDiff;
@@ -287,6 +662,7 @@ export interface EditedFileDiffPreviewProps {
     readonly lineWrapping?: boolean;
     readonly onKeepHunk?: (hunkId: string) => void;
     readonly onRejectHunk?: (hunkId: string) => void;
+    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly showWhenEmpty?: boolean;
     readonly testId?: string;
 }
@@ -301,9 +677,12 @@ export function EditedFileDiffPreview({
     lineWrapping,
     onKeepHunk,
     onRejectHunk,
+    scrollContainerRef,
     showWhenEmpty = true,
     testId,
 }: EditedFileDiffPreviewProps) {
+    const listRef = useRef<HTMLDivElement | null>(null);
+    const [scrollMarginTop, setScrollMarginTop] = useState(0);
     const resolvedLineWrapping =
         lineWrapping ?? shouldWrapDiffPreview(file?.path ?? diff.path);
     const lines = useMemo(
@@ -332,6 +711,126 @@ export function EditedFileDiffPreview({
         file.hunks.length > 0 &&
         decisionHunks.length > 0,
     );
+    const previewContext = useMemo<RenderPreviewContext>(
+        () => ({
+            compactLineNumbers,
+            decisionHunks,
+            diff,
+            file,
+            interactiveHunksEnabled,
+            lineWrapping: resolvedLineWrapping,
+            onKeepHunk,
+            onRejectHunk,
+            visualBlockSet,
+        }),
+        [
+            compactLineNumbers,
+            decisionHunks,
+            diff,
+            file,
+            interactiveHunksEnabled,
+            onKeepHunk,
+            onRejectHunk,
+            resolvedLineWrapping,
+            visualBlockSet,
+        ],
+    );
+    const shouldVirtualizeLines = shouldVirtualizePreviewLines({
+        hasScrollContainer: scrollContainerRef !== undefined,
+        lineWrapping: resolvedLineWrapping,
+        lines,
+    });
+    const virtualItems = useMemo(
+        () =>
+            shouldVirtualizeLines
+                ? buildVirtualPreviewItems(renderBlocks, previewContext)
+                : [],
+        [previewContext, renderBlocks, shouldVirtualizeLines],
+    );
+    const maxLineWidthCh = useMemo(
+        () => getPreviewMaxLineWidthCh(lines),
+        [lines],
+    );
+    const contentStyle = useMemo<CSSProperties>(
+        () => ({
+            minWidth: resolvedLineWrapping
+                ? "100%"
+                : shouldVirtualizeLines
+                  ? `max(100%, ${maxLineWidthCh}ch)`
+                  : "100%",
+            width: resolvedLineWrapping ? "100%" : "max-content",
+        }),
+        [maxLineWidthCh, resolvedLineWrapping, shouldVirtualizeLines],
+    );
+
+    useEffect(() => {
+        if (
+            !shouldVirtualizeLines ||
+            !scrollContainerRef ||
+            typeof window === "undefined"
+        ) {
+            return;
+        }
+
+        const syncScrollMarginTop = () => {
+            setScrollMarginTop(
+                calculateScrollMarginTop(
+                    listRef.current,
+                    scrollContainerRef.current,
+                ),
+            );
+        };
+
+        syncScrollMarginTop();
+
+        const scrollContainer = scrollContainerRef.current;
+        let observer: ResizeObserver | null = null;
+
+        if (typeof ResizeObserver !== "undefined") {
+            observer = new ResizeObserver(syncScrollMarginTop);
+            if (listRef.current) {
+                observer.observe(listRef.current);
+            }
+            if (scrollContainer) {
+                observer.observe(scrollContainer);
+            }
+        }
+
+        window.addEventListener("resize", syncScrollMarginTop);
+
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener("resize", syncScrollMarginTop);
+        };
+    }, [scrollContainerRef, shouldVirtualizeLines]);
+
+    const estimateVirtualItemSize = useCallback(
+        (item: VirtualPreviewItem) =>
+            estimateVirtualPreviewItemHeight(item, diffZoom),
+        [diffZoom],
+    );
+
+    const renderVirtualItem = useCallback(
+        ({ item }: { readonly item: VirtualPreviewItem }) => (
+            <VirtualPreviewItemView
+                compactLineNumbers={compactLineNumbers}
+                diff={diff}
+                file={file}
+                item={item}
+                lineWrapping={resolvedLineWrapping}
+                onKeepHunk={onKeepHunk}
+                onRejectHunk={onRejectHunk}
+            />
+        ),
+        [
+            compactLineNumbers,
+            diff,
+            file,
+            onKeepHunk,
+            onRejectHunk,
+            resolvedLineWrapping,
+        ],
+    );
 
     if (!expanded) {
         return null;
@@ -351,6 +850,7 @@ export function EditedFileDiffPreview({
             <div
                 data-line-wrapping={String(resolvedLineWrapping)}
                 data-testid={testId}
+                data-virtualized-edited-diff={String(shouldVirtualizeLines)}
                 style={{
                     backgroundColor:
                         "color-mix(in srgb, var(--color-bg-primary) 60%, var(--color-bg-elevated))",
@@ -361,174 +861,25 @@ export function EditedFileDiffPreview({
                     overflowY: "hidden",
                 }}
             >
-                <div
-                    style={{
-                        minWidth: "100%",
-                        width: resolvedLineWrapping ? "100%" : "max-content",
-                    }}
-                >
+                <div style={contentStyle}>
                     {lines.length > 0 ? (
-                        <div style={{ padding: "4px 0" }}>
-                            {renderBlocks.map((block) => {
-                                if (block.kind === "separator") {
-                                    return (
-                                        <DiffLineView
-                                            compactLineNumbers={
-                                                compactLineNumbers
-                                            }
-                                            filePath={file?.path ?? diff.path}
-                                            key={block.key}
-                                            line={block.line}
-                                            lineWrapping={resolvedLineWrapping}
-                                        />
-                                    );
-                                }
-
-                                if (
-                                    block.kind !== "visual" ||
-                                    !visualBlockSet.has(block.visualBlockIndex)
-                                ) {
-                                    return (
-                                        <div key={block.key}>
-                                            {renderDiffLines(block.lines, {
-                                                compactLineNumbers,
-                                                filePath:
-                                                    file?.path ?? diff.path,
-                                                lineWrapping:
-                                                    resolvedLineWrapping,
-                                            })}
-                                        </div>
-                                    );
-                                }
-
-                                const segments = buildVisualSegments(
-                                    block.lines,
-                                );
-
-                                return (
-                                    <div
-                                        key={block.key}
-                                        style={{
-                                            backgroundColor:
-                                                "color-mix(in srgb, var(--color-bg-primary) 40%, var(--color-bg-elevated))",
-                                            border: "1px solid color-mix(in srgb, var(--color-border) 40%, transparent)",
-                                            borderRadius: 8,
-                                            margin: "4px 6px",
-                                        }}
-                                    >
-                                        {block.decisionHunkIndexes.length >
-                                        1 ? (
-                                            <div
-                                                style={{
-                                                    color: "var(--color-text-secondary)",
-                                                    fontSize: "0.68em",
-                                                    fontWeight: 500,
-                                                    letterSpacing: "0.02em",
-                                                    opacity: 0.55,
-                                                    padding: "5px 10px 0",
-                                                }}
-                                            >
-                                                Linked changes
-                                            </div>
-                                        ) : null}
-                                        <div style={{ padding: 4 }}>
-                                            {segments.map((segment) => {
-                                                if (
-                                                    segment.kind === "plain" ||
-                                                    !interactiveHunksEnabled ||
-                                                    !file
-                                                ) {
-                                                    return (
-                                                        <div key={segment.key}>
-                                                            {renderDiffLines(
-                                                                segment.lines,
-                                                                {
-                                                                    compactLineNumbers,
-                                                                    filePath:
-                                                                        file?.path ??
-                                                                        diff.path,
-                                                                    lineWrapping:
-                                                                        resolvedLineWrapping,
-                                                                },
-                                                            )}
-                                                        </div>
-                                                    );
-                                                }
-
-                                                const hunkId =
-                                                    resolveTrackedHunkId(
-                                                        file,
-                                                        diff,
-                                                        decisionHunks,
-                                                        segment.decisionHunkIndex,
-                                                    );
-
-                                                return (
-                                                    <div
-                                                        className="group"
-                                                        data-review-file-key={
-                                                            file.identityKey
-                                                        }
-                                                        data-review-file-updated-at={
-                                                            file.updatedAt
-                                                        }
-                                                        data-review-hunk-key={
-                                                            hunkId ?? undefined
-                                                        }
-                                                        key={segment.key}
-                                                        style={{
-                                                            margin: "16px 0 4px",
-                                                            position:
-                                                                "relative",
-                                                        }}
-                                                    >
-                                                        {hunkId ? (
-                                                            <HunkActionBar
-                                                                hunkIndex={
-                                                                    segment.decisionHunkIndex
-                                                                }
-                                                                onAccept={() =>
-                                                                    onKeepHunk?.(
-                                                                        hunkId,
-                                                                    )
-                                                                }
-                                                                onReject={() =>
-                                                                    onRejectHunk?.(
-                                                                        hunkId,
-                                                                    )
-                                                                }
-                                                            />
-                                                        ) : null}
-                                                        <div
-                                                            style={{
-                                                                backgroundColor:
-                                                                    "color-mix(in srgb, var(--color-bg-elevated) 72%, transparent)",
-                                                                border: "1px solid color-mix(in srgb, var(--color-border) 32%, transparent)",
-                                                                borderRadius: 4,
-                                                                overflow:
-                                                                    "hidden",
-                                                                paddingRight: 4,
-                                                                paddingTop: 4,
-                                                            }}
-                                                        >
-                                                            {renderDiffLines(
-                                                                segment.lines,
-                                                                {
-                                                                    compactLineNumbers,
-                                                                    filePath:
-                                                                        file.path,
-                                                                    lineWrapping:
-                                                                        resolvedLineWrapping,
-                                                                },
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                );
-                            })}
+                        <div ref={listRef} style={{ padding: "4px 0" }}>
+                            {shouldVirtualizeLines && scrollContainerRef ? (
+                                <MeasuredVirtualList
+                                    enabled
+                                    estimateSize={estimateVirtualItemSize}
+                                    getItemKey={getVirtualPreviewItemKey}
+                                    items={virtualItems}
+                                    overscan={VIRTUAL_DIFF_LINE_OVERSCAN}
+                                    renderItem={renderVirtualItem}
+                                    scrollContainerRef={scrollContainerRef}
+                                    scrollMarginTop={scrollMarginTop}
+                                />
+                            ) : (
+                                renderBlocks.map((block) =>
+                                    renderPreviewBlock(block, previewContext),
+                                )
+                            )}
                         </div>
                     ) : (
                         <div
@@ -544,6 +895,130 @@ export function EditedFileDiffPreview({
                     )}
                 </div>
             </div>
+        </div>
+    );
+}
+
+function getVirtualVisualLineStyle(
+    item: Extract<VirtualPreviewItem, { readonly kind: "visualLine" }>,
+): CSSProperties {
+    const style: CSSProperties = {
+        backgroundColor:
+            "color-mix(in srgb, var(--color-bg-primary) 40%, var(--color-bg-elevated))",
+        borderLeft:
+            "1px solid color-mix(in srgb, var(--color-border) 40%, transparent)",
+        borderRight:
+            "1px solid color-mix(in srgb, var(--color-border) 40%, transparent)",
+        marginLeft: 6,
+        marginRight: 6,
+        paddingLeft: 4,
+        paddingRight: 4,
+        position: item.isFirstInDecision ? "relative" : undefined,
+    };
+
+    if (item.isFirstInVisualBlock) {
+        style.borderTop =
+            "1px solid color-mix(in srgb, var(--color-border) 40%, transparent)";
+        style.borderTopLeftRadius = 8;
+        style.borderTopRightRadius = 8;
+        style.marginTop = 4;
+        style.paddingTop = item.isFirstInDecision ? 16 : 4;
+    } else if (item.isFirstInDecision) {
+        style.paddingTop = 16;
+    }
+
+    if (item.isLastInVisualBlock) {
+        style.borderBottom =
+            "1px solid color-mix(in srgb, var(--color-border) 40%, transparent)";
+        style.borderBottomLeftRadius = 8;
+        style.borderBottomRightRadius = 8;
+        style.marginBottom = 4;
+        style.paddingBottom = 4;
+    }
+
+    return style;
+}
+
+function VirtualPreviewItemView({
+    compactLineNumbers,
+    diff,
+    file,
+    item,
+    lineWrapping,
+    onKeepHunk,
+    onRejectHunk,
+}: {
+    readonly compactLineNumbers: boolean;
+    readonly diff: AiFileDiff;
+    readonly file: AiTrackedFile | null;
+    readonly item: VirtualPreviewItem;
+    readonly lineWrapping: boolean;
+    readonly onKeepHunk?: (hunkId: string) => void;
+    readonly onRejectHunk?: (hunkId: string) => void;
+}) {
+    if (item.kind === "visualLabel") {
+        return (
+            <div
+                style={{
+                    color: "var(--color-text-secondary)",
+                    fontSize: "0.68em",
+                    fontWeight: 500,
+                    letterSpacing: "0.02em",
+                    margin: "4px 6px 0",
+                    opacity: 0.55,
+                    padding: "5px 10px 0",
+                }}
+            >
+                Linked changes
+            </div>
+        );
+    }
+
+    if (item.kind === "separator") {
+        return (
+            <DiffLineView
+                compactLineNumbers={compactLineNumbers}
+                filePath={file?.path ?? diff.path}
+                line={item.line}
+                lineWrapping={lineWrapping}
+            />
+        );
+    }
+
+    if (item.kind === "line") {
+        return (
+            <DiffLineView
+                compactLineNumbers={compactLineNumbers}
+                filePath={file?.path ?? diff.path}
+                line={item.line}
+                lineWrapping={lineWrapping}
+            />
+        );
+    }
+
+    const hunkId = item.dataReviewHunkKey;
+
+    return (
+        <div
+            className={hunkId && item.isFirstInDecision ? "group" : undefined}
+            data-review-file-key={item.dataReviewFileKey}
+            data-review-file-updated-at={item.dataReviewFileUpdatedAt}
+            data-review-hunk-key={hunkId}
+            style={getVirtualVisualLineStyle(item)}
+        >
+            {hunkId && item.isFirstInDecision ? (
+                <HunkActionBar
+                    hunkIndex={item.decisionHunkIndex ?? 0}
+                    onAccept={() => onKeepHunk?.(hunkId)}
+                    onReject={() => onRejectHunk?.(hunkId)}
+                />
+            ) : null}
+            <DiffLineView
+                compactLineNumbers={compactLineNumbers}
+                filePath={file?.path ?? diff.path}
+                line={item.line}
+                lineWrapping={lineWrapping}
+            />
         </div>
     );
 }
