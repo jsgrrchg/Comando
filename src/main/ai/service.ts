@@ -224,6 +224,7 @@ type LiveSessionContext = {
 
 export class AiService {
     #aiWorker: AiWorkerGateway | null;
+    readonly #deletedSessionIds = new Set<string>();
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
@@ -275,6 +276,18 @@ export class AiService {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ): void {
+        const sessionId =
+            update.kind === "snapshot"
+                ? update.snapshot.sessionId
+                : update.patch.sessionId;
+        if (this.#deletedSessionIds.has(sessionId)) {
+            emitAiMainDiagnostic("Ignored deleted AI session update.", {
+                ownerWindowId,
+                ...describeAiSessionUpdate(update),
+            });
+            return;
+        }
+
         emitAiMainDiagnostic("Received worker AI session update.", {
             ownerWindowId,
             ...describeAiSessionUpdate(update),
@@ -841,19 +854,25 @@ export class AiService {
     }
 
     async deleteSession(sessionId: string): Promise<void> {
-        if (this.#liveSessionContexts.has(sessionId)) {
-            try {
-                await this.cancelSession(sessionId);
-            } catch (error) {
-                // Closing and deleting the local session state is still safe.
-                debugBenignError("ai.service.deleteSession.cancel", error);
+        this.#deletedSessionIds.add(sessionId);
+        try {
+            if (this.#liveSessionContexts.has(sessionId)) {
+                try {
+                    await this.cancelSession(sessionId);
+                } catch (error) {
+                    // Closing and deleting the local session state is still safe.
+                    debugBenignError("ai.service.deleteSession.cancel", error);
+                }
+
+                await this.closeSession(sessionId);
             }
 
-            await this.closeSession(sessionId);
+            this.#clearLiveSession(sessionId);
+            await this.#persistence.deleteSession(sessionId);
+        } catch (error) {
+            this.#deletedSessionIds.delete(sessionId);
+            throw error;
         }
-
-        this.#clearLiveSession(sessionId);
-        await this.#persistence.deleteSession(sessionId);
     }
 
     closeOwnedByWindow(ownerWindowId: string): void {

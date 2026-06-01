@@ -172,6 +172,28 @@ describe("applySessionUpdateToSidebarHistory", () => {
         });
     });
 
+    it("does not resurrect a locally deleted session from a late snapshot", () => {
+        const update: AiSessionUpdate = {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                sessionId: "deleted-session",
+                title: "Deleted Session",
+                updatedAt: "2026-04-19T12:00:00.000Z",
+            }),
+        };
+
+        const result = applySessionUpdateToSidebarHistory({
+            deletedSessionIds: new Set(["deleted-session"]),
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions: [],
+            update,
+        });
+
+        expect(result.needsReload).toBe(false);
+        expect(result.sessions).toEqual([]);
+    });
+
     it("preserves pinned metadata when a snapshot refreshes a known session", () => {
         const sessions = [
             createSummary({

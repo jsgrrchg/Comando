@@ -157,6 +157,7 @@ export function SidebarAgentsPanel({
     );
     const requestIdRef = useRef(0);
     const refreshTimerRef = useRef<number | null>(null);
+    const deletedSessionIdsRef = useRef<Set<string>>(new Set());
     const normalizedFilter = (filter ?? "").trim().toLowerCase();
     const hasQuery = normalizedFilter.length > 0;
     const pendingHistoryCache =
@@ -303,6 +304,7 @@ export function SidebarAgentsPanel({
                         : readSidebarAgentsHistoryCache(projectId, worktreeId)
                               ?.sessions ?? EMPTY_AGENTS_SESSIONS;
                 const result = applySessionUpdateToSidebarHistory({
+                    deletedSessionIds: deletedSessionIdsRef.current,
                     limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
                     scope: {
                         projectId,
@@ -495,6 +497,7 @@ export function SidebarAgentsPanel({
             }
 
             const previousSessions = visibleSessions;
+            deletedSessionIdsRef.current.add(session.sessionId);
             setSessionsAndCache((current) =>
                 current
                     .filter(
@@ -525,6 +528,7 @@ export function SidebarAgentsPanel({
                     await closeTab(tabId);
                 }
             } catch (err) {
+                deletedSessionIdsRef.current.delete(session.sessionId);
                 setSessionsAndCache(() => previousSessions);
                 setError(
                     err instanceof Error

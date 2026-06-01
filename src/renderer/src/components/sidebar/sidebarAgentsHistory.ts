@@ -30,18 +30,31 @@ export interface SidebarAgentsHistoryUnknownSessionSeed {
 export const SIDEBAR_AGENTS_HISTORY_LIMIT = 250;
 
 export function applySessionUpdateToSidebarHistory({
+    deletedSessionIds,
     limit,
     scope,
     sessions,
     unknownSessionSeed,
     update,
 }: {
+    readonly deletedSessionIds?: ReadonlySet<string> | null;
     readonly limit: number;
     readonly scope: SidebarAgentsHistoryScope;
     readonly sessions: readonly AiHistorySessionSummary[];
     readonly unknownSessionSeed?: SidebarAgentsHistoryUnknownSessionSeed | null;
     readonly update: AiSessionUpdate;
 }): SidebarAgentsHistoryUpdateResult {
+    const sessionId =
+        update.kind === "snapshot"
+            ? update.snapshot.sessionId
+            : update.patch.sessionId;
+    if (deletedSessionIds?.has(sessionId)) {
+        return {
+            needsReload: false,
+            sessions,
+        };
+    }
+
     if (update.kind === "snapshot") {
         return applySnapshotToSidebarHistory({
             limit,
