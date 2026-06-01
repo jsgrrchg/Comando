@@ -194,12 +194,9 @@ describe("AiPersistence", () => {
         persistence.saveSessionSnapshot(snapshot);
 
         const storedTranscript = connection
-            .prepare<
-                [string],
-                { preview: string | null; transcript_json: string } | undefined
-            >(
+            .prepare<[string], { preview: string | null } | undefined>(
                 `
-                SELECT preview, transcript_json
+                SELECT preview
                 FROM chat_transcripts
                 WHERE session_id = ?
                 `,
@@ -208,7 +205,6 @@ describe("AiPersistence", () => {
 
         expect(storedTranscript).toBeDefined();
         expect(storedTranscript?.preview).toBe("hello");
-        expect(storedTranscript?.transcript_json).toBe("{}");
 
         const catalog = persistence.loadLatestRuntimeCatalog("codex");
 
@@ -343,7 +339,7 @@ describe("AiPersistence", () => {
         expect(loadStoredMessageCount(connection, snapshot.sessionId)).toBe(2);
     });
 
-    it("loads transcript pages from message rows when transcript_json is unavailable", () => {
+    it("loads transcript pages from normalized message rows", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
@@ -358,8 +354,7 @@ describe("AiPersistence", () => {
             .prepare(
                 `
                 UPDATE chat_transcripts
-                SET transcript_json = 'not json',
-                    message_count = 999
+                SET message_count = 999
                 WHERE session_id = ?
                 `,
             )
@@ -391,7 +386,7 @@ describe("AiPersistence", () => {
         expect(loaded?.title).toBe("Shadow page");
     });
 
-    it("loads snapshot transcript and state from normalized rows before compact json", () => {
+    it("loads snapshot transcript and state from normalized rows", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot: AiSessionSnapshot = {
@@ -427,57 +422,6 @@ describe("AiPersistence", () => {
         };
 
         persistence.saveSessionSnapshot(snapshot);
-
-        const staleTranscriptPayload = {
-            ...loadStoredRuntimeState(connection, snapshot.sessionId),
-            messages: [
-                {
-                    attachments: [],
-                    content: "Stale compact message",
-                    createdAt: "2026-04-16T11:59:00.000Z",
-                    id: "stale-message",
-                    kind: "assistant",
-                    status: "completed",
-                },
-            ],
-            status: "waiting_permission",
-            toolActivity: [
-                {
-                    ...createInflatedToolActivity(
-                        "tool-stale-compact",
-                        snapshot.sessionId,
-                    ),
-                    summary: "Stale compact tool",
-                },
-            ],
-            trackedFiles: [
-                {
-                    hunks: [],
-                    identityKey: "src/stale.ts",
-                    isText: true,
-                    kind: "update",
-                    newText: "stale",
-                    oldText: "old",
-                    path: "src/stale.ts",
-                    previousPath: null,
-                    reviewState: "pending",
-                    reversible: true,
-                    sessionId: snapshot.sessionId,
-                    toolCallId: "tool-stale-compact",
-                    updatedAt: "2026-04-16T11:59:00.000Z",
-                },
-            ],
-            updatedAt: "2026-04-16T11:59:00.000Z",
-        };
-        connection
-            .prepare(
-                `
-                UPDATE chat_transcripts
-                SET transcript_json = ?
-                WHERE session_id = ?
-                `,
-            )
-            .run(JSON.stringify(staleTranscriptPayload), snapshot.sessionId);
 
         const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
 
@@ -610,24 +554,24 @@ describe("AiPersistence", () => {
         expect(loadStoredMessageCount(connection, snapshot.sessionId)).toBe(1);
     });
 
-    it("keeps transcript metadata idempotent when loading snapshots and pages", () => {
+    it("keeps normalized transcript rows idempotent when loading snapshots and pages", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
             messages: ["Stable message"],
-            sessionId: "session-compact-idempotent",
+            sessionId: "session-normalized-idempotent",
             title: "Stable session",
             toolActivity: [
                 createInflatedToolActivity(
                     "tool-idempotent",
-                    "session-compact-idempotent",
+                    "session-normalized-idempotent",
                 ),
             ],
             updatedAt: "2026-04-16T12:00:00.000Z",
         });
 
         persistence.saveSessionSnapshot(snapshot);
-        const storedBefore = loadStoredTranscriptJson(
+        const messageCountBefore = loadStoredMessageCount(
             connection,
             snapshot.sessionId,
         );
@@ -638,12 +582,12 @@ describe("AiPersistence", () => {
             offset: 0,
             sessionId: snapshot.sessionId,
         });
-        const storedAfter = loadStoredTranscriptJson(
+        const messageCountAfter = loadStoredMessageCount(
             connection,
             snapshot.sessionId,
         );
 
-        expect(storedAfter).toBe(storedBefore);
+        expect(messageCountAfter).toBe(messageCountBefore);
         expect(loaded?.messages).toEqual(snapshot.messages);
         expect(loaded?.toolActivity[0]).toEqual(
             expect.objectContaining({
@@ -985,7 +929,7 @@ describe("AiPersistence", () => {
         );
     });
 
-    it("returns null for missing history previews without backfilling transcripts", () => {
+    it("returns null for missing history previews without deriving legacy previews", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
 
@@ -994,7 +938,7 @@ describe("AiPersistence", () => {
             runtimeId: "codex",
             sessionId: "session-no-preview",
             transcript: createTranscriptWithMessages([
-                "Compact transcript should not be parsed for history.",
+                "Legacy transcript text should not be parsed for history.",
             ]),
             updatedAt: "2026-04-16T12:00:00.000Z",
             worktreeId: "worktree-a",
@@ -1016,7 +960,7 @@ describe("AiPersistence", () => {
         expect(loadStoredPreview(connection, "session-no-preview")).toBeNull();
     });
 
-    it("uses persisted history previews without parsing transcripts", () => {
+    it("uses persisted history previews without parsing legacy transcript json", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
 
@@ -1787,24 +1731,6 @@ function loadStoredRuntimeState(
             readonly title?: string;
         }[];
     };
-}
-
-function loadStoredTranscriptJson(
-    connection: ReturnType<typeof createSqliteCompatConnection>,
-    sessionId: string,
-): string {
-    const row = connection
-        .prepare<[string], { transcript_json: string } | undefined>(
-            `
-            SELECT transcript_json
-            FROM chat_transcripts
-            WHERE session_id = ?
-            `,
-        )
-        .get(sessionId);
-
-    expect(row).toBeDefined();
-    return row?.transcript_json ?? "";
 }
 
 function loadStoredMessageCount(
