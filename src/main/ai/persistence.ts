@@ -289,6 +289,10 @@ export class AiPersistence {
                     availableCommands: normalizeAvailableCommands(
                         stateRaw?.availableCommands,
                     ),
+                    closedAt:
+                        typeof stateRaw?.closedAt === "string"
+                            ? stateRaw.closedAt
+                            : null,
                     configOptions: normalizeConfigOptions(
                         stateRaw?.configOptions,
                     ),
@@ -920,6 +924,7 @@ export class AiPersistence {
     ): void {
         const state = {
             activeTurnStartedAt: snapshot.activeTurnStartedAt,
+            closedAt: snapshot.closedAt ?? null,
             lastError: snapshot.lastError,
             modeId: snapshot.modeId,
             modelId: snapshot.modelId,

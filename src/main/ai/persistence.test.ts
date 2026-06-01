@@ -755,6 +755,40 @@ describe("AiPersistence", () => {
         ]);
     });
 
+    it("preserves closed subagent state when restoring a session", () => {
+        const connection = createTestConnection();
+        const persistence = new AiPersistence(connection);
+        const closedAt = "2026-04-16T12:02:00.000Z";
+        const childSnapshot = createSnapshot({
+            closedAt,
+            messages: ["Child response"],
+            parentSessionId: "session-parent",
+            runtimeSessionId: "runtime-child",
+            sessionId: "session-child-closed",
+            title: "Closed Galileo",
+            updatedAt: closedAt,
+        });
+
+        persistence.saveSessionSnapshot(childSnapshot);
+
+        const loaded = persistence.loadSessionSnapshot(
+            childSnapshot.sessionId,
+        );
+        const state = loadStoredRuntimeState(
+            connection,
+            childSnapshot.sessionId,
+        );
+
+        expect(state.closedAt).toBe(closedAt);
+        expect(loaded).toEqual(
+            expect.objectContaining({
+                closedAt,
+                parentSessionId: "session-parent",
+                sessionId: childSnapshot.sessionId,
+            }),
+        );
+    });
+
     it("resolves raw runtime parent links through persisted runtime mappings", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
@@ -1475,6 +1509,7 @@ function createTranscriptWithMessages(
 }
 
 function createSnapshot(input: {
+    readonly closedAt?: string | null;
     readonly messages?: readonly string[];
     readonly parentSessionId?: string | null;
     readonly runtimeSessionId?: string | null;
@@ -1485,6 +1520,7 @@ function createSnapshot(input: {
 }): AiSessionSnapshot {
     return {
         availableCommands: [],
+        closedAt: input.closedAt ?? null,
         configOptions: [],
         lastError: null,
         messages: (input.messages ?? []).map((content, index) => ({
@@ -1670,6 +1706,7 @@ function loadStoredRuntimeState(
     sessionId: string,
 ): {
     readonly activeTurnStartedAt?: string | null;
+    readonly closedAt?: string | null;
     readonly messages?: unknown[];
     readonly pendingPermission?: unknown;
     readonly pendingUserInput?: unknown;
@@ -1707,6 +1744,7 @@ function loadStoredRuntimeState(
     expect(row).toBeDefined();
     return JSON.parse(row?.state_json ?? "{}") as {
         readonly activeTurnStartedAt?: string | null;
+        readonly closedAt?: string | null;
         readonly messages?: unknown[];
         readonly pendingPermission?: unknown;
         readonly pendingUserInput?: unknown;
