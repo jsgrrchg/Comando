@@ -246,6 +246,10 @@ function isDirectStreamingSessionUpdate(
     );
 }
 
+function toInternalThinkingMessageId(messageId: string | null): string | null {
+    return messageId ? `thinking:${messageId}` : null;
+}
+
 function createRuntimeSessionMappingIndex(
     mappings: readonly {
         readonly appSessionId: string;
@@ -1987,7 +1991,7 @@ export class AiWorkerRuntime {
                     nextSnapshot,
                     "thinking",
                     update.content,
-                    update.messageId ?? null,
+                    toInternalThinkingMessageId(update.messageId ?? null),
                 );
                 break;
             case "tool_call":

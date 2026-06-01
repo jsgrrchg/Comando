@@ -623,6 +623,85 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(true);
     });
 
+    it("keeps ACP thought and assistant chunks with the same runtime message id distinct", async () => {
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: process.cwd(),
+            projectRoot: process.cwd(),
+            title: "ACP message id collision",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await client!.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: "internal notes",
+                    type: "text",
+                },
+                messageId: "runtime-message-1",
+                sessionUpdate: "agent_thought_chunk",
+            },
+        });
+        await client!.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                content: {
+                    text: "final answer",
+                    type: "text",
+                },
+                messageId: "runtime-message-1",
+                sessionUpdate: "agent_message_chunk",
+            },
+        });
+
+        await vi.waitFor(() => {
+            const messages = getLatestPatchMessages(emittedEvents, "session-1");
+            expect(messages).toEqual([
+                expect.objectContaining({
+                    content: "internal notes",
+                    id: "thinking:runtime-message-1",
+                    kind: "thinking",
+                }),
+                expect.objectContaining({
+                    content: "final answer",
+                    id: "runtime-message-1",
+                    kind: "assistant",
+                }),
+            ]);
+        });
+        expect(
+            emittedEvents.some(
+                (event) =>
+                    event.event === "ai.session.event" &&
+                    event.payload.event.kind === "message-started" &&
+                    event.payload.event.message.id === "runtime-message-1" &&
+                    event.payload.event.messageKind === "assistant",
+            ),
+        ).toBe(true);
+        expect(
+            emittedEvents.some(
+                (event) =>
+                    event.event === "ai.session.event" &&
+                    event.payload.event.kind === "message-delta" &&
+                    event.payload.event.messageId === "runtime-message-1" &&
+                    event.payload.event.delta === "final answer",
+            ),
+        ).toBe(true);
+    });
+
     it("does not mark the session streaming for suppressed Codex status updates", async () => {
         const emittedEvents: AiWorkerEventMessage[] = [];
         const runtime = new AiWorkerRuntime({
