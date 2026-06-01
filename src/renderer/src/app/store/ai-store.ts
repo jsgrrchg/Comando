@@ -140,8 +140,6 @@ const EMPTY_RUNTIME_CATALOG: AiRuntimeCatalog = {
     modelId: null,
     models: [],
 };
-const AI_SESSION_CONSUME_SNAPSHOT_TRANSCRIPT = true;
-
 function emitAiRendererDiagnostic(
     message: string,
     context: Record<
@@ -2480,16 +2478,6 @@ function resolveIncomingSessionSnapshot(
         currentSnapshot,
         incomingSnapshot,
     );
-
-    if (!AI_SESSION_CONSUME_SNAPSHOT_TRANSCRIPT) {
-        return {
-            snapshot: writeAiSessionTranscriptToSnapshot(
-                incomingSnapshot,
-                currentTranscript,
-            ),
-            transcript: currentTranscript,
-        };
-    }
 
     if (
         !incomingIsFreshEnough &&

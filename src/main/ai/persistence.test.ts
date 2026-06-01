@@ -14,16 +14,23 @@ describe("AiPersistence", () => {
     it("overlays explicit runtime preferences onto the latest runtime catalog", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
+        const transcript = createCatalogTranscript({
+            access: "read-only",
+            modelId: "gpt-5",
+            reasoning: "high",
+        });
 
-        seedChatSession(connection, {
-            runtimeId: "codex",
-            sessionId: "session-latest",
-            transcript: createCatalogTranscript({
-                access: "read-only",
-                modelId: "gpt-5",
-                reasoning: "high",
+        persistence.saveSessionSnapshot({
+            ...createSnapshot({
+                sessionId: "session-latest",
+                title: "Latest catalog",
+                updatedAt: "2026-04-15T10:00:00.000Z",
             }),
-            updatedAt: "2026-04-15T10:00:00.000Z",
+            availableCommands: transcript.availableCommands,
+            configOptions:
+                transcript.configOptions as AiSessionSnapshot["configOptions"],
+            modelId: transcript.modelId,
+            models: transcript.models,
         });
 
         persistence.saveRuntimeModelPreference("codex", "gpt-5.4-mini");
@@ -84,7 +91,7 @@ describe("AiPersistence", () => {
         });
     });
 
-    it("applies legacy Claude effort preferences to upstream effort catalogs", () => {
+    it("applies Claude effort preference aliases to upstream effort catalogs", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const transcript = createCatalogTranscript({
@@ -93,12 +100,15 @@ describe("AiPersistence", () => {
             reasoning: "high",
         });
 
-        seedChatSession(connection, {
-            runtimeId: "claude",
-            sessionId: "session-claude-effort",
-            transcript: {
-                ...transcript,
-                configOptions: transcript.configOptions.map((option) =>
+        persistence.saveSessionSnapshot({
+            ...createSnapshot({
+                sessionId: "session-claude-effort",
+                title: "Claude effort",
+                updatedAt: "2026-04-15T10:00:00.000Z",
+            }),
+            availableCommands: transcript.availableCommands,
+            configOptions:
+                transcript.configOptions.map((option) =>
                     option.id === "thought_level"
                         ? {
                               ...option,
@@ -106,9 +116,10 @@ describe("AiPersistence", () => {
                               label: "Effort",
                           }
                         : option,
-                ),
-            },
-            updatedAt: "2026-04-15T10:00:00.000Z",
+                ) as AiSessionSnapshot["configOptions"],
+            modelId: transcript.modelId,
+            models: transcript.models,
+            runtimeId: "claude",
         });
         persistence.saveRuntimeSelectionPreferenceOption(
             "claude",
@@ -338,7 +349,7 @@ describe("AiPersistence", () => {
         expect(loadStoredMessageCount(connection, snapshot.sessionId)).toBe(2);
     });
 
-    it("loads transcript pages from shadow rows when legacy transcript json is unavailable", () => {
+    it("loads transcript pages from shadow rows when compact transcript json is unavailable", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
@@ -386,7 +397,7 @@ describe("AiPersistence", () => {
         expect(loaded?.title).toBe("Shadow page");
     });
 
-    it("loads snapshot transcript and state from shadow rows before legacy json", () => {
+    it("loads snapshot transcript and state from normalized rows before compact json", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot: AiSessionSnapshot = {
@@ -423,12 +434,12 @@ describe("AiPersistence", () => {
 
         persistence.saveSessionSnapshot(snapshot);
 
-        const staleLegacySnapshot = {
+        const staleCompactSnapshot = {
             ...loadStoredSnapshot(connection, snapshot.sessionId),
             messages: [
                 {
                     attachments: [],
-                    content: "Stale legacy message",
+                    content: "Stale compact message",
                     createdAt: "2026-04-16T11:59:00.000Z",
                     id: "stale-message",
                     kind: "assistant",
@@ -439,10 +450,10 @@ describe("AiPersistence", () => {
             toolActivity: [
                 {
                     ...createInflatedToolActivity(
-                        "tool-stale-legacy",
+                        "tool-stale-compact",
                         snapshot.sessionId,
                     ),
-                    summary: "Stale legacy tool",
+                    summary: "Stale compact tool",
                 },
             ],
             trackedFiles: [
@@ -458,7 +469,7 @@ describe("AiPersistence", () => {
                     reviewState: "pending",
                     reversible: true,
                     sessionId: snapshot.sessionId,
-                    toolCallId: "tool-stale-legacy",
+                    toolCallId: "tool-stale-compact",
                     updatedAt: "2026-04-16T11:59:00.000Z",
                 },
             ],
@@ -472,7 +483,7 @@ describe("AiPersistence", () => {
                 WHERE session_id = ?
                 `,
             )
-            .run(JSON.stringify(staleLegacySnapshot), snapshot.sessionId);
+            .run(JSON.stringify(staleCompactSnapshot), snapshot.sessionId);
 
         const loaded = persistence.loadSessionSnapshot(snapshot.sessionId);
 
@@ -554,17 +565,17 @@ describe("AiPersistence", () => {
         expect(loaded?.messages[0]?.status).toBe("completed");
     });
 
-    it("stores a healed compact tool activity when raw output and diffs contain huge strings", () => {
+    it("stores sanitized compact tool activity when raw output and diffs contain huge strings", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
             messages: ["Summarize the edit"],
-            sessionId: "session-save-healed-tool-activity",
-            title: "Healed save",
+            sessionId: "session-save-sanitized-tool-activity",
+            title: "Sanitized save",
             toolActivity: [
                 createInflatedToolActivity(
-                    "tool-save-healed",
-                    "session-save-healed-tool-activity",
+                    "tool-save-sanitized",
+                    "session-save-sanitized-tool-activity",
                 ),
             ],
             updatedAt: "2026-04-16T12:00:00.000Z",
@@ -582,7 +593,7 @@ describe("AiPersistence", () => {
         expect(storedSnapshot.persistenceVersion).toBe(3);
         expect(toolActivity).toEqual(
             expect.objectContaining({
-                id: "tool-save-healed",
+                id: "tool-save-sanitized",
                 kind: "edit",
                 rawInputJson: null,
                 rawOutputJson: null,
@@ -608,138 +619,17 @@ describe("AiPersistence", () => {
         expect(storedSnapshot.messages).toHaveLength(1);
     });
 
-    it("heals a legacy inflated transcript on load while preserving messages and essential tool activity fields", () => {
-        const connection = createTestConnection();
-        const persistence = new AiPersistence(connection);
-        const transcript = createLegacyInflatedTranscript(
-            "session-load-heal",
-            ["User request", "Assistant response"],
-        );
-
-        seedChatSession(connection, {
-            runtimeId: "codex",
-            sessionId: "session-load-heal",
-            transcript,
-            updatedAt: "2026-04-16T12:00:00.000Z",
-        });
-        const originalJson = loadStoredTranscriptJson(
-            connection,
-            "session-load-heal",
-        );
-
-        const loaded = persistence.loadSessionSnapshot("session-load-heal");
-
-        expect(loaded?.messages.map((message) => message.content)).toEqual([
-            "User request",
-            "Assistant response",
-        ]);
-        expect(loaded?.toolActivity[0]).toEqual(
-            expect.objectContaining({
-                action: {
-                    kind: "open_session",
-                    sessionId: "session-load-heal-child",
-                },
-                createdAt: "2026-04-16T12:00:00.000Z",
-                exitCode: 0,
-                id: "tool-legacy-inflated",
-                kind: "edit",
-                locations: [
-                    {
-                        endLine: 12,
-                        line: 4,
-                        path: "/tmp/large-file.ts",
-                    },
-                ],
-                rawInputJson: null,
-                rawOutputJson: null,
-                sessionId: "session-load-heal",
-                status: "completed",
-                summary: "Edited a large file",
-                title: "Edit large file",
-                updatedAt: "2026-04-16T12:00:01.000Z",
-            }),
-        );
-
-        const healedJson = loadStoredTranscriptJson(
-            connection,
-            "session-load-heal",
-        );
-        const healedSnapshot = JSON.parse(healedJson) as Record<
-            string,
-            unknown
-        >;
-
-        expect(healedJson.length).toBeLessThan(originalJson.length);
-        expect(healedSnapshot.persistenceVersion).toBe(3);
-        expect(loadStoredMessageCount(connection, "session-load-heal")).toBe(2);
-        expect(loadStoredPreview(connection, "session-load-heal")).toBe(
-            "Assistant response",
-        );
-        expect(loadStoredSessionUpdatedAt(connection, "session-load-heal")).toBe(
-            "2026-04-16T12:00:00.000Z",
-        );
-    });
-
-    it("heals a legacy inflated transcript when loading a transcript page and returns the correct page", () => {
-        const connection = createTestConnection();
-        const persistence = new AiPersistence(connection);
-
-        seedChatSession(connection, {
-            runtimeId: "codex",
-            sessionId: "session-page-heal",
-            transcript: createLegacyInflatedTranscript("session-page-heal", [
-                "Message 1",
-                "Message 2",
-                "Message 3",
-                "Message 4",
-            ]),
-            updatedAt: "2026-04-16T12:00:00.000Z",
-        });
-        const originalJson = loadStoredTranscriptJson(
-            connection,
-            "session-page-heal",
-        );
-
-        const page = persistence.loadSessionTranscriptPage({
-            limit: 2,
-            offset: 1,
-            sessionId: "session-page-heal",
-        });
-
-        expect(page?.messages.map((message) => message.content)).toEqual([
-            "Message 2",
-            "Message 3",
-        ]);
-        expect(page?.totalMessages).toBe(4);
-
-        const healedJson = loadStoredTranscriptJson(
-            connection,
-            "session-page-heal",
-        );
-        const healedSnapshot = JSON.parse(healedJson) as {
-            readonly persistenceVersion?: number;
-            readonly toolActivity?: readonly {
-                readonly rawOutputJson?: string | null;
-            }[];
-        };
-
-        expect(healedJson.length).toBeLessThan(originalJson.length);
-        expect(healedSnapshot.persistenceVersion).toBe(3);
-        expect(healedSnapshot.toolActivity?.[0]?.rawOutputJson).toBeNull();
-        expect(loadStoredMessageCount(connection, "session-page-heal")).toBe(4);
-    });
-
-    it("keeps already-healed transcripts idempotent when loading snapshots and pages", () => {
+    it("keeps compact transcripts idempotent when loading snapshots and pages", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
         const snapshot = createSnapshot({
             messages: ["Stable message"],
-            sessionId: "session-heal-idempotent",
+            sessionId: "session-compact-idempotent",
             title: "Stable session",
             toolActivity: [
                 createInflatedToolActivity(
                     "tool-idempotent",
-                    "session-heal-idempotent",
+                    "session-compact-idempotent",
                 ),
             ],
             updatedAt: "2026-04-16T12:00:00.000Z",
@@ -1137,9 +1027,9 @@ describe("AiPersistence", () => {
         seedChatSession(connection, {
             projectId: "project-1",
             runtimeId: "codex",
-            sessionId: "session-legacy",
+            sessionId: "session-no-preview",
             transcript: createTranscriptWithMessages([
-                "Legacy transcript should not be parsed for history.",
+                "Compact transcript should not be parsed for history.",
             ]),
             updatedAt: "2026-04-16T12:00:00.000Z",
             worktreeId: "worktree-a",
@@ -1155,10 +1045,10 @@ describe("AiPersistence", () => {
             expect.objectContaining({
                 messageCount: 1,
                 preview: null,
-                sessionId: "session-legacy",
+                sessionId: "session-no-preview",
             }),
         ]);
-        expect(loadStoredPreview(connection, "session-legacy")).toBeNull();
+        expect(loadStoredPreview(connection, "session-no-preview")).toBeNull();
     });
 
     it("uses persisted history previews without parsing transcripts", () => {
@@ -1344,23 +1234,21 @@ describe("AiPersistence", () => {
         expect(history).toHaveLength(105);
     });
 
-    it("loads a transcript page from persisted snapshot messages", () => {
+    it("loads a transcript page from normalized transcript messages", () => {
         const connection = createTestConnection();
         const persistence = new AiPersistence(connection);
 
-        seedChatSession(connection, {
-            projectId: "project-1",
-            runtimeId: "codex",
+        persistence.saveSessionSnapshot(createSnapshot({
             sessionId: "session-page",
-            transcript: createTranscriptWithMessages([
+            title: "Paged session",
+            messages: [
                 "Message 1",
                 "Message 2",
                 "Message 3",
                 "Message 4",
-            ]),
+            ],
             updatedAt: "2026-04-16T12:00:00.000Z",
-            worktreeId: "worktree-a",
-        });
+        }));
 
         const page = persistence.loadSessionTranscriptPage({
             limit: 2,
@@ -1808,21 +1696,6 @@ function seedChatSession(
         );
 }
 
-function createLegacyInflatedTranscript(
-    sessionId: string,
-    contents: readonly string[],
-): Record<string, unknown> {
-    return {
-        ...createTranscriptWithMessages(contents),
-        persistenceVersion: undefined,
-        sessionId,
-        title: "Legacy inflated session",
-        toolActivity: [
-            createInflatedToolActivity("tool-legacy-inflated", sessionId),
-        ],
-    };
-}
-
 function createInflatedToolActivity(
     id: string,
     sessionId: string,
@@ -1966,23 +1839,6 @@ function loadStoredMessageCount(
                 `,
             )
             .get(sessionId)?.message_count ?? null
-    );
-}
-
-function loadStoredSessionUpdatedAt(
-    connection: ReturnType<typeof createSqliteCompatConnection>,
-    sessionId: string,
-): string | null {
-    return (
-        connection
-            .prepare<[string], { updated_at: string } | undefined>(
-                `
-                SELECT updated_at
-                FROM chat_sessions
-                WHERE id = ?
-                `,
-            )
-            .get(sessionId)?.updated_at ?? null
     );
 }
 
