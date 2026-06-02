@@ -530,7 +530,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ),
                         hydrated: true,
                         isHydrating: false,
-                        lastIncomingSnapshotUpdatedAt: nextSnapshot.updatedAt,
+                        lastIncomingSnapshotUpdatedAt:
+                            getLatestIncomingSnapshotUpdatedAt(
+                                session.lastIncomingSnapshotUpdatedAt,
+                                nextSnapshot.updatedAt,
+                            ),
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
@@ -633,7 +637,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 hydrated: true,
                                 isHydrating: false,
                                 lastIncomingSnapshotUpdatedAt:
-                                    incomingSnapshot.updatedAt,
+                                    getLatestIncomingSnapshotUpdatedAt(
+                                        session.lastIncomingSnapshotUpdatedAt,
+                                        incomingSnapshot.updatedAt,
+                                    ),
                                 localError: nextSnapshot.lastError,
                                 meta: nextMeta,
                                 snapshot: nextSnapshot,
@@ -706,7 +713,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         hydrated: true,
                         isHydrating: false,
                         lastIncomingSnapshotUpdatedAt:
-                            incomingSnapshot.updatedAt,
+                            getLatestIncomingSnapshotUpdatedAt(
+                                session.lastIncomingSnapshotUpdatedAt,
+                                incomingSnapshot.updatedAt,
+                            ),
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
@@ -773,7 +783,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         hydrated: true,
                         isHydrating: false,
                         lastIncomingSnapshotUpdatedAt:
-                            nextSnapshot.updatedAt,
+                            getLatestIncomingSnapshotUpdatedAt(
+                                session.lastIncomingSnapshotUpdatedAt,
+                                nextSnapshot.updatedAt,
+                            ),
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: resolvedSnapshot,
@@ -966,7 +979,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             hydrated: true,
                             isHydrating: false,
                             lastIncomingSnapshotUpdatedAt: snapshot
-                                ? incomingSnapshot.updatedAt
+                                ? getLatestIncomingSnapshotUpdatedAt(
+                                      currentSession?.lastIncomingSnapshotUpdatedAt ??
+                                          null,
+                                      incomingSnapshot.updatedAt,
+                                  )
                                 : (currentSession?.lastIncomingSnapshotUpdatedAt ??
                                   null),
                             meta: buildSessionMeta(tab),
@@ -2504,6 +2521,25 @@ function isIncomingSnapshotFreshEnough(
     }
 
     return incomingMs >= currentMs;
+}
+
+function getLatestIncomingSnapshotUpdatedAt(
+    currentUpdatedAt: string | null,
+    incomingUpdatedAt: string,
+): string {
+    if (!currentUpdatedAt) {
+        return incomingUpdatedAt;
+    }
+
+    const currentMs = Date.parse(currentUpdatedAt);
+    const incomingMs = Date.parse(incomingUpdatedAt);
+    if (!Number.isFinite(currentMs) || !Number.isFinite(incomingMs)) {
+        return incomingUpdatedAt >= currentUpdatedAt
+            ? incomingUpdatedAt
+            : currentUpdatedAt;
+    }
+
+    return incomingMs >= currentMs ? incomingUpdatedAt : currentUpdatedAt;
 }
 
 function applyCatalogPatchToCatalog(
