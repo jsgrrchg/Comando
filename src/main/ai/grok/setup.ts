@@ -309,6 +309,18 @@ export function applyGrokAuthEnv(
     return env;
 }
 
+export function isGrokEnvironmentCredentialReady(
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    return envSecretPresent(env, XAI_API_KEY_ENV);
+}
+
+export function isGrokExternalCredentialReady(
+    settings: GrokRuntimeSettings,
+): boolean {
+    return grokLoginAvailable(settings);
+}
+
 export function markGrokAuthInvalidated(
     settings: GrokRuntimeSettings,
 ): GrokRuntimeSettings {

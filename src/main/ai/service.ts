@@ -34,6 +34,8 @@ import type {
     CodexRuntimeSettingsInput,
     CodexRuntimeSettings,
     GeminiRuntimeSettingsInput,
+    GrokRuntimeSettings,
+    GrokRuntimeSettingsInput,
     GetAiSessionTranscriptPageInput,
     KiloRuntimeSettingsInput,
     ListAiSessionHistoryInput,
@@ -133,6 +135,18 @@ import {
     markKiloAuthInvalidated,
     resolveKiloRuntime,
 } from "./kilo/setup";
+import {
+    applyGrokAuthEnv,
+    buildGrokSecretPatches,
+    getGrokRuntimeStatus,
+    isGrokAuthenticationError,
+    isGrokEnvironmentCredentialReady,
+    isGrokExternalCredentialReady,
+    launchGrokLogin,
+    loadGrokSecretBundle,
+    markGrokAuthInvalidated,
+    resolveGrokRuntime,
+} from "./grok/setup";
 import {
     applyOpenCodeAuthEnv,
     getOpenCodeRuntimeStatus,
@@ -420,6 +434,46 @@ export class AiService {
         await this.#saveGeminiAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
             getGeminiRuntimeStatus(nextSettings, this.#secretStore),
+        );
+        this.#onRuntimeStatus(status);
+        return status;
+    }
+
+    async saveGrokRuntimeSettings(
+        settings: GrokRuntimeSettingsInput,
+    ): Promise<AiRuntimeStatus> {
+        const currentSettings = this.#settingsService.loadGrokRuntimeSettings();
+        const xaiApiKey = applySecretValuePatch(
+            loadGrokSecretBundle(this.#secretStore).xaiApiKey,
+            settings.xaiApiKey,
+        );
+        const secretPatch = buildGrokSecretPatches(this.#secretStore, {
+            xaiApiKey,
+        });
+        const nextSettings = {
+            authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
+            authMethod: settings.authMethod,
+            binaryPath: normalizeOptionalText(settings.binaryPath),
+            hasXaiApiKey: secretPatch.flags.hasXaiApiKey,
+        } satisfies GrokRuntimeSettings;
+        const shouldClearInvalidation =
+            settings.authMethod === "grok-login" &&
+            (isGrokEnvironmentCredentialReady(process.env) ||
+                isGrokExternalCredentialReady(nextSettings));
+        const persistedSettings = {
+            ...nextSettings,
+            authInvalidatedAtMs:
+                shouldClearInvalidation
+                    ? null
+                    : nextSettings.authInvalidatedAtMs,
+        } satisfies GrokRuntimeSettings;
+
+        await this.#saveGrokAuthSettings(
+            persistedSettings,
+            secretPatch.patches,
+        );
+        const status = this.#withPersistedRuntimeCatalog(
+            getGrokRuntimeStatus(persistedSettings, this.#secretStore),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -868,6 +922,34 @@ export class AiService {
             return;
         }
 
+        if (input.runtimeId === "grok") {
+            if (input.methodId === "xai-api-key") {
+                throw new Error(
+                    "The xAI API key does not need a login terminal. Save the API key from settings.",
+                );
+            }
+
+            if (input.methodId !== "grok-login") {
+                throw new Error(
+                    "Select Grok login before opening authentication.",
+                );
+            }
+
+            const nextSettings = markGrokAuthInvalidated({
+                ...this.#settingsService.loadGrokRuntimeSettings(),
+                authMethod: "grok-login",
+            });
+            await this.#saveGrokAuthSettings(nextSettings);
+
+            await launchGrokLogin(nextSettings, cwd);
+            this.#onRuntimeStatus(
+                this.#withPersistedRuntimeCatalog(
+                    getGrokRuntimeStatus(nextSettings, this.#secretStore),
+                ),
+            );
+            return;
+        }
+
         if (input.runtimeId === "opencode") {
             if (input.methodId !== "opencode-login") {
                 throw new Error(
@@ -1114,6 +1196,25 @@ export class AiService {
             await this.#saveOpenCodeAuthSettings(nextSettings);
             const status = this.#withPersistedRuntimeCatalog(
                 getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
+        if (input.runtimeId === "grok") {
+            const currentSettings =
+                this.#settingsService.loadGrokRuntimeSettings();
+            const secretPatch = buildGrokSecretPatches(this.#secretStore, {
+                xaiApiKey: null,
+            });
+            const nextSettings = {
+                ...markGrokAuthInvalidated(currentSettings),
+                authMethod: null,
+                hasXaiApiKey: secretPatch.flags.hasXaiApiKey,
+            } satisfies GrokRuntimeSettings;
+            await this.#saveGrokAuthSettings(nextSettings, secretPatch.patches);
+            const status = this.#withPersistedRuntimeCatalog(
+                getGrokRuntimeStatus(nextSettings, this.#secretStore),
             );
             this.#onRuntimeStatus(status);
             return status;
@@ -1747,6 +1848,13 @@ export class AiService {
             );
         }
 
+        if (runtimeId === "grok") {
+            return getGrokRuntimeStatus(
+                this.#settingsService.loadGrokRuntimeSettings(),
+                this.#secretStore,
+            );
+        }
+
         if (runtimeId === "kilo") {
             return getKiloRuntimeStatus(
                 this.#settingsService.loadKiloRuntimeSettings(),
@@ -1807,6 +1915,20 @@ export class AiService {
 
         await this.#saveSecretPatches(secrets);
         this.#settingsService.saveGeminiRuntimeSettings(settings);
+    }
+
+    async #saveGrokAuthSettings(
+        settings: GrokRuntimeSettings,
+        secrets: readonly SecretRecordPatch[] = [],
+    ): Promise<void> {
+        if (this.#settingsService.saveGrokAuth) {
+            await this.#settingsService.saveGrokAuth(settings, secrets);
+            this.#secretStore.cacheSecretPatches?.(secrets);
+            return;
+        }
+
+        await this.#saveSecretPatches(secrets);
+        this.#settingsService.saveGrokRuntimeSettings(settings);
     }
 
     async #saveKiloAuthSettings(
@@ -1904,6 +2026,22 @@ export class AiService {
                         settings,
                         this.#secretStore,
                     ),
+                    resolved.program,
+                ),
+                executable: resolved.program,
+                status: resolved.status,
+            };
+        }
+
+        if (runtimeId === "grok") {
+            const settings = this.#settingsService.loadGrokRuntimeSettings();
+            const resolved = resolveGrokRuntime(settings, this.#secretStore);
+
+            return {
+                args: resolved.args,
+                command: resolved.command,
+                env: buildRuntimeSpawnEnv(
+                    applyGrokAuthEnv(process.env, settings, this.#secretStore),
                     resolved.program,
                 ),
                 executable: resolved.program,
@@ -2087,6 +2225,20 @@ export class AiService {
             this.#settingsService.saveGeminiRuntimeSettings(nextSettings);
             this.#onRuntimeStatus(
                 getGeminiRuntimeStatus(nextSettings, this.#secretStore),
+            );
+            return;
+        }
+
+        if (runtimeId === "grok" && isGrokAuthenticationError(message)) {
+            const nextSettings = markGrokAuthInvalidated({
+                ...this.#settingsService.loadGrokRuntimeSettings(),
+                authMethod: "grok-login",
+            });
+            this.#settingsService.saveGrokRuntimeSettings(nextSettings);
+            this.#onRuntimeStatus(
+                this.#withPersistedRuntimeCatalog(
+                    getGrokRuntimeStatus(nextSettings, this.#secretStore),
+                ),
             );
             return;
         }
