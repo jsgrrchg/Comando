@@ -22,6 +22,7 @@ import {
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 
 import { getTerminalTheme, type TerminalTheme } from "./terminalTheme";
 import type {
@@ -78,9 +79,15 @@ function buildSearchSummary(resultIndex: number, resultCount: number): string {
     return `${Math.max(resultIndex + 1, 1)} / ${resultCount}`;
 }
 
-function useTerminalTheme(): TerminalTheme {
+interface TerminalThemeOptions {
+    readonly fontFamily: string;
+    readonly fontSize: number;
+}
+
+function useTerminalTheme(options: TerminalThemeOptions): TerminalTheme {
+    const { fontFamily, fontSize } = options;
     const [theme, setTheme] = useState<TerminalTheme>(() =>
-        getTerminalTheme(null),
+        getTerminalTheme(null, { fontFamily, fontSize }),
     );
 
     useEffect(() => {
@@ -88,7 +95,7 @@ function useTerminalTheme(): TerminalTheme {
 
         const updateTheme = () => {
             frameHandle = 0;
-            const nextTheme = getTerminalTheme(null);
+            const nextTheme = getTerminalTheme(null, { fontFamily, fontSize });
             setTheme((currentTheme) =>
                 JSON.stringify(currentTheme) === JSON.stringify(nextTheme)
                     ? currentTheme
@@ -116,9 +123,21 @@ function useTerminalTheme(): TerminalTheme {
                 window.cancelAnimationFrame(frameHandle);
             }
         };
-    }, []);
+    }, [fontFamily, fontSize]);
 
     return theme;
+}
+
+async function loadTerminalFontForTheme(theme: TerminalTheme): Promise<void> {
+    if (!document.fonts?.load) {
+        return;
+    }
+
+    try {
+        await document.fonts.load(`${theme.fontSize}px ${theme.fontFamily}`);
+    } catch {
+        // Font loading is best-effort; xterm can still refit with fallbacks.
+    }
 }
 
 async function readClipboardText(): Promise<string> {
@@ -206,7 +225,16 @@ export function TerminalViewport({
     const [searchResultCount, setSearchResultCount] = useState(0);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<void> | null>(null);
-    const theme = useTerminalTheme();
+    const terminalFontFamily = useSettingsStore(
+        (state) => state.terminal.terminalFontFamily,
+    );
+    const terminalFontSize = useSettingsStore(
+        (state) => state.terminal.terminalFontSize,
+    );
+    const theme = useTerminalTheme({
+        fontFamily: terminalFontFamily,
+        fontSize: terminalFontSize,
+    });
 
     const focusTerminal = useCallback(() => {
         shouldRestoreFocusRef.current = true;
@@ -640,7 +668,18 @@ export function TerminalViewport({
         terminal.options.fontSize = theme.fontSize;
         terminal.options.lineHeight = theme.lineHeight;
         terminal.options.theme = createXtermTheme(theme);
-        fitAddonRef.current?.fit();
+
+        let cancelled = false;
+        void loadTerminalFontForTheme(theme).finally(() => {
+            if (cancelled) {
+                return;
+            }
+            syncSizeRef.current();
+        });
+
+        return () => {
+            cancelled = true;
+        };
     }, [theme]);
 
     useEffect(() => {

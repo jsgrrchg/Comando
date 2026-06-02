@@ -64,6 +64,24 @@ export interface SettingsEditorControlState {
     readonly onSuggestionsEnabledChange?: (enabled: boolean) => void;
 }
 
+export interface SettingsTerminalState {
+    readonly terminalFontFamily: string;
+    readonly terminalFontSize: number;
+    readonly claudeCodeOptimized: boolean;
+    readonly claudeCodeSkipPermissions: boolean;
+    readonly claudeCodeModel: string;
+    readonly claudeCodeContinueSession: boolean;
+    readonly claudeCodeMaxTurns: number;
+    readonly claudeCodeAvailable?: boolean | null;
+    readonly onTerminalFontFamilyChange?: (value: string) => void;
+    readonly onTerminalFontSizeChange?: (value: number) => void;
+    readonly onClaudeCodeOptimizedChange?: (value: boolean) => void;
+    readonly onClaudeCodeSkipPermissionsChange?: (value: boolean) => void;
+    readonly onClaudeCodeModelChange?: (value: string) => void;
+    readonly onClaudeCodeContinueSessionChange?: (value: boolean) => void;
+    readonly onClaudeCodeMaxTurnsChange?: (value: number) => void;
+}
+
 export interface ShortcutEntryOption {
     readonly description: string;
     readonly id: string;
@@ -107,6 +125,7 @@ export interface SettingsAiChatState {
 export interface SettingsWindowProps {
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
+    readonly terminal: SettingsTerminalState;
     readonly aiChat: SettingsAiChatState;
     readonly github: SettingsGitHubState;
     readonly privacy: SettingsPrivacyState;

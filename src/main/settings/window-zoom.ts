@@ -1,10 +1,12 @@
-import { BrowserWindow } from "electron";
+import type { BrowserWindow } from "electron";
 
 import { clampAppZoomFactor } from "@shared/app-zoom";
 import {
     IPC_EVENTS,
+    type AppAiChatSettings,
     type AppAppearanceSettings,
     type AppEditorSettings,
+    type AppTerminalSettings,
     type SettingsUpdatedEvent,
 } from "@shared/ipc";
 
@@ -26,8 +28,15 @@ export function applyAppZoomToAllWindows(zoomFactor: number): void {
 export function broadcastSettingsUpdated(
     appearance: AppAppearanceSettings | null,
     editor: AppEditorSettings | null,
+    aiChat: AppAiChatSettings | null,
+    terminal: AppTerminalSettings | null,
 ): void {
-    const payload: SettingsUpdatedEvent = { appearance, editor };
+    const payload: SettingsUpdatedEvent = {
+        aiChat,
+        appearance,
+        editor,
+        terminal,
+    };
 
     forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.settingsUpdated, payload);

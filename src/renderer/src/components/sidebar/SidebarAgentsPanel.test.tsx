@@ -1,9 +1,16 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiHistorySessionSummary } from "@shared/ipc";
+import {
+    registerClaudeCodeSidebarSession,
+    resetClaudeCodeSidebarSessionsForTests,
+} from "@renderer/features/terminal/claudeCodeSidebarSession";
 
-import { SidebarAgentsPanel } from "./SidebarAgentsPanel";
+import {
+    buildSidebarAgentsNewAgentMenuEntries,
+    SidebarAgentsPanel,
+} from "./SidebarAgentsPanel";
 import {
     clearSidebarAgentsHistoryCache,
     writeSidebarAgentsHistoryCache,
@@ -57,6 +64,7 @@ function createSummary(
 describe("SidebarAgentsPanel history cache", () => {
     beforeEach(() => {
         clearSidebarAgentsHistoryCache();
+        resetClaudeCodeSidebarSessionsForTests();
         Object.defineProperty(globalThis, "localStorage", {
             configurable: true,
             value: new MemoryStorage(),
@@ -141,5 +149,112 @@ describe("SidebarAgentsPanel history cache", () => {
         );
         expect(markup).toContain('data-subagent="true"');
         expect(markup).toContain("Agent");
+    });
+
+    it("renders live Claude Code terminal agents alongside real history", () => {
+        writeSidebarAgentsHistoryCache(
+            "project-1",
+            "worktree-1",
+            [
+                createSummary({
+                    runtimeId: "claude",
+                    sessionId: "claude-thread",
+                    title: "Claude Thread",
+                }),
+            ],
+            100,
+        );
+        registerClaudeCodeSidebarSession({
+            cwd: "/workspace",
+            projectId: "project-1",
+            terminalId: "terminal-1",
+            terminalTabId: "terminal-tab-1",
+            title: "Claude Code 1",
+            transcriptSessionId: null,
+            worktreeId: "worktree-1",
+        });
+
+        const markup = renderToStaticMarkup(
+            <SidebarAgentsPanel
+                projectId="project-1"
+                worktreeId="worktree-1"
+            />,
+        );
+
+        expect(markup).toContain("Claude Thread");
+        expect(markup).toContain("Claude Code 1");
+        expect(markup).toContain("Claude Code");
+        expect(markup).toContain("Terminal");
+    });
+});
+
+describe("SidebarAgentsPanel new agent menu", () => {
+    it("includes a Claude Code terminal entry without replacing Claude threads", () => {
+        const createAgent = vi.fn();
+        const openClaudeCodeTerminal = vi.fn();
+
+        const entries = buildSidebarAgentsNewAgentMenuEntries({
+            claudeCodeAvailable: true,
+            onCreateNewAgentTab: createAgent,
+            onOpenClaudeCodeTerminal: openClaudeCodeTerminal,
+        });
+
+        expect(entries.map((entry) => entry.type === "separator" ? "" : entry.label))
+            .toEqual([
+                "New Codex thread",
+                "New Claude thread",
+                "New Gemini thread",
+                "New Kilo thread",
+                "New OpenCode thread",
+                "New Claude Code Terminal",
+            ]);
+
+        const claudeEntry = entries.find(
+            (entry) =>
+                entry.type !== "separator" &&
+                entry.label === "New Claude thread",
+        );
+        const claudeCodeEntry = entries.find(
+            (entry) =>
+                entry.type !== "separator" &&
+                entry.label === "New Claude Code Terminal",
+        );
+
+        if (claudeEntry?.type === "separator" || !claudeEntry?.action) {
+            throw new Error("Expected Claude thread entry.");
+        }
+        if (
+            claudeCodeEntry?.type === "separator" ||
+            !claudeCodeEntry?.action
+        ) {
+            throw new Error("Expected Claude Code terminal entry.");
+        }
+
+        claudeEntry.action();
+        claudeCodeEntry.action();
+
+        expect(createAgent).toHaveBeenCalledWith("claude");
+        expect(createAgent).toHaveBeenCalledTimes(1);
+        expect(openClaudeCodeTerminal).toHaveBeenCalledTimes(1);
+    });
+
+    it("surfaces the non-blocking missing CLI state", () => {
+        const entries = buildSidebarAgentsNewAgentMenuEntries({
+            claudeCodeAvailable: false,
+            onCreateNewAgentTab: vi.fn(),
+            onOpenClaudeCodeTerminal: vi.fn(),
+        });
+
+        const claudeCodeEntry = entries.find(
+            (entry) =>
+                entry.type !== "separator" &&
+                entry.label === "New Claude Code Terminal",
+        );
+
+        expect(claudeCodeEntry).not.toHaveProperty("disabled");
+        expect(claudeCodeEntry).toMatchObject({
+            title:
+                "The claude command was not found in Comando's PATH. Your shell may still resolve it.",
+        });
     });
 });

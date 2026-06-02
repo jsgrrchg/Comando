@@ -2,8 +2,13 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppEditorSettings,
+    AppTerminalSettings,
     SettingsSnapshot,
 } from "@shared/ipc";
+import {
+    DEFAULT_APP_TERMINAL_SETTINGS,
+    normalizeAppTerminalSettings,
+} from "@shared/terminal-settings";
 
 import {
     getDefaultAiChatSettings,
@@ -54,6 +59,26 @@ export async function saveAiChatSettings(
         ...currentSnapshot,
         aiChat,
         shellState: currentSnapshot.shellState,
+    };
+
+    await getComandoApi().saveSettingsSnapshot(nextSnapshot);
+}
+
+export async function loadAppTerminalSettings(): Promise<AppTerminalSettings> {
+    const snapshot = await getComandoApi().getSettingsSnapshot();
+    return normalizeAppTerminalSettings(
+        snapshot.terminal ?? DEFAULT_APP_TERMINAL_SETTINGS,
+    );
+}
+
+export async function saveAppTerminalSettings(
+    terminal: AppTerminalSettings,
+): Promise<void> {
+    const currentSnapshot = await getComandoApi().getSettingsSnapshot();
+    const nextSnapshot: SettingsSnapshot = {
+        ...currentSnapshot,
+        shellState: currentSnapshot.shellState,
+        terminal: normalizeAppTerminalSettings(terminal),
     };
 
     await getComandoApi().saveSettingsSnapshot(nextSnapshot);

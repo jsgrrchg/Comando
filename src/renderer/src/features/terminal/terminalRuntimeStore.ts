@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type { TerminalSession } from "@shared/ipc";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 import type { RuntimeWorkspaceTerminalTab } from "@renderer/app/workspace/tree";
 
 import {
@@ -303,9 +304,10 @@ async function createSessionForTerminal(
     const requestVersion = allocateSessionVersion(terminalId);
 
     try {
+        const extraEnv = buildTerminalSessionExtraEnv(input.extraEnv);
         const nextSession = await getComandoApi().createTerminalSession({
             cols: input.cols,
-            extraEnv: input.extraEnv,
+            extraEnv,
             projectId: input.projectId,
             rows: input.rows,
             terminalId: input.terminalId ?? terminalId,
@@ -396,6 +398,20 @@ async function createSessionForTerminal(
         });
         return null;
     }
+}
+
+function buildTerminalSessionExtraEnv(
+    inputExtraEnv: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+    const { claudeCodeOptimized } = useSettingsStore.getState().terminal;
+    if (!claudeCodeOptimized) {
+        return inputExtraEnv;
+    }
+
+    return {
+        CLAUDE_CODE_NO_FLICKER: "1",
+        ...inputExtraEnv,
+    };
 }
 
 function updateRuntimeBySessionId(

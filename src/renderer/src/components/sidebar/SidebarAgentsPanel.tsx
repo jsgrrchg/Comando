@@ -20,6 +20,23 @@ import { truncateChatTitle } from "@shared/chatTitle";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { collectPaneNodes } from "@renderer/app/workspace/tree";
+import {
+    checkClaudeCodeInstalled,
+    launchClaudeCodeTerminal,
+} from "@renderer/features/terminal/claudeCodeTerminal";
+import {
+    CLAUDE_CODE_TERMINAL_RUNTIME_ID,
+    closeClaudeCodeSidebarSession,
+    focusClaudeCodeSidebarSession,
+    getClaudeCodeSidebarSessionByTerminalId,
+    getClaudeCodeSidebarSessions,
+    isClaudeCodeSidebarSession,
+    reconcileClaudeCodeSidebarSessions,
+    refreshClaudeCodeSidebarSessionTranscript,
+    renameClaudeCodeSidebarSession,
+    subscribeClaudeCodeSidebarSessions,
+    type SidebarAgentSessionSummary,
+} from "@renderer/features/terminal/claudeCodeSidebarSession";
 
 import {
     ContextMenu,
@@ -90,6 +107,10 @@ const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
     "opencode",
 ];
 const SIDEBAR_AGENT_DRAG_THRESHOLD_PX = 6;
+const CLAUDE_CODE_TERMINAL_DESCRIPTION =
+    "Open the claude CLI in a workspace terminal.";
+const CLAUDE_CODE_NOT_FOUND_MESSAGE =
+    "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 
 export function SidebarAgentsPanel({
     filter,
@@ -120,9 +141,16 @@ export function SidebarAgentsPanel({
             ? state.tabsById[activePane.activeTabId]
             : null;
 
-        return activeTab?.kind === "chat" || activeTab?.kind === "review"
-            ? activeTab.sessionId
-            : null;
+        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
+            return activeTab.sessionId;
+        }
+        if (activeTab?.kind === "terminal") {
+            return (
+                getClaudeCodeSidebarSessionByTerminalId(activeTab.terminalId)
+                    ?.sessionId ?? null
+            );
+        }
+        return null;
     });
     const historyScopeKey = useMemo(
         () => getSidebarAgentsHistoryCacheKey(projectId, worktreeId),
@@ -131,6 +159,9 @@ export function SidebarAgentsPanel({
 
     const [sessions, setSessions] = useState<readonly AiHistorySessionSummary[]>(
         () => readSidebarAgentsHistoryCache(projectId, worktreeId)?.sessions ?? [],
+    );
+    const [terminalAgentSessions, setTerminalAgentSessions] = useState(
+        () => getClaudeCodeSidebarSessions(),
     );
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -144,6 +175,9 @@ export function SidebarAgentsPanel({
         null,
     );
     const [renameDraft, setRenameDraft] = useState("");
+    const [claudeCodeAvailable, setClaudeCodeAvailable] = useState<
+        boolean | null
+    >(null);
     const [collapsedSessionIds, setCollapsedSessionIds] = useState<
         ReadonlySet<string>
     >(() => readSidebarAgentsCollapsedSessionIds(projectId, worktreeId));
@@ -164,10 +198,33 @@ export function SidebarAgentsPanel({
         loadedHistoryScopeKey === historyScopeKey
             ? null
             : readSidebarAgentsHistoryCache(projectId, worktreeId);
-    const visibleSessions =
+    const visibleHistorySessions =
         loadedHistoryScopeKey === historyScopeKey
             ? sessions
             : pendingHistoryCache?.sessions ?? EMPTY_AGENTS_SESSIONS;
+    const scopedTerminalAgentSessions = useMemo(
+        () =>
+            terminalAgentSessions.filter(
+                (session) =>
+                    session.projectId === projectId &&
+                    (session.worktreeId ?? null) === (worktreeId ?? null),
+        ),
+        [projectId, terminalAgentSessions, worktreeId],
+    );
+    const terminalAgentSessionByTerminalId = useMemo(
+        () =>
+            new Map(
+                terminalAgentSessions.map((session) => [
+                    session.terminalId,
+                    session,
+                ]),
+            ),
+        [terminalAgentSessions],
+    );
+    const visibleSessions = useMemo<readonly SidebarAgentSessionSummary[]>(
+        () => [...scopedTerminalAgentSessions, ...visibleHistorySessions],
+        [scopedTerminalAgentSessions, visibleHistorySessions],
+    );
     const visibleError =
         loadedHistoryScopeKey === historyScopeKey ? error : null;
     const showBlockingLoading =
@@ -288,6 +345,41 @@ export function SidebarAgentsPanel({
     }, [projectId, worktreeId]);
 
     useEffect(() => {
+        return subscribeClaudeCodeSidebarSessions(() => {
+            setTerminalAgentSessions(getClaudeCodeSidebarSessions());
+        });
+    }, []);
+
+    useEffect(() => {
+        reconcileClaudeCodeSidebarSessions(Object.values(tabsById));
+    }, [tabsById]);
+
+    useEffect(() => {
+        const refreshableSessions = terminalAgentSessions.filter(
+            (session) => session.cwd && session.transcriptSessionId,
+        );
+        if (refreshableSessions.length === 0) {
+            return;
+        }
+
+        const refresh = () => {
+            for (const session of getClaudeCodeSidebarSessions()) {
+                if (!session.cwd || !session.transcriptSessionId) {
+                    continue;
+                }
+                void refreshClaudeCodeSidebarSessionTranscript(session).catch(
+                    () => undefined,
+                );
+            }
+        };
+        refresh();
+        const intervalId = window.setInterval(refresh, 4_000);
+        return () => {
+            window.clearInterval(intervalId);
+        };
+    }, [terminalAgentSessions]);
+
+    useEffect(() => {
         const api = getComandoApi();
         if (!api) {
             return;
@@ -346,10 +438,15 @@ export function SidebarAgentsPanel({
     ]);
 
     const handleOpenSession = useCallback(
-        (session: AiHistorySessionSummary) => {
+        (session: SidebarAgentSessionSummary) => {
+            if (isClaudeCodeSidebarSession(session)) {
+                void focusClaudeCodeSidebarSession(session);
+                return;
+            }
+
             void openChatSessionTab({
                 projectId: session.projectId,
-                runtimeId: session.runtimeId,
+                runtimeId: session.runtimeId as AiRuntimeId,
                 sessionId: session.sessionId,
                 title: session.title,
                 worktreeId: session.worktreeId ?? null,
@@ -382,9 +479,28 @@ export function SidebarAgentsPanel({
         },
         [createChatTab, projectId, worktreeId],
     );
+    const handleOpenClaudeCodeTerminal = useCallback(() => {
+        void launchClaudeCodeTerminal({
+            projectId,
+            worktreeId,
+        });
+    }, [projectId, worktreeId]);
+
+    useEffect(() => {
+        let cancelled = false;
+        void checkClaudeCodeInstalled().then((available) => {
+            if (!cancelled) {
+                setClaudeCodeAvailable(available);
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     const handleContextMenu = useCallback(
-        (event: ReactMouseEvent, session: AiHistorySessionSummary) => {
+        (event: ReactMouseEvent, session: SidebarAgentSessionSummary) => {
             event.preventDefault();
             event.stopPropagation();
             setContextMenu({
@@ -397,8 +513,8 @@ export function SidebarAgentsPanel({
     );
 
     const startRename = useCallback(
-        (session: AiHistorySessionSummary) => {
-            if (isSubagentSession(session)) {
+        (session: SidebarAgentSessionSummary) => {
+            if (!isClaudeCodeSidebarSession(session) && isSubagentSession(session)) {
                 return;
             }
 
@@ -432,6 +548,11 @@ export function SidebarAgentsPanel({
             trimmedTitle.length === 0 ||
             trimmedTitle === session.title
         ) {
+            return;
+        }
+
+        if (isClaudeCodeSidebarSession(session)) {
+            await renameClaudeCodeSidebarSession(session, trimmedTitle);
             return;
         }
 
@@ -477,15 +598,21 @@ export function SidebarAgentsPanel({
     ]);
 
     const handleDelete = useCallback(
-        async (session: AiHistorySessionSummary) => {
+        async (session: SidebarAgentSessionSummary) => {
+            if (isClaudeCodeSidebarSession(session)) {
+                await closeClaudeCodeSidebarSession(session);
+                return;
+            }
+            const historySession = session as AiHistorySessionSummary;
+
             const childCount = countAiHistorySessionChildren(
-                session,
-                visibleSessions,
+                historySession,
+                visibleHistorySessions,
             );
             const confirmed = window.confirm(
                 childCount > 0
-                    ? `Delete "${session.title}" from threads? ${childCount} child agent${childCount === 1 ? "" : "s"} will stay in history as detached. This cannot be undone.`
-                    : `Delete "${session.title}" from threads? This cannot be undone.`,
+                    ? `Delete "${historySession.title}" from threads? ${childCount} child agent${childCount === 1 ? "" : "s"} will stay in history as detached. This cannot be undone.`
+                    : `Delete "${historySession.title}" from threads? This cannot be undone.`,
             );
             if (!confirmed) {
                 return;
@@ -496,16 +623,16 @@ export function SidebarAgentsPanel({
                 return;
             }
 
-            const previousSessions = visibleSessions;
-            deletedSessionIdsRef.current.add(session.sessionId);
+            const previousSessions = visibleHistorySessions;
+            deletedSessionIdsRef.current.add(historySession.sessionId);
             setSessionsAndCache((current) =>
                 current
                     .filter(
                         (candidate) =>
-                            candidate.sessionId !== session.sessionId,
+                            candidate.sessionId !== historySession.sessionId,
                     )
                     .map((candidate) =>
-                        isAiHistorySessionChildOfParent(session, candidate)
+                        isAiHistorySessionChildOfParent(historySession, candidate)
                             ? { ...candidate, parentSessionId: null }
                             : candidate,
                     ),
@@ -518,17 +645,17 @@ export function SidebarAgentsPanel({
                         (candidate) =>
                             (candidate.kind === "chat" ||
                                 candidate.kind === "review") &&
-                            candidate.sessionId === session.sessionId,
+                            candidate.sessionId === historySession.sessionId,
                     )
                     .map((candidate) => candidate.id);
 
-                await api.deleteAiSession(session.sessionId);
+                await api.deleteAiSession(historySession.sessionId);
 
                 for (const tabId of matchingTabIds) {
                     await closeTab(tabId);
                 }
             } catch (err) {
-                deletedSessionIdsRef.current.delete(session.sessionId);
+                deletedSessionIdsRef.current.delete(historySession.sessionId);
                 setSessionsAndCache(() => previousSessions);
                 setError(
                     err instanceof Error
@@ -537,17 +664,22 @@ export function SidebarAgentsPanel({
                 );
             }
         },
-        [closeTab, setSessionsAndCache, visibleSessions],
+        [closeTab, setSessionsAndCache, visibleHistorySessions],
     );
 
     const handleTogglePinned = useCallback(
-        async (session: AiHistorySessionSummary) => {
+        async (session: SidebarAgentSessionSummary) => {
+            if (isClaudeCodeSidebarSession(session)) {
+                return;
+            }
+            const historySession = session as AiHistorySessionSummary;
+
             const api = getComandoApi();
             if (!api) {
                 return;
             }
 
-            const previousPinnedAt = session.pinnedAt ?? null;
+            const previousPinnedAt = historySession.pinnedAt ?? null;
             const nextPinned = previousPinnedAt === null;
             const optimisticPinnedAt = nextPinned
                 ? new Date().toISOString()
@@ -564,7 +696,7 @@ export function SidebarAgentsPanel({
             try {
                 await api.setAiSessionPinned({
                     pinned: nextPinned,
-                    sessionId: session.sessionId,
+                    sessionId: historySession.sessionId,
                 });
             } catch (err) {
                 setSessionsAndCache((current) =>
@@ -588,11 +720,16 @@ export function SidebarAgentsPanel({
 
     const newAgentMenuEntries = useMemo<readonly ContextMenuEntry[]>(
         () =>
-            SIDEBAR_AGENTS_NEW_RUNTIMES.map((runtimeId) => ({
-                action: () => handleCreateNewAgentTab(runtimeId),
-                label: `New ${getHistoryRuntimeLabel(runtimeId)} thread`,
-            })),
-        [handleCreateNewAgentTab],
+            buildSidebarAgentsNewAgentMenuEntries({
+                claudeCodeAvailable,
+                onCreateNewAgentTab: handleCreateNewAgentTab,
+                onOpenClaudeCodeTerminal: handleOpenClaudeCodeTerminal,
+            }),
+        [
+            claudeCodeAvailable,
+            handleCreateNewAgentTab,
+            handleOpenClaudeCodeTerminal,
+        ],
     );
 
     const contextMenuEntries = useMemo<readonly ContextMenuEntry[]>(() => {
@@ -608,16 +745,18 @@ export function SidebarAgentsPanel({
             return [];
         }
 
-        const entries: ContextMenuEntry[] = [
-            {
+        const entries: ContextMenuEntry[] = [];
+
+        if (!isClaudeCodeSidebarSession(session)) {
+            entries.push({
                 label: isSessionPinned(session)
                     ? "Unpin from Sidebar"
                     : "Pin to Sidebar",
                 action: () => void handleTogglePinned(session),
-            },
-        ];
+            });
+        }
 
-        if (!isSubagentSession(session)) {
+        if (isClaudeCodeSidebarSession(session) || !isSubagentSession(session)) {
             entries.push({
                 label: "Rename",
                 action: () => startRename(session),
@@ -626,7 +765,9 @@ export function SidebarAgentsPanel({
 
         entries.push(
             {
-                label: "Delete",
+                label: isClaudeCodeSidebarSession(session)
+                    ? "Close Terminal"
+                    : "Delete",
                 danger: true,
                 action: () => void handleDelete(session),
             },
@@ -646,10 +787,17 @@ export function SidebarAgentsPanel({
         for (const tab of Object.values(tabsById)) {
             if (tab.kind === "chat" || tab.kind === "review") {
                 ids.add(tab.sessionId);
+            } else if (tab.kind === "terminal") {
+                const terminalSession = terminalAgentSessionByTerminalId.get(
+                    tab.terminalId,
+                );
+                if (terminalSession) {
+                    ids.add(terminalSession.sessionId);
+                }
             }
         }
         return ids;
-    }, [tabsById]);
+    }, [tabsById, terminalAgentSessionByTerminalId]);
 
     const aiSessions = useAiStore((state) => state.sessions);
     const workingOrderRef = useRef<Map<string, number>>(new Map());
@@ -962,6 +1110,31 @@ export function SidebarAgentsPanel({
     );
 }
 
+export function buildSidebarAgentsNewAgentMenuEntries({
+    claudeCodeAvailable,
+    onCreateNewAgentTab,
+    onOpenClaudeCodeTerminal,
+}: {
+    readonly claudeCodeAvailable: boolean | null;
+    readonly onCreateNewAgentTab: (runtimeId: AiRuntimeId) => void;
+    readonly onOpenClaudeCodeTerminal: () => void;
+}): readonly ContextMenuEntry[] {
+    return [
+        ...SIDEBAR_AGENTS_NEW_RUNTIMES.map((runtimeId) => ({
+            action: () => onCreateNewAgentTab(runtimeId),
+            label: `New ${getHistoryRuntimeLabel(runtimeId)} thread`,
+        })),
+        {
+            action: onOpenClaudeCodeTerminal,
+            label: "New Claude Code Terminal",
+            title:
+                claudeCodeAvailable === false
+                    ? CLAUDE_CODE_NOT_FOUND_MESSAGE
+                    : CLAUDE_CODE_TERMINAL_DESCRIPTION,
+        },
+    ];
+}
+
 function SidebarAgentsSection({
     activeSessionId,
     cancelRename,
@@ -983,16 +1156,16 @@ function SidebarAgentsSection({
     readonly collapsedSessionIds: ReadonlySet<string>;
     readonly collapseEnabled: boolean;
     readonly commitRename: () => void;
-    readonly groups: readonly AiSessionHierarchyGroup[];
+    readonly groups: readonly AiSessionHierarchyGroup<SidebarAgentSessionSummary>[];
     readonly onContextMenu: (
         event: ReactMouseEvent,
-        session: AiHistorySessionSummary,
+        session: SidebarAgentSessionSummary,
     ) => void;
-    readonly onOpen: (session: AiHistorySessionSummary) => void;
+    readonly onOpen: (session: SidebarAgentSessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
     readonly onToggleCollapsed: (sessionId: string) => void;
     readonly onTogglePinned: (
-        session: AiHistorySessionSummary,
+        session: SidebarAgentSessionSummary,
     ) => Promise<void> | void;
     readonly renameDraft: string;
     readonly renamingSessionId: string | null;
@@ -1093,16 +1266,16 @@ function SidebarAgentsItem({
     readonly onCommitRename: () => void;
     readonly onContextMenu: (
         event: ReactMouseEvent,
-        session: AiHistorySessionSummary,
+        session: SidebarAgentSessionSummary,
     ) => void;
-    readonly onOpen: (session: AiHistorySessionSummary) => void;
+    readonly onOpen: (session: SidebarAgentSessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
     readonly onToggleCollapsed: (sessionId: string) => void;
     readonly onTogglePinned: (
-        session: AiHistorySessionSummary,
+        session: SidebarAgentSessionSummary,
     ) => Promise<void> | void;
     readonly renameDraft: string;
-    readonly session: AiHistorySessionSummary;
+    readonly session: SidebarAgentSessionSummary;
 }) {
     const dragStateRef = useRef<{
         readonly pointerId: number;
@@ -1117,6 +1290,7 @@ function SidebarAgentsItem({
     const preview = getHistoryPreviewText(session);
     const title = truncateChatTitle(session.title, SIDEBAR_AGENTS_TITLE_MAX_CHARS);
     const isPinned = isSessionPinned(session);
+    const isTerminalAgent = isClaudeCodeSidebarSession(session);
     const activity = useAgentActivityIndicator(session.sessionId);
     const timestampLabel = activity
         ? activity.tone === "danger"
@@ -1141,7 +1315,7 @@ function SidebarAgentsItem({
             emitSidebarAgentDrag({
                 phase,
                 projectId: session.projectId,
-                runtimeId: session.runtimeId,
+                runtimeId: session.runtimeId as AiRuntimeId,
                 sessionId: session.sessionId,
                 title: session.title,
                 worktreeId: session.worktreeId ?? null,
@@ -1156,13 +1330,13 @@ function SidebarAgentsItem({
         (event: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">) => {
             setDragPreview({
                 activity,
-                runtimeLabel: getHistoryRuntimeLabel(session.runtimeId),
+                runtimeLabel: getSidebarAgentRuntimeLabel(session),
                 title: session.title,
                 x: event.clientX,
                 y: event.clientY,
             });
         },
-        [activity, session.runtimeId, session.title],
+        [activity, session],
     );
 
     const clearDragState = useCallback(
@@ -1279,6 +1453,7 @@ function SidebarAgentsItem({
             onPointerDown={(event) => {
                 if (
                     isRenaming ||
+                    isTerminalAgent ||
                     event.button !== 0 ||
                     isInteractiveSidebarAgentDragTarget(
                         event.target,
@@ -1415,7 +1590,7 @@ function SidebarAgentsItem({
                         {title}
                     </span>
                 )}
-                {isRenaming ? null : (
+                {isRenaming || isTerminalAgent ? null : (
                     <button
                         aria-label={
                             isPinned
@@ -1466,13 +1641,15 @@ function SidebarAgentsItem({
                     </>
                 ) : null}
                 <span className="shrink-0">
-                    {getHistoryRuntimeLabel(session.runtimeId)}
+                    {getSidebarAgentRuntimeLabel(session)}
                 </span>
                 <span aria-hidden="true" className="shrink-0">
                     ·
                 </span>
                 <span className="shrink-0">
-                    {formatHistoryMessageCount(session.messageCount)}
+                    {isTerminalAgent
+                        ? "Terminal"
+                        : formatHistoryMessageCount(session.messageCount)}
                 </span>
             </div>
             </div>
@@ -1700,25 +1877,31 @@ function buildUnknownSessionSeed(
     };
 }
 
-function isSessionPinned(session: AiHistorySessionSummary): boolean {
+function isSessionPinned(session: SidebarAgentSessionSummary): boolean {
     return (session.pinnedAt ?? null) !== null;
 }
 
-function isSubagentSession(session: AiHistorySessionSummary): boolean {
+function getSidebarAgentRuntimeLabel(session: SidebarAgentSessionSummary): string {
+    return session.runtimeId === CLAUDE_CODE_TERMINAL_RUNTIME_ID
+        ? "Claude Code"
+        : getHistoryRuntimeLabel(session.runtimeId);
+}
+
+function isSubagentSession(session: SidebarAgentSessionSummary): boolean {
     const parentSessionId = (session.parentSessionId ?? "").trim();
     return parentSessionId.length > 0 && parentSessionId !== session.sessionId;
 }
 
 function countHierarchyGroupRows(
-    groups: readonly AiSessionHierarchyGroup[],
+    groups: readonly AiSessionHierarchyGroup<SidebarAgentSessionSummary>[],
 ): number {
     return groups.reduce((count, group) => count + group.rows.length, 0);
 }
 
 function getVisibleSidebarHierarchyRows(
-    group: AiSessionHierarchyGroup,
+    group: AiSessionHierarchyGroup<SidebarAgentSessionSummary>,
     collapsedSessionIds: ReadonlySet<string>,
-): readonly AiSessionHierarchyRow[] {
+): readonly AiSessionHierarchyRow<SidebarAgentSessionSummary>[] {
     return filterAiSessionHierarchyRowsForCollapsedParents(
         group.rows,
         collapsedSessionIds,
@@ -1726,8 +1909,8 @@ function getVisibleSidebarHierarchyRows(
 }
 
 function comparePinnedHierarchyGroups(
-    left: AiSessionHierarchyGroup,
-    right: AiSessionHierarchyGroup,
+    left: AiSessionHierarchyGroup<SidebarAgentSessionSummary>,
+    right: AiSessionHierarchyGroup<SidebarAgentSessionSummary>,
 ): number {
     const pinnedComparison = getLatestPinnedAt(right).localeCompare(
         getLatestPinnedAt(left),
@@ -1739,7 +1922,9 @@ function comparePinnedHierarchyGroups(
     return getLatestUpdatedAt(right).localeCompare(getLatestUpdatedAt(left));
 }
 
-function getLatestPinnedAt(group: AiSessionHierarchyGroup): string {
+function getLatestPinnedAt(
+    group: AiSessionHierarchyGroup<SidebarAgentSessionSummary>,
+): string {
     return group.rows.reduce(
         (latest, row) =>
             (row.session.pinnedAt ?? "").localeCompare(latest) > 0
@@ -1749,7 +1934,9 @@ function getLatestPinnedAt(group: AiSessionHierarchyGroup): string {
     );
 }
 
-function getLatestUpdatedAt(group: AiSessionHierarchyGroup): string {
+function getLatestUpdatedAt(
+    group: AiSessionHierarchyGroup<SidebarAgentSessionSummary>,
+): string {
     return group.rows.reduce(
         (latest, row) =>
             row.session.updatedAt.localeCompare(latest) > 0
@@ -1760,8 +1947,8 @@ function getLatestUpdatedAt(group: AiSessionHierarchyGroup): string {
 }
 
 function compareSidebarHierarchySiblings(
-    left: AiHistorySessionSummary,
-    right: AiHistorySessionSummary,
+    left: SidebarAgentSessionSummary,
+    right: SidebarAgentSessionSummary,
     workingOrder: ReadonlyMap<string, number>,
 ): number {
     const leftOrder = workingOrder.get(left.sessionId);
@@ -1780,7 +1967,7 @@ function compareSidebarHierarchySiblings(
 }
 
 function getHierarchyGroupWorkingOrder(
-    group: AiSessionHierarchyGroup,
+    group: AiSessionHierarchyGroup<SidebarAgentSessionSummary>,
     workingOrder: ReadonlyMap<string, number>,
 ): number | undefined {
     let order: number | undefined;

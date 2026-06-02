@@ -15,6 +15,7 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppEditorSettings,
+    AppTerminalSettings,
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
     GeminiRuntimeSettings,
@@ -369,6 +370,18 @@ class SettingsClient implements SettingsGateway {
             aiChat: settings,
         };
         this.#dispatch("settings.saveAiChatSettings", settings);
+    }
+
+    loadAppTerminalSettings(): AppTerminalSettings {
+        return requireSetting(this.#snapshot.terminal, "terminal");
+    }
+
+    saveAppTerminalSettings(settings: AppTerminalSettings): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            terminal: settings,
+        };
+        this.#dispatch("settings.saveAppTerminalSettings", settings);
     }
 
     loadProjectSettings(projectId: string): ProjectSettingsSnapshot | null {

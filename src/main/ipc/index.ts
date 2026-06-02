@@ -13,6 +13,8 @@ import {
     type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
     type AiRuntimeAuthLogoutInput,
+    type CheckCommandAvailabilityInput,
+    type CheckCommandAvailabilityResult,
     type AiRuntimeId,
     type AiSessionConfigOptionMutationInput,
     type GetAiSessionTranscriptPageInput,
@@ -136,6 +138,7 @@ import {
     type OpenCodeRuntimeSettingsInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
+    type ReadClaudeCodeTranscriptInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
     type SendAiPromptInput,
@@ -162,6 +165,7 @@ import { simpleGit } from "simple-git";
 
 import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
+import { resolveSettingsSnapshotSaveEffects } from "@main/ipc/settings-save-effects";
 import { debugBenignError } from "@main/observability/logging";
 import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol";
 
@@ -171,6 +175,7 @@ import {
     forgetOpenFileBuffer,
     recordOpenFileBuffer,
 } from "@main/ai/openFileBuffers";
+import { checkCommandAvailability } from "@main/shell/command-availability";
 import type { GitGateway } from "@main/git/service";
 import type { GitHubGateway } from "@main/github/service";
 import type { ProjectService } from "@main/projects/service";
@@ -191,6 +196,7 @@ import {
     createEmptyTsconfigResolution,
     resolveTsconfigForPath,
 } from "@main/tsconfig/resolve";
+import { readClaudeCodeTranscript } from "@main/ipc/claude-code-transcript";
 import { loadAppChangelog } from "@main/changelog";
 import {
     getAppPrivacyAccessState,
@@ -229,6 +235,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
+    ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
+    ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
@@ -448,6 +456,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
+        IPC_CHANNELS.checkCommandAvailability,
+        (
+            _event,
+            input: CheckCommandAvailabilityInput,
+        ): CheckCommandAvailabilityResult => checkCommandAvailability(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.readClaudeCodeTranscript,
+        (_event, input: ReadClaudeCodeTranscriptInput) =>
+            readClaudeCodeTranscript(input),
+    );
+    ipcMain.handle(
         IPC_CHANNELS.getSettingsSnapshot,
         (): SettingsSnapshot => options.settingsService.loadSnapshot(),
     );
@@ -466,16 +486,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveSettingsSnapshot,
         (_event, snapshot: SettingsSnapshot) => {
             options.settingsService.saveSnapshot(snapshot);
-            if (
-                snapshot.appearance !== undefined ||
-                snapshot.editor !== undefined ||
-                snapshot.aiChat !== undefined
-            ) {
+            const effects = resolveSettingsSnapshotSaveEffects(snapshot);
+            if (effects.broadcastSettingsUpdated) {
                 const persisted = options.settingsService.loadSnapshot();
-                applyAppZoomToAllWindows(persisted.appearance?.zoomFactor ?? 1);
+                if (effects.applyAppZoom) {
+                    applyAppZoomToAllWindows(
+                        persisted.appearance?.zoomFactor ?? 1,
+                    );
+                }
                 broadcastSettingsUpdated(
                     persisted.appearance ?? null,
                     persisted.editor ?? null,
+                    persisted.aiChat ?? null,
+                    persisted.terminal ?? null,
                 );
             }
         },

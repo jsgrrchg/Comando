@@ -123,7 +123,11 @@ interface WorkspaceStore extends WorkspaceTreeState {
     createTerminalTab: (
         projectId: string | null,
         worktreeId?: string | null,
-    ) => Promise<void>;
+        options?: {
+            readonly paneId?: string | null;
+            readonly title?: string;
+        },
+    ) => Promise<string | null>;
     openChatSessionTab: (input: {
         readonly preserveSourcePaneOnMove?: boolean;
         readonly projectId: string | null;
@@ -317,6 +321,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         sessionId: string,
         title: string,
     ) => Promise<void>;
+    updateTerminalTabTitle: (tabId: string, title: string) => Promise<void>;
 }
 
 type GetWorkspaceState = () => WorkspaceStore;
@@ -498,7 +503,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 
-    createTerminalTab: async (projectId, worktreeId = null) => {
+    createTerminalTab: async (projectId, worktreeId = null, options) => {
+        const requestedPaneId = options?.paneId ?? get().activePaneId;
+        const paneId = findPaneById(get().rootNode, requestedPaneId)
+            ? requestedPaneId
+            : get().activePaneId;
         const terminalId = crypto.randomUUID();
         const tab: RuntimeWorkspaceTerminalTab = {
             createdAt: new Date().toISOString(),
@@ -513,12 +522,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             sessionId: terminalId,
             signalCode: null,
             terminalId,
-            title: `Terminal ${countTabs(get, "terminal") + 1}`,
+            title:
+                options?.title ??
+                getNextTerminalTabTitle(Object.values(get().tabsById)),
             worktreeId,
         };
 
         set((state) => ({
-            ...attachTabToPane(state, state.activePaneId, tab),
+            ...attachTabToPane(state, paneId, tab),
             error: null,
             lastQuickCreateAction: "terminal",
             recentActiveTabIds: recordRecentTabActivation(
@@ -527,6 +538,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ),
         }));
         await persistWorkspaceState(get);
+        return tab.id;
     },
 
     openChatSessionTab: async (input) => {
@@ -1862,6 +1874,27 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         await persistWorkspaceState(get);
     },
+
+    updateTerminalTabTitle: async (tabId, title) => {
+        set((state) => {
+            const tab = state.tabsById[tabId];
+            if (!tab || tab.kind !== "terminal" || tab.title === title) {
+                return state;
+            }
+
+            return {
+                ...state,
+                tabsById: {
+                    ...state.tabsById,
+                    [tabId]: {
+                        ...tab,
+                        title,
+                    },
+                },
+            };
+        });
+        await persistWorkspaceState(get);
+    },
 }));
 
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
@@ -2909,14 +2942,6 @@ function createRestoredTab(tab: RuntimeWorkspaceTab): RuntimeWorkspaceTab {
     };
 }
 
-function countTabs(
-    get: GetWorkspaceState,
-    kind: RuntimeWorkspaceTab["kind"],
-): number {
-    return Object.values(get().tabsById).filter((tab) => tab.kind === kind)
-        .length;
-}
-
 function countRuntimeChatTabs(
     get: GetWorkspaceState,
     runtimeId: AiRuntimeId,
@@ -2924,6 +2949,37 @@ function countRuntimeChatTabs(
     return Object.values(get().tabsById).filter(
         (tab) => tab.kind === "chat" && tab.runtimeId === runtimeId,
     ).length;
+}
+
+const TERMINAL_TITLE_PATTERN = /^Terminal(?: (\d+))?$/;
+
+function getNextTerminalTabTitle(tabs: readonly RuntimeWorkspaceTab[]): string {
+    return `Terminal ${getNextNumberedTitleValue(
+        tabs,
+        TERMINAL_TITLE_PATTERN,
+    )}`;
+}
+
+function getNextNumberedTitleValue(
+    tabs: readonly RuntimeWorkspaceTab[],
+    pattern: RegExp,
+): number {
+    let maxValue = 0;
+    for (const tab of tabs) {
+        if (tab.kind !== "terminal") {
+            continue;
+        }
+        const match = pattern.exec(tab.title.trim());
+        if (!match) {
+            continue;
+        }
+        const value = match[1] ? Number.parseInt(match[1], 10) : 1;
+        if (Number.isFinite(value)) {
+            maxValue = Math.max(maxValue, value);
+        }
+    }
+
+    return maxValue + 1;
 }
 
 function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {

@@ -36,6 +36,8 @@ import {
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type ComandoApi,
+    type CheckCommandAvailabilityInput,
+    type CheckCommandAvailabilityResult,
     type CodexRuntimeSettingsInput,
     type CopyExternalProjectEntriesInput,
     type CopyExternalProjectEntriesResult,
@@ -57,6 +59,8 @@ import {
     type PrepareAiSessionInput,
     type ProjectSettingsSnapshot,
     type ProjectSettingsUpdatedEvent,
+    type ReadClaudeCodeTranscriptInput,
+    type ReadClaudeCodeTranscriptResult,
     type ProjectAppDataSummary,
     type ProjectRelocateResult,
     type ProjectSummary,
@@ -203,6 +207,72 @@ function assertIpcArray<T>(channel: string, value: unknown): T[] {
         );
     }
     return value as T[];
+}
+
+function assertCommandAvailabilityResult(
+    channel: string,
+    value: unknown,
+): CheckCommandAvailabilityResult {
+    const result = assertIpcObject<Partial<CheckCommandAvailabilityResult>>(
+        channel,
+        value,
+    );
+    if (typeof result.found !== "boolean") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected found to be boolean.`,
+        );
+    }
+    if (result.path !== null && typeof result.path !== "string") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected path to be string or null.`,
+        );
+    }
+    return {
+        found: result.found,
+        path: result.path,
+    };
+}
+
+function assertClaudeCodeTranscriptResult(
+    channel: string,
+    value: unknown,
+): ReadClaudeCodeTranscriptResult {
+    const result = assertIpcObject<Partial<ReadClaudeCodeTranscriptResult>>(
+        channel,
+        value,
+    );
+    if (typeof result.found !== "boolean") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected found to be boolean.`,
+        );
+    }
+    if (typeof result.changed !== "boolean") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected changed to be boolean.`,
+        );
+    }
+    if (result.mtimeMs !== null && typeof result.mtimeMs !== "number") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected mtimeMs to be number or null.`,
+        );
+    }
+    if (result.title !== null && typeof result.title !== "string") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected title to be string or null.`,
+        );
+    }
+    if (result.preview !== null && typeof result.preview !== "string") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected preview to be string or null.`,
+        );
+    }
+    return {
+        changed: result.changed,
+        found: result.found,
+        mtimeMs: result.mtimeMs,
+        preview: result.preview,
+        title: result.title,
+    };
 }
 
 const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
@@ -395,6 +465,19 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.revealGeneratedImage, path),
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
+    checkCommandAvailability: async (input: CheckCommandAvailabilityInput) =>
+        assertCommandAvailabilityResult(
+            IPC_CHANNELS.checkCommandAvailability,
+            await ipcRenderer.invoke(IPC_CHANNELS.checkCommandAvailability, input),
+        ),
+    readClaudeCodeTranscript: async (input: ReadClaudeCodeTranscriptInput) =>
+        assertClaudeCodeTranscriptResult(
+            IPC_CHANNELS.readClaudeCodeTranscript,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.readClaudeCodeTranscript,
+                input,
+            ),
+        ),
     getSettingsSnapshot: async () =>
         assertIpcObject<SettingsSnapshot>(
             IPC_CHANNELS.getSettingsSnapshot,

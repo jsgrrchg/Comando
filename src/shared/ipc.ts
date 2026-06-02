@@ -1,6 +1,8 @@
 import type { AppIdentity } from "@shared/app-identity";
+import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
 
+export type { AppTerminalSettings } from "./terminal-settings";
 export type { ChatFontFamily, EditorFontFamily } from "./typography";
 
 export const IPC_CHANNELS = {
@@ -20,6 +22,8 @@ export const IPC_CHANNELS = {
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
+    checkCommandAvailability: "app:check-command-availability",
+    readClaudeCodeTranscript: "app:read-claude-code-transcript",
     getSettingsSnapshot: "settings:get-snapshot",
     getProjectSettings: "settings:get-project-settings",
     saveCodexRuntimeSettings: "settings:save-codex-runtime-settings",
@@ -282,6 +286,29 @@ export interface PersistedShellState {
         | "agents"
         | "issues"
         | "pull_requests";
+}
+
+export interface CheckCommandAvailabilityInput {
+    readonly name: string;
+}
+
+export interface CheckCommandAvailabilityResult {
+    readonly found: boolean;
+    readonly path: string | null;
+}
+
+export interface ReadClaudeCodeTranscriptInput {
+    readonly cwd: string;
+    readonly sessionId: string;
+    readonly sinceMtimeMs?: number | null;
+}
+
+export interface ReadClaudeCodeTranscriptResult {
+    readonly changed: boolean;
+    readonly found: boolean;
+    readonly mtimeMs: number | null;
+    readonly preview: string | null;
+    readonly title: string | null;
 }
 
 export type AiRuntimeId =
@@ -559,6 +586,7 @@ export interface SettingsSnapshot {
     readonly appearance?: AppAppearanceSettings | null;
     readonly editor?: AppEditorSettings | null;
     readonly shellState: PersistedShellState | null;
+    readonly terminal?: AppTerminalSettings | null;
 }
 
 export interface ProjectSettingsSnapshot {
@@ -568,8 +596,10 @@ export interface ProjectSettingsSnapshot {
 }
 
 export interface SettingsUpdatedEvent {
+    readonly aiChat: AppAiChatSettings | null;
     readonly appearance: AppAppearanceSettings | null;
     readonly editor: AppEditorSettings | null;
+    readonly terminal: AppTerminalSettings | null;
 }
 
 export type AppUpdateStatus =
@@ -2690,6 +2720,12 @@ export interface ComandoApi {
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    checkCommandAvailability: (
+        input: CheckCommandAvailabilityInput,
+    ) => Promise<CheckCommandAvailabilityResult>;
+    readClaudeCodeTranscript: (
+        input: ReadClaudeCodeTranscriptInput,
+    ) => Promise<ReadClaudeCodeTranscriptResult>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getProjectSettings: (
         projectId: string,

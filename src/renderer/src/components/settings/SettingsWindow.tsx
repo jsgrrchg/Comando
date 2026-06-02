@@ -30,6 +30,13 @@ import {
     EDITOR_FONT_SIZE_MAX,
     EDITOR_FONT_SIZE_MIN,
 } from "@shared/typography";
+import {
+    CLAUDE_CODE_MODEL_OPTIONS,
+    TERMINAL_FONT_SIZE_MAX,
+    TERMINAL_FONT_SIZE_MIN,
+    normalizeTerminalFontFamily,
+    normalizeTerminalFontSize,
+} from "@shared/terminal-settings";
 
 import {
     IdeActionButton,
@@ -58,6 +65,7 @@ import type {
     SettingsPrivacyState,
     SettingsProjectOption,
     SettingsProjectsState,
+    SettingsTerminalState,
     SettingsThemeControlState,
     SettingsUpdatesState,
     SettingsWindowProps,
@@ -67,6 +75,7 @@ import type {
 type Category =
     | "appearance"
     | "editor"
+    | "terminal"
     | "projects"
     | "github"
     | "ai"
@@ -78,6 +87,7 @@ type Category =
 const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "editor", label: "Editor" },
+    { id: "terminal", label: "Terminal" },
     { id: "ai", label: "AI" },
     { id: "runtimes", label: "AI Runtimes" },
     { id: "projects", label: "Projects" },
@@ -90,6 +100,7 @@ const CATEGORIES: { id: Category; label: string }[] = [
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     appearance: "Theme mode and visual presets",
     editor: "Typography and editor behavior",
+    terminal: "Font, size, and shell environment settings",
     projects: "Project locations and saved app data",
     github: "Issues, pull requests, and repository auth",
     ai: "Chat, composer, and AI behavior",
@@ -110,6 +121,7 @@ interface SettingsSearchContext {
     readonly aiChat: SettingsAiChatState;
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
+    readonly terminal: SettingsTerminalState;
     readonly github: SettingsGitHubState;
     readonly privacy: SettingsPrivacyState;
     readonly projects: SettingsProjectsState;
@@ -159,6 +171,26 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Show Monaco code minimap on the side of the editor.",
         "Autocomplete suggestions",
         "Show Monaco suggestions automatically while typing trigger manually.",
+    ],
+    terminal: [
+        "Terminal",
+        "Font",
+        "Font family",
+        "Nerd Fonts",
+        "FiraCode",
+        "Font size",
+        "Shell Environment",
+        "Fullscreen rendering",
+        "CLAUDE_CODE_NO_FLICKER",
+        "Claude Code",
+        "Claude Code CLI",
+        "claude command",
+        "Skip permissions",
+        "dangerously-skip-permissions",
+        "--dangerously-skip-permissions",
+        "Model",
+        "Continue",
+        "Continue last session",
     ],
     projects: [
         "Projects",
@@ -268,7 +300,7 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
     ],
 };
 
-function createSettingsSearchQuery(value: string): SettingsSearchQuery {
+export function createSettingsSearchQuery(value: string): SettingsSearchQuery {
     const normalized = normalizeSearchText(value);
 
     if (!normalized) {
@@ -352,6 +384,19 @@ function getDynamicCategorySearchValues(
                 font.description,
                 font.preview,
             ]);
+        case "terminal":
+            return [
+                context.terminal.terminalFontFamily,
+                context.terminal.terminalFontSize,
+                context.terminal.claudeCodeModel,
+                context.terminal.claudeCodeAvailable === false
+                    ? "Install the claude command to use the launcher."
+                    : null,
+                ...CLAUDE_CODE_MODEL_OPTIONS.flatMap((option) => [
+                    option.label,
+                    option.value,
+                ]),
+            ];
         case "projects":
             return [
                 context.projects.error,
@@ -451,6 +496,7 @@ export function SettingsWindow({
     aiChat,
     appAppearance,
     appEditor,
+    terminal,
     github,
     privacy,
     projects,
@@ -465,6 +511,7 @@ export function SettingsWindow({
         aiChat,
         appAppearance,
         appEditor,
+        terminal,
         github,
         privacy,
         projects,
@@ -754,6 +801,13 @@ export function SettingsWindow({
                                     <EditorContent
                                         searchQuery={activeSearchQuery}
                                         state={appEditor}
+                                    />
+                                )}
+                            {filteredCategories.length > 0 &&
+                                activeCategory === "terminal" && (
+                                    <TerminalContent
+                                        searchQuery={activeSearchQuery}
+                                        state={terminal}
                                     />
                                 )}
                             {filteredCategories.length > 0 &&
@@ -1981,6 +2035,224 @@ function EditorContent({
                     <Toggle
                         value={state.suggestionsEnabled}
                         onChange={(v) => state.onSuggestionsEnabledChange?.(v)}
+                    />
+                }
+            />
+        </div>
+    );
+}
+
+export function TerminalContent({
+    searchQuery,
+    state,
+}: {
+    searchQuery: SettingsSearchQuery;
+    state: SettingsTerminalState;
+}) {
+    const modelOptions = CLAUDE_CODE_MODEL_OPTIONS.map((option) => ({
+        label: option.label,
+        value: option.value,
+    }));
+    const showFont = sectionHasMatches(searchQuery, "Font", [
+        [
+            "Font family",
+            "Font used by integrated terminals. Leave blank to use Comando's default terminal font stack.",
+            "Nerd Fonts",
+            "FiraCode",
+            state.terminalFontFamily,
+        ],
+        ["Font size", "Text size in integrated terminals, in pixels."],
+    ]);
+    const showShellEnvironment = sectionHasMatches(
+        searchQuery,
+        "Shell Environment",
+        [
+            [
+                "Fullscreen rendering (experimental)",
+                "Sets CLAUDE_CODE_NO_FLICKER=1. Reduces flicker in Claude Code but disables scrollback. Applies to new terminals only.",
+                "CLAUDE_CODE_NO_FLICKER",
+            ],
+        ],
+    );
+    const showClaudeCode = sectionHasMatches(searchQuery, "Claude Code", [
+        [
+            "Claude Code CLI",
+            "Install the claude command to use the launcher.",
+            "claude command",
+        ],
+        [
+            "Skip permissions",
+            "Passes --dangerously-skip-permissions. Claude Code will not ask for approval before running tools or writing files.",
+            "--dangerously-skip-permissions",
+            "dangerously-skip-permissions",
+        ],
+        [
+            "Model",
+            "Model passed to Claude Code when launching from Comando.",
+            ...CLAUDE_CODE_MODEL_OPTIONS.flatMap((option) => [
+                option.label,
+                option.value,
+            ]),
+        ],
+        ["Continue last session", "Passes --continue to Claude Code."],
+    ]);
+
+    if (!showFont && !showShellEnvironment && !showClaudeCode) {
+        return <EmptyPanelSearchResult />;
+    }
+
+    return (
+        <div>
+            {showFont ? <SectionLabel>Font</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Font"
+                label="Font family"
+                description="Font used by integrated terminals. Leave blank to use Comando's default terminal font stack."
+                keywords={["Nerd Fonts", "FiraCode", state.terminalFontFamily]}
+                control={
+                    <input
+                        aria-label="Terminal font family"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        onChange={(event) =>
+                            state.onTerminalFontFamilyChange?.(
+                                normalizeTerminalFontFamily(
+                                    event.target.value,
+                                ),
+                            )
+                        }
+                        placeholder="e.g. FiraCode Nerd Font"
+                        spellCheck={false}
+                        style={{
+                            backgroundColor: "var(--color-bg-tertiary)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: 6,
+                            color: "var(--color-text-primary)",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 12,
+                            height: 28,
+                            outline: "none",
+                            padding: "0 9px",
+                            width: 240,
+                        }}
+                        type="text"
+                        value={state.terminalFontFamily}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Font"
+                label="Font size"
+                description="Text size in integrated terminals, in pixels."
+                control={
+                    <NumberStepper
+                        ariaLabel="Terminal font size"
+                        value={state.terminalFontSize}
+                        min={TERMINAL_FONT_SIZE_MIN}
+                        max={TERMINAL_FONT_SIZE_MAX}
+                        onChange={(value) =>
+                            state.onTerminalFontSizeChange?.(
+                                normalizeTerminalFontSize(value),
+                            )
+                        }
+                    />
+                }
+            />
+
+            {showShellEnvironment ? (
+                <SectionLabel>Shell Environment</SectionLabel>
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Shell Environment"
+                label="Fullscreen rendering (experimental)"
+                description="Sets CLAUDE_CODE_NO_FLICKER=1. Reduces flicker in Claude Code but disables scrollback. Applies to new terminals only."
+                keywords={["CLAUDE_CODE_NO_FLICKER"]}
+                control={
+                    <Toggle
+                        value={state.claudeCodeOptimized}
+                        onChange={(value) =>
+                            state.onClaudeCodeOptimizedChange?.(value)
+                        }
+                    />
+                }
+            />
+
+            {showClaudeCode ? <SectionLabel>Claude Code</SectionLabel> : null}
+            {state.claudeCodeAvailable === false ? (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Claude Code"
+                    label="Claude Code CLI"
+                    description="Install the claude command to use the launcher."
+                    keywords={["claude command", "launcher"]}
+                    control={
+                        <span
+                            style={{
+                                color: "var(--color-text-secondary)",
+                                fontFamily: "var(--font-mono)",
+                                fontSize: 11,
+                            }}
+                        >
+                            not found
+                        </span>
+                    }
+                />
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Claude Code"
+                label="Skip permissions"
+                description="Passes --dangerously-skip-permissions. Claude Code will not ask for approval before running tools or writing files."
+                keywords={[
+                    "--dangerously-skip-permissions",
+                    "dangerously-skip-permissions",
+                    "approval",
+                    "tools",
+                    "write files",
+                ]}
+                control={
+                    <Toggle
+                        value={state.claudeCodeSkipPermissions}
+                        onChange={(value) =>
+                            state.onClaudeCodeSkipPermissionsChange?.(value)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Claude Code"
+                label="Model"
+                description="Model passed to Claude Code when launching from Comando."
+                keywords={CLAUDE_CODE_MODEL_OPTIONS.flatMap((option) => [
+                    option.label,
+                    option.value,
+                ])}
+                control={
+                    <SelectField
+                        value={state.claudeCodeModel}
+                        options={modelOptions}
+                        onChange={(value) =>
+                            state.onClaudeCodeModelChange?.(value)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Claude Code"
+                label="Continue last session"
+                description="Passes --continue to Claude Code."
+                keywords={["--continue", "continue"]}
+                control={
+                    <Toggle
+                        value={state.claudeCodeContinueSession}
+                        onChange={(value) =>
+                            state.onClaudeCodeContinueSessionChange?.(value)
+                        }
                     />
                 }
             />

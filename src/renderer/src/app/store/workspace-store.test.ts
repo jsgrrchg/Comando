@@ -1606,6 +1606,102 @@ describe("workspace file opening", () => {
     });
 });
 
+describe("workspace terminal tabs", () => {
+    beforeEach(() => {
+        resetWorkspacePersistenceForTests();
+        saveWorkspaceSnapshotMock.mockClear();
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    closeAiSession: closeAiSessionMock,
+                    closeTerminalSession: closeTerminalSessionMock,
+                    notifyFileBuffer: notifyFileBufferMock,
+                    openProjectFile: openProjectFileMock,
+                    saveProjectFile: saveProjectFileMock,
+                    saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
+                },
+            },
+            writable: true,
+        });
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            ...createDefaultWorkspaceState(),
+            error: null,
+            hydrated: true,
+            lastFocusedChatTabId: null,
+            lastFocusedRuntimeId: "codex",
+            lastQuickCreateAction: "codex",
+            recentActiveTabIds: [],
+            recentClosedTabs: [],
+            recentFocusedChatTabIds: [],
+        }), true);
+    });
+
+    it("keeps Terminal and Claude Code title numbering independent", async () => {
+        await useWorkspaceStore.getState().createTerminalTab("project-1", null, {
+            title: "Claude Code 1",
+        });
+
+        const terminalTabId = await useWorkspaceStore
+            .getState()
+            .createTerminalTab("project-1");
+
+        expect(terminalTabId).toEqual(expect.any(String));
+        expect(useWorkspaceStore.getState().tabsById[terminalTabId!])
+            .toMatchObject({
+                kind: "terminal",
+                title: "Terminal 1",
+            });
+    });
+
+    it("can create an optioned terminal tab in a requested pane", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-a",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-a",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-b",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [50, 50],
+                type: "split",
+            },
+        }));
+
+        const terminalTabId = await useWorkspaceStore
+            .getState()
+            .createTerminalTab("project-1", null, {
+                paneId: "pane-b",
+                title: "Claude Code 1",
+            });
+        const paneB = findWorkspacePane(
+            useWorkspaceStore.getState().rootNode,
+            "pane-b",
+        );
+
+        expect(paneB?.activeTabId).toBe(terminalTabId);
+        expect(paneB?.tabIds).toEqual([terminalTabId]);
+        expect(useWorkspaceStore.getState().tabsById[terminalTabId!])
+            .toMatchObject({
+                kind: "terminal",
+                title: "Claude Code 1",
+            });
+    });
+});
+
 describe("workspace runtime focus helpers", () => {
     it("returns the runtime for chat and review tabs only", () => {
         expect(

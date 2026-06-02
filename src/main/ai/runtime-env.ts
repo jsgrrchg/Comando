@@ -22,7 +22,7 @@ export function buildRuntimeSpawnEnv(
     return nextEnv;
 }
 
-function buildRuntimePathEntries(
+export function buildRuntimePathEntries(
     currentPath: string | undefined,
     executable: string,
 ): string[] {

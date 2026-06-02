@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_APP_TERMINAL_SETTINGS } from "@shared/terminal-settings";
+
 import { SettingsService } from "./service";
 
 describe("SettingsService", () => {
@@ -58,6 +60,7 @@ describe("SettingsService", () => {
                 activeSurface: "workspace",
                 leftWidth: 280,
             },
+            terminal: DEFAULT_APP_TERMINAL_SETTINGS,
         });
     });
 
@@ -76,6 +79,13 @@ describe("SettingsService", () => {
                 "editor.line_height": "??",
                 "editor.minimap_enabled": "??",
                 "editor.suggestions_enabled": "??",
+                "terminal.claude_code_continue_session": "??",
+                "terminal.claude_code_max_turns": "5000",
+                "terminal.claude_code_model": "claude-opus-4-7; rm -rf /",
+                "terminal.claude_code_optimized": "??",
+                "terminal.claude_code_skip_permissions": "??",
+                "terminal.font_family": "  FiraCode\nNerd Font  ",
+                "terminal.font_size": "99",
             },
             project: {
                 "project-a": {
@@ -114,6 +124,12 @@ describe("SettingsService", () => {
                 suggestionsEnabled: true,
             },
             shellState: null,
+            terminal: {
+                ...DEFAULT_APP_TERMINAL_SETTINGS,
+                claudeCodeMaxTurns: 1000,
+                terminalFontFamily: "FiraCode Nerd Font",
+                terminalFontSize: 24,
+            },
         });
 
         expect(service.loadProjectSettings("project-a")).toEqual(null);
@@ -404,6 +420,110 @@ describe("SettingsService", () => {
             historyRetentionDays: 0,
             contextUsageBarEnabled: true,
             toolCardExpansionMode: "expanded",
+        });
+    });
+
+    it("stores and reloads terminal settings", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveSnapshot({
+            shellState: null,
+            terminal: {
+                claudeCodeContinueSession: true,
+                claudeCodeMaxTurns: 42,
+                claudeCodeModel: "claude-sonnet-4-6",
+                claudeCodeOptimized: true,
+                claudeCodeSkipPermissions: true,
+                terminalFontFamily: '"FiraCode Nerd Font", Menlo',
+                terminalFontSize: 16,
+            },
+        });
+
+        expect(service.loadAppTerminalSettings()).toEqual({
+            claudeCodeContinueSession: true,
+            claudeCodeMaxTurns: 42,
+            claudeCodeModel: "claude-sonnet-4-6",
+            claudeCodeOptimized: true,
+            claudeCodeSkipPermissions: true,
+            terminalFontFamily: '"FiraCode Nerd Font", Menlo',
+            terminalFontSize: 16,
+        });
+        expect(service.loadSnapshot().terminal).toEqual({
+            claudeCodeContinueSession: true,
+            claudeCodeMaxTurns: 42,
+            claudeCodeModel: "claude-sonnet-4-6",
+            claudeCodeOptimized: true,
+            claudeCodeSkipPermissions: true,
+            terminalFontFamily: '"FiraCode Nerd Font", Menlo',
+            terminalFontSize: 16,
+        });
+    });
+
+    it("normalizes terminal settings before saving", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveAppTerminalSettings({
+            claudeCodeContinueSession: true,
+            claudeCodeMaxTurns: 2000,
+            claudeCodeModel: "bad-model",
+            claudeCodeOptimized: true,
+            claudeCodeSkipPermissions: true,
+            terminalFontFamily: "  JetBrains Mono\nMenlo  ",
+            terminalFontSize: 4,
+        });
+
+        expect(service.loadAppTerminalSettings()).toEqual({
+            claudeCodeContinueSession: true,
+            claudeCodeMaxTurns: 1000,
+            claudeCodeModel: "",
+            claudeCodeOptimized: true,
+            claudeCodeSkipPermissions: true,
+            terminalFontFamily: "JetBrains Mono Menlo",
+            terminalFontSize: 8,
+        });
+    });
+
+    it("does not clear terminal settings when saving a snapshot without terminal", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveAppTerminalSettings({
+            claudeCodeContinueSession: false,
+            claudeCodeMaxTurns: 12,
+            claudeCodeModel: "claude-haiku-4-5",
+            claudeCodeOptimized: true,
+            claudeCodeSkipPermissions: false,
+            terminalFontFamily: "Menlo",
+            terminalFontSize: 18,
+        });
+        service.saveSnapshot({
+            editor: {
+                autoSaveDelayMs: 900,
+                fontFamily: "ibm-plex-mono",
+                fontSize: 14,
+                lineHeight: 1.55,
+                minimapEnabled: true,
+                suggestionsEnabled: true,
+            },
+            shellState: null,
+        });
+
+        expect(service.loadAppTerminalSettings()).toEqual({
+            claudeCodeContinueSession: false,
+            claudeCodeMaxTurns: 12,
+            claudeCodeModel: "claude-haiku-4-5",
+            claudeCodeOptimized: true,
+            claudeCodeSkipPermissions: false,
+            terminalFontFamily: "Menlo",
+            terminalFontSize: 18,
         });
     });
 });

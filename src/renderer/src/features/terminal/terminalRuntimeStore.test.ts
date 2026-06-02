@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TerminalSession } from "@shared/ipc";
+import { DEFAULT_APP_TERMINAL_SETTINGS } from "@shared/terminal-settings";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 import type { RuntimeWorkspaceTerminalTab } from "@renderer/app/workspace/tree";
 
 import {
@@ -67,6 +69,9 @@ describe("terminalRuntimeStore", () => {
         writeTerminalInputMock.mockClear();
         resizeTerminalSessionMock.mockClear();
         closeTerminalSessionMock.mockClear();
+        useSettingsStore.setState({
+            terminal: DEFAULT_APP_TERMINAL_SETTINGS,
+        });
 
         Object.defineProperty(globalThis, "window", {
             configurable: true,
@@ -115,6 +120,32 @@ describe("terminalRuntimeStore", () => {
         expect(writeTerminalInputMock).toHaveBeenCalledWith({
             data: "pwd\r",
             sessionId: "live-session-1",
+        });
+    });
+
+    it("passes the Claude Code no-flicker env flag for optimized terminals", async () => {
+        useSettingsStore.setState({
+            terminal: {
+                ...DEFAULT_APP_TERMINAL_SETTINGS,
+                claudeCodeOptimized: true,
+            },
+        });
+        createTerminalSessionMock.mockResolvedValueOnce(
+            createSession("live-session-1"),
+        );
+
+        useTerminalRuntimeStore.getState().ensureTerminal(createTerminalTab());
+        await flushPromises();
+
+        expect(createTerminalSessionMock).toHaveBeenCalledWith({
+            cols: 120,
+            extraEnv: {
+                CLAUDE_CODE_NO_FLICKER: "1",
+            },
+            projectId: "project-1",
+            rows: 24,
+            terminalId: "terminal-1",
+            worktreeId: "worktree-1",
         });
     });
 
