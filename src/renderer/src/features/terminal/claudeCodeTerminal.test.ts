@@ -190,7 +190,7 @@ describe("Claude Code terminal launcher", () => {
         ]);
     });
 
-    it("adds skip-permissions, model, and max-turns flags when configured", async () => {
+    it("adds supported Claude Code flags and ignores interactive-only max turns", async () => {
         useSettingsStore.setState({
             terminal: createTerminalSettings({
                 claudeCodeMaxTurns: 12,
@@ -214,7 +214,7 @@ describe("Claude Code terminal launcher", () => {
 
         expect(writeTerminalInputMock).toHaveBeenCalledWith({
             data:
-                "claude --dangerously-skip-permissions --session-id transcript-session-1 --model claude-sonnet-4-6 --max-turns 12\n",
+                "claude --dangerously-skip-permissions --session-id transcript-session-1 --model claude-sonnet-4-6\n",
             sessionId: "pty-terminal-id-1",
         });
     });

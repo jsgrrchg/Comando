@@ -93,7 +93,6 @@ export async function launchClaudeCodeTerminal(
     const command = buildShellCommand(
         buildClaudeCodeCommandArgs({
             continueSession: terminalSettings.claudeCodeContinueSession,
-            maxTurns: terminalSettings.claudeCodeMaxTurns,
             model: terminalSettings.claudeCodeModel,
             skipPermissions: terminalSettings.claudeCodeSkipPermissions,
             transcriptSessionId,
@@ -189,7 +188,6 @@ export function resetClaudeCodeTerminalStateForTests(): void {
 
 interface BuildClaudeCodeCommandArgsInput {
     readonly continueSession: boolean;
-    readonly maxTurns: number;
     readonly model: string;
     readonly skipPermissions: boolean;
     readonly transcriptSessionId: string | null;
@@ -197,7 +195,6 @@ interface BuildClaudeCodeCommandArgsInput {
 
 function buildClaudeCodeCommandArgs({
     continueSession,
-    maxTurns,
     model,
     skipPermissions,
     transcriptSessionId,
@@ -215,10 +212,6 @@ function buildClaudeCodeCommandArgs({
     }
     if (continueSession) {
         args.push("--continue");
-    }
-    const safeMaxTurns = Math.max(0, Math.floor(maxTurns));
-    if (safeMaxTurns > 0) {
-        args.push("--max-turns", String(safeMaxTurns));
     }
     return args;
 }

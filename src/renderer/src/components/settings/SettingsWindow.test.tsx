@@ -154,7 +154,8 @@ describe("SettingsWindow terminal settings", () => {
         expect(markup).toContain("will not ask for approval");
         expect(markup).toContain("Default (Claude Code decides)");
         expect(markup).toContain("Continue last session");
-        expect(markup).toContain("Max turns");
+        expect(markup).not.toContain("Max turns");
+        expect(markup).not.toContain("--max-turns");
     });
 
     it("renders the selected Claude Code model label", () => {
@@ -181,9 +182,8 @@ describe("SettingsWindow terminal settings", () => {
         expect(permissionsMarkup).not.toContain("Font family");
 
         const turnsMarkup = renderTerminal(createTerminalState(), "Max turns");
-        expect(turnsMarkup).toContain("Max turns");
-        expect(turnsMarkup).toContain("--max-turns");
-        expect(turnsMarkup).not.toContain("Font family");
+        expect(turnsMarkup).toContain("No matching settings in this panel.");
+        expect(turnsMarkup).not.toContain("--max-turns");
     });
 
     it("wires terminal control handlers and clamps numeric values", () => {
@@ -226,17 +226,6 @@ describe("SettingsWindow terminal settings", () => {
         expect(handlers.onTerminalFontSizeChange).toHaveBeenNthCalledWith(1, 8);
         expect(handlers.onTerminalFontSizeChange).toHaveBeenNthCalledWith(2, 24);
 
-        const maxTurnsStepper = findNumberStepper(tree, "Claude Code max turns");
-        expect(maxTurnsStepper.props.min).toBe(0);
-        expect(maxTurnsStepper.props.max).toBe(200);
-        maxTurnsStepper.props.onChange(-1);
-        maxTurnsStepper.props.onChange(201);
-        expect(handlers.onClaudeCodeMaxTurnsChange).toHaveBeenNthCalledWith(1, 0);
-        expect(handlers.onClaudeCodeMaxTurnsChange).toHaveBeenNthCalledWith(
-            2,
-            200,
-        );
-
         const toggles = findElementsByType<ToggleProps>(tree, Toggle);
         expect(toggles).toHaveLength(3);
         toggles[0].props.onChange(true);
@@ -267,7 +256,6 @@ describe("SettingsWindow terminal settings", () => {
 
         expect(renderTerminal(createTerminalState({ claudeCodeAvailable: false })))
             .toContain("Install the claude command to use the launcher.");
-        expect(findNumberStepper(tree, "Claude Code max turns")).toBeDefined();
         expect(findElementsByType<ToggleProps>(tree, Toggle)).toHaveLength(3);
         expect(findElementsByType<SelectFieldProps>(tree, SelectField)).toHaveLength(
             1,

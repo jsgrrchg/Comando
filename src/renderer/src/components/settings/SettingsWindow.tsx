@@ -31,11 +31,9 @@ import {
     EDITOR_FONT_SIZE_MIN,
 } from "@shared/typography";
 import {
-    CLAUDE_CODE_MAX_TURNS_UI_MAX,
     CLAUDE_CODE_MODEL_OPTIONS,
     TERMINAL_FONT_SIZE_MAX,
     TERMINAL_FONT_SIZE_MIN,
-    normalizeClaudeCodeMaxTurns,
     normalizeTerminalFontFamily,
     normalizeTerminalFontSize,
 } from "@shared/terminal-settings";
@@ -193,8 +191,6 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Model",
         "Continue",
         "Continue last session",
-        "Max turns",
-        "--max-turns",
     ],
     projects: [
         "Projects",
@@ -393,7 +389,6 @@ function getDynamicCategorySearchValues(
                 context.terminal.terminalFontFamily,
                 context.terminal.terminalFontSize,
                 context.terminal.claudeCodeModel,
-                context.terminal.claudeCodeMaxTurns,
                 context.terminal.claudeCodeAvailable === false
                     ? "Install the claude command to use the launcher."
                     : null,
@@ -2100,11 +2095,6 @@ export function TerminalContent({
             ]),
         ],
         ["Continue last session", "Passes --continue to Claude Code."],
-        [
-            "Max turns",
-            "Passes --max-turns N when greater than 0. Use 0 for no Comando override.",
-            "--max-turns",
-        ],
     ]);
 
     if (!showFont && !showShellEnvironment && !showClaudeCode) {
@@ -2262,30 +2252,6 @@ export function TerminalContent({
                         value={state.claudeCodeContinueSession}
                         onChange={(value) =>
                             state.onClaudeCodeContinueSessionChange?.(value)
-                        }
-                    />
-                }
-            />
-            <SearchableRow
-                searchQuery={searchQuery}
-                section="Claude Code"
-                label="Max turns"
-                description="Passes --max-turns N when greater than 0. Use 0 for no Comando override."
-                keywords={["--max-turns", "turns"]}
-                control={
-                    <NumberStepper
-                        ariaLabel="Claude Code max turns"
-                        value={state.claudeCodeMaxTurns}
-                        min={0}
-                        max={CLAUDE_CODE_MAX_TURNS_UI_MAX}
-                        inputWidth={42}
-                        onChange={(value) =>
-                            state.onClaudeCodeMaxTurnsChange?.(
-                                normalizeClaudeCodeMaxTurns(
-                                    value,
-                                    CLAUDE_CODE_MAX_TURNS_UI_MAX,
-                                ),
-                            )
                         }
                     />
                 }
