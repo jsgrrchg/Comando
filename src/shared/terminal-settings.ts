@@ -59,6 +59,10 @@ export const DEFAULT_APP_TERMINAL_SETTINGS: AppTerminalSettings = {
     terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
 };
 
+export type AppTerminalSettingsInput = {
+    readonly [Key in keyof AppTerminalSettings]?: unknown;
+};
+
 function isAllowedClaudeCodeModel(
     value: string,
 ): value is ClaudeCodeModel {
@@ -136,7 +140,7 @@ export function normalizeClaudeCodeMaxTurns(
 }
 
 export function normalizeAppTerminalSettings(
-    value: Partial<AppTerminalSettings> | null | undefined,
+    value: AppTerminalSettingsInput | null | undefined,
 ): AppTerminalSettings {
     return {
         claudeCodeContinueSession:

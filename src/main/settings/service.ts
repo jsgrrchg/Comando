@@ -13,6 +13,10 @@ import {
     FILE_TREE_SCALE_DEFAULT,
     clampFileTreeScale,
 } from "@shared/file-tree-scale";
+import {
+    normalizeAppTerminalSettings,
+    type AppTerminalSettings,
+} from "@shared/terminal-settings";
 import type {
     AppAiChatSettings,
     AppAppearanceSettings,
@@ -94,6 +98,17 @@ const APP_EDITOR_LINE_HEIGHT_KEY = "editor.line_height";
 const APP_EDITOR_AUTOSAVE_DELAY_MS_KEY = "editor.autosave_delay_ms";
 const APP_EDITOR_MINIMAP_ENABLED_KEY = "editor.minimap_enabled";
 const APP_EDITOR_SUGGESTIONS_ENABLED_KEY = "editor.suggestions_enabled";
+const APP_TERMINAL_FONT_FAMILY_KEY = "terminal.font_family";
+const APP_TERMINAL_FONT_SIZE_KEY = "terminal.font_size";
+const APP_TERMINAL_CLAUDE_CODE_OPTIMIZED_KEY =
+    "terminal.claude_code_optimized";
+const APP_TERMINAL_CLAUDE_CODE_SKIP_PERMISSIONS_KEY =
+    "terminal.claude_code_skip_permissions";
+const APP_TERMINAL_CLAUDE_CODE_MODEL_KEY = "terminal.claude_code_model";
+const APP_TERMINAL_CLAUDE_CODE_CONTINUE_SESSION_KEY =
+    "terminal.claude_code_continue_session";
+const APP_TERMINAL_CLAUDE_CODE_MAX_TURNS_KEY =
+    "terminal.claude_code_max_turns";
 const PROJECT_THEME_MODE_KEY = "appearance.theme_mode";
 const PROJECT_THEME_PRESET_KEY = "appearance.theme_preset";
 const PROJECT_EDITOR_FONT_FAMILY_KEY = "editor.font_family";
@@ -216,6 +231,8 @@ export interface SettingsGateway {
     saveAppEditorSettings(settings: AppEditorSettings): void;
     loadAiChatSettings(): AppAiChatSettings;
     saveAiChatSettings(settings: AppAiChatSettings): void;
+    loadAppTerminalSettings(): AppTerminalSettings;
+    saveAppTerminalSettings(settings: AppTerminalSettings): void;
     loadProjectSettings(projectId: string): ProjectSettingsSnapshot | null;
     saveProjectSettings(snapshot: ProjectSettingsSnapshot): void;
     loadCodexRuntimeSettings(): CodexRuntimeSettings;
@@ -255,6 +272,7 @@ export class SettingsService {
             editor: this.loadAppEditorSettings(),
             shellState:
                 this.#loadJsonSetting<PersistedShellState>("shell.state"),
+            terminal: this.loadAppTerminalSettings(),
         };
     }
 
@@ -298,6 +316,10 @@ export class SettingsService {
 
         if (snapshot.editor) {
             this.saveAppEditorSettings(snapshot.editor);
+        }
+
+        if (snapshot.terminal) {
+            this.saveAppTerminalSettings(snapshot.terminal);
         }
     }
 
@@ -493,6 +515,64 @@ export class SettingsService {
             this.#normalizeToolCardExpansionMode(
                 settings.toolCardExpansionMode,
             ),
+        );
+    }
+
+    loadAppTerminalSettings(): AppTerminalSettings {
+        return normalizeAppTerminalSettings({
+            claudeCodeContinueSession: this.#loadBooleanSetting(
+                APP_TERMINAL_CLAUDE_CODE_CONTINUE_SESSION_KEY,
+            ),
+            claudeCodeMaxTurns: this.#loadNumberSetting(
+                APP_TERMINAL_CLAUDE_CODE_MAX_TURNS_KEY,
+            ),
+            claudeCodeModel: this.#loadStringSetting(
+                APP_TERMINAL_CLAUDE_CODE_MODEL_KEY,
+            ),
+            claudeCodeOptimized: this.#loadBooleanSetting(
+                APP_TERMINAL_CLAUDE_CODE_OPTIMIZED_KEY,
+            ),
+            claudeCodeSkipPermissions: this.#loadBooleanSetting(
+                APP_TERMINAL_CLAUDE_CODE_SKIP_PERMISSIONS_KEY,
+            ),
+            terminalFontFamily: this.#loadStringSetting(
+                APP_TERMINAL_FONT_FAMILY_KEY,
+            ),
+            terminalFontSize: this.#loadNumberSetting(
+                APP_TERMINAL_FONT_SIZE_KEY,
+            ),
+        });
+    }
+
+    saveAppTerminalSettings(settings: AppTerminalSettings): void {
+        const normalized = normalizeAppTerminalSettings(settings);
+        this.#saveSetting(
+            APP_TERMINAL_FONT_FAMILY_KEY,
+            normalized.terminalFontFamily,
+        );
+        this.#saveSetting(
+            APP_TERMINAL_FONT_SIZE_KEY,
+            String(normalized.terminalFontSize),
+        );
+        this.#saveBooleanSetting(
+            APP_TERMINAL_CLAUDE_CODE_OPTIMIZED_KEY,
+            normalized.claudeCodeOptimized,
+        );
+        this.#saveBooleanSetting(
+            APP_TERMINAL_CLAUDE_CODE_SKIP_PERMISSIONS_KEY,
+            normalized.claudeCodeSkipPermissions,
+        );
+        this.#saveSetting(
+            APP_TERMINAL_CLAUDE_CODE_MODEL_KEY,
+            normalized.claudeCodeModel,
+        );
+        this.#saveBooleanSetting(
+            APP_TERMINAL_CLAUDE_CODE_CONTINUE_SESSION_KEY,
+            normalized.claudeCodeContinueSession,
+        );
+        this.#saveSetting(
+            APP_TERMINAL_CLAUDE_CODE_MAX_TURNS_KEY,
+            String(normalized.claudeCodeMaxTurns),
         );
     }
 

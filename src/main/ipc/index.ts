@@ -162,6 +162,7 @@ import { simpleGit } from "simple-git";
 
 import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
+import { resolveSettingsSnapshotSaveEffects } from "@main/ipc/settings-save-effects";
 import { debugBenignError } from "@main/observability/logging";
 import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol";
 
@@ -466,16 +467,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveSettingsSnapshot,
         (_event, snapshot: SettingsSnapshot) => {
             options.settingsService.saveSnapshot(snapshot);
-            if (
-                snapshot.appearance !== undefined ||
-                snapshot.editor !== undefined ||
-                snapshot.aiChat !== undefined
-            ) {
+            const effects = resolveSettingsSnapshotSaveEffects(snapshot);
+            if (effects.broadcastSettingsUpdated) {
                 const persisted = options.settingsService.loadSnapshot();
-                applyAppZoomToAllWindows(persisted.appearance?.zoomFactor ?? 1);
+                if (effects.applyAppZoom) {
+                    applyAppZoomToAllWindows(
+                        persisted.appearance?.zoomFactor ?? 1,
+                    );
+                }
                 broadcastSettingsUpdated(
                     persisted.appearance ?? null,
                     persisted.editor ?? null,
+                    persisted.aiChat ?? null,
+                    persisted.terminal ?? null,
                 );
             }
         },

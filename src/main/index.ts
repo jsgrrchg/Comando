@@ -535,7 +535,12 @@ function persistAppAppearanceSettings(): void {
         });
     }
 
-    broadcastSettingsUpdated(appearance ?? null, snapshot.editor ?? null);
+    broadcastSettingsUpdated(
+        appearance ?? null,
+        snapshot.editor ?? null,
+        snapshot.aiChat ?? null,
+        snapshot.terminal ?? null,
+    );
 }
 
 function updateAppZoom(direction: "decrease" | "increase" | "reset"): void {

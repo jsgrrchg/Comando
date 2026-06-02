@@ -7,6 +7,7 @@ import type {
     SettingsUpdatedEvent,
     SystemTheme,
 } from "@shared/ipc";
+import { DEFAULT_APP_TERMINAL_SETTINGS } from "@shared/terminal-settings";
 
 import {
     resetSettingsStoreForTests,
@@ -163,8 +164,10 @@ describe("settings-store", () => {
             payload: SettingsUpdatedEvent,
         ) => void;
         registeredSettingsListener({
+            aiChat: nextAiChat,
             appearance: nextAppearance,
             editor: nextEditor,
+            terminal: DEFAULT_APP_TERMINAL_SETTINGS,
         });
         await flushAsyncWork();
 

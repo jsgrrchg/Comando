@@ -1,6 +1,8 @@
 import type { AppIdentity } from "@shared/app-identity";
+import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
 
+export type { AppTerminalSettings } from "./terminal-settings";
 export type { ChatFontFamily, EditorFontFamily } from "./typography";
 
 export const IPC_CHANNELS = {
@@ -559,6 +561,7 @@ export interface SettingsSnapshot {
     readonly appearance?: AppAppearanceSettings | null;
     readonly editor?: AppEditorSettings | null;
     readonly shellState: PersistedShellState | null;
+    readonly terminal?: AppTerminalSettings | null;
 }
 
 export interface ProjectSettingsSnapshot {
@@ -568,8 +571,10 @@ export interface ProjectSettingsSnapshot {
 }
 
 export interface SettingsUpdatedEvent {
+    readonly aiChat: AppAiChatSettings | null;
     readonly appearance: AppAppearanceSettings | null;
     readonly editor: AppEditorSettings | null;
+    readonly terminal: AppTerminalSettings | null;
 }
 
 export type AppUpdateStatus =

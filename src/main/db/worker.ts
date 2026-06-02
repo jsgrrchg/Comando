@@ -512,6 +512,13 @@ function dispatchMethod(method: string, params: unknown): unknown {
                 params as Parameters<SettingsService["saveAiChatSettings"]>[0],
             );
             return null;
+        case "settings.saveAppTerminalSettings":
+            settingsService.saveAppTerminalSettings(
+                params as Parameters<
+                    SettingsService["saveAppTerminalSettings"]
+                >[0],
+            );
+            return null;
         case "settings.saveCodexRuntimeSettings":
             settingsService.saveCodexRuntimeSettings(
                 params as Parameters<
