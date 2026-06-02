@@ -250,6 +250,11 @@ export interface LiveAcpTerminal {
 
 export interface ResolvedAcpRuntime {
     readonly args: readonly string[];
+    readonly authHandshake?: {
+        readonly envMethodId: string;
+        readonly externalMethodId: string;
+        readonly meta?: Record<string, unknown>;
+    };
     readonly command: string;
     readonly env: NodeJS.ProcessEnv;
     readonly executable: string;

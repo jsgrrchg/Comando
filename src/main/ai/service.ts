@@ -2039,6 +2039,13 @@ export class AiService {
 
             return {
                 args: resolved.args,
+                authHandshake: {
+                    envMethodId: "xai.api_key",
+                    externalMethodId: "cached_token",
+                    meta: {
+                        headless: true,
+                    },
+                },
                 command: resolved.command,
                 env: buildRuntimeSpawnEnv(
                     applyGrokAuthEnv(process.env, settings, this.#secretStore),

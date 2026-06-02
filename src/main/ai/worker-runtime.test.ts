@@ -29,7 +29,8 @@ import {
     type AiWorkerSessionLaunchInput,
 } from "./contracts";
 
-const initializeMock = vi.fn(() => Promise.resolve(undefined));
+const initializeMock = vi.fn(() => Promise.resolve({}));
+const authenticateMock = vi.fn(() => Promise.resolve({}));
 type MockSessionCatalogResponse = {
     readonly configOptions: readonly Record<string, unknown>[];
     readonly modes: unknown;
@@ -190,6 +191,7 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         }
 
         initialize = initializeMock;
+        authenticate = authenticateMock;
         cancel = cancelRuntimeSessionMock;
         loadSession = loadSessionMock;
         newSession = newSessionMock;
@@ -205,6 +207,9 @@ const { AiWorkerRuntime } = await import("./worker-runtime");
 describe("AiWorkerRuntime prepareSession", () => {
     beforeEach(() => {
         initializeMock.mockClear();
+        initializeMock.mockResolvedValue({});
+        authenticateMock.mockClear();
+        authenticateMock.mockResolvedValue({});
         loadSessionMock.mockClear();
         loadSessionMock.mockResolvedValue({
             configOptions: [],
@@ -318,6 +323,88 @@ describe("AiWorkerRuntime prepareSession", () => {
                     event.payload.event.kind === "session-info",
             ),
         ).toBe(true);
+    });
+
+    it("authenticates Grok with the xAI API key ACP method before opening a session", async () => {
+        initializeMock.mockResolvedValueOnce({
+            authMethods: [{ id: "xai.api_key" }, { id: "cached_token" }],
+        });
+        const runtime = new AiWorkerRuntime({
+            emitEvent: vi.fn(),
+        });
+        const launch = createGrokLaunch({
+            authCredentialSource: "comando-secret",
+            authMethod: "xai-api-key",
+            cwd: process.cwd(),
+            projectRoot: null,
+            title: "Grok 1",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        expect(authenticateMock).toHaveBeenCalledWith({
+            _meta: { headless: true },
+            methodId: "xai.api_key",
+        });
+        expect(authenticateMock.mock.invocationCallOrder[0]).toBeLessThan(
+            loadSessionMock.mock.invocationCallOrder[0],
+        );
+    });
+
+    it("authenticates Grok with the cached token ACP method for external login", async () => {
+        initializeMock.mockResolvedValueOnce({
+            authMethods: [{ id: "xai.api_key" }, { id: "cached_token" }],
+        });
+        const runtime = new AiWorkerRuntime({
+            emitEvent: vi.fn(),
+        });
+        const launch = createGrokLaunch({
+            authCredentialSource: "external-runtime",
+            authMethod: "grok-login",
+            cwd: process.cwd(),
+            projectRoot: null,
+            title: "Grok 1",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        expect(authenticateMock).toHaveBeenCalledWith({
+            _meta: { headless: true },
+            methodId: "cached_token",
+        });
+    });
+
+    it("fails Grok startup when the expected ACP auth method is missing", async () => {
+        initializeMock.mockResolvedValueOnce({
+            authMethods: [{ id: "cached_token" }],
+        });
+        const runtime = new AiWorkerRuntime({
+            emitEvent: vi.fn(),
+        });
+        const launch = createGrokLaunch({
+            authCredentialSource: "comando-secret",
+            authMethod: "xai-api-key",
+            cwd: process.cwd(),
+            projectRoot: null,
+            title: "Grok 1",
+        });
+
+        await expect(
+            runtime.dispatchMethod("ai.prepareSession", {
+                input: launch.input,
+                launch,
+            }),
+        ).rejects.toThrow(
+            "Grok does not advertise the expected authentication method `xai.api_key` on this machine.",
+        );
+        expect(authenticateMock).not.toHaveBeenCalled();
+        expect(loadSessionMock).not.toHaveBeenCalled();
     });
 
     it("does not reactivate a restored subagent from replayed turn lifecycle events", async () => {
@@ -6306,5 +6393,55 @@ function createLaunch(
             status: readyStatus,
         },
         ...rest,
+    };
+}
+
+function createGrokLaunch(input: {
+    readonly authCredentialSource: NonNullable<
+        AiRuntimeStatus["authCredentialSource"]
+    >;
+    readonly authMethod: string;
+    readonly cwd: string;
+    readonly projectRoot: string | null;
+    readonly title: string;
+}): AiWorkerSessionLaunchInput {
+    const launch = createLaunch({
+        cwd: input.cwd,
+        projectRoot: input.projectRoot,
+        title: input.title,
+    });
+    const status = {
+        ...launch.resolvedRuntime.status,
+        authCredentialSource: input.authCredentialSource,
+        authMethod: input.authMethod,
+        command: "mock-grok-acp",
+        runtimeId: "grok",
+    } satisfies AiRuntimeStatus;
+
+    return {
+        ...launch,
+        input: {
+            ...launch.input,
+            runtimeId: "grok",
+            title: input.title,
+        },
+        persistedSnapshot: {
+            ...launch.persistedSnapshot,
+            runtimeId: "grok",
+            title: input.title,
+        },
+        resolvedRuntime: {
+            ...launch.resolvedRuntime,
+            authHandshake: {
+                envMethodId: "xai.api_key",
+                externalMethodId: "cached_token",
+                meta: {
+                    headless: true,
+                },
+            },
+            command: "mock-grok-acp",
+            executable: "mock-grok-acp",
+            status,
+        },
     };
 }
