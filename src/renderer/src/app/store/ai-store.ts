@@ -106,7 +106,7 @@ interface QueuedPromptPositionState {
 }
 
 interface ActiveQueuedPromptState {
-    readonly activatedAfterSnapshotUpdatedAt: string | null;
+    readonly activatedAfterIncomingSnapshotUpdatedAt: string | null;
     readonly position: QueuedPromptPositionState;
     readonly queuedPrompt: QueuedPrompt;
 }
@@ -124,6 +124,7 @@ interface AiSessionClientState {
     readonly hydrated: boolean;
     readonly isDispatching: boolean;
     readonly isHydrating: boolean;
+    readonly lastIncomingSnapshotUpdatedAt: string | null;
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
     readonly queue: readonly QueuedPrompt[];
@@ -529,6 +530,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ),
                         hydrated: true,
                         isHydrating: false,
+                        lastIncomingSnapshotUpdatedAt: nextSnapshot.updatedAt,
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
@@ -630,6 +632,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 ),
                                 hydrated: true,
                                 isHydrating: false,
+                                lastIncomingSnapshotUpdatedAt:
+                                    incomingSnapshot.updatedAt,
                                 localError: nextSnapshot.lastError,
                                 meta: nextMeta,
                                 snapshot: nextSnapshot,
@@ -697,10 +701,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
-                            nextSnapshot,
+                            incomingSnapshot,
                         ),
                         hydrated: true,
                         isHydrating: false,
+                        lastIncomingSnapshotUpdatedAt:
+                            incomingSnapshot.updatedAt,
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
@@ -762,10 +768,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
-                            resolvedSnapshot,
+                            nextSnapshot,
                         ),
                         hydrated: true,
                         isHydrating: false,
+                        lastIncomingSnapshotUpdatedAt:
+                            nextSnapshot.updatedAt,
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: resolvedSnapshot,
@@ -957,6 +965,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 createSessionState()),
                             hydrated: true,
                             isHydrating: false,
+                            lastIncomingSnapshotUpdatedAt: snapshot
+                                ? incomingSnapshot.updatedAt
+                                : (currentSession?.lastIncomingSnapshotUpdatedAt ??
+                                  null),
                             meta: buildSessionMeta(tab),
                             snapshot: nextSnapshot,
                             transcript: nextTranscript,
@@ -1806,6 +1818,7 @@ function createSessionState(
         hydrated: false,
         isDispatching: false,
         isHydrating: false,
+        lastIncomingSnapshotUpdatedAt: null,
         localError: null,
         meta: null,
         queue: [],
@@ -3044,8 +3057,8 @@ function activateQueuedPromptForDrain(
         }
 
         activeQueuedPrompt = {
-            activatedAfterSnapshotUpdatedAt:
-                session.snapshot?.updatedAt ?? null,
+            activatedAfterIncomingSnapshotUpdatedAt:
+                session.lastIncomingSnapshotUpdatedAt,
             position: createQueuedPromptPositionState(
                 session.queue,
                 queueIndex,
@@ -3124,8 +3137,8 @@ function completeActiveQueuedPromptIfSnapshotAdvanced(
             session.activeQueuedPrompt?.queuedPrompt.id !==
                 activeQueuedPrompt.queuedPrompt.id ||
             !session.snapshot ||
-            !isSnapshotNewerThanActiveQueuedPrompt(
-                session.snapshot,
+            !hasIncomingSnapshotAdvancedPastActiveQueuedPrompt(
+                session,
                 activeQueuedPrompt,
             )
         ) {
@@ -3469,7 +3482,7 @@ function reconcileDispatchStateForIncomingSnapshot(
 
     if (
         !session.activeDispatchToken &&
-        isSnapshotNewerThanActiveQueuedPrompt(
+        isIncomingSnapshotNewerThanActiveQueuedPrompt(
             snapshot,
             session.activeQueuedPrompt,
         )
@@ -3488,16 +3501,32 @@ function reconcileDispatchStateForIncomingSnapshot(
     };
 }
 
-function isSnapshotNewerThanActiveQueuedPrompt(
+function isIncomingSnapshotNewerThanActiveQueuedPrompt(
     snapshot: AiSessionSnapshot,
     activeQueuedPrompt: ActiveQueuedPromptState,
 ): boolean {
-    const activatedAfterSnapshotUpdatedAt =
-        activeQueuedPrompt.activatedAfterSnapshotUpdatedAt;
+    const activatedAfterIncomingSnapshotUpdatedAt =
+        activeQueuedPrompt.activatedAfterIncomingSnapshotUpdatedAt;
 
     return (
-        !activatedAfterSnapshotUpdatedAt ||
-        snapshot.updatedAt > activatedAfterSnapshotUpdatedAt
+        !activatedAfterIncomingSnapshotUpdatedAt ||
+        snapshot.updatedAt > activatedAfterIncomingSnapshotUpdatedAt
+    );
+}
+
+function hasIncomingSnapshotAdvancedPastActiveQueuedPrompt(
+    session: AiSessionClientState,
+    activeQueuedPrompt: ActiveQueuedPromptState,
+): boolean {
+    const activatedAfterIncomingSnapshotUpdatedAt =
+        activeQueuedPrompt.activatedAfterIncomingSnapshotUpdatedAt;
+    const lastIncomingSnapshotUpdatedAt = session.lastIncomingSnapshotUpdatedAt;
+
+    return Boolean(
+        lastIncomingSnapshotUpdatedAt &&
+            (!activatedAfterIncomingSnapshotUpdatedAt ||
+                lastIncomingSnapshotUpdatedAt >
+                    activatedAfterIncomingSnapshotUpdatedAt),
     );
 }
 

@@ -1356,6 +1356,82 @@ describe("ai-store queue", () => {
         ).toEqual(["fourth"]);
     });
 
+    it("does not treat local snapshot mutations as queued dispatch completion", async () => {
+        const firstDispatch = createDeferred<void>();
+        const sendAiPrompt = vi
+            .fn()
+            .mockImplementationOnce(() => firstDispatch.promise)
+            .mockResolvedValue(undefined);
+        const setAiSessionModel = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                    setAiSessionModel,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "first");
+        await useAiStore.getState().sendPrompt(TAB, "second");
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        expect(sendAiPrompt.mock.calls[0][0]).toMatchObject({
+            prompt: "first",
+        });
+
+        await useAiStore.getState().setSessionModel({
+            modelId: "gpt-5",
+            sessionId: TAB.sessionId,
+        });
+
+        firstDispatch.resolve(undefined);
+
+        await vi.waitFor(() => {
+            expect(
+                useAiStore.getState().sessions[TAB.sessionId]?.isDispatching,
+            ).toBe(false);
+        });
+        expect(setAiSessionModel).toHaveBeenCalledTimes(1);
+        expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.queue.map((item) => item.prompt),
+        ).toEqual(["second"]);
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(2);
+        });
+        expect(sendAiPrompt.mock.calls[1][0]).toMatchObject({
+            prompt: "second",
+        });
+    });
+
     it("drains several queued prompts in FIFO order on successive idle snapshots", async () => {
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
 
