@@ -133,6 +133,7 @@ import {
     type ProjectSettingsSnapshot,
     type ProjectSettingsUpdatedEvent,
     type GeminiRuntimeSettingsInput,
+    type GrokRuntimeSettingsInput,
     type KiloRuntimeSettingsInput,
     type RenameProjectEntryInput,
     type OpenCodeRuntimeSettingsInput,
@@ -361,6 +362,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveCodexRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.saveClaudeRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.saveGeminiRuntimeSettings);
+    ipcMain.removeHandler(IPC_CHANNELS.saveGrokRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.saveKiloRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.saveOpenCodeRuntimeSettings);
     ipcMain.removeHandler(IPC_CHANNELS.verifyCodexRuntimeSettings);
@@ -1829,6 +1831,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveGeminiRuntimeSettings,
         (_event, settings: GeminiRuntimeSettingsInput) =>
             options.aiService.saveGeminiRuntimeSettings(settings),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.saveGrokRuntimeSettings,
+        (_event, settings: GrokRuntimeSettingsInput) =>
+            options.aiService.saveGrokRuntimeSettings(settings),
     );
     ipcMain.handle(
         IPC_CHANNELS.saveKiloRuntimeSettings,
