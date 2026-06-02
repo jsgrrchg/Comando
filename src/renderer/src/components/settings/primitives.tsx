@@ -400,12 +400,14 @@ export function SelectField<T extends string | number | null>({
 }
 
 export function NumberStepper({
+    ariaLabel,
     value,
     min,
     max,
     inputWidth,
     onChange,
 }: {
+    ariaLabel?: string;
     value: number;
     min: number;
     max: number;
@@ -467,6 +469,7 @@ export function NumberStepper({
                 −
             </button>
             <input
+                aria-label={ariaLabel}
                 ref={inputRef}
                 value={isEditing ? local : String(value)}
                 onFocus={() => {

@@ -1,11 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
 
 import {
     createSettingsSearchQuery,
     SettingsWindow,
     TerminalContent,
 } from "./SettingsWindow";
+import { NumberStepper, SelectField, Toggle } from "./primitives";
 import type { SettingsTerminalState, SettingsWindowProps } from "./settings-types";
 
 function createTerminalState(
@@ -183,4 +185,177 @@ describe("SettingsWindow terminal settings", () => {
         expect(turnsMarkup).toContain("--max-turns");
         expect(turnsMarkup).not.toContain("Font family");
     });
+
+    it("wires terminal control handlers and clamps numeric values", () => {
+        const handlers = {
+            onClaudeCodeContinueSessionChange: vi.fn(),
+            onClaudeCodeMaxTurnsChange: vi.fn(),
+            onClaudeCodeModelChange: vi.fn(),
+            onClaudeCodeOptimizedChange: vi.fn(),
+            onClaudeCodeSkipPermissionsChange: vi.fn(),
+            onTerminalFontFamilyChange: vi.fn(),
+            onTerminalFontSizeChange: vi.fn(),
+        };
+        const tree = createTerminalContentTree(
+            createTerminalState({
+                ...handlers,
+                claudeCodeAvailable: false,
+                terminalFontSize: 8,
+            }),
+        );
+
+        const fontFamilyInput = findIntrinsicElement<InputElementProps>(
+            tree,
+            "input",
+            {
+                "aria-label": "Terminal font family",
+            },
+        );
+        fontFamilyInput.props.onChange({
+            target: { value: "  FiraCode Nerd Font  " },
+        });
+        expect(handlers.onTerminalFontFamilyChange).toHaveBeenCalledWith(
+            "FiraCode Nerd Font",
+        );
+
+        const fontSizeStepper = findNumberStepper(tree, "Terminal font size");
+        expect(fontSizeStepper.props.min).toBe(8);
+        expect(fontSizeStepper.props.max).toBe(24);
+        fontSizeStepper.props.onChange(7);
+        fontSizeStepper.props.onChange(25);
+        expect(handlers.onTerminalFontSizeChange).toHaveBeenNthCalledWith(1, 8);
+        expect(handlers.onTerminalFontSizeChange).toHaveBeenNthCalledWith(2, 24);
+
+        const maxTurnsStepper = findNumberStepper(tree, "Claude Code max turns");
+        expect(maxTurnsStepper.props.min).toBe(0);
+        expect(maxTurnsStepper.props.max).toBe(200);
+        maxTurnsStepper.props.onChange(-1);
+        maxTurnsStepper.props.onChange(201);
+        expect(handlers.onClaudeCodeMaxTurnsChange).toHaveBeenNthCalledWith(1, 0);
+        expect(handlers.onClaudeCodeMaxTurnsChange).toHaveBeenNthCalledWith(
+            2,
+            200,
+        );
+
+        const toggles = findElementsByType<ToggleProps>(tree, Toggle);
+        expect(toggles).toHaveLength(3);
+        toggles[0].props.onChange(true);
+        toggles[1].props.onChange(true);
+        toggles[2].props.onChange(true);
+        expect(handlers.onClaudeCodeOptimizedChange).toHaveBeenCalledWith(true);
+        expect(handlers.onClaudeCodeSkipPermissionsChange).toHaveBeenCalledWith(
+            true,
+        );
+        expect(
+            handlers.onClaudeCodeContinueSessionChange,
+        ).toHaveBeenCalledWith(true);
+
+        const modelSelect = findElementsByType<SelectFieldProps>(
+            tree,
+            SelectField,
+        )[0];
+        modelSelect.props.onChange("claude-opus-4-7");
+        expect(handlers.onClaudeCodeModelChange).toHaveBeenCalledWith(
+            "claude-opus-4-7",
+        );
+    });
+
+    it("keeps Claude Code controls editable when the CLI is not found", () => {
+        const tree = createTerminalContentTree(
+            createTerminalState({ claudeCodeAvailable: false }),
+        );
+
+        expect(renderTerminal(createTerminalState({ claudeCodeAvailable: false })))
+            .toContain("Install the claude command to use the launcher.");
+        expect(findNumberStepper(tree, "Claude Code max turns")).toBeDefined();
+        expect(findElementsByType<ToggleProps>(tree, Toggle)).toHaveLength(3);
+        expect(findElementsByType<SelectFieldProps>(tree, SelectField)).toHaveLength(
+            1,
+        );
+    });
 });
+
+type NumberStepperProps = Parameters<typeof NumberStepper>[0];
+type SelectFieldProps = Parameters<typeof SelectField<string>>[0];
+type ToggleProps = Parameters<typeof Toggle>[0];
+type InputElementProps = {
+    readonly onChange: (event: {
+        readonly target: { readonly value: string };
+    }) => void;
+};
+
+function createTerminalContentTree(state: SettingsTerminalState): ReactElement {
+    return TerminalContent({
+        searchQuery: createSettingsSearchQuery(""),
+        state,
+    }) as ReactElement;
+}
+
+function findNumberStepper(
+    tree: ReactNode,
+    ariaLabel: string,
+): ReactElement<NumberStepperProps> {
+    const stepper = findElementsByType<NumberStepperProps>(
+        tree,
+        NumberStepper,
+    ).find((element) => element.props.ariaLabel === ariaLabel);
+    if (!stepper) {
+        throw new Error(`Expected NumberStepper "${ariaLabel}".`);
+    }
+    return stepper;
+}
+
+function findIntrinsicElement<TProps extends Record<string, unknown>>(
+    tree: ReactNode,
+    type: string,
+    props: Record<string, unknown>,
+): ReactElement<TProps> {
+    const match = collectElements(tree).find((element) => {
+        if (element.type !== type) {
+            return false;
+        }
+        return Object.entries(props).every(
+            ([key, value]) =>
+                (element.props as Record<string, unknown>)[key] === value,
+        );
+    });
+    if (!match) {
+        throw new Error(`Expected intrinsic element "${type}".`);
+    }
+    return match as ReactElement<TProps>;
+}
+
+function findElementsByType<TProps>(
+    tree: ReactNode,
+    type: unknown,
+): ReactElement<TProps>[] {
+    return collectElements(tree).filter(
+        (element): element is ReactElement<TProps> => element.type === type,
+    );
+}
+
+function collectElements(tree: ReactNode): ReactElement[] {
+    const elements: ReactElement[] = [];
+    const visit = (node: ReactNode): void => {
+        if (Array.isArray(node)) {
+            for (const child of node as readonly ReactNode[]) {
+                visit(child);
+            }
+            return;
+        }
+        if (!isValidElement(node)) {
+            return;
+        }
+
+        elements.push(node);
+        const props = node.props as {
+            readonly children?: ReactNode;
+            readonly control?: ReactNode;
+        };
+        visit(props.children);
+        visit(props.control);
+    };
+
+    visit(tree);
+    return elements;
+}

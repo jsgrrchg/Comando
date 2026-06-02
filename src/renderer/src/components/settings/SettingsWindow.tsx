@@ -2158,6 +2158,7 @@ export function TerminalContent({
                 description="Text size in integrated terminals, in pixels."
                 control={
                     <NumberStepper
+                        ariaLabel="Terminal font size"
                         value={state.terminalFontSize}
                         min={TERMINAL_FONT_SIZE_MIN}
                         max={TERMINAL_FONT_SIZE_MAX}
@@ -2273,6 +2274,7 @@ export function TerminalContent({
                 keywords={["--max-turns", "turns"]}
                 control={
                     <NumberStepper
+                        ariaLabel="Claude Code max turns"
                         value={state.claudeCodeMaxTurns}
                         min={0}
                         max={CLAUDE_CODE_MAX_TURNS_UI_MAX}
