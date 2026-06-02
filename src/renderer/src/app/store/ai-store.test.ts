@@ -1598,8 +1598,21 @@ describe("ai-store queue", () => {
             .getState()
             .applySessionSnapshot(createSnapshot({ status: "streaming" }));
 
+        const betaComposerParts = [
+            { text: "beta ", type: "text" as const },
+            {
+                label: "app.ts",
+                languageId: "typescript",
+                path: "/tmp/project/src/app.ts",
+                relativePath: "src/app.ts",
+                type: "file_mention" as const,
+            },
+        ];
+
         await useAiStore.getState().sendPrompt(TAB, "alpha");
-        await useAiStore.getState().sendPrompt(TAB, "beta");
+        await useAiStore.getState().sendPrompt(TAB, "beta", {
+            composerPartsSnapshot: betaComposerParts,
+        });
 
         await useAiStore.getState().cancelSession(TAB.sessionId);
         useAiStore.getState().applySessionSnapshot(
@@ -1621,6 +1634,9 @@ describe("ai-store queue", () => {
             expect(sendAiPrompt).toHaveBeenCalledTimes(1);
         });
         expect(sendAiPrompt.mock.calls[0][0]).toMatchObject({ prompt: "beta" });
+        expect(sendAiPrompt.mock.calls[0][0]).toMatchObject({
+            composerParts: betaComposerParts,
+        });
         expect(useAiStore.getState().sessions[TAB.sessionId]?.queuePaused).toBe(
             false,
         );

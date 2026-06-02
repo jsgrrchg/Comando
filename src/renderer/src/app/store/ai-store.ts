@@ -1608,6 +1608,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     additionalRoots: collectExternalComposerRoots(
                         queuedPrompt.composerPartsSnapshot,
                     ),
+                    composerParts: queuedPrompt.composerPartsSnapshot,
                     projectId: latestSession.meta.projectId,
                     runtimeId: latestSession.meta.runtimeId,
                     sessionId,
