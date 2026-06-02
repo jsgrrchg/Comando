@@ -138,6 +138,7 @@ import {
     type OpenCodeRuntimeSettingsInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
+    type ReadClaudeCodeTranscriptInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
     type SendAiPromptInput,
@@ -195,6 +196,7 @@ import {
     createEmptyTsconfigResolution,
     resolveTsconfigForPath,
 } from "@main/tsconfig/resolve";
+import { readClaudeCodeTranscript } from "@main/ipc/claude-code-transcript";
 import { loadAppChangelog } from "@main/changelog";
 import {
     getAppPrivacyAccessState,
@@ -234,6 +236,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
     ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
+    ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
@@ -458,6 +461,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             _event,
             input: CheckCommandAvailabilityInput,
         ): CheckCommandAvailabilityResult => checkCommandAvailability(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.readClaudeCodeTranscript,
+        (_event, input: ReadClaudeCodeTranscriptInput) =>
+            readClaudeCodeTranscript(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.getSettingsSnapshot,

@@ -1,12 +1,15 @@
-import type { AiSessionSnapshot } from "@shared/ipc";
 import {
     ALLOWED_CLAUDE_CODE_MODELS,
     DEFAULT_APP_TERMINAL_SETTINGS,
 } from "@shared/terminal-settings";
 import type { RuntimeWorkspaceTab } from "@renderer/app/workspace/tree";
-import { useAiStore } from "@renderer/app/store/ai-store";
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import {
+    getClaudeCodeSidebarSessions,
+    registerClaudeCodeSidebarSession,
+    resetClaudeCodeSidebarSessionsForTests,
+} from "./claudeCodeSidebarSession";
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
 
 let claudeCodeInstalledCache: boolean | null = null;
@@ -28,21 +31,6 @@ export interface LaunchClaudeCodeTerminalResult {
     readonly terminalTabId: string | null;
     readonly transcriptSessionId: string | null;
 }
-
-export interface ClaudeCodeTerminalSidebarItem {
-    readonly cwd: string;
-    readonly projectId: string | null;
-    readonly terminalId: string;
-    readonly terminalTabId: string;
-    readonly title: string;
-    readonly transcriptSessionId: string | null;
-    readonly worktreeId: string | null;
-}
-
-const sidebarItemsByTerminalId = new Map<
-    string,
-    ClaudeCodeTerminalSidebarItem
->();
 
 export async function checkClaudeCodeInstalled(): Promise<boolean> {
     if (claudeCodeInstalledCache !== null) {
@@ -112,19 +100,11 @@ export async function launchClaudeCodeTerminal(
         }),
     );
 
-    registerClaudeCodeTerminalSidebarItem({
+    registerClaudeCodeSidebarSession({
         cwd: runtime?.snapshot.cwd ?? "",
         projectId: terminalTab.projectId,
         terminalId,
         terminalTabId,
-        title,
-        transcriptSessionId,
-        worktreeId: terminalTab.worktreeId ?? null,
-    });
-    applyClaudeCodeTerminalSessionSnapshot({
-        cwd: runtime?.snapshot.cwd ?? "",
-        projectId: terminalTab.projectId,
-        sessionId: transcriptSessionId ?? terminalId,
         title,
         transcriptSessionId,
         worktreeId: terminalTab.worktreeId ?? null,
@@ -198,13 +178,13 @@ export function getPinnedTranscriptSessionId(
     return continueSession ? null : createUuid();
 }
 
-export function getClaudeCodeTerminalSidebarItemsForTests(): readonly ClaudeCodeTerminalSidebarItem[] {
-    return [...sidebarItemsByTerminalId.values()];
+export function getClaudeCodeTerminalSidebarItemsForTests() {
+    return getClaudeCodeSidebarSessions();
 }
 
 export function resetClaudeCodeTerminalStateForTests(): void {
     claudeCodeInstalledCache = null;
-    sidebarItemsByTerminalId.clear();
+    resetClaudeCodeSidebarSessionsForTests();
 }
 
 interface BuildClaudeCodeCommandArgsInput {
@@ -281,62 +261,6 @@ function isTerminalRunning(terminalId: string): boolean {
         useTerminalRuntimeStore.getState().runtimesById[terminalId]?.snapshot
             .status === "running"
     );
-}
-
-function registerClaudeCodeTerminalSidebarItem(
-    item: ClaudeCodeTerminalSidebarItem,
-): void {
-    sidebarItemsByTerminalId.set(item.terminalId, item);
-}
-
-function applyClaudeCodeTerminalSessionSnapshot(input: {
-    readonly cwd: string;
-    readonly projectId: string | null;
-    readonly sessionId: string;
-    readonly title: string;
-    readonly transcriptSessionId: string | null;
-    readonly worktreeId: string | null;
-}): void {
-    useAiStore.getState().applySessionSnapshot(
-        createClaudeCodeTerminalSessionSnapshot(input),
-    );
-}
-
-function createClaudeCodeTerminalSessionSnapshot(input: {
-    readonly cwd: string;
-    readonly projectId: string | null;
-    readonly sessionId: string;
-    readonly title: string;
-    readonly transcriptSessionId: string | null;
-    readonly worktreeId: string | null;
-}): AiSessionSnapshot {
-    const now = new Date().toISOString();
-    return {
-        activeTurnStartedAt: null,
-        availableCommands: [],
-        closedAt: null,
-        configOptions: [],
-        lastError: null,
-        messages: [],
-        modeId: null,
-        modes: [],
-        modelId: null,
-        models: [],
-        pendingPermission: null,
-        pendingUserInput: null,
-        plan: null,
-        projectId: input.projectId,
-        runtimeId: "claude",
-        runtimeSessionId: input.transcriptSessionId,
-        sessionId: input.sessionId,
-        status: "idle",
-        title: input.title,
-        tokenUsage: null,
-        toolActivity: [],
-        trackedFiles: [],
-        updatedAt: now,
-        worktreeId: input.worktreeId,
-    };
 }
 
 function createLaunchResult(

@@ -59,6 +59,8 @@ import {
     type PrepareAiSessionInput,
     type ProjectSettingsSnapshot,
     type ProjectSettingsUpdatedEvent,
+    type ReadClaudeCodeTranscriptInput,
+    type ReadClaudeCodeTranscriptResult,
     type ProjectAppDataSummary,
     type ProjectRelocateResult,
     type ProjectSummary,
@@ -228,6 +230,48 @@ function assertCommandAvailabilityResult(
     return {
         found: result.found,
         path: result.path,
+    };
+}
+
+function assertClaudeCodeTranscriptResult(
+    channel: string,
+    value: unknown,
+): ReadClaudeCodeTranscriptResult {
+    const result = assertIpcObject<Partial<ReadClaudeCodeTranscriptResult>>(
+        channel,
+        value,
+    );
+    if (typeof result.found !== "boolean") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected found to be boolean.`,
+        );
+    }
+    if (typeof result.changed !== "boolean") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected changed to be boolean.`,
+        );
+    }
+    if (result.mtimeMs !== null && typeof result.mtimeMs !== "number") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected mtimeMs to be number or null.`,
+        );
+    }
+    if (result.title !== null && typeof result.title !== "string") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected title to be string or null.`,
+        );
+    }
+    if (result.preview !== null && typeof result.preview !== "string") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected preview to be string or null.`,
+        );
+    }
+    return {
+        changed: result.changed,
+        found: result.found,
+        mtimeMs: result.mtimeMs,
+        preview: result.preview,
+        title: result.title,
     };
 }
 
@@ -425,6 +469,14 @@ const comandoApi: ComandoApi = {
         assertCommandAvailabilityResult(
             IPC_CHANNELS.checkCommandAvailability,
             await ipcRenderer.invoke(IPC_CHANNELS.checkCommandAvailability, input),
+        ),
+    readClaudeCodeTranscript: async (input: ReadClaudeCodeTranscriptInput) =>
+        assertClaudeCodeTranscriptResult(
+            IPC_CHANNELS.readClaudeCodeTranscript,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.readClaudeCodeTranscript,
+                input,
+            ),
         ),
     getSettingsSnapshot: async () =>
         assertIpcObject<SettingsSnapshot>(

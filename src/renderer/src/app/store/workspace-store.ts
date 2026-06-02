@@ -321,6 +321,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         sessionId: string,
         title: string,
     ) => Promise<void>;
+    updateTerminalTabTitle: (tabId: string, title: string) => Promise<void>;
 }
 
 type GetWorkspaceState = () => WorkspaceStore;
@@ -1871,6 +1872,27 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 }),
             ),
         }));
+        await persistWorkspaceState(get);
+    },
+
+    updateTerminalTabTitle: async (tabId, title) => {
+        set((state) => {
+            const tab = state.tabsById[tabId];
+            if (!tab || tab.kind !== "terminal" || tab.title === title) {
+                return state;
+            }
+
+            return {
+                ...state,
+                tabsById: {
+                    ...state.tabsById,
+                    [tabId]: {
+                        ...tab,
+                        title,
+                    },
+                },
+            };
+        });
         await persistWorkspaceState(get);
     },
 }));

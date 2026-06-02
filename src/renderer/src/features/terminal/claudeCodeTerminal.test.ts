@@ -136,27 +136,23 @@ describe("Claude Code terminal launcher", () => {
             data: "claude --session-id transcript-session-1\n",
             sessionId: "pty-terminal-id-1",
         });
-        expect(getClaudeCodeTerminalSidebarItemsForTests()).toEqual([
+        expect(getClaudeCodeTerminalSidebarItemsForTests()).toMatchObject([
             {
                 cwd: "/workspace",
+                isTerminalAgent: true,
                 projectId: "project-1",
+                runtimeId: "claude-code-terminal",
+                runtimeSessionId: "transcript-session-1",
+                sessionId: "claude-code-terminal:terminal-id-1",
                 terminalId: "terminal-id-1",
                 terminalTabId: "terminal-tab-1",
                 title: "Claude Code 1",
+                transcriptMtimeMs: null,
                 transcriptSessionId: "transcript-session-1",
                 worktreeId: "worktree-1",
             },
         ]);
-        expect(
-            useAiStore.getState().sessions["transcript-session-1"]?.snapshot,
-        ).toMatchObject({
-            projectId: "project-1",
-            runtimeId: "claude",
-            runtimeSessionId: "transcript-session-1",
-            sessionId: "transcript-session-1",
-            title: "Claude Code 1",
-            worktreeId: "worktree-1",
-        });
+        expect(useAiStore.getState().sessions).toEqual({});
     });
 
     it("uses --continue without adding a transcript session id", async () => {
@@ -184,12 +180,14 @@ describe("Claude Code terminal launcher", () => {
             data: "claude --continue\n",
             sessionId: "pty-terminal-id-1",
         });
-        expect(useAiStore.getState().sessions["terminal-id-1"]?.snapshot)
-            .toMatchObject({
+        expect(getClaudeCodeTerminalSidebarItemsForTests()).toMatchObject([
+            {
                 runtimeSessionId: null,
-                sessionId: "terminal-id-1",
+                sessionId: "claude-code-terminal:terminal-id-1",
+                transcriptSessionId: null,
                 title: "Claude Code 1",
-            });
+            },
+        ]);
     });
 
     it("adds skip-permissions, model, and max-turns flags when configured", async () => {

@@ -23,6 +23,7 @@ export const IPC_CHANNELS = {
     revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
     checkCommandAvailability: "app:check-command-availability",
+    readClaudeCodeTranscript: "app:read-claude-code-transcript",
     getSettingsSnapshot: "settings:get-snapshot",
     getProjectSettings: "settings:get-project-settings",
     saveCodexRuntimeSettings: "settings:save-codex-runtime-settings",
@@ -294,6 +295,20 @@ export interface CheckCommandAvailabilityInput {
 export interface CheckCommandAvailabilityResult {
     readonly found: boolean;
     readonly path: string | null;
+}
+
+export interface ReadClaudeCodeTranscriptInput {
+    readonly cwd: string;
+    readonly sessionId: string;
+    readonly sinceMtimeMs?: number | null;
+}
+
+export interface ReadClaudeCodeTranscriptResult {
+    readonly changed: boolean;
+    readonly found: boolean;
+    readonly mtimeMs: number | null;
+    readonly preview: string | null;
+    readonly title: string | null;
 }
 
 export type AiRuntimeId =
@@ -2708,6 +2723,9 @@ export interface ComandoApi {
     checkCommandAvailability: (
         input: CheckCommandAvailabilityInput,
     ) => Promise<CheckCommandAvailabilityResult>;
+    readClaudeCodeTranscript: (
+        input: ReadClaudeCodeTranscriptInput,
+    ) => Promise<ReadClaudeCodeTranscriptResult>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getProjectSettings: (
         projectId: string,

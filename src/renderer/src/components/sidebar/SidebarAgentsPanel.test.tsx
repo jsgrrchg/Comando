@@ -2,6 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiHistorySessionSummary } from "@shared/ipc";
+import {
+    registerClaudeCodeSidebarSession,
+    resetClaudeCodeSidebarSessionsForTests,
+} from "@renderer/features/terminal/claudeCodeSidebarSession";
 
 import {
     buildSidebarAgentsNewAgentMenuEntries,
@@ -60,6 +64,7 @@ function createSummary(
 describe("SidebarAgentsPanel history cache", () => {
     beforeEach(() => {
         clearSidebarAgentsHistoryCache();
+        resetClaudeCodeSidebarSessionsForTests();
         Object.defineProperty(globalThis, "localStorage", {
             configurable: true,
             value: new MemoryStorage(),
@@ -144,6 +149,42 @@ describe("SidebarAgentsPanel history cache", () => {
         );
         expect(markup).toContain('data-subagent="true"');
         expect(markup).toContain("Agent");
+    });
+
+    it("renders live Claude Code terminal agents alongside real history", () => {
+        writeSidebarAgentsHistoryCache(
+            "project-1",
+            "worktree-1",
+            [
+                createSummary({
+                    runtimeId: "claude",
+                    sessionId: "claude-thread",
+                    title: "Claude Thread",
+                }),
+            ],
+            100,
+        );
+        registerClaudeCodeSidebarSession({
+            cwd: "/workspace",
+            projectId: "project-1",
+            terminalId: "terminal-1",
+            terminalTabId: "terminal-tab-1",
+            title: "Claude Code 1",
+            transcriptSessionId: null,
+            worktreeId: "worktree-1",
+        });
+
+        const markup = renderToStaticMarkup(
+            <SidebarAgentsPanel
+                projectId="project-1"
+                worktreeId="worktree-1"
+            />,
+        );
+
+        expect(markup).toContain("Claude Thread");
+        expect(markup).toContain("Claude Code 1");
+        expect(markup).toContain("Claude Code");
+        expect(markup).toContain("Terminal");
     });
 });
 
