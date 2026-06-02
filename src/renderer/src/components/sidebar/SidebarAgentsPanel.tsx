@@ -20,6 +20,10 @@ import { truncateChatTitle } from "@shared/chatTitle";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { collectPaneNodes } from "@renderer/app/workspace/tree";
+import {
+    checkClaudeCodeInstalled,
+    launchClaudeCodeTerminal,
+} from "@renderer/features/terminal/claudeCodeTerminal";
 
 import {
     ContextMenu,
@@ -90,6 +94,10 @@ const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
     "opencode",
 ];
 const SIDEBAR_AGENT_DRAG_THRESHOLD_PX = 6;
+const CLAUDE_CODE_TERMINAL_DESCRIPTION =
+    "Open the claude CLI in a workspace terminal.";
+const CLAUDE_CODE_NOT_FOUND_MESSAGE =
+    "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 
 export function SidebarAgentsPanel({
     filter,
@@ -144,6 +152,9 @@ export function SidebarAgentsPanel({
         null,
     );
     const [renameDraft, setRenameDraft] = useState("");
+    const [claudeCodeAvailable, setClaudeCodeAvailable] = useState<
+        boolean | null
+    >(null);
     const [collapsedSessionIds, setCollapsedSessionIds] = useState<
         ReadonlySet<string>
     >(() => readSidebarAgentsCollapsedSessionIds(projectId, worktreeId));
@@ -382,6 +393,25 @@ export function SidebarAgentsPanel({
         },
         [createChatTab, projectId, worktreeId],
     );
+    const handleOpenClaudeCodeTerminal = useCallback(() => {
+        void launchClaudeCodeTerminal({
+            projectId,
+            worktreeId,
+        });
+    }, [projectId, worktreeId]);
+
+    useEffect(() => {
+        let cancelled = false;
+        void checkClaudeCodeInstalled().then((available) => {
+            if (!cancelled) {
+                setClaudeCodeAvailable(available);
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     const handleContextMenu = useCallback(
         (event: ReactMouseEvent, session: AiHistorySessionSummary) => {
@@ -588,11 +618,16 @@ export function SidebarAgentsPanel({
 
     const newAgentMenuEntries = useMemo<readonly ContextMenuEntry[]>(
         () =>
-            SIDEBAR_AGENTS_NEW_RUNTIMES.map((runtimeId) => ({
-                action: () => handleCreateNewAgentTab(runtimeId),
-                label: `New ${getHistoryRuntimeLabel(runtimeId)} thread`,
-            })),
-        [handleCreateNewAgentTab],
+            buildSidebarAgentsNewAgentMenuEntries({
+                claudeCodeAvailable,
+                onCreateNewAgentTab: handleCreateNewAgentTab,
+                onOpenClaudeCodeTerminal: handleOpenClaudeCodeTerminal,
+            }),
+        [
+            claudeCodeAvailable,
+            handleCreateNewAgentTab,
+            handleOpenClaudeCodeTerminal,
+        ],
     );
 
     const contextMenuEntries = useMemo<readonly ContextMenuEntry[]>(() => {
@@ -960,6 +995,31 @@ export function SidebarAgentsPanel({
             ) : null}
         </div>
     );
+}
+
+export function buildSidebarAgentsNewAgentMenuEntries({
+    claudeCodeAvailable,
+    onCreateNewAgentTab,
+    onOpenClaudeCodeTerminal,
+}: {
+    readonly claudeCodeAvailable: boolean | null;
+    readonly onCreateNewAgentTab: (runtimeId: AiRuntimeId) => void;
+    readonly onOpenClaudeCodeTerminal: () => void;
+}): readonly ContextMenuEntry[] {
+    return [
+        ...SIDEBAR_AGENTS_NEW_RUNTIMES.map((runtimeId) => ({
+            action: () => onCreateNewAgentTab(runtimeId),
+            label: `New ${getHistoryRuntimeLabel(runtimeId)} thread`,
+        })),
+        {
+            action: onOpenClaudeCodeTerminal,
+            label: "New Claude Code Terminal",
+            title:
+                claudeCodeAvailable === false
+                    ? CLAUDE_CODE_NOT_FOUND_MESSAGE
+                    : CLAUDE_CODE_TERMINAL_DESCRIPTION,
+        },
+    ];
 }
 
 function SidebarAgentsSection({

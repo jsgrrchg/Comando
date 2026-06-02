@@ -10,6 +10,7 @@ export type ContextMenuEntry =
           readonly action?: () => void;
           readonly danger?: boolean;
           readonly disabled?: boolean;
+          readonly title?: string;
       }
     | {
           readonly type: "separator";
@@ -119,6 +120,7 @@ export function ContextMenu<T>({
                         disabled={entry.disabled}
                         key={`${entry.label}-${index}`}
                         onClick={() => closeAndRunAction(entry.action)}
+                        title={entry.title}
                         type="button"
                     >
                         {entry.label}

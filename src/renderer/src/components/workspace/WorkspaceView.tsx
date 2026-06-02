@@ -158,6 +158,10 @@ import {
     SIDEBAR_GITHUB_DRAG_EVENT,
     type SidebarGitHubDragDetail,
 } from "@renderer/components/sidebar/sidebarGitHubDragEvents";
+import {
+    checkClaudeCodeInstalled,
+    launchClaudeCodeTerminal,
+} from "@renderer/features/terminal/claudeCodeTerminal";
 
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
@@ -185,6 +189,7 @@ type QuickCreateMenuItem = {
     readonly children?: readonly QuickCreateMenuEntry[];
     readonly disabled?: boolean;
     readonly label: string;
+    readonly title?: string;
     readonly type?: "item";
 };
 
@@ -193,6 +198,10 @@ type QuickCreateMenuSeparator = {
 };
 
 type QuickCreateMenuEntry = QuickCreateMenuItem | QuickCreateMenuSeparator;
+const CLAUDE_CODE_TERMINAL_DESCRIPTION =
+    "Open the claude CLI in a workspace terminal.";
+const CLAUDE_CODE_NOT_FOUND_MESSAGE =
+    "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 
 type QuickCreateSubmenuState = {
     readonly anchorRect: MenuAnchorRect;
@@ -502,6 +511,49 @@ function isQuickCreateMenuSeparator(
     entry: QuickCreateMenuEntry,
 ): entry is QuickCreateMenuSeparator {
     return entry.type === "separator";
+}
+
+export function buildWorkspaceAgentsQuickCreateEntries({
+    claudeCodeAvailable,
+    defaultProjectId,
+    defaultWorktreeId,
+    onCreateChatTab,
+    onOpenClaudeCodeTerminal,
+}: {
+    readonly claudeCodeAvailable: boolean | null;
+    readonly defaultProjectId: string | null;
+    readonly defaultWorktreeId: string | null;
+    readonly onCreateChatTab: (
+        projectId: string | null,
+        worktreeId: string | null,
+        runtimeId: AiRuntimeId,
+    ) => void;
+    readonly onOpenClaudeCodeTerminal: () => void;
+}): readonly QuickCreateMenuEntry[] {
+    const createRuntimeEntry = (
+        label: string,
+        runtimeId: AiRuntimeId,
+    ): QuickCreateMenuEntry => ({
+        action: () =>
+            onCreateChatTab(defaultProjectId, defaultWorktreeId, runtimeId),
+        label,
+    });
+
+    return [
+        createRuntimeEntry("Codex", "codex"),
+        createRuntimeEntry("Claude", "claude"),
+        {
+            action: onOpenClaudeCodeTerminal,
+            label: "Claude Code",
+            title:
+                claudeCodeAvailable === false
+                    ? CLAUDE_CODE_NOT_FOUND_MESSAGE
+                    : CLAUDE_CODE_TERMINAL_DESCRIPTION,
+        },
+        createRuntimeEntry("Gemini", "gemini"),
+        createRuntimeEntry("Kilo", "kilo"),
+        createRuntimeEntry("OpenCode", "opencode"),
+    ];
 }
 
 export function WorkspaceView({
@@ -1466,6 +1518,9 @@ function WorkspacePaneView({
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
     const [quickCreateMenu, setQuickCreateMenu] =
         useState<QuickCreateMenuState>(null);
+    const [claudeCodeAvailable, setClaudeCodeAvailable] = useState<
+        boolean | null
+    >(null);
     const contextTabId = tabContextMenu?.payload.tabId ?? null;
     const contextTab = useWorkspaceStore(
         useCallback(
@@ -1638,6 +1693,26 @@ function WorkspacePaneView({
 
         onRequestCreateFile();
     }, [defaultProjectId, onRequestCreateFile]);
+    const handleOpenClaudeCodeTerminal = useCallback(() => {
+        void launchClaudeCodeTerminal({
+            paneId: paneNodeId,
+            projectId: defaultProjectId,
+            worktreeId: defaultWorktreeId ?? null,
+        });
+    }, [defaultProjectId, defaultWorktreeId, paneNodeId]);
+
+    useEffect(() => {
+        let cancelled = false;
+        void checkClaudeCodeInstalled().then((available) => {
+            if (!cancelled) {
+                setClaudeCodeAvailable(available);
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     const handleOpenWorkspaceFile = useCallback(
         async (
@@ -1891,53 +1966,15 @@ function WorkspacePaneView({
         () => [
             {
                 label: "Agents",
-                children: [
-                    {
-                        action: () =>
-                            void createChatTab(
-                                defaultProjectId,
-                                defaultWorktreeId ?? null,
-                                "codex",
-                            ),
-                        label: "Codex",
+                children: buildWorkspaceAgentsQuickCreateEntries({
+                    claudeCodeAvailable,
+                    defaultProjectId,
+                    defaultWorktreeId,
+                    onCreateChatTab: (projectId, worktreeId, runtimeId) => {
+                        void createChatTab(projectId, worktreeId, runtimeId);
                     },
-                    {
-                        action: () =>
-                            void createChatTab(
-                                defaultProjectId,
-                                defaultWorktreeId ?? null,
-                                "claude",
-                            ),
-                        label: "Claude",
-                    },
-                    {
-                        action: () =>
-                            void createChatTab(
-                                defaultProjectId,
-                                defaultWorktreeId ?? null,
-                                "gemini",
-                            ),
-                        label: "Gemini",
-                    },
-                    {
-                        action: () =>
-                            void createChatTab(
-                                defaultProjectId,
-                                defaultWorktreeId ?? null,
-                                "kilo",
-                            ),
-                        label: "Kilo",
-                    },
-                    {
-                        action: () =>
-                            void createChatTab(
-                                defaultProjectId,
-                                defaultWorktreeId ?? null,
-                                "opencode",
-                            ),
-                        label: "OpenCode",
-                    },
-                ],
+                    onOpenClaudeCodeTerminal: handleOpenClaudeCodeTerminal,
+                }),
             },
             { type: "separator" },
             {
@@ -1979,9 +2016,11 @@ function WorkspacePaneView({
         [
             createChatTab,
             createTerminalTab,
+            claudeCodeAvailable,
             defaultProjectId,
             defaultWorktreeId,
             handleCreateFile,
+            handleOpenClaudeCodeTerminal,
             openChatHistoryTab,
             openGitTab,
         ],
@@ -2800,6 +2839,7 @@ function QuickCreateMenu({
                             setSubmenuPosition(null);
                         }
                     }}
+                    title={entry.title}
                     type="button"
                 >
                     <span>{entry.label}</span>
