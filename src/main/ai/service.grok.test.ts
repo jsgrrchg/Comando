@@ -129,6 +129,156 @@ describe("AiService Grok branch", () => {
         }
     });
 
+    it("keeps saved Grok login pending until local credentials are verified", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-pending-login-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "grok");
+            let savedSettings: GrokRuntimeSettings | null = null;
+            const service = createService({
+                settingsService: createSettingsService({
+                    loadGrokRuntimeSettings: vi.fn(() =>
+                        createGrokSettings(),
+                    ),
+                    saveGrokRuntimeSettings: (
+                        settings: GrokRuntimeSettings,
+                    ) => {
+                        savedSettings = settings;
+                    },
+                }),
+            });
+
+            const status = await service.saveGrokRuntimeSettings({
+                authMethod: "grok-login",
+                binaryPath,
+                xaiApiKey: {
+                    kind: "unchanged",
+                },
+            });
+
+            expect(savedSettings).toMatchObject({
+                authMethod: "grok-login",
+                binaryPath,
+                hasXaiApiKey: false,
+            });
+            expect(
+                (savedSettings as unknown as GrokRuntimeSettings)
+                    .authInvalidatedAtMs,
+            ).toEqual(expect.any(Number));
+            expect(status).toMatchObject({
+                authCredentialSource: "none",
+                authMethod: null,
+                authReady: false,
+                onboardingRequired: true,
+                runtimeId: "grok",
+            });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("does not treat XAI_API_KEY as verified Grok login state", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-env-login-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "grok");
+            process.env.XAI_API_KEY = "env-xai-key";
+            let savedSettings: GrokRuntimeSettings | null = null;
+            const service = createService({
+                settingsService: createSettingsService({
+                    loadGrokRuntimeSettings: vi.fn(() =>
+                        createGrokSettings(),
+                    ),
+                    saveGrokRuntimeSettings: (
+                        settings: GrokRuntimeSettings,
+                    ) => {
+                        savedSettings = settings;
+                    },
+                }),
+            });
+
+            const status = await service.saveGrokRuntimeSettings({
+                authMethod: "grok-login",
+                binaryPath,
+                xaiApiKey: {
+                    kind: "unchanged",
+                },
+            });
+
+            expect(
+                (savedSettings as unknown as GrokRuntimeSettings)
+                    .authInvalidatedAtMs,
+            ).toEqual(expect.any(Number));
+            expect(status).toMatchObject({
+                authCredentialSource: "environment",
+                authMethod: "xai-api-key",
+                authReady: true,
+                runtimeId: "grok",
+            });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("trusts saved Grok login when local credentials are already present", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-trusted-login-"),
+        );
+        const originalHome = process.env.HOME;
+        const originalUserProfile = process.env.USERPROFILE;
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "grok");
+            writeGrokAuthStore(tempDir);
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
+            let savedSettings: GrokRuntimeSettings | null = null;
+            const service = createService({
+                settingsService: createSettingsService({
+                    loadGrokRuntimeSettings: vi.fn(() =>
+                        createGrokSettings({
+                            authInvalidatedAtMs: Date.now() - 60_000,
+                        }),
+                    ),
+                    saveGrokRuntimeSettings: (
+                        settings: GrokRuntimeSettings,
+                    ) => {
+                        savedSettings = settings;
+                    },
+                }),
+            });
+
+            const status = await service.saveGrokRuntimeSettings({
+                authMethod: "grok-login",
+                binaryPath,
+                xaiApiKey: {
+                    kind: "unchanged",
+                },
+            });
+
+            expect(savedSettings).toMatchObject({
+                authInvalidatedAtMs: null,
+                authMethod: "grok-login",
+                binaryPath,
+            });
+            expect(status).toMatchObject({
+                authCredentialSource: "external-runtime",
+                authMethod: "grok-login",
+                authReady: true,
+                onboardingRequired: false,
+                runtimeId: "grok",
+            });
+        } finally {
+            restoreEnv("HOME", originalHome);
+            restoreEnv("USERPROFILE", originalUserProfile);
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("hydrates Grok login from the ACP cached token probe", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-grok-probe-"),
@@ -740,6 +890,12 @@ function writeExecutable(directory: string, name: string): string {
     fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
     fs.chmodSync(binaryPath, 0o755);
     return binaryPath;
+}
+
+function writeGrokAuthStore(homeDir: string): void {
+    const authDir = path.join(homeDir, ".grok", "auth");
+    fs.mkdirSync(authDir, { recursive: true });
+    fs.writeFileSync(path.join(authDir, "token"), "cached-token", "utf8");
 }
 
 function restoreEnv(name: string, value: string | undefined): void {

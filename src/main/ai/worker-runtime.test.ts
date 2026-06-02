@@ -407,6 +407,58 @@ describe("AiWorkerRuntime prepareSession", () => {
         expect(loadSessionMock).not.toHaveBeenCalled();
     });
 
+    it("fails Grok startup when ACP auth methods are not advertised", async () => {
+        initializeMock.mockResolvedValueOnce({
+            authMethods: [],
+        });
+        const runtime = new AiWorkerRuntime({
+            emitEvent: vi.fn(),
+        });
+        const launch = createGrokLaunch({
+            authCredentialSource: "external-runtime",
+            authMethod: "grok-login",
+            cwd: process.cwd(),
+            projectRoot: null,
+            title: "Grok 1",
+        });
+
+        await expect(
+            runtime.dispatchMethod("ai.prepareSession", {
+                input: launch.input,
+                launch,
+            }),
+        ).rejects.toThrow(
+            "Grok does not advertise authentication methods on this machine.",
+        );
+        expect(authenticateMock).not.toHaveBeenCalled();
+        expect(loadSessionMock).not.toHaveBeenCalled();
+    });
+
+    it("fails Grok startup when ACP auth methods are missing", async () => {
+        initializeMock.mockResolvedValueOnce({});
+        const runtime = new AiWorkerRuntime({
+            emitEvent: vi.fn(),
+        });
+        const launch = createGrokLaunch({
+            authCredentialSource: "external-runtime",
+            authMethod: "grok-login",
+            cwd: process.cwd(),
+            projectRoot: null,
+            title: "Grok 1",
+        });
+
+        await expect(
+            runtime.dispatchMethod("ai.prepareSession", {
+                input: launch.input,
+                launch,
+            }),
+        ).rejects.toThrow(
+            "Grok does not advertise authentication methods on this machine.",
+        );
+        expect(authenticateMock).not.toHaveBeenCalled();
+        expect(loadSessionMock).not.toHaveBeenCalled();
+    });
+
     it("does not reactivate a restored subagent from replayed turn lifecycle events", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),

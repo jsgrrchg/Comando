@@ -140,7 +140,6 @@ import {
     buildGrokSecretPatches,
     getGrokRuntimeStatus,
     isGrokAuthenticationError,
-    isGrokEnvironmentCredentialReady,
     isGrokExternalCredentialReady,
     launchGrokLogin,
     loadGrokSecretBundle,
@@ -461,15 +460,16 @@ export class AiService {
             binaryPath: normalizeOptionalText(settings.binaryPath),
             hasXaiApiKey: secretPatch.flags.hasXaiApiKey,
         } satisfies GrokRuntimeSettings;
-        const shouldClearInvalidation =
-            settings.authMethod === "grok-login" &&
-            (isGrokEnvironmentCredentialReady(process.env) ||
-                isGrokExternalCredentialReady(nextSettings));
+        const selectedGrokLogin = settings.authMethod === "grok-login";
+        const shouldTrustGrokLogin =
+            selectedGrokLogin && isGrokExternalCredentialReady(nextSettings);
         const persistedSettings = {
             ...nextSettings,
             authInvalidatedAtMs:
-                shouldClearInvalidation
+                shouldTrustGrokLogin
                     ? null
+                    : selectedGrokLogin
+                      ? Date.now()
                     : nextSettings.authInvalidatedAtMs,
         } satisfies GrokRuntimeSettings;
 

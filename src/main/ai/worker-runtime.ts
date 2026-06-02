@@ -1460,9 +1460,6 @@ export class AiWorkerRuntime {
 
         const advertisedMethodIds =
             initializeResponse.authMethods?.map((method) => method.id) ?? [];
-        if (advertisedMethodIds.length === 0) {
-            return;
-        }
 
         const credentialSource =
             liveConnection.resolvedRuntime.status.authCredentialSource ?? "none";
@@ -1477,6 +1474,12 @@ export class AiWorkerRuntime {
         if (!methodId) {
             throw new Error(
                 `${getRuntimeDisplayName(liveConnection.runtimeId)} needs authentication before starting a session. Open Settings and choose a login method or save an API key.`,
+            );
+        }
+
+        if (advertisedMethodIds.length === 0) {
+            throw new Error(
+                `${getRuntimeDisplayName(liveConnection.runtimeId)} does not advertise authentication methods on this machine.`,
             );
         }
 

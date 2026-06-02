@@ -850,7 +850,10 @@ function ProviderCard({
     const provider = AI_PROVIDER_DEFINITIONS[providerId];
     const statusTone = getProviderStatusTone(status);
     const method = getProviderMethod(providerId, methodId);
-    const sourceLabel = buildProviderSourceLabel(status, method?.label);
+    const effectiveMethod = isMethodIdForProvider(providerId, status?.authMethod)
+        ? getProviderMethod(providerId, status.authMethod)
+        : method;
+    const sourceLabel = buildProviderSourceLabel(status, effectiveMethod?.label);
 
     return (
         <article style={PROVIDER_CARD_STYLE}>
@@ -2049,8 +2052,8 @@ function getRuntimeNotice(
     status: AiProviderRuntimeStatus | null | undefined,
 ): string | null {
     return (
-        status?.authSessionMessage ??
         status?.message ??
+        status?.authSessionMessage ??
         status?.authStorageMessage ??
         null
     );
