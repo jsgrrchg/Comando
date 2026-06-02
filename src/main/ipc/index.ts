@@ -13,6 +13,8 @@ import {
     type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
     type AiRuntimeAuthLogoutInput,
+    type CheckCommandAvailabilityInput,
+    type CheckCommandAvailabilityResult,
     type AiRuntimeId,
     type AiSessionConfigOptionMutationInput,
     type GetAiSessionTranscriptPageInput,
@@ -172,6 +174,7 @@ import {
     forgetOpenFileBuffer,
     recordOpenFileBuffer,
 } from "@main/ai/openFileBuffers";
+import { checkCommandAvailability } from "@main/shell/command-availability";
 import type { GitGateway } from "@main/git/service";
 import type { GitHubGateway } from "@main/github/service";
 import type { ProjectService } from "@main/projects/service";
@@ -230,6 +233,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
+    ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
@@ -447,6 +451,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: OpenProjectWindowInput) => {
             options.openProjectWindow(input);
         },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.checkCommandAvailability,
+        (
+            _event,
+            input: CheckCommandAvailabilityInput,
+        ): CheckCommandAvailabilityResult => checkCommandAvailability(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.getSettingsSnapshot,

@@ -36,6 +36,8 @@ import {
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type ComandoApi,
+    type CheckCommandAvailabilityInput,
+    type CheckCommandAvailabilityResult,
     type CodexRuntimeSettingsInput,
     type CopyExternalProjectEntriesInput,
     type CopyExternalProjectEntriesResult,
@@ -203,6 +205,30 @@ function assertIpcArray<T>(channel: string, value: unknown): T[] {
         );
     }
     return value as T[];
+}
+
+function assertCommandAvailabilityResult(
+    channel: string,
+    value: unknown,
+): CheckCommandAvailabilityResult {
+    const result = assertIpcObject<Partial<CheckCommandAvailabilityResult>>(
+        channel,
+        value,
+    );
+    if (typeof result.found !== "boolean") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected found to be boolean.`,
+        );
+    }
+    if (result.path !== null && typeof result.path !== "string") {
+        throw new Error(
+            `IPC contract violation on "${channel}": expected path to be string or null.`,
+        );
+    }
+    return {
+        found: result.found,
+        path: result.path,
+    };
 }
 
 const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
@@ -395,6 +421,11 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.revealGeneratedImage, path),
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
+    checkCommandAvailability: async (input: CheckCommandAvailabilityInput) =>
+        assertCommandAvailabilityResult(
+            IPC_CHANNELS.checkCommandAvailability,
+            await ipcRenderer.invoke(IPC_CHANNELS.checkCommandAvailability, input),
+        ),
     getSettingsSnapshot: async () =>
         assertIpcObject<SettingsSnapshot>(
             IPC_CHANNELS.getSettingsSnapshot,

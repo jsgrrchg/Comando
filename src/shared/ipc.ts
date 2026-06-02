@@ -22,6 +22,7 @@ export const IPC_CHANNELS = {
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
+    checkCommandAvailability: "app:check-command-availability",
     getSettingsSnapshot: "settings:get-snapshot",
     getProjectSettings: "settings:get-project-settings",
     saveCodexRuntimeSettings: "settings:save-codex-runtime-settings",
@@ -284,6 +285,15 @@ export interface PersistedShellState {
         | "agents"
         | "issues"
         | "pull_requests";
+}
+
+export interface CheckCommandAvailabilityInput {
+    readonly name: string;
+}
+
+export interface CheckCommandAvailabilityResult {
+    readonly found: boolean;
+    readonly path: string | null;
 }
 
 export type AiRuntimeId =
@@ -2695,6 +2705,9 @@ export interface ComandoApi {
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    checkCommandAvailability: (
+        input: CheckCommandAvailabilityInput,
+    ) => Promise<CheckCommandAvailabilityResult>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
     getProjectSettings: (
         projectId: string,
