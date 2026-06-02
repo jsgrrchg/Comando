@@ -103,6 +103,7 @@ const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
     "codex",
     "claude",
     "gemini",
+    "grok",
     "kilo",
     "opencode",
 ];

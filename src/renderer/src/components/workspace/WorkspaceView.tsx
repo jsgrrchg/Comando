@@ -551,6 +551,7 @@ export function buildWorkspaceAgentsQuickCreateEntries({
                     : CLAUDE_CODE_TERMINAL_DESCRIPTION,
         },
         createRuntimeEntry("Gemini", "gemini"),
+        createRuntimeEntry("Grok", "grok"),
         createRuntimeEntry("Kilo", "kilo"),
         createRuntimeEntry("OpenCode", "opencode"),
     ];
@@ -1893,6 +1894,13 @@ function WorkspacePaneView({
                     "gemini",
                 );
                 return;
+            case "grok":
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "grok",
+                );
+                return;
             case "kilo":
                 void createChatTab(
                     defaultProjectId,
@@ -2899,7 +2907,7 @@ function QuickCreateMenu({
     );
 }
 
-function getQuickCreateButtonTitle(
+export function getQuickCreateButtonTitle(
     action: WorkspaceQuickCreateAction,
     hasProject: boolean,
 ) {
@@ -2908,6 +2916,8 @@ function getQuickCreateButtonTitle(
             return "Open last item: Claude chat";
         case "gemini":
             return "Open last item: Gemini chat";
+        case "grok":
+            return "Open last item: Grok chat";
         case "kilo":
             return "Open last item: Kilo chat";
         case "opencode":
@@ -5866,6 +5876,25 @@ function ChatProviderIcon({ runtimeId }: { readonly runtimeId: AiRuntimeId }) {
                 <circle cx="8" cy="8" r="5.25" strokeWidth="1.1" />
                 <path d="M4.9 8h6.2M8 4.9v6.2" strokeWidth="1.1" />
                 <path d="M11.1 4.9 4.9 11.1" strokeWidth="0.9" />
+            </svg>
+        );
+    }
+
+    if (runtimeId === "grok") {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <path d="M3.25 8a4.75 4.75 0 1 1 4.75 4.75" strokeWidth="1.1" />
+                <path d="M8 3.25v4.75h4.75" strokeWidth="1.1" />
+                <path d="M4.4 11.6 11.6 4.4" strokeWidth="1" />
             </svg>
         );
     }

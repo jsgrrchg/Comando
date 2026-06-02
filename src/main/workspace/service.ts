@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
 import type {
+    AiRuntimeId,
     PersistedChatSessionState,
     GitHubRepositoryRef,
     WorkspaceChatHistoryTab,
@@ -444,14 +445,7 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 chatPayload.projectId === null
                     ? chatPayload.projectId
                     : null,
-            runtimeId:
-                chatPayload.runtimeId === "claude" ||
-                chatPayload.runtimeId === "codex" ||
-                chatPayload.runtimeId === "gemini" ||
-                chatPayload.runtimeId === "kilo" ||
-                chatPayload.runtimeId === "opencode"
-                    ? chatPayload.runtimeId
-                    : "codex",
+            runtimeId: parseAiRuntimeId(chatPayload.runtimeId),
             sessionId:
                 typeof chatPayload.sessionId === "string"
                     ? chatPayload.sessionId
@@ -498,14 +492,7 @@ function deserializeTabRow(row: WorkspaceTabRow): WorkspaceTab | null {
                 reviewPayload.projectId === null
                     ? reviewPayload.projectId
                     : null,
-            runtimeId:
-                reviewPayload.runtimeId === "claude" ||
-                reviewPayload.runtimeId === "codex" ||
-                reviewPayload.runtimeId === "gemini" ||
-                reviewPayload.runtimeId === "kilo" ||
-                reviewPayload.runtimeId === "opencode"
-                    ? reviewPayload.runtimeId
-                    : "codex",
+            runtimeId: parseAiRuntimeId(reviewPayload.runtimeId),
             sessionId:
                 typeof reviewPayload.sessionId === "string"
                     ? reviewPayload.sessionId
@@ -856,6 +843,17 @@ function parseNullableString(
     }
 
     return fallback;
+}
+
+function parseAiRuntimeId(value: unknown): AiRuntimeId {
+    return value === "claude" ||
+        value === "codex" ||
+        value === "gemini" ||
+        value === "grok" ||
+        value === "kilo" ||
+        value === "opencode"
+        ? value
+        : "codex";
 }
 
 function parseGitHubRepositoryRef(

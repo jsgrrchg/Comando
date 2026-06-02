@@ -30,6 +30,7 @@ export const IPC_CHANNELS = {
     verifyCodexRuntimeSettings: "settings:verify-codex-runtime-settings",
     saveClaudeRuntimeSettings: "settings:save-claude-runtime-settings",
     saveGeminiRuntimeSettings: "settings:save-gemini-runtime-settings",
+    saveGrokRuntimeSettings: "settings:save-grok-runtime-settings",
     saveKiloRuntimeSettings: "settings:save-kilo-runtime-settings",
     saveOpenCodeRuntimeSettings: "settings:save-opencode-runtime-settings",
     getSystemTheme: "app:get-system-theme",
@@ -315,6 +316,7 @@ export type AiRuntimeId =
     | "claude"
     | "codex"
     | "gemini"
+    | "grok"
     | "kilo"
     | "opencode";
 
@@ -333,6 +335,8 @@ export type ClaudeAuthMethodId =
     | "gateway-bedrock";
 
 export type GeminiAuthMethodId = "login_with_google" | "use_gemini";
+
+export type GrokAuthMethodId = "grok-login" | "xai-api-key";
 
 export type KiloAuthMethodId = "kilo-login" | "kilo-api-key";
 
@@ -406,6 +410,19 @@ export interface GeminiRuntimeSettingsInput {
     readonly googleCloudProject: string | null;
 }
 
+export interface GrokRuntimeSettings {
+    readonly authInvalidatedAtMs: number | null;
+    readonly authMethod: GrokAuthMethodId | null;
+    readonly binaryPath: string | null;
+    readonly hasXaiApiKey: boolean;
+}
+
+export interface GrokRuntimeSettingsInput {
+    readonly authMethod: GrokAuthMethodId | null;
+    readonly binaryPath: string | null;
+    readonly xaiApiKey: SecretValuePatch;
+}
+
 export interface KiloRuntimeSettings {
     readonly authInvalidatedAtMs: number | null;
     readonly authMethod: KiloAuthMethodId | null;
@@ -434,6 +451,7 @@ export interface AiSettingsSnapshot {
     readonly claude: ClaudeRuntimeSettings;
     readonly codex: CodexRuntimeSettings;
     readonly gemini: GeminiRuntimeSettings;
+    readonly grok: GrokRuntimeSettings;
     readonly kilo: KiloRuntimeSettings;
     readonly opencode: OpenCodeRuntimeSettings;
 }
@@ -511,6 +529,7 @@ export interface AiRuntimePathOverrideDiagnostic {
         | "COMANDO_CLAUDE_ACP_BIN"
         | "COMANDO_CODEX_ACP_BIN"
         | "COMANDO_GEMINI_ACP_BIN"
+        | "COMANDO_GROK_ACP_BIN"
         | "COMANDO_KILO_ACP_BIN"
         | "COMANDO_OPENCODE_ACP_BIN";
     readonly pathOrCommand: string | null;
@@ -530,7 +549,8 @@ export interface AiCredentialEnvironmentDiagnostic {
         | "GOOGLE_API_KEY"
         | "KILO_API_KEY"
         | "OPENCODE_API_KEY"
-        | "OPENAI_API_KEY";
+        | "OPENAI_API_KEY"
+        | "XAI_API_KEY";
     readonly present: boolean;
     readonly runtimeId: AiRuntimeId;
 }
@@ -3016,6 +3036,9 @@ export interface ComandoApi {
     ) => Promise<AiRuntimeStatus>;
     saveGeminiRuntimeSettings: (
         settings: GeminiRuntimeSettingsInput,
+    ) => Promise<AiRuntimeStatus>;
+    saveGrokRuntimeSettings: (
+        settings: GrokRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     saveKiloRuntimeSettings: (
         settings: KiloRuntimeSettingsInput,

@@ -1373,7 +1373,7 @@ export class AiWorkerRuntime {
         this.#queueSnapshotFlush(liveSession);
 
         try {
-            await connection.initialize({
+            const initializeResponse = await connection.initialize({
                 clientCapabilities: {
                     fs: {
                         readTextFile: true,
@@ -1388,6 +1388,10 @@ export class AiWorkerRuntime {
                 },
                 protocolVersion: PROTOCOL_VERSION,
             });
+            await this.#authenticateRuntimeIfNeeded(
+                liveConnection,
+                initializeResponse,
+            );
 
             const openedSession = await this.#openRuntimeSession(liveSession);
             liveSession.snapshot = {
@@ -1441,6 +1445,54 @@ export class AiWorkerRuntime {
             });
             throw error;
         }
+    }
+
+    async #authenticateRuntimeIfNeeded(
+        liveConnection: LiveAcpConnection,
+        initializeResponse: Awaited<
+            ReturnType<LiveAcpConnection["connection"]["initialize"]>
+        >,
+    ): Promise<void> {
+        const handshake = liveConnection.resolvedRuntime.authHandshake;
+        if (!handshake) {
+            return;
+        }
+
+        const advertisedMethodIds =
+            initializeResponse.authMethods?.map((method) => method.id) ?? [];
+
+        const credentialSource =
+            liveConnection.resolvedRuntime.status.authCredentialSource ?? "none";
+        const methodId =
+            credentialSource === "environment" ||
+            credentialSource === "comando-secret"
+                ? handshake.envMethodId
+                : credentialSource === "external-runtime"
+                  ? handshake.externalMethodId
+                  : null;
+
+        if (!methodId) {
+            throw new Error(
+                `${getRuntimeDisplayName(liveConnection.runtimeId)} needs authentication before starting a session. Open Settings and choose a login method or save an API key.`,
+            );
+        }
+
+        if (advertisedMethodIds.length === 0) {
+            throw new Error(
+                `${getRuntimeDisplayName(liveConnection.runtimeId)} does not advertise authentication methods on this machine.`,
+            );
+        }
+
+        if (!advertisedMethodIds.includes(methodId)) {
+            throw new Error(
+                `${getRuntimeDisplayName(liveConnection.runtimeId)} does not advertise the expected authentication method \`${methodId}\` on this machine.`,
+            );
+        }
+
+        await liveConnection.connection.authenticate({
+            methodId,
+            ...(handshake.meta ? { _meta: handshake.meta } : {}),
+        });
     }
 
     async #openRuntimeSession(

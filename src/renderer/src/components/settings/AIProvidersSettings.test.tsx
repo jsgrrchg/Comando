@@ -42,6 +42,16 @@ const RUNTIME_STATUSES: AiProviderRuntimeStatusMap = {
         source: "settings",
         state: "ready",
     },
+    grok: {
+        authCredentialSourceLabel: "Using environment variable",
+        authMethod: "xai-api-key",
+        authReady: true,
+        checkedAt: "2026-05-19T12:00:00.000Z",
+        command: "grok --no-auto-update agent stdio",
+        runtimeId: "grok",
+        source: "env",
+        state: "ready",
+    },
     kilo: {
         authMethod: "kilo-api-key",
         authReady: false,
@@ -84,6 +94,11 @@ const RUNTIME_SETTINGS: AiProviderRuntimeSettingsMap = {
         hasGeminiApiKey: true,
         hasGoogleApiKey: true,
     },
+    grok: {
+        authMethod: "xai-api-key",
+        binaryPath: null,
+        hasXaiApiKey: true,
+    },
     kilo: {
         authMethod: "kilo-api-key",
         binaryPath: null,
@@ -108,6 +123,7 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Codex");
         expect(markup).toContain("Claude");
         expect(markup).toContain("Gemini");
+        expect(markup).toContain("Grok");
         expect(markup).toContain("Kilo");
         expect(markup).toContain("OpenCode");
         expect(markup).toContain("Anthropic API key");
@@ -116,6 +132,8 @@ describe("AIProvidersSettings", () => {
         expect(markup).not.toContain("Auth token");
         expect(markup).toContain("Gemini API key");
         expect(markup).toContain("Google Cloud project");
+        expect(markup).toContain("Grok login");
+        expect(markup).toContain("xAI API key");
         expect(markup).toContain("Kilo API key");
         expect(markup).toContain("OpenCode auth");
         expect(markup).toContain("project .env");
@@ -253,6 +271,112 @@ describe("AIProvidersSettings", () => {
         expect(markup).not.toContain("Claude login");
         expect(markup).toContain("Anthropic API key");
         expect(markup).toContain("Bedrock gateway");
+    });
+
+    it("filters Grok methods to the runtime-supported environment", () => {
+        const markup = renderToStaticMarkup(
+            <AIProvidersSettings
+                defaultExpandedProviderIds={["grok"]}
+                runtimeSettings={{
+                    grok: {
+                        authMethod: "grok-login",
+                        binaryPath: null,
+                        hasXaiApiKey: false,
+                    },
+                }}
+                runtimeStatuses={{
+                    grok: {
+                        authMethod: null,
+                        authMethods: [
+                            {
+                                description:
+                                    "Use an xAI API key stored only for Comando on this machine.",
+                                id: "xai-api-key",
+                                name: "xAI API key",
+                            },
+                        ],
+                        authReady: false,
+                        checkedAt: "2026-05-19T12:00:00.000Z",
+                        command: "grok --no-auto-update agent stdio",
+                        runtimeId: "grok",
+                        source: "path",
+                        state: "ready",
+                    },
+                }}
+            />,
+        );
+
+        expect(markup).toContain("xAI API key");
+        expect(markup).toContain("Optional XAI_API_KEY");
+        expect(markup).not.toContain("Grok login");
+        expect(markup).not.toContain("Run Grok login in a terminal");
+    });
+
+    it("shows Grok-specific runtime messages before generic session notices", () => {
+        const markup = renderToStaticMarkup(
+            <AIProvidersSettings
+                defaultExpandedProviderIds={["grok"]}
+                runtimeSettings={{
+                    grok: {
+                        authMethod: "grok-login",
+                        binaryPath: null,
+                        hasXaiApiKey: false,
+                    },
+                }}
+                runtimeStatuses={{
+                    grok: {
+                        authCredentialSource: "external-runtime",
+                        authCredentialSourceLabel: "Using external Grok login",
+                        authMethod: "grok-login",
+                        authReady: true,
+                        authSessionMessage:
+                            "This affects new sessions. Active sessions may keep using credentials loaded at launch.",
+                        checkedAt: "2026-05-19T12:00:00.000Z",
+                        command: "grok --no-auto-update agent stdio",
+                        message:
+                            "Grok login is selected. Comando could not verify local Grok credentials.",
+                        runtimeId: "grok",
+                        source: "path",
+                        state: "ready",
+                    },
+                }}
+            />,
+        );
+
+        expect(markup).toContain(
+            "Grok login is selected. Comando could not verify local Grok credentials.",
+        );
+        expect(markup).not.toContain("This affects new sessions");
+    });
+
+    it("uses the effective Grok auth method in the provider summary", () => {
+        const markup = renderToStaticMarkup(
+            <AIProvidersSettings
+                runtimeSettings={{
+                    grok: {
+                        authMethod: "grok-login",
+                        binaryPath: null,
+                        hasXaiApiKey: false,
+                    },
+                }}
+                runtimeStatuses={{
+                    grok: {
+                        authCredentialSource: "environment",
+                        authCredentialSourceLabel: "Using environment variable",
+                        authMethod: "xai-api-key",
+                        authReady: true,
+                        checkedAt: "2026-05-19T12:00:00.000Z",
+                        command: "grok --no-auto-update agent stdio",
+                        runtimeId: "grok",
+                        source: "env",
+                        state: "ready",
+                    },
+                }}
+            />,
+        );
+
+        expect(markup).toContain("xAI API key / Using environment variable");
+        expect(markup).not.toContain("Grok login / Using environment variable");
     });
 
     it("does not render default API key fields before a method is selected or detected", () => {

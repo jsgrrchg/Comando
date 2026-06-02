@@ -25,6 +25,7 @@ describe("AI environment diagnostics", () => {
             const claudePath = writeExecutable(binDir, "claude-agent-acp");
             const codexPath = writeExecutable(binDir, "codex-acp");
             const geminiPath = writeExecutable(binDir, "gemini");
+            const grokPath = writeExecutable(binDir, "grok");
             const kiloPath = writeExecutable(binDir, "kilo");
             const opencodePath = writeExecutable(binDir, "opencode");
             const diagnostics = createAiEnvironmentDiagnostics({
@@ -33,12 +34,14 @@ describe("AI environment diagnostics", () => {
                     COMANDO_CLAUDE_ACP_BIN: claudePath,
                     COMANDO_CODEX_ACP_BIN: codexPath,
                     COMANDO_GEMINI_ACP_BIN: geminiPath,
+                    COMANDO_GROK_ACP_BIN: grokPath,
                     COMANDO_KILO_ACP_BIN: kiloPath,
                     COMANDO_OPENCODE_ACP_BIN: opencodePath,
                     GEMINI_API_KEY: "gemini-secret-value",
                     HOME: homeDir,
                     OPENAI_API_KEY: "openai-secret-value",
                     PATH: binDir,
+                    XAI_API_KEY: "xai-secret-value",
                 },
                 now: () => new Date("2026-05-19T12:00:00.000Z"),
                 secretStore: createSecretStore(),
@@ -57,6 +60,12 @@ describe("AI environment diagnostics", () => {
                         googleCloudProject: null,
                         hasGeminiApiKey: false,
                         hasGoogleApiKey: false,
+                    },
+                    grok: {
+                        authInvalidatedAtMs: null,
+                        authMethod: "xai-api-key",
+                        binaryPath: null,
+                        hasXaiApiKey: false,
                     },
                 }),
             });
@@ -81,6 +90,15 @@ describe("AI environment diagnostics", () => {
                 pathOrCommand: geminiPath,
                 present: true,
                 runtimeId: "gemini",
+            });
+            expect(
+                diagnostics.runtimePathOverrides.find(
+                    (entry) => entry.name === "COMANDO_GROK_ACP_BIN",
+                ),
+            ).toMatchObject({
+                pathOrCommand: grokPath,
+                present: true,
+                runtimeId: "grok",
             });
             expect(
                 diagnostics.credentialEnvironment.find(
@@ -123,6 +141,29 @@ describe("AI environment diagnostics", () => {
             ).toBe(binDir);
             expect(
                 diagnostics.runtimes.find(
+                    (runtime) => runtime.runtimeId === "grok",
+                ),
+            ).toMatchObject({
+                authCredentialSource: "environment",
+                authMethod: "xai-api-key",
+                authReady: true,
+                command: `${grokPath} --no-auto-update agent stdio`,
+                executablePath: grokPath,
+                source: "env",
+                state: "ready",
+            });
+            expect(
+                diagnostics.credentialEnvironment.find(
+                    (entry) =>
+                        entry.name === "XAI_API_KEY" &&
+                        entry.runtimeId === "grok",
+                ),
+            ).toMatchObject({
+                present: true,
+                runtimeId: "grok",
+            });
+            expect(
+                diagnostics.runtimes.find(
                     (runtime) => runtime.runtimeId === "opencode",
                 ),
             ).toMatchObject({
@@ -153,6 +194,9 @@ describe("AI environment diagnostics", () => {
             expect(JSON.stringify(diagnostics)).not.toContain(
                 "openai-secret-value",
             );
+            expect(JSON.stringify(diagnostics)).not.toContain(
+                "xai-secret-value",
+            );
             expect(process.env.PATH).toBe(previousPath);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -174,6 +218,7 @@ describe("AI environment diagnostics", () => {
                 secretStore: createSecretStore({
                     "ai.codex:codex_api_key": "stored-codex-secret",
                     "ai.gemini:gemini_api_key": "stored-gemini-secret",
+                    "ai.grok:xai_api_key": "stored-xai-secret",
                 }),
                 settings: createSettings({
                     codex: {
@@ -191,12 +236,19 @@ describe("AI environment diagnostics", () => {
                         hasGeminiApiKey: true,
                         hasGoogleApiKey: false,
                     },
+                    grok: {
+                        authInvalidatedAtMs: null,
+                        authMethod: "xai-api-key",
+                        binaryPath: path.join(tempDir, "missing-grok"),
+                        hasXaiApiKey: true,
+                    },
                 }),
             });
             const payload = JSON.stringify(diagnostics);
 
             expect(payload).not.toContain("stored-codex-secret");
             expect(payload).not.toContain("stored-gemini-secret");
+            expect(payload).not.toContain("stored-xai-secret");
             expect(
                 diagnostics.credentialEnvironment.find(
                     (entry) => entry.name === "CODEX_API_KEY",
@@ -248,6 +300,12 @@ function createSettings(
             googleCloudProject: null,
             hasGeminiApiKey: false,
             hasGoogleApiKey: false,
+        },
+        grok: {
+            authInvalidatedAtMs: null,
+            authMethod: null,
+            binaryPath: null,
+            hasXaiApiKey: false,
         },
         kilo: {
             authInvalidatedAtMs: null,

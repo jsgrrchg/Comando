@@ -67,6 +67,39 @@ describe("WorkspaceService", () => {
         expect(chatSessionState?.updatedAt).toEqual(expect.any(String));
     });
 
+    it("preserves Grok chat runtime tabs when restoring a workspace", () => {
+        const connection = createTestConnection();
+        const service = new WorkspaceService(connection);
+        const workspaceId = "workspace-grok-chat";
+
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "grok-chat-tab",
+                id: "pane-root",
+                tabIds: ["grok-chat-tab"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-06-02T00:00:00.000Z",
+                    draft: "",
+                    id: "grok-chat-tab",
+                    kind: "chat",
+                    projectId: null,
+                    runtimeId: "grok",
+                    sessionId: "grok-session",
+                    title: "Grok chat",
+                    worktreeId: null,
+                },
+            ],
+        };
+
+        service.saveSnapshot(workspaceId, snapshot);
+
+        expect(service.loadSnapshot(workspaceId)).toEqual(snapshot);
+    });
+
     it("tolerates corrupt layout and tabs when restoring a specific workspace", () => {
         const connection = createTestConnection();
         connection

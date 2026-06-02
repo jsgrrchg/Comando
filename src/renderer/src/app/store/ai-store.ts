@@ -29,6 +29,8 @@ import type {
     ClaudeRuntimeSettingsInput,
     GeminiRuntimeSettings,
     GeminiRuntimeSettingsInput,
+    GrokRuntimeSettings,
+    GrokRuntimeSettingsInput,
     KiloRuntimeSettings,
     KiloRuntimeSettingsInput,
     OpenCodeRuntimeSettings,
@@ -155,6 +157,7 @@ interface AiStore {
     readonly codexBinaryPath: string;
     readonly codexSettings: CodexRuntimeSettings;
     readonly geminiSettings: GeminiRuntimeSettings;
+    readonly grokSettings: GrokRuntimeSettings;
     readonly kiloSettings: KiloRuntimeSettings;
     readonly opencodeSettings: OpenCodeRuntimeSettings;
     readonly runtimeCatalogById: Partial<Record<AiRuntimeId, AiRuntimeCatalog>>;
@@ -226,6 +229,9 @@ interface AiStore {
     saveGeminiRuntimeSettings: (
         settings: GeminiRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
+    saveGrokRuntimeSettings: (
+        settings: GrokRuntimeSettingsInput,
+    ) => Promise<AiRuntimeStatus>;
     saveKiloRuntimeSettings: (
         settings: KiloRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
@@ -281,6 +287,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     codexBinaryPath: "",
     codexSettings: createEmptyCodexSettings(),
     geminiSettings: createEmptyGeminiSettings(),
+    grokSettings: createEmptyGrokSettings(),
     kiloSettings: createEmptyKiloSettings(),
     opencodeSettings: createEmptyOpenCodeSettings(),
     runtimeCatalogById: {},
@@ -971,6 +978,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             codexBinaryPath: settings?.codex.binaryPath ?? "",
             codexSettings: settings?.codex ?? createEmptyCodexSettings(),
             geminiSettings: settings?.gemini ?? createEmptyGeminiSettings(),
+            grokSettings: settings?.grok ?? createEmptyGrokSettings(),
             kiloSettings: settings?.kilo ?? createEmptyKiloSettings(),
             opencodeSettings:
                 settings?.opencode ?? createEmptyOpenCodeSettings(),
@@ -1247,6 +1255,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             claudeSettings: snapshot.ai?.claude ?? state.claudeSettings,
             codexSettings: snapshot.ai?.codex ?? state.codexSettings,
             geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
+            grokSettings: snapshot.ai?.grok ?? state.grokSettings,
             kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
             opencodeSettings:
                 snapshot.ai?.opencode ?? state.opencodeSettings,
@@ -1267,6 +1276,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             claudeSettings: snapshot.ai?.claude ?? state.claudeSettings,
             codexSettings: snapshot.ai?.codex ?? state.codexSettings,
             geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
+            grokSettings: snapshot.ai?.grok ?? state.grokSettings,
             kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
             opencodeSettings:
                 snapshot.ai?.opencode ?? state.opencodeSettings,
@@ -1305,6 +1315,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
             runtimeStatusById: {
                 ...state.runtimeStatusById,
                 gemini: status,
+            },
+        }));
+
+        return status;
+    },
+
+    saveGrokRuntimeSettings: async (settings) => {
+        const status = await getComandoApi().saveGrokRuntimeSettings(settings);
+        const snapshot = await getComandoApi().getSettingsSnapshot();
+
+        set((state) => ({
+            grokSettings: snapshot.ai?.grok ?? state.grokSettings,
+            runtimeStatusById: {
+                ...state.runtimeStatusById,
+                grok: status,
             },
         }));
 
@@ -1815,6 +1840,15 @@ function createEmptyGeminiSettings(): GeminiRuntimeSettings {
         googleCloudProject: null,
         hasGeminiApiKey: false,
         hasGoogleApiKey: false,
+    };
+}
+
+function createEmptyGrokSettings(): GrokRuntimeSettings {
+    return {
+        authInvalidatedAtMs: null,
+        authMethod: null,
+        binaryPath: null,
+        hasXaiApiKey: false,
     };
 }
 
@@ -3220,6 +3254,8 @@ function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
             return "Claude";
         case "gemini":
             return "Gemini";
+        case "grok":
+            return "Grok";
         case "kilo":
             return "Kilo";
         case "opencode":

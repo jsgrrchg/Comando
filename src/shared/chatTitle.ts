@@ -3,7 +3,7 @@ export const CHAT_TITLE_HISTORY_MAX_CHARS = 70;
 export const CHAT_TITLE_STORED_MAX_CHARS = 100;
 
 export const DEFAULT_CHAT_TITLE_PATTERN =
-    /^(Claude|Gemini|Codex|Kilo|OpenCode|Agent) \d+$/;
+    /^(Claude|Gemini|Grok|Codex|Kilo|OpenCode|Agent) \d+$/;
 
 const PILL_OPEN = "\u200B\u00AB";
 const PILL_CLOSE = "\u00BB\u200B";

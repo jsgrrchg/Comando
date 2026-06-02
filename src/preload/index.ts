@@ -147,6 +147,7 @@ import {
     type GitUnstagePathsInput,
     type GitWorktreeListInput,
     type GitWorktreeSummary,
+    type GrokRuntimeSettingsInput,
     type KiloRuntimeSettingsInput,
     type ListProjectEntriesInput,
     type OpenCodeRuntimeSettingsInput,
@@ -1282,6 +1283,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveClaudeRuntimeSettings, settings),
     saveGeminiRuntimeSettings: (settings: GeminiRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveGeminiRuntimeSettings, settings),
+    saveGrokRuntimeSettings: (settings: GrokRuntimeSettingsInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.saveGrokRuntimeSettings, settings),
     saveKiloRuntimeSettings: (settings: KiloRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveKiloRuntimeSettings, settings),
     saveOpenCodeRuntimeSettings: (settings: OpenCodeRuntimeSettingsInput) =>

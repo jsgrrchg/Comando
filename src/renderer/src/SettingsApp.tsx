@@ -17,6 +17,7 @@ import type {
     AppEditorSettings,
     ChatFontFamily,
     GeminiRuntimeSettingsInput,
+    GrokRuntimeSettingsInput,
     GitHubAuthStatus,
     KiloRuntimeSettingsInput,
     OpenCodeRuntimeSettingsInput,
@@ -29,6 +30,7 @@ import {
     type AiProviderDiagnosticEntry,
     type AiProviderDiagnosticsState,
     type AiProviderId,
+    type AiProviderRuntimeStatus,
     type AiProviderRuntimeSettingsInput,
 } from "./components/settings";
 import {
@@ -57,6 +59,15 @@ import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
 import { useSettingsStore } from "./app/store/settings-store";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
 
+const AI_PROVIDER_RUNTIME_IDS = [
+    "codex",
+    "claude",
+    "gemini",
+    "grok",
+    "kilo",
+    "opencode",
+] as const satisfies readonly AiProviderId[];
+
 export function SettingsApp() {
     const runtimeProjectId = useMemo(() => {
         const params = new URLSearchParams(window.location.search);
@@ -80,6 +91,7 @@ export function SettingsApp() {
         claude: null,
         codex: null,
         gemini: null,
+        grok: null,
         kilo: null,
         opencode: null,
     });
@@ -145,12 +157,13 @@ export function SettingsApp() {
             return;
         }
 
-        const [settingsSnapshot, codex, claude, gemini, kilo, opencode] =
+        const [settingsSnapshot, codex, claude, gemini, grok, kilo, opencode] =
             await Promise.all([
                 window.comando.getSettingsSnapshot(),
                 window.comando.getAiRuntimeStatus("codex"),
                 window.comando.getAiRuntimeStatus("claude"),
                 window.comando.getAiRuntimeStatus("gemini"),
+                window.comando.getAiRuntimeStatus("grok"),
                 window.comando.getAiRuntimeStatus("kilo"),
                 window.comando.getAiRuntimeStatus("opencode"),
             ]);
@@ -160,6 +173,7 @@ export function SettingsApp() {
             claude,
             codex,
             gemini,
+            grok,
             kilo,
             opencode,
         });
@@ -552,6 +566,10 @@ export function SettingsApp() {
                     return await window.comando.saveGeminiRuntimeSettings(
                         settings as GeminiRuntimeSettingsInput,
                     );
+                case "grok":
+                    return await window.comando.saveGrokRuntimeSettings(
+                        settings as GrokRuntimeSettingsInput,
+                    );
                 case "kilo":
                     return await window.comando.saveKiloRuntimeSettings(
                         settings as KiloRuntimeSettingsInput,
@@ -901,7 +919,7 @@ export function SettingsApp() {
                     });
                 },
                 runtimeSettings: runtimeSettings ?? undefined,
-                runtimeStatuses,
+                runtimeStatuses: mapProviderRuntimeStatuses(runtimeStatuses),
             }}
             github={{
                 error: githubError,
@@ -1036,6 +1054,8 @@ function getRuntimeName(runtimeId: AiRuntimeId): string {
             return "Claude";
         case "gemini":
             return "Gemini";
+        case "grok":
+            return "Grok";
         case "kilo":
             return "Kilo";
         case "opencode":
@@ -1044,6 +1064,25 @@ function getRuntimeName(runtimeId: AiRuntimeId): string {
         default:
             return "Codex";
     }
+}
+
+function isAiProviderId(runtimeId: AiRuntimeId): runtimeId is AiProviderId {
+    return AI_PROVIDER_RUNTIME_IDS.includes(runtimeId);
+}
+
+function mapProviderRuntimeStatuses(
+    statuses: Record<AiRuntimeId, AiRuntimeStatus | null>,
+): Partial<Record<AiProviderId, AiProviderRuntimeStatus | null>> {
+    return Object.fromEntries(
+        AI_PROVIDER_RUNTIME_IDS.map((providerId) => {
+            const status = statuses[providerId];
+
+            return [
+                providerId,
+                status ? { ...status, runtimeId: providerId } : null,
+            ];
+        }),
+    );
 }
 
 function mapEnvironmentDiagnostics(
@@ -1108,7 +1147,9 @@ function mapEnvironmentDiagnostics(
                     (runtime.authReady
                         ? "Runtime authentication is ready."
                         : "Runtime needs authentication."),
-                providerId: runtime.runtimeId,
+                providerId: isAiProviderId(runtime.runtimeId)
+                    ? runtime.runtimeId
+                    : undefined,
                 status:
                     runtime.state === "error"
                         ? "error"
@@ -1133,7 +1174,9 @@ function mapEnvironmentDiagnostics(
                 message: override.present
                     ? "Runtime path override is set."
                     : "Runtime path override is not set.",
-                providerId: override.runtimeId,
+                providerId: isAiProviderId(override.runtimeId)
+                    ? override.runtimeId
+                    : undefined,
                 status: override.present ? "ok" : "pending",
                 }),
             ),
@@ -1144,7 +1187,9 @@ function mapEnvironmentDiagnostics(
                 message: credential.present
                     ? "Environment credential is present."
                     : "Environment credential is not set.",
-                providerId: credential.runtimeId,
+                providerId: isAiProviderId(credential.runtimeId)
+                    ? credential.runtimeId
+                    : undefined,
                 status: credential.present ? "ok" : "pending",
                 }),
             ),

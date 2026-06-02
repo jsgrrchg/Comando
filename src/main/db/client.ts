@@ -19,6 +19,7 @@ import type {
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
     GeminiRuntimeSettings,
+    GrokRuntimeSettings,
     KiloRuntimeSettings,
     OpenCodeRuntimeSettings,
     PersistedShellState,
@@ -95,6 +96,7 @@ const runtimeIds = [
     "claude",
     "codex",
     "gemini",
+    "grok",
     "kilo",
     "opencode",
 ] as const satisfies readonly AiRuntimeId[];
@@ -420,6 +422,15 @@ class SettingsClient implements SettingsGateway {
         this.#dispatch("settings.saveGeminiRuntimeSettings", settings);
     }
 
+    loadGrokRuntimeSettings(): GrokRuntimeSettings {
+        return requireAiSettings(this.#snapshot.ai).grok;
+    }
+
+    saveGrokRuntimeSettings(settings: GrokRuntimeSettings): void {
+        this.#setGrokRuntimeSettings(settings);
+        this.#dispatch("settings.saveGrokRuntimeSettings", settings);
+    }
+
     loadKiloRuntimeSettings(): KiloRuntimeSettings {
         return requireAiSettings(this.#snapshot.ai).kilo;
     }
@@ -492,6 +503,24 @@ class SettingsClient implements SettingsGateway {
         }
     }
 
+    async saveGrokAuth(
+        settings: GrokRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        const records = serializeSecretRecordPatches(secrets);
+        const previousSettings = this.loadGrokRuntimeSettings();
+        this.#setGrokRuntimeSettings(settings);
+        try {
+            await this.#rpc.call("ai.saveGrokAuth", {
+                secrets: records,
+                settings,
+            });
+        } catch (error) {
+            this.#setGrokRuntimeSettings(previousSettings);
+            throw error;
+        }
+    }
+
     async saveKiloAuth(
         settings: KiloRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
@@ -554,6 +583,16 @@ class SettingsClient implements SettingsGateway {
             ai: {
                 ...requireAiSettings(this.#snapshot.ai),
                 gemini: settings,
+            },
+        };
+    }
+
+    #setGrokRuntimeSettings(settings: GrokRuntimeSettings): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            ai: {
+                ...requireAiSettings(this.#snapshot.ai),
+                grok: settings,
             },
         };
     }

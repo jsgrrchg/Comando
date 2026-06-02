@@ -204,6 +204,50 @@ describe("SettingsService", () => {
         });
     });
 
+    it("returns empty Grok settings by default", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        expect(service.loadGrokRuntimeSettings()).toEqual(
+            createEmptyGrokSettings(),
+        );
+        expect(service.loadSnapshot().ai).toMatchObject({
+            grok: createEmptyGrokSettings(),
+        });
+    });
+
+    it("stores and reloads Grok settings", () => {
+        const connection = createFakeSettingsConnection();
+        const service = new SettingsService(
+            connection as unknown as Database.Database,
+        );
+
+        service.saveGrokRuntimeSettings({
+            authInvalidatedAtMs: 2345,
+            authMethod: "xai-api-key",
+            binaryPath: "/opt/homebrew/bin/grok",
+            hasXaiApiKey: true,
+        });
+
+        expect(service.loadGrokRuntimeSettings()).toEqual({
+            authInvalidatedAtMs: 2345,
+            authMethod: "xai-api-key",
+            binaryPath: "/opt/homebrew/bin/grok",
+            hasXaiApiKey: true,
+        });
+        expect(service.loadSnapshot().ai).toEqual({
+            ...createEmptyAiSettings(),
+            grok: {
+                authInvalidatedAtMs: 2345,
+                authMethod: "xai-api-key",
+                binaryPath: "/opt/homebrew/bin/grok",
+                hasXaiApiKey: true,
+            },
+        });
+    });
+
     it("stores and reloads Claude provider settings", () => {
         const connection = createFakeSettingsConnection();
         const service = new SettingsService(
@@ -553,6 +597,15 @@ function createEmptyGeminiSettings() {
     };
 }
 
+function createEmptyGrokSettings() {
+    return {
+        authInvalidatedAtMs: null,
+        authMethod: null,
+        binaryPath: null,
+        hasXaiApiKey: false,
+    };
+}
+
 function createEmptyAiSettings() {
     return {
         claude: createEmptyClaudeSettings(),
@@ -563,6 +616,7 @@ function createEmptyAiSettings() {
             hasOpenAiApiKey: false,
         },
         gemini: createEmptyGeminiSettings(),
+        grok: createEmptyGrokSettings(),
         kilo: {
             authInvalidatedAtMs: null,
             authMethod: null,

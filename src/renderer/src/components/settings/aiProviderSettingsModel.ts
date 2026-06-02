@@ -2,6 +2,7 @@ export const AI_PROVIDER_IDS = [
     "codex",
     "claude",
     "gemini",
+    "grok",
     "kilo",
     "opencode",
 ] as const;
@@ -23,6 +24,8 @@ export type ClaudeProviderAuthMethodId =
 
 export type GeminiProviderAuthMethodId = "login_with_google" | "use_gemini";
 
+export type GrokProviderAuthMethodId = "grok-login" | "xai-api-key";
+
 export type KiloProviderAuthMethodId = "kilo-login" | "kilo-api-key";
 
 export type OpenCodeProviderAuthMethodId = "opencode-login";
@@ -31,6 +34,7 @@ export interface AiProviderAuthMethodById {
     readonly codex: CodexProviderAuthMethodId;
     readonly claude: ClaudeProviderAuthMethodId;
     readonly gemini: GeminiProviderAuthMethodId;
+    readonly grok: GrokProviderAuthMethodId;
     readonly kilo: KiloProviderAuthMethodId;
     readonly opencode: OpenCodeProviderAuthMethodId;
 }
@@ -141,6 +145,19 @@ export interface GeminiProviderSettingsInput {
     readonly googleCloudProject: string | null;
 }
 
+export interface GrokProviderSettings {
+    readonly authInvalidatedAtMs?: number | null;
+    readonly authMethod?: GrokProviderAuthMethodId | null;
+    readonly binaryPath?: string | null;
+    readonly hasXaiApiKey?: boolean;
+}
+
+export interface GrokProviderSettingsInput {
+    readonly authMethod: GrokProviderAuthMethodId | null;
+    readonly binaryPath: string | null;
+    readonly xaiApiKey: AiProviderSecretPatch;
+}
+
 export interface KiloProviderSettings {
     readonly authInvalidatedAtMs?: number | null;
     readonly authMethod?: KiloProviderAuthMethodId | null;
@@ -169,6 +186,7 @@ export interface AiProviderRuntimeSettingsById {
     readonly codex: CodexProviderSettings;
     readonly claude: ClaudeProviderSettings;
     readonly gemini: GeminiProviderSettings;
+    readonly grok: GrokProviderSettings;
     readonly kilo: KiloProviderSettings;
     readonly opencode: OpenCodeProviderSettings;
 }
@@ -177,6 +195,7 @@ export interface AiProviderRuntimeSettingsInputById {
     readonly codex: CodexProviderSettingsInput;
     readonly claude: ClaudeProviderSettingsInput;
     readonly gemini: GeminiProviderSettingsInput;
+    readonly grok: GrokProviderSettingsInput;
     readonly kilo: KiloProviderSettingsInput;
     readonly opencode: OpenCodeProviderSettingsInput;
 }
@@ -321,6 +340,27 @@ export const AI_PROVIDER_DEFINITIONS = {
             },
         ],
         name: "Gemini",
+    },
+    grok: {
+        defaultMethodId: "grok-login",
+        description: "Grok Build runtime using local CLI login or an xAI API key.",
+        envVars: ["XAI_API_KEY"],
+        id: "grok",
+        methods: [
+            {
+                description: "Use the local Grok CLI login state.",
+                id: "grok-login",
+                label: "Grok login",
+                terminalAuth: true,
+            },
+            {
+                description: "Store an xAI API key in Comando secure storage.",
+                id: "xai-api-key",
+                label: "xAI API key",
+                terminalAuth: false,
+            },
+        ],
+        name: "Grok",
     },
     kilo: {
         defaultMethodId: "kilo-login",
