@@ -4,9 +4,14 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppEditorSettings,
+    AppTerminalSettings,
     SettingsSnapshot,
     SystemTheme,
 } from "@shared/ipc";
+import {
+    DEFAULT_APP_TERMINAL_SETTINGS,
+    normalizeAppTerminalSettings,
+} from "@shared/terminal-settings";
 
 import { setCachedAppEditorSettings } from "../settings/client";
 import {
@@ -25,6 +30,7 @@ interface SettingsStore {
     readonly revision: number;
     readonly status: SettingsStatus;
     readonly systemTheme: SystemTheme;
+    readonly terminal: AppTerminalSettings;
     hydrate: () => Promise<void>;
 }
 
@@ -43,6 +49,7 @@ function createDefaultSettingsState() {
         revision: 0,
         status: "idle" as const,
         systemTheme: DEFAULT_SYSTEM_THEME,
+        terminal: DEFAULT_APP_TERMINAL_SETTINGS,
     };
 }
 
@@ -121,6 +128,7 @@ function applySnapshot(
     const aiChat = snapshot.aiChat ?? getDefaultAiChatSettings();
     const appearance = snapshot.appearance ?? getDefaultAppAppearance();
     const editor = snapshot.editor ?? getDefaultAppEditorSettings();
+    const terminal = normalizeAppTerminalSettings(snapshot.terminal);
 
     setCachedAppEditorSettings(snapshot.editor);
     useSettingsStore.setState((state) => ({
@@ -131,6 +139,7 @@ function applySnapshot(
         revision: state.revision + 1,
         status: "ready",
         systemTheme,
+        terminal,
     }));
 }
 

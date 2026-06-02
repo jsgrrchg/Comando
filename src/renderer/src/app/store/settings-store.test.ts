@@ -4,6 +4,7 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppEditorSettings,
+    AppTerminalSettings,
     SettingsUpdatedEvent,
     SystemTheme,
 } from "@shared/ipc";
@@ -61,6 +62,21 @@ function createAiChatSettings(
     };
 }
 
+function createTerminalSettings(
+    overrides: Partial<AppTerminalSettings> = {},
+): AppTerminalSettings {
+    return {
+        claudeCodeContinueSession: false,
+        claudeCodeMaxTurns: 0,
+        claudeCodeModel: "",
+        claudeCodeOptimized: false,
+        claudeCodeSkipPermissions: false,
+        terminalFontFamily: "",
+        terminalFontSize: 13,
+        ...overrides,
+    };
+}
+
 function flushAsyncWork(): Promise<void> {
     return new Promise((resolve) => {
         setTimeout(resolve, 0);
@@ -108,6 +124,7 @@ describe("settings-store", () => {
             revision: 1,
             status: "ready",
             systemTheme: { isDark: true },
+            terminal: DEFAULT_APP_TERMINAL_SETTINGS,
         });
     });
 
@@ -118,6 +135,14 @@ describe("settings-store", () => {
         const nextAppearance = createAppearanceSettings({ zoomFactor: 1.2 });
         const initialEditor = createEditorSettings({ fontSize: 14 });
         const nextEditor = createEditorSettings({ fontSize: 16 });
+        const initialTerminal = createTerminalSettings({
+            terminalFontSize: 13,
+        });
+        const nextTerminal = createTerminalSettings({
+            claudeCodeOptimized: true,
+            terminalFontFamily: "Menlo",
+            terminalFontSize: 18,
+        });
         let settingsListener:
             | ((payload: SettingsUpdatedEvent) => void)
             | null = null;
@@ -129,12 +154,14 @@ describe("settings-store", () => {
                 appearance: initialAppearance,
                 editor: initialEditor,
                 shellState: null,
+                terminal: initialTerminal,
             })
             .mockResolvedValueOnce({
                 aiChat: nextAiChat,
                 appearance: nextAppearance,
                 editor: nextEditor,
                 shellState: null,
+                terminal: nextTerminal,
             });
 
         vi.stubGlobal("window", {
@@ -167,7 +194,7 @@ describe("settings-store", () => {
             aiChat: nextAiChat,
             appearance: nextAppearance,
             editor: nextEditor,
-            terminal: DEFAULT_APP_TERMINAL_SETTINGS,
+            terminal: nextTerminal,
         });
         await flushAsyncWork();
 
@@ -176,7 +203,44 @@ describe("settings-store", () => {
             appearance: nextAppearance,
             editor: nextEditor,
             revision: 2,
+            terminal: nextTerminal,
         });
         expect(getSettingsSnapshot).toHaveBeenCalledTimes(2);
+    });
+
+    it("normalizes terminal settings from hydrated snapshots", async () => {
+        vi.stubGlobal("window", {
+            comando: {
+                getSettingsSnapshot: vi.fn().mockResolvedValue({
+                    shellState: null,
+                    terminal: {
+                        claudeCodeContinueSession: true,
+                        claudeCodeMaxTurns: 5000,
+                        claudeCodeModel: "bad-model",
+                        claudeCodeOptimized: true,
+                        claudeCodeSkipPermissions: true,
+                        terminalFontFamily: "  FiraCode\nNerd Font  ",
+                        terminalFontSize: 99,
+                    },
+                }),
+                getSystemTheme: vi
+                    .fn()
+                    .mockResolvedValue({ isDark: false } satisfies SystemTheme),
+                onSettingsUpdated: vi.fn().mockReturnValue(() => {}),
+                onThemeUpdated: vi.fn().mockReturnValue(() => {}),
+            },
+        });
+
+        await useSettingsStore.getState().hydrate();
+
+        expect(useSettingsStore.getState().terminal).toEqual({
+            claudeCodeContinueSession: true,
+            claudeCodeMaxTurns: 1000,
+            claudeCodeModel: "",
+            claudeCodeOptimized: true,
+            claudeCodeSkipPermissions: true,
+            terminalFontFamily: "FiraCode Nerd Font",
+            terminalFontSize: 24,
+        });
     });
 });
