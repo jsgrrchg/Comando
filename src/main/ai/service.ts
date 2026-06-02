@@ -307,6 +307,7 @@ export class AiService {
                 claude: this.#settingsService.loadClaudeRuntimeSettings(),
                 codex: this.#settingsService.loadCodexRuntimeSettings(),
                 gemini: this.#settingsService.loadGeminiRuntimeSettings(),
+                grok: this.#settingsService.loadGrokRuntimeSettings(),
                 kilo: this.#settingsService.loadKiloRuntimeSettings(),
                 opencode: this.#settingsService.loadOpenCodeRuntimeSettings(),
             },

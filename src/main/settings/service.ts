@@ -27,6 +27,7 @@ import type {
     CodexRuntimeSettings,
     EditorFontFamily,
     GeminiRuntimeSettings,
+    GrokRuntimeSettings,
     KiloRuntimeSettings,
     OpenCodeRuntimeSettings,
     PersistedShellState,
@@ -77,6 +78,10 @@ const GEMINI_GOOGLE_CLOUD_LOCATION_KEY = "ai.gemini.google_cloud_location";
 const GEMINI_GOOGLE_CLOUD_PROJECT_KEY = "ai.gemini.google_cloud_project";
 const GEMINI_HAS_GEMINI_API_KEY_KEY = "ai.gemini.has_gemini_api_key";
 const GEMINI_HAS_GOOGLE_API_KEY_KEY = "ai.gemini.has_google_api_key";
+const GROK_AUTH_INVALIDATED_AT_KEY = "ai.grok.auth_invalidated_at_ms";
+const GROK_AUTH_METHOD_KEY = "ai.grok.auth_method";
+const GROK_BINARY_PATH_KEY = "ai.grok.binary_path";
+const GROK_HAS_XAI_API_KEY_KEY = "ai.grok.has_xai_api_key";
 const KILO_AUTH_INVALIDATED_AT_KEY = "ai.kilo.auth_invalidated_at_ms";
 const KILO_AUTH_METHOD_KEY = "ai.kilo.auth_method";
 const KILO_BINARY_PATH_KEY = "ai.kilo.binary_path";
@@ -241,6 +246,8 @@ export interface SettingsGateway {
     saveClaudeRuntimeSettings(settings: ClaudeRuntimeSettings): void;
     loadGeminiRuntimeSettings(): GeminiRuntimeSettings;
     saveGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void;
+    loadGrokRuntimeSettings(): GrokRuntimeSettings;
+    saveGrokRuntimeSettings(settings: GrokRuntimeSettings): void;
     loadKiloRuntimeSettings(): KiloRuntimeSettings;
     saveKiloRuntimeSettings(settings: KiloRuntimeSettings): void;
     loadOpenCodeRuntimeSettings(): OpenCodeRuntimeSettings;
@@ -264,6 +271,7 @@ export class SettingsService {
                 claude: this.loadClaudeRuntimeSettings(),
                 codex: this.loadCodexRuntimeSettings(),
                 gemini: this.loadGeminiRuntimeSettings(),
+                grok: this.loadGrokRuntimeSettings(),
                 kilo: this.loadKiloRuntimeSettings(),
                 opencode: this.loadOpenCodeRuntimeSettings(),
             },
@@ -296,6 +304,10 @@ export class SettingsService {
 
         if (snapshot.ai?.gemini) {
             this.saveGeminiRuntimeSettings(snapshot.ai.gemini);
+        }
+
+        if (snapshot.ai?.grok) {
+            this.saveGrokRuntimeSettings(snapshot.ai.grok);
         }
 
         if (snapshot.ai?.kilo) {
@@ -734,6 +746,40 @@ export class SettingsService {
         this.#saveBooleanSetting(
             GEMINI_HAS_GOOGLE_API_KEY_KEY,
             settings.hasGoogleApiKey,
+        );
+    }
+
+    loadGrokRuntimeSettings(): GrokRuntimeSettings {
+        return {
+            authInvalidatedAtMs: this.#loadNumberSetting(
+                GROK_AUTH_INVALIDATED_AT_KEY,
+            ),
+            authMethod:
+                (this.#loadStringSetting(
+                    GROK_AUTH_METHOD_KEY,
+                ) as GrokRuntimeSettings["authMethod"]) ?? null,
+            binaryPath: this.#loadStringSetting(GROK_BINARY_PATH_KEY) ?? null,
+            hasXaiApiKey:
+                this.#loadBooleanSetting(GROK_HAS_XAI_API_KEY_KEY) ?? false,
+        };
+    }
+
+    saveGrokRuntimeSettings(settings: GrokRuntimeSettings): void {
+        this.#saveOptionalTrimmedStringSetting(
+            GROK_BINARY_PATH_KEY,
+            settings.binaryPath,
+        );
+        this.#saveOptionalTrimmedStringSetting(
+            GROK_AUTH_METHOD_KEY,
+            settings.authMethod,
+        );
+        this.#saveOptionalNumberSetting(
+            GROK_AUTH_INVALIDATED_AT_KEY,
+            settings.authInvalidatedAtMs,
+        );
+        this.#saveBooleanSetting(
+            GROK_HAS_XAI_API_KEY_KEY,
+            settings.hasXaiApiKey,
         );
     }
 

@@ -249,6 +249,12 @@ function createSettings(
             hasGeminiApiKey: false,
             hasGoogleApiKey: false,
         },
+        grok: {
+            authInvalidatedAtMs: null,
+            authMethod: null,
+            binaryPath: null,
+            hasXaiApiKey: false,
+        },
         kilo: {
             authInvalidatedAtMs: null,
             authMethod: null,

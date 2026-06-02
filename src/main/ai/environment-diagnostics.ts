@@ -306,6 +306,8 @@ function resolveRuntimeExecutable(
                     input.settings.gemini,
                     input.secretStore,
                 ).program;
+            case "grok":
+                return null;
             case "kilo":
                 return resolveKiloRuntime(
                     input.settings.kilo,
