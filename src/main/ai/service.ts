@@ -1504,6 +1504,7 @@ export class AiService {
             input,
             projectRoot,
         );
+        await this.#hydrateGrokRuntimeAuthBeforeLaunch(input.runtimeId);
         const resolvedRuntime = this.#resolveRuntimeCommand(input.runtimeId);
         this.#onRuntimeStatus(resolvedRuntime.status);
         if (
@@ -2027,6 +2028,18 @@ export class AiService {
 
         return this.#withPersistedRuntimeCatalog(
             getGrokRuntimeStatus(nextSettings, this.#secretStore),
+        );
+    }
+
+    async #hydrateGrokRuntimeAuthBeforeLaunch(
+        runtimeId: AiRuntimeId,
+    ): Promise<void> {
+        if (runtimeId !== "grok") {
+            return;
+        }
+
+        await this.#resolveGrokRuntimeStatusWithProbe(
+            this.#resolveRuntimeStatus(runtimeId),
         );
     }
 

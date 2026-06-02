@@ -340,6 +340,72 @@ describe("AiService Grok branch", () => {
         }
     });
 
+    it("hydrates Grok login during session preparation after terminal login", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-prepare-probe-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "grok");
+            const invalidatedAtMs = Date.now();
+            let grokSettings = createGrokSettings({
+                authInvalidatedAtMs: invalidatedAtMs,
+                authMethod: "grok-login",
+                binaryPath,
+            });
+            const preparedSnapshot = createSessionSnapshot();
+            const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+                () => Promise.resolve(preparedSnapshot),
+            );
+            const aiWorker = createAiWorker({ prepareSession });
+            probeGrokCachedTokenAuthMock.mockResolvedValueOnce(true);
+
+            const service = createService({
+                aiWorker,
+                settingsService: createSettingsService({
+                    loadGrokRuntimeSettings: vi.fn(() => grokSettings),
+                    saveGrokRuntimeSettings: (
+                        settings: GrokRuntimeSettings,
+                    ) => {
+                        grokSettings = settings;
+                    },
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId: "grok",
+                    sessionId: "session-grok",
+                    title: "Grok 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+
+            expect(probeGrokCachedTokenAuthMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    authInvalidatedAtMs: invalidatedAtMs,
+                    authMethod: "grok-login",
+                    binaryPath,
+                }),
+                expect.any(Object),
+            );
+            expect(grokSettings).toMatchObject({
+                authInvalidatedAtMs: null,
+                authMethod: "grok-login",
+                binaryPath,
+            });
+            expect(prepareSession).toHaveBeenCalledOnce();
+            expect(
+                prepareSession.mock.calls[0][0].launch.resolvedRuntime.status
+                    .onboardingRequired,
+            ).toBe(false);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("invalidates Grok login after an authentication error", () => {
         let savedSettings: GrokRuntimeSettings | null = null;
         const service = createService({
